@@ -17,13 +17,35 @@ use uuid::Uuid;
 /// The only protocol version supported by this build.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// Preserves Serde's transparent UUID representation without presenting its
+/// unsupported container attribute to `ts-rs`.
+#[derive(Deserialize, Serialize)]
+#[serde(transparent)]
+struct TransparentUuid(Uuid);
+
 macro_rules! uuid_id {
     ($name:ident) => {
-        #[derive(
-            Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS,
-        )]
-        #[serde(transparent)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, JsonSchema, PartialEq, TS)]
+        #[schemars(transparent)]
         pub struct $name(pub Uuid);
+
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                TransparentUuid(self.0).serialize(serializer)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                TransparentUuid::deserialize(deserializer).map(|uuid| Self(uuid.0))
+            }
+        }
 
         impl $name {
             #[must_use]
@@ -1172,8 +1194,16 @@ mod tests {
 
     #[test]
     fn typescript_export_smoke_test() {
-        let declaration =
-            EventEnvelope::export_to_string(&ts_rs::Config::default()).expect("export TypeScript");
+        let config = ts_rs::Config::default();
+        let declaration = EventEnvelope::export_to_string(&config).expect("export TypeScript");
         assert!(declaration.contains("EventEnvelope"));
+        for declaration in [
+            SessionId::inline(&config),
+            RunId::inline(&config),
+            ToolCallId::inline(&config),
+            InvocationId::inline(&config),
+        ] {
+            assert_eq!(declaration, "string");
+        }
     }
 }

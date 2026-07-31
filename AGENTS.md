@@ -15,3 +15,12 @@ Minor implementation details that do not drift from the documented plan
 bug fixes that restore documented behavior) do **not** require a doc update.
 
 When in doubt whether a change is architectural: it is. Update the doc.
+
+## Zero warnings
+
+All warnings are addressed, not ignored: `cargo build`, `cargo clippy`, and
+`cargo test` across the workspace must produce **zero** warnings (rustc,
+clippy, and macro-expansion warnings alike). Do not silence warnings with
+`#[allow]` unless the warning is a proven false positive and the allowance
+is narrowly scoped with a comment explaining why. If a dependency upgrade or
+new code introduces a warning, fix it in the same change.
