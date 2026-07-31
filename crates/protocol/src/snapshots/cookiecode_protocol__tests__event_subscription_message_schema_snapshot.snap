@@ -1,5 +1,6 @@
 ---
 source: crates/protocol/src/lib.rs
+assertion_line: 1089
 expression: schema_for!(EventSubscriptionMessage)
 ---
 {
@@ -505,6 +506,7 @@ expression: schema_for!(EventSubscriptionMessage)
             },
             "resources": {
               "type": "array",
+              "default": [],
               "items": {
                 "$ref": "#/$defs/ApprovalResource"
               }
@@ -523,7 +525,6 @@ expression: schema_for!(EventSubscriptionMessage)
             "action",
             "resource",
             "suggested_pattern",
-            "resources",
             "decision_trace"
           ]
         },

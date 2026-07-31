@@ -1,5 +1,6 @@
 ---
 source: crates/protocol/src/lib.rs
+assertion_line: 1084
 expression: schema_for!(EventEnvelope)
 ---
 {
@@ -496,6 +497,7 @@ expression: schema_for!(EventEnvelope)
             },
             "resources": {
               "type": "array",
+              "default": [],
               "items": {
                 "$ref": "#/$defs/ApprovalResource"
               }
@@ -514,7 +516,6 @@ expression: schema_for!(EventEnvelope)
             "action",
             "resource",
             "suggested_pattern",
-            "resources",
             "decision_trace"
           ]
         },

@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 cookiecode-engine = { path = "../engine" }
+cookiecode-config = { path = "../config" }
 cookiecode-protocol = { path = "../protocol" }
 ignore.workspace = true
 process-wrap.workspace = true
@@ -25,4 +26,6 @@ tokio-util.workspace = true
 tree-sitter-bash.workspace = true
 
 [dev-dependencies]
+cookiecode-providers = { path = "../providers" }
+futures-util.workspace = true
 tempfile.workspace = true

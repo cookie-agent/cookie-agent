@@ -235,7 +235,7 @@ impl DelegationJournal {
         if let Some(worker) = self
             .worker
             .lock()
-            .expect("journal worker lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
         {
             let (reply, receiver) = mpsc::channel();

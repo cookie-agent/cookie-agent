@@ -100,7 +100,10 @@ impl EventLog {
         event: Event,
         policy: Option<PolicySnapshot>,
     ) -> Result<EventEnvelope, EventLogError> {
-        let mut events = self.events.lock().expect("event log lock poisoned");
+        let mut events = self
+            .events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let envelope = EventEnvelope {
             session_id: self.session_id,
             run_id,
@@ -121,7 +124,7 @@ impl EventLog {
     pub fn events(&self) -> Vec<EventEnvelope> {
         self.events
             .lock()
-            .expect("event log lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
             .map(|event| event.envelope.clone())
             .collect()
@@ -131,7 +134,7 @@ impl EventLog {
     pub fn policy(&self) -> Option<PolicySnapshot> {
         self.events
             .lock()
-            .expect("event log lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .first()
             .and_then(|event| event.policy.clone())
     }
@@ -284,7 +287,10 @@ impl OutputHub {
         if data.is_empty() {
             return;
         }
-        let mut state = self.state.lock().expect("output hub lock poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.finalized {
             return;
         }
@@ -350,7 +356,10 @@ impl OutputHub {
         stream: OutputStream,
         queue: usize,
     ) -> (OutputSnapshot, mpsc::Receiver<OutputMessage>) {
-        let mut state = self.state.lock().expect("output hub lock poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let index = stream_index(stream);
         let buffer = &mut state.streams[index];
         let snapshot = OutputSnapshot {
@@ -369,18 +378,23 @@ impl OutputHub {
                 .collect(),
         };
         let (sender, receiver) = mpsc::channel(queue);
-        state.subscribers[index].push(Subscriber { sender, gap: None });
+        // A retained finalized hub is a snapshot-only resource. Do not retain a
+        // sender for a receiver which can never receive another delta.
+        if !state.finalized {
+            state.subscribers[index].push(Subscriber { sender, gap: None });
+        }
         (snapshot, receiver)
     }
 
     /// Prevents late producer clones from publishing after the owning call has
-    /// been committed as complete.  Existing subscribers retain already queued
-    /// deltas and naturally disconnect when their receivers are dropped.
+    /// been committed as complete and closes every live subscription.
     pub fn finalize(&self) {
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .expect("output hub lock poisoned")
-            .finalized = true;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.finalized = true;
+        state.subscribers = [Vec::new(), Vec::new()];
     }
 }
 
@@ -426,5 +440,23 @@ mod tests {
             OutputMessage::Delta(delta) => assert_eq!(delta.byte_offset, 3),
             OutputMessage::Gap(_) => panic!("unexpected gap"),
         }
+    }
+
+    #[tokio::test]
+    async fn finalized_output_subscription_is_closed_after_its_snapshot() {
+        let hub = OutputHub::new(ToolCallId(Uuid::from_u128(2)), 64);
+        hub.emit(OutputStream::Stdout, b"done");
+        hub.finalize();
+        let (snapshot, mut live) = hub.subscribe(OutputStream::Stdout, 4);
+        assert_eq!(snapshot.end_offset, 4);
+        assert!(live.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn live_output_subscription_closes_at_finalize() {
+        let hub = OutputHub::new(ToolCallId(Uuid::from_u128(3)), 64);
+        let (_, mut live) = hub.subscribe(OutputStream::Stdout, 4);
+        hub.finalize();
+        assert!(live.recv().await.is_none());
     }
 }

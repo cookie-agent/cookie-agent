@@ -1,13 +1,13 @@
 //! The transport-free single-conversation CookieCode runtime.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -140,9 +140,10 @@ impl Drop for DelegateAwait {
             .or_else(|| tokio::runtime::Handle::try_current().ok())
         {
             let engine = self.engine.clone();
+            let cancel_engine = engine.clone();
             let handle = self.handle;
-            runtime.spawn(async move {
-                let _ = engine.cancel_delegate(handle).await;
+            let _ = engine.spawn_admission_task(&runtime, async move {
+                let _ = cancel_engine.cancel_delegate(handle).await;
             });
         }
     }
@@ -251,6 +252,8 @@ pub enum EngineError {
     MissingRun(RunId),
     #[error("session {0} is already running")]
     SessionRunning(SessionId),
+    #[error("client run id conflicts with durable run parameters")]
+    RunIdempotencyConflict,
     #[error("tool call is not running or is not interactive")]
     StdinUnavailable,
     #[error("invalid base64 stdin: {0}")]
@@ -269,6 +272,7 @@ pub enum EngineError {
 struct ActiveRun {
     session: SessionId,
     cancellation: CancellationToken,
+    cancelled_committed: Mutex<bool>,
     stdin: Mutex<HashMap<ToolCallId, mpsc::Sender<StdinWrite>>>,
     /// Last persisted event included in the current provider request.
     prompt_seq: AtomicU64,
@@ -284,6 +288,26 @@ struct PromptSnapshotHook {
 struct GapSendHook {
     reached: std_mpsc::Sender<()>,
     release: std_mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+struct AdmissionConfirmationHook {
+    reached: mpsc::UnboundedSender<()>,
+    release: Arc<tokio::sync::Barrier>,
+}
+
+#[cfg(test)]
+struct AdmissionBlockingHook {
+    reached: std_mpsc::Sender<()>,
+    release: std_mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct AbandonedSweepHook {
+    reached: mpsc::UnboundedSender<()>,
+    captured: mpsc::UnboundedSender<Vec<RunId>>,
+    release: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Debug)]
@@ -309,6 +333,7 @@ enum SessionCommand {
     },
     Start {
         params: RunStartParams,
+        admission: Option<(InvocationId, u64)>,
         reply: oneshot::Sender<Result<RunStartResult, EngineError>>,
     },
     Steer {
@@ -351,6 +376,14 @@ enum SessionCommand {
         result: ToolResult,
         reply: oneshot::Sender<Result<bool, EngineError>>,
     },
+    ResolveAbandonedDelegateFailureIfPending {
+        invocation_id: InvocationId,
+        generation: u64,
+        run: RunId,
+        tool_call_id: ToolCallId,
+        result: ToolResult,
+        reply: oneshot::Sender<Result<bool, EngineError>>,
+    },
     CompleteIfNoSteering {
         run: RunId,
         final_text: Option<String>,
@@ -367,7 +400,7 @@ struct Inner {
     store: Arc<SessionStore>,
     journal: Arc<DelegationJournal>,
     providers: HashMap<String, Arc<dyn Provider>>,
-    tools: Vec<Arc<dyn ToolProvider>>,
+    tools: Mutex<Vec<Arc<dyn ToolProvider>>>,
     approvals: ApprovalStore,
     permissions: PermissionPipeline,
     active: Mutex<HashMap<RunId, Arc<ActiveRun>>>,
@@ -376,21 +409,43 @@ struct Inner {
     subscribers: Mutex<HashMap<SessionId, Vec<PersistedSubscriber>>>,
     actors: Mutex<HashMap<SessionId, SessionActor<SessionCommand>>>,
     output_hubs: Mutex<HashMap<ToolCallId, OutputHub>>,
+    finalized_output_hubs: Mutex<VecDeque<ToolCallId>>,
     pending_approvals: Mutex<HashMap<String, oneshot::Sender<ApprovalDecision>>>,
     runtime: Option<tokio::runtime::Handle>,
+    admission_tasks: Mutex<Vec<JoinHandle<()>>>,
+    admission_blocking_tasks: Mutex<Vec<JoinHandle<()>>>,
+    admission_tasks_closing: AtomicBool,
     recovery_waiters: Mutex<HashSet<(SessionId, RunId, ToolCallId)>>,
     #[cfg(test)]
     prompt_snapshot_hook: Mutex<Option<Arc<PromptSnapshotHook>>>,
     #[cfg(test)]
     gap_send_hook: Mutex<Option<GapSendHook>>,
+    #[cfg(test)]
+    admission_confirmation_hook: Mutex<Option<Arc<AdmissionConfirmationHook>>>,
+    #[cfg(test)]
+    admission_blocking_hook: Mutex<Option<AdmissionBlockingHook>>,
+    #[cfg(test)]
+    abandoned_sweep_hook: Mutex<Option<AbandonedSweepHook>>,
 }
 
 #[derive(Clone, Copy)]
 struct InflightDelegation {
     parent_run_id: RunId,
+    parent_session_id: Option<SessionId>,
+    parent_tool_call_id: Option<ToolCallId>,
     child_session_id: Option<SessionId>,
     child_run_id: Option<RunId>,
+    starting: bool,
     cancelled: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct AbandonedAdmission {
+    parent_session_id: SessionId,
+    parent_run_id: RunId,
+    parent_tool_call_id: ToolCallId,
+    child_session_id: Option<SessionId>,
+    child_run_id: Option<RunId>,
 }
 
 /// Removes only its own admission generation. Concurrent redeliveries retain
@@ -399,6 +454,7 @@ struct AdmissionGuard {
     inner: Arc<Inner>,
     invocation_id: InvocationId,
     generation: u64,
+    completed: bool,
 }
 
 impl AdmissionGuard {
@@ -406,41 +462,119 @@ impl AdmissionGuard {
         let generation = inner
             .next_admission_generation
             .fetch_add(1, Ordering::Relaxed);
-        inner
+        let mut admissions = inner
             .inflight_delegations
             .lock()
-            .expect("inflight delegation lock poisoned")
-            .entry(invocation_id)
-            .or_default()
-            .insert(
-                generation,
-                InflightDelegation {
-                    parent_run_id,
-                    child_session_id: None,
-                    child_run_id: None,
-                    cancelled: false,
-                },
-            );
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entries = admissions.entry(invocation_id).or_default();
+        // Keep abandoned generations until their sweeper has observed them.
+        // Removing them here would discard the child/run identity needed to
+        // finish a pending cancellation.
+        entries.insert(
+            generation,
+            InflightDelegation {
+                parent_run_id,
+                parent_session_id: None,
+                parent_tool_call_id: None,
+                child_session_id: None,
+                child_run_id: None,
+                starting: false,
+                cancelled: false,
+            },
+        );
+        drop(admissions);
         Self {
             inner,
             invocation_id,
             generation,
+            completed: false,
+        }
+    }
+
+    fn complete(&mut self) {
+        self.completed = true;
+        self.remove();
+    }
+
+    fn handoff(&mut self) {
+        // The successful admission is now observed by DelegateAwait. Keep its
+        // generation live until the child reaches a terminal state so a stale
+        // concurrent redelivery cannot cancel the shared child.
+        self.completed = true;
+    }
+
+    fn set_parent(&self, parent_session_id: SessionId, parent_tool_call_id: ToolCallId) {
+        if let Some(admission) = self
+            .inner
+            .inflight_delegations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_mut(&self.invocation_id)
+            .and_then(|entries| entries.get_mut(&self.generation))
+        {
+            admission.parent_session_id = Some(parent_session_id);
+            admission.parent_tool_call_id = Some(parent_tool_call_id);
+        }
+    }
+
+    fn remove(&self) {
+        let mut admissions = self
+            .inner
+            .inflight_delegations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(entries) = admissions.get_mut(&self.invocation_id) {
+            entries.remove(&self.generation);
+            if entries.is_empty() {
+                admissions.remove(&self.invocation_id);
+            }
         }
     }
 }
 
 impl Drop for AdmissionGuard {
     fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
         let mut admissions = self
             .inner
             .inflight_delegations
             .lock()
-            .expect("inflight delegation lock poisoned");
-        if let Some(entries) = admissions.get_mut(&self.invocation_id) {
-            entries.remove(&self.generation);
-            if entries.is_empty() {
-                admissions.remove(&self.invocation_id);
-            }
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let abandoned = if let Some(entries) = admissions.get_mut(&self.invocation_id)
+            && let Some(admission) = entries.get_mut(&self.generation)
+        {
+            // An abandoned delegate_invoke has no handle for the caller to
+            // cancel. Retain a cancellation gate so a concurrent creator
+            // cannot start its child after this future is dropped.
+            admission.cancelled = true;
+            true
+        } else {
+            false
+        };
+        drop(admissions);
+        if abandoned
+            && let Some(runtime) = self
+                .inner
+                .runtime
+                .clone()
+                .or_else(|| tokio::runtime::Handle::try_current().ok())
+        {
+            let engine = Engine {
+                inner: self.inner.clone(),
+            };
+            let sweep_engine = engine.clone();
+            let invocation_id = self.invocation_id;
+            let generation = self.generation;
+            let _ = engine.spawn_admission_task(&runtime, async move {
+                if let Err(error) = sweep_engine
+                    .sweep_abandoned_admission(invocation_id, generation)
+                    .await
+                {
+                    eprintln!("delegate admission sweep failed: {error}");
+                }
+            });
         }
     }
 }
@@ -463,7 +597,7 @@ impl Engine {
                 store,
                 journal,
                 providers: options.providers,
-                tools: options.tools,
+                tools: Mutex::new(options.tools),
                 approvals: ApprovalStore::default(),
                 permissions: PermissionPipeline::default(),
                 active: Mutex::new(HashMap::new()),
@@ -472,13 +606,23 @@ impl Engine {
                 subscribers: Mutex::new(HashMap::new()),
                 actors: Mutex::new(HashMap::new()),
                 output_hubs: Mutex::new(HashMap::new()),
+                finalized_output_hubs: Mutex::new(VecDeque::new()),
                 pending_approvals: Mutex::new(HashMap::new()),
                 runtime: tokio::runtime::Handle::try_current().ok(),
+                admission_tasks: Mutex::new(Vec::new()),
+                admission_blocking_tasks: Mutex::new(Vec::new()),
+                admission_tasks_closing: AtomicBool::new(false),
                 recovery_waiters: Mutex::new(HashSet::new()),
                 #[cfg(test)]
                 prompt_snapshot_hook: Mutex::new(None),
                 #[cfg(test)]
                 gap_send_hook: Mutex::new(None),
+                #[cfg(test)]
+                admission_confirmation_hook: Mutex::new(None),
+                #[cfg(test)]
+                admission_blocking_hook: Mutex::new(None),
+                #[cfg(test)]
+                abandoned_sweep_hook: Mutex::new(None),
             }),
         };
         for session in engine.inner.store.all() {
@@ -494,14 +638,103 @@ impl Engine {
         self.clone()
     }
 
+    fn spawn_admission_task<F>(&self, runtime: &tokio::runtime::Handle, task: F) -> bool
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let Ok(mut tasks) = self.inner.admission_tasks.lock() else {
+            return false;
+        };
+        if self.inner.admission_tasks_closing.load(Ordering::Acquire) {
+            return false;
+        }
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(runtime.spawn(task));
+        true
+    }
+
+    async fn spawn_admission_blocking<T, E, F>(&self, work: F) -> Result<T, EngineError>
+    where
+        T: Send + 'static,
+        E: Into<EngineError> + Send + 'static,
+        F: FnOnce() -> Result<T, E> + Send + 'static,
+    {
+        let (sender, receiver) = oneshot::channel();
+        {
+            let mut tasks = self
+                .inner
+                .admission_blocking_tasks
+                .lock()
+                .map_err(|_| EngineError::ActorStopped)?;
+            if self.inner.admission_tasks_closing.load(Ordering::Acquire) {
+                return Err(EngineError::ActorStopped);
+            }
+            tasks.retain(|task| !task.is_finished());
+            #[cfg(test)]
+            let hook = self
+                .inner
+                .admission_blocking_hook
+                .lock()
+                .expect("admission blocking hook lock poisoned")
+                .take();
+            tasks.push(tokio::task::spawn_blocking(move || {
+                #[cfg(test)]
+                if let Some(hook) = hook {
+                    let _ = hook.reached.send(());
+                    let _ = hook.release.recv();
+                }
+                let _ = sender.send(work().map_err(Into::into));
+            }));
+        }
+        receiver.await.map_err(|_| EngineError::ActorStopped)?
+    }
+
+    /// Registers a tool provider after engine open, allowing providers that
+    /// require an EngineClient (notably delegate) to break the construction cycle.
+    pub fn register_tool_provider(&self, provider: Arc<dyn ToolProvider>) {
+        self.inner
+            .tools
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(provider);
+    }
+
     /// Stops new session mailbox traffic, cancels active work, and joins the
     /// journal worker. Existing client clones may keep a session mailbox alive.
-    pub fn shutdown(&self) {
+    pub async fn shutdown(&self) {
+        self.inner
+            .admission_tasks_closing
+            .store(true, Ordering::Release);
+        let tasks = self
+            .inner
+            .admission_tasks
+            .lock()
+            .map(|mut tasks| tasks.drain(..).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for task in &tasks {
+            task.abort();
+        }
+        for task in tasks {
+            if let Err(error) = task.await {
+                eprintln!("admission task stopped during shutdown: {error}");
+            }
+        }
+        let blocking_tasks = self
+            .inner
+            .admission_blocking_tasks
+            .lock()
+            .map(|mut tasks| tasks.drain(..).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for task in blocking_tasks {
+            if let Err(error) = task.await {
+                eprintln!("admission blocking task stopped during shutdown: {error}");
+            }
+        }
         let active: Vec<_> = self
             .inner
             .active
             .lock()
-            .expect("active run lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .values()
             .cloned()
             .collect();
@@ -511,7 +744,7 @@ impl Engine {
         self.inner
             .actors
             .lock()
-            .expect("actor registry lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
         self.inner.journal.shutdown();
     }
@@ -543,6 +776,7 @@ impl Engine {
     /// The origin fields are derived from the parent projection, never supplied
     /// by a caller.
     #[allow(dead_code)] // wired by the crate-internal delegation capability once tools exposes it
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create_child(
         &self,
         parent_session_id: SessionId,
@@ -551,6 +785,7 @@ impl Engine {
         profile: &str,
         request_fingerprint: String,
         request: journal::DelegateRequestPayload,
+        admission: Option<(InvocationId, u64)>,
     ) -> Result<SessionMeta, EngineError> {
         let parent = self.inner.store.get(parent_session_id)?;
         if parent
@@ -586,19 +821,26 @@ impl Engine {
         let invocation_id = invocation_id(parent_session_id, parent_run_id, parent_tool_call_id);
         let journal = self.inner.journal.clone();
         let journal_policy = child_policy.clone();
-        let entry = tokio::task::spawn_blocking(move || {
-            journal.reserve(
-                invocation_id,
-                parent_session_id,
-                parent_run_id,
-                parent_tool_call_id,
-                journal_policy,
-                request_fingerprint,
-                request,
-            )
-        })
-        .await
-        .map_err(|_| EngineError::ActorStopped)??;
+        let entry = self
+            .spawn_admission_blocking(move || {
+                journal.reserve(
+                    invocation_id,
+                    parent_session_id,
+                    parent_run_id,
+                    parent_tool_call_id,
+                    journal_policy,
+                    request_fingerprint,
+                    request,
+                )
+            })
+            .await?;
+        if admission.is_some_and(|(invocation_id, generation)| {
+            !self.admission_generation_live(invocation_id, generation)
+        }) {
+            return Err(EngineError::MissingTool(
+                "delegate admission was abandoned".into(),
+            ));
+        }
         // The reservation may have completed while the parent was cancelled.
         // Never turn that durable reservation into a child after cancellation.
         if self
@@ -618,9 +860,8 @@ impl Engine {
             )
             .await?;
             let journal = self.inner.journal.clone();
-            tokio::task::spawn_blocking(move || journal.mark_linked(invocation_id))
-                .await
-                .map_err(|_| EngineError::ActorStopped)??;
+            self.spawn_admission_blocking(move || journal.mark_linked(invocation_id))
+                .await?;
             return Ok(existing.meta);
         }
         let (root, depth) = match parent.meta.origin {
@@ -647,12 +888,18 @@ impl Engine {
         );
         let store = self.inner.store.clone();
         let creation_meta = meta.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        self.spawn_admission_blocking(move || {
             store.create_with_status(creation_meta, child_policy)
         })
-        .await
-        .map_err(|_| EngineError::ActorStopped)??;
+        .await?;
         self.spawn_actor(meta.id);
+        if admission.is_some_and(|(invocation_id, generation)| {
+            !self.admission_generation_live(invocation_id, generation)
+        }) {
+            return Err(EngineError::MissingTool(
+                "delegate admission was abandoned".into(),
+            ));
+        }
         self.ensure_parent_link(
             parent_session_id,
             parent_run_id,
@@ -661,10 +908,249 @@ impl Engine {
         )
         .await?;
         let journal = self.inner.journal.clone();
-        tokio::task::spawn_blocking(move || journal.mark_linked(invocation_id))
-            .await
-            .map_err(|_| EngineError::ActorStopped)??;
+        self.spawn_admission_blocking(move || journal.mark_linked(invocation_id))
+            .await?;
         Ok(meta)
+    }
+
+    fn admission_generation_live(&self, invocation_id: InvocationId, generation: u64) -> bool {
+        self.inner
+            .inflight_delegations
+            .lock()
+            .ok()
+            .and_then(|admissions| {
+                admissions
+                    .get(&invocation_id)
+                    .and_then(|entries| entries.get(&generation))
+                    .is_some_and(|admission| !admission.cancelled)
+                    .then_some(())
+            })
+            .is_some()
+    }
+
+    fn publish_admission_child(
+        &self,
+        invocation_id: InvocationId,
+        generation: u64,
+        child_session_id: SessionId,
+    ) -> Result<(), EngineError> {
+        let mut admissions = self
+            .inner
+            .inflight_delegations
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?;
+        let admission = admissions
+            .get_mut(&invocation_id)
+            .and_then(|entries| entries.get_mut(&generation))
+            .ok_or_else(|| EngineError::MissingTool("delegate admission disappeared".into()))?;
+        admission.child_session_id = Some(child_session_id);
+        Ok(())
+    }
+
+    fn publish_admission_run(
+        &self,
+        invocation_id: InvocationId,
+        generation: u64,
+        child_session_id: SessionId,
+        child_run_id: RunId,
+    ) -> Result<(), EngineError> {
+        let mut admissions = self
+            .inner
+            .inflight_delegations
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?;
+        let admission = admissions
+            .get_mut(&invocation_id)
+            .and_then(|entries| entries.get_mut(&generation))
+            .ok_or_else(|| EngineError::MissingTool("delegate admission disappeared".into()))?;
+        admission.child_session_id = Some(child_session_id);
+        admission.child_run_id = Some(child_run_id);
+        admission.starting = false;
+        Ok(())
+    }
+
+    fn mark_admission_starting(
+        &self,
+        invocation_id: InvocationId,
+        generation: u64,
+    ) -> Result<(), EngineError> {
+        let mut admissions = self
+            .inner
+            .inflight_delegations
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?;
+        let admission = admissions
+            .get_mut(&invocation_id)
+            .and_then(|entries| entries.get_mut(&generation))
+            .filter(|admission| !admission.cancelled)
+            .ok_or_else(|| EngineError::MissingTool("delegate admission disappeared".into()))?;
+        admission.starting = true;
+        Ok(())
+    }
+
+    fn clear_admission_starting(&self, invocation_id: InvocationId, generation: u64) {
+        if let Ok(mut admissions) = self.inner.inflight_delegations.lock()
+            && let Some(admission) = admissions
+                .get_mut(&invocation_id)
+                .and_then(|entries| entries.get_mut(&generation))
+        {
+            admission.starting = false;
+        }
+    }
+
+    /// Atomically revalidates the generation against the admission registry at
+    /// the destructive cancellation point. A retry that enters first makes the
+    /// all-abandoned predicate false; a retry that enters afterwards observes a
+    /// sweep that was already linearized for the previous generation.
+    fn observe_abandoned_admission(
+        &self,
+        invocation_id: InvocationId,
+        generation: u64,
+    ) -> Result<Option<AbandonedAdmission>, EngineError> {
+        let admissions = self
+            .inner
+            .inflight_delegations
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?;
+        let Some(entries) = admissions.get(&invocation_id) else {
+            return Ok(None);
+        };
+        let Some(admission) = entries.get(&generation) else {
+            return Ok(None);
+        };
+        if !admission.cancelled {
+            return Ok(None);
+        }
+        if admission.starting && admission.child_run_id.is_none() {
+            return Ok(None);
+        }
+        if entries.values().any(|entry| !entry.cancelled) {
+            return Ok(None);
+        }
+        let (Some(parent_session_id), Some(parent_tool_call_id)) =
+            (admission.parent_session_id, admission.parent_tool_call_id)
+        else {
+            return Ok(None);
+        };
+        let target = AbandonedAdmission {
+            parent_session_id,
+            parent_run_id: admission.parent_run_id,
+            parent_tool_call_id,
+            child_session_id: admission.child_session_id,
+            child_run_id: admission.child_run_id,
+        };
+        Ok(Some(target))
+    }
+
+    fn cancel_abandoned_admission(
+        &self,
+        invocation_id: InvocationId,
+        generation: u64,
+        observed: AbandonedAdmission,
+    ) -> Result<Option<AbandonedAdmission>, EngineError> {
+        let mut admissions = self
+            .inner
+            .inflight_delegations
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?;
+        let Some(entries) = admissions.get_mut(&invocation_id) else {
+            return Ok(None);
+        };
+        let Some(admission) = entries.get(&generation).copied() else {
+            return Ok(None);
+        };
+        if !admission.cancelled
+            || (admission.starting && admission.child_run_id.is_none())
+            || entries.values().any(|entry| !entry.cancelled)
+        {
+            entries.remove(&generation);
+            if entries.is_empty() {
+                admissions.remove(&invocation_id);
+            }
+            return Ok(None);
+        }
+        let (Some(parent_session_id), Some(parent_tool_call_id)) =
+            (admission.parent_session_id, admission.parent_tool_call_id)
+        else {
+            return Ok(None);
+        };
+        let target = AbandonedAdmission {
+            parent_session_id,
+            parent_run_id: admission.parent_run_id,
+            parent_tool_call_id,
+            child_session_id: admission.child_session_id,
+            child_run_id: admission.child_run_id,
+        };
+        if target != observed {
+            return Ok(None);
+        }
+        if let Some(run_id) = target.child_run_id {
+            match self.cancel_run_durably(run_id, Some("delegate admission was abandoned".into())) {
+                Ok(_) => {}
+                Err(EngineError::MissingRun(_))
+                    if target.child_session_id.is_some_and(|child| {
+                        self.inner
+                            .store
+                            .get(child)
+                            .ok()
+                            .and_then(|projection| projection.runs.get(&run_id).cloned())
+                            .is_some_and(|run| run.status != SessionStatus::Running)
+                    }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(Some(target))
+    }
+
+    /// Drives an abandoned admission from engine-owned shared state. Parent
+    /// resolution is revalidated by the parent actor immediately before its
+    /// durable append, so a concurrent retry cannot be resolved by a stale sweep.
+    async fn sweep_abandoned_admission(
+        &self,
+        invocation_id: InvocationId,
+        generation: u64,
+    ) -> Result<(), EngineError> {
+        let observed = self.observe_abandoned_admission(invocation_id, generation)?;
+        #[cfg(test)]
+        let hook = self
+            .inner
+            .abandoned_sweep_hook
+            .lock()
+            .expect("abandoned sweep hook lock poisoned")
+            .clone();
+        #[cfg(test)]
+        if let Some(observed) = observed
+            && let Some(hook) = hook
+        {
+            let _ = hook.reached.send(());
+            let _ = hook
+                .captured
+                .send(observed.child_run_id.into_iter().collect());
+            hook.release.notified().await;
+        }
+        let Some(observed) = observed else {
+            return Ok(());
+        };
+        let Some(target) = self.cancel_abandoned_admission(invocation_id, generation, observed)?
+        else {
+            return Ok(());
+        };
+        let result = cancelled_delegate_result_with_reason(
+            target.child_session_id,
+            "delegate admission was abandoned",
+        );
+        self.request(target.parent_session_id, |reply| {
+            SessionCommand::ResolveAbandonedDelegateFailureIfPending {
+                invocation_id,
+                generation,
+                run: target.parent_run_id,
+                tool_call_id: target.parent_tool_call_id,
+                result,
+                reply,
+            }
+        })
+        .await
+        .map(|_| ())
     }
 
     /// Serializes the durable parent backlink per invocation. Every admission
@@ -766,8 +1252,40 @@ impl Engine {
             invocation.parent_run_id,
             invocation.parent_tool_call_id,
         );
-        let admission =
+        let mut admission =
             AdmissionGuard::begin(self.inner.clone(), invocation_id, invocation.parent_run_id);
+        admission.set_parent(invocation.parent_session_id, invocation.parent_tool_call_id);
+        // The admission task, rather than this observer, owns the durable start
+        // confirmation and therefore survives a dropped caller future.
+        let (reply, receiver) = oneshot::channel();
+        let engine = self.clone();
+        let generation = admission.generation;
+        let Some(runtime) = tokio::runtime::Handle::try_current().ok() else {
+            return Err(EngineError::ActorStopped);
+        };
+        if !self.spawn_admission_task(&runtime, async move {
+            let result = engine
+                .delegate_invoke_admitted(invocation, invocation_id, generation)
+                .await;
+            let _ = reply.send(result);
+        }) {
+            return Err(EngineError::ActorStopped);
+        }
+        let result = receiver.await.map_err(|_| EngineError::ActorStopped)?;
+        if result.is_ok() {
+            admission.handoff();
+        } else {
+            admission.complete();
+        }
+        result
+    }
+
+    async fn delegate_invoke_admitted(
+        &self,
+        invocation: DelegateInvocation,
+        invocation_id: InvocationId,
+        generation: u64,
+    ) -> Result<DelegateHandle, EngineError> {
         let parent = self.inner.store.get(invocation.parent_session_id)?;
         if parent
             .runs
@@ -807,6 +1325,7 @@ impl Engine {
                 &invocation.profile,
                 fingerprint,
                 request,
+                Some((invocation_id, generation)),
             )
             .await
         {
@@ -825,21 +1344,15 @@ impl Engine {
                 return Err(error);
             }
         };
-        if let Some(inflight) = self
-            .inner
-            .inflight_delegations
-            .lock()
-            .expect("inflight delegation lock poisoned")
-            .get_mut(&invocation_id)
-            .and_then(|entries| entries.get_mut(&admission.generation))
-        {
-            inflight.child_session_id = Some(child.id);
-        }
+        self.publish_admission_child(invocation_id, generation, child.id)?;
         let entry = self
             .journal_get(invocation_id)
             .await?
             .ok_or_else(|| EngineError::MissingTool("delegate reservation disappeared".into()))?;
-        let child_run_id = match self.ensure_delegate_run(&entry).await {
+        let child_run_id = match self
+            .ensure_delegate_run(&entry, Some((invocation_id, generation)))
+            .await
+        {
             Ok(run_id) => run_id,
             Err(error) => {
                 if is_journal_append_failure(&error) {
@@ -898,7 +1411,7 @@ impl Engine {
                         self.inner
                             .active
                             .lock()
-                            .expect("active run lock poisoned")
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .get(&handle.child_run_id)
                             .cloned()
                     };
@@ -919,23 +1432,29 @@ impl Engine {
                         .get(&handle.child_run_id)
                         .and_then(|run| run.final_text.clone())
                         .unwrap_or_else(|| "child completed without a final report".into());
-                    return Ok(bound_delegate_result(
+                    let result = bound_delegate_result(
                         report,
                         child.policy.result_limits.delegate_result_bytes,
-                    ));
+                    );
+                    self.clear_delegate_admissions(handle.invocation_id);
+                    return Ok(result);
                 }
                 SessionStatus::Cancelled => {
-                    return Ok(cancelled_delegate_result(handle.child_session_id, None));
+                    let result = cancelled_delegate_result(handle.child_session_id, None);
+                    self.clear_delegate_admissions(handle.invocation_id);
+                    return Ok(result);
                 }
                 SessionStatus::Failed | SessionStatus::Interrupted => {
-                    return Ok(delegate_failure_result(
+                    let result = delegate_failure_result(
                         Some(handle.child_session_id),
                         child
                             .runs
                             .get(&handle.child_run_id)
                             .and_then(|run| run.final_text.as_deref())
                             .unwrap_or("child run failed or was interrupted"),
-                    ));
+                    );
+                    self.clear_delegate_admissions(handle.invocation_id);
+                    return Ok(result);
                 }
             }
         }
@@ -965,9 +1484,16 @@ impl Engine {
         invocation_id: InvocationId,
     ) -> Result<Option<journal::JournalEntry>, EngineError> {
         let journal = self.inner.journal.clone();
-        tokio::task::spawn_blocking(move || journal.get(invocation_id))
+        self.spawn_admission_blocking(move || Ok::<_, EngineError>(journal.get(invocation_id)))
             .await
-            .map_err(|_| EngineError::ActorStopped)
+    }
+
+    fn clear_delegate_admissions(&self, invocation_id: InvocationId) {
+        self.inner
+            .inflight_delegations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&invocation_id);
     }
 
     async fn resolve_delegate_failure_if_pending(
@@ -1023,26 +1549,73 @@ impl Engine {
         Ok(true)
     }
 
-    async fn ensure_delegate_run(
+    fn resolve_abandoned_delegate_failure_if_pending_direct(
         &self,
-        entry: &journal::JournalEntry,
-    ) -> Result<RunId, EngineError> {
-        if self
+        invocation_id: InvocationId,
+        generation: u64,
+        session_id: SessionId,
+        run_id: RunId,
+        tool_call_id: ToolCallId,
+        result: ToolResult,
+    ) -> Result<bool, EngineError> {
+        let mut admissions = self
             .inner
             .inflight_delegations
             .lock()
-            .expect("inflight delegation lock poisoned")
-            .get(&entry.reservation.invocation_id)
-            .is_some_and(|entries| entries.values().any(|inflight| inflight.cancelled))
-        {
+            .map_err(|_| EngineError::ActorStopped)?;
+        let still_abandoned = admissions.get(&invocation_id).is_some_and(|entries| {
+            entries
+                .get(&generation)
+                .is_some_and(|entry| entry.cancelled)
+                && entries.values().all(|entry| entry.cancelled)
+        });
+        if !still_abandoned {
+            return Ok(false);
+        }
+        let resolved = self.resolve_delegate_failure_if_pending_direct(
+            session_id,
+            run_id,
+            tool_call_id,
+            result,
+        )?;
+        admissions.remove(&invocation_id);
+        Ok(resolved)
+    }
+
+    async fn ensure_delegate_run(
+        &self,
+        entry: &journal::JournalEntry,
+        admission: Option<(InvocationId, u64)>,
+    ) -> Result<RunId, EngineError> {
+        if admission.is_some_and(|(invocation_id, generation)| {
+            !self.admission_generation_live(invocation_id, generation)
+        }) {
             return Err(EngineError::MissingTool(
                 "delegate cancelled before child start".into(),
             ));
         }
         let child = self.inner.store.get(entry.reservation.child_session_id)?;
+        if let Some((invocation_id, generation)) = admission {
+            self.mark_admission_starting(invocation_id, generation)?;
+        }
         if let Some(run_id) = entry.child_run_id
             && child.runs.contains_key(&run_id)
         {
+            if let Some((invocation_id, generation)) = admission {
+                self.publish_admission_run(
+                    invocation_id,
+                    generation,
+                    entry.reservation.child_session_id,
+                    run_id,
+                )?;
+                if !self.admission_generation_live(invocation_id, generation) {
+                    self.sweep_abandoned_admission(invocation_id, generation)
+                        .await?;
+                    return Err(EngineError::MissingTool(
+                        "delegate cancelled before child start".into(),
+                    ));
+                }
+            }
             return Ok(run_id);
         }
         let client_run_id = delegate_client_run_id(entry.reservation.invocation_id);
@@ -1053,71 +1626,95 @@ impl Engine {
             .map(|run| run.id);
         let run_id = match existing_run {
             Some(run_id) => run_id,
-            None => {
-                self.start_run(RunStartParams {
-                    session_id: entry.reservation.child_session_id,
-                    client_run_id,
-                    input: render_delegate_input(&entry.request),
+            None => match self
+                .request(entry.reservation.child_session_id, |reply| {
+                    SessionCommand::Start {
+                        params: RunStartParams {
+                            session_id: entry.reservation.child_session_id,
+                            client_run_id,
+                            input: render_delegate_input(&entry.request),
+                        },
+                        admission,
+                        reply,
+                    }
                 })
-                .await?
-                .run_id
-            }
-        };
-        let cancelled = {
-            let mut inflight = self
-                .inner
-                .inflight_delegations
-                .lock()
-                .expect("inflight delegation lock poisoned");
-            if let Some(entries) = inflight.get_mut(&entry.reservation.invocation_id) {
-                let cancelled = entries.values().any(|inflight| inflight.cancelled);
-                for inflight in entries.values_mut() {
-                    inflight.child_run_id = Some(run_id);
+                .await
+            {
+                Ok(started) => started.run_id,
+                Err(error) => {
+                    if let Some((invocation_id, generation)) = admission {
+                        self.clear_admission_starting(invocation_id, generation);
+                        if !self.admission_generation_live(invocation_id, generation) {
+                            self.sweep_abandoned_admission(invocation_id, generation)
+                                .await?;
+                        }
+                    }
+                    return Err(error);
                 }
-                cancelled
-            } else {
-                false
-            }
+            },
         };
-        if cancelled {
-            let _ = self.cancel_run(run_id).await;
-            return Err(EngineError::MissingTool(
-                "delegate cancelled during child start".into(),
-            ));
+        let cancelled = if let Some((invocation_id, generation)) = admission {
+            // The Start actor published a newly-created run before delivering
+            // its reply. Existing local runs reach the same state here.
+            self.publish_admission_run(
+                invocation_id,
+                generation,
+                entry.reservation.child_session_id,
+                run_id,
+            )?;
+            !self.admission_generation_live(invocation_id, generation)
+        } else {
+            false
+        };
+        // The actor-owned confirmation must run even after its observer drops:
+        // the start reply may already have created the child run.
+        #[cfg(test)]
+        let confirmation_hook = self
+            .inner
+            .admission_confirmation_hook
+            .lock()
+            .expect("admission confirmation hook lock poisoned")
+            .clone();
+        #[cfg(test)]
+        if let Some(hook) = confirmation_hook {
+            let _ = hook.reached.send(());
+            hook.release.wait().await;
         }
         let journal = self.inner.journal.clone();
         let invocation_id = entry.reservation.invocation_id;
-        let confirmation =
-            tokio::task::spawn_blocking(move || journal.mark_run_started(invocation_id, run_id))
-                .await
-                .map_err(|_| EngineError::ActorStopped)
-                .and_then(|result| result.map_err(EngineError::from));
+        let confirmation = self
+            .spawn_admission_blocking(move || journal.mark_run_started(invocation_id, run_id))
+            .await;
         if let Err(error) = confirmation {
             // A failed confirmation may have poisoned the sole journal writer.
             // The child already has an active run, so terminally cancel it before
             // the caller resolves the parent through its actor.
-            if let Err(cancel_error) = self.cancel_run(run_id).await {
-                let already_terminal = matches!(cancel_error, EngineError::MissingRun(_))
-                    && self
-                        .inner
-                        .store
-                        .get(entry.reservation.child_session_id)
-                        .ok()
-                        .and_then(|child| child.runs.get(&run_id).cloned())
-                        .is_some_and(|run| run.status != SessionStatus::Running);
-                if !already_terminal {
-                    return Err(cancel_error);
-                }
-            }
+            let _ = self.cancel_run_durably(
+                run_id,
+                Some("delegate journal run confirmation failed".into()),
+            );
             return Err(error);
+        }
+        if cancelled {
+            if let Some((invocation_id, generation)) = admission {
+                self.sweep_abandoned_admission(invocation_id, generation)
+                    .await?;
+            }
+            return Err(EngineError::MissingTool(
+                "delegate cancelled during child start".into(),
+            ));
         }
         Ok(run_id)
     }
 
     pub async fn start_run(&self, params: RunStartParams) -> Result<RunStartResult, EngineError> {
         let session = params.session_id;
-        self.request(session, |reply| SessionCommand::Start { params, reply })
-            .await
+        self.request(session, |reply| SessionCommand::Start {
+            params,
+            admission: None,
+            reply,
+        })
+        .await
     }
 
     /// Synchronous setup/CLI wrapper. Do not call from a Tokio runtime.
@@ -1126,7 +1723,11 @@ impl Engine {
         params: RunStartParams,
     ) -> Result<RunStartResult, EngineError> {
         let session = params.session_id;
-        self.request_blocking(session, |reply| SessionCommand::Start { params, reply })
+        self.request_blocking(session, |reply| SessionCommand::Start {
+            params,
+            admission: None,
+            reply,
+        })
     }
 
     pub async fn steer(&self, run_id: RunId, input: String) -> Result<RunSteerResult, EngineError> {
@@ -1134,7 +1735,7 @@ impl Engine {
             .inner
             .active
             .lock()
-            .expect("active run lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&run_id)
             .cloned()
             .ok_or(EngineError::MissingRun(run_id))?;
@@ -1156,7 +1757,7 @@ impl Engine {
             .inner
             .active
             .lock()
-            .expect("active run lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&run_id)
             .cloned()
             .ok_or(EngineError::MissingRun(run_id))?;
@@ -1172,7 +1773,7 @@ impl Engine {
             .inner
             .active
             .lock()
-            .expect("active run lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&run_id)
             .cloned()
             .ok_or(EngineError::MissingRun(run_id))?;
@@ -1187,7 +1788,7 @@ impl Engine {
                 .inner
                 .inflight_delegations
                 .lock()
-                .expect("inflight delegation lock poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             inflight
                 .values_mut()
                 .flat_map(|entries| entries.values_mut())
@@ -1199,9 +1800,9 @@ impl Engine {
                 .collect()
         };
         let journal = self.inner.journal.clone();
-        let children = tokio::task::spawn_blocking(move || journal.entries())
-            .await
-            .map_err(|_| EngineError::ActorStopped)?;
+        let children = self
+            .spawn_admission_blocking(move || Ok::<_, EngineError>(journal.entries()))
+            .await?;
         let mut pending = vec![run_id];
         pending.extend(inflight_runs);
         let mut visited = HashSet::new();
@@ -1214,7 +1815,7 @@ impl Engine {
                     .inner
                     .inflight_delegations
                     .lock()
-                    .expect("inflight delegation lock poisoned");
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 inflight
                     .values_mut()
                     .flat_map(|entries| entries.values_mut())
@@ -1239,7 +1840,7 @@ impl Engine {
                     self.inner
                         .active
                         .lock()
-                        .expect("active run lock poisoned")
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .get(&child_run_id)
                         .cloned()
                 };
@@ -1257,6 +1858,139 @@ impl Engine {
         Ok(result)
     }
 
+    /// Cancels an active run and commits its terminal event under a per-run
+    /// gate. The run loop observes the same gate, so concurrent cancellation
+    /// paths cannot append two `RunCancelled` records.
+    fn cancel_run_durably(
+        &self,
+        run_id: RunId,
+        reason: Option<String>,
+    ) -> Result<bool, EngineError> {
+        let active = self
+            .inner
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&run_id)
+            .cloned();
+        let Some(active) = active else {
+            let session = self
+                .inner
+                .store
+                .all()
+                .into_iter()
+                .find(|session| session.runs.contains_key(&run_id))
+                .ok_or(EngineError::MissingRun(run_id))?;
+            let mut committed = false;
+            return self.commit_run_cancelled_with_retry(
+                session.meta.id,
+                run_id,
+                reason,
+                &mut committed,
+            );
+        };
+        active.cancellation.cancel();
+        active
+            .stdin
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        let mut committed = active
+            .cancelled_committed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.commit_run_cancelled_with_retry(active.session, run_id, reason, &mut committed)
+    }
+
+    fn append_run_cancelled_once(
+        &self,
+        active: &ActiveRun,
+        run_id: RunId,
+        reason: Option<String>,
+    ) -> Result<bool, EngineError> {
+        let mut committed = active
+            .cancelled_committed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.commit_run_cancelled_with_retry(active.session, run_id, reason, &mut committed)
+    }
+
+    fn commit_run_cancelled_with_retry(
+        &self,
+        session: SessionId,
+        run_id: RunId,
+        reason: Option<String>,
+        committed: &mut bool,
+    ) -> Result<bool, EngineError> {
+        let mut last_error = None;
+        for _ in 0..3 {
+            match self.commit_run_cancelled_once(session, run_id, reason.clone(), committed) {
+                Ok(result) => return Ok(result),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error.expect("cancellation retry attempts are nonempty"))
+    }
+
+    fn commit_run_cancelled_once(
+        &self,
+        session: SessionId,
+        run_id: RunId,
+        reason: Option<String>,
+        committed: &mut bool,
+    ) -> Result<bool, EngineError> {
+        if *committed {
+            return Ok(false);
+        }
+        // `append_direct` can append to the log before a projection/cache
+        // refresh fails. The event log is authoritative in that window.
+        if self.run_cancelled_recorded(session, run_id)? {
+            *committed = true;
+            return Ok(false);
+        }
+        if self
+            .inner
+            .store
+            .get(session)?
+            .runs
+            .get(&run_id)
+            .is_none_or(|run| run.status != SessionStatus::Running)
+        {
+            return Ok(false);
+        }
+        match self.append_direct(session, Some(run_id), Event::RunCancelled { reason }) {
+            Ok(()) => {
+                *committed = true;
+                Ok(true)
+            }
+            Err(error) => {
+                if self.run_cancelled_recorded(session, run_id)? {
+                    *committed = true;
+                    Ok(true)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    fn run_cancelled_recorded(
+        &self,
+        session: SessionId,
+        run_id: RunId,
+    ) -> Result<bool, EngineError> {
+        Ok(self
+            .inner
+            .store
+            .get(session)?
+            .log
+            .events()
+            .iter()
+            .any(|event| {
+                event.run_id == Some(run_id) && matches!(event.event, Event::RunCancelled { .. })
+            }))
+    }
+
     pub async fn tool_stdin(
         &self,
         params: RunToolStdinParams,
@@ -1265,7 +1999,7 @@ impl Engine {
             .inner
             .active
             .lock()
-            .expect("active run lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&params.run_id)
             .cloned()
             .ok_or(EngineError::MissingRun(params.run_id))?;
@@ -1304,10 +2038,29 @@ impl Engine {
         self.inner
             .output_hubs
             .lock()
-            .expect("output hub registry lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&call)
             .cloned()
             .map(|hub| hub.subscribe(stream, 256))
+    }
+
+    fn retain_finalized_output_hub(&self, call: ToolCallId) {
+        const FINALIZED_HUB_RETENTION: usize = 128;
+        let mut finalized = self
+            .inner
+            .finalized_output_hubs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        finalized.push_back(call);
+        if finalized.len() > FINALIZED_HUB_RETENTION
+            && let Some(expired) = finalized.pop_front()
+        {
+            self.inner
+                .output_hubs
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&expired);
+        }
     }
 
     #[must_use]
@@ -1483,7 +2236,7 @@ impl Engine {
         self.inner
             .subscribers
             .lock()
-            .expect("subscriber lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .entry(session)
             .or_default()
             .retain_mut(|subscriber| {
@@ -1534,7 +2287,7 @@ impl Engine {
             .inner
             .actors
             .lock()
-            .expect("actor registry lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&session)
             .cloned()
             .ok_or(EngineError::MissingActor(session))?;
@@ -1587,7 +2340,7 @@ impl Engine {
             .inner
             .actors
             .lock()
-            .expect("actor registry lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&session)
             .cloned()
             .ok_or(EngineError::MissingActor(session))?;
@@ -1605,7 +2358,7 @@ impl Engine {
             .inner
             .actors
             .lock()
-            .expect("actor registry lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .contains_key(&session)
         {
             return;
@@ -1618,7 +2371,7 @@ impl Engine {
         self.inner
             .actors
             .lock()
-            .expect("actor registry lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(session, actor);
     }
 
@@ -1659,15 +2412,45 @@ impl Engine {
                 })();
                 let _ = reply.send(result);
             }
-            SessionCommand::Start { params, reply } => {
-                let _ = reply.send(self.start_run_direct(params).await);
+            SessionCommand::Start {
+                params,
+                admission,
+                reply,
+            } => {
+                let child_session_id = params.session_id;
+                let mut result = self.start_run_direct(params, admission).await;
+                if let (Some((invocation_id, generation)), Ok(started)) =
+                    (admission, result.as_ref())
+                    && let Err(error) = self.publish_admission_run(
+                        invocation_id,
+                        generation,
+                        child_session_id,
+                        started.run_id,
+                    )
+                {
+                    let _ = self.cancel_run_durably(
+                        started.run_id,
+                        Some("delegate admission could not be published".into()),
+                    );
+                    result = Err(error);
+                }
+                let started = result.as_ref().ok().map(|result| result.run_id);
+                if reply.send(result).is_err()
+                    && admission.is_some()
+                    && let Some(run_id) = started
+                {
+                    let _ = self.cancel_run_durably(
+                        run_id,
+                        Some("delegate admission reply abandoned".into()),
+                    );
+                }
             }
             SessionCommand::Steer { run, input, reply } => {
                 let result = self
                     .inner
                     .active
                     .lock()
-                    .expect("active run lock poisoned")
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .get(&run)
                     .cloned()
                     .filter(|active| active.session == session)
@@ -1695,14 +2478,18 @@ impl Engine {
                     .inner
                     .active
                     .lock()
-                    .expect("active run lock poisoned")
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .get(&run)
                     .cloned()
                     .filter(|active| active.session == session)
                     .ok_or(EngineError::MissingRun(run))
                     .map(|active| {
                         active.cancellation.cancel();
-                        active.stdin.lock().expect("stdin lock poisoned").clear();
+                        active
+                            .stdin
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .clear();
                         RunCancelResult { cancelled: true }
                     });
                 let _ = reply.send(result);
@@ -1713,7 +2500,7 @@ impl Engine {
                         .inner
                         .active
                         .lock()
-                        .expect("active run lock poisoned")
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .get(&params.run_id)
                         .cloned()
                         .filter(|active| active.session == session)
@@ -1726,7 +2513,7 @@ impl Engine {
                     let sender = active
                         .stdin
                         .lock()
-                        .expect("stdin lock poisoned")
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .get(&params.call_id)
                         .cloned()
                         .ok_or(EngineError::StdinUnavailable)?;
@@ -1740,7 +2527,7 @@ impl Engine {
                         active
                             .stdin
                             .lock()
-                            .expect("stdin lock poisoned")
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .remove(&params.call_id);
                     }
                     self.append_direct(
@@ -1769,7 +2556,7 @@ impl Engine {
                     self.inner
                         .subscribers
                         .lock()
-                        .expect("subscriber lock poisoned")
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .entry(session)
                         .or_default()
                         .push(PersistedSubscriber { sender });
@@ -1831,6 +2618,24 @@ impl Engine {
                 );
                 let _ = reply.send(result);
             }
+            SessionCommand::ResolveAbandonedDelegateFailureIfPending {
+                invocation_id,
+                generation,
+                run,
+                tool_call_id,
+                result,
+                reply,
+            } => {
+                let result = self.resolve_abandoned_delegate_failure_if_pending_direct(
+                    invocation_id,
+                    generation,
+                    session,
+                    run,
+                    tool_call_id,
+                    result,
+                );
+                let _ = reply.send(result);
+            }
             SessionCommand::CompleteIfNoSteering {
                 run,
                 final_text,
@@ -1840,7 +2645,7 @@ impl Engine {
                     .inner
                     .active
                     .lock()
-                    .expect("active run lock poisoned")
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .get(&run)
                     .cloned()
                     .filter(|active| active.session == session)
@@ -1877,7 +2682,7 @@ impl Engine {
                     .inner
                     .active
                     .lock()
-                    .expect("active run lock poisoned")
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .get(&run)
                     .cloned()
                     .filter(|active| active.session == session)
@@ -1924,13 +2729,24 @@ impl Engine {
     async fn start_run_direct(
         &self,
         params: RunStartParams,
+        admission: Option<(InvocationId, u64)>,
     ) -> Result<RunStartResult, EngineError> {
+        if let Some((invocation_id, generation)) = admission
+            && !self.admission_generation_live(invocation_id, generation)
+        {
+            return Err(EngineError::MissingTool(
+                "delegate admission was abandoned or superseded".into(),
+            ));
+        }
         let session = self.inner.store.get(params.session_id)?;
         if let Some(run) = session
             .runs
             .values()
             .find(|run| run.client_run_id == params.client_run_id)
         {
+            if run.input != params.input {
+                return Err(EngineError::RunIdempotencyConflict);
+            }
             return Ok(RunStartResult { run_id: run.id });
         }
         if session.status == SessionStatus::Running {
@@ -1949,23 +2765,49 @@ impl Engine {
         let active = Arc::new(ActiveRun {
             session: params.session_id,
             cancellation: CancellationToken::new(),
+            cancelled_committed: Mutex::new(false),
             stdin: Mutex::new(HashMap::new()),
             prompt_seq: AtomicU64::new(0),
         });
+        // A sweeper may have terminalized this durable run before active-run
+        // registration. Never resurrect a cancelled run with a live loop.
+        if self.run_cancelled_recorded(params.session_id, run_id)? {
+            return Ok(RunStartResult { run_id });
+        }
+        if let Some((invocation_id, generation)) = admission
+            && let Err(error) =
+                self.publish_admission_run(invocation_id, generation, params.session_id, run_id)
+        {
+            self.inner
+                .active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(run_id, active);
+            self.cancel_run_durably(run_id, Some("delegate admission publication failed".into()))?;
+            return Err(error);
+        }
         self.inner
             .active
             .lock()
-            .expect("active run lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(run_id, active.clone());
-        let engine = self.clone();
-        tokio::spawn(async move {
-            let _ = engine.run_loop(run_id, active).await;
-            engine
-                .inner
+        if self.run_cancelled_recorded(params.session_id, run_id)? {
+            self.inner
                 .active
                 .lock()
-                .expect("active run lock poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&run_id);
+            return Ok(RunStartResult { run_id });
+        }
+        let engine = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = engine.run_loop(run_id, active).await {
+                eprintln!("run {run_id} terminalization failed: {error}");
+                return;
+            }
+            if let Ok(mut active_runs) = engine.inner.active.lock() {
+                active_runs.remove(&run_id);
+            }
         });
         Ok(RunStartResult { run_id })
     }
@@ -1975,12 +2817,7 @@ impl Engine {
         let mut fallback_entry = 0_usize;
         loop {
             if active.cancellation.is_cancelled() {
-                self.append(
-                    active.session,
-                    Some(run_id),
-                    Event::RunCancelled { reason: None },
-                )
-                .await?;
+                self.append_run_cancelled_once(&active, run_id, None)?;
                 return Ok(());
             }
             let session = self.inner.store.get(active.session)?;
@@ -2010,12 +2847,7 @@ impl Engine {
                 Ok(events) => events,
                 Err(error) => {
                     if active.cancellation.is_cancelled() {
-                        self.append(
-                            active.session,
-                            Some(run_id),
-                            Event::RunCancelled { reason: None },
-                        )
-                        .await?;
+                        self.append_run_cancelled_once(&active, run_id, None)?;
                         return Ok(());
                     }
                     self.append(
@@ -2060,12 +2892,7 @@ impl Engine {
                 }
             }
             if active.cancellation.is_cancelled() {
-                self.append(
-                    active.session,
-                    Some(run_id),
-                    Event::RunCancelled { reason: None },
-                )
-                .await?;
+                self.append_run_cancelled_once(&active, run_id, None)?;
                 return Ok(());
             }
             if !tool_use {
@@ -2088,6 +2915,12 @@ impl Engine {
                 let arguments =
                     serde_json::from_str(args.get(raw_id).map(String::as_str).unwrap_or("{}"))
                         .unwrap_or(Value::Object(Default::default()));
+                self.inner
+                    .output_hubs
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .entry(*id)
+                    .or_insert_with(|| OutputHub::new(*id, 64 * 1024));
                 self.append(
                     active.session,
                     Some(run_id),
@@ -2112,22 +2945,12 @@ impl Engine {
             // committed in provider tool-call order, regardless of completion order.
             for (id, task) in calls.iter().map(|call| call.0).zip(tasks) {
                 if active.cancellation.is_cancelled() {
-                    self.append(
-                        active.session,
-                        Some(run_id),
-                        Event::RunCancelled { reason: None },
-                    )
-                    .await?;
+                    self.append_run_cancelled_once(&active, run_id, None)?;
                     return Ok(());
                 }
                 let task_result = task.await;
                 if active.cancellation.is_cancelled() {
-                    self.append(
-                        active.session,
-                        Some(run_id),
-                        Event::RunCancelled { reason: None },
-                    )
-                    .await?;
+                    self.append_run_cancelled_once(&active, run_id, None)?;
                     return Ok(());
                 }
                 let result = match task_result {
@@ -2327,7 +3150,12 @@ impl Engine {
                 Ok(session) => session,
                 Err(error) => return Err(error.to_string()),
             };
-            if !session.policy.tools.contains(&call.name) {
+            let delegate_enabled = session.policy.delegation.enabled
+                && session.policy.delegation.depth_limit.allows_delegation()
+                && !session.policy.delegation.allowed_profiles.is_empty();
+            if (call.name == "delegate" && !delegate_enabled)
+                || (call.name != "delegate" && !session.policy.tools.contains(&call.name))
+            {
                 return Err(format!(
                     "tool `{}` is not enabled for this session",
                     call.name
@@ -2391,7 +3219,7 @@ impl Engine {
                         .inner
                         .pending_approvals
                         .lock()
-                        .expect("pending approval lock poisoned")
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .insert(approval_id.clone(), approval_tx);
                     if engine
                         .append(
@@ -2413,14 +3241,14 @@ impl Engine {
                             .inner
                             .pending_approvals
                             .lock()
-                            .expect("pending approval lock poisoned")
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .remove(&approval_id);
                         return Err("could not persist approval request".into());
                     }
                     let decision = tokio::select! {
                         decision = approval_rx => decision.map_err(|_| "approval request was abandoned".to_owned())?,
                         _ = active.cancellation.cancelled() => {
-                            engine.inner.pending_approvals.lock().expect("pending approval lock poisoned").remove(&approval_id);
+                            engine.inner.pending_approvals.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&approval_id);
                             return Err("cancelled".into());
                         }
                     };
@@ -2434,9 +3262,13 @@ impl Engine {
                     return Err("permission denied".into());
                 }
             }
-            let provider = engine
+            let providers = engine
                 .inner
                 .tools
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            let provider = providers
                 .iter()
                 .find(|provider| {
                     provider
@@ -2449,13 +3281,14 @@ impl Engine {
                 .cloned()
                 .ok_or_else(|| EngineError::MissingTool(call.name.clone()).to_string())?;
             let (progress_tx, mut progress_rx) = mpsc::channel(64);
-            let hub = OutputHub::new(call.id, 64 * 1024);
-            engine
+            let hub = engine
                 .inner
                 .output_hubs
                 .lock()
-                .expect("output hub registry lock poisoned")
-                .insert(call.id, hub.clone());
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entry(call.id)
+                .or_insert_with(|| OutputHub::new(call.id, 64 * 1024))
+                .clone();
             let interactive = call.name == "bash"
                 && call
                     .arguments
@@ -2467,7 +3300,7 @@ impl Engine {
                 active
                     .stdin
                     .lock()
-                    .expect("stdin lock poisoned")
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .insert(call.id, stdin_tx);
             }
             let invoke = provider.invoke(
@@ -2486,22 +3319,30 @@ impl Engine {
             loop {
                 tokio::select! {
                     result = &mut invoke => {
-                        active.stdin.lock().expect("stdin lock poisoned").remove(&call.id);
+                        active
+                            .stdin
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .remove(&call.id);
                         // Tool implementations drain their producers before
                         // resolving.  Finalizing here makes all emitted deltas
                         // precede the completion notification committed by the
                         // session actor.
                         hub.finalize();
-                        engine.inner.output_hubs.lock().expect("output hub registry lock poisoned").remove(&call.id);
+                        engine.retain_finalized_output_hub(call.id);
                         return result.map(bound_tool_result).map_err(|error| error.to_string());
                     }
                     Some(progress) = progress_rx.recv() => {
                         let _ = engine.append(active.session, Some(run), Event::ToolCallProgress { tool_call_id: progress.tool_call_id, message: progress.message }).await;
                     }
                     _ = active.cancellation.cancelled() => {
-                        active.stdin.lock().expect("stdin lock poisoned").remove(&call.id);
+                        active
+                            .stdin
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .remove(&call.id);
                         hub.finalize();
-                        engine.inner.output_hubs.lock().expect("output hub registry lock poisoned").remove(&call.id);
+                        engine.retain_finalized_output_hub(call.id);
                         return Err("cancelled".into());
                     }
                 }
@@ -2596,7 +3437,7 @@ impl Engine {
             .inner
             .pending_approvals
             .lock()
-            .expect("pending approval lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&approval_id)
         {
             let _ = sender.send(decision);
@@ -2609,14 +3450,26 @@ impl Engine {
 
     fn tool_definitions(&self, session: SessionId) -> Result<Vec<ToolDefinition>, EngineError> {
         let policy = self.inner.store.get(session)?.policy;
+        let delegate_enabled = policy.delegation.enabled
+            && policy.delegation.depth_limit.allows_delegation()
+            && !policy.delegation.allowed_profiles.is_empty();
         let mut names = HashSet::new();
         let mut output = Vec::new();
-        for provider in &self.inner.tools {
+        let providers = self
+            .inner
+            .tools
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        for provider in &providers {
             for tool in provider
                 .tools_for_session(&SessionToolContext { session })
                 .map_err(|error| EngineError::MissingTool(error.to_string()))?
             {
-                if policy.tools.contains(&tool.name) && names.insert(tool.name.clone()) {
+                if ((tool.name != "delegate" && policy.tools.contains(&tool.name))
+                    || (tool.name == "delegate" && delegate_enabled))
+                    && names.insert(tool.name.clone())
+                {
                     output.push(ToolDefinition {
                         name: tool.name,
                         description: tool.description,
@@ -2754,7 +3607,7 @@ impl Engine {
                         .inner
                         .recovery_waiters
                         .lock()
-                        .expect("recovery waiter lock poisoned")
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .contains(&recovery_key)
                     {
                         continue;
@@ -2856,15 +3709,15 @@ impl Engine {
                         self.inner
                             .recovery_waiters
                             .lock()
-                            .expect("recovery waiter lock poisoned")
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .insert(recovery_key);
-                        let child_run_id = match self.ensure_delegate_run(&entry).await {
+                        let child_run_id = match self.ensure_delegate_run(&entry, None).await {
                             Ok(run_id) => run_id,
                             Err(error) => {
                                 self.inner
                                     .recovery_waiters
                                     .lock()
-                                    .expect("recovery waiter lock poisoned")
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner())
                                     .remove(&recovery_key);
                                 if is_journal_append_failure(&error) {
                                     let _ = self.resolve_delegate_failure_if_pending_direct(
@@ -2905,7 +3758,7 @@ impl Engine {
                                 .inner
                                 .recovery_waiters
                                 .lock()
-                                .expect("recovery waiter lock poisoned")
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
                                 .remove(&(session_id, parent_run_id, tool_call_id));
                         });
                     } else {
@@ -3944,6 +4797,50 @@ mod tests {
             .count()
     }
 
+    fn child_run_id(engine: &Engine, child: SessionId) -> RunId {
+        *engine
+            .inner
+            .store
+            .get(child)
+            .expect("child projection")
+            .runs
+            .keys()
+            .next()
+            .expect("child run")
+    }
+
+    fn run_cancel_count(engine: &Engine, session: SessionId) -> usize {
+        engine
+            .inner
+            .store
+            .get(session)
+            .expect("session projection")
+            .log
+            .events()
+            .iter()
+            .filter(|event| matches!(event.event, Event::RunCancelled { .. }))
+            .count()
+    }
+
+    fn parent_delegate_completion_count(
+        engine: &Engine,
+        parent: SessionId,
+        call: ToolCallId,
+    ) -> usize {
+        engine
+            .inner
+            .store
+            .get(parent)
+            .expect("parent projection")
+            .log
+            .events()
+            .iter()
+            .filter(|event| {
+                matches!(event.event, Event::ToolCallCompleted { tool_call_id, .. } if tool_call_id == call)
+            })
+            .count()
+    }
+
     async fn wait_for_delegate_completion(
         engine: &Engine,
         parent: SessionId,
@@ -4003,6 +4900,37 @@ mod tests {
                 precedence_reason: precedence_reason.into(),
             },
         }
+    }
+
+    async fn start_with_admission(
+        engine: &Engine,
+        child: SessionId,
+        invocation_id: InvocationId,
+        generation: u64,
+        input: String,
+    ) -> Result<RunStartResult, EngineError> {
+        let actor = engine
+            .inner
+            .actors
+            .lock()
+            .expect("actor registry lock poisoned")
+            .get(&child)
+            .cloned()
+            .expect("child actor");
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        actor
+            .send(SessionCommand::Start {
+                params: RunStartParams {
+                    session_id: child,
+                    client_run_id: delegate_client_run_id(invocation_id),
+                    input,
+                },
+                admission: Some((invocation_id, generation)),
+                reply,
+            })
+            .await
+            .expect("queue child start");
+        receiver.await.expect("child start reply")
     }
 
     fn envelope(seq: u64, event: Event) -> EventEnvelope {
@@ -4407,6 +5335,7 @@ mod tests {
                     success_criteria: Vec::new(),
                     expected_output: Value::Null,
                 },
+                None,
             )
             .await
             .expect("create unstarted child");
@@ -4784,7 +5713,7 @@ mod tests {
             .append(session, Some(run), Event::RunCompleted { final_text: None })
             .await
             .expect("complete run");
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
         let reopened = Engine::open(EngineOptions {
             data_dir: directory.path().join("data"),
@@ -4909,7 +5838,7 @@ mod tests {
             .append(session, Some(run), Event::RunInterrupted { reason: None })
             .await
             .expect("interrupt run");
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
         let reopened = Engine::open(EngineOptions {
             data_dir: directory.path().join("data"),
@@ -5069,7 +5998,7 @@ mod tests {
         let policy = child_policy_for(&engine, &invocation);
         let child = SessionId::new_v7();
         let invocation_id = write_started_delegation(&engine, &invocation, child, &policy);
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
 
         let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
@@ -5115,7 +6044,7 @@ mod tests {
         let child = SessionId::new_v7();
         let invocation_id = write_started_delegation(&engine, &invocation, child, &policy);
         persist_delegated_child(&engine, &invocation, child, policy);
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
 
         let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
@@ -5159,7 +6088,7 @@ mod tests {
             )
             .await
             .expect("persist parent link");
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
 
         let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
@@ -5199,7 +6128,7 @@ mod tests {
                 input: render_delegate_input(&delegate_request(&invocation)),
             },
         );
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
 
         let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
@@ -5243,7 +6172,7 @@ mod tests {
             },
         );
         write_run_started_delegation(&engine, invocation_id, child_run);
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
 
         let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
@@ -5304,7 +6233,7 @@ mod tests {
             .store
             .create(orphan_meta, policy)
             .expect("persist orphan child");
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
 
         let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
@@ -5351,7 +6280,7 @@ mod tests {
             )
             .await
             .expect("cancel parent");
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
 
         let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
@@ -5456,7 +6385,7 @@ mod tests {
             )
             .await
             .expect("cancel parent");
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
 
         let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
@@ -5504,7 +6433,7 @@ mod tests {
             .await
             .expect("persist parent link");
         write_linked_delegation(&engine, invocation_id);
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
 
         let reopened = reopen_test_engine(&directory, Arc::new(ReportProvider)).await;
@@ -5534,7 +6463,7 @@ mod tests {
     async fn reopen_pending_delegate_without_journal_resolves_failure_without_fabricating_state() {
         let (directory, engine) = test_engine(Arc::new(NoopProvider));
         let (parent, _parent_run, call, _invocation) = pending_delegate_parent(&engine).await;
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
 
         let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
@@ -5640,7 +6569,7 @@ mod tests {
         persist_delegated_child(&engine, &invocation, child, policy);
         write_linked_delegation(&engine, invocation_id);
         append_torn_journal_tail(&engine, b"{\"type\":\"delegation_run_started");
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
 
         let reopened = reopen_test_engine(&directory, Arc::new(ReportProvider)).await;
@@ -5678,7 +6607,7 @@ mod tests {
             &engine,
             b"{\"type\":\"delegation_started\",\"reservation\":{\"invocation_id\":",
         );
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
 
         let reopened = reopen_test_engine(&directory, Arc::new(ReportProvider)).await;
@@ -5773,7 +6702,7 @@ mod tests {
                 .count(),
             1
         );
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
 
         let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
@@ -5848,7 +6777,7 @@ mod tests {
                 .mark_run_started(entry.reservation.invocation_id, RunId::new_v7()),
             Err(JournalError::Poisoned)
         ));
-        engine.shutdown();
+        engine.shutdown().await;
         drop(engine);
 
         let reopened = reopen_test_engine(
@@ -5882,8 +6811,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn poisoned_journal_keeps_reads_available_but_rejects_all_mutations() {
+    #[tokio::test]
+    async fn poisoned_journal_keeps_reads_available_but_rejects_all_mutations() {
         let (_directory, engine) = test_engine(Arc::new(NoopProvider));
         let journal = engine.inner.journal.clone();
         let invocation = InvocationId(Uuid::from_u128(91));
@@ -5924,7 +6853,7 @@ mod tests {
             journal.mark_run_started(invocation, RunId::new_v7()),
             Err(JournalError::Poisoned)
         ));
-        engine.shutdown();
+        engine.shutdown().await;
     }
 
     #[tokio::test]
@@ -6041,7 +6970,7 @@ mod tests {
             matches!(&event.event, Event::RunCompleted { final_text }
                 if final_text.as_deref() == Some("advanced"))
         }));
-        engine.shutdown();
+        engine.shutdown().await;
     }
 
     #[tokio::test]
@@ -6097,7 +7026,7 @@ mod tests {
             0
         );
         assert_eq!(child_run_start_count(&engine, handle.child_session_id), 1);
-        engine.shutdown();
+        engine.shutdown().await;
     }
 
     #[tokio::test]
@@ -6158,7 +7087,7 @@ mod tests {
             cookiecode_protocol::ActionKind::Bash,
             "git status --short"
         ));
-        engine.shutdown();
+        engine.shutdown().await;
     }
 
     #[tokio::test]
@@ -6238,7 +7167,7 @@ mod tests {
                 .effect,
             cookiecode_protocol::Effect::Allow
         );
-        engine.shutdown();
+        engine.shutdown().await;
     }
 
     #[tokio::test]
@@ -6335,6 +7264,756 @@ mod tests {
         assert!(resolved.iter().any(|(id, decision, scope)| {
             id == "reject" && *decision == ApprovalDecision::Reject && scope.is_none()
         }));
-        engine.shutdown();
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn abandoned_generation_rejects_its_queued_child_start_without_creating_a_run() {
+        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
+        let child = engine.create_session(".", "test").expect("create child").id;
+        let invocation = InvocationId(Uuid::from_u128(101));
+        let abandoned = AdmissionGuard::begin(engine.inner.clone(), invocation, RunId::new_v7());
+        let generation = abandoned.generation;
+        drop(abandoned);
+
+        assert!(matches!(
+            start_with_admission(
+                &engine,
+                child,
+                invocation,
+                generation,
+                "queued child start".into(),
+            )
+            .await,
+            Err(EngineError::MissingTool(_))
+        ));
+        assert!(
+            engine
+                .inner
+                .store
+                .get(child)
+                .expect("child")
+                .runs
+                .is_empty(),
+            "abandoned admission created an untracked child run"
+        );
+        assert!(
+            engine
+                .inner
+                .active
+                .lock()
+                .expect("active run lock poisoned")
+                .is_empty()
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn superseded_stale_start_noops_while_retry_starts_one_linked_child_run() {
+        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
+        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
+        let policy = child_policy_for(&engine, &invocation);
+        let entry = reserve_live_delegation(&engine, &invocation, policy.clone()).await;
+        let child = entry.reservation.child_session_id;
+        persist_delegated_child(&engine, &invocation, child, policy);
+        engine.spawn_actor(child);
+        engine
+            .append(
+                parent,
+                Some(parent_run),
+                Event::ToolCallLinked {
+                    tool_call_id: call,
+                    child_session_id: child,
+                },
+            )
+            .await
+            .expect("persist parent link");
+        let stale = AdmissionGuard::begin(
+            engine.inner.clone(),
+            entry.reservation.invocation_id,
+            parent_run,
+        );
+        let stale_generation = stale.generation;
+        drop(stale);
+        let mut retry = AdmissionGuard::begin(
+            engine.inner.clone(),
+            entry.reservation.invocation_id,
+            parent_run,
+        );
+
+        assert!(matches!(
+            start_with_admission(
+                &engine,
+                child,
+                entry.reservation.invocation_id,
+                stale_generation,
+                render_delegate_input(&entry.request),
+            )
+            .await,
+            Err(EngineError::MissingTool(_))
+        ));
+        start_with_admission(
+            &engine,
+            child,
+            entry.reservation.invocation_id,
+            retry.generation,
+            render_delegate_input(&entry.request),
+        )
+        .await
+        .expect("retry start");
+        retry.complete();
+        assert_eq!(child_run_start_count(&engine, child), 1);
+        assert_eq!(
+            engine
+                .inner
+                .store
+                .get(parent)
+                .expect("parent")
+                .log
+                .events()
+                .into_iter()
+                .filter(|event| {
+                    matches!(event.event, Event::ToolCallLinked { tool_call_id, child_session_id }
+                        if tool_call_id == call && child_session_id == child)
+                })
+                .count(),
+            1
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn undeliverable_child_start_reply_cancels_durably_across_reopen() {
+        let (directory, engine) = test_engine(Arc::new(BlockingProvider {
+            calls: AtomicUsize::new(0),
+            release: Notify::new(),
+        }));
+        let child = engine.create_session(".", "test").expect("create child").id;
+        let invocation = InvocationId(Uuid::from_u128(102));
+        let mut admission =
+            AdmissionGuard::begin(engine.inner.clone(), invocation, RunId::new_v7());
+        let actor = engine
+            .inner
+            .actors
+            .lock()
+            .expect("actor registry lock poisoned")
+            .get(&child)
+            .cloned()
+            .expect("child actor");
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        drop(receiver);
+        actor
+            .send(SessionCommand::Start {
+                params: RunStartParams {
+                    session_id: child,
+                    client_run_id: delegate_client_run_id(invocation),
+                    input: "reply abandoned".into(),
+                },
+                admission: Some((invocation, admission.generation)),
+                reply,
+            })
+            .await
+            .expect("queue child start");
+        wait_for_session_status(&engine, child, &SessionStatus::Cancelled).await;
+        admission.complete();
+        assert!(
+            engine
+                .inner
+                .store
+                .get(child)
+                .expect("child")
+                .log
+                .events()
+                .into_iter()
+                .any(|event| matches!(event.event, Event::RunCancelled { .. }))
+        );
+        engine.shutdown().await;
+        drop(engine);
+
+        let reopened = reopen_test_engine(
+            &directory,
+            Arc::new(BlockingProvider {
+                calls: AtomicUsize::new(0),
+                release: Notify::new(),
+            }),
+        )
+        .await;
+        assert_eq!(
+            reopened.inner.store.get(child).expect("child").status,
+            SessionStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn superseded_retry_completes_child_and_parent_result_once() {
+        let (_directory, engine) = test_engine(Arc::new(ReportProvider));
+        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
+        let policy = child_policy_for(&engine, &invocation);
+        let entry = reserve_live_delegation(&engine, &invocation, policy.clone()).await;
+        let child = entry.reservation.child_session_id;
+        persist_delegated_child(&engine, &invocation, child, policy);
+        engine.spawn_actor(child);
+        engine
+            .append(
+                parent,
+                Some(parent_run),
+                Event::ToolCallLinked {
+                    tool_call_id: call,
+                    child_session_id: child,
+                },
+            )
+            .await
+            .expect("persist parent link");
+        let stale = AdmissionGuard::begin(
+            engine.inner.clone(),
+            entry.reservation.invocation_id,
+            parent_run,
+        );
+        let stale_generation = stale.generation;
+        drop(stale);
+        assert!(matches!(
+            start_with_admission(
+                &engine,
+                child,
+                entry.reservation.invocation_id,
+                stale_generation,
+                render_delegate_input(&entry.request),
+            )
+            .await,
+            Err(EngineError::MissingTool(_))
+        ));
+
+        let handle = engine
+            .delegate_invoke(invocation)
+            .await
+            .expect("superseding retry");
+        let result = engine.await_delegate(handle).await.expect("child result");
+        assert_eq!(result.content, "child report");
+        engine
+            .submit_tool_result(parent, parent_run, call, Ok(result))
+            .await
+            .expect("commit parent result");
+        assert_eq!(child_run_start_count(&engine, child), 1);
+        assert_eq!(
+            engine
+                .inner
+                .store
+                .get(parent)
+                .expect("parent")
+                .log
+                .events()
+                .into_iter()
+                .filter(|event| {
+                    matches!(event.event, Event::ToolCallCompleted { tool_call_id, .. } if tool_call_id == call)
+                })
+                .count(),
+            1
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn drop_after_start_reply_during_confirmation_cancels_once_and_survives_reopen() {
+        let (directory, engine) = test_engine(Arc::new(BlockingProvider {
+            calls: AtomicUsize::new(0),
+            release: Notify::new(),
+        }));
+        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
+        let invocation_id = invocation_id(parent, parent_run, call);
+        let (reached, mut confirmations) = mpsc::unbounded_channel();
+        let release = Arc::new(Barrier::new(2));
+        *engine
+            .inner
+            .admission_confirmation_hook
+            .lock()
+            .expect("admission confirmation hook lock poisoned") =
+            Some(Arc::new(AdmissionConfirmationHook {
+                reached,
+                release: release.clone(),
+            }));
+        let task = tokio::spawn({
+            let engine = engine.clone();
+            async move { engine.delegate_invoke(invocation).await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), confirmations.recv())
+            .await
+            .expect("child start reply did not reach confirmation")
+            .expect("child start reply reached confirmation");
+        let entry = engine
+            .journal_get(invocation_id)
+            .await
+            .expect("journal lookup")
+            .expect("journal entry");
+        let child = entry.reservation.child_session_id;
+        task.abort();
+        let _ = task.await;
+        wait_for_session_status(&engine, child, &SessionStatus::Cancelled).await;
+        let result = wait_for_delegate_completion(&engine, parent, call).await;
+        assert_eq!(
+            serde_json::from_str::<Value>(&result.content).expect("cancelled result")["status"],
+            "cancelled"
+        );
+        release.wait().await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if journal_run_count(&engine, invocation_id, child_run_id(&engine, child)) == 1 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("actor-owned confirmation did not finish");
+        assert_eq!(run_cancel_count(&engine, child), 1);
+        assert_eq!(parent_delegate_completion_count(&engine, parent, call), 1);
+        tokio::task::yield_now().await;
+        engine.shutdown().await;
+        drop(engine);
+
+        let reopened = reopen_test_engine(
+            &directory,
+            Arc::new(BlockingProvider {
+                calls: AtomicUsize::new(0),
+                release: Notify::new(),
+            }),
+        )
+        .await;
+        assert_eq!(
+            reopened.inner.store.get(child).expect("child").status,
+            SessionStatus::Cancelled
+        );
+        assert_eq!(run_cancel_count(&reopened, child), 1);
+    }
+
+    #[tokio::test]
+    async fn abandoned_concurrent_delegate_observer_does_not_cancel_survivor() {
+        let (_directory, engine) = test_engine(Arc::new(ReportProvider));
+        let (_parent, _parent_run, _call, invocation) = pending_delegate_parent(&engine).await;
+        let (reached, mut confirmations) = mpsc::unbounded_channel();
+        let release = Arc::new(Barrier::new(3));
+        *engine
+            .inner
+            .admission_confirmation_hook
+            .lock()
+            .expect("admission confirmation hook lock poisoned") =
+            Some(Arc::new(AdmissionConfirmationHook {
+                reached,
+                release: release.clone(),
+            }));
+        let abandoned = tokio::spawn({
+            let engine = engine.clone();
+            let invocation = invocation.clone();
+            async move { engine.delegate_invoke(invocation).await }
+        });
+        confirmations.recv().await.expect("first confirmation");
+        let survivor = tokio::spawn({
+            let engine = engine.clone();
+            async move { engine.delegate_invoke(invocation).await }
+        });
+        confirmations.recv().await.expect("second confirmation");
+        abandoned.abort();
+        let _ = abandoned.await;
+        release.wait().await;
+        let handle = survivor
+            .await
+            .expect("survivor task")
+            .expect("surviving delegate admission");
+        let result = engine
+            .await_delegate(handle)
+            .await
+            .expect("surviving child result");
+        assert_eq!(result.content, "child report");
+        assert_eq!(run_cancel_count(&engine, handle.child_session_id), 0);
+    }
+
+    #[tokio::test]
+    async fn retry_after_stale_sweep_snapshot_keeps_its_child_and_parent_pending() {
+        let (_directory, engine) = test_engine(Arc::new(BlockingProvider {
+            calls: AtomicUsize::new(0),
+            release: Notify::new(),
+        }));
+        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
+        let policy = child_policy_for(&engine, &invocation);
+        let entry = reserve_live_delegation(&engine, &invocation, policy.clone()).await;
+        let child = entry.reservation.child_session_id;
+        persist_delegated_child(&engine, &invocation, child, policy);
+        engine.spawn_actor(child);
+        let run = engine
+            .start_run(RunStartParams {
+                session_id: child,
+                client_run_id: delegate_client_run_id(entry.reservation.invocation_id),
+                input: render_delegate_input(&entry.request),
+            })
+            .await
+            .expect("start child")
+            .run_id;
+        let journal = engine.inner.journal.clone();
+        let invocation_id = entry.reservation.invocation_id;
+        tokio::task::spawn_blocking(move || journal.mark_run_started(invocation_id, run))
+            .await
+            .expect("journal task")
+            .expect("confirm child run");
+
+        let mut stale = AdmissionGuard::begin(engine.inner.clone(), invocation_id, parent_run);
+        stale.set_parent(parent, call);
+        engine
+            .publish_admission_run(invocation_id, stale.generation, child, run)
+            .expect("publish stale run");
+        engine
+            .inner
+            .inflight_delegations
+            .lock()
+            .expect("inflight delegation lock poisoned")
+            .get_mut(&invocation_id)
+            .expect("admission entries")
+            .get_mut(&stale.generation)
+            .expect("stale generation")
+            .cancelled = true;
+        let stale_generation = stale.generation;
+        let (reached, mut sweep_observed) = mpsc::unbounded_channel();
+        let (captured, mut captured_targets) = mpsc::unbounded_channel();
+        let release_sweep = Arc::new(Notify::new());
+        *engine
+            .inner
+            .abandoned_sweep_hook
+            .lock()
+            .expect("abandoned sweep hook lock poisoned") = Some(AbandonedSweepHook {
+            reached,
+            captured,
+            release: release_sweep.clone(),
+        });
+        let sweep = tokio::spawn({
+            let engine = engine.clone();
+            async move {
+                engine
+                    .sweep_abandoned_admission(invocation_id, stale_generation)
+                    .await
+            }
+        });
+        sweep_observed
+            .recv()
+            .await
+            .expect("sweeper did not observe all generations abandoned");
+        assert_eq!(
+            captured_targets
+                .recv()
+                .await
+                .expect("sweeper did not capture its target set"),
+            vec![run]
+        );
+        let mut retry = AdmissionGuard::begin(engine.inner.clone(), invocation_id, parent_run);
+        retry.set_parent(parent, call);
+        assert!(
+            engine
+                .inner
+                .inflight_delegations
+                .lock()
+                .expect("inflight delegation lock poisoned")
+                .get(&invocation_id)
+                .is_some_and(|entries| entries.contains_key(&stale_generation))
+        );
+        release_sweep.notify_one();
+        sweep.await.expect("sweep task").expect("stale sweep");
+        assert!(
+            engine
+                .inner
+                .inflight_delegations
+                .lock()
+                .expect("inflight delegation lock poisoned")
+                .get(&invocation_id)
+                .is_some_and(|entries| {
+                    !entries.contains_key(&stale_generation)
+                        && entries.contains_key(&retry.generation)
+                }),
+            "the sweep did not consume exactly the pre-retry stale generation"
+        );
+        assert_eq!(
+            engine.inner.store.get(child).expect("child").status,
+            SessionStatus::Running
+        );
+        assert_eq!(parent_delegate_completion_count(&engine, parent, call), 0);
+        stale.complete();
+        retry.complete();
+        engine.cancel_run(run).await.expect("cancel child");
+    }
+
+    #[tokio::test]
+    async fn abandoned_confirmed_run_attachment_publishes_run_for_sweep() {
+        let (_directory, engine) = test_engine(Arc::new(BlockingProvider {
+            calls: AtomicUsize::new(0),
+            release: Notify::new(),
+        }));
+        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
+        let policy = child_policy_for(&engine, &invocation);
+        let entry = reserve_live_delegation(&engine, &invocation, policy.clone()).await;
+        let child = entry.reservation.child_session_id;
+        persist_delegated_child(&engine, &invocation, child, policy);
+        engine.spawn_actor(child);
+        let run = engine
+            .start_run(RunStartParams {
+                session_id: child,
+                client_run_id: delegate_client_run_id(entry.reservation.invocation_id),
+                input: render_delegate_input(&entry.request),
+            })
+            .await
+            .expect("start child")
+            .run_id;
+        let journal = engine.inner.journal.clone();
+        let invocation_id = entry.reservation.invocation_id;
+        tokio::task::spawn_blocking(move || journal.mark_run_started(invocation_id, run))
+            .await
+            .expect("journal task")
+            .expect("confirm child run");
+        let confirmed = engine
+            .journal_get(invocation_id)
+            .await
+            .expect("journal lookup")
+            .expect("confirmed entry");
+
+        let attachment = AdmissionGuard::begin(engine.inner.clone(), invocation_id, parent_run);
+        attachment.set_parent(parent, call);
+        assert_eq!(
+            engine
+                .ensure_delegate_run(&confirmed, Some((invocation_id, attachment.generation)))
+                .await
+                .expect("attach confirmed run"),
+            run
+        );
+        drop(attachment);
+        wait_for_session_status(&engine, child, &SessionStatus::Cancelled).await;
+        let _ = wait_for_delegate_completion(&engine, parent, call).await;
+        assert_eq!(parent_delegate_completion_count(&engine, parent, call), 1);
+    }
+
+    #[tokio::test]
+    async fn durable_cancel_record_prevents_a_duplicate_after_projection_failure_window() {
+        let (_directory, engine) = test_engine(Arc::new(BlockingProvider {
+            calls: AtomicUsize::new(0),
+            release: Notify::new(),
+        }));
+        let session = engine.create_session(".", "test").expect("session").id;
+        let run = engine
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "cancel-reconcile".into(),
+                input: "input".into(),
+            })
+            .await
+            .expect("start run")
+            .run_id;
+        // Model the window after JSONL append but before cache/projection refresh.
+        append_child_event(&engine, session, run, Event::RunCancelled { reason: None });
+        assert!(
+            !engine
+                .cancel_run_durably(run, Some("retry".into()))
+                .expect("reconcile durable cancel")
+        );
+        assert_eq!(run_cancel_count(&engine, session), 1);
+    }
+
+    #[tokio::test]
+    async fn three_failed_zero_record_cancellations_retain_active_tombstone() {
+        let provider = Arc::new(BlockingProvider {
+            calls: AtomicUsize::new(0),
+            release: Notify::new(),
+        });
+        let (_directory, engine) = test_engine(provider);
+        let session = engine.create_session(".", "test").expect("session").id;
+        let run = engine
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "zero-record-cancel".into(),
+                input: "input".into(),
+            })
+            .await
+            .expect("start run")
+            .run_id;
+        let log_path = engine
+            .inner
+            .store
+            .get(session)
+            .expect("session")
+            .log
+            .path()
+            .to_owned();
+        let saved = log_path.with_extension("cancel-fail");
+        std::fs::rename(&log_path, &saved).expect("park event log");
+        std::fs::create_dir(&log_path).expect("obstruct event log appends");
+        let error = engine.cancel_run_durably(run, Some("test failure".into()));
+        assert!(matches!(
+            error,
+            Err(EngineError::Event(EventLogError::Io { .. }))
+        ));
+        assert!(
+            engine
+                .inner
+                .active
+                .lock()
+                .expect("active run lock poisoned")
+                .contains_key(&run)
+        );
+        assert_eq!(run_cancel_count(&engine, session), 0);
+        std::fs::remove_dir(&log_path).expect("remove event log obstruction");
+        std::fs::rename(saved, log_path).expect("restore event log");
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_completes_with_a_pending_admission_task() {
+        let (_directory, engine) = test_engine(Arc::new(BlockingProvider {
+            calls: AtomicUsize::new(0),
+            release: Notify::new(),
+        }));
+        let (_, _, _, invocation) = pending_delegate_parent(&engine).await;
+        let (reached, mut confirmations) = mpsc::unbounded_channel();
+        let release = Arc::new(Barrier::new(2));
+        *engine
+            .inner
+            .admission_confirmation_hook
+            .lock()
+            .expect("admission confirmation hook lock poisoned") =
+            Some(Arc::new(AdmissionConfirmationHook { reached, release }));
+        let admission = tokio::spawn({
+            let engine = engine.clone();
+            async move { engine.delegate_invoke(invocation).await }
+        });
+        confirmations
+            .recv()
+            .await
+            .expect("pending admission confirmation");
+        tokio::time::timeout(Duration::from_secs(1), engine.shutdown())
+            .await
+            .expect("shutdown deadlocked on admission task");
+        assert!(matches!(
+            admission.await.expect("admission join"),
+            Err(EngineError::ActorStopped)
+        ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_registered_blocking_admission_mutation() {
+        let (directory, engine) = test_engine(Arc::new(NoopProvider));
+        let marker = directory.path().join("blocking-admission-finished");
+        let (reached, reached_rx) = std_mpsc::channel();
+        let (release_tx, release) = std_mpsc::channel();
+        *engine
+            .inner
+            .admission_blocking_hook
+            .lock()
+            .expect("admission blocking hook lock poisoned") =
+            Some(AdmissionBlockingHook { reached, release });
+        let mutation = tokio::spawn({
+            let engine = engine.clone();
+            let marker = marker.clone();
+            async move {
+                engine
+                    .spawn_admission_blocking(move || {
+                        std::fs::write(&marker, b"complete").map_err(|source| {
+                            EngineError::Event(EventLogError::Io {
+                                path: marker.clone(),
+                                source,
+                            })
+                        })?;
+                        Ok::<_, EngineError>(())
+                    })
+                    .await
+            }
+        });
+        tokio::task::spawn_blocking(move || reached_rx.recv())
+            .await
+            .expect("blocking checkpoint task")
+            .expect("blocking checkpoint sender dropped");
+        let mut shutdown = tokio::spawn({
+            let engine = engine.clone();
+            async move { engine.shutdown().await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
+                .await
+                .is_err(),
+            "shutdown returned before the blocking admission closure finished"
+        );
+        release_tx.send(()).expect("release blocking admission");
+        mutation
+            .await
+            .expect("mutation task")
+            .expect("blocking mutation");
+        shutdown.await.expect("shutdown task");
+        assert_eq!(std::fs::read(marker).expect("read marker"), b"complete");
+    }
+
+    #[tokio::test]
+    async fn poisoned_active_and_actor_locks_do_not_block_abandoned_delegate_terminalization() {
+        let (_directory, engine) = test_engine(Arc::new(BlockingProvider {
+            calls: AtomicUsize::new(0),
+            release: Notify::new(),
+        }));
+        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
+        let policy = child_policy_for(&engine, &invocation);
+        let entry = reserve_live_delegation(&engine, &invocation, policy.clone()).await;
+        let child = entry.reservation.child_session_id;
+        persist_delegated_child(&engine, &invocation, child, policy);
+        engine.spawn_actor(child);
+        let admission = AdmissionGuard::begin(
+            engine.inner.clone(),
+            entry.reservation.invocation_id,
+            parent_run,
+        );
+        admission.set_parent(parent, call);
+        let _run = engine
+            .ensure_delegate_run(
+                &entry,
+                Some((entry.reservation.invocation_id, admission.generation)),
+            )
+            .await
+            .expect("start child run");
+
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = engine
+                    .inner
+                    .active
+                    .lock()
+                    .expect("active lock before poison");
+                panic!("poison active registry");
+            }))
+            .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = engine
+                    .inner
+                    .actors
+                    .lock()
+                    .expect("actor lock before poison");
+                panic!("poison actor registry");
+            }))
+            .is_err()
+        );
+        let active = engine
+            .inner
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&_run)
+            .cloned()
+            .expect("active child run");
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = active.stdin.lock().expect("stdin lock before poison");
+                panic!("poison child stdin");
+            }))
+            .is_err()
+        );
+
+        drop(admission);
+        wait_for_session_status(&engine, child, &SessionStatus::Cancelled).await;
+        let result = wait_for_delegate_completion(&engine, parent, call).await;
+        assert_eq!(
+            serde_json::from_str::<Value>(&result.content).expect("cancelled result")["status"],
+            "cancelled"
+        );
+        assert_eq!(run_cancel_count(&engine, child), 1);
+        engine.shutdown().await;
     }
 }

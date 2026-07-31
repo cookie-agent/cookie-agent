@@ -36,7 +36,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::{
     net::TcpListener,
-    sync::{Mutex as AsyncMutex, mpsc},
+    sync::mpsc,
     task::JoinHandle,
     time::{Duration, sleep},
 };
@@ -163,9 +163,6 @@ pub struct Server {
     config: Config,
     providers: ProviderRegistry,
     shutdown: CancellationToken,
-    // Temporary process-local cache; Part B moves conflict enforcement into
-    // durable engine state so it survives daemon restarts.
-    run_start_params: Arc<AsyncMutex<HashMap<(cookiecode_protocol::SessionId, String), String>>>,
     #[cfg(test)]
     connection_observer: Arc<Mutex<Option<mpsc::Sender<CancellationToken>>>>,
 }
@@ -178,7 +175,6 @@ impl Server {
             config,
             providers,
             shutdown: CancellationToken::new(),
-            run_start_params: Arc::new(AsyncMutex::new(HashMap::new())),
             #[cfg(test)]
             connection_observer: Arc::new(Mutex::new(None)),
         }
@@ -378,19 +374,13 @@ impl Server {
             }
             "run.start" => {
                 let params: RunStartParams = decode_params(params)?;
-                let canonical = canonical_run_start_params(&params)?;
-                let key = (params.session_id, params.client_run_id.clone());
-                // This lock deliberately spans the engine call: it makes the
-                // server's first-seen comparison atomic for concurrent client
-                // requests until engine-side durable enforcement lands.
-                let mut seen = self.run_start_params.lock().await;
-                if let Some(previous) = seen.get(&key)
-                    && previous != &canonical
-                {
-                    return Err(RpcFault::run_start_conflict(&params));
-                }
-                let result = self.engine.start_run(params).await.map_err(engine_fault)?;
-                seen.entry(key).or_insert(canonical);
+                let result = match self.engine.start_run(params.clone()).await {
+                    Ok(result) => result,
+                    Err(EngineError::RunIdempotencyConflict) => {
+                        return Err(RpcFault::run_start_conflict(&params));
+                    }
+                    Err(error) => return Err(engine_fault(error)),
+                };
                 value(result)
             }
             "run.steer" => {
@@ -726,15 +716,6 @@ impl RpcFault {
 
 fn engine_fault(error: EngineError) -> RpcFault {
     RpcFault::engine(error.to_string())
-}
-
-fn canonical_run_start_params(params: &RunStartParams) -> Result<String, RpcFault> {
-    serde_json::to_string(&json!({
-        "session_id": params.session_id,
-        "client_run_id": params.client_run_id,
-        "input": params.input,
-    }))
-    .map_err(|error| RpcFault::internal(error.to_string()))
 }
 
 fn parse_incoming(frame: MessageFrame) -> Result<Value, RpcFault> {

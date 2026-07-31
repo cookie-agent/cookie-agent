@@ -39,20 +39,23 @@ pub struct ApprovalStore {
 
 impl ApprovalStore {
     pub fn grant(&self, root: SessionId, action: ActionKind, pattern: String) {
-        self.grants.lock().expect("approval lock poisoned").insert(
-            ApprovalKey {
-                root,
-                action,
-                pattern,
-            },
-            (),
-        );
+        self.grants
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                ApprovalKey {
+                    root,
+                    action,
+                    pattern,
+                },
+                (),
+            );
     }
     #[must_use]
     pub fn allows(&self, root: SessionId, action: ActionKind, resource: &str) -> bool {
         self.grants
             .lock()
-            .expect("approval lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .keys()
             .any(|key| {
                 key.root == root
@@ -145,7 +148,10 @@ impl PermissionPipeline {
             .cloned()
             .expect("permission resources are non-empty");
         let count = {
-            let mut calls = self.consecutive.lock().expect("permission lock poisoned");
+            let mut calls = self
+                .consecutive
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             match calls.get_mut(&session) {
                 Some((previous_action, previous_resource, count))
                     if *previous_action == action && *previous_resource == signature =>
@@ -190,7 +196,7 @@ impl PermissionPipeline {
     pub fn reset_call_streak(&self, session: SessionId) {
         self.consecutive
             .lock()
-            .expect("permission lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .retain(|id, _| *id != session);
     }
 }

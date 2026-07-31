@@ -10,6 +10,22 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
+base64 = "0.22"
 cookiecode-protocol = { path = "../protocol" }
+cookiecode-server = { path = "../server" }
 crossterm.workspace = true
+futures-util.workspace = true
 ratatui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+
+[dev-dependencies]
+cookiecode-config = { path = "../config" }
+cookiecode-engine = { path = "../engine" }
+cookiecode-providers = { path = "../providers" }
+jiff.workspace = true
+tempfile.workspace = true

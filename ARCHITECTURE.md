@@ -290,6 +290,13 @@ profiles, **restricted to profiles of type `subagent` or `all`** (§9; never
 `primary` or `internal`) — naming a `primary`-only or `internal` profile in
 `allowed_profiles` is a config validation error.
 
+The schema is only an exposure filter: engine child admission authoritatively
+revalidates the target profile's type, the parent's allowed-profile set, and
+the frozen delegation limit. A tool provider cannot admit an ineligible target.
+The composition root must construct `DelegateToolProvider` from the same
+validated configuration supplied to the engine; this shared configuration is a
+composition-root invariant.
+
 Tool schema (sketch):
 
 ```json
@@ -394,6 +401,12 @@ error; the poisoned state makes later mutations return `Poisoned`. Startup
 reconciliation propagates that first repair error from `Engine::open` rather
 than silently publishing a half-repaired engine.
 
+Run cancellation retries its terminal JSONL append a bounded number of times.
+If all attempts fail, the cancellation error remains surfaced and the active
+run is retained as a cancellation-pending tombstone; no further in-process
+retry is attempted, so reopen is required to reconcile it rather than silently
+leaving a durable `Running` projection.
+
 `invocation_id` is derived by the engine from
 `(parent_session_id, parent_run_id, parent_tool_call_id)` — all
 engine-generated, so the tuple is globally unique by construction; it never
@@ -422,8 +435,11 @@ depends on provider-supplied tool-call IDs.
    before the engine is published. The child run cannot start before this
    durable backlink exists.
 5. Append DelegationLinked { invocation_id } to the journal
-6. Start the child run (client_run_id derived from invocation_id);
-   append DelegationRunStarted { invocation_id, child_run_id }
+6. Start the child run (client_run_id derived from invocation_id); the
+   engine-owned admission task appends DelegationRunStarted { invocation_id,
+   child_run_id } even if the delegating caller has gone away. If its last
+   observer abandons the admission, that task/sweeper cancels the child and
+   resolves the pending parent call.
 ```
 
 The child's initial input is rendered deterministically as four labelled
@@ -721,6 +737,9 @@ actor nor stall process draining). The hub:
   deltas with `byte_offset > snapshot_offset` — no lost or duplicated bytes;
 - flushes all remaining output before the tool task returns, so the final
   deltas always precede the actor-persisted `ToolCallCompleted`.
+- retains finalized hubs for the most recent 128 calls. A subscription to one
+  of those retained finalized hubs receives its snapshot and an already-closed
+  live receiver; it never occupies a subscriber slot until eviction.
 
 **The model still receives exactly one bounded final result** when the call
 completes — providers accept tool results only as complete messages, so
@@ -861,7 +880,8 @@ returns only a bare effect; we keep the full derivation.
    the scope before confirming. Post-MVP: project-persistent approvals with
    TTL (OpenCode V2's durable model).
 - A default-accepted suggested scope is persisted as that effective scope, not
-  `None`. Multi-resource `always` approvals persist and rebuild one
+  `None`. A caller override applies only to the primary resource; secondary
+  resources retain their own suggestions. Multi-resource `always` approvals persist and rebuild one
   `(action, resource, scope)` grant per disclosed resource. Doom-loop prompts
   reject an attempted `always` decision.
 - Reject affects **only** the pending call — OpenCode's surprising
@@ -1055,15 +1075,17 @@ Protocol surface (transport-independent):
 - Methods (sketch): `session.create`, `session.list`, `session.get`,
   `session.children`, `session.tree`, `session.resume` (re-resolves
   interrupted pending tool calls, §5.4), `run.start`
-  (idempotent via `client_run_id`; a conflicting reuse returns JSON-RPC
-  `-32602` with `data.code = "idempotency_conflict"` plus `session_id` and
-  `client_run_id`; enforcement is currently process-local in the server pending
-  engine-durable enforcement in part B), `run.steer`, `run.cancel`,
+  (idempotent via `client_run_id`, durably enforced by the engine; a
+  conflicting reuse returns JSON-RPC `-32602` with
+  `data.code = "idempotency_conflict"` plus `session_id` and
+  `client_run_id`), `run.steer`, `run.cancel`,
   `run.tool_stdin` (ordered base64 writes + `eof` to a running tool call,
   §7.1),
-  `events.subscribe` (cursor-based replay + live tail), `approval.respond`,
-  `provider.list_models`, `agent.list` (user-invocable profiles: types
-  `primary` and `all`, §9). Post-MVP additions: `session.fork`.
+   `events.subscribe` (cursor-based replay + live tail), `approval.respond`,
+   `provider.list_models`, `agent.list` (user-invocable profiles: types
+   `primary` and `all`, §9). Post-MVP additions: `session.fork`.
+- Tool providers registered after the engine opens are visible only to a later
+  model turn; an in-flight turn retains the tool set assembled when it began.
 - Server → client notifications carry persisted events with per-session
   cursors; a lagging `events.subscribe` tail ends with `Gap { session_id,
   last_delivered_seq }`, which identifies the lagged subscription and carries

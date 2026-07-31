@@ -122,7 +122,7 @@ impl SessionStore {
             store
                 .sessions
                 .lock()
-                .expect("session store lock poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .insert(id, projection);
         }
         Ok(store)
@@ -145,7 +145,7 @@ impl SessionStore {
         let _creation = self
             .creation
             .lock()
-            .expect("session creation lock poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let final_dir = self.sessions_dir.join(meta.id.to_string());
         if final_dir.exists() {
             return Ok((self.get(meta.id)?.log, false));
@@ -187,7 +187,7 @@ impl SessionStore {
         let result = projection(final_log.clone())?;
         self.sessions
             .lock()
-            .expect("session store lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(meta.id, result);
         Ok((final_log, true))
     }
@@ -195,7 +195,7 @@ impl SessionStore {
     pub fn get(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
         self.sessions
             .lock()
-            .expect("session store lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&id)
             .cloned()
             .ok_or(SessionError::Missing(id))
@@ -214,7 +214,7 @@ impl SessionStore {
         )?;
         self.sessions
             .lock()
-            .expect("session store lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(id, rebuilt);
         Ok(())
     }
@@ -223,7 +223,7 @@ impl SessionStore {
     pub fn all(&self) -> Vec<SessionProjection> {
         self.sessions
             .lock()
-            .expect("session store lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .values()
             .cloned()
             .collect()
