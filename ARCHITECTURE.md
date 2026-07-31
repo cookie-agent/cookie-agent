@@ -932,6 +932,10 @@ Protocol surface (transport-independent):
   offsets and atomic snapshot-to-live handoff for in-flight streaming calls.
 - `ts-rs` generates TypeScript bindings from `protocol` types; `schemars`
   generates JSON Schemas (tool parameters, protocol).
+- Wire enum encoding is stable: data-carrying protocol enums use internally
+  tagged `snake_case` objects with a `type` discriminator, while unit enums
+  are `snake_case` strings; `DepthLimit` uses adjacent `kind`/`value` tags,
+  and JSON-RPC IDs/responses remain untagged as required by JSON-RPC 2.0.
 
 ---
 

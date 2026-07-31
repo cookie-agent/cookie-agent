@@ -1,9 +1,10 @@
-//! Capability-aware model provider interface and adapter placeholders.
+//! Capability-aware, provider-neutral model streaming interface.
 
 use async_trait::async_trait;
-use futures_util::stream::BoxStream;
+use futures_util::{StreamExt, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use thiserror::Error;
 
 pub mod anthropic;
@@ -17,7 +18,81 @@ pub struct ModelId(pub String);
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ProviderRequest {
     pub model: ModelId,
-    pub messages: Vec<Value>,
+    #[serde(default)]
+    pub messages: Vec<ProviderMessage>,
+    #[serde(default)]
+    pub tools: Vec<ToolDefinition>,
+    #[serde(default)]
+    pub reasoning: ReasoningControls,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structured_output: Option<Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "role", rename_all = "snake_case")]
+pub enum ProviderMessage {
+    System {
+        content: String,
+    },
+    User {
+        content: Vec<ContentPart>,
+    },
+    Assistant {
+        content: Vec<ContentPart>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tool_calls: Vec<ToolCall>,
+    },
+    Tool {
+        result: ToolResult,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text { text: String },
+    Image { media_type: String, data: String },
+    Pdf { media_type: String, data: String },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ToolResult {
+    pub tool_call_id: String,
+    pub content: String,
+    #[serde(default)]
+    pub is_error: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ReasoningControls {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ProviderResponse {
+    #[serde(default)]
+    pub events: Vec<NormalizedEvent>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -34,7 +109,18 @@ pub struct ProviderCapabilities {
     pub context_limit: Option<u64>,
     pub output_limit: Option<u64>,
     pub usage_reporting: bool,
-    pub cancellation: bool,
+    pub cancellation: CancellationSemantics,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancellationSemantics {
+    /// Dropping the HTTP stream stops local consumption but is not a remote abort.
+    #[default]
+    DropStream,
+    /// The provider offers a remote cancellation endpoint.
+    RemoteAbort,
+    Unsupported,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -60,8 +146,36 @@ pub enum NormalizedEvent {
     Usage {
         input_tokens: u64,
         output_tokens: u64,
+        cache_read_tokens: u64,
     },
-    Stop,
+    Stop {
+        reason: StopReason,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    EndTurn,
+    ToolUse,
+    Length,
+    ContentFilter,
+    Cancelled,
+    Other(String),
+}
+
+impl StopReason {
+    #[must_use]
+    pub fn from_provider(value: &str) -> Self {
+        match value {
+            "stop" | "end_turn" | "completed" => Self::EndTurn,
+            "tool_calls" | "tool_use" => Self::ToolUse,
+            "length" | "max_tokens" => Self::Length,
+            "content_filter" => Self::ContentFilter,
+            "cancelled" | "canceled" => Self::Cancelled,
+            other => Self::Other(other.to_owned()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -91,6 +205,37 @@ impl ProviderError {
             Self::RunTerminal { .. } => ProviderErrorClass::RunTerminal,
         }
     }
+
+    #[must_use]
+    pub fn from_http(status: reqwest::StatusCode, body: impl AsRef<str>) -> Self {
+        let message = body.as_ref().to_owned();
+        let lower = message.to_ascii_lowercase();
+        if lower.contains("context length")
+            || lower.contains("context_window")
+            || lower.contains("context window")
+            || lower.contains("maximum context")
+        {
+            return Self::RunTerminal { message };
+        }
+        if status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error() {
+            Self::EntryRetryable { message }
+        } else if status.as_u16() == 401
+            || status.as_u16() == 403
+            || status.as_u16() == 404
+            || status.is_client_error()
+        {
+            Self::EntryTerminal { message }
+        } else {
+            Self::EntryRetryable { message }
+        }
+    }
+
+    #[must_use]
+    pub fn network(message: impl Into<String>) -> Self {
+        Self::EntryRetryable {
+            message: message.into(),
+        }
+    }
 }
 
 #[async_trait]
@@ -101,4 +246,173 @@ pub trait Provider: Send + Sync {
         &self,
         request: ProviderRequest,
     ) -> Result<BoxStream<'static, Result<NormalizedEvent, ProviderError>>, ProviderError>;
+}
+
+/// A configured member of an ordered model fallback chain.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct ModelRef {
+    pub provider: String,
+    pub model: ModelId,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ModelFallback {
+    pub from: ModelRef,
+    pub to: ModelRef,
+    pub reason: String,
+    pub attempts: u32,
+}
+
+/// Mutable state held by an engine run.  A fresh run starts at the chain head.
+#[derive(Clone, Debug, Default)]
+pub struct FallbackRunState {
+    entry: usize,
+}
+
+impl FallbackRunState {
+    #[must_use]
+    pub const fn entry(&self) -> usize {
+        self.entry
+    }
+}
+
+/// Executes ordered model chains while retaining the selected entry for a run.
+pub struct FallbackExecutor {
+    providers: HashMap<String, Arc<dyn Provider>>,
+    retries: u32,
+    retry_backoff: Duration,
+}
+
+#[cfg(test)]
+mod tests;
+
+impl Default for FallbackExecutor {
+    fn default() -> Self {
+        Self {
+            providers: HashMap::new(),
+            retries: 2,
+            retry_backoff: Duration::from_millis(100),
+        }
+    }
+}
+
+impl FallbackExecutor {
+    #[must_use]
+    pub fn new(providers: HashMap<String, Arc<dyn Provider>>) -> Self {
+        Self {
+            providers,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn with_retry_policy(mut self, retries: u32, retry_backoff: Duration) -> Self {
+        self.retries = retries;
+        self.retry_backoff = retry_backoff;
+        self
+    }
+
+    pub async fn execute<F, C>(
+        &self,
+        chain: &[ModelRef],
+        assemble: F,
+        callback: C,
+    ) -> Result<ProviderResponse, ProviderError>
+    where
+        F: Fn(&ModelRef, ProviderCapabilities) -> ProviderRequest,
+        C: FnMut(ModelFallback),
+    {
+        self.execute_with_state(chain, &mut FallbackRunState::default(), assemble, callback)
+            .await
+    }
+
+    pub async fn execute_with_state<F, C>(
+        &self,
+        chain: &[ModelRef],
+        state: &mut FallbackRunState,
+        assemble: F,
+        mut callback: C,
+    ) -> Result<ProviderResponse, ProviderError>
+    where
+        F: Fn(&ModelRef, ProviderCapabilities) -> ProviderRequest,
+        C: FnMut(ModelFallback),
+    {
+        let mut entry = state.entry;
+        let mut last_error = ProviderError::EntryTerminal {
+            message: "model fallback chain is empty".into(),
+        };
+        while entry < chain.len() {
+            let model = &chain[entry];
+            let Some(provider) = self.providers.get(&model.provider) else {
+                last_error = ProviderError::EntryTerminal {
+                    message: format!("provider '{}' is not registered", model.provider),
+                };
+                if let Some(next) = chain.get(entry + 1) {
+                    callback(ModelFallback {
+                        from: model.clone(),
+                        to: next.clone(),
+                        reason: last_error.to_string(),
+                        attempts: 0,
+                    });
+                    entry += 1;
+                    state.entry = entry;
+                    continue;
+                }
+                return Err(last_error);
+            };
+
+            let mut attempts = 0;
+            loop {
+                let request = assemble(model, provider.capabilities(&model.model));
+                let result = match provider.stream(request).await {
+                    Ok(mut stream) => {
+                        let mut events = Vec::new();
+                        let mut failure = None;
+                        while let Some(item) = stream.next().await {
+                            match item {
+                                Ok(event) => events.push(event),
+                                Err(error) => {
+                                    failure = Some(error);
+                                    break;
+                                }
+                            }
+                        }
+                        failure.map_or(Ok(ProviderResponse { events }), Err)
+                    }
+                    Err(error) => Err(error),
+                };
+                match result {
+                    Ok(response) => return Ok(response),
+                    Err(error) if error.class() == ProviderErrorClass::RunTerminal => {
+                        return Err(error);
+                    }
+                    Err(error)
+                        if error.class() == ProviderErrorClass::EntryRetryable
+                            && attempts < self.retries =>
+                    {
+                        attempts += 1;
+                        let multiplier = 1_u32 << (attempts - 1);
+                        tokio::time::sleep(self.retry_backoff * multiplier).await;
+                    }
+                    Err(error) => {
+                        last_error = error;
+                        break;
+                    }
+                }
+            }
+            if let Some(next) = chain.get(entry + 1) {
+                callback(ModelFallback {
+                    from: model.clone(),
+                    to: next.clone(),
+                    reason: last_error.to_string(),
+                    attempts: attempts + 1,
+                });
+                entry += 1;
+                state.entry = entry;
+            } else {
+                return Err(last_error);
+            }
+        }
+        Err(last_error)
+    }
 }
