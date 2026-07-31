@@ -645,8 +645,12 @@ Semantics:
   - *entry-retryable* — rate limit (429), overloaded, 5xx, network/timeout,
     dropped stream: retry the same entry with exponential backoff (default
     2 retries), then advance to the next chain entry.
-  - *entry-terminal* — auth failure, invalid request, model not found:
-    skip the entry immediately (no retries), advance to the next entry.
+  - *entry-terminal* — auth failure, invalid request, or model not found:
+    skip the entry immediately (no retries), advance to the next entry. Known
+    provider error-body `code` values `model_not_found`, `invalid_model`,
+    `model_does_not_exist` (including `model_doesnt_exist` and
+    `model_not_exist`) take precedence over HTTP status heuristics, including
+    5xx responses.
   - *run-terminal* — context overflow (MVP), cancellation: fail the run;
     no fallback. (Post-MVP, overflow triggers compaction instead.)
 - **Request assembly is per-attempt**: each entry's request is built against

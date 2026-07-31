@@ -121,9 +121,11 @@ Streaming:
 Cancellation/errors:
 
 - [ ] **MUST:** classify `429` rate limit, `400` invalid/schema/context,
-  `401/403`, `404` model, `413`, `5xx` transient; profile endpoint-specific
-  context strings (`context_length_exceeded`, vendor wordings, Azure
-  content-filter 400).
+  `401/403`, `404` model, `413`, `5xx` transient; provider error-body `code`
+  values `model_not_found`, `invalid_model`, and model-does-not-exist variants
+  are entry-terminal even when sent with 5xx. Profile endpoint-specific context
+  strings (`context_length_exceeded`, vendor wordings, Azure content-filter
+  400).
 - [ ] **NICE:** preserve `x-request-id`, retry-after, rate-limit headers.
 - [ ] **Compat reality:** Chat usually works; reasoning fields, strict
   tools, multimodal, stream usage, cache controls, exact error bodies are

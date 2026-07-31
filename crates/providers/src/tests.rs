@@ -567,6 +567,11 @@ fn provider_error_classification_inspects_body_and_nested_sse_status() {
             "insufficient_quota",
             ProviderErrorClass::EntryTerminal,
         ),
+        (
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"error":{"code":"unknown_error"}}"#,
+            ProviderErrorClass::EntryRetryable,
+        ),
     ] {
         assert_eq!(ProviderError::from_http(status, body).class(), class);
     }
@@ -577,6 +582,26 @@ fn provider_error_classification_inspects_body_and_nested_sse_status() {
         .class(),
         ProviderErrorClass::EntryRetryable
     );
+}
+
+#[test]
+fn model_terminal_codes_override_http_status_class() {
+    for code in [
+        "model_not_found",
+        "invalid_model",
+        "model_does_not_exist",
+        "model_doesnt_exist",
+        "model_not_exist",
+    ] {
+        assert_eq!(
+            ProviderError::from_http(
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error": {"code": code}}).to_string(),
+            )
+            .class(),
+            ProviderErrorClass::EntryTerminal,
+        );
+    }
 }
 
 #[test]
@@ -919,6 +944,49 @@ impl Provider for FakeProvider {
             Err(error) => Err(error),
         }
     }
+}
+
+#[tokio::test]
+async fn model_not_found_5xx_advances_without_retrying_the_entry() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+            "error": {
+                "code": "model_not_found",
+                "message": "The model does not exist"
+            }
+        })))
+        .mount(&server)
+        .await;
+    let primary = Arc::new(OpenAiCompatibleProvider::new("key", server.uri()));
+    let fallback = Arc::new(FakeProvider::new(vec![Ok(ProviderResponse::default())]));
+    let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+    providers.insert("primary".into(), primary);
+    providers.insert("fallback".into(), fallback.clone());
+    let chain = vec![
+        ModelRef {
+            provider: "primary".into(),
+            model: ModelId("missing".into()),
+        },
+        ModelRef {
+            provider: "fallback".into(),
+            model: ModelId("available".into()),
+        },
+    ];
+    let fallbacks = Arc::new(Mutex::new(Vec::new()));
+    FallbackExecutor::new(providers)
+        .with_retry_policy(2, Duration::ZERO)
+        .execute(&chain, |model, _| request(&model.model.0), {
+            let fallbacks = fallbacks.clone();
+            move |fallback| fallbacks.lock().expect("fallback lock").push(fallback)
+        })
+        .await
+        .expect("fallback succeeds");
+
+    assert_eq!(server.received_requests().await.expect("requests").len(), 1);
+    assert_eq!(fallback.calls(), 1);
+    assert_eq!(fallbacks.lock().expect("fallback lock")[0].attempts, 1);
 }
 
 struct PartialFailureProvider {

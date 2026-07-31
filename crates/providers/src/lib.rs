@@ -275,6 +275,9 @@ impl ProviderError {
         if lower.contains("insufficient_quota") {
             return Self::EntryTerminal { message };
         }
+        if has_entry_terminal_model_code(&message) {
+            return Self::EntryTerminal { message };
+        }
         if lower.contains("rate_limit")
             || lower.contains("rate limit")
             || lower.contains("overloaded")
@@ -326,6 +329,37 @@ impl ProviderError {
             message: message.into(),
         }
     }
+}
+
+fn has_entry_terminal_model_code(body: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    has_entry_terminal_model_code_value(&value)
+}
+
+fn has_entry_terminal_model_code_value(value: &Value) -> bool {
+    match value {
+        Value::Object(fields) => fields.iter().any(|(key, value)| {
+            (key.eq_ignore_ascii_case("code")
+                && value.as_str().is_some_and(is_entry_terminal_model_code))
+                || has_entry_terminal_model_code_value(value)
+        }),
+        Value::Array(values) => values.iter().any(has_entry_terminal_model_code_value),
+        _ => false,
+    }
+}
+
+fn is_entry_terminal_model_code(code: &str) -> bool {
+    [
+        "model_not_found",
+        "invalid_model",
+        "model_does_not_exist",
+        "model_doesnt_exist",
+        "model_not_exist",
+    ]
+    .iter()
+    .any(|known_code| code.eq_ignore_ascii_case(known_code))
 }
 
 fn status_code(value: &Value) -> Option<reqwest::StatusCode> {

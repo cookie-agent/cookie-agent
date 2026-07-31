@@ -644,7 +644,17 @@ impl Engine {
             engine.spawn_actor(session.meta.id);
         }
         engine.rebuild_approvals();
-        engine.reconcile()?;
+        // Reconciliation uses the synchronous actor facade. When open is
+        // called by an async composition root, move that facade to a plain
+        // thread so `blocking_send` never runs on a Tokio worker.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let reconcile_engine = engine.clone();
+            std::thread::spawn(move || reconcile_engine.reconcile())
+                .join()
+                .map_err(|_| EngineError::ActorStopped)??;
+        } else {
+            engine.reconcile()?;
+        }
         Ok(engine)
     }
 
@@ -5099,6 +5109,20 @@ mod tests {
         .expect("reopen engine")
     }
 
+    fn reopen_test_engine_in_runtime(
+        directory: &tempfile::TempDir,
+        provider: Arc<dyn Provider>,
+    ) -> Engine {
+        Engine::open(EngineOptions {
+            data_dir: directory.path().join("data"),
+            cwd: directory.path().to_owned(),
+            config: test_config(),
+            providers: HashMap::from([("test".into(), provider)]),
+            tools: Vec::new(),
+        })
+        .expect("reopen engine from Tokio runtime")
+    }
+
     async fn reconcile_test_engine(engine: &Engine) {
         let engine = engine.clone();
         tokio::task::spawn_blocking(move || engine.reconcile())
@@ -7514,6 +7538,213 @@ mod tests {
                 .filter(|record| matches!(record, journal::JournalRecord::DelegationStarted { reservation, .. } if reservation.invocation_id == invocation_id))
                 .count(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn reopen_inside_runtime_interrupts_a_partial_run_without_panicking() {
+        let (directory, engine) = test_engine(Arc::new(NoopProvider));
+        let session = engine.create_session(".", "test").expect("session").id;
+        let run = RunId::new_v7();
+        engine
+            .append(
+                session,
+                Some(run),
+                Event::RunStarted {
+                    client_run_id: "crashed".into(),
+                    input: "before restart".into(),
+                },
+            )
+            .await
+            .expect("persist run start");
+        engine
+            .append(
+                session,
+                Some(run),
+                Event::TextDelta {
+                    text: "partial output".into(),
+                },
+            )
+            .await
+            .expect("persist partial output");
+        drop(engine);
+
+        let reopened = reopen_test_engine_in_runtime(&directory, Arc::new(NoopProvider));
+        let projection = reopened
+            .inner
+            .store
+            .get(session)
+            .expect("reconciled session");
+        assert_eq!(
+            projection.runs.get(&run).expect("interrupted run").status,
+            SessionStatus::Interrupted
+        );
+        assert!(projection.log.events().iter().any(|event| {
+            matches!(event.event, Event::RunInterrupted { ref reason }
+                if reason.as_deref() == Some("daemon restart"))
+        }));
+        reopened
+            .resume(session)
+            .await
+            .expect("resume interrupted session");
+        reopened
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "continued".into(),
+                input: "continue".into(),
+            })
+            .await
+            .expect("continue after reconciliation");
+        wait_for_session_status(&reopened, session, &SessionStatus::Completed).await;
+    }
+
+    #[tokio::test]
+    async fn reopen_inside_runtime_interrupts_a_run_with_pending_approval_without_panicking() {
+        let (directory, engine) = test_engine(Arc::new(NoopProvider));
+        let session = engine.create_session(".", "test").expect("session").id;
+        let run = RunId::new_v7();
+        engine
+            .append(
+                session,
+                Some(run),
+                Event::RunStarted {
+                    client_run_id: "approval-crash".into(),
+                    input: "await approval".into(),
+                },
+            )
+            .await
+            .expect("persist run start");
+        engine
+            .append(
+                session,
+                Some(run),
+                approval_request_event(
+                    "pending-restart-approval",
+                    vec![cookiecode_protocol::ApprovalResource {
+                        action: cookiecode_protocol::ActionKind::Bash,
+                        resource: "git status".into(),
+                        suggested_pattern: "git status *".into(),
+                    }],
+                    "awaiting approval",
+                ),
+            )
+            .await
+            .expect("persist approval request");
+        drop(engine);
+
+        let reopened = reopen_test_engine_in_runtime(&directory, Arc::new(NoopProvider));
+        let projection = reopened
+            .inner
+            .store
+            .get(session)
+            .expect("reconciled session");
+        assert_eq!(
+            projection.runs.get(&run).expect("interrupted run").status,
+            SessionStatus::Interrupted
+        );
+        assert!(projection.log.events().iter().any(|event| {
+            matches!(&event.event, Event::ApprovalRequested { approval_id, .. }
+                if approval_id == "pending-restart-approval")
+        }));
+        reopened
+            .resume(session)
+            .await
+            .expect("resume approval session");
+    }
+
+    #[tokio::test]
+    async fn reopen_inside_runtime_replays_committed_prefix_before_continuation() {
+        let (directory, engine) = test_engine(Arc::new(NoopProvider));
+        let session = engine.create_session(".", "test").expect("session").id;
+        let run = RunId::new_v7();
+        engine
+            .append(
+                session,
+                Some(run),
+                Event::RunStarted {
+                    client_run_id: "crashed".into(),
+                    input: "original input".into(),
+                },
+            )
+            .await
+            .expect("persist run start");
+        engine
+            .append(
+                session,
+                Some(run),
+                Event::TextDelta {
+                    text: "committed prefix".into(),
+                },
+            )
+            .await
+            .expect("persist partial output");
+        engine
+            .append(
+                session,
+                Some(run),
+                Event::UserInputSubmitted {
+                    input: "preserve committed prefix".into(),
+                },
+            )
+            .await
+            .expect("persist steering input");
+        let steering_seq = engine
+            .inner
+            .store
+            .get(session)
+            .expect("session")
+            .log
+            .events()
+            .into_iter()
+            .rev()
+            .find(|event| matches!(event.event, Event::UserInputSubmitted { .. }))
+            .expect("steering event")
+            .seq;
+        engine
+            .append(
+                session,
+                Some(run),
+                Event::UserInputApplied {
+                    user_input_seq: steering_seq,
+                },
+            )
+            .await
+            .expect("persist steering boundary");
+        drop(engine);
+
+        let provider = Arc::new(RecordingNoopProvider {
+            protocol: None,
+            requests: Mutex::new(Vec::new()),
+        });
+        let reopened = reopen_test_engine_in_runtime(&directory, provider.clone());
+        reopened
+            .resume(session)
+            .await
+            .expect("resume interrupted session");
+        reopened
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "continued".into(),
+                input: "continue from prefix".into(),
+            })
+            .await
+            .expect("start continuation");
+        wait_for_session_status(&reopened, session, &SessionStatus::Completed).await;
+        let request = provider
+            .requests
+            .lock()
+            .expect("requests lock poisoned")
+            .last()
+            .cloned()
+            .expect("continuation request");
+        assert_eq!(
+            visible_messages(&request.messages),
+            vec![
+                ("user", "original input".into()),
+                ("assistant", "committed prefix".into()),
+                ("user", "preserve committed prefix".into()),
+                ("user", "continue from prefix".into()),
+            ]
         );
     }
 
