@@ -61,6 +61,15 @@ impl Captured {
     }
 }
 
+fn lossy_complete_prefix(bytes: &[u8]) -> String {
+    let bytes = match std::str::from_utf8(bytes) {
+        Ok(_) => bytes,
+        Err(error) if error.error_len().is_none() => &bytes[..error.valid_up_to()],
+        Err(_) => bytes,
+    };
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
 impl BashTool {
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
@@ -202,8 +211,8 @@ impl ToolProvider for BashTool {
                     "exited".into()
                 },
                 exit_code: status.code(),
-                stdout: String::from_utf8_lossy(&stdout.data).into_owned(),
-                stderr: String::from_utf8_lossy(&stderr.data).into_owned(),
+                stdout: lossy_complete_prefix(&stdout.data),
+                stderr: lossy_complete_prefix(&stderr.data),
                 timed_out,
                 cancelled,
                 truncated,
@@ -334,5 +343,60 @@ mod tests {
             .expect("read stdout");
         child.wait().await.expect("reap cat");
         assert_eq!(output, "round trip\n");
+    }
+
+    #[tokio::test]
+    async fn capped_valid_utf8_output_discards_only_the_partial_codepoint() {
+        let directory = tempdir().expect("temporary directory");
+        let tool = BashTool::new(directory.path());
+        let call_id = ToolCallId::new_v7();
+        let hub = cookiecode_engine::events::OutputHub::new(call_id, 1024);
+        let prefix = super::STREAM_RESULT_LIMIT - 2;
+        let result = tool
+            .invoke(
+                context(hub),
+                ToolCall {
+                    id: call_id,
+                    name: "bash".into(),
+                    arguments: serde_json::json!({
+                        "command": format!(
+                            "printf '%*s' {prefix} '' | tr ' ' a; printf '\\360\\237\\230\\200'"
+                        )
+                    }),
+                },
+            )
+            .await
+            .expect("bash result");
+        let output: serde_json::Value = serde_json::from_str(&result.content).expect("bash JSON");
+
+        assert_eq!(output["stdout"], "a".repeat(prefix));
+        assert!(
+            !output["stdout"]
+                .as_str()
+                .expect("stdout")
+                .contains('\u{fffd}')
+        );
+        assert!(result.truncated);
+    }
+
+    #[tokio::test]
+    async fn invalid_process_bytes_are_lossy_safe() {
+        let directory = tempdir().expect("temporary directory");
+        let tool = BashTool::new(directory.path());
+        let call_id = ToolCallId::new_v7();
+        let result = tool
+            .invoke(
+                context(cookiecode_engine::events::OutputHub::new(call_id, 1024)),
+                ToolCall {
+                    id: call_id,
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command":"printf '\\377bad'"}),
+                },
+            )
+            .await
+            .expect("bash result");
+        let output: serde_json::Value = serde_json::from_str(&result.content).expect("bash JSON");
+
+        assert_eq!(output["stdout"], "�bad");
     }
 }

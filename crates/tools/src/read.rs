@@ -88,6 +88,11 @@ impl ToolProvider for ReadTool {
             .take(READ_LIMIT as u64)
             .read_to_end(&mut bytes)
             .map_err(tool_error)?;
+        if let Err(error) = std::str::from_utf8(&bytes)
+            && error.error_len().is_none()
+        {
+            bytes.truncate(error.valid_up_to());
+        }
         let text = String::from_utf8_lossy(&bytes);
         let start = args.start_line.unwrap_or(1);
         let end = args.end_line.unwrap_or(usize::MAX);
@@ -111,5 +116,56 @@ impl ToolProvider for ReadTool {
             },
             truncated,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cookiecode_engine::{ProgressSink, ToolCall, ToolInvocationContext, ToolProvider};
+    use cookiecode_protocol::{RunId, SessionId, ToolCallId};
+    use tempfile::tempdir;
+    use tokio::sync::mpsc;
+
+    use super::{READ_LIMIT, ReadTool};
+
+    #[tokio::test]
+    async fn capped_valid_utf8_file_discards_only_the_partial_codepoint() {
+        let directory = tempdir().expect("temporary directory");
+        let prefix = "a".repeat(READ_LIMIT - 2);
+        std::fs::write(directory.path().join("emoji.txt"), format!("{prefix}😀"))
+            .expect("write UTF-8 fixture");
+        let (progress, _) = mpsc::channel(1);
+        let result = ReadTool::new(directory.path())
+            .invoke(
+                ToolInvocationContext {
+                    session: SessionId::new_v7(),
+                    run: RunId::new_v7(),
+                    cwd: directory.path().to_owned(),
+                    workspace_root: directory.path().to_owned(),
+                    progress: ProgressSink::new(
+                        progress,
+                        cookiecode_engine::events::OutputHub::new(ToolCallId::new_v7(), 1),
+                    ),
+                    cancellation: tokio_util::sync::CancellationToken::new(),
+                    stdin: None,
+                },
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({"path":"emoji.txt"}),
+                },
+            )
+            .await
+            .expect("read result");
+        let output: serde_json::Value = serde_json::from_str(&result.content).expect("read JSON");
+
+        assert_eq!(output["content"], format!("{prefix}\n"));
+        assert!(
+            !output["content"]
+                .as_str()
+                .expect("content")
+                .contains('\u{fffd}')
+        );
+        assert!(result.truncated);
     }
 }

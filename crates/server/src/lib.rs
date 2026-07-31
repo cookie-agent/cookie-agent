@@ -826,6 +826,16 @@ async fn forward_output(
     notifications: mpsc::Sender<Value>,
     shutdown: CancellationToken,
 ) -> Result<(), ()> {
+    // Snapshot eviction gaps describe a prefix the following snapshot no
+    // longer contains, so deliver them before establishing its end cursor.
+    let held_delta = match receiver.try_recv() {
+        Ok(OutputMessage::Gap(gap)) => {
+            send_notification(&notifications, &shutdown, "events.tool_output_gap", &gap).await?;
+            None
+        }
+        Ok(OutputMessage::Delta(delta)) => Some(delta),
+        Err(_) => None,
+    };
     // An empty snapshot is still meaningful: its envelope identifies the
     // stream and establishes the snapshot-to-live handoff boundary.
     send_notification(
@@ -835,6 +845,15 @@ async fn forward_output(
         &OutputSnapshotEnvelope { stream, snapshot },
     )
     .await?;
+    if let Some(delta) = held_delta {
+        send_notification(
+            &notifications,
+            &shutdown,
+            "events.tool_output_delta",
+            &delta,
+        )
+        .await?;
+    }
     loop {
         let message = tokio::select! {
             _ = shutdown.cancelled() => return Ok(()),
@@ -1210,6 +1229,100 @@ mod tests {
             .await
             .expect("forwarder stopped")
             .expect("forwarder task");
+    }
+
+    #[tokio::test]
+    async fn output_forwarding_sends_pre_read_gap_then_snapshot_then_live_delta() {
+        let call_id = cookiecode_protocol::ToolCallId::new_v7();
+        let (output_tx, output_rx) = mpsc::channel(2);
+        output_tx
+            .send(OutputMessage::Gap(cookiecode_protocol::OutputGap {
+                call_id,
+                stream: OutputStream::Stdout,
+                next_offset: 3,
+            }))
+            .await
+            .expect("queue eviction gap");
+        output_tx
+            .send(OutputMessage::Delta(cookiecode_protocol::OutputDelta {
+                call_id,
+                stream: OutputStream::Stdout,
+                byte_offset: 6,
+                data: "bGl2ZQ==".into(),
+            }))
+            .await
+            .expect("queue live delta");
+        let (notifications, mut notification_rx) = mpsc::channel(3);
+        let task = tokio::spawn(forward_output(
+            OutputStream::Stdout,
+            cookiecode_protocol::OutputSnapshot {
+                call_id,
+                start_offset: 3,
+                end_offset: 6,
+                chunks: Vec::new(),
+            },
+            output_rx,
+            notifications,
+            CancellationToken::new(),
+        ));
+
+        assert_eq!(
+            notification_rx.recv().await.expect("gap")["method"],
+            "events.tool_output_gap"
+        );
+        assert_eq!(
+            notification_rx.recv().await.expect("snapshot")["method"],
+            "events.tool_output_snapshot"
+        );
+        assert_eq!(
+            notification_rx.recv().await.expect("live delta")["method"],
+            "events.tool_output_delta"
+        );
+        drop(output_tx);
+        task.await
+            .expect("forward task")
+            .expect("output forwarding");
+    }
+
+    #[tokio::test]
+    async fn output_forwarding_keeps_a_pre_read_delta_without_a_gap() {
+        let call_id = cookiecode_protocol::ToolCallId::new_v7();
+        let (output_tx, output_rx) = mpsc::channel(1);
+        output_tx
+            .send(OutputMessage::Delta(cookiecode_protocol::OutputDelta {
+                call_id,
+                stream: OutputStream::Stdout,
+                byte_offset: 0,
+                data: "bGl2ZQ==".into(),
+            }))
+            .await
+            .expect("queue delta between subscription and forwarding");
+        let (notifications, mut notification_rx) = mpsc::channel(2);
+        let task = tokio::spawn(forward_output(
+            OutputStream::Stdout,
+            cookiecode_protocol::OutputSnapshot {
+                call_id,
+                start_offset: 0,
+                end_offset: 0,
+                chunks: Vec::new(),
+            },
+            output_rx,
+            notifications,
+            CancellationToken::new(),
+        ));
+
+        assert_eq!(
+            notification_rx.recv().await.expect("snapshot")["method"],
+            "events.tool_output_snapshot"
+        );
+        assert_eq!(
+            notification_rx.recv().await.expect("held delta")["method"],
+            "events.tool_output_delta"
+        );
+        drop(output_tx);
+        task.await
+            .expect("forward task")
+            .expect("output forwarding");
     }
 
     #[tokio::test]

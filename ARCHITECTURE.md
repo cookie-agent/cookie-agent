@@ -773,6 +773,9 @@ actor nor stall process draining). The hub:
   `[start_offset, end_offset)` — with a `gap` marker when `start_offset > 0`
   (older bytes already evicted) — followed only by deltas starting at
   `>= end_offset`;
+- queues that snapshot gap as `{ next_offset: start_offset }` on the live
+  receiver too; `next_offset` is the first retained decoded-byte offset, so
+  consumers know the exact lost half-open prefix `[0, next_offset)`;
 - fans out to subscribers with bounded per-subscriber queues: a lagging
   subscriber receives a `{ gap: true, next_offset }` marker instead of
   backpressure; disconnected subscribers are dropped;

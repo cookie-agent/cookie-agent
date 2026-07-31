@@ -378,10 +378,26 @@ impl OutputHub {
                 .collect(),
         };
         let (sender, receiver) = mpsc::channel(queue);
+        // A nonzero retained start is an explicit loss boundary for a new
+        // snapshot consumer. Queue the same marker used for lagging live
+        // subscribers before any later deltas can be registered.
+        let gap = (buffer.start > 0).then_some(buffer.start);
+        let gap = match gap {
+            Some(next_offset) => match sender.try_send(OutputMessage::Gap(OutputGap {
+                call_id: self.call_id,
+                stream,
+                next_offset,
+            })) {
+                Ok(()) => None,
+                Err(mpsc::error::TrySendError::Full(_)) => Some(next_offset),
+                Err(mpsc::error::TrySendError::Closed(_)) => None,
+            },
+            None => None,
+        };
         // A retained finalized hub is a snapshot-only resource. Do not retain a
         // sender for a receiver which can never receive another delta.
         if !state.finalized {
-            state.subscribers[index].push(Subscriber { sender, gap: None });
+            state.subscribers[index].push(Subscriber { sender, gap });
         }
         (snapshot, receiver)
     }
@@ -457,6 +473,45 @@ mod tests {
         let hub = OutputHub::new(ToolCallId(Uuid::from_u128(3)), 64);
         let (_, mut live) = hub.subscribe(OutputStream::Stdout, 4);
         hub.finalize();
+        assert!(live.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn evicted_snapshot_queues_an_explicit_gap_marker() {
+        let hub = OutputHub::new(ToolCallId(Uuid::from_u128(4)), 3);
+        hub.emit(OutputStream::Stdout, b"one");
+        hub.emit(OutputStream::Stdout, b"two");
+        let (snapshot, mut live) = hub.subscribe(OutputStream::Stdout, 2);
+        assert_eq!(snapshot.start_offset, 3);
+        match live.recv().await.expect("snapshot gap") {
+            OutputMessage::Gap(gap) => assert_eq!(gap.next_offset, 3),
+            OutputMessage::Delta(_) => panic!("expected gap"),
+        }
+    }
+
+    #[tokio::test]
+    async fn finalized_evicted_snapshot_queues_gap_before_closing() {
+        let hub = OutputHub::new(ToolCallId(Uuid::from_u128(6)), 3);
+        hub.emit(OutputStream::Stdout, b"one");
+        hub.emit(OutputStream::Stdout, b"two");
+        hub.finalize();
+        let (snapshot, mut live) = hub.subscribe(OutputStream::Stdout, 2);
+
+        assert_eq!(snapshot.start_offset, 3);
+        match live.recv().await.expect("eviction gap") {
+            OutputMessage::Gap(gap) => assert_eq!(gap.next_offset, 3),
+            OutputMessage::Delta(_) => panic!("expected gap before the finalized receiver closes"),
+        }
+        assert!(live.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn finalize_drains_queued_delta_before_closing() {
+        let hub = OutputHub::new(ToolCallId(Uuid::from_u128(5)), 64);
+        let (_, mut live) = hub.subscribe(OutputStream::Stdout, 2);
+        hub.emit(OutputStream::Stdout, b"done");
+        hub.finalize();
+        assert!(matches!(live.recv().await, Some(OutputMessage::Delta(_))));
         assert!(live.recv().await.is_none());
     }
 }

@@ -799,6 +799,7 @@ impl OrderedOutput {
 
     pub fn mark_gap(&mut self, next_offset: u64) {
         self.has_gap = true;
+        let next_offset = self.next_offset.max(next_offset);
         self.next_offset = next_offset;
         self.pending.retain(|offset, _| *offset >= next_offset);
         self.flush();
@@ -813,5 +814,61 @@ impl OrderedOutput {
             self.next_offset += bytes.len() as u64;
             self.data.extend_from_slice(&bytes);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use cookiecode_protocol::{OutputDelta, OutputGap, OutputSnapshot, OutputSnapshotEnvelope};
+
+    use super::{StateStore, ToolCallState, ToolStatus};
+
+    #[test]
+    fn gap_snapshot_and_live_delta_preserve_the_snapshot_cursor() {
+        let session_id = cookiecode_protocol::SessionId::new_v7();
+        let call_id = cookiecode_protocol::ToolCallId::new_v7();
+        let mut store = StateStore::default();
+        store.sessions.entry(session_id).or_default().tools.insert(
+            call_id,
+            ToolCallState {
+                id: call_id,
+                tool: "bash".into(),
+                arguments: String::new(),
+                status: ToolStatus::Running,
+                detail: String::new(),
+            },
+        );
+
+        store.apply_output_gap(OutputGap {
+            call_id,
+            stream: cookiecode_protocol::OutputStream::Stdout,
+            next_offset: 3,
+        });
+        store.apply_snapshot(OutputSnapshotEnvelope {
+            stream: cookiecode_protocol::OutputStream::Stdout,
+            snapshot: OutputSnapshot {
+                call_id,
+                start_offset: 3,
+                end_offset: 6,
+                chunks: vec![OutputDelta {
+                    call_id,
+                    stream: cookiecode_protocol::OutputStream::Stdout,
+                    byte_offset: 3,
+                    data: STANDARD.encode(b"two"),
+                }],
+            },
+        });
+        store.apply_output_delta(OutputDelta {
+            call_id,
+            stream: cookiecode_protocol::OutputStream::Stdout,
+            byte_offset: 6,
+            data: STANDARD.encode(b"!"),
+        });
+
+        let output = &store.sessions[&session_id].output[&(call_id, false)];
+        assert!(output.has_gap);
+        assert_eq!(output.text(), "two!");
+        assert_eq!(output.next_offset, 7);
     }
 }
