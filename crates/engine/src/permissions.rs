@@ -7,7 +7,9 @@ use std::{
 };
 
 use cookiecode_config::{PermissionEffect, PolicySnapshot, RuleSource, simple_wildcard_match};
-use cookiecode_protocol::{ActionKind, DecisionTrace, Effect, MatchedPermissionRule, SessionId};
+use cookiecode_protocol::{
+    ActionKind, ApprovalResource, DecisionTrace, Effect, MatchedPermissionRule, SessionId,
+};
 use thiserror::Error;
 use tree_sitter::Parser;
 
@@ -65,6 +67,7 @@ pub struct PermissionDecision {
     pub effect: Effect,
     pub trace: DecisionTrace,
     pub always_allowed: bool,
+    pub asking_resources: Vec<ApprovalResource>,
 }
 
 #[derive(Debug, Default)]
@@ -96,72 +99,92 @@ impl PermissionPipeline {
         action: ActionKind,
         resource: String,
     ) -> PermissionDecision {
-        let candidates = matching_rules(policy, action, &resource);
-        if let Some(rule) = candidates
+        self.decide_resources(policy, approvals, root, session, vec![(action, resource)])
+    }
+
+    pub fn decide_resources(
+        &self,
+        policy: &PolicySnapshot,
+        approvals: &ApprovalStore,
+        root: SessionId,
+        session: SessionId,
+        resources: Vec<(ActionKind, String)>,
+    ) -> PermissionDecision {
+        let signature = resources
             .iter()
-            .find(|rule| rule.hard && rule.effect == Effect::Deny)
-        {
-            let reason = format!(
-                "hard deny rule {}",
-                rule.rule_id.as_deref().unwrap_or("builtin")
-            );
-            return decision(action, resource, candidates, Effect::Deny, reason, false);
-        }
+            .map(|(action, resource)| format!("{action:?}:{resource}"))
+            .collect::<Vec<_>>()
+            .join("\u{1f}");
+        let action = resources
+            .first()
+            .map(|(action, _)| *action)
+            .unwrap_or(ActionKind::Read);
+        let decisions = resources
+            .iter()
+            .map(|(action, resource)| {
+                base_decide(policy, approvals, root, *action, resource.clone())
+            })
+            .collect::<Vec<_>>();
+        let mut selected = decisions
+            .iter()
+            .find(|decision| {
+                decision.effect == Effect::Deny
+                    && decision.trace.candidates.iter().any(|rule| rule.hard)
+            })
+            .or_else(|| {
+                decisions
+                    .iter()
+                    .find(|decision| decision.effect == Effect::Deny)
+            })
+            .or_else(|| {
+                decisions
+                    .iter()
+                    .find(|decision| decision.effect == Effect::Ask)
+            })
+            .or_else(|| decisions.first())
+            .cloned()
+            .expect("permission resources are non-empty");
         let count = {
             let mut calls = self.consecutive.lock().expect("permission lock poisoned");
             match calls.get_mut(&session) {
                 Some((previous_action, previous_resource, count))
-                    if *previous_action == action && *previous_resource == resource =>
+                    if *previous_action == action && *previous_resource == signature =>
                 {
                     *count = count.saturating_add(1);
                     *count
                 }
                 _ => {
-                    calls.insert(session, (action, resource.clone(), 1));
+                    calls.insert(session, (action, signature, 1));
                     1
                 }
             }
         };
-        if count >= 3 {
-            return decision(
-                action,
-                resource,
-                candidates,
-                Effect::Ask,
-                "doom-loop guard (third identical call)".into(),
-                false,
-            );
+        if count >= 3 && selected.effect != Effect::Deny {
+            selected.effect = Effect::Ask;
+            selected.trace.effect = Effect::Ask;
+            selected.trace.precedence_reason = "doom-loop guard (third identical call)".into();
+            selected.always_allowed = false;
+            selected.asking_resources = resources
+                .iter()
+                .map(|(action, resource)| ApprovalResource {
+                    action: *action,
+                    resource: resource.clone(),
+                    suggested_pattern: format!("{resource} *"),
+                })
+                .collect();
         }
-        if approvals.allows(root, action, &resource) {
-            return decision(
-                action,
-                resource,
-                candidates,
-                Effect::Allow,
-                "tree-shared runtime approval".into(),
-                true,
-            );
+        if selected.effect == Effect::Ask && selected.asking_resources.is_empty() {
+            selected.asking_resources = decisions
+                .iter()
+                .filter(|decision| decision.effect == Effect::Ask)
+                .map(|decision| ApprovalResource {
+                    action: decision.trace.action,
+                    resource: decision.trace.normalized_resource.clone(),
+                    suggested_pattern: format!("{} *", decision.trace.normalized_resource),
+                })
+                .collect();
         }
-        if let Some(rule) = candidates.last() {
-            let effect = rule.effect;
-            return decision(
-                action,
-                resource,
-                candidates,
-                effect,
-                "last matching rule".into(),
-                effect != Effect::Ask,
-            );
-        }
-        let effect = tier(policy, action);
-        decision(
-            action,
-            resource,
-            candidates,
-            effect,
-            "tier default".into(),
-            effect != Effect::Ask,
-        )
+        selected
     }
 
     pub fn reset_call_streak(&self, session: SessionId) {
@@ -170,6 +193,56 @@ impl PermissionPipeline {
             .expect("permission lock poisoned")
             .retain(|id, _| *id != session);
     }
+}
+
+fn base_decide(
+    policy: &PolicySnapshot,
+    approvals: &ApprovalStore,
+    root: SessionId,
+    action: ActionKind,
+    resource: String,
+) -> PermissionDecision {
+    let candidates = matching_rules(policy, action, &resource);
+    if let Some(rule) = candidates
+        .iter()
+        .find(|rule| rule.hard && rule.effect == Effect::Deny)
+    {
+        let reason = format!(
+            "hard deny rule {}",
+            rule.rule_id.as_deref().unwrap_or("builtin")
+        );
+        return decision(action, resource, candidates, Effect::Deny, reason, false);
+    }
+    if approvals.allows(root, action, &resource) {
+        return decision(
+            action,
+            resource,
+            candidates,
+            Effect::Allow,
+            "tree-shared runtime approval".into(),
+            true,
+        );
+    }
+    if let Some(rule) = candidates.last() {
+        let effect = rule.effect;
+        return decision(
+            action,
+            resource,
+            candidates,
+            effect,
+            "last matching rule".into(),
+            effect != Effect::Ask,
+        );
+    }
+    let effect = tier(policy, action);
+    decision(
+        action,
+        resource,
+        candidates,
+        effect,
+        "tier default".into(),
+        effect != Effect::Ask,
+    )
 }
 
 fn decision(
@@ -190,6 +263,7 @@ fn decision(
             precedence_reason,
         },
         always_allowed,
+        asking_resources: Vec::new(),
     }
 }
 
@@ -377,7 +451,7 @@ pub fn bash_subcommands(source: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::{collections::BTreeSet, path::Path};
 
     use cookiecode_config::{
         DelegationPolicy, DepthLimit, PermissionEffect, PermissionRule, PolicySnapshot,
@@ -386,7 +460,7 @@ mod tests {
     use cookiecode_protocol::{ActionKind, Effect, SessionId};
     use uuid::Uuid;
 
-    use super::{ApprovalStore, PermissionPipeline, bash_subcommands};
+    use super::{ApprovalStore, PermissionPipeline, bash_subcommands, canonical_resource};
 
     fn policy(rules: Vec<PermissionRule>) -> PolicySnapshot {
         PolicySnapshot {
@@ -452,5 +526,185 @@ mod tests {
         let commands = bash_subcommands("git status && git log -1");
         assert!(commands.iter().any(|command| command == "git status"));
         assert!(commands.iter().any(|command| command == "git log -1"));
+    }
+
+    #[test]
+    fn aggregate_resources_denies_regardless_of_ask_deny_order_and_discloses_all_asks() {
+        let id = SessionId(Uuid::from_u128(2));
+        let rules = vec![
+            PermissionRule {
+                id: "ask".into(),
+                action: "bash".into(),
+                resource: "ask command".into(),
+                effect: "ask".into(),
+                hard: false,
+                source: RuleSource::Profile,
+            },
+            PermissionRule {
+                id: "deny".into(),
+                action: "bash".into(),
+                resource: "deny command".into(),
+                effect: "deny".into(),
+                hard: false,
+                source: RuleSource::Profile,
+            },
+            PermissionRule {
+                id: "ask-two".into(),
+                action: "bash".into(),
+                resource: "another ask".into(),
+                effect: "ask".into(),
+                hard: false,
+                source: RuleSource::Profile,
+            },
+        ];
+        let pipeline = PermissionPipeline::default();
+        let approvals = ApprovalStore::default();
+        for resources in [
+            vec![
+                (ActionKind::Bash, "ask command".into()),
+                (ActionKind::Bash, "deny command".into()),
+            ],
+            vec![
+                (ActionKind::Bash, "deny command".into()),
+                (ActionKind::Bash, "ask command".into()),
+            ],
+        ] {
+            assert_eq!(
+                pipeline
+                    .decide_resources(&policy(rules.clone()), &approvals, id, id, resources)
+                    .effect,
+                Effect::Deny
+            );
+        }
+        let decision = pipeline.decide_resources(
+            &policy(rules),
+            &approvals,
+            id,
+            id,
+            vec![
+                (ActionKind::Bash, "ask command".into()),
+                (ActionKind::Bash, "another ask".into()),
+            ],
+        );
+        assert_eq!(decision.effect, Effect::Ask);
+        assert_eq!(
+            decision
+                .asking_resources
+                .iter()
+                .map(|resource| resource.resource.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ask command", "another ask"]
+        );
+    }
+
+    #[test]
+    fn doom_loop_uses_complete_signature_and_different_signature_resets_streak() {
+        let id = SessionId(Uuid::from_u128(3));
+        let rules = vec![PermissionRule {
+            id: "allow-bash".into(),
+            action: "bash".into(),
+            resource: "*".into(),
+            effect: "allow".into(),
+            hard: false,
+            source: RuleSource::Profile,
+        }];
+        let pipeline = PermissionPipeline::default();
+        let approvals = ApprovalStore::default();
+        let signature = || {
+            vec![
+                (ActionKind::Bash, "git status".into()),
+                (ActionKind::Bash, "git log -1".into()),
+            ]
+        };
+        assert_eq!(
+            pipeline
+                .decide_resources(&policy(rules.clone()), &approvals, id, id, signature())
+                .effect,
+            Effect::Allow
+        );
+        assert_eq!(
+            pipeline
+                .decide_resources(&policy(rules.clone()), &approvals, id, id, signature())
+                .effect,
+            Effect::Allow
+        );
+        let doom =
+            pipeline.decide_resources(&policy(rules.clone()), &approvals, id, id, signature());
+        assert_eq!(doom.effect, Effect::Ask);
+        assert_eq!(doom.asking_resources.len(), 2);
+        assert!(doom.trace.precedence_reason.starts_with("doom-loop guard"));
+        assert_eq!(
+            pipeline
+                .decide_resources(
+                    &policy(rules),
+                    &approvals,
+                    id,
+                    id,
+                    vec![
+                        (ActionKind::Bash, "git status".into()),
+                        (ActionKind::Bash, "git diff".into()),
+                    ],
+                )
+                .effect,
+            Effect::Allow
+        );
+    }
+
+    #[test]
+    fn external_directory_resource_remains_asked_when_read_tier_allows() {
+        let id = SessionId(Uuid::from_u128(4));
+        let mut policy = policy(Vec::new());
+        policy.permissions.read = PermissionEffect::Allow;
+        let approvals = ApprovalStore::default();
+        let pipeline = PermissionPipeline::default();
+        let resources = vec![
+            (
+                ActionKind::ExternalDirectory,
+                "/outside/workspace/file".into(),
+            ),
+            (ActionKind::Read, "/outside/workspace/file".into()),
+        ];
+        let decision = pipeline.decide_resources(&policy, &approvals, id, id, resources.clone());
+        assert_eq!(decision.effect, Effect::Ask);
+        assert_eq!(decision.trace.action, ActionKind::ExternalDirectory);
+        assert_eq!(decision.asking_resources.len(), 1);
+        assert_eq!(
+            decision.asking_resources[0].action,
+            ActionKind::ExternalDirectory
+        );
+        approvals.grant(
+            id,
+            ActionKind::ExternalDirectory,
+            "/outside/workspace/file *".into(),
+        );
+        assert_eq!(
+            pipeline
+                .decide_resources(&policy, &approvals, id, id, resources)
+                .effect,
+            Effect::Allow
+        );
+    }
+
+    #[test]
+    fn canonicalization_failure_fallback_still_uses_external_directory_guard() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let missing_workspace = directory.path().join("missing-workspace");
+        assert!(canonical_resource(&missing_workspace, Path::new("outside-file")).is_err());
+
+        let id = SessionId(Uuid::from_u128(5));
+        let mut policy = policy(Vec::new());
+        policy.permissions.read = PermissionEffect::Allow;
+        let decision = PermissionPipeline::default().decide_resources(
+            &policy,
+            &ApprovalStore::default(),
+            id,
+            id,
+            vec![
+                (ActionKind::ExternalDirectory, "outside-file".into()),
+                (ActionKind::Read, "outside-file".into()),
+            ],
+        );
+        assert_eq!(decision.effect, Effect::Ask);
+        assert_eq!(decision.trace.action, ActionKind::ExternalDirectory);
     }
 }

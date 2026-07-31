@@ -23,10 +23,11 @@ use cookiecode_protocol::{
     Event, EventSubscriptionMessage, EventsSubscribeParams, JsonRpcError, JsonRpcId,
     ModelDescriptor, ModelRef, Notification, OutputSnapshotEnvelope, OutputStream,
     PROTOCOL_VERSION, ProviderListModelsParams, ProviderListModelsResult, Response as RpcResponse,
-    RunCancelParams, RunSteerParams, RunToolStdinParams, ServerHello, SessionChildrenParams,
-    SessionChildrenResult, SessionCreateParams, SessionCreateResult, SessionGetParams,
-    SessionGetResult, SessionListParams, SessionListResult, SessionResumeParams,
-    SessionResumeResult, SessionTreeParams, SessionTreeResult, SuccessResponse,
+    RunCancelParams, RunStartConflict, RunStartConflictCode, RunStartParams, RunSteerParams,
+    RunToolStdinParams, ServerHello, SessionChildrenParams, SessionChildrenResult,
+    SessionCreateParams, SessionCreateResult, SessionGetParams, SessionGetResult,
+    SessionListParams, SessionListResult, SessionResumeParams, SessionResumeResult,
+    SessionTreeParams, SessionTreeResult, SuccessResponse,
 };
 use cookiecode_providers::Provider;
 use futures_util::StreamExt;
@@ -35,13 +36,23 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::{
     net::TcpListener,
-    sync::mpsc,
+    sync::{Mutex as AsyncMutex, mpsc},
     task::JoinHandle,
     time::{Duration, sleep},
 };
 use tokio_util::sync::CancellationToken;
 
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
+
+/// Cancels one connection's subscription and output-forwarding tasks whenever
+/// its routing future is dropped, including on panic or task abort.
+struct ConnectionShutdown(CancellationToken);
+
+impl Drop for ConnectionShutdown {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
 
 /// One complete JSON-RPC message. WebSockets use [`Self::Text`]; the
 /// in-process adapter passes [`Self::Value`] directly and avoids a JSON
@@ -152,6 +163,9 @@ pub struct Server {
     config: Config,
     providers: ProviderRegistry,
     shutdown: CancellationToken,
+    // Temporary process-local cache; Part B moves conflict enforcement into
+    // durable engine state so it survives daemon restarts.
+    run_start_params: Arc<AsyncMutex<HashMap<(cookiecode_protocol::SessionId, String), String>>>,
     #[cfg(test)]
     connection_observer: Arc<Mutex<Option<mpsc::Sender<CancellationToken>>>>,
 }
@@ -164,6 +178,7 @@ impl Server {
             config,
             providers,
             shutdown: CancellationToken::new(),
+            run_start_params: Arc::new(AsyncMutex::new(HashMap::new())),
             #[cfg(test)]
             connection_observer: Arc::new(Mutex::new(None)),
         }
@@ -210,6 +225,7 @@ impl Server {
         let (notifications, mut notification_rx) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
         let mut handshaken = false;
         let connection_shutdown = self.shutdown.child_token();
+        let _connection_shutdown = ConnectionShutdown(connection_shutdown.clone());
         #[cfg(test)]
         if let Some(observer) = self
             .connection_observer
@@ -267,7 +283,6 @@ impl Server {
             }
         }
         .await;
-        connection_shutdown.cancel();
         result
     }
 
@@ -361,12 +376,23 @@ impl Server {
                     .map_err(engine_fault)?;
                 value(SessionResumeResult { session })
             }
-            "run.start" => value(
-                self.engine
-                    .start_run(decode_params(params)?)
-                    .await
-                    .map_err(engine_fault)?,
-            ),
+            "run.start" => {
+                let params: RunStartParams = decode_params(params)?;
+                let canonical = canonical_run_start_params(&params)?;
+                let key = (params.session_id, params.client_run_id.clone());
+                // This lock deliberately spans the engine call: it makes the
+                // server's first-seen comparison atomic for concurrent client
+                // requests until engine-side durable enforcement lands.
+                let mut seen = self.run_start_params.lock().await;
+                if let Some(previous) = seen.get(&key)
+                    && previous != &canonical
+                {
+                    return Err(RpcFault::run_start_conflict(&params));
+                }
+                let result = self.engine.start_run(params).await.map_err(engine_fault)?;
+                seen.entry(key).or_insert(canonical);
+                value(result)
+            }
             "run.steer" => {
                 let request: RunSteerParams = decode_params(params)?;
                 value(
@@ -654,6 +680,20 @@ impl RpcFault {
             data: Some(json!({ "detail": message.into() })),
         }
     }
+    fn run_start_conflict(params: &RunStartParams) -> Self {
+        Self {
+            code: -32602,
+            message: "idempotency conflict",
+            data: Some(
+                serde_json::to_value(RunStartConflict {
+                    code: RunStartConflictCode::IdempotencyConflict,
+                    session_id: params.session_id,
+                    client_run_id: params.client_run_id.clone(),
+                })
+                .expect("run-start conflict data serializes"),
+            ),
+        }
+    }
     const fn handshake_required() -> Self {
         Self {
             code: -32001,
@@ -686,6 +726,15 @@ impl RpcFault {
 
 fn engine_fault(error: EngineError) -> RpcFault {
     RpcFault::engine(error.to_string())
+}
+
+fn canonical_run_start_params(params: &RunStartParams) -> Result<String, RpcFault> {
+    serde_json::to_string(&json!({
+        "session_id": params.session_id,
+        "client_run_id": params.client_run_id,
+        "input": params.input,
+    }))
+    .map_err(|error| RpcFault::internal(error.to_string()))
 }
 
 fn parse_incoming(frame: MessageFrame) -> Result<Value, RpcFault> {
@@ -846,7 +895,9 @@ mod tests {
     use async_trait::async_trait;
     use cookiecode_config::{AgentProfile, Config, ModelConfig, ProviderConfig, ProviderType};
     use cookiecode_engine::EngineOptions;
-    use cookiecode_protocol::{ActionKind, DecisionTrace, Effect, MatchedPermissionRule, Request};
+    use cookiecode_protocol::{
+        ActionKind, ApprovalResource, DecisionTrace, Effect, MatchedPermissionRule, Request,
+    };
     use cookiecode_providers::{
         ModelId, NormalizedEvent, ProviderCapabilities, ProviderError, ProviderRequest,
     };
@@ -1181,6 +1232,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connection_shutdown_guard_cancels_during_unwind() {
+        let token = CancellationToken::new();
+        let observed = token.clone();
+        let task = tokio::spawn(async move {
+            let _guard = ConnectionShutdown(token);
+            panic!("simulated connection panic");
+        });
+        assert!(task.await.expect_err("task panicked").is_panic());
+        tokio::time::timeout(Duration::from_secs(1), observed.cancelled())
+            .await
+            .expect("connection token was cancelled during unwind");
+    }
+
+    #[tokio::test]
     async fn in_process_session_run_idempotency_steering_and_cursor_replay() {
         let harness = harness();
         let (mut client, server_stream) = in_process_pair(4);
@@ -1216,9 +1281,23 @@ mod tests {
         )
         .await;
         assert_eq!(first, second);
+        client
+            .send(MessageFrame::Value(json!({
+                "jsonrpc": "2.0", "id": 5, "method": "run.start",
+                "params": {
+                    "session_id": session_id,
+                    "client_run_id": "client-run",
+                    "input": "different input"
+                }
+            })))
+            .await
+            .expect("send conflicting start");
+        let conflict = next_value(&mut client).await;
+        assert_eq!(conflict["error"]["code"], -32602);
+        assert_eq!(conflict["error"]["data"]["code"], "idempotency_conflict");
         let steered = rpc(
             &mut client,
-            5,
+            6,
             "run.steer",
             json!({
                 "run_id": first["run_id"], "input": "more context"
@@ -1229,7 +1308,7 @@ mod tests {
 
         let replay = rpc(
             &mut client,
-            6,
+            7,
             "events.subscribe",
             json!({
                 "session_id": session_id, "cursor": 0
@@ -1284,6 +1363,10 @@ mod tests {
             if notification["method"] == "events.subscription"
                 && notification["params"]["type"] == "gap"
             {
+                assert_eq!(
+                    notification["params"]["session_id"],
+                    json!(session.id.to_string())
+                );
                 gap_cursor = notification["params"]["last_delivered_seq"].as_u64();
                 break;
             }
@@ -1310,6 +1393,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn multi_session_subscription_gaps_identify_their_sessions() {
+        let harness = harness();
+        let first = harness
+            .engine
+            .create_session(harness._directory.path(), "primary")
+            .expect("first session");
+        let second = harness
+            .engine
+            .create_session(harness._directory.path(), "primary")
+            .expect("second session");
+        let (mut client, server_stream) = in_process_pair(1);
+        let task = tokio::spawn(harness.server.clone().serve_stream(server_stream));
+        handshake(&mut client).await;
+        let _ = rpc(
+            &mut client,
+            2,
+            "events.subscribe",
+            json!({ "session_id": first.id }),
+        )
+        .await;
+        let _ = rpc(
+            &mut client,
+            3,
+            "events.subscribe",
+            json!({ "session_id": second.id }),
+        )
+        .await;
+
+        for session in [first.id, second.id] {
+            for index in 0..800 {
+                harness
+                    .engine
+                    .append(
+                        session,
+                        None,
+                        Event::TextDelta {
+                            text: index.to_string(),
+                        },
+                    )
+                    .await
+                    .expect("append");
+            }
+        }
+
+        let mut gap_sessions = std::collections::HashSet::new();
+        for _ in 0..2_400 {
+            let notification = next_value(&mut client).await;
+            if notification["method"] == "events.subscription"
+                && notification["params"]["type"] == "gap"
+            {
+                gap_sessions.insert(notification["params"]["session_id"].clone());
+                if gap_sessions.len() == 2 {
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            gap_sessions,
+            std::collections::HashSet::from([
+                json!(first.id.to_string()),
+                json!(second.id.to_string())
+            ])
+        );
+
+        drop(client);
+        task.await.expect("server task").expect("stream result");
+    }
+
+    #[tokio::test]
     async fn approval_respond_routes_to_its_session() {
         let harness = harness();
         let session = harness
@@ -1326,6 +1478,11 @@ mod tests {
                     action: ActionKind::Bash,
                     resource: "git status".into(),
                     suggested_pattern: "git status".into(),
+                    resources: vec![ApprovalResource {
+                        action: ActionKind::Bash,
+                        resource: "git status".into(),
+                        suggested_pattern: "git status".into(),
+                    }],
                     decision_trace: DecisionTrace {
                         action: ActionKind::Bash,
                         normalized_resource: "git status".into(),

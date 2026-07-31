@@ -343,6 +343,22 @@ pub struct DecisionTrace {
     pub precedence_reason: String,
 }
 
+/// One resource disclosed by an approval request.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+pub struct ApprovalResource {
+    pub action: ActionKind,
+    pub resource: String,
+    pub suggested_pattern: String,
+}
+
+/// One runtime approval scope granted by an `always` response.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+pub struct ApprovedScope {
+    pub action: ActionKind,
+    pub resource: String,
+    pub scope: String,
+}
+
 /// A user's answer to a pending approval request.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -422,6 +438,8 @@ pub enum Event {
         action: ActionKind,
         resource: String,
         suggested_pattern: String,
+        #[serde(default)]
+        resources: Vec<ApprovalResource>,
         decision_trace: DecisionTrace,
     },
     ApprovalResolved {
@@ -429,6 +447,8 @@ pub enum Event {
         decision: ApprovalDecision,
         #[serde(skip_serializing_if = "Option::is_none")]
         approved_scope: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        approved_scopes: Vec<ApprovedScope>,
         #[serde(skip_serializing_if = "Option::is_none")]
         feedback: Option<String>,
     },
@@ -467,13 +487,18 @@ pub struct EventEnvelope {
 ///
 /// `Gap` is never persisted. Its `last_delivered_seq` is an exclusive replay
 /// cursor: clients must re-subscribe with that cursor to receive the first
-/// omitted event.
+/// omitted event. `session_id` identifies the subscription whose tail lagged.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
 pub enum EventSubscriptionMessage {
-    Event { event: EventEnvelope },
-    Gap { last_delivered_seq: u64 },
+    Event {
+        event: EventEnvelope,
+    },
+    Gap {
+        session_id: SessionId,
+        last_delivered_seq: u64,
+    },
 }
 
 /// A tool output channel. Byte offsets are independent for each stream.
@@ -615,6 +640,22 @@ pub struct RunStartParams {
     pub session_id: SessionId,
     pub client_run_id: String,
     pub input: String,
+}
+
+/// Stable error discriminator for a reused `run.start` idempotency key whose
+/// parameters differ from the request that first claimed it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStartConflictCode {
+    IdempotencyConflict,
+}
+
+/// JSON-RPC error data for a conflicting `run.start` idempotency request.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+pub struct RunStartConflict {
+    pub code: RunStartConflictCode,
+    pub session_id: SessionId,
+    pub client_run_id: String,
 }
 
 /// Result for `run.start`.
@@ -831,6 +872,12 @@ mod tests {
         round_trip(JsonRpcId::Null);
         round_trip(JsonRpcId::Number(1));
         round_trip(JsonRpcId::String("request".into()));
+        round_trip(RunStartConflictCode::IdempotencyConflict);
+        round_trip(RunStartConflict {
+            code: RunStartConflictCode::IdempotencyConflict,
+            session_id: session_id(),
+            client_run_id: "client-run".into(),
+        });
         round_trip(Response::Success(SuccessResponse {
             jsonrpc: "2.0".into(),
             id: JsonRpcId::Number(1),
@@ -956,12 +1003,22 @@ mod tests {
                 action: ActionKind::Bash,
                 resource: "git status".into(),
                 suggested_pattern: "git status *".into(),
+                resources: vec![ApprovalResource {
+                    action: ActionKind::Bash,
+                    resource: "git status".into(),
+                    suggested_pattern: "git status *".into(),
+                }],
                 decision_trace: trace(),
             },
             Event::ApprovalResolved {
                 approval_id: "approval".into(),
                 decision: ApprovalDecision::Always,
                 approved_scope: Some("git status *".into()),
+                approved_scopes: vec![ApprovedScope {
+                    action: ActionKind::Bash,
+                    resource: "git status".into(),
+                    scope: "git status *".into(),
+                }],
                 feedback: Some("okay".into()),
             },
             Event::ToolStdinSubmitted {
@@ -996,6 +1053,7 @@ mod tests {
     fn serde_round_trips_event_subscription_messages() {
         round_trip(EventSubscriptionMessage::Event { event: envelope() });
         round_trip(EventSubscriptionMessage::Gap {
+            session_id: session_id(),
             last_delivered_seq: 3,
         });
     }

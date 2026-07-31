@@ -5,7 +5,7 @@ expression: schema_for!(EventSubscriptionMessage)
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EventSubscriptionMessage",
-  "description": "A live persisted-event subscription message.\n\n`Gap` is never persisted. Its `last_delivered_seq` is an exclusive replay\ncursor: clients must re-subscribe with that cursor to receive the first\nomitted event.",
+  "description": "A live persisted-event subscription message.\n\n`Gap` is never persisted. Its `last_delivered_seq` is an exclusive replay\ncursor: clients must re-subscribe with that cursor to receive the first\nomitted event. `session_id` identifies the subscription whose tail lagged.",
   "oneOf": [
     {
       "type": "object",
@@ -31,6 +31,10 @@ expression: schema_for!(EventSubscriptionMessage)
           "format": "uint64",
           "minimum": 0
         },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
         "type": {
           "type": "string",
           "const": "gap"
@@ -38,6 +42,7 @@ expression: schema_for!(EventSubscriptionMessage)
       },
       "required": [
         "type",
+        "session_id",
         "last_delivered_seq"
       ]
     }
@@ -74,6 +79,46 @@ expression: schema_for!(EventSubscriptionMessage)
         "once",
         "always",
         "reject"
+      ]
+    },
+    "ApprovalResource": {
+      "description": "One resource disclosed by an approval request.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ActionKind"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "suggested_pattern": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "resource",
+        "suggested_pattern"
+      ]
+    },
+    "ApprovedScope": {
+      "description": "One runtime approval scope granted by an `always` response.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ActionKind"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "resource",
+        "scope"
       ]
     },
     "DecisionTrace": {
@@ -458,6 +503,12 @@ expression: schema_for!(EventSubscriptionMessage)
             "resource": {
               "type": "string"
             },
+            "resources": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ApprovalResource"
+              }
+            },
             "suggested_pattern": {
               "type": "string"
             },
@@ -472,6 +523,7 @@ expression: schema_for!(EventSubscriptionMessage)
             "action",
             "resource",
             "suggested_pattern",
+            "resources",
             "decision_trace"
           ]
         },
@@ -486,6 +538,12 @@ expression: schema_for!(EventSubscriptionMessage)
                 "string",
                 "null"
               ]
+            },
+            "approved_scopes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ApprovedScope"
+              }
             },
             "decision": {
               "$ref": "#/$defs/ApprovalDecision"

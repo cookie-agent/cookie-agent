@@ -542,8 +542,11 @@ name = "cookiecode-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "cookiecode-config",
  "cookiecode-engine",
  "cookiecode-protocol",
+ "cookiecode-providers",
+ "futures-util",
  "ignore",
  "process-wrap",
  "regex",

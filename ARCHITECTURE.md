@@ -179,7 +179,7 @@ Every **persisted** event carries: session ID, run ID (when applicable), a
 per-session monotonic sequence number (authoritative ordering — never
 inferred from IDs or timestamps), and an RFC 3339 timestamp. Cursor replay
 and sequence numbers apply to persisted events only. A bounded persisted-event
-live subscription emits an ephemeral `Gap { last_delivered_seq }` control message before
+live subscription emits an ephemeral `Gap { session_id, last_delivered_seq }` control message before
 closing when it falls behind; its `last_delivered_seq` is the exclusive cursor
 clients use to replay the first omitted event.
 Live tool output
@@ -834,8 +834,9 @@ happens on the result.
    layers win. Environment-supplied rules concatenate like any other layer.
 5. Tier default fallback (read/write/exec/delegate per §8.1).
 
-Multi-resource calls: any deny blocks everything; otherwise any ask prompts;
-otherwise allow.
+Multi-resource calls: every resource is normalized once and evaluated once;
+the aggregate is hard-deny/deny, then ask, then allow. Doom-loop accounting is
+one increment for the complete normalized call signature, not each subcommand.
 
 **Every decision is explainable**: the trace (matched rule id, source layer,
 all candidate matches, normalized resource, precedence reason) is emitted
@@ -857,8 +858,12 @@ returns only a bare effect; we keep the full derivation.
   survive a daemon restart but expire with the tree: deleting the root
   session's history ends them. Suggested patterns come from the tool (e.g.
   bash suggests a command prefix like `git status *`); the client may edit
-  the scope before confirming. Post-MVP: project-persistent approvals with
-  TTL (OpenCode V2's durable model).
+   the scope before confirming. Post-MVP: project-persistent approvals with
+   TTL (OpenCode V2's durable model).
+- A default-accepted suggested scope is persisted as that effective scope, not
+  `None`. Multi-resource `always` approvals persist and rebuild one
+  `(action, resource, scope)` grant per disclosed resource. Doom-loop prompts
+  reject an attempted `always` decision.
 - Reject affects **only** the pending call — OpenCode's surprising
   reject-fan-out to unrelated pending requests in the session is not copied.
 - The model receives a structured refusal as the tool result, plus feedback
@@ -1050,15 +1055,19 @@ Protocol surface (transport-independent):
 - Methods (sketch): `session.create`, `session.list`, `session.get`,
   `session.children`, `session.tree`, `session.resume` (re-resolves
   interrupted pending tool calls, §5.4), `run.start`
-  (idempotent via `client_run_id`), `run.steer`, `run.cancel`,
+  (idempotent via `client_run_id`; a conflicting reuse returns JSON-RPC
+  `-32602` with `data.code = "idempotency_conflict"` plus `session_id` and
+  `client_run_id`; enforcement is currently process-local in the server pending
+  engine-durable enforcement in part B), `run.steer`, `run.cancel`,
   `run.tool_stdin` (ordered base64 writes + `eof` to a running tool call,
   §7.1),
   `events.subscribe` (cursor-based replay + live tail), `approval.respond`,
   `provider.list_models`, `agent.list` (user-invocable profiles: types
   `primary` and `all`, §9). Post-MVP additions: `session.fork`.
 - Server → client notifications carry persisted events with per-session
-  cursors; a lagging `events.subscribe` tail ends with `Gap {
-  last_delivered_seq }`, which clients pass back as the exclusive replay
+  cursors; a lagging `events.subscribe` tail ends with `Gap { session_id,
+  last_delivered_seq }`, which identifies the lagged subscription and carries
+  the exclusive replay
   cursor. They also carry ephemeral output-delta envelopes (§7.1) with per-call
   byte offsets and atomic snapshot-to-live handoff for in-flight streaming
   calls. An output snapshot includes its `stdout` or `stderr` stream explicitly

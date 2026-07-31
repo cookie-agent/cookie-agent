@@ -72,6 +72,46 @@ expression: schema_for!(EventEnvelope)
         "reject"
       ]
     },
+    "ApprovalResource": {
+      "description": "One resource disclosed by an approval request.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ActionKind"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "suggested_pattern": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "resource",
+        "suggested_pattern"
+      ]
+    },
+    "ApprovedScope": {
+      "description": "One runtime approval scope granted by an `always` response.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ActionKind"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "resource",
+        "scope"
+      ]
+    },
     "DecisionTrace": {
       "description": "Complete derivation of a permission decision.",
       "type": "object",
@@ -454,6 +494,12 @@ expression: schema_for!(EventEnvelope)
             "resource": {
               "type": "string"
             },
+            "resources": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ApprovalResource"
+              }
+            },
             "suggested_pattern": {
               "type": "string"
             },
@@ -468,6 +514,7 @@ expression: schema_for!(EventEnvelope)
             "action",
             "resource",
             "suggested_pattern",
+            "resources",
             "decision_trace"
           ]
         },
@@ -482,6 +529,12 @@ expression: schema_for!(EventEnvelope)
                 "string",
                 "null"
               ]
+            },
+            "approved_scopes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ApprovedScope"
+              }
             },
             "decision": {
               "$ref": "#/$defs/ApprovalDecision"

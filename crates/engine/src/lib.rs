@@ -21,10 +21,10 @@ use cookiecode_config::{
 };
 use cookiecode_protocol::{
     AgentDescriptor, AgentListResult, AgentType, ApprovalDecision, ApprovalRespondResult,
-    ChildSummary, Event, EventEnvelope, EventSubscriptionMessage, EventsSubscribeResult,
-    InvocationId, ModelRef, RunCancelResult, RunId, RunStartParams, RunStartResult, RunSteerResult,
-    RunToolStdinParams, RunToolStdinResult, SessionId, SessionMeta, SessionOrigin, SessionStatus,
-    ToolCallId,
+    ApprovedScope, ChildSummary, Event, EventEnvelope, EventSubscriptionMessage,
+    EventsSubscribeResult, InvocationId, ModelRef, RunCancelResult, RunId, RunStartParams,
+    RunStartResult, RunSteerResult, RunToolStdinParams, RunToolStdinResult, SessionId, SessionMeta,
+    SessionOrigin, SessionStatus, ToolCallId,
 };
 use cookiecode_providers::{
     ContentPart, ModelId, ModelRef as ProviderModelRef, NormalizedEvent, Provider, ProviderError,
@@ -1494,6 +1494,7 @@ impl Engine {
                 let is_gap = subscriber.sender.capacity() <= 1;
                 let message = if is_gap {
                     EventSubscriptionMessage::Gap {
+                        session_id: session,
                         last_delivered_seq: envelope.seq.saturating_sub(1),
                     }
                 } else {
@@ -2355,47 +2356,36 @@ impl Engine {
                         vec![resource]
                     }
                 })
-                .unwrap_or_else(|_| vec![raw_resource])
+                .unwrap_or_else(|_| vec![format!("external:{raw_resource}"), raw_resource])
             } else {
                 vec![raw_resource]
             };
-            let mut permission = None;
-            for resource in resources {
-                let (decision_action, resource) = match resource.strip_prefix("external:") {
+            let resources = resources
+                .into_iter()
+                .map(|resource| match resource.strip_prefix("external:") {
                     Some(resource) => (
                         cookiecode_protocol::ActionKind::ExternalDirectory,
                         resource.to_owned(),
                     ),
                     None => (action, resource),
-                };
-                let decision = engine.inner.permissions.decide(
-                    &session.policy,
-                    &engine.inner.approvals,
-                    root,
-                    active.session,
-                    decision_action,
-                    resource,
-                );
-                if decision.effect != cookiecode_protocol::Effect::Allow {
-                    permission = Some(decision);
-                    break;
-                }
-            }
-            let permission = permission.unwrap_or_else(|| {
-                engine.inner.permissions.decide(
-                    &session.policy,
-                    &engine.inner.approvals,
-                    root,
-                    active.session,
-                    action,
-                    resource_for(&call),
-                )
-            });
+                })
+                .collect();
+            let permission = engine.inner.permissions.decide_resources(
+                &session.policy,
+                &engine.inner.approvals,
+                root,
+                active.session,
+                resources,
+            );
             let resource = permission.trace.normalized_resource.clone();
             if permission.effect != cookiecode_protocol::Effect::Allow {
                 if permission.effect == cookiecode_protocol::Effect::Ask {
                     let approval_id = format!("{}:{}", run, call.id);
-                    let suggested_pattern = format!("{resource} *");
+                    let suggested_pattern = permission
+                        .asking_resources
+                        .first()
+                        .map(|resource| resource.suggested_pattern.clone())
+                        .unwrap_or_else(|| format!("{resource} *"));
                     let (approval_tx, approval_rx) = oneshot::channel();
                     engine
                         .inner
@@ -2409,9 +2399,10 @@ impl Engine {
                             Some(run),
                             Event::ApprovalRequested {
                                 approval_id: approval_id.clone(),
-                                action,
+                                action: permission.trace.action,
                                 resource: resource.clone(),
                                 suggested_pattern,
+                                resources: permission.asking_resources.clone(),
                                 decision_trace: permission.trace,
                             },
                         )
@@ -2535,19 +2526,57 @@ impl Engine {
                 Event::ApprovalRequested {
                     approval_id: ref id,
                     action,
+                    ref resource,
                     ref suggested_pattern,
+                    ref resources,
+                    ref decision_trace,
                     ..
-                } if *id == approval_id => Some((action, suggested_pattern.clone())),
+                } if *id == approval_id => Some((
+                    action,
+                    resource.clone(),
+                    suggested_pattern.clone(),
+                    resources.clone(),
+                    decision_trace
+                        .precedence_reason
+                        .starts_with("doom-loop guard"),
+                )),
                 _ => None,
             });
-        if let Some((action, suggested_pattern)) = requested
+        let decision = if requested
+            .as_ref()
+            .is_some_and(|(_, _, _, _, doom_loop)| *doom_loop)
             && decision == ApprovalDecision::Always
         {
-            self.inner.approvals.grant(
-                root_id(&projection.meta.origin, session),
-                action,
-                scope.clone().unwrap_or(suggested_pattern),
-            );
+            ApprovalDecision::Reject
+        } else {
+            decision
+        };
+        let effective_scope = requested.as_ref().map(|(_, _, suggested_pattern, _, _)| {
+            scope.clone().unwrap_or_else(|| suggested_pattern.clone())
+        });
+        let mut approved_scopes = Vec::new();
+        if let Some((action, primary_resource, _, resources, _)) = requested
+            && decision == ApprovalDecision::Always
+        {
+            for resource in resources {
+                let scope = if resource.action == action && resource.resource == primary_resource {
+                    effective_scope
+                        .clone()
+                        .expect("requested approval has scope")
+                } else {
+                    resource.suggested_pattern
+                };
+                self.inner.approvals.grant(
+                    root_id(&projection.meta.origin, session),
+                    resource.action,
+                    scope.clone(),
+                );
+                approved_scopes.push(ApprovedScope {
+                    action: resource.action,
+                    resource: resource.resource,
+                    scope,
+                });
+            }
         }
         self.append(
             session,
@@ -2555,7 +2584,10 @@ impl Engine {
             Event::ApprovalResolved {
                 approval_id: approval_id.clone(),
                 decision,
-                approved_scope: scope,
+                approved_scope: (decision == ApprovalDecision::Always)
+                    .then_some(effective_scope)
+                    .flatten(),
+                approved_scopes,
                 feedback,
             },
         )
@@ -2917,17 +2949,29 @@ impl Engine {
                         approval_id,
                         action,
                         suggested_pattern,
+                        resources,
                         ..
                     } => {
-                        pending.insert(approval_id, (action, suggested_pattern));
+                        pending.insert(approval_id, (action, suggested_pattern, resources));
                     }
                     Event::ApprovalResolved {
                         approval_id,
                         decision: ApprovalDecision::Always,
                         approved_scope,
+                        approved_scopes,
                         ..
                     } => {
-                        if let Some((action, suggested_pattern)) = pending.get(&approval_id) {
+                        if !approved_scopes.is_empty() {
+                            for scope in approved_scopes {
+                                self.inner.approvals.grant(
+                                    root_id(&session.meta.origin, session.meta.id),
+                                    scope.action,
+                                    scope.scope,
+                                );
+                            }
+                        } else if let Some((action, suggested_pattern, _)) =
+                            pending.get(&approval_id)
+                        {
                             self.inner.approvals.grant(
                                 root_id(&session.meta.origin, session.meta.id),
                                 *action,
@@ -3144,8 +3188,9 @@ fn delegate_failure_result(child_session_id: Option<SessionId>, reason: &str) ->
 fn is_journal_append_failure(error: &EngineError) -> bool {
     matches!(
         error,
-        EngineError::Journal(JournalError::Event(_) | JournalError::Poisoned)
-            | EngineError::ActorStopped
+        EngineError::Journal(
+            JournalError::Event(_) | JournalError::Poisoned | JournalError::Stopped
+        ) | EngineError::ActorStopped
     )
 }
 
@@ -3929,6 +3974,35 @@ mod tests {
         })
         .await
         .expect("delegate result was not committed")
+    }
+
+    fn approval_request_event(
+        approval_id: &str,
+        resources: Vec<cookiecode_protocol::ApprovalResource>,
+        precedence_reason: &str,
+    ) -> Event {
+        let (action, resource, suggested_pattern) = {
+            let primary = resources.first().expect("approval has a resource");
+            (
+                primary.action,
+                primary.resource.clone(),
+                primary.suggested_pattern.clone(),
+            )
+        };
+        Event::ApprovalRequested {
+            approval_id: approval_id.into(),
+            action,
+            resource: resource.clone(),
+            suggested_pattern,
+            resources,
+            decision_trace: cookiecode_protocol::DecisionTrace {
+                action,
+                normalized_resource: resource,
+                candidates: Vec::new(),
+                effect: cookiecode_protocol::Effect::Ask,
+                precedence_reason: precedence_reason.into(),
+            },
+        }
     }
 
     fn envelope(seq: u64, event: Event) -> EventEnvelope {
@@ -4962,7 +5036,11 @@ mod tests {
             let mut gap = None;
             loop {
                 match live.recv().await {
-                    Some(EventSubscriptionMessage::Gap { last_delivered_seq }) => {
+                    Some(EventSubscriptionMessage::Gap {
+                        session_id,
+                        last_delivered_seq,
+                    }) => {
+                        assert_eq!(session_id, session);
                         gap = Some(last_delivered_seq);
                         let _ = release_gap.send(());
                     }
@@ -6019,6 +6097,244 @@ mod tests {
             0
         );
         assert_eq!(child_run_start_count(&engine, handle.child_session_id), 1);
+        engine.shutdown();
+    }
+
+    #[tokio::test]
+    async fn always_approval_discloses_all_bash_resources_and_persists_effective_scope() {
+        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
+        let session = engine
+            .create_session(".", "test")
+            .expect("create session")
+            .id;
+        let resources = vec![
+            cookiecode_protocol::ApprovalResource {
+                action: cookiecode_protocol::ActionKind::Bash,
+                resource: "git status --short".into(),
+                suggested_pattern: "git status *".into(),
+            },
+            cookiecode_protocol::ApprovalResource {
+                action: cookiecode_protocol::ActionKind::Bash,
+                resource: "git log -1".into(),
+                suggested_pattern: "git log *".into(),
+            },
+        ];
+        engine
+            .append(
+                session,
+                None,
+                approval_request_event("bash-batch", resources.clone(), "aggregate ask"),
+            )
+            .await
+            .expect("persist approval request");
+        let decision = engine
+            .approval_respond(
+                session,
+                "bash-batch".into(),
+                ApprovalDecision::Always,
+                None,
+                None,
+            )
+            .await
+            .expect("approve batch");
+        assert_eq!(decision.decision, ApprovalDecision::Always);
+        let events = engine
+            .inner
+            .store
+            .get(session)
+            .expect("session")
+            .log
+            .events();
+        assert!(events.iter().any(|event| {
+            matches!(&event.event, Event::ApprovalRequested { resources: disclosed, .. }
+                if disclosed == &resources)
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(&event.event, Event::ApprovalResolved { approval_id, decision: ApprovalDecision::Always, approved_scope, .. }
+                if approval_id == "bash-batch" && approved_scope.as_deref() == Some("git status *"))
+        }));
+        assert!(engine.inner.approvals.allows(
+            session,
+            cookiecode_protocol::ActionKind::Bash,
+            "git status --short"
+        ));
+        engine.shutdown();
+    }
+
+    #[tokio::test]
+    async fn external_directory_always_approval_uses_external_action_and_scope() {
+        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
+        let session = engine
+            .create_session(".", "test")
+            .expect("create session")
+            .id;
+        let resource = cookiecode_protocol::ApprovalResource {
+            action: cookiecode_protocol::ActionKind::ExternalDirectory,
+            resource: "/outside/workspace/file".into(),
+            suggested_pattern: "/outside/workspace/file *".into(),
+        };
+        engine
+            .append(
+                session,
+                None,
+                approval_request_event("external", vec![resource.clone()], "external guard"),
+            )
+            .await
+            .expect("persist external approval");
+        engine
+            .approval_respond(
+                session,
+                "external".into(),
+                ApprovalDecision::Always,
+                None,
+                None,
+            )
+            .await
+            .expect("approve external path");
+        let events = engine
+            .inner
+            .store
+            .get(session)
+            .expect("session")
+            .log
+            .events();
+        assert!(events.iter().any(|event| {
+            matches!(&event.event, Event::ApprovalRequested { action, resources, .. }
+                if *action == cookiecode_protocol::ActionKind::ExternalDirectory
+                    && resources == &vec![resource.clone()])
+        }));
+        assert!(engine.inner.approvals.allows(
+            session,
+            cookiecode_protocol::ActionKind::ExternalDirectory,
+            "/outside/workspace/file"
+        ));
+        assert!(!engine.inner.approvals.allows(
+            session,
+            cookiecode_protocol::ActionKind::Read,
+            "/outside/workspace/file"
+        ));
+        let mut policy = engine.inner.store.get(session).expect("session").policy;
+        policy.permissions.read = cookiecode_config::PermissionEffect::Allow;
+        assert_eq!(
+            engine
+                .inner
+                .permissions
+                .decide_resources(
+                    &policy,
+                    &engine.inner.approvals,
+                    session,
+                    session,
+                    vec![
+                        (
+                            cookiecode_protocol::ActionKind::ExternalDirectory,
+                            "/outside/workspace/file".into(),
+                        ),
+                        (
+                            cookiecode_protocol::ActionKind::Read,
+                            "/outside/workspace/file".into(),
+                        ),
+                    ],
+                )
+                .effect,
+            cookiecode_protocol::Effect::Allow
+        );
+        engine.shutdown();
+    }
+
+    #[tokio::test]
+    async fn doom_always_is_rejected_and_non_always_responses_persist_no_scope() {
+        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
+        let session = engine
+            .create_session(".", "test")
+            .expect("create session")
+            .id;
+        let resources = vec![
+            cookiecode_protocol::ApprovalResource {
+                action: cookiecode_protocol::ActionKind::Bash,
+                resource: "git status".into(),
+                suggested_pattern: "git status *".into(),
+            },
+            cookiecode_protocol::ApprovalResource {
+                action: cookiecode_protocol::ActionKind::Bash,
+                resource: "git log -1".into(),
+                suggested_pattern: "git log *".into(),
+            },
+        ];
+        engine
+            .append(
+                session,
+                None,
+                approval_request_event(
+                    "doom",
+                    resources.clone(),
+                    "doom-loop guard (third identical call)",
+                ),
+            )
+            .await
+            .expect("persist doom approval");
+        let response = engine
+            .approval_respond(session, "doom".into(), ApprovalDecision::Always, None, None)
+            .await
+            .expect("respond to doom approval");
+        assert_eq!(response.decision, ApprovalDecision::Reject);
+        for resource in &resources {
+            assert!(
+                !engine
+                    .inner
+                    .approvals
+                    .allows(session, resource.action, &resource.resource)
+            );
+        }
+        for (approval_id, decision) in [
+            ("once", ApprovalDecision::Once),
+            ("reject", ApprovalDecision::Reject),
+        ] {
+            engine
+                .append(
+                    session,
+                    None,
+                    approval_request_event(approval_id, resources.clone(), "aggregate ask"),
+                )
+                .await
+                .expect("persist approval");
+            engine
+                .approval_respond(
+                    session,
+                    approval_id.into(),
+                    decision,
+                    Some("caller scope".into()),
+                    None,
+                )
+                .await
+                .expect("respond to approval");
+        }
+        let resolved: Vec<_> = engine
+            .inner
+            .store
+            .get(session)
+            .expect("session")
+            .log
+            .events()
+            .into_iter()
+            .filter_map(|event| match event.event {
+                Event::ApprovalResolved {
+                    approval_id,
+                    decision,
+                    approved_scope,
+                    ..
+                } => Some((approval_id, decision, approved_scope)),
+                _ => None,
+            })
+            .collect();
+        assert!(resolved.iter().any(|(id, decision, scope)| {
+            id == "doom" && *decision == ApprovalDecision::Reject && scope.is_none()
+        }));
+        assert!(resolved.iter().any(|(id, decision, scope)| {
+            id == "once" && *decision == ApprovalDecision::Once && scope.is_none()
+        }));
+        assert!(resolved.iter().any(|(id, decision, scope)| {
+            id == "reject" && *decision == ApprovalDecision::Reject && scope.is_none()
+        }));
         engine.shutdown();
     }
 }
