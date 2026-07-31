@@ -1,0 +1,25 @@
+[package]
+name = "cookiecode"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cookiecode"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+cookiecode-config = { path = "../config" }
+cookiecode-engine = { path = "../engine" }
+cookiecode-providers = { path = "../providers" }
+cookiecode-server = { path = "../server" }
+cookiecode-tools = { path = "../tools" }
+cookiecode-tui = { path = "../tui" }
+tokio.workspace = true
+tracing-subscriber.workspace = true
