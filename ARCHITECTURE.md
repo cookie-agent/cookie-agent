@@ -148,8 +148,11 @@ crates/
 - Concurrent tool execution is *backpressured* by bounded channels — an
   implementation detail, not a policy limit. There are no user-visible
   parallelism caps by design (§1).
-- **Steering**: clients may inject input into a running turn; it is applied at
-  safe turn boundaries (never mid-tool-execution).
+- **Steering**: clients may inject input into a running turn; accepted input is
+  persisted as `UserInputSubmitted`. The actor persists `UserInputApplied`
+  before the next safe provider attempt (never mid-tool-execution), including
+  retry and fallback attempts. Prompt assembly uses that durable association to
+  place input after the active assistant turn and before that attempt.
 - **Cancellation**: every run and tool call carries a `CancellationToken`.
   Cancelling a session stops streaming *and* in-flight tool execution.
 
@@ -159,8 +162,9 @@ The engine emits typed, ordered events. Each session's event log is the
 source of truth; everything else is a projection.
 
 ```
-SessionCreated          RunStarted              RunCompleted | RunFailed | RunCancelled
-RunInterrupted          TextDelta               ReasoningDelta
+SessionCreated          RunStarted              UserInputSubmitted | UserInputApplied
+RunCompleted | RunFailed | RunCancelled         RunInterrupted
+TextDelta               ReasoningDelta
 ToolCallStarted         ToolCallProgress        ToolCallCompleted
 ToolCallFailed          ApprovalRequested       ApprovalResolved
 ToolStdinSubmitted      (redacted audit: byte count only, §7.1)
@@ -172,7 +176,11 @@ UsageReported
 Every **persisted** event carries: session ID, run ID (when applicable), a
 per-session monotonic sequence number (authoritative ordering — never
 inferred from IDs or timestamps), and an RFC 3339 timestamp. Cursor replay
-and sequence numbers apply to persisted events only. Live tool output
+and sequence numbers apply to persisted events only. A bounded persisted-event
+live subscription emits an ephemeral `Gap { last_delivered_seq }` control message before
+closing when it falls behind; its `last_delivered_seq` is the exclusive cursor
+clients use to replay the first omitted event.
+Live tool output
 streaming (§7.1) uses a separate **ephemeral notification envelope** with
 its own per-call byte offsets — it is not part of this sequence, never
 written to the log, and never cursor-replayed.
@@ -236,7 +244,7 @@ same APIs as for the root:
 | Interaction | Mechanism |
 |---|---|
 | Observe live | `events.subscribe(child_session_id)` |
-| Steer mid-run | `run.steer(child_run_id, input)` — affects the result the parent receives |
+| Steer mid-run | `run.steer(child_run_id, input)` — persists `UserInputSubmitted`, then a durable `UserInputApplied` boundary before model consumption |
 | Cancel | `run.cancel` / `session.cancel` |
 | Follow up on a completed child | **forks** the child (post-MVP); original stays immutable as the record of what fed the parent. v0.1 children are read-only after completion |
 
@@ -276,9 +284,9 @@ tool is offered only when the session's policy snapshot has delegation
 enabled and its effective depth limit `allows_delegation()` (§5.2). Users
 never list it manually; models cannot request it when it isn't offered. Its
 `profile` argument is generated as an enum of exactly the allowed child
-profiles, **restricted to profiles of type `subagent` or `all`** (§9) —
-naming a `primary`-only profile in `allowed_profiles` is a config
-validation error.
+profiles, **restricted to profiles of type `subagent` or `all`** (§9; never
+`primary` or `internal`) — naming a `primary`-only or `internal` profile in
+`allowed_profiles` is a config validation error.
 
 Tool schema (sketch):
 
@@ -478,6 +486,64 @@ MVP adapters:
 Credentials: environment variables only, referenced from TOML
 (`api_key_env = "ANTHROPIC_API_KEY"`). No secrets in config files.
 
+### 6.2 Round-trip fidelity
+
+Normalized events drive *behavior*; they are **not sufficient to reconstruct
+provider requests**. Several formats carry opaque continuation state that
+must be replayed verbatim in later requests:
+
+- Anthropic: signed `thinking` / `redacted_thinking` blocks, exact block
+  order, `tool_use` IDs, `cache_control` positions
+- OpenAI Responses: `reasoning` items with `encrypted_content`, item IDs,
+  `function_call.call_id` pairing, hosted-tool items
+- OpenAI Completions: `reasoning_content` where the endpoint requires replay,
+  exact `tool_calls` echo with serialized arguments
+
+Therefore: adapters emit **opaque provider-state artifacts** alongside
+normalized events (per assistant turn and per block where applicable). The
+engine persists them in the session log with the turn, and request assembly
+replays them through the same adapter's history encoder — provider-native
+data takes precedence over normalized reconstruction for every turn it
+exists for; normalized reconstruction is the fallback for synthetic turns
+(steering, future compaction summaries). An adapter that cannot honor an
+opaque artifact (e.g. provider changed across a fallback advance) discards it
+explicitly and degrades to normalized replay.
+
+The provider-domain representation is
+`NormalizedEvent::TurnOpaque { state: AssistantTurnOpaque }`. An artifact is
+tagged with its exact `ProviderProtocol` and holds an untyped JSON `payload`;
+the payload is intentionally provider-native rather than a lossy common
+schema. The persistence/assembly boundary is:
+
+```rust
+struct PersistedTurn { message: ProviderMessage, opaque: Option<AssistantTurnOpaque> }
+struct EncodedHistory { system: Vec<Value>, messages: Vec<Value>, discarded_opaque: bool }
+```
+
+`ProviderRequest` carries `persisted_turns: Vec<PersistedTurn>` for request
+assembly. When it is non-empty, the selected adapter invokes its history
+encoder while building the actual HTTP body; `messages` remains the
+normalized-only path for callers that have no persisted transcript.
+
+The Anthropic and compatible adapters expose
+`encode_history(&[PersistedTurn]) -> EncodedHistory`; OpenAI exposes
+`encode_history(&[PersistedTurn], OpenAiEndpoint) -> EncodedHistory` to select
+Chat versus Responses. A matching artifact contributes its native assistant
+message/items verbatim;
+an artifact tagged for another protocol sets `discarded_opaque` and the
+adapter rebuilds only that turn from `ProviderMessage`. Anthropic artifacts
+contain the ordered assistant content blocks plus stop/usage state; Chat
+artifacts contain the assistant message including exact tool-call echoes and
+reasoning fields; Responses artifacts contain ordered output items including
+encrypted reasoning and hosted-tool items.
+
+Each adapter is implemented and tested against the conformance checklist in
+`docs/provider-conformance.md` (derived from OpenCode's provider layer).
+MVP scope is the three formats below; Gemini, Bedrock, and Azure adapters
+are post-MVP and target the same checklist. An `openai_compatible` endpoint
+may claim only: chat text, tool-call echo, tool-result pairing, basic
+SSE/429 handling — every advanced feature is capability-probed before use.
+
 ### 6.1 Fallback chains
 
 Each agent profile configures an **ordered model chain** instead of a single
@@ -518,7 +584,9 @@ Semantics:
   behavior stay attributable.
 - The resolved chain lives in the session's policy snapshot (§4.5); editing
   TOML mid-run never reorders a live session's chain. Children get their own
-  chains from their own profiles.
+  chains from their own profiles — or **inherit the parent's resolved chain**
+  when their profile's `models` is empty (§9). Internal agents (compaction)
+  run on the inheriting session's chain by default.
 
 ---
 
@@ -798,7 +866,7 @@ type = "openai-compatible"
 base_url = "http://localhost:11434/v1"
 
 [agents.primary]
-type = "primary"             # primary | subagent | all (default: all) — see below
+type = "primary"             # primary | subagent | all | internal (default: all) — see below
 models = [
   { provider = "anthropic", model = "claude-sonnet-4-6" },
   { provider = "openai",    model = "gpt-5" },   # fallback (§6.1)
@@ -816,19 +884,36 @@ type = "subagent"            # only spawnable via delegate; not user-invocable
 models = [{ provider = "openai", model = "gpt-5-mini" }]
 tools = ["read", "list", "grep", "glob"]
 
+[agents.compaction]
+type = "internal"            # engine-internal; cannot be disabled (§9)
+# no models — inherits the compacted session's chain (§6.1)
+tools = []
+
 [agents.explorer.delegation]
 enabled = false
 ```
 
 Notes:
 
-- **Agent types**: every profile declares `type` — `primary` (user-invocable
-  root sessions only; listed in the UI), `subagent` (spawnable only via
-  `delegate`; hidden from user-facing profile lists), or `all` (either).
-  Default when unset: `all`. Enforced at two points: `session.create`
-  rejects a `subagent`-only profile for a root session, and delegate schema
-  generation restricts its `profile` enum to `subagent`/`all` profiles
-  (§5.1).
+- **Agent types**: every profile declares `type` —
+  - `primary`: user-invocable root sessions only; listed in the UI.
+  - `subagent`: spawnable only via `delegate`; hidden from user-facing
+    profile lists.
+  - `all`: either. Default when unset.
+  - `internal`: engine-internal agents (e.g. the compaction agent). Never
+    user-invocable, never delegate-spawnable, and **cannot be disabled** —
+    they ship as built-in defaults and `[agents.*] enabled = false` is a
+    validation error for them. Other types accept `enabled = false`.
+  Enforced at two points: `session.create` rejects a `subagent`-only or
+  `internal` profile for a root session, and delegate schema generation
+  restricts its `profile` enum to `subagent`/`all` profiles (§5.1).
+- **Model chain inheritance**: a profile with an **empty `models` chain
+  inherits the parent session's resolved chain** (§6.1) — the default for
+  subagent profiles that should ride the parent's provider choice, and for
+  internal agents (the compaction agent compacts with the session's own
+  models). Root sessions cannot use an inheriting profile: `session.create`
+  fails validation when the resolved chain would be empty. `type = "all"`
+  profiles with no chain are legal but fail as roots.
 - **Merge semantics**: figment's `merge` *replaces* arrays, which is wrong
   for permission rules (deeper layers must append). The config crate
   implements a custom layered merge: permission-rule arrays are concatenated
@@ -928,8 +1013,11 @@ Protocol surface (transport-independent):
   `provider.list_models`, `agent.list` (user-invocable profiles: types
   `primary` and `all`, §9). Post-MVP additions: `session.fork`.
 - Server → client notifications carry persisted events with per-session
-  cursors, plus ephemeral output-delta envelopes (§7.1) with per-call byte
-  offsets and atomic snapshot-to-live handoff for in-flight streaming calls.
+  cursors; a lagging `events.subscribe` tail ends with `Gap {
+  last_delivered_seq }`, which clients pass back as the exclusive replay
+  cursor. They also carry ephemeral output-delta envelopes (§7.1) with per-call
+  byte offsets and atomic snapshot-to-live handoff for in-flight streaming
+  calls.
 - `ts-rs` generates TypeScript bindings from `protocol` types; `schemars`
   generates JSON Schemas (tool parameters, protocol).
 - Wire enum encoding is stable: data-carrying protocol enums use internally

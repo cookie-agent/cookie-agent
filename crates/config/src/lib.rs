@@ -25,7 +25,7 @@ const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 7419;
 const DEFAULT_DELEGATE_RESULT_BYTES: usize = 32 * 1024;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub server: ServerConfig,
@@ -36,6 +36,25 @@ pub struct Config {
     pub permissions: PermissionConfig,
     #[serde(default)]
     pub agents: BTreeMap<String, AgentProfile>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "compaction".to_owned(),
+            AgentProfile {
+                r#type: AgentType::Internal,
+                ..AgentProfile::default()
+            },
+        );
+        Self {
+            server: ServerConfig::default(),
+            providers: BTreeMap::new(),
+            permissions: PermissionConfig::default(),
+            agents,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -93,6 +112,8 @@ pub enum OpenAiApi {
 pub struct AgentProfile {
     #[serde(rename = "type", default)]
     pub r#type: AgentType,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     #[serde(default)]
     pub models: Vec<ModelConfig>,
     #[serde(default)]
@@ -107,6 +128,7 @@ impl Default for AgentProfile {
     fn default() -> Self {
         Self {
             r#type: AgentType::All,
+            enabled: default_enabled(),
             models: Vec::new(),
             tools: Vec::new(),
             delegation: DelegationConfig::default(),
@@ -122,6 +144,11 @@ pub enum AgentType {
     All,
     Primary,
     Subagent,
+    Internal,
+}
+
+const fn default_enabled() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -258,6 +285,30 @@ pub struct PolicySnapshot {
     pub result_limits: ResultLimits,
 }
 
+/// Parent policy inputs needed to materialize a child profile.
+pub struct ChildPolicyParent {
+    depth_limit: DepthLimit,
+    models: Option<Vec<ModelConfig>>,
+}
+
+impl From<DepthLimit> for ChildPolicyParent {
+    fn from(depth_limit: DepthLimit) -> Self {
+        Self {
+            depth_limit,
+            models: None,
+        }
+    }
+}
+
+impl From<&PolicySnapshot> for ChildPolicyParent {
+    fn from(policy: &PolicySnapshot) -> Self {
+        Self {
+            depth_limit: policy.delegation.depth_limit,
+            models: Some(policy.models.clone()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProfileSnapshot {
     pub name: String,
@@ -330,6 +381,13 @@ pub enum ConfigError {
         profile: String,
         allowed_profile: String,
     },
+    #[error("profile `{profile}` allows internal profile `{allowed_profile}`")]
+    InternalAllowedProfile {
+        profile: String,
+        allowed_profile: String,
+    },
+    #[error("internal agents cannot be disabled: `{profile}`")]
+    InternalAgentDisabled { profile: String },
     #[error("profile `{profile}` enables delegation with no allowed profiles")]
     EmptyAllowedProfiles { profile: String },
     #[error("invalid {tier} tier `{value}` in {scope}")]
@@ -413,8 +471,13 @@ impl Config {
         validate_permission_config(&self.permissions, "global")?;
 
         for (name, profile) in &self.agents {
-            if profile.models.is_empty() {
+            if profile.r#type == AgentType::Primary && profile.models.is_empty() {
                 return Err(ConfigError::EmptyModels {
+                    profile: name.clone(),
+                });
+            }
+            if !profile.enabled && (profile.r#type == AgentType::Internal || name == "compaction") {
+                return Err(ConfigError::InternalAgentDisabled {
                     profile: name.clone(),
                 });
             }
@@ -445,6 +508,12 @@ impl Config {
                         allowed_profile: allowed_profile.clone(),
                     });
                 }
+                if target.r#type == AgentType::Internal {
+                    return Err(ConfigError::InternalAllowedProfile {
+                        profile: name.clone(),
+                        allowed_profile: allowed_profile.clone(),
+                    });
+                }
             }
         }
         Ok(())
@@ -453,23 +522,25 @@ impl Config {
     /// Resolves exactly global permissions plus the named profile's overlay.
     /// Parent profile policy is deliberately not an input to this operation.
     pub fn materialize_policy(&self, profile_name: &str) -> Result<PolicySnapshot, ConfigError> {
-        self.materialize_with_parent_limit(profile_name, DepthLimit::Unlimited)
+        self.materialize_with_parent(profile_name, DepthLimit::Unlimited, None)
     }
 
-    /// Materializes a child profile with the parent's effective depth limit.
-    /// The returned depth limit is ready to freeze into the child's snapshot.
+    /// Materializes a child profile with the parent's frozen policy.
+    /// Empty child model chains inherit the parent's resolved model chain.
     pub fn materialize_child_policy(
         &self,
         profile_name: &str,
-        parent_limit: DepthLimit,
+        parent: impl Into<ChildPolicyParent>,
     ) -> Result<PolicySnapshot, ConfigError> {
-        self.materialize_with_parent_limit(profile_name, parent_limit)
+        let parent = parent.into();
+        self.materialize_with_parent(profile_name, parent.depth_limit, parent.models.as_deref())
     }
 
-    fn materialize_with_parent_limit(
+    fn materialize_with_parent(
         &self,
         profile_name: &str,
         parent_limit: DepthLimit,
+        parent_models: Option<&[ModelConfig]>,
     ) -> Result<PolicySnapshot, ConfigError> {
         self.validate()?;
         let profile = self
@@ -483,12 +554,22 @@ impl Config {
             rule
         }));
 
+        let models = if profile.models.is_empty() {
+            parent_models
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| ConfigError::EmptyModels {
+                    profile: profile_name.to_owned(),
+                })?
+        } else {
+            profile.models.clone()
+        };
+
         Ok(PolicySnapshot {
             profile: ProfileSnapshot {
                 name: profile_name.to_owned(),
                 r#type: profile.r#type,
             },
-            models: profile.models.clone(),
+            models,
             tools: profile.tools.iter().cloned().collect(),
             permissions: ResolvedPermissions {
                 read: resolve_tier(profile.permissions.read.as_deref(), &self.permissions.read),
@@ -933,7 +1014,10 @@ tools = ["read"]
     #[test]
     fn validates_every_cross_reference_and_permission_failure() {
         let cases = [
-            ("[agents.a]\nmodels = []", "empty model chain"),
+            (
+                "[agents.a]\ntype = \"primary\"\nmodels = []",
+                "empty model chain",
+            ),
             (
                 "[agents.a]\nmodels = [{ provider = \"missing\", model = \"x\" }]",
                 "unknown provider",
@@ -999,6 +1083,81 @@ tools = ["read"]
             DepthLimit::for_child(Some(4), DepthLimit::Finite(2)),
             DepthLimit::Finite(1)
         );
+    }
+
+    #[test]
+    fn parses_internal_profiles_and_defaults_enabled() {
+        let (_temp, user, workspace) = config_tree();
+        write(&workspace, "[agents.maintenance]\ntype = \"internal\"");
+
+        let config = load_layered(Some(&user), Some(&workspace)).expect("load config");
+        let profile = &config.agents["maintenance"];
+        assert_eq!(profile.r#type, AgentType::Internal);
+        assert!(profile.enabled);
+    }
+
+    #[test]
+    fn rejects_disabled_internal_profiles_and_internal_delegate_targets() {
+        let cases = [
+            (
+                "[agents.maintenance]\ntype = \"internal\"\nenabled = false",
+                "internal agents cannot be disabled",
+            ),
+            (
+                "[providers.p]\ntype = \"anthropic\"\n[agents.primary]\ntype = \"primary\"\nmodels = [{ provider = \"p\", model = \"x\" }]\n[agents.primary.delegation]\nallowed_profiles = [\"compaction\"]",
+                "allows internal profile",
+            ),
+        ];
+        for (input, expected) in cases {
+            let (_temp, user, workspace) = config_tree();
+            write(&workspace, input);
+            let error = load_layered(Some(&user), Some(&workspace)).expect_err("invalid config");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn compaction_is_builtin_and_cannot_be_disabled() {
+        let (_temp, user, workspace) = config_tree();
+        write(&workspace, "[agents.compaction]\ntools = [\"read\"]");
+        let config = load_layered(Some(&user), Some(&workspace)).expect("load config");
+        let compaction = &config.agents["compaction"];
+        assert_eq!(compaction.r#type, AgentType::Internal);
+        assert!(compaction.enabled);
+        assert_eq!(compaction.tools, ["read"]);
+        assert!(compaction.models.is_empty());
+
+        write(&workspace, "[agents.compaction]\nenabled = false");
+        let error = load_layered(Some(&user), Some(&workspace)).expect_err("invalid config");
+        assert!(
+            error
+                .to_string()
+                .contains("internal agents cannot be disabled")
+        );
+    }
+
+    #[test]
+    fn empty_model_chains_are_inherited_by_children_but_rejected_at_roots() {
+        let (_temp, user, workspace) = config_tree();
+        write(
+            &workspace,
+            "[providers.p]\ntype = \"anthropic\"\n[agents.root]\ntype = \"primary\"\nmodels = [{ provider = \"p\", model = \"root\" }]\n[agents.child]\ntype = \"subagent\"\n[agents.all_child]\ntype = \"all\"\n[agents.internal_child]\ntype = \"internal\"",
+        );
+        let config = load_layered(Some(&user), Some(&workspace)).expect("load config");
+        let parent = config.materialize_policy("root").expect("root snapshot");
+        let child = config
+            .materialize_child_policy("child", &parent)
+            .expect("child snapshot");
+        assert_eq!(child.models, parent.models);
+        assert!(config.materialize_policy("all_child").is_err());
+        assert!(config.materialize_policy("internal_child").is_err());
+
+        write(
+            &workspace,
+            "[agents.root]\ntype = \"primary\"\n[agents.child]\ntype = \"subagent\"\n[agents.all_child]\ntype = \"all\"\n[agents.internal_child]\ntype = \"internal\"",
+        );
+        let error = load_layered(Some(&user), Some(&workspace)).expect_err("invalid config");
+        assert!(error.to_string().contains("empty model chain"));
     }
 
     #[test]

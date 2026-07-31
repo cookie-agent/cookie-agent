@@ -156,7 +156,7 @@ pub struct ModelRef {
     pub model: String,
 }
 
-/// Whether a profile can create root sessions, delegated sessions, or both.
+/// Whether a profile can create root sessions, delegated sessions, both, or neither.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentType {
@@ -165,6 +165,7 @@ pub enum AgentType {
     Primary,
     #[serde(rename = "subagent")]
     SubAgent,
+    Internal,
 }
 
 /// The frozen delegation portion of a session profile.
@@ -368,6 +369,15 @@ pub enum Event {
         client_run_id: String,
         input: String,
     },
+    /// Model-visible input injected into an already-running turn.
+    UserInputSubmitted {
+        input: String,
+    },
+    /// Durable association of accepted steering with the provider attempt that
+    /// consumed it. `user_input_seq` references `UserInputSubmitted`.
+    UserInputApplied {
+        user_input_seq: u64,
+    },
     RunCompleted {
         #[serde(skip_serializing_if = "Option::is_none")]
         final_text: Option<String>,
@@ -450,6 +460,19 @@ pub struct EventEnvelope {
     pub seq: u64,
     pub timestamp: Timestamp,
     pub event: Event,
+}
+
+/// A live persisted-event subscription message.
+///
+/// `Gap` is never persisted. Its `last_delivered_seq` is an exclusive replay
+/// cursor: clients must re-subscribe with that cursor to receive the first
+/// omitted event.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
+pub enum EventSubscriptionMessage {
+    Event { event: EventEnvelope },
+    Gap { last_delivered_seq: u64 },
 }
 
 /// A tool output channel. Byte offsets are independent for each stream.
@@ -699,6 +722,7 @@ pub struct AgentListParams {
 pub struct AgentDescriptor {
     pub name: String,
     pub agent_type: AgentType,
+    pub enabled: bool,
     pub models: Vec<ModelRef>,
 }
 
@@ -778,6 +802,18 @@ mod tests {
         }
     }
 
+    fn envelope() -> EventEnvelope {
+        EventEnvelope {
+            session_id: session_id(),
+            run_id: Some(run_id()),
+            seq: 3,
+            timestamp: Timestamp::now(),
+            event: Event::TextDelta {
+                text: "text".into(),
+            },
+        }
+    }
+
     #[test]
     fn serde_round_trips_all_enums() {
         round_trip(JsonRpcId::Number(1));
@@ -814,6 +850,7 @@ mod tests {
         round_trip(AgentType::All);
         round_trip(AgentType::Primary);
         round_trip(AgentType::SubAgent);
+        round_trip(AgentType::Internal);
         for status in [
             SessionStatus::Idle,
             SessionStatus::Running,
@@ -866,6 +903,10 @@ mod tests {
                 client_run_id: "client-run".into(),
                 input: "hello".into(),
             },
+            Event::UserInputSubmitted {
+                input: "steering".into(),
+            },
+            Event::UserInputApplied { user_input_seq: 2 },
             Event::RunCompleted {
                 final_text: Some("done".into()),
             },
@@ -939,6 +980,14 @@ mod tests {
     }
 
     #[test]
+    fn serde_round_trips_event_subscription_messages() {
+        round_trip(EventSubscriptionMessage::Event { event: envelope() });
+        round_trip(EventSubscriptionMessage::Gap {
+            last_delivered_seq: 3,
+        });
+    }
+
+    #[test]
     fn depth_limit_child_arithmetic_matches_specification() {
         assert_eq!(
             DepthLimit::Finite(3).child_limit(Some(9)),
@@ -962,6 +1011,11 @@ mod tests {
     #[test]
     fn event_envelope_schema_snapshot() {
         assert_json_snapshot!(schema_for!(EventEnvelope));
+    }
+
+    #[test]
+    fn event_subscription_message_schema_snapshot() {
+        assert_json_snapshot!(schema_for!(EventSubscriptionMessage));
     }
 
     #[test]

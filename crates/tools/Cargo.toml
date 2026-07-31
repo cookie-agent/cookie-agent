@@ -11,8 +11,18 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 cookiecode-engine = { path = "../engine" }
+cookiecode-protocol = { path = "../protocol" }
 ignore.workspace = true
 process-wrap.workspace = true
 regex.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 similar.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
 tree-sitter-bash.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

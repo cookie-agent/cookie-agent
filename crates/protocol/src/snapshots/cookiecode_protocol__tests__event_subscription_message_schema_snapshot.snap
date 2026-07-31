@@ -1,42 +1,46 @@
 ---
 source: crates/protocol/src/lib.rs
-expression: schema_for!(EventEnvelope)
+expression: schema_for!(EventSubscriptionMessage)
 ---
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "EventEnvelope",
-  "description": "A persisted event with authoritative per-session ordering metadata.",
-  "type": "object",
-  "properties": {
-    "event": {
-      "$ref": "#/$defs/Event"
+  "title": "EventSubscriptionMessage",
+  "description": "A live persisted-event subscription message.\n\n`Gap` is never persisted. Its `last_delivered_seq` is an exclusive replay\ncursor: clients must re-subscribe with that cursor to receive the first\nomitted event.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/EventEnvelope"
+        },
+        "type": {
+          "type": "string",
+          "const": "event"
+        }
+      },
+      "required": [
+        "type",
+        "event"
+      ]
     },
-    "run_id": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "format": "uuid"
-    },
-    "seq": {
-      "type": "integer",
-      "format": "uint64",
-      "minimum": 0
-    },
-    "session_id": {
-      "type": "string",
-      "format": "uuid"
-    },
-    "timestamp": {
-      "type": "string",
-      "format": "date-time"
+    {
+      "type": "object",
+      "properties": {
+        "last_delivered_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "gap"
+        }
+      },
+      "required": [
+        "type",
+        "last_delivered_seq"
+      ]
     }
-  },
-  "required": [
-    "session_id",
-    "seq",
-    "timestamp",
-    "event"
   ],
   "$defs": {
     "ActionKind": {
@@ -598,6 +602,41 @@ expression: schema_for!(EventEnvelope)
             "usage"
           ]
         }
+      ]
+    },
+    "EventEnvelope": {
+      "description": "A persisted event with authoritative per-session ordering metadata.",
+      "type": "object",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/Event"
+        },
+        "run_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "session_id",
+        "seq",
+        "timestamp",
+        "event"
       ]
     },
     "MatchedPermissionRule": {

@@ -10,14 +10,21 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
+base64 = "0.22"
+bytes.workspace = true
 cookiecode-config = { path = "../config" }
 cookiecode-protocol = { path = "../protocol" }
 cookiecode-providers = { path = "../providers" }
+futures-util.workspace = true
+jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+tree-sitter = "0.25.10"
+tree-sitter-bash.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 insta.workspace = true

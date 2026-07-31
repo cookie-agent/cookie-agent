@@ -20,6 +20,11 @@ pub struct ProviderRequest {
     pub model: ModelId,
     #[serde(default)]
     pub messages: Vec<ProviderMessage>,
+    /// Persisted transcript entries. When present, adapters replay matching
+    /// opaque state through their native history encoder instead of rebuilding
+    /// assistant turns from the normalized skeleton.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub persisted_turns: Vec<PersistedTurn>,
     #[serde(default)]
     pub tools: Vec<ToolDefinition>,
     #[serde(default)]
@@ -95,6 +100,46 @@ pub struct ProviderResponse {
     pub events: Vec<NormalizedEvent>,
 }
 
+/// Provider-native state needed to replay an assistant turn exactly.
+///
+/// `payload` deliberately has no provider-neutral schema: it is the native
+/// assistant message/items captured by the adapter, including continuation
+/// fields which normalized events cannot represent.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AssistantTurnOpaque {
+    pub provider: ProviderProtocol,
+    pub payload: Value,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderProtocol {
+    AnthropicMessages,
+    OpenAiChatCompletions,
+    OpenAiResponses,
+    OpenAiCompatible,
+}
+
+/// A persisted conversation entry supplied to an adapter history encoder.
+///
+/// An opaque artifact is only valid for the protocol that emitted it. History
+/// encoders report incompatible artifacts as discarded and reconstruct that
+/// entry from `message` instead.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PersistedTurn {
+    pub message: ProviderMessage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opaque: Option<AssistantTurnOpaque>,
+}
+
+/// Provider-native history assembled for a new request.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct EncodedHistory {
+    pub system: Vec<Value>,
+    pub messages: Vec<Value>,
+    pub discarded_opaque: bool,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ProviderCapabilities {
     pub tool_calling: bool,
@@ -150,6 +195,10 @@ pub enum NormalizedEvent {
     },
     Stop {
         reason: StopReason,
+    },
+    /// Opaque native assistant state to persist with the completed turn.
+    TurnOpaque {
+        state: AssistantTurnOpaque,
     },
 }
 
@@ -210,16 +259,39 @@ impl ProviderError {
     pub fn from_http(status: reqwest::StatusCode, body: impl AsRef<str>) -> Self {
         let message = body.as_ref().to_owned();
         let lower = message.to_ascii_lowercase();
-        if lower.contains("context length")
+        if lower.contains("context_length_exceeded")
+            || lower.contains("context length")
             || lower.contains("context_window")
             || lower.contains("context window")
             || lower.contains("maximum context")
+            || lower.contains("maximum number of tokens")
+            || lower.contains("too many tokens")
+            || lower.contains("prompt is too long")
+            || lower.contains("input is too long")
+            || status.as_u16() == 413
         {
             return Self::RunTerminal { message };
         }
-        if status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error() {
+        if lower.contains("insufficient_quota") {
+            return Self::EntryTerminal { message };
+        }
+        if lower.contains("rate_limit")
+            || lower.contains("rate limit")
+            || lower.contains("overloaded")
+            || lower.contains("capacity")
+            || lower.contains("server_error")
+            || lower.contains("internal_server_error")
+            || status.as_u16() == 408
+            || status.as_u16() == 429
+            || status.as_u16() == 529
+            || status.is_server_error()
+        {
             Self::EntryRetryable { message }
-        } else if status.as_u16() == 401
+        } else if lower.contains("authentication")
+            || lower.contains("invalid_api_key")
+            || lower.contains("invalid api key")
+            || lower.contains("invalid_request")
+            || status.as_u16() == 401
             || status.as_u16() == 403
             || status.as_u16() == 404
             || status.is_client_error()
@@ -230,12 +302,37 @@ impl ProviderError {
         }
     }
 
+    /// Classifies an error delivered after an HTTP 200 SSE handshake.
+    #[must_use]
+    pub fn from_sse(value: &Value) -> Self {
+        let body = value.to_string();
+        let status = value
+            .get("status")
+            .or_else(|| value.get("error").and_then(|error| error.get("status")))
+            .or_else(|| {
+                value
+                    .get("response")
+                    .and_then(|response| response.get("error"))
+                    .and_then(|error| error.get("status"))
+            })
+            .and_then(status_code)
+            .unwrap_or(reqwest::StatusCode::BAD_REQUEST);
+        Self::from_http(status, body)
+    }
+
     #[must_use]
     pub fn network(message: impl Into<String>) -> Self {
         Self::EntryRetryable {
             message: message.into(),
         }
     }
+}
+
+fn status_code(value: &Value) -> Option<reqwest::StatusCode> {
+    let code = value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))?;
+    reqwest::StatusCode::from_u16(code as u16).ok()
 }
 
 #[async_trait]
@@ -364,13 +461,17 @@ impl FallbackExecutor {
             let mut attempts = 0;
             loop {
                 let request = assemble(model, provider.capabilities(&model.model));
+                let mut meaningful_output = false;
                 let result = match provider.stream(request).await {
                     Ok(mut stream) => {
                         let mut events = Vec::new();
                         let mut failure = None;
                         while let Some(item) = stream.next().await {
                             match item {
-                                Ok(event) => events.push(event),
+                                Ok(event) => {
+                                    meaningful_output |= is_meaningful(&event);
+                                    events.push(event);
+                                }
                                 Err(error) => {
                                     failure = Some(error);
                                     break;
@@ -390,6 +491,10 @@ impl FallbackExecutor {
                         if error.class() == ProviderErrorClass::EntryRetryable
                             && attempts < self.retries =>
                     {
+                        if meaningful_output {
+                            last_error = error;
+                            break;
+                        }
                         attempts += 1;
                         let multiplier = 1_u32 << (attempts - 1);
                         tokio::time::sleep(self.retry_backoff * multiplier).await;
@@ -415,4 +520,15 @@ impl FallbackExecutor {
         }
         Err(last_error)
     }
+}
+
+fn is_meaningful(event: &NormalizedEvent) -> bool {
+    matches!(
+        event,
+        NormalizedEvent::TextDelta { .. }
+            | NormalizedEvent::ReasoningDelta { .. }
+            | NormalizedEvent::ToolCallStart { .. }
+            | NormalizedEvent::ToolArgsDelta { .. }
+            | NormalizedEvent::ToolCallEnd { .. }
+    )
 }
