@@ -947,6 +947,7 @@ fn config_hash(bytes: &[u8]) -> String {
 mod tests {
     use std::fs;
 
+    use insta::assert_json_snapshot;
     use tempfile::TempDir;
 
     use super::*;
@@ -1082,6 +1083,23 @@ tools = ["read"]
         assert_eq!(
             DepthLimit::for_child(Some(4), DepthLimit::Finite(2)),
             DepthLimit::Finite(1)
+        );
+    }
+
+    #[test]
+    fn materialized_policy_snapshot_is_stable() {
+        let (_temp, user, workspace) = config_tree();
+        write(
+            &workspace,
+            &format!(
+                "{BASE}\n[[permissions.rules]]\nid = \"global\"\naction = \"read\"\nresource = \"*\"\neffect = \"allow\"\n[[agents.primary.permissions.rules]]\nid = \"primary\"\naction = \"bash\"\nresource = \"git status *\"\neffect = \"allow\"\n"
+            ),
+        );
+        let config = load_layered(Some(&user), Some(&workspace)).expect("load config");
+        assert_json_snapshot!(
+            config
+                .materialize_policy("primary")
+                .expect("policy snapshot")
         );
     }
 

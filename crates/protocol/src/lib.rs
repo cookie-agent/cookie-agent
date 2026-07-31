@@ -1097,6 +1097,49 @@ mod tests {
     }
 
     #[test]
+    fn output_delivery_types_round_trip_and_legacy_approval_resolution_decodes() {
+        let delta = OutputDelta {
+            call_id: call_id(),
+            stream: OutputStream::Stdout,
+            byte_offset: 4,
+            data: "b3V0".into(),
+        };
+        round_trip(delta.clone());
+        round_trip(OutputGap {
+            call_id: call_id(),
+            stream: OutputStream::Stderr,
+            next_offset: 7,
+        });
+        round_trip(OutputSnapshot {
+            call_id: call_id(),
+            start_offset: 1,
+            end_offset: 7,
+            chunks: vec![delta],
+        });
+        round_trip(OutputSnapshotEnvelope {
+            stream: OutputStream::Stdout,
+            snapshot: OutputSnapshot {
+                call_id: call_id(),
+                start_offset: 0,
+                end_offset: 0,
+                chunks: Vec::new(),
+            },
+        });
+
+        let legacy: Event = serde_json::from_value(serde_json::json!({
+            "type": "approval_resolved",
+            "approval_id": "legacy",
+            "decision": "always",
+            "approved_scope": "git status *"
+        }))
+        .expect("legacy approval resolution");
+        assert!(matches!(
+            legacy,
+            Event::ApprovalResolved { approved_scopes, .. } if approved_scopes.is_empty()
+        ));
+    }
+
+    #[test]
     fn depth_limit_child_arithmetic_matches_specification() {
         assert_eq!(
             DepthLimit::Finite(3).child_limit(Some(9)),

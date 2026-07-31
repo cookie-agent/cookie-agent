@@ -1,0 +1,36 @@
+---
+source: crates/engine/src/lib.rs
+expression: messages
+---
+[
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "inspect the workspace"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": [],
+    "tool_calls": [
+      {
+        "id": "00000000-0000-0000-0000-000000000008",
+        "name": "read",
+        "arguments": {
+          "path": "README.md"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "result": {
+      "tool_call_id": "00000000-0000-0000-0000-000000000008",
+      "content": "contents",
+      "is_error": false
+    }
+  }
+]

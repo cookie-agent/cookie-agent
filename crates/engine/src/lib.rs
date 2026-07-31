@@ -4659,6 +4659,103 @@ mod tests {
         release_delegate: Notify,
     }
 
+    struct InteractiveProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for InteractiveProvider {
+        fn capabilities(&self, _: &ModelId) -> cookiecode_providers::ProviderCapabilities {
+            cookiecode_providers::ProviderCapabilities::default()
+        }
+
+        async fn stream(
+            &self,
+            _: ProviderRequest,
+        ) -> Result<
+            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
+            ProviderError,
+        > {
+            let events = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                vec![
+                    Ok(NormalizedEvent::ToolCallStart {
+                        tool_call_id: "interactive".into(),
+                        tool: "bash".into(),
+                    }),
+                    Ok(NormalizedEvent::ToolArgsDelta {
+                        tool_call_id: "interactive".into(),
+                        delta: r#"{"command":"cat","interactive":true}"#.into(),
+                    }),
+                    Ok(NormalizedEvent::ToolCallEnd {
+                        tool_call_id: "interactive".into(),
+                    }),
+                    Ok(NormalizedEvent::Stop {
+                        reason: StopReason::EndTurn,
+                    }),
+                ]
+            } else {
+                vec![Ok(NormalizedEvent::Stop {
+                    reason: StopReason::EndTurn,
+                })]
+            };
+            Ok(stream::iter(events).boxed())
+        }
+    }
+
+    struct InteractiveTool {
+        started: Notify,
+        hold: Option<Arc<Notify>>,
+        consumed: Mutex<Option<oneshot::Sender<()>>>,
+        writes: Mutex<Vec<StdinWrite>>,
+    }
+
+    #[async_trait]
+    impl ToolProvider for InteractiveTool {
+        fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+            Ok(vec![ToolSpec {
+                name: "bash".into(),
+                description: "test interactive bash".into(),
+                parameters: Value::Null,
+            }])
+        }
+
+        async fn invoke(
+            &self,
+            mut ctx: ToolInvocationContext,
+            _: ToolCall,
+        ) -> Result<ToolResult, ToolError> {
+            let mut stdin = ctx.stdin.take().expect("interactive stdin");
+            let mut consumed = self
+                .consumed
+                .lock()
+                .expect("interactive consumed lock poisoned")
+                .take();
+            self.started.notify_one();
+            if let Some(hold) = &self.hold {
+                hold.notified().await;
+            }
+            while let Some(write) = stdin.recv().await {
+                ctx.progress
+                    .output(cookiecode_protocol::OutputStream::Stdout, &write.data);
+                let eof = write.eof;
+                self.writes
+                    .lock()
+                    .expect("interactive writes lock poisoned")
+                    .push(write);
+                if let Some(consumed) = consumed.take() {
+                    let _ = consumed.send(());
+                }
+                if eof {
+                    break;
+                }
+            }
+            Ok(ToolResult {
+                content: "interactive complete".into(),
+                truncated: false,
+            })
+        }
+    }
+
     #[async_trait]
     impl ToolProvider for BatchToolProvider {
         fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
@@ -5890,6 +5987,249 @@ mod tests {
         let result = bound_delegate_result("éé".into(), 3);
         assert_eq!(result.content, "é");
         assert!(result.truncated);
+    }
+
+    #[test]
+    fn assembled_tool_transcript_snapshot_is_stable() {
+        let call = ToolCallId(Uuid::from_u128(8));
+        let session = SessionId(Uuid::from_u128(9));
+        let run = RunId(Uuid::from_u128(10));
+        let envelope = |seq, event| EventEnvelope {
+            session_id: session,
+            run_id: Some(run),
+            seq,
+            timestamp: jiff::Timestamp::now(),
+            event,
+        };
+        let messages = assemble_messages(&[
+            envelope(
+                1,
+                Event::RunStarted {
+                    client_run_id: "snapshot".into(),
+                    input: "inspect the workspace".into(),
+                },
+            ),
+            envelope(
+                2,
+                Event::ToolCallStarted {
+                    tool_call_id: call,
+                    tool: "read".into(),
+                    arguments: serde_json::json!({"path": "README.md"}),
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
+                },
+            ),
+            envelope(
+                3,
+                Event::ToolCallCompleted {
+                    tool_call_id: call,
+                    result: cookiecode_protocol::ToolResult {
+                        content: "contents".into(),
+                        truncated: false,
+                    },
+                },
+            ),
+        ]);
+        insta::assert_json_snapshot!(messages);
+    }
+
+    #[tokio::test]
+    async fn interactive_stdin_preserves_order_eof_and_rejects_after_completion() {
+        let mut config = test_config();
+        let profile = config.agents.get_mut("test").expect("test profile");
+        profile.tools = vec!["bash".into()];
+        profile.permissions.exec = Some("allow".into());
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let tool = Arc::new(InteractiveTool {
+            started: Notify::new(),
+            hold: None,
+            consumed: Mutex::new(None),
+            writes: Mutex::new(Vec::new()),
+        });
+        let engine = Engine::open(EngineOptions {
+            data_dir: directory.path().join("data"),
+            cwd: directory.path().to_owned(),
+            config,
+            providers: HashMap::from([(
+                "test".into(),
+                Arc::new(InteractiveProvider {
+                    calls: AtomicUsize::new(0),
+                }) as Arc<dyn Provider>,
+            )]),
+            tools: vec![tool.clone() as Arc<dyn ToolProvider>],
+        })
+        .expect("open engine");
+        let session = engine.create_session(".", "test").expect("session").id;
+        let run = engine
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "interactive".into(),
+                input: "run bash".into(),
+            })
+            .await
+            .expect("start run")
+            .run_id;
+        tool.started.notified().await;
+        let call = engine
+            .inner
+            .store
+            .get(session)
+            .expect("session")
+            .log
+            .events()
+            .into_iter()
+            .find_map(|event| match event.event {
+                Event::ToolCallStarted {
+                    tool_call_id,
+                    ref tool,
+                    ..
+                } if tool == "bash" => Some(tool_call_id),
+                _ => None,
+            })
+            .expect("interactive call");
+        let (_, mut stdout) = engine
+            .subscribe_tool_output(call, cookiecode_protocol::OutputStream::Stdout)
+            .expect("output hub");
+
+        for (data, eof) in [(b"first".as_slice(), false), (b"second".as_slice(), true)] {
+            assert!(
+                engine
+                    .tool_stdin(RunToolStdinParams {
+                        run_id: run,
+                        call_id: call,
+                        data: Some(STANDARD.encode(data)),
+                        eof,
+                    })
+                    .await
+                    .expect("submit stdin")
+                    .accepted
+            );
+        }
+        match stdout.recv().await.expect("stdout delta") {
+            events::OutputMessage::Delta(delta) => {
+                assert_eq!(delta.data, STANDARD.encode(b"first"))
+            }
+            events::OutputMessage::Gap(_) => panic!("unexpected output gap"),
+        }
+        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
+        match stdout.recv().await.expect("final stdout delta") {
+            events::OutputMessage::Delta(delta) => {
+                assert_eq!(delta.data, STANDARD.encode(b"second"))
+            }
+            events::OutputMessage::Gap(_) => panic!("unexpected output gap"),
+        }
+        assert!(stdout.recv().await.is_none());
+        assert_eq!(
+            tool.writes
+                .lock()
+                .expect("interactive writes lock poisoned")
+                .iter()
+                .map(|write| (write.data.clone(), write.eof))
+                .collect::<Vec<_>>(),
+            vec![(b"first".to_vec(), false), (b"second".to_vec(), true)]
+        );
+        assert!(
+            engine
+                .tool_stdin(RunToolStdinParams {
+                    run_id: run,
+                    call_id: call,
+                    data: None,
+                    eof: true,
+                })
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_discards_queued_interactive_stdin() {
+        let mut config = test_config();
+        let profile = config.agents.get_mut("test").expect("test profile");
+        profile.tools = vec!["bash".into()];
+        profile.permissions.exec = Some("allow".into());
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let release = Arc::new(Notify::new());
+        let (consumed, consumed_rx) = oneshot::channel();
+        let tool = Arc::new(InteractiveTool {
+            started: Notify::new(),
+            hold: Some(release.clone()),
+            consumed: Mutex::new(Some(consumed)),
+            writes: Mutex::new(Vec::new()),
+        });
+        let engine = Engine::open(EngineOptions {
+            data_dir: directory.path().join("data"),
+            cwd: directory.path().to_owned(),
+            config,
+            providers: HashMap::from([(
+                "test".into(),
+                Arc::new(InteractiveProvider {
+                    calls: AtomicUsize::new(0),
+                }) as Arc<dyn Provider>,
+            )]),
+            tools: vec![tool.clone() as Arc<dyn ToolProvider>],
+        })
+        .expect("open engine");
+        let session = engine.create_session(".", "test").expect("session").id;
+        let run = engine
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "cancel-interactive".into(),
+                input: "run bash".into(),
+            })
+            .await
+            .expect("start run")
+            .run_id;
+        tool.started.notified().await;
+        let call = engine
+            .inner
+            .store
+            .get(session)
+            .expect("session")
+            .log
+            .events()
+            .into_iter()
+            .find_map(|event| match event.event {
+                Event::ToolCallStarted {
+                    tool_call_id,
+                    ref tool,
+                    ..
+                } if tool == "bash" => Some(tool_call_id),
+                _ => None,
+            })
+            .expect("interactive call");
+        engine
+            .tool_stdin(RunToolStdinParams {
+                run_id: run,
+                call_id: call,
+                data: Some(STANDARD.encode(b"queued")),
+                eof: false,
+            })
+            .await
+            .expect("queue stdin before cancellation");
+        engine.cancel_run(run).await.expect("cancel run");
+        wait_for_session_status(&engine, session, &SessionStatus::Cancelled).await;
+        release.notify_one();
+        assert!(
+            consumed_rx.await.is_err(),
+            "releasing the held invocation consumed stdin after cancellation"
+        );
+        assert!(
+            tool.writes
+                .lock()
+                .expect("interactive writes lock poisoned")
+                .is_empty()
+        );
+        assert!(
+            engine
+                .tool_stdin(RunToolStdinParams {
+                    run_id: run,
+                    call_id: call,
+                    data: None,
+                    eof: true,
+                })
+                .await
+                .is_err()
+        );
     }
 
     #[test]
@@ -8172,7 +8512,7 @@ mod tests {
 
     #[tokio::test]
     async fn always_approval_discloses_all_bash_resources_and_persists_effective_scope() {
-        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
+        let (directory, engine) = test_engine(Arc::new(NoopProvider));
         let session = engine
             .create_session(".", "test")
             .expect("create session")
@@ -8228,7 +8568,22 @@ mod tests {
             cookiecode_protocol::ActionKind::Bash,
             "git status --short"
         ));
+        assert!(engine.inner.approvals.allows(
+            session,
+            cookiecode_protocol::ActionKind::Bash,
+            "git log -1"
+        ));
         engine.shutdown().await;
+        drop(engine);
+
+        let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
+        for resource in ["git status --short", "git log -1"] {
+            assert!(reopened.inner.approvals.allows(
+                session,
+                cookiecode_protocol::ActionKind::Bash,
+                resource
+            ));
+        }
     }
 
     #[tokio::test]

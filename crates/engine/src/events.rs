@@ -506,6 +506,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lagging_live_subscriber_receives_a_gap_before_later_delta() {
+        let hub = OutputHub::new(ToolCallId(Uuid::from_u128(7)), 64);
+        let (_, mut live) = hub.subscribe(OutputStream::Stdout, 2);
+        hub.emit(OutputStream::Stdout, b"one");
+        hub.emit(OutputStream::Stdout, b"two");
+        hub.emit(OutputStream::Stdout, b"three");
+        assert!(matches!(live.recv().await, Some(OutputMessage::Delta(_))));
+        hub.emit(OutputStream::Stdout, b"four");
+        assert!(matches!(live.recv().await, Some(OutputMessage::Delta(_))));
+        match live.recv().await.expect("lagging gap") {
+            OutputMessage::Gap(gap) => assert_eq!(gap.next_offset, 11),
+            OutputMessage::Delta(_) => panic!("expected gap before resumed output"),
+        }
+        hub.emit(OutputStream::Stdout, b"five");
+        match live.recv().await.expect("second lagging gap") {
+            OutputMessage::Gap(gap) => assert_eq!(gap.next_offset, 15),
+            OutputMessage::Delta(_) => panic!("expected retained loss boundary"),
+        }
+        match live.recv().await.expect("resumed output") {
+            OutputMessage::Delta(delta) => assert_eq!(delta.byte_offset, 15),
+            OutputMessage::Gap(_) => panic!("unexpected second gap"),
+        }
+    }
+
+    #[tokio::test]
     async fn finalize_drains_queued_delta_before_closing() {
         let hub = OutputHub::new(ToolCallId(Uuid::from_u128(5)), 64);
         let (_, mut live) = hub.subscribe(OutputStream::Stdout, 2);

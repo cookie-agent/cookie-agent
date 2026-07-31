@@ -657,6 +657,49 @@ mod tests {
     }
 
     #[test]
+    fn doom_loop_signature_distinguishes_resource_order() {
+        let id = SessionId(Uuid::from_u128(6));
+        let rules = vec![PermissionRule {
+            id: "allow-bash".into(),
+            action: "bash".into(),
+            resource: "*".into(),
+            effect: "allow".into(),
+            hard: false,
+            source: RuleSource::Profile,
+        }];
+        let pipeline = PermissionPipeline::default();
+        let approvals = ApprovalStore::default();
+        let forward = vec![
+            (ActionKind::Bash, "git status".into()),
+            (ActionKind::Bash, "git log -1".into()),
+        ];
+        let reverse = forward.iter().cloned().rev().collect();
+
+        for _ in 0..2 {
+            assert_eq!(
+                pipeline
+                    .decide_resources(&policy(rules.clone()), &approvals, id, id, forward.clone())
+                    .effect,
+                Effect::Allow
+            );
+        }
+        assert_eq!(
+            pipeline
+                .decide_resources(&policy(rules.clone()), &approvals, id, id, reverse)
+                .effect,
+            Effect::Allow,
+            "a reordered compound call must not inherit the prior doom-loop streak"
+        );
+        assert_eq!(
+            pipeline
+                .decide_resources(&policy(rules), &approvals, id, id, forward)
+                .effect,
+            Effect::Allow,
+            "the reordered call resets the consecutive-call streak"
+        );
+    }
+
+    #[test]
     fn external_directory_resource_remains_asked_when_read_tier_allows() {
         let id = SessionId(Uuid::from_u128(4));
         let mut policy = policy(Vec::new());
