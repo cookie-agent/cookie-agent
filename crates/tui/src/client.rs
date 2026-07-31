@@ -7,7 +7,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cookiecode_protocol::{
+use cookie_agent_protocol::{
     AgentListParams, AgentListResult, ApprovalRespondParams, ApprovalRespondResult, ClientHello,
     Event, EventEnvelope, EventSubscriptionMessage, EventsSubscribeParams, EventsSubscribeResult,
     JsonRpcError, JsonRpcId, Notification, OutputDelta, OutputGap, OutputSnapshotEnvelope,
@@ -16,7 +16,7 @@ use cookiecode_protocol::{
     RunToolStdinResult, ServerHello, SessionCreateParams, SessionCreateResult, SessionId,
     SessionListParams, SessionListResult, SessionTreeParams, SessionTreeResult, ToolCallId,
 };
-use cookiecode_server::{MessageFrame, MessageStream, Server, TransportError, in_process_pair};
+use cookie_agent_server::{MessageFrame, MessageStream, Server, TransportError, in_process_pair};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -1482,7 +1482,7 @@ mod tests {
             route_output(
                 ClientDelivery::OutputSnapshot(OutputSnapshotEnvelope {
                     stream,
-                    snapshot: cookiecode_protocol::OutputSnapshot {
+                    snapshot: cookie_agent_protocol::OutputSnapshot {
                         call_id,
                         start_offset: 0,
                         end_offset: 0,

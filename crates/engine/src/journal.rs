@@ -7,8 +7,8 @@ use std::{
     thread,
 };
 
-use cookiecode_config::PolicySnapshot;
-use cookiecode_protocol::{InvocationId, RunId, SessionId, ToolCallId};
+use cookie_agent_config::PolicySnapshot;
+use cookie_agent_protocol::{InvocationId, RunId, SessionId, ToolCallId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -141,7 +141,7 @@ impl DelegationJournal {
         let (sender, receiver) = mpsc::channel();
         let actor_path = path.clone();
         let worker = thread::Builder::new()
-            .name("cookiecode-delegation-journal".into())
+            .name("cookie_agent_delegation_journal".into())
             .spawn(move || run_actor(actor_path, state, receiver))
             .expect("spawn delegation journal actor");
         Ok(Arc::new(Self {

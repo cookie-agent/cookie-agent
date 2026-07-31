@@ -1,4 +1,4 @@
-//! The transport-free single-conversation CookieCode runtime.
+//! The transport-free single-conversation cookie agent runtime.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -16,17 +16,17 @@ use std::sync::mpsc as std_mpsc;
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use cookiecode_config::{
+use cookie_agent_config::{
     AgentType as ConfigAgentType, Config, DepthLimit as ConfigDepthLimit, PolicySnapshot,
 };
-use cookiecode_protocol::{
+use cookie_agent_protocol::{
     AgentDescriptor, AgentListResult, AgentType, ApprovalDecision, ApprovalRespondResult,
     ApprovedScope, ChildSummary, Event, EventEnvelope, EventSubscriptionMessage,
     EventsSubscribeResult, InvocationId, ModelRef, RunCancelResult, RunId, RunStartParams,
     RunStartResult, RunSteerResult, RunToolStdinParams, RunToolStdinResult, SessionId, SessionMeta,
     SessionOrigin, SessionStatus, ToolCallId, TurnOpaque,
 };
-use cookiecode_providers::{
+use cookie_agent_providers::{
     ContentPart, ModelId, ModelRef as ProviderModelRef, NormalizedEvent, Provider, ProviderError,
     ProviderErrorClass, ProviderMessage, ProviderProtocol, ProviderRequest, StopReason,
     ToolDefinition,
@@ -166,7 +166,7 @@ impl ProgressSink {
             .await
             .map_err(|_| ToolError::ProgressSinkClosed)
     }
-    pub fn output(&self, stream: cookiecode_protocol::OutputStream, data: &[u8]) {
+    pub fn output(&self, stream: cookie_agent_protocol::OutputStream, data: &[u8]) {
         self.output.emit(stream, data);
     }
 }
@@ -246,7 +246,7 @@ pub enum EngineError {
     #[error(transparent)]
     Event(#[from] EventLogError),
     #[error("configuration error: {0}")]
-    Config(#[source] Box<cookiecode_config::ConfigError>),
+    Config(#[source] Box<cookie_agent_config::ConfigError>),
     #[error("profile `{0}` is subagent-only")]
     SubagentOnly(String),
     #[error("run {0} not found")]
@@ -260,7 +260,7 @@ pub enum EngineError {
     #[error("invalid base64 stdin: {0}")]
     Base64(#[from] base64::DecodeError),
     #[error("provider failure: {0}")]
-    Provider(#[from] cookiecode_providers::ProviderError),
+    Provider(#[from] cookie_agent_providers::ProviderError),
     #[error("tool `{0}` is unavailable")]
     MissingTool(String),
     #[error("session actor for {0} is unavailable")]
@@ -290,7 +290,7 @@ struct EmittedToolCall {
     segment: u64,
     run_id: RunId,
     provider_tool_call_id: String,
-    result: Option<cookiecode_providers::ToolResult>,
+    result: Option<cookie_agent_providers::ToolResult>,
 }
 
 #[cfg(test)]
@@ -1255,7 +1255,7 @@ impl Engine {
                 Some(parent_run_id),
                 Event::ToolCallCompleted {
                     tool_call_id: parent_tool_call_id,
-                    result: cookiecode_protocol::ToolResult {
+                    result: cookie_agent_protocol::ToolResult {
                         content: result.content,
                         truncated: false,
                     },
@@ -1565,7 +1565,7 @@ impl Engine {
             Some(run_id),
             Event::ToolCallCompleted {
                 tool_call_id,
-                result: cookiecode_protocol::ToolResult {
+                result: cookie_agent_protocol::ToolResult {
                     content: result.content,
                     truncated: result.truncated,
                 },
@@ -2055,9 +2055,9 @@ impl Engine {
     pub fn subscribe_tool_output(
         &self,
         call: ToolCallId,
-        stream: cookiecode_protocol::OutputStream,
+        stream: cookie_agent_protocol::OutputStream,
     ) -> Option<(
-        cookiecode_protocol::OutputSnapshot,
+        cookie_agent_protocol::OutputSnapshot,
         mpsc::Receiver<events::OutputMessage>,
     )> {
         self.inner
@@ -2101,7 +2101,7 @@ impl Engine {
         Ok(self.inner.store.get(id)?.meta)
     }
     #[must_use]
-    pub fn children(&self, id: SessionId) -> Vec<cookiecode_protocol::ChildSummary> {
+    pub fn children(&self, id: SessionId) -> Vec<cookie_agent_protocol::ChildSummary> {
         let known: HashSet<_> = self
             .inner
             .journal
@@ -2143,8 +2143,8 @@ impl Engine {
             })
             .collect()
     }
-    pub fn tree(&self, id: SessionId) -> Result<cookiecode_protocol::SessionTree, EngineError> {
-        Ok(cookiecode_protocol::SessionTree {
+    pub fn tree(&self, id: SessionId) -> Result<cookie_agent_protocol::SessionTree, EngineError> {
+        Ok(cookie_agent_protocol::SessionTree {
             session: self.inner.store.get(id)?.meta,
             children: self
                 .children(id)
@@ -2615,7 +2615,7 @@ impl Engine {
                     let event = match result {
                         Ok(result) => Event::ToolCallCompleted {
                             tool_call_id,
-                            result: cookiecode_protocol::ToolResult {
+                            result: cookie_agent_protocol::ToolResult {
                                 content: result.content,
                                 truncated: result.truncated,
                             },
@@ -3113,7 +3113,7 @@ impl Engine {
                                                 Some(run),
                                                 Event::UsageReported {
                                                     model: wire_model(model),
-                                                    usage: cookiecode_protocol::Usage {
+                                                    usage: cookie_agent_protocol::Usage {
                                                         input_tokens: *input_tokens,
                                                         output_tokens: *output_tokens,
                                                         cached_input_tokens: Some(
@@ -3236,13 +3236,13 @@ impl Engine {
                 .map_err(|error| error.to_string())?;
             let root = root_id(&session.meta.origin, active.session);
             let raw_resource = resource_for(&call);
-            let resources = if action == cookiecode_protocol::ActionKind::Bash {
+            let resources = if action == cookie_agent_protocol::ActionKind::Bash {
                 permissions::bash_subcommands(&raw_resource)
             } else if matches!(
                 action,
-                cookiecode_protocol::ActionKind::Read
-                    | cookiecode_protocol::ActionKind::Write
-                    | cookiecode_protocol::ActionKind::List
+                cookie_agent_protocol::ActionKind::Read
+                    | cookie_agent_protocol::ActionKind::Write
+                    | cookie_agent_protocol::ActionKind::List
             ) {
                 permissions::canonical_resource(
                     Path::new(&session.meta.cwd),
@@ -3263,7 +3263,7 @@ impl Engine {
                 .into_iter()
                 .map(|resource| match resource.strip_prefix("external:") {
                     Some(resource) => (
-                        cookiecode_protocol::ActionKind::ExternalDirectory,
+                        cookie_agent_protocol::ActionKind::ExternalDirectory,
                         resource.to_owned(),
                     ),
                     None => (action, resource),
@@ -3277,8 +3277,8 @@ impl Engine {
                 resources,
             );
             let resource = permission.trace.normalized_resource.clone();
-            if permission.effect != cookiecode_protocol::Effect::Allow {
-                if permission.effect == cookiecode_protocol::Effect::Ask {
+            if permission.effect != cookie_agent_protocol::Effect::Allow {
+                if permission.effect == cookie_agent_protocol::Effect::Ask {
                     let approval_id = format!("{}:{}", run, call.id);
                     let suggested_pattern = permission
                         .asking_resources
@@ -3690,7 +3690,7 @@ impl Engine {
                             Some(run.id),
                             Event::ToolCallCompleted {
                                 tool_call_id: *call,
-                                result: cookiecode_protocol::ToolResult {
+                                result: cookie_agent_protocol::ToolResult {
                                     content: delegate_failure_result(
                                         None,
                                         "delegate interrupted by daemon restart: no durable reservation",
@@ -3713,7 +3713,7 @@ impl Engine {
                             Some(run.id),
                             Event::ToolCallCompleted {
                                 tool_call_id: *call,
-                                result: cookiecode_protocol::ToolResult {
+                                result: cookie_agent_protocol::ToolResult {
                                     content: result.content,
                                     truncated: false,
                                 },
@@ -3729,7 +3729,7 @@ impl Engine {
                                 Some(run.id),
                                 Event::ToolCallCompleted {
                                     tool_call_id: *call,
-                                    result: cookiecode_protocol::ToolResult {
+                                    result: cookie_agent_protocol::ToolResult {
                                         content: delegate_failure_result(
                                             Some(child_id),
                                             "delegate child session is missing",
@@ -3757,7 +3757,7 @@ impl Engine {
                             Some(run.id),
                             Event::ToolCallCompleted {
                                 tool_call_id: *call,
-                                result: cookiecode_protocol::ToolResult {
+                                result: cookie_agent_protocol::ToolResult {
                                     content: result.content,
                                     truncated: result.truncated,
                                 },
@@ -3770,7 +3770,7 @@ impl Engine {
                             Some(run.id),
                             Event::ToolCallCompleted {
                                 tool_call_id: *call,
-                                result: cookiecode_protocol::ToolResult {
+                                result: cookie_agent_protocol::ToolResult {
                                     content: result.content,
                                     truncated: result.truncated,
                                 },
@@ -3838,7 +3838,7 @@ impl Engine {
                             Some(run.id),
                             Event::ToolCallCompleted {
                                 tool_call_id: *call,
-                                result: cookiecode_protocol::ToolResult {
+                                result: cookie_agent_protocol::ToolResult {
                                     content: delegate_failure_result(
                                         Some(child_id),
                                         "delegate child interrupted by daemon restart",
@@ -3916,7 +3916,7 @@ fn session_meta(
     cwd: &Path,
     policy: &PolicySnapshot,
 ) -> SessionMeta {
-    let profile = cookiecode_protocol::ProfileSnapshot {
+    let profile = cookie_agent_protocol::ProfileSnapshot {
         name: policy.profile.name.clone(),
         agent_type: agent_type(policy.profile.r#type),
         models: policy
@@ -3928,7 +3928,7 @@ fn session_meta(
             })
             .collect(),
         tools: policy.tools.iter().cloned().collect(),
-        delegation: cookiecode_protocol::DelegationSnapshot {
+        delegation: cookie_agent_protocol::DelegationSnapshot {
             enabled: policy.delegation.enabled,
             allowed_profiles: policy.delegation.allowed_profiles.iter().cloned().collect(),
             depth_limit: depth(policy.delegation.depth_limit),
@@ -3941,14 +3941,14 @@ fn session_meta(
             .filter_map(|rule| {
                 PermissionPipeline::action_for_tool(&rule.action)
                     .ok()
-                    .map(|action| cookiecode_protocol::PermissionRule {
+                    .map(|action| cookie_agent_protocol::PermissionRule {
                         id: rule.id.clone(),
                         action,
                         resource: rule.resource.clone(),
                         effect: match rule.effect.as_str() {
-                            "allow" => cookiecode_protocol::Effect::Allow,
-                            "deny" => cookiecode_protocol::Effect::Deny,
-                            _ => cookiecode_protocol::Effect::Ask,
+                            "allow" => cookie_agent_protocol::Effect::Allow,
+                            "deny" => cookie_agent_protocol::Effect::Deny,
+                            _ => cookie_agent_protocol::Effect::Ask,
                         },
                         hard: rule.hard,
                     })
@@ -3970,10 +3970,10 @@ fn agent_type(value: ConfigAgentType) -> AgentType {
         ConfigAgentType::Internal => AgentType::Internal,
     }
 }
-fn depth(value: ConfigDepthLimit) -> cookiecode_protocol::DepthLimit {
+fn depth(value: ConfigDepthLimit) -> cookie_agent_protocol::DepthLimit {
     match value {
-        ConfigDepthLimit::Finite(value) => cookiecode_protocol::DepthLimit::Finite(value),
-        ConfigDepthLimit::Unlimited => cookiecode_protocol::DepthLimit::Unlimited,
+        ConfigDepthLimit::Finite(value) => cookie_agent_protocol::DepthLimit::Finite(value),
+        ConfigDepthLimit::Unlimited => cookie_agent_protocol::DepthLimit::Unlimited,
     }
 }
 fn root_id(origin: &SessionOrigin, session: SessionId) -> SessionId {
@@ -4009,7 +4009,7 @@ fn hash_parts(parts: &[&str]) -> u128 {
     parts.hash(&mut first);
     let high = first.finish() as u128;
     let mut second = std::collections::hash_map::DefaultHasher::new();
-    "cookiecode".hash(&mut second);
+    "cookie_agent".hash(&mut second);
     parts.hash(&mut second);
     (high << 64) | second.finish() as u128
 }
@@ -4118,31 +4118,35 @@ fn is_journal_append_failure(error: &EngineError) -> bool {
     )
 }
 
-fn wire_provider_protocol(protocol: ProviderProtocol) -> cookiecode_protocol::ProviderProtocol {
+fn wire_provider_protocol(protocol: ProviderProtocol) -> cookie_agent_protocol::ProviderProtocol {
     match protocol {
         ProviderProtocol::AnthropicMessages => {
-            cookiecode_protocol::ProviderProtocol::AnthropicMessages
+            cookie_agent_protocol::ProviderProtocol::AnthropicMessages
         }
         ProviderProtocol::OpenAiChatCompletions => {
-            cookiecode_protocol::ProviderProtocol::OpenAiChatCompletions
+            cookie_agent_protocol::ProviderProtocol::OpenAiChatCompletions
         }
-        ProviderProtocol::OpenAiResponses => cookiecode_protocol::ProviderProtocol::OpenAiResponses,
+        ProviderProtocol::OpenAiResponses => {
+            cookie_agent_protocol::ProviderProtocol::OpenAiResponses
+        }
         ProviderProtocol::OpenAiCompatible => {
-            cookiecode_protocol::ProviderProtocol::OpenAiCompatible
+            cookie_agent_protocol::ProviderProtocol::OpenAiCompatible
         }
     }
 }
 
-fn provider_protocol(protocol: cookiecode_protocol::ProviderProtocol) -> ProviderProtocol {
+fn provider_protocol(protocol: cookie_agent_protocol::ProviderProtocol) -> ProviderProtocol {
     match protocol {
-        cookiecode_protocol::ProviderProtocol::AnthropicMessages => {
+        cookie_agent_protocol::ProviderProtocol::AnthropicMessages => {
             ProviderProtocol::AnthropicMessages
         }
-        cookiecode_protocol::ProviderProtocol::OpenAiChatCompletions => {
+        cookie_agent_protocol::ProviderProtocol::OpenAiChatCompletions => {
             ProviderProtocol::OpenAiChatCompletions
         }
-        cookiecode_protocol::ProviderProtocol::OpenAiResponses => ProviderProtocol::OpenAiResponses,
-        cookiecode_protocol::ProviderProtocol::OpenAiCompatible => {
+        cookie_agent_protocol::ProviderProtocol::OpenAiResponses => {
+            ProviderProtocol::OpenAiResponses
+        }
+        cookie_agent_protocol::ProviderProtocol::OpenAiCompatible => {
             ProviderProtocol::OpenAiCompatible
         }
     }
@@ -4176,7 +4180,7 @@ fn assemble_messages(events: &[EventEnvelope]) -> Vec<ProviderMessage> {
 fn assemble_persisted_turns(
     events: &[EventEnvelope],
     target_protocol: Option<ProviderProtocol>,
-) -> Vec<cookiecode_providers::PersistedTurn> {
+) -> Vec<cookie_agent_providers::PersistedTurn> {
     let mut output = Vec::new();
     let mut assistant_text = String::new();
     let mut assistant_calls = Vec::new();
@@ -4188,9 +4192,9 @@ fn assemble_persisted_turns(
     let mut emitted_calls = Vec::new();
     let mut pending_calls: HashMap<(ToolCallId, RunId), VecDeque<usize>> = HashMap::new();
     let flush_assistant =
-        |output: &mut Vec<cookiecode_providers::PersistedTurn>,
+        |output: &mut Vec<cookie_agent_providers::PersistedTurn>,
          text: &mut String,
-         calls: &mut Vec<cookiecode_providers::ToolCall>,
+         calls: &mut Vec<cookie_agent_providers::ToolCall>,
          call_ids: &mut Vec<(ToolCallId, RunId)>,
          opaque: &mut Option<TurnOpaque>,
          opaque_usable: &mut bool,
@@ -4209,7 +4213,7 @@ fn assemble_persisted_turns(
                 } else {
                     Vec::new()
                 };
-                output.push(cookiecode_providers::PersistedTurn {
+                output.push(cookie_agent_providers::PersistedTurn {
                     message: ProviderMessage::Assistant {
                         content,
                         tool_calls: std::mem::take(calls),
@@ -4217,7 +4221,7 @@ fn assemble_persisted_turns(
                     opaque: if *opaque_usable {
                         opaque
                             .take()
-                            .map(|state| cookiecode_providers::AssistantTurnOpaque {
+                            .map(|state| cookie_agent_providers::AssistantTurnOpaque {
                                 provider: provider_protocol(state.provider),
                                 payload: state.payload,
                             })
@@ -4263,7 +4267,7 @@ fn assemble_persisted_turns(
                     &mut pending_calls,
                 );
                 segment += 1;
-                output.push(cookiecode_providers::PersistedTurn {
+                output.push(cookie_agent_providers::PersistedTurn {
                     message: ProviderMessage::User {
                         content: vec![ContentPart::Text {
                             text: input.clone(),
@@ -4288,7 +4292,7 @@ fn assemble_persisted_turns(
                         &mut emitted_calls,
                         &mut pending_calls,
                     );
-                    output.push(cookiecode_providers::PersistedTurn {
+                    output.push(cookie_agent_providers::PersistedTurn {
                         message: ProviderMessage::User {
                             content: vec![ContentPart::Text { text: input }],
                         },
@@ -4321,7 +4325,7 @@ fn assemble_persisted_turns(
                     .cloned()
                     .unwrap_or_else(|| canonical_id.clone());
                 assistant_call_ids.push((*tool_call_id, run_id));
-                assistant_calls.push(cookiecode_providers::ToolCall {
+                assistant_calls.push(cookie_agent_providers::ToolCall {
                     id: provider_id,
                     name: tool.clone(),
                     arguments: arguments.clone(),
@@ -4376,7 +4380,7 @@ fn assemble_persisted_turns(
                     continue;
                 };
                 let provider_tool_call_id = emitted_calls[occurrence].provider_tool_call_id.clone();
-                emitted_calls[occurrence].result = Some(cookiecode_providers::ToolResult {
+                emitted_calls[occurrence].result = Some(cookie_agent_providers::ToolResult {
                     tool_call_id: provider_tool_call_id,
                     content: result.content.clone(),
                     is_error: false,
@@ -4422,7 +4426,7 @@ fn assemble_persisted_turns(
                     continue;
                 };
                 let provider_tool_call_id = emitted_calls[occurrence].provider_tool_call_id.clone();
-                emitted_calls[occurrence].result = Some(cookiecode_providers::ToolResult {
+                emitted_calls[occurrence].result = Some(cookie_agent_providers::ToolResult {
                     tool_call_id: provider_tool_call_id,
                     content: message.clone(),
                     is_error: true,
@@ -4481,10 +4485,10 @@ fn assemble_persisted_turns(
 }
 
 fn finalize_persisted_turns(
-    output: Vec<cookiecode_providers::PersistedTurn>,
+    output: Vec<cookie_agent_providers::PersistedTurn>,
     emitted_calls: Vec<EmittedToolCall>,
-) -> Vec<cookiecode_providers::PersistedTurn> {
-    let mut results_by_assistant: HashMap<usize, Vec<(usize, cookiecode_providers::ToolResult)>> =
+) -> Vec<cookie_agent_providers::PersistedTurn> {
+    let mut results_by_assistant: HashMap<usize, Vec<(usize, cookie_agent_providers::ToolResult)>> =
         HashMap::new();
     for call in emitted_calls {
         if let Some(result) = call.result {
@@ -4496,13 +4500,13 @@ fn finalize_persisted_turns(
     }
     let mut finalized = Vec::new();
     for (assistant_index, turn) in output.into_iter().enumerate() {
-        let cookiecode_providers::PersistedTurn { message, opaque } = turn;
+        let cookie_agent_providers::PersistedTurn { message, opaque } = turn;
         let ProviderMessage::Assistant {
             content,
             tool_calls,
         } = message
         else {
-            finalized.push(cookiecode_providers::PersistedTurn { message, opaque });
+            finalized.push(cookie_agent_providers::PersistedTurn { message, opaque });
             continue;
         };
         let mut results = results_by_assistant
@@ -4521,7 +4525,7 @@ fn finalize_persisted_turns(
             .then_some(opaque)
             .flatten();
         if !content.is_empty() || !tool_calls.is_empty() || opaque.is_some() {
-            finalized.push(cookiecode_providers::PersistedTurn {
+            finalized.push(cookie_agent_providers::PersistedTurn {
                 message: ProviderMessage::Assistant {
                     content,
                     tool_calls,
@@ -4529,7 +4533,7 @@ fn finalize_persisted_turns(
                 opaque,
             });
             finalized.extend(results.into_iter().map(|(_, result)| {
-                cookiecode_providers::PersistedTurn {
+                cookie_agent_providers::PersistedTurn {
                     message: ProviderMessage::Tool { result },
                     opaque: None,
                 }
@@ -4552,7 +4556,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use cookiecode_config::{
+    use cookie_agent_config::{
         AgentProfile, DelegationConfig, ModelConfig, ProviderConfig, ProviderType,
     };
     use futures_util::{StreamExt, stream};
@@ -4564,8 +4568,8 @@ mod tests {
 
     #[async_trait]
     impl Provider for NoopProvider {
-        fn capabilities(&self, _: &ModelId) -> cookiecode_providers::ProviderCapabilities {
-            cookiecode_providers::ProviderCapabilities::default()
+        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
+            cookie_agent_providers::ProviderCapabilities::default()
         }
 
         async fn stream(
@@ -4586,8 +4590,8 @@ mod tests {
 
     #[async_trait]
     impl Provider for ReportProvider {
-        fn capabilities(&self, _: &ModelId) -> cookiecode_providers::ProviderCapabilities {
-            cookiecode_providers::ProviderCapabilities::default()
+        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
+            cookie_agent_providers::ProviderCapabilities::default()
         }
 
         async fn stream(
@@ -4615,8 +4619,8 @@ mod tests {
 
     #[async_trait]
     impl Provider for TwoTurnBatchProvider {
-        fn capabilities(&self, _: &ModelId) -> cookiecode_providers::ProviderCapabilities {
-            cookiecode_providers::ProviderCapabilities::default()
+        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
+            cookie_agent_providers::ProviderCapabilities::default()
         }
 
         async fn stream(
@@ -4675,8 +4679,8 @@ mod tests {
 
     #[async_trait]
     impl Provider for InteractiveProvider {
-        fn capabilities(&self, _: &ModelId) -> cookiecode_providers::ProviderCapabilities {
-            cookiecode_providers::ProviderCapabilities::default()
+        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
+            cookie_agent_providers::ProviderCapabilities::default()
         }
 
         async fn stream(
@@ -4746,7 +4750,7 @@ mod tests {
             }
             while let Some(write) = stdin.recv().await {
                 ctx.progress
-                    .output(cookiecode_protocol::OutputStream::Stdout, &write.data);
+                    .output(cookie_agent_protocol::OutputStream::Stdout, &write.data);
                 let eof = write.eof;
                 self.writes
                     .lock()
@@ -4812,8 +4816,8 @@ mod tests {
 
     #[async_trait]
     impl Provider for SteeringProvider {
-        fn capabilities(&self, _: &ModelId) -> cookiecode_providers::ProviderCapabilities {
-            cookiecode_providers::ProviderCapabilities::default()
+        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
+            cookie_agent_providers::ProviderCapabilities::default()
         }
 
         async fn stream(
@@ -4865,8 +4869,8 @@ mod tests {
 
     #[async_trait]
     impl Provider for RecordingNoopProvider {
-        fn capabilities(&self, _: &ModelId) -> cookiecode_providers::ProviderCapabilities {
-            cookiecode_providers::ProviderCapabilities::default()
+        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
+            cookie_agent_providers::ProviderCapabilities::default()
         }
 
         fn protocol(&self, _: &ModelId) -> Option<ProviderProtocol> {
@@ -4893,8 +4897,8 @@ mod tests {
 
     #[async_trait]
     impl Provider for OpaqueRecordingProvider {
-        fn capabilities(&self, _: &ModelId) -> cookiecode_providers::ProviderCapabilities {
-            cookiecode_providers::ProviderCapabilities::default()
+        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
+            cookie_agent_providers::ProviderCapabilities::default()
         }
 
         fn protocol(&self, _: &ModelId) -> Option<ProviderProtocol> {
@@ -4918,7 +4922,7 @@ mod tests {
                         text: "first".into(),
                     }),
                     Ok(NormalizedEvent::TurnOpaque {
-                        state: cookiecode_providers::AssistantTurnOpaque {
+                        state: cookie_agent_providers::AssistantTurnOpaque {
                             provider: self.protocol,
                             payload: self.artifact.clone(),
                         },
@@ -4947,8 +4951,8 @@ mod tests {
 
     #[async_trait]
     impl Provider for MeaningfulFailureProvider {
-        fn capabilities(&self, _: &ModelId) -> cookiecode_providers::ProviderCapabilities {
-            cookiecode_providers::ProviderCapabilities::default()
+        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
+            cookie_agent_providers::ProviderCapabilities::default()
         }
 
         async fn stream(
@@ -4978,8 +4982,8 @@ mod tests {
 
     #[async_trait]
     impl Provider for BlockingProvider {
-        fn capabilities(&self, _: &ModelId) -> cookiecode_providers::ProviderCapabilities {
-            cookiecode_providers::ProviderCapabilities::default()
+        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
+            cookie_agent_providers::ProviderCapabilities::default()
         }
 
         async fn stream(
@@ -5000,8 +5004,8 @@ mod tests {
 
     #[async_trait]
     impl Provider for RetrySteeringProvider {
-        fn capabilities(&self, _: &ModelId) -> cookiecode_providers::ProviderCapabilities {
-            cookiecode_providers::ProviderCapabilities::default()
+        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
+            cookie_agent_providers::ProviderCapabilities::default()
         }
 
         async fn stream(
@@ -5478,7 +5482,7 @@ mod tests {
         engine: &Engine,
         parent: SessionId,
         call: ToolCallId,
-    ) -> cookiecode_protocol::ToolResult {
+    ) -> cookie_agent_protocol::ToolResult {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let Some(result) = engine
@@ -5508,7 +5512,7 @@ mod tests {
 
     fn approval_request_event(
         approval_id: &str,
-        resources: Vec<cookiecode_protocol::ApprovalResource>,
+        resources: Vec<cookie_agent_protocol::ApprovalResource>,
         precedence_reason: &str,
     ) -> Event {
         let (action, resource, suggested_pattern) = {
@@ -5525,11 +5529,11 @@ mod tests {
             resource: resource.clone(),
             suggested_pattern,
             resources,
-            decision_trace: cookiecode_protocol::DecisionTrace {
+            decision_trace: cookie_agent_protocol::DecisionTrace {
                 action,
                 normalized_resource: resource,
                 candidates: Vec::new(),
-                effect: cookiecode_protocol::Effect::Ask,
+                effect: cookie_agent_protocol::Effect::Ask,
                 precedence_reason: precedence_reason.into(),
             },
         }
@@ -6047,7 +6051,7 @@ mod tests {
                 3,
                 Event::ToolCallCompleted {
                     tool_call_id: call,
-                    result: cookiecode_protocol::ToolResult {
+                    result: cookie_agent_protocol::ToolResult {
                         content: "contents".into(),
                         truncated: false,
                     },
@@ -6112,7 +6116,7 @@ mod tests {
             })
             .expect("interactive call");
         let (_, mut stdout) = engine
-            .subscribe_tool_output(call, cookiecode_protocol::OutputStream::Stdout)
+            .subscribe_tool_output(call, cookie_agent_protocol::OutputStream::Stdout)
             .expect("output hub");
 
         for (data, eof) in [(b"first".as_slice(), false), (b"second".as_slice(), true)] {
@@ -6920,7 +6924,7 @@ mod tests {
             },
             Event::ToolCallCompleted {
                 tool_call_id: call,
-                result: cookiecode_protocol::ToolResult {
+                result: cookie_agent_protocol::ToolResult {
                     content: "result".into(),
                     truncated: false,
                 },
@@ -6979,7 +6983,7 @@ mod tests {
                 tool: "read".into(),
                 arguments: Value::Null,
                 provider_tool_call_id: Some("native-orphan".into()),
-                provider_protocol: Some(cookiecode_protocol::ProviderProtocol::OpenAiResponses),
+                provider_protocol: Some(cookie_agent_protocol::ProviderProtocol::OpenAiResponses),
             },
             Event::AttemptAbandoned,
             Event::ToolCallFailed {
@@ -7050,7 +7054,7 @@ mod tests {
             },
             Event::ToolCallCompleted {
                 tool_call_id: paired,
-                result: cookiecode_protocol::ToolResult {
+                result: cookie_agent_protocol::ToolResult {
                     content: "result".into(),
                     truncated: false,
                 },
@@ -7332,7 +7336,9 @@ mod tests {
                     tool: "read".into(),
                     arguments: Value::Null,
                     provider_tool_call_id: Some("native-first".into()),
-                    provider_protocol: Some(cookiecode_protocol::ProviderProtocol::OpenAiResponses),
+                    provider_protocol: Some(
+                        cookie_agent_protocol::ProviderProtocol::OpenAiResponses,
+                    ),
                 },
             ),
             (first_run, Event::RunInterrupted { reason: None }),
@@ -7350,7 +7356,9 @@ mod tests {
                     tool: "write".into(),
                     arguments: Value::Null,
                     provider_tool_call_id: Some("native-second".into()),
-                    provider_protocol: Some(cookiecode_protocol::ProviderProtocol::OpenAiResponses),
+                    provider_protocol: Some(
+                        cookie_agent_protocol::ProviderProtocol::OpenAiResponses,
+                    ),
                 },
             ),
             (second_run, Event::RunInterrupted { reason: None }),
@@ -7620,8 +7628,8 @@ mod tests {
                 Some(run),
                 approval_request_event(
                     "pending-restart-approval",
-                    vec![cookiecode_protocol::ApprovalResource {
-                        action: cookiecode_protocol::ActionKind::Bash,
+                    vec![cookie_agent_protocol::ApprovalResource {
+                        action: cookie_agent_protocol::ActionKind::Bash,
                         resource: "git status".into(),
                         suggested_pattern: "git status *".into(),
                     }],
@@ -8749,13 +8757,13 @@ mod tests {
             .expect("create session")
             .id;
         let resources = vec![
-            cookiecode_protocol::ApprovalResource {
-                action: cookiecode_protocol::ActionKind::Bash,
+            cookie_agent_protocol::ApprovalResource {
+                action: cookie_agent_protocol::ActionKind::Bash,
                 resource: "git status --short".into(),
                 suggested_pattern: "git status *".into(),
             },
-            cookiecode_protocol::ApprovalResource {
-                action: cookiecode_protocol::ActionKind::Bash,
+            cookie_agent_protocol::ApprovalResource {
+                action: cookie_agent_protocol::ActionKind::Bash,
                 resource: "git log -1".into(),
                 suggested_pattern: "git log *".into(),
             },
@@ -8796,12 +8804,12 @@ mod tests {
         }));
         assert!(engine.inner.approvals.allows(
             session,
-            cookiecode_protocol::ActionKind::Bash,
+            cookie_agent_protocol::ActionKind::Bash,
             "git status --short"
         ));
         assert!(engine.inner.approvals.allows(
             session,
-            cookiecode_protocol::ActionKind::Bash,
+            cookie_agent_protocol::ActionKind::Bash,
             "git log -1"
         ));
         engine.shutdown().await;
@@ -8811,7 +8819,7 @@ mod tests {
         for resource in ["git status --short", "git log -1"] {
             assert!(reopened.inner.approvals.allows(
                 session,
-                cookiecode_protocol::ActionKind::Bash,
+                cookie_agent_protocol::ActionKind::Bash,
                 resource
             ));
         }
@@ -8824,8 +8832,8 @@ mod tests {
             .create_session(".", "test")
             .expect("create session")
             .id;
-        let resource = cookiecode_protocol::ApprovalResource {
-            action: cookiecode_protocol::ActionKind::ExternalDirectory,
+        let resource = cookie_agent_protocol::ApprovalResource {
+            action: cookie_agent_protocol::ActionKind::ExternalDirectory,
             resource: "/outside/workspace/file".into(),
             suggested_pattern: "/outside/workspace/file *".into(),
         };
@@ -8856,21 +8864,21 @@ mod tests {
             .events();
         assert!(events.iter().any(|event| {
             matches!(&event.event, Event::ApprovalRequested { action, resources, .. }
-                if *action == cookiecode_protocol::ActionKind::ExternalDirectory
+                if *action == cookie_agent_protocol::ActionKind::ExternalDirectory
                     && resources == &vec![resource.clone()])
         }));
         assert!(engine.inner.approvals.allows(
             session,
-            cookiecode_protocol::ActionKind::ExternalDirectory,
+            cookie_agent_protocol::ActionKind::ExternalDirectory,
             "/outside/workspace/file"
         ));
         assert!(!engine.inner.approvals.allows(
             session,
-            cookiecode_protocol::ActionKind::Read,
+            cookie_agent_protocol::ActionKind::Read,
             "/outside/workspace/file"
         ));
         let mut policy = engine.inner.store.get(session).expect("session").policy;
-        policy.permissions.read = cookiecode_config::PermissionEffect::Allow;
+        policy.permissions.read = cookie_agent_config::PermissionEffect::Allow;
         assert_eq!(
             engine
                 .inner
@@ -8882,17 +8890,17 @@ mod tests {
                     session,
                     vec![
                         (
-                            cookiecode_protocol::ActionKind::ExternalDirectory,
+                            cookie_agent_protocol::ActionKind::ExternalDirectory,
                             "/outside/workspace/file".into(),
                         ),
                         (
-                            cookiecode_protocol::ActionKind::Read,
+                            cookie_agent_protocol::ActionKind::Read,
                             "/outside/workspace/file".into(),
                         ),
                     ],
                 )
                 .effect,
-            cookiecode_protocol::Effect::Allow
+            cookie_agent_protocol::Effect::Allow
         );
         engine.shutdown().await;
     }
@@ -8905,13 +8913,13 @@ mod tests {
             .expect("create session")
             .id;
         let resources = vec![
-            cookiecode_protocol::ApprovalResource {
-                action: cookiecode_protocol::ActionKind::Bash,
+            cookie_agent_protocol::ApprovalResource {
+                action: cookie_agent_protocol::ActionKind::Bash,
                 resource: "git status".into(),
                 suggested_pattern: "git status *".into(),
             },
-            cookiecode_protocol::ApprovalResource {
-                action: cookiecode_protocol::ActionKind::Bash,
+            cookie_agent_protocol::ApprovalResource {
+                action: cookie_agent_protocol::ActionKind::Bash,
                 resource: "git log -1".into(),
                 suggested_pattern: "git log *".into(),
             },
@@ -9871,9 +9879,9 @@ mod tests {
                 .is_some_and(|opaque| opaque.provider == ProviderProtocol::AnthropicMessages)
         }));
         assert!(
-            cookiecode_providers::openai::encode_history(
+            cookie_agent_providers::openai::encode_history(
                 &request.persisted_turns,
-                cookiecode_providers::openai::OpenAiEndpoint::ChatCompletions,
+                cookie_agent_providers::openai::OpenAiEndpoint::ChatCompletions,
             )
             .discarded_opaque
         );
@@ -9911,7 +9919,7 @@ mod tests {
                 timestamp: jiff::Timestamp::now(),
                 event: Event::TurnOpaque {
                     state: TurnOpaque {
-                        provider: cookiecode_protocol::ProviderProtocol::OpenAiResponses,
+                        provider: cookie_agent_protocol::ProviderProtocol::OpenAiResponses,
                         payload: serde_json::json!({"items": [{"type": "function_call", "call_id": "native-call"}]}),
                     },
                 },
@@ -9926,7 +9934,9 @@ mod tests {
                     tool: "read".into(),
                     arguments: serde_json::json!({"path": "file"}),
                     provider_tool_call_id: Some("native-call".into()),
-                    provider_protocol: Some(cookiecode_protocol::ProviderProtocol::OpenAiResponses),
+                    provider_protocol: Some(
+                        cookie_agent_protocol::ProviderProtocol::OpenAiResponses,
+                    ),
                 },
             },
             EventEnvelope {
@@ -9936,7 +9946,7 @@ mod tests {
                 timestamp: jiff::Timestamp::now(),
                 event: Event::ToolCallCompleted {
                     tool_call_id: call,
-                    result: cookiecode_protocol::ToolResult {
+                    result: cookie_agent_protocol::ToolResult {
                         content: "result".into(),
                         truncated: false,
                     },
@@ -9946,7 +9956,7 @@ mod tests {
         let same = assemble_persisted_turns(&events, Some(ProviderProtocol::OpenAiResponses));
         let foreign =
             assemble_persisted_turns(&events, Some(ProviderProtocol::OpenAiChatCompletions));
-        let tool_id = |turns: &[cookiecode_providers::PersistedTurn]| match &turns[2].message {
+        let tool_id = |turns: &[cookie_agent_providers::PersistedTurn]| match &turns[2].message {
             ProviderMessage::Tool { result } => result.tool_call_id.clone(),
             _ => panic!("tool result expected"),
         };

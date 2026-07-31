@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use cookiecode_config::{AgentType, Config};
-use cookiecode_engine::{
+use cookie_agent_config::{AgentType, Config};
+use cookie_agent_engine::{
     DelegateInvocation, EngineClient, EngineError, SessionToolContext, ToolCall, ToolError,
     ToolInvocationContext, ToolProvider, ToolResult, ToolSpec, journal::JournalError,
 };
@@ -125,7 +125,7 @@ impl DelegateToolProvider {
 
     fn targets_for_session(
         &self,
-        session: cookiecode_protocol::SessionId,
+        session: cookie_agent_protocol::SessionId,
     ) -> Result<Vec<String>, ToolError> {
         let delegation = self
             .engine
@@ -317,12 +317,12 @@ mod tests {
         time::Duration,
     };
 
-    use cookiecode_config::{
+    use cookie_agent_config::{
         AgentProfile, DelegationConfig, ModelConfig, ProviderConfig, ProviderType,
     };
-    use cookiecode_engine::{Engine, EngineOptions, ProgressSink, events::OutputHub};
-    use cookiecode_protocol::{Event, RunId, SessionStatus, ToolCallId};
-    use cookiecode_providers::{
+    use cookie_agent_engine::{Engine, EngineOptions, ProgressSink, events::OutputHub};
+    use cookie_agent_protocol::{Event, RunId, SessionStatus, ToolCallId};
+    use cookie_agent_providers::{
         ModelId, NormalizedEvent, Provider, ProviderCapabilities, ProviderError, ProviderRequest,
         StopReason,
     };
@@ -437,7 +437,7 @@ mod tests {
 
     async fn pending_delegate_call(
         engine: &Engine,
-    ) -> (cookiecode_protocol::SessionId, RunId, ToolCallId) {
+    ) -> (cookie_agent_protocol::SessionId, RunId, ToolCallId) {
         let session = engine
             .create_session(".", "root")
             .expect("create root session")
@@ -473,7 +473,7 @@ mod tests {
     }
 
     fn invocation_context(
-        session: cookiecode_protocol::SessionId,
+        session: cookie_agent_protocol::SessionId,
         run: RunId,
         call: ToolCallId,
     ) -> ToolInvocationContext {

@@ -6,7 +6,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cookiecode_engine::{
+use cookie_agent_engine::{
     SessionToolContext, ToolCall, ToolError, ToolInvocationContext, ToolProvider, ToolSpec,
 };
 use schemars::JsonSchema;
@@ -73,7 +73,7 @@ fn edit_file(
     new: &str,
     expected_count: usize,
     before_rename: impl FnOnce(),
-) -> Result<cookiecode_engine::ToolResult, ToolError> {
+) -> Result<cookie_agent_engine::ToolResult, ToolError> {
     if old.is_empty() {
         return Err(tool_error("old_string must not be empty"));
     }
@@ -149,7 +149,7 @@ impl ToolProvider for EditTool {
         &self,
         ctx: ToolInvocationContext,
         call: ToolCall,
-    ) -> Result<cookiecode_engine::ToolResult, ToolError> {
+    ) -> Result<cookie_agent_engine::ToolResult, ToolError> {
         if call.name != "edit" {
             return Err(tool_error("edit tool received another tool name"));
         }

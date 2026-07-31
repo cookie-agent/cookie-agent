@@ -417,7 +417,7 @@ pub fn build_figment(user_config: Option<&Path>, workspace_config: Option<&Path>
     if let Some(path) = workspace_config {
         figment = figment.merge(Toml::file(path));
     }
-    figment.merge(Env::prefixed("COOKIECODE_").split("__"))
+    figment.merge(Env::prefixed("COOKIE_AGENT_").split("__"))
 }
 
 /// Extracts and validates a pre-built Figment stack.
@@ -432,7 +432,7 @@ pub fn load_from(figment: Figment) -> Result<Config, ConfigError> {
 /// Loads the default user configuration and a repository's workspace config.
 pub fn load(workspace: &Path) -> Result<Config, ConfigError> {
     let user = user_config_path();
-    let workspace_config = workspace.join(".cookiecode/config.toml");
+    let workspace_config = workspace.join(".cookie_agent/config.toml");
     load_layered(Some(&user), Some(&workspace_config))
 }
 
@@ -449,7 +449,7 @@ pub fn load_layered(
     merge_optional_file(&mut merged, user_config, RuleSource::User)?;
     merge_optional_file(&mut merged, workspace_config, RuleSource::Workspace)?;
 
-    let environment: Value = Figment::from(Env::prefixed("COOKIECODE_").split("__"))
+    let environment: Value = Figment::from(Env::prefixed("COOKIE_AGENT_").split("__"))
         .extract()
         .map_err(|error| ConfigError::Figment(Box::new(error)))?;
     merge_value(&mut merged, environment, RuleSource::Env, &[]);
@@ -765,7 +765,7 @@ fn user_config_path() -> PathBuf {
     env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default()
-        .join(".config/cookiecode/config.toml")
+        .join(".config/cookie_agent/config.toml")
 }
 
 /// `*` matches any characters (including `/`) and `?` exactly one character.
@@ -909,7 +909,7 @@ impl TrustStore {
 
 pub fn trust_store_path() -> Result<PathBuf, TrustError> {
     let home = env::var_os("HOME").ok_or(TrustError::HomeUnavailable)?;
-    Ok(PathBuf::from(home).join(".local/share/cookiecode/trust.json"))
+    Ok(PathBuf::from(home).join(".local/share/cookie_agent/trust.json"))
 }
 
 pub fn is_trusted(workspace: &Path, config_bytes: &[u8]) -> Result<bool, TrustError> {

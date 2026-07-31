@@ -73,7 +73,7 @@ privileged child-creation API. The engine's role in delegation is generic:
 tool registration, the permissions pipeline, provenance derivation, and
 durable session storage. The daemon composes both.
 
-Dependency direction (no cycles). Arrows read "depends on"; `cookiecode` is
+Dependency direction (no cycles). Arrows read "depends on"; `cookie_agent` is
 the sole composition root:
 
 ```
@@ -94,7 +94,7 @@ providers ◄── engine ◄────── tools        (built-ins + deleg
 - `tui` → `protocol`, `server` (client side only; `server` supplies the
   current `MessageStream` transport adapters for in-process and WebSocket
   connections, never engine APIs)
-- `cookiecode` → `engine`, `providers`, `tools`, `config`, `server`, `tui`
+- `cookie_agent` → `engine`, `providers`, `tools`, `config`, `server`, `tui`
 
 `engine` never imports `tools`; the composition root registers the built-in
 and delegate providers into the engine's tool registry.
@@ -124,8 +124,8 @@ crates/
   server/                # axum daemon: WS listener, daemon lifecycle,
                          # session/run service behind the protocol
   tui/                   # ratatui client (pure protocol consumer)
-  cookiecode/            # thin binary (composition root):
-                         #   `cookiecode` (TUI), `cookiecode daemon`, ...
+  cookie_agent/            # thin binary (composition root):
+                         #   `cookie_agent` (TUI), `cookie_agent daemon`, ...
 ```
 
 ---
@@ -960,9 +960,9 @@ Layered via figment (later layers win):
 
 ```
 built-in defaults
-  < user config        ~/.config/cookiecode/config.toml
-  < workspace config   <repo>/.cookiecode/config.toml
-  < environment        COOKIECODE_*
+  < user config        ~/.config/cookie_agent/config.toml
+  < workspace config   <repo>/.cookie_agent/config.toml
+  < environment        COOKIE_AGENT_*
 ```
 
 Sketch:
@@ -1045,9 +1045,9 @@ Notes:
 - **Project trust**: workspace config from a repository is untrusted input.
   First use prompts for trust before it is applied (it can enable permissive
   tools in an unsandboxed harness). Trust decisions are stored in
-  `~/.local/share/cookiecode/trust.json`, keyed by canonical workspace path
+  `~/.local/share/cookie_agent/trust.json`, keyed by canonical workspace path
   plus a content hash of the workspace config file — editing the file
-  re-prompts. The `cookiecode` CLI prompts only when stdin and stdout are
+  re-prompts. The `cookie_agent` CLI prompts only when stdin and stdout are
   TTYs; an untrusted config in a non-TTY invocation (including `daemon`) is
   refused unless the user explicitly passes `--trust-workspace`, which records
   trust for the current config contents.
@@ -1066,7 +1066,7 @@ Notes:
 - Layout:
 
 ```
-~/.local/share/cookiecode/projects/<cwd-hash>/
+~/.local/share/cookie_agent/projects/<cwd-hash>/
     delegations.jsonl
     sessions/<session-id>/
         events.jsonl
@@ -1168,8 +1168,8 @@ Protocol surface (transport-independent):
   attaching to a running one. No privileged access to engine internals.
   Renders the session tree, live child streams, approval prompts, and live
   tool output with stdin interaction (§7.1).
-- `cookiecode` binary crate: `cookiecode` (TUI, auto-spawns/connects daemon),
-  `cookiecode daemon` (WebSocket transport; stdio post-MVP), plus
+- `cookie_agent` binary crate: `cookie_agent` (TUI, auto-spawns/connects daemon),
+  `cookie_agent daemon` (WebSocket transport; stdio post-MVP), plus
   non-interactive conveniences later.
 - Web and VS Code: post-MVP, consuming the generated TS bindings.
 
@@ -1227,7 +1227,7 @@ MSRV: Rust 1.88 (ts-rs floor).
 v0.1 ships when all of these work end-to-end:
 
 **Daemon and engine**
-- engine + server composed by `cookiecode`; JSON-RPC over the transport
+- engine + server composed by `cookie_agent`; JSON-RPC over the transport
   abstraction with exactly two transports: **in-process** and **WebSocket**
 - per-session actors with out-of-mailbox tool execution (§4.1), steering at
   turn boundaries, full cancellation

@@ -1,5 +1,5 @@
 [package]
-name = "cookiecode-tui"
+name = "cookie_agent_tui"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -12,8 +12,8 @@ workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 base64 = "0.22"
-cookiecode-protocol = { path = "../protocol" }
-cookiecode-server = { path = "../server" }
+cookie_agent_protocol = { path = "../protocol" }
+cookie_agent_server = { path = "../server" }
 crossterm.workspace = true
 futures-util.workspace = true
 ratatui.workspace = true
@@ -24,8 +24,8 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 
 [dev-dependencies]
-cookiecode-config = { path = "../config" }
-cookiecode-engine = { path = "../engine" }
-cookiecode-providers = { path = "../providers" }
+cookie_agent_config = { path = "../config" }
+cookie_agent_engine = { path = "../engine" }
+cookie_agent_providers = { path = "../providers" }
 jiff.workspace = true
 tempfile.workspace = true

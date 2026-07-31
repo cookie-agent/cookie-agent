@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use cookiecode_engine::{
+use cookie_agent_engine::{
     SessionToolContext, ToolCall, ToolError, ToolInvocationContext, ToolProvider, ToolSpec,
 };
 use ignore::{Match, WalkBuilder, overrides::OverrideBuilder};
@@ -55,7 +55,7 @@ impl ToolProvider for GlobTool {
         &self,
         ctx: ToolInvocationContext,
         call: ToolCall,
-    ) -> Result<cookiecode_engine::ToolResult, ToolError> {
+    ) -> Result<cookie_agent_engine::ToolResult, ToolError> {
         if call.name != "glob" {
             return Err(tool_error("glob tool received another tool name"));
         }

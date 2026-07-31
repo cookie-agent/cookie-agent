@@ -5,10 +5,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cookiecode_engine::{
+use cookie_agent_engine::{
     SessionToolContext, ToolCall, ToolError, ToolInvocationContext, ToolProvider, ToolSpec,
 };
-use cookiecode_protocol::OutputStream;
+use cookie_agent_protocol::OutputStream;
 use process_wrap::tokio::{CommandWrap, ProcessGroup};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -87,7 +87,7 @@ impl Default for BashTool {
 async fn drain<R: tokio::io::AsyncRead + Unpin>(
     mut reader: R,
     stream: OutputStream,
-    progress: cookiecode_engine::ProgressSink,
+    progress: cookie_agent_engine::ProgressSink,
     captured: Arc<Mutex<Captured>>,
 ) -> Result<(), ToolError> {
     let mut buffer = [0_u8; 8192];
@@ -117,7 +117,7 @@ impl ToolProvider for BashTool {
         &self,
         mut ctx: ToolInvocationContext,
         call: ToolCall,
-    ) -> Result<cookiecode_engine::ToolResult, ToolError> {
+    ) -> Result<cookie_agent_engine::ToolResult, ToolError> {
         if call.name != "bash" {
             return Err(tool_error("bash tool received another tool name"));
         }
@@ -226,10 +226,10 @@ impl ToolProvider for BashTool {
 mod tests {
     use std::{fs, time::Duration};
 
-    use cookiecode_engine::{
+    use cookie_agent_engine::{
         ProgressSink, ToolCall, ToolInvocationContext, ToolProvider, events::OutputMessage,
     };
-    use cookiecode_protocol::{OutputStream, RunId, SessionId, ToolCallId};
+    use cookie_agent_protocol::{OutputStream, RunId, SessionId, ToolCallId};
     use process_wrap::tokio::{CommandWrap, ProcessGroup};
     use tempfile::tempdir;
     use tokio::{
@@ -239,7 +239,7 @@ mod tests {
 
     use super::BashTool;
 
-    fn context(hub: cookiecode_engine::events::OutputHub) -> ToolInvocationContext {
+    fn context(hub: cookie_agent_engine::events::OutputHub) -> ToolInvocationContext {
         let (progress, _) = mpsc::channel(1);
         ToolInvocationContext {
             session: SessionId::new_v7(),
@@ -257,7 +257,7 @@ mod tests {
         let directory = tempdir().expect("temporary directory");
         let tool = BashTool::new(directory.path());
         let call_id = ToolCallId::new_v7();
-        let hub = cookiecode_engine::events::OutputHub::new(call_id, 1024);
+        let hub = cookie_agent_engine::events::OutputHub::new(call_id, 1024);
         let (_, mut stdout) = hub.subscribe(OutputStream::Stdout, 8);
         let (_, mut stderr) = hub.subscribe(OutputStream::Stderr, 8);
         let result = tool
@@ -296,7 +296,7 @@ mod tests {
         let pid_file = directory.path().join("child.pid");
         let tool = BashTool::new(directory.path());
         let call_id = ToolCallId::new_v7();
-        let hub = cookiecode_engine::events::OutputHub::new(call_id, 1024);
+        let hub = cookie_agent_engine::events::OutputHub::new(call_id, 1024);
         let command = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
         let result = tool
             .invoke(
@@ -350,7 +350,7 @@ mod tests {
         let directory = tempdir().expect("temporary directory");
         let tool = BashTool::new(directory.path());
         let call_id = ToolCallId::new_v7();
-        let hub = cookiecode_engine::events::OutputHub::new(call_id, 1024);
+        let hub = cookie_agent_engine::events::OutputHub::new(call_id, 1024);
         let prefix = super::STREAM_RESULT_LIMIT - 2;
         let result = tool
             .invoke(
@@ -386,7 +386,7 @@ mod tests {
         let call_id = ToolCallId::new_v7();
         let result = tool
             .invoke(
-                context(cookiecode_engine::events::OutputHub::new(call_id, 1024)),
+                context(cookie_agent_engine::events::OutputHub::new(call_id, 1024)),
                 ToolCall {
                     id: call_id,
                     name: "bash".into(),

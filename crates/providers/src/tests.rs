@@ -1171,49 +1171,52 @@ async fn fallback_does_not_advance_run_terminal_errors() {
     assert_eq!(fallback.calls(), 0);
 }
 
-#[ignore = "requires COOKIECODE_TEST_* environment variables"]
+#[ignore = "requires COOKIE_AGENT_TEST_* environment variables"]
 #[tokio::test]
 async fn live_anthropic_smoke() {
     let provider = AnthropicProvider::with_base_url(
-        env("COOKIECODE_TEST_API_KEY"),
-        env("COOKIECODE_TEST_BASE_URL"),
-    );
-    assert!(
-        !events(&provider, request(&env("COOKIECODE_TEST_MODEL_ANTHROPIC")))
-            .await
-            .is_empty()
-    );
-}
-
-#[ignore = "requires COOKIECODE_TEST_* environment variables"]
-#[tokio::test]
-async fn live_openai_completions_smoke() {
-    let provider = OpenAiProvider::with_base_url(
-        env("COOKIECODE_TEST_API_KEY"),
-        env("COOKIECODE_TEST_BASE_URL"),
+        env("COOKIE_AGENT_TEST_API_KEY"),
+        env("COOKIE_AGENT_TEST_BASE_URL"),
     );
     assert!(
         !events(
             &provider,
-            request(&env("COOKIECODE_TEST_MODEL_OPENAI_COMPLETIONS"))
+            request(&env("COOKIE_AGENT_TEST_MODEL_ANTHROPIC"))
         )
         .await
         .is_empty()
     );
 }
 
-#[ignore = "requires COOKIECODE_TEST_* environment variables"]
+#[ignore = "requires COOKIE_AGENT_TEST_* environment variables"]
+#[tokio::test]
+async fn live_openai_completions_smoke() {
+    let provider = OpenAiProvider::with_base_url(
+        env("COOKIE_AGENT_TEST_API_KEY"),
+        env("COOKIE_AGENT_TEST_BASE_URL"),
+    );
+    assert!(
+        !events(
+            &provider,
+            request(&env("COOKIE_AGENT_TEST_MODEL_OPENAI_COMPLETIONS"))
+        )
+        .await
+        .is_empty()
+    );
+}
+
+#[ignore = "requires COOKIE_AGENT_TEST_* environment variables"]
 #[tokio::test]
 async fn live_openai_responses_smoke() {
     let provider = OpenAiProvider::with_base_url(
-        env("COOKIECODE_TEST_API_KEY"),
-        env("COOKIECODE_TEST_BASE_URL"),
+        env("COOKIE_AGENT_TEST_API_KEY"),
+        env("COOKIE_AGENT_TEST_BASE_URL"),
     )
     .with_default_endpoint(OpenAiEndpoint::Responses);
     assert!(
         !events(
             &provider,
-            request(&env("COOKIECODE_TEST_MODEL_OPENAI_RESPONSES"))
+            request(&env("COOKIE_AGENT_TEST_MODEL_OPENAI_RESPONSES"))
         )
         .await
         .is_empty()

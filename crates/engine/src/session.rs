@@ -8,8 +8,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use cookiecode_config::PolicySnapshot;
-use cookiecode_protocol::{
+use cookie_agent_config::PolicySnapshot;
+use cookie_agent_protocol::{
     ChildSummary, Event, RunId, SessionId, SessionMeta, SessionOrigin, SessionStatus, SessionTree,
     ToolCallId, Usage,
 };

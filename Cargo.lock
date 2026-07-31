@@ -434,23 +434,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "cookiecode"
+name = "cookie_agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "cookiecode-config",
- "cookiecode-engine",
- "cookiecode-providers",
- "cookiecode-server",
- "cookiecode-tools",
- "cookiecode-tui",
+ "cookie_agent_config",
+ "cookie_agent_engine",
+ "cookie_agent_providers",
+ "cookie_agent_server",
+ "cookie_agent_tools",
+ "cookie_agent_tui",
  "tokio",
  "tracing-subscriber",
 ]
 
 [[package]]
-name = "cookiecode-config"
+name = "cookie_agent_config"
 version = "0.1.0"
 dependencies = [
  "figment",
@@ -463,15 +463,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "cookiecode-engine"
+name = "cookie_agent_engine"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64",
  "bytes",
- "cookiecode-config",
- "cookiecode-protocol",
- "cookiecode-providers",
+ "cookie_agent_config",
+ "cookie_agent_protocol",
+ "cookie_agent_providers",
  "futures-util",
  "insta",
  "jiff",
@@ -488,7 +488,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cookiecode-protocol"
+name = "cookie_agent_protocol"
 version = "0.1.0"
 dependencies = [
  "insta",
@@ -501,7 +501,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cookiecode-providers"
+name = "cookie_agent_providers"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -516,16 +516,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "cookiecode-server"
+name = "cookie_agent_server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "cookiecode-config",
- "cookiecode-engine",
- "cookiecode-protocol",
- "cookiecode-providers",
+ "cookie_agent_config",
+ "cookie_agent_engine",
+ "cookie_agent_protocol",
+ "cookie_agent_providers",
  "futures-util",
  "serde",
  "serde_json",
@@ -539,14 +539,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "cookiecode-tools"
+name = "cookie_agent_tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "cookiecode-config",
- "cookiecode-engine",
- "cookiecode-protocol",
- "cookiecode-providers",
+ "cookie_agent_config",
+ "cookie_agent_engine",
+ "cookie_agent_protocol",
+ "cookie_agent_providers",
  "futures-util",
  "ignore",
  "process-wrap",
@@ -562,17 +562,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "cookiecode-tui"
+name = "cookie_agent_tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "base64",
- "cookiecode-config",
- "cookiecode-engine",
- "cookiecode-protocol",
- "cookiecode-providers",
- "cookiecode-server",
+ "cookie_agent_config",
+ "cookie_agent_engine",
+ "cookie_agent_protocol",
+ "cookie_agent_providers",
+ "cookie_agent_server",
  "crossterm",
  "futures-util",
  "jiff",

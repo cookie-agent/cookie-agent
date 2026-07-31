@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf};
 
 use async_trait::async_trait;
-use cookiecode_engine::{
+use cookie_agent_engine::{
     SessionToolContext, ToolCall, ToolError, ToolInvocationContext, ToolProvider, ToolSpec,
 };
 use ignore::WalkBuilder;
@@ -69,7 +69,7 @@ impl ToolProvider for GrepTool {
         &self,
         ctx: ToolInvocationContext,
         call: ToolCall,
-    ) -> Result<cookiecode_engine::ToolResult, ToolError> {
+    ) -> Result<cookie_agent_engine::ToolResult, ToolError> {
         if call.name != "grep" {
             return Err(tool_error("grep tool received another tool name"));
         }

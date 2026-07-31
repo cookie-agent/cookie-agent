@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::Context;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use cookiecode_protocol::{
+use cookie_agent_protocol::{
     AgentDescriptor, AgentListParams, ApprovalDecision, ApprovalRespondParams, Event,
     RunCancelParams, RunStartParams, RunSteerParams, RunToolStdinParams, SessionCreateParams,
     SessionId, SessionListParams, SessionMeta, SessionTree, SessionTreeParams,
@@ -60,7 +60,7 @@ pub struct App {
     picker_index: usize,
     input: String,
     focus: Focus,
-    stdin_target: Option<cookiecode_protocol::ToolCallId>,
+    stdin_target: Option<cookie_agent_protocol::ToolCallId>,
     status: String,
     should_quit: bool,
 }
@@ -190,8 +190,8 @@ impl App {
         let linked = match &delivery {
             ClientDelivery::Live { message, .. } => matches!(
                 message.as_ref(),
-                cookiecode_protocol::EventSubscriptionMessage::Event {
-                    event: cookiecode_protocol::EventEnvelope {
+                cookie_agent_protocol::EventSubscriptionMessage::Event {
+                    event: cookie_agent_protocol::EventEnvelope {
                         event: Event::ToolCallLinked { .. },
                         ..
                     }
@@ -487,7 +487,10 @@ impl App {
 
     fn selected_running_tool(
         &mut self,
-    ) -> Option<(cookiecode_protocol::RunId, cookiecode_protocol::ToolCallId)> {
+    ) -> Option<(
+        cookie_agent_protocol::RunId,
+        cookie_agent_protocol::ToolCallId,
+    )> {
         let session_id = self.selected?;
         let run_id = self.store.sessions.get(&session_id)?.active_run?;
         let running = self.running_tool_ids();
@@ -502,7 +505,7 @@ impl App {
         (state.tools.get(&call_id)?.status == ToolStatus::Running).then_some((run_id, call_id))
     }
 
-    fn running_tool_ids(&self) -> Vec<cookiecode_protocol::ToolCallId> {
+    fn running_tool_ids(&self) -> Vec<cookie_agent_protocol::ToolCallId> {
         let Some(session_id) = self.selected else {
             return Vec::new();
         };
@@ -906,7 +909,7 @@ mod tests {
     use std::collections::HashMap;
 
     use async_trait::async_trait;
-    use cookiecode_server::{MessageFrame, MessageStream, TransportError};
+    use cookie_agent_server::{MessageFrame, MessageStream, TransportError};
 
     use super::*;
     use crate::state::{SessionState, ToolCallState};
@@ -927,9 +930,9 @@ mod tests {
     #[tokio::test]
     async fn completed_stdin_target_advances_to_another_running_tool() {
         let session_id = SessionId::new_v7();
-        let run_id = cookiecode_protocol::RunId::new_v7();
-        let completed = cookiecode_protocol::ToolCallId::new_v7();
-        let running = cookiecode_protocol::ToolCallId::new_v7();
+        let run_id = cookie_agent_protocol::RunId::new_v7();
+        let completed = cookie_agent_protocol::ToolCallId::new_v7();
+        let running = cookie_agent_protocol::ToolCallId::new_v7();
         let mut state = SessionState {
             active_run: Some(run_id),
             ..SessionState::default()

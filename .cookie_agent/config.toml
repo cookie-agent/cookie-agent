@@ -1,0 +1,103 @@
+# cookie agent workspace configuration — dogfooding against the local test endpoint.
+#
+# Secrets are env-only: the API key is read from COOKIE_AGENT_TEST_API_KEY
+# (exported by the gitignored .env in this repo). Load it before launching:
+#
+#   set -a; source .env; set +a
+#   cargo run -p cookie_agent
+#
+# On first run you'll be prompted to trust this workspace config (TTY).
+
+[server]
+host = "127.0.0.1"
+port = 17419
+
+# ---------------------------------------------------------------------------
+# Providers — unified test endpoint speaking all three wire protocols.
+# ---------------------------------------------------------------------------
+
+[providers.anthropic_live]
+type = "anthropic"
+api_key_env = "COOKIE_AGENT_TEST_API_KEY"
+base_url = "https://llm-api.quantumcookie.xyz/v1"
+
+[providers.responses_live]
+type = "openai"
+api_key_env = "COOKIE_AGENT_TEST_API_KEY"
+base_url = "https://llm-api.quantumcookie.xyz/v1"
+api = "responses"
+
+[providers.chat_live]
+type = "openai-compatible"
+api_key_env = "COOKIE_AGENT_TEST_API_KEY"
+base_url = "https://llm-api.quantumcookie.xyz/v1"
+
+# ---------------------------------------------------------------------------
+# Permissions — read/list freely, ask before mutations, exec, and delegation.
+# ---------------------------------------------------------------------------
+
+[permissions]
+read = "allow"
+write = "ask"
+exec = "ask"
+delegate = "ask"
+
+# ---------------------------------------------------------------------------
+# Agents
+# ---------------------------------------------------------------------------
+
+# Default profile: fallback chain across all three protocols. A run starts on
+# kimi-for-coding (Anthropic); entry-terminal failures advance the chain.
+[agents.primary]
+type = "primary"
+models = [
+  { provider = "anthropic_live", model = "kimi-for-coding" },
+  { provider = "responses_live", model = "gpt-5.6-luna" },
+  { provider = "chat_live", model = "deepseek-v4-flash" },
+]
+tools = ["read", "list", "grep", "glob", "write", "edit", "bash"]
+
+[agents.primary.delegation]
+enabled = true
+allowed_profiles = ["worker"]
+limit = 3
+
+# Subagent profile for the delegate tool.
+[agents.worker]
+type = "subagent"
+models = [{ provider = "responses_live", model = "gpt-5.6-luna" }]
+tools = ["read", "list", "grep", "glob"]
+
+[agents.worker.delegation]
+enabled = false
+
+# Single-protocol profiles, handy for exercising a specific adapter.
+[agents.anthropic]
+type = "primary"
+models = [{ provider = "anthropic_live", model = "kimi-for-coding" }]
+tools = ["read", "list", "grep", "glob", "write", "edit", "bash"]
+
+[agents.anthropic.delegation]
+enabled = true
+allowed_profiles = ["worker"]
+limit = 3
+
+[agents.responses]
+type = "primary"
+models = [{ provider = "responses_live", model = "gpt-5.6-luna" }]
+tools = ["read", "list", "grep", "glob", "write", "edit", "bash"]
+
+[agents.responses.delegation]
+enabled = true
+allowed_profiles = ["worker"]
+limit = 3
+
+[agents.chat]
+type = "primary"
+models = [{ provider = "chat_live", model = "deepseek-v4-flash" }]
+tools = ["read", "list", "grep", "glob", "write", "edit", "bash"]
+
+[agents.chat.delegation]
+enabled = true
+allowed_profiles = ["worker"]
+limit = 3

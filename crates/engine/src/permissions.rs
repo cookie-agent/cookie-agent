@@ -6,8 +6,8 @@ use std::{
     sync::Mutex,
 };
 
-use cookiecode_config::{PermissionEffect, PolicySnapshot, RuleSource, simple_wildcard_match};
-use cookiecode_protocol::{
+use cookie_agent_config::{PermissionEffect, PolicySnapshot, RuleSource, simple_wildcard_match};
+use cookie_agent_protocol::{
     ActionKind, ApprovalResource, DecisionTrace, Effect, MatchedPermissionRule, SessionId,
 };
 use thiserror::Error;
@@ -459,11 +459,11 @@ pub fn bash_subcommands(source: &str) -> Vec<String> {
 mod tests {
     use std::{collections::BTreeSet, path::Path};
 
-    use cookiecode_config::{
+    use cookie_agent_config::{
         DelegationPolicy, DepthLimit, PermissionEffect, PermissionRule, PolicySnapshot,
         ProfileSnapshot, ResolvedPermissions, ResultLimits, RuleSource,
     };
-    use cookiecode_protocol::{ActionKind, Effect, SessionId};
+    use cookie_agent_protocol::{ActionKind, Effect, SessionId};
     use uuid::Uuid;
 
     use super::{ApprovalStore, PermissionPipeline, bash_subcommands, canonical_resource};
@@ -472,7 +472,7 @@ mod tests {
         PolicySnapshot {
             profile: ProfileSnapshot {
                 name: "test".into(),
-                r#type: cookiecode_config::AgentType::All,
+                r#type: cookie_agent_config::AgentType::All,
             },
             models: Vec::new(),
             tools: BTreeSet::new(),

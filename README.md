@@ -1,2 +1,2 @@
-# cookie_code
+# cookie agent
 Subagent-first coding harness

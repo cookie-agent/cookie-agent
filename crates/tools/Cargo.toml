@@ -1,5 +1,5 @@
 [package]
-name = "cookiecode-tools"
+name = "cookie_agent_tools"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -10,9 +10,9 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
-cookiecode-engine = { path = "../engine" }
-cookiecode-config = { path = "../config" }
-cookiecode-protocol = { path = "../protocol" }
+cookie_agent_engine = { path = "../engine" }
+cookie_agent_config = { path = "../config" }
+cookie_agent_protocol = { path = "../protocol" }
 ignore.workspace = true
 process-wrap.workspace = true
 regex.workspace = true
@@ -26,6 +26,6 @@ tokio-util.workspace = true
 tree-sitter-bash.workspace = true
 
 [dev-dependencies]
-cookiecode-providers = { path = "../providers" }
+cookie_agent_providers = { path = "../providers" }
 futures-util.workspace = true
 tempfile.workspace = true

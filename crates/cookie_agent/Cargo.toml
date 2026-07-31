@@ -1,0 +1,25 @@
+[package]
+name = "cookie_agent"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cookie_agent"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+cookie_agent_config = { path = "../config" }
+cookie_agent_engine = { path = "../engine" }
+cookie_agent_providers = { path = "../providers" }
+cookie_agent_server = { path = "../server" }
+cookie_agent_tools = { path = "../tools" }
+cookie_agent_tui = { path = "../tui" }
+tokio.workspace = true
+tracing-subscriber.workspace = true

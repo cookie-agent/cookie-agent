@@ -6,7 +6,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use cookiecode_protocol::{
+use cookie_agent_protocol::{
     ApprovalDecision, ApprovalResource, DecisionTrace, Event, EventEnvelope,
     EventSubscriptionMessage, OutputDelta, OutputGap, OutputSnapshotEnvelope, OutputStream, RunId,
     SessionId, ToolCallId,
@@ -820,14 +820,14 @@ impl OrderedOutput {
 #[cfg(test)]
 mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
-    use cookiecode_protocol::{OutputDelta, OutputGap, OutputSnapshot, OutputSnapshotEnvelope};
+    use cookie_agent_protocol::{OutputDelta, OutputGap, OutputSnapshot, OutputSnapshotEnvelope};
 
     use super::{StateStore, ToolCallState, ToolStatus};
 
     #[test]
     fn gap_snapshot_and_live_delta_preserve_the_snapshot_cursor() {
-        let session_id = cookiecode_protocol::SessionId::new_v7();
-        let call_id = cookiecode_protocol::ToolCallId::new_v7();
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
+        let call_id = cookie_agent_protocol::ToolCallId::new_v7();
         let mut store = StateStore::default();
         store.sessions.entry(session_id).or_default().tools.insert(
             call_id,
@@ -842,18 +842,18 @@ mod tests {
 
         store.apply_output_gap(OutputGap {
             call_id,
-            stream: cookiecode_protocol::OutputStream::Stdout,
+            stream: cookie_agent_protocol::OutputStream::Stdout,
             next_offset: 3,
         });
         store.apply_snapshot(OutputSnapshotEnvelope {
-            stream: cookiecode_protocol::OutputStream::Stdout,
+            stream: cookie_agent_protocol::OutputStream::Stdout,
             snapshot: OutputSnapshot {
                 call_id,
                 start_offset: 3,
                 end_offset: 6,
                 chunks: vec![OutputDelta {
                     call_id,
-                    stream: cookiecode_protocol::OutputStream::Stdout,
+                    stream: cookie_agent_protocol::OutputStream::Stdout,
                     byte_offset: 3,
                     data: STANDARD.encode(b"two"),
                 }],
@@ -861,7 +861,7 @@ mod tests {
         });
         store.apply_output_delta(OutputDelta {
             call_id,
-            stream: cookiecode_protocol::OutputStream::Stdout,
+            stream: cookie_agent_protocol::OutputStream::Stdout,
             byte_offset: 6,
             data: STANDARD.encode(b"!"),
         });

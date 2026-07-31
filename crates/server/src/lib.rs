@@ -1,4 +1,4 @@
-//! Transport-neutral JSON-RPC server for the CookieCode engine.
+//! Transport-neutral JSON-RPC server for the cookie agent engine.
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -16,9 +16,9 @@ use axum::{
     response::Response,
     routing::get,
 };
-use cookiecode_config::Config;
-use cookiecode_engine::{Engine, EngineError, events::OutputMessage};
-use cookiecode_protocol::{
+use cookie_agent_config::Config;
+use cookie_agent_engine::{Engine, EngineError, events::OutputMessage};
+use cookie_agent_protocol::{
     AgentListParams, AgentListResult, AgentType, ApprovalRespondParams, ClientHello, ErrorResponse,
     Event, EventSubscriptionMessage, EventsSubscribeParams, JsonRpcError, JsonRpcId,
     ModelDescriptor, ModelRef, Notification, OutputSnapshotEnvelope, OutputStream,
@@ -29,7 +29,7 @@ use cookiecode_protocol::{
     SessionListParams, SessionListResult, SessionResumeParams, SessionResumeResult,
     SessionTreeParams, SessionTreeResult, SuccessResponse,
 };
-use cookiecode_providers::Provider;
+use cookie_agent_providers::Provider;
 use futures_util::StreamExt;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -509,7 +509,7 @@ impl Server {
                 let call_id = match &message {
                     EventSubscriptionMessage::Event {
                         event:
-                            cookiecode_protocol::EventEnvelope {
+                            cookie_agent_protocol::EventEnvelope {
                                 event: Event::ToolCallStarted { tool_call_id, .. },
                                 ..
                             },
@@ -535,7 +535,7 @@ impl Server {
 
     fn start_output_tail(
         &self,
-        call_id: cookiecode_protocol::ToolCallId,
+        call_id: cookie_agent_protocol::ToolCallId,
         notifications: mpsc::Sender<Value>,
         shutdown: CancellationToken,
     ) {
@@ -821,7 +821,7 @@ async fn send_notification<T: Serialize>(
 
 async fn forward_output(
     stream: OutputStream,
-    snapshot: cookiecode_protocol::OutputSnapshot,
+    snapshot: cookie_agent_protocol::OutputSnapshot,
     mut receiver: mpsc::Receiver<OutputMessage>,
     notifications: mpsc::Sender<Value>,
     shutdown: CancellationToken,
@@ -893,12 +893,12 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use cookiecode_config::{AgentProfile, Config, ModelConfig, ProviderConfig, ProviderType};
-    use cookiecode_engine::EngineOptions;
-    use cookiecode_protocol::{
+    use cookie_agent_config::{AgentProfile, Config, ModelConfig, ProviderConfig, ProviderType};
+    use cookie_agent_engine::EngineOptions;
+    use cookie_agent_protocol::{
         ActionKind, ApprovalResource, DecisionTrace, Effect, MatchedPermissionRule, Request,
     };
-    use cookiecode_providers::{
+    use cookie_agent_providers::{
         ModelId, NormalizedEvent, ProviderCapabilities, ProviderError, ProviderRequest,
     };
     use futures_util::{SinkExt, StreamExt, stream};
@@ -963,7 +963,7 @@ mod tests {
         config.agents = BTreeMap::from([(
             "primary".into(),
             AgentProfile {
-                r#type: cookiecode_config::AgentType::Primary,
+                r#type: cookie_agent_config::AgentType::Primary,
                 models: vec![ModelConfig {
                     provider: "fake".into(),
                     model: "scripted".into(),
@@ -1209,8 +1209,8 @@ mod tests {
         let (notifications, mut notification_rx) = mpsc::channel(1);
         let forward_task = tokio::spawn(forward_output(
             OutputStream::Stdout,
-            cookiecode_protocol::OutputSnapshot {
-                call_id: cookiecode_protocol::ToolCallId::new_v7(),
+            cookie_agent_protocol::OutputSnapshot {
+                call_id: cookie_agent_protocol::ToolCallId::new_v7(),
                 start_offset: 0,
                 end_offset: 0,
                 chunks: Vec::new(),
@@ -1233,10 +1233,10 @@ mod tests {
 
     #[tokio::test]
     async fn output_forwarding_sends_pre_read_gap_then_snapshot_then_live_delta() {
-        let call_id = cookiecode_protocol::ToolCallId::new_v7();
+        let call_id = cookie_agent_protocol::ToolCallId::new_v7();
         let (output_tx, output_rx) = mpsc::channel(2);
         output_tx
-            .send(OutputMessage::Gap(cookiecode_protocol::OutputGap {
+            .send(OutputMessage::Gap(cookie_agent_protocol::OutputGap {
                 call_id,
                 stream: OutputStream::Stdout,
                 next_offset: 3,
@@ -1244,7 +1244,7 @@ mod tests {
             .await
             .expect("queue eviction gap");
         output_tx
-            .send(OutputMessage::Delta(cookiecode_protocol::OutputDelta {
+            .send(OutputMessage::Delta(cookie_agent_protocol::OutputDelta {
                 call_id,
                 stream: OutputStream::Stdout,
                 byte_offset: 6,
@@ -1255,7 +1255,7 @@ mod tests {
         let (notifications, mut notification_rx) = mpsc::channel(3);
         let task = tokio::spawn(forward_output(
             OutputStream::Stdout,
-            cookiecode_protocol::OutputSnapshot {
+            cookie_agent_protocol::OutputSnapshot {
                 call_id,
                 start_offset: 3,
                 end_offset: 6,
@@ -1286,10 +1286,10 @@ mod tests {
 
     #[tokio::test]
     async fn output_forwarding_keeps_a_pre_read_delta_without_a_gap() {
-        let call_id = cookiecode_protocol::ToolCallId::new_v7();
+        let call_id = cookie_agent_protocol::ToolCallId::new_v7();
         let (output_tx, output_rx) = mpsc::channel(1);
         output_tx
-            .send(OutputMessage::Delta(cookiecode_protocol::OutputDelta {
+            .send(OutputMessage::Delta(cookie_agent_protocol::OutputDelta {
                 call_id,
                 stream: OutputStream::Stdout,
                 byte_offset: 0,
@@ -1300,7 +1300,7 @@ mod tests {
         let (notifications, mut notification_rx) = mpsc::channel(2);
         let task = tokio::spawn(forward_output(
             OutputStream::Stdout,
-            cookiecode_protocol::OutputSnapshot {
+            cookie_agent_protocol::OutputSnapshot {
                 call_id,
                 start_offset: 0,
                 end_offset: 0,

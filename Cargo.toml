@@ -7,7 +7,7 @@ members = [
     "crates/config",
     "crates/server",
     "crates/tui",
-    "crates/cookiecode",
+    "crates/cookie_agent",
 ]
 resolver = "2"
 

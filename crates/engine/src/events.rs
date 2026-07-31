@@ -9,8 +9,8 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use cookiecode_config::PolicySnapshot;
-use cookiecode_protocol::{
+use cookie_agent_config::PolicySnapshot;
+use cookie_agent_protocol::{
     Event, EventEnvelope, OutputDelta, OutputGap, OutputSnapshot, OutputStream, SessionId,
     ToolCallId,
 };
@@ -88,7 +88,7 @@ impl EventLog {
 
     pub fn append(
         &self,
-        run_id: Option<cookiecode_protocol::RunId>,
+        run_id: Option<cookie_agent_protocol::RunId>,
         event: Event,
     ) -> Result<EventEnvelope, EventLogError> {
         self.append_inner(run_id, event, None)
@@ -96,7 +96,7 @@ impl EventLog {
 
     fn append_inner(
         &self,
-        run_id: Option<cookiecode_protocol::RunId>,
+        run_id: Option<cookie_agent_protocol::RunId>,
         event: Event,
         policy: Option<PolicySnapshot>,
     ) -> Result<EventEnvelope, EventLogError> {
@@ -425,7 +425,7 @@ const fn stream_index(stream: OutputStream) -> usize {
 mod tests {
     use std::fs;
 
-    use cookiecode_protocol::{OutputStream, ToolCallId};
+    use cookie_agent_protocol::{OutputStream, ToolCallId};
     use serde_json::Value;
     use tempfile::tempdir;
     use uuid::Uuid;

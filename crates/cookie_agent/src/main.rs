@@ -12,19 +12,19 @@ use std::{
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use cookiecode_config::{Config, OpenAiApi, ProviderConfig, ProviderType, TrustStore};
-use cookiecode_engine::{Engine, EngineOptions};
-use cookiecode_providers::{
+use cookie_agent_config::{Config, OpenAiApi, ProviderConfig, ProviderType, TrustStore};
+use cookie_agent_engine::{Engine, EngineOptions};
+use cookie_agent_providers::{
     Provider,
     anthropic::AnthropicProvider,
     openai::{OpenAiEndpoint, OpenAiProvider},
     openai_compatible::OpenAiCompatibleProvider,
 };
-use cookiecode_server::{ProviderRegistry, Server, in_process_pair};
-use cookiecode_tools::{BuiltinTools, delegate::DelegateToolProvider};
+use cookie_agent_server::{ProviderRegistry, Server, in_process_pair};
+use cookie_agent_tools::{BuiltinTools, delegate::DelegateToolProvider};
 
 #[derive(Debug, Parser)]
-#[command(name = "cookiecode")]
+#[command(name = "cookie_agent")]
 struct Cli {
     /// Trust the current workspace configuration without an interactive prompt.
     #[arg(long, global = true)]
@@ -58,7 +58,7 @@ impl ApprovedWorkspaceConfig {
             .as_nanos();
         for _ in 0..16 {
             let workspace = env::temp_dir().join(format!(
-                "cookiecode-approved-config-{}-{timestamp}-{}",
+                "cookie_agent_approved_config_{}_{timestamp}_{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
@@ -73,7 +73,7 @@ impl ApprovedWorkspaceConfig {
             }
             let result = (|| -> anyhow::Result<()> {
                 if let Some(bytes) = bytes {
-                    let config_dir = workspace.join(".cookiecode");
+                    let config_dir = workspace.join(".cookie_agent");
                     create_private_directory(&config_dir).with_context(|| {
                         format!("create approved config directory {config_dir:?}")
                     })?;
@@ -178,7 +178,7 @@ fn compose(workspace: &Path, trust_workspace: bool) -> anyhow::Result<Runtime> {
 /// explicitly accepted its current contents.
 fn load_trusted_config(workspace: &Path, trust_workspace: bool) -> anyhow::Result<Config> {
     let trust_path =
-        cookiecode_config::trust_store_path().context("locate workspace trust store")?;
+        cookie_agent_config::trust_store_path().context("locate workspace trust store")?;
     let stdin = io::stdin();
     let stdout = io::stdout();
     let interactive = stdin.is_terminal() && stdout.is_terminal();
@@ -199,7 +199,7 @@ fn load_trusted_config(workspace: &Path, trust_workspace: bool) -> anyhow::Resul
 /// config crate's user and environment layers.
 fn load_config_with_approved_workspace_config(bytes: Option<&[u8]>) -> anyhow::Result<Config> {
     let workspace = ApprovedWorkspaceConfig::new(bytes)?;
-    cookiecode_config::load(&workspace.workspace).context("load approved workspace configuration")
+    cookie_agent_config::load(&workspace.workspace).context("load approved workspace configuration")
 }
 
 fn authorize_workspace_config<R, W>(
@@ -214,7 +214,7 @@ where
     R: BufRead,
     W: Write,
 {
-    let config_path = workspace.join(".cookiecode/config.toml");
+    let config_path = workspace.join(".cookie_agent/config.toml");
     let config_bytes = match fs::read(&config_path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -236,7 +236,7 @@ where
         }
         writeln!(
             output,
-            "CookieCode workspace configuration {config_path:?} can grant host-authority tools. Trust it? [y/N]"
+            "cookie agent workspace configuration {config_path:?} can grant host-authority tools. Trust it? [y/N]"
         )
         .context("prompt for workspace trust")?;
         output.flush().context("flush workspace trust prompt")?;
@@ -259,8 +259,8 @@ where
 }
 
 fn data_dir() -> anyhow::Result<PathBuf> {
-    let home = env::var_os("HOME").context("determine home directory for CookieCode data")?;
-    Ok(PathBuf::from(home).join(".local/share/cookiecode"))
+    let home = env::var_os("HOME").context("determine home directory for cookie agent data")?;
+    Ok(PathBuf::from(home).join(".local/share/cookie_agent"))
 }
 
 fn provider_registry(config: &Config) -> anyhow::Result<ProviderRegistry> {
@@ -315,9 +315,9 @@ async fn run_tui(runtime: Runtime) -> anyhow::Result<()> {
     let (client_stream, server_stream) = in_process_pair(128);
     let server_task = tokio::spawn(runtime.server.clone().serve_stream(server_stream));
     let tui_result = async {
-        let client = cookiecode_tui::Client::connect_stream(client_stream);
+        let client = cookie_agent_tui::Client::connect_stream(client_stream);
         client.handshake().await.context("handshake with daemon")?;
-        cookiecode_tui::run_with_client(client).await
+        cookie_agent_tui::run_with_client(client).await
     }
     .await;
 
@@ -369,7 +369,7 @@ mod tests {
                 .expect("clock after epoch")
                 .as_nanos();
             let path = env::temp_dir().join(format!(
-                "cookiecode-test-{}-{timestamp}-{}",
+                "cookie_agent_test_{}_{timestamp}_{}",
                 process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
@@ -391,7 +391,7 @@ mod tests {
     fn workspace_with_config(contents: &str) -> (TestDirectory, PathBuf, PathBuf) {
         let directory = TestDirectory::new();
         let workspace = directory.path().join("workspace");
-        let config_dir = workspace.join(".cookiecode");
+        let config_dir = workspace.join(".cookie_agent");
         fs::create_dir_all(&config_dir).expect("create workspace config directory");
         fs::write(config_dir.join("config.toml"), contents).expect("write workspace config");
         let trust_path = directory.path().join("trust.json");
@@ -400,13 +400,13 @@ mod tests {
 
     #[test]
     fn cli_defaults_to_the_in_process_tui() {
-        let cli = Cli::try_parse_from(["cookiecode"]).expect("parse CLI");
+        let cli = Cli::try_parse_from(["cookie_agent"]).expect("parse CLI");
         assert_eq!(cli.command, None);
     }
 
     #[test]
     fn cli_parses_daemon() {
-        let cli = Cli::try_parse_from(["cookiecode", "daemon"]).expect("parse CLI");
+        let cli = Cli::try_parse_from(["cookie_agent", "daemon"]).expect("parse CLI");
         assert_eq!(cli.command, Some(Command::Daemon));
     }
 
@@ -452,7 +452,7 @@ mod tests {
                 .expect("prompt text")
                 .contains("Trust it?")
         );
-        let bytes = fs::read(workspace.join(".cookiecode/config.toml")).expect("config bytes");
+        let bytes = fs::read(workspace.join(".cookie_agent/config.toml")).expect("config bytes");
         assert!(
             TrustStore::load(&trust_path)
                 .expect("trust store")
@@ -477,9 +477,11 @@ mod tests {
         )
         .expect("accept trust prompt");
 
-        let config =
-            cookiecode_config::load_layered(None, Some(&workspace.join(".cookiecode/config.toml")))
-                .expect("load trusted workspace configuration");
+        let config = cookie_agent_config::load_layered(
+            None,
+            Some(&workspace.join(".cookie_agent/config.toml")),
+        )
+        .expect("load trusted workspace configuration");
         assert_eq!(config.server.port, 8123);
     }
 
@@ -519,7 +521,7 @@ mod tests {
         )
         .expect("explicit workspace trust");
 
-        let bytes = fs::read(workspace.join(".cookiecode/config.toml")).expect("config bytes");
+        let bytes = fs::read(workspace.join(".cookie_agent/config.toml")).expect("config bytes");
         assert!(
             !TrustStore::load(&trust_path)
                 .expect("trust store")
@@ -564,7 +566,7 @@ tools = ["bash"]
         .expect("approve workspace configuration")
         .expect("workspace configuration exists");
 
-        fs::write(workspace.join(".cookiecode/config.toml"), malicious)
+        fs::write(workspace.join(".cookie_agent/config.toml"), malicious)
             .expect("replace workspace configuration");
         let config = load_config_with_approved_workspace_config(Some(&approved_bytes))
             .expect("load approved workspace configuration");
@@ -591,7 +593,7 @@ tools = ["bash"]
             0o700
         );
         assert_eq!(
-            fs::metadata(workspace.workspace.join(".cookiecode"))
+            fs::metadata(workspace.workspace.join(".cookie_agent"))
                 .expect("config directory metadata")
                 .permissions()
                 .mode()
@@ -599,7 +601,7 @@ tools = ["bash"]
             0o700
         );
         assert_eq!(
-            fs::metadata(workspace.workspace.join(".cookiecode/config.toml"))
+            fs::metadata(workspace.workspace.join(".cookie_agent/config.toml"))
                 .expect("config metadata")
                 .permissions()
                 .mode()
@@ -628,7 +630,7 @@ tools = ["bash"]
         let server = Arc::new(Server::new(engine.clone(), config, HashMap::new()));
         let (client_stream, server_stream) = in_process_pair(8);
         let server_task = tokio::spawn(server.clone().serve_stream(server_stream));
-        let client = cookiecode_tui::Client::connect_stream(client_stream);
+        let client = cookie_agent_tui::Client::connect_stream(client_stream);
 
         client.handshake().await.expect("handshake");
         server.shutdown();

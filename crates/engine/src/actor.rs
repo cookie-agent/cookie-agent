@@ -35,7 +35,7 @@ impl<M: Send + 'static> SessionActor<M> {
     {
         let (sender, mut receiver) = mpsc::channel(capacity);
         thread::Builder::new()
-            .name("cookiecode-session-actor".into())
+            .name("cookie_agent_session_actor".into())
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()

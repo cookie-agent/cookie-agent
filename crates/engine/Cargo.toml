@@ -1,5 +1,5 @@
 [package]
-name = "cookiecode-engine"
+name = "cookie_agent_engine"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -12,9 +12,9 @@ workspace = true
 async-trait.workspace = true
 base64 = "0.22"
 bytes.workspace = true
-cookiecode-config = { path = "../config" }
-cookiecode-protocol = { path = "../protocol" }
-cookiecode-providers = { path = "../providers" }
+cookie_agent_config = { path = "../config" }
+cookie_agent_protocol = { path = "../protocol" }
+cookie_agent_providers = { path = "../providers" }
 futures-util.workspace = true
 jiff.workspace = true
 serde.workspace = true

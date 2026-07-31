@@ -1,7 +1,7 @@
 use std::{fs, io::Read, path::PathBuf};
 
 use async_trait::async_trait;
-use cookiecode_engine::{
+use cookie_agent_engine::{
     SessionToolContext, ToolCall, ToolError, ToolInvocationContext, ToolProvider, ToolSpec,
 };
 use schemars::JsonSchema;
@@ -64,7 +64,7 @@ impl ToolProvider for ReadTool {
         &self,
         ctx: ToolInvocationContext,
         call: ToolCall,
-    ) -> Result<cookiecode_engine::ToolResult, ToolError> {
+    ) -> Result<cookie_agent_engine::ToolResult, ToolError> {
         if call.name != "read" {
             return Err(tool_error("read tool received another tool name"));
         }
@@ -121,8 +121,8 @@ impl ToolProvider for ReadTool {
 
 #[cfg(test)]
 mod tests {
-    use cookiecode_engine::{ProgressSink, ToolCall, ToolInvocationContext, ToolProvider};
-    use cookiecode_protocol::{RunId, SessionId, ToolCallId};
+    use cookie_agent_engine::{ProgressSink, ToolCall, ToolInvocationContext, ToolProvider};
+    use cookie_agent_protocol::{RunId, SessionId, ToolCallId};
     use tempfile::tempdir;
     use tokio::sync::mpsc;
 
@@ -144,7 +144,7 @@ mod tests {
                     workspace_root: directory.path().to_owned(),
                     progress: ProgressSink::new(
                         progress,
-                        cookiecode_engine::events::OutputHub::new(ToolCallId::new_v7(), 1),
+                        cookie_agent_engine::events::OutputHub::new(ToolCallId::new_v7(), 1),
                     ),
                     cancellation: tokio_util::sync::CancellationToken::new(),
                     stdin: None,

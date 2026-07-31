@@ -1,4 +1,4 @@
-//! Versioned JSON-RPC wire types shared by CookieCode clients and the daemon.
+//! Versioned JSON-RPC wire types shared by cookie agent clients and the daemon.
 //!
 //! Data-carrying wire enums use an internally tagged, `snake_case`
 //! representation with a `type` discriminator; unit enums are `snake_case`

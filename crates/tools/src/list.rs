@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf};
 
 use async_trait::async_trait;
-use cookiecode_engine::{
+use cookie_agent_engine::{
     SessionToolContext, ToolCall, ToolError, ToolInvocationContext, ToolProvider, ToolSpec,
 };
 use schemars::JsonSchema;
@@ -60,7 +60,7 @@ impl ToolProvider for ListTool {
         &self,
         ctx: ToolInvocationContext,
         call: ToolCall,
-    ) -> Result<cookiecode_engine::ToolResult, ToolError> {
+    ) -> Result<cookie_agent_engine::ToolResult, ToolError> {
         if call.name != "list" {
             return Err(tool_error("list tool received another tool name"));
         }

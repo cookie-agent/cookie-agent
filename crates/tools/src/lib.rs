@@ -6,7 +6,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cookiecode_engine::{
+use cookie_agent_engine::{
     SessionToolContext, ToolCall, ToolError, ToolInvocationContext, ToolProvider, ToolSpec,
 };
 use schemars::JsonSchema;
@@ -30,7 +30,7 @@ pub(crate) fn schema<T: JsonSchema>() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(T)).expect("tool schemas serialize")
 }
 
-pub(crate) fn result<T: Serialize>(value: &T, truncated: bool) -> cookiecode_engine::ToolResult {
+pub(crate) fn result<T: Serialize>(value: &T, truncated: bool) -> cookie_agent_engine::ToolResult {
     let content = serde_json::to_string(value).expect("tool result serializes");
     let mut was_truncated = truncated;
     let content = if content.len() > RESULT_LIMIT {
@@ -40,14 +40,14 @@ pub(crate) fn result<T: Serialize>(value: &T, truncated: bool) -> cookiecode_eng
     } else {
         content
     };
-    cookiecode_engine::ToolResult {
+    cookie_agent_engine::ToolResult {
         content,
         truncated: was_truncated,
     }
 }
 
-pub(crate) fn tool_error(error: impl std::fmt::Display) -> cookiecode_engine::ToolError {
-    cookiecode_engine::ToolError::Failed(error.to_string())
+pub(crate) fn tool_error(error: impl std::fmt::Display) -> cookie_agent_engine::ToolError {
+    cookie_agent_engine::ToolError::Failed(error.to_string())
 }
 
 /// Resolves paths relative to the workspace passed when the tool provider is built.
@@ -148,7 +148,7 @@ impl ToolProvider for BuiltinTools {
         &self,
         ctx: ToolInvocationContext,
         call: ToolCall,
-    ) -> Result<cookiecode_engine::ToolResult, ToolError> {
+    ) -> Result<cookie_agent_engine::ToolResult, ToolError> {
         match call.name.as_str() {
             "read" => self.read.invoke(ctx, call).await,
             "write" => self.write.invoke(ctx, call).await,

@@ -1,4 +1,4 @@
-//! Ratatui frontend for CookieCode's versioned JSON-RPC protocol.
+//! Ratatui frontend for cookie agent's versioned JSON-RPC protocol.
 
 pub mod client;
 pub mod state;
@@ -12,7 +12,7 @@ pub use ui::run_with_client;
 /// [`run_with_client`].
 pub fn run() -> anyhow::Result<()> {
     Err(anyhow::anyhow!(
-        "the TUI needs a connected client; use cookiecode_tui::run_with_client"
+        "the TUI needs a connected client; use cookie_agent_tui::run_with_client"
     ))
 }
 
@@ -25,17 +25,17 @@ mod tests {
 
     use async_trait::async_trait;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
-    use cookiecode_config::{AgentProfile, Config, ModelConfig, ProviderConfig, ProviderType};
-    use cookiecode_engine::{Engine, EngineOptions};
-    use cookiecode_protocol::{
+    use cookie_agent_config::{AgentProfile, Config, ModelConfig, ProviderConfig, ProviderType};
+    use cookie_agent_engine::{Engine, EngineOptions};
+    use cookie_agent_protocol::{
         ActionKind, ApprovalResource, DecisionTrace, Effect, Event, EventEnvelope,
         EventSubscriptionMessage, MatchedPermissionRule, OutputDelta, OutputSnapshot,
         OutputSnapshotEnvelope, OutputStream, SessionCreateParams, SessionId, ToolCallId,
     };
-    use cookiecode_providers::{
+    use cookie_agent_providers::{
         ModelId, NormalizedEvent, Provider, ProviderCapabilities, ProviderError, ProviderRequest,
     };
-    use cookiecode_server::Server;
+    use cookie_agent_server::Server;
     use futures_util::{StreamExt, stream};
     use jiff::Timestamp;
     use ratatui::{Terminal, backend::TestBackend};
@@ -80,7 +80,7 @@ mod tests {
         config.agents = BTreeMap::from([(
             "primary".into(),
             AgentProfile {
-                r#type: cookiecode_config::AgentType::Primary,
+                r#type: cookie_agent_config::AgentType::Primary,
                 models: vec![ModelConfig {
                     provider: "fake".into(),
                     model: "scripted".into(),
