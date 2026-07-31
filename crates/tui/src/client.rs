@@ -1465,6 +1465,8 @@ mod tests {
                 tool_call_id: call_id,
                 tool: "bash".into(),
                 arguments: serde_json::json!({}),
+                provider_tool_call_id: None,
+                provider_protocol: None,
             },
         };
         begin_replay(

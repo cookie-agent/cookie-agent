@@ -646,6 +646,7 @@ fn reduce_event(
             tool_call_id,
             tool,
             arguments,
+            ..
         } => {
             state.tools.insert(
                 tool_call_id,
@@ -725,6 +726,8 @@ fn reduce_event(
         | Event::UserInputApplied { .. }
         | Event::ToolStdinSubmitted { .. }
         | Event::ToolCallLinked { .. }
+        | Event::AttemptAbandoned
+        | Event::TurnOpaque { .. }
         | Event::ModelFallback { .. }
         | Event::UsageReported { .. } => {}
     }

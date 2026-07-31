@@ -24,11 +24,12 @@ use cookiecode_protocol::{
     ApprovedScope, ChildSummary, Event, EventEnvelope, EventSubscriptionMessage,
     EventsSubscribeResult, InvocationId, ModelRef, RunCancelResult, RunId, RunStartParams,
     RunStartResult, RunSteerResult, RunToolStdinParams, RunToolStdinResult, SessionId, SessionMeta,
-    SessionOrigin, SessionStatus, ToolCallId,
+    SessionOrigin, SessionStatus, ToolCallId, TurnOpaque,
 };
 use cookiecode_providers::{
     ContentPart, ModelId, ModelRef as ProviderModelRef, NormalizedEvent, Provider, ProviderError,
-    ProviderErrorClass, ProviderMessage, ProviderRequest, StopReason, ToolDefinition,
+    ProviderErrorClass, ProviderMessage, ProviderProtocol, ProviderRequest, StopReason,
+    ToolDefinition,
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -276,6 +277,20 @@ struct ActiveRun {
     stdin: Mutex<HashMap<ToolCallId, mpsc::Sender<StdinWrite>>>,
     /// Last persisted event included in the current provider request.
     prompt_seq: AtomicU64,
+}
+
+struct AttemptEvents {
+    events: Vec<NormalizedEvent>,
+    protocol: Option<ProviderProtocol>,
+}
+
+struct EmittedToolCall {
+    assistant_index: usize,
+    call_index: usize,
+    segment: u64,
+    run_id: RunId,
+    provider_tool_call_id: String,
+    result: Option<cookiecode_providers::ToolResult>,
 }
 
 #[cfg(test)]
@@ -2299,11 +2314,11 @@ impl Engine {
         receiver.await.map_err(|_| EngineError::ActorStopped)?
     }
 
-    async fn prompt_messages(
+    async fn prompt_events(
         &self,
         session: SessionId,
         run: RunId,
-    ) -> Result<Vec<ProviderMessage>, EngineError> {
+    ) -> Result<Vec<EventEnvelope>, EngineError> {
         let events = self
             .request(session, |reply| SessionCommand::PromptSnapshot {
                 run,
@@ -2328,7 +2343,7 @@ impl Engine {
             }
             hook.release.notified().await;
         }
-        Ok(assemble_messages(&events))
+        Ok(events)
     }
 
     fn request_blocking<T>(
@@ -2802,6 +2817,9 @@ impl Engine {
         let engine = self.clone();
         tokio::spawn(async move {
             if let Err(error) = engine.run_loop(run_id, active).await {
+                // A provider-attempt persistence error may also prevent the
+                // terminal append. Retain this active tombstone for reopen
+                // reconciliation rather than clearing a durably Running run.
                 eprintln!("run {run_id} terminalization failed: {error}");
                 return;
             }
@@ -2831,15 +2849,15 @@ impl Engine {
                     model: ModelId(model.model.clone()),
                 })
                 .collect();
-            let messages = self.prompt_messages(active.session, run_id).await?;
-            let events = match self
+            let prompt_events = self.prompt_events(active.session, run_id).await?;
+            let attempt = match self
                 .stream_attempt(
                     active.session,
                     run_id,
                     &active.cancellation,
                     &chain,
                     &mut fallback_entry,
-                    messages,
+                    prompt_events,
                     tools,
                 )
                 .await
@@ -2865,7 +2883,8 @@ impl Engine {
             let mut args: HashMap<String, String> = HashMap::new();
             let mut final_text = String::new();
             let mut tool_use = false;
-            for event in events {
+            let attempt_protocol = attempt.protocol;
+            for event in attempt.events {
                 match event {
                     NormalizedEvent::TextDelta { text } => final_text.push_str(&text),
                     NormalizedEvent::ReasoningDelta { .. } => {}
@@ -2928,6 +2947,8 @@ impl Engine {
                         tool_call_id: *id,
                         tool: tool.clone(),
                         arguments: arguments.clone(),
+                        provider_tool_call_id: attempt_protocol.map(|_| raw_id.clone()),
+                        provider_protocol: attempt_protocol.map(wire_provider_protocol),
                     },
                 )
                 .await?;
@@ -2974,9 +2995,9 @@ impl Engine {
         cancellation: &CancellationToken,
         chain: &[ProviderModelRef],
         sticky_entry: &mut usize,
-        messages: Vec<ProviderMessage>,
+        prompt_events: Vec<EventEnvelope>,
         tools: Vec<ToolDefinition>,
-    ) -> Result<Vec<NormalizedEvent>, ProviderError> {
+    ) -> Result<AttemptEvents, ProviderError> {
         let mut entry = *sticky_entry;
         let mut last_error = ProviderError::EntryTerminal {
             message: "model fallback chain is empty".into(),
@@ -2989,18 +3010,18 @@ impl Engine {
                     message: format!("provider '{}' is not registered", model.provider),
                 };
                 if let Some(next) = chain.get(entry + 1) {
-                    let _ = self
-                        .append(
-                            session,
-                            Some(run),
-                            Event::ModelFallback {
-                                from: wire_model(model),
-                                to: wire_model(next),
-                                reason: last_error.to_string(),
-                                attempts: 0,
-                            },
-                        )
-                        .await;
+                    self.append(
+                        session,
+                        Some(run),
+                        Event::ModelFallback {
+                            from: wire_model(model),
+                            to: wire_model(next),
+                            reason: last_error.to_string(),
+                            attempts: 0,
+                        },
+                    )
+                    .await
+                    .map_err(provider_persistence_error)?;
                     entry += 1;
                     *sticky_entry = entry;
                     first_request = false;
@@ -3010,78 +3031,105 @@ impl Engine {
             };
             let mut attempts = 0;
             loop {
-                let request_messages = if first_request {
+                let request_events = if first_request {
                     first_request = false;
-                    messages.clone()
+                    prompt_events.clone()
                 } else {
-                    self.prompt_messages(session, run).await.map_err(|error| {
+                    self.prompt_events(session, run).await.map_err(|error| {
                         ProviderError::RunTerminal {
                             message: error.to_string(),
                         }
                     })?
                 };
+                let protocol = provider.protocol(&model.model);
+                let persisted_turns = assemble_persisted_turns(&request_events, protocol);
                 let request = ProviderRequest {
                     model: model.model.clone(),
-                    messages: request_messages,
+                    messages: persisted_turns
+                        .iter()
+                        .map(|turn| turn.message.clone())
+                        .collect(),
+                    persisted_turns,
                     tools: tools.clone(),
                     ..ProviderRequest::default()
                 };
                 let stream = tokio::select! {
                     result = provider.stream(request) => result,
-                    _ = cancellation.cancelled() => return Err(ProviderError::RunTerminal { message: "cancelled".into() }),
+                    _ = cancellation.cancelled() => Err(ProviderError::RunTerminal { message: "cancelled".into() }),
                 };
-                let result = match stream {
+                let (result, meaningful_output) = match stream {
                     Ok(mut stream) => {
                         let mut events = Vec::new();
                         let mut failure = None;
+                        let mut meaningful_output = false;
                         loop {
                             let item = tokio::select! {
                                 item = stream.next() => item,
-                                _ = cancellation.cancelled() => return Err(ProviderError::RunTerminal { message: "cancelled".into() }),
+                                _ = cancellation.cancelled() => {
+                                    failure = Some(ProviderError::RunTerminal { message: "cancelled".into() });
+                                    break;
+                                },
                             };
                             let Some(item) = item else { break };
                             match item {
                                 Ok(event) => {
+                                    meaningful_output |= is_meaningful_output(&event);
                                     match &event {
                                         NormalizedEvent::TextDelta { text } => {
-                                            let _ = self
-                                                .append(
-                                                    session,
-                                                    Some(run),
-                                                    Event::TextDelta { text: text.clone() },
-                                                )
-                                                .await;
+                                            self.append(
+                                                session,
+                                                Some(run),
+                                                Event::TextDelta { text: text.clone() },
+                                            )
+                                            .await
+                                            .map_err(provider_persistence_error)?;
                                         }
                                         NormalizedEvent::ReasoningDelta { text } => {
-                                            let _ = self
-                                                .append(
-                                                    session,
-                                                    Some(run),
-                                                    Event::ReasoningDelta { text: text.clone() },
-                                                )
-                                                .await;
+                                            self.append(
+                                                session,
+                                                Some(run),
+                                                Event::ReasoningDelta { text: text.clone() },
+                                            )
+                                            .await
+                                            .map_err(provider_persistence_error)?;
                                         }
                                         NormalizedEvent::Usage {
                                             input_tokens,
                                             output_tokens,
                                             cache_read_tokens,
                                         } => {
-                                            let _ = self
-                                                .append(
-                                                    session,
-                                                    Some(run),
-                                                    Event::UsageReported {
-                                                        model: wire_model(model),
-                                                        usage: cookiecode_protocol::Usage {
-                                                            input_tokens: *input_tokens,
-                                                            output_tokens: *output_tokens,
-                                                            cached_input_tokens: Some(
-                                                                *cache_read_tokens,
-                                                            ),
-                                                        },
+                                            self.append(
+                                                session,
+                                                Some(run),
+                                                Event::UsageReported {
+                                                    model: wire_model(model),
+                                                    usage: cookiecode_protocol::Usage {
+                                                        input_tokens: *input_tokens,
+                                                        output_tokens: *output_tokens,
+                                                        cached_input_tokens: Some(
+                                                            *cache_read_tokens,
+                                                        ),
                                                     },
-                                                )
-                                                .await;
+                                                },
+                                            )
+                                            .await
+                                            .map_err(provider_persistence_error)?;
+                                        }
+                                        NormalizedEvent::TurnOpaque { state } => {
+                                            self.append(
+                                                session,
+                                                Some(run),
+                                                Event::TurnOpaque {
+                                                    state: TurnOpaque {
+                                                        provider: wire_provider_protocol(
+                                                            state.provider,
+                                                        ),
+                                                        payload: state.payload.clone(),
+                                                    },
+                                                },
+                                            )
+                                            .await
+                                            .map_err(provider_persistence_error)?;
                                         }
                                         _ => {}
                                     }
@@ -3093,25 +3141,38 @@ impl Engine {
                                 }
                             }
                         }
-                        failure.map_or(Ok(events), Err)
+                        (failure.map_or(Ok(events), Err), meaningful_output)
                     }
-                    Err(error) => Err(error),
+                    Err(error) => (Err(error), false),
                 };
                 match result {
-                    Ok(events) => return Ok(events),
+                    Ok(events) => {
+                        return Ok(AttemptEvents { events, protocol });
+                    }
                     Err(error) if error.class() == ProviderErrorClass::RunTerminal => {
+                        self.append(session, Some(run), Event::AttemptAbandoned)
+                            .await
+                            .map_err(provider_persistence_error)?;
                         return Err(error);
                     }
                     Err(error)
-                        if error.class() == ProviderErrorClass::EntryRetryable && attempts < 2 =>
+                        if error.class() == ProviderErrorClass::EntryRetryable
+                            && attempts < 2
+                            && !meaningful_output =>
                     {
+                        self.append(session, Some(run), Event::AttemptAbandoned)
+                            .await
+                            .map_err(provider_persistence_error)?;
                         attempts += 1;
                         tokio::select! {
-                            _ = tokio::time::sleep(std::time::Duration::from_millis(1_u64 << (attempts - 1))) => {}
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(100_u64 << (attempts - 1))) => {}
                             _ = cancellation.cancelled() => return Err(ProviderError::RunTerminal { message: "cancelled".into() }),
                         }
                     }
                     Err(error) => {
+                        self.append(session, Some(run), Event::AttemptAbandoned)
+                            .await
+                            .map_err(provider_persistence_error)?;
                         last_error = error;
                         break;
                     }
@@ -3120,18 +3181,18 @@ impl Engine {
             let Some(next) = chain.get(entry + 1) else {
                 return Err(last_error);
             };
-            let _ = self
-                .append(
-                    session,
-                    Some(run),
-                    Event::ModelFallback {
-                        from: wire_model(model),
-                        to: wire_model(next),
-                        reason: last_error.to_string(),
-                        attempts: attempts + 1,
-                    },
-                )
-                .await;
+            self.append(
+                session,
+                Some(run),
+                Event::ModelFallback {
+                    from: wire_model(model),
+                    to: wire_model(next),
+                    reason: last_error.to_string(),
+                    attempts: attempts + 1,
+                },
+            )
+            .await
+            .map_err(provider_persistence_error)?;
             entry += 1;
             *sticky_entry = entry;
         }
@@ -4047,16 +4108,90 @@ fn is_journal_append_failure(error: &EngineError) -> bool {
     )
 }
 
+fn wire_provider_protocol(protocol: ProviderProtocol) -> cookiecode_protocol::ProviderProtocol {
+    match protocol {
+        ProviderProtocol::AnthropicMessages => {
+            cookiecode_protocol::ProviderProtocol::AnthropicMessages
+        }
+        ProviderProtocol::OpenAiChatCompletions => {
+            cookiecode_protocol::ProviderProtocol::OpenAiChatCompletions
+        }
+        ProviderProtocol::OpenAiResponses => cookiecode_protocol::ProviderProtocol::OpenAiResponses,
+        ProviderProtocol::OpenAiCompatible => {
+            cookiecode_protocol::ProviderProtocol::OpenAiCompatible
+        }
+    }
+}
+
+fn provider_protocol(protocol: cookiecode_protocol::ProviderProtocol) -> ProviderProtocol {
+    match protocol {
+        cookiecode_protocol::ProviderProtocol::AnthropicMessages => {
+            ProviderProtocol::AnthropicMessages
+        }
+        cookiecode_protocol::ProviderProtocol::OpenAiChatCompletions => {
+            ProviderProtocol::OpenAiChatCompletions
+        }
+        cookiecode_protocol::ProviderProtocol::OpenAiResponses => ProviderProtocol::OpenAiResponses,
+        cookiecode_protocol::ProviderProtocol::OpenAiCompatible => {
+            ProviderProtocol::OpenAiCompatible
+        }
+    }
+}
+
+fn is_meaningful_output(event: &NormalizedEvent) -> bool {
+    matches!(
+        event,
+        NormalizedEvent::TextDelta { .. }
+            | NormalizedEvent::ReasoningDelta { .. }
+            | NormalizedEvent::ToolCallStart { .. }
+            | NormalizedEvent::ToolArgsDelta { .. }
+            | NormalizedEvent::ToolCallEnd { .. }
+    )
+}
+
+fn provider_persistence_error(error: EngineError) -> ProviderError {
+    ProviderError::RunTerminal {
+        message: format!("could not persist provider attempt state: {error}"),
+    }
+}
+
+#[cfg(test)]
 fn assemble_messages(events: &[EventEnvelope]) -> Vec<ProviderMessage> {
+    assemble_persisted_turns(events, None)
+        .into_iter()
+        .map(|turn| turn.message)
+        .collect()
+}
+
+fn assemble_persisted_turns(
+    events: &[EventEnvelope],
+    target_protocol: Option<ProviderProtocol>,
+) -> Vec<cookiecode_providers::PersistedTurn> {
     let mut output = Vec::new();
     let mut assistant_text = String::new();
     let mut assistant_calls = Vec::new();
+    let mut assistant_call_ids: Vec<(ToolCallId, RunId)> = Vec::new();
+    let mut assistant_opaque = None;
+    let mut assistant_opaque_usable = true;
     let mut pending_steering = HashMap::new();
+    let mut segment = 0_u64;
+    let mut emitted_calls = Vec::new();
+    let mut pending_calls: HashMap<(ToolCallId, RunId), VecDeque<usize>> = HashMap::new();
     let flush_assistant =
-        |output: &mut Vec<ProviderMessage>,
+        |output: &mut Vec<cookiecode_providers::PersistedTurn>,
          text: &mut String,
-         calls: &mut Vec<cookiecode_providers::ToolCall>| {
-            if !text.is_empty() || !calls.is_empty() {
+         calls: &mut Vec<cookiecode_providers::ToolCall>,
+         call_ids: &mut Vec<(ToolCallId, RunId)>,
+         opaque: &mut Option<TurnOpaque>,
+         opaque_usable: &mut bool,
+         segment: u64,
+         emitted_calls: &mut Vec<EmittedToolCall>,
+         pending_calls: &mut HashMap<(ToolCallId, RunId), VecDeque<usize>>| {
+            if !text.is_empty() || !calls.is_empty() || opaque.is_some() {
+                let emitted_ids = std::mem::take(call_ids);
+                let emitted_provider_ids: Vec<_> =
+                    calls.iter().map(|call| call.id.clone()).collect();
+                let assistant_index = output.len();
                 let content = if !text.is_empty() {
                     vec![ContentPart::Text {
                         text: std::mem::take(text),
@@ -4064,20 +4199,67 @@ fn assemble_messages(events: &[EventEnvelope]) -> Vec<ProviderMessage> {
                 } else {
                     Vec::new()
                 };
-                output.push(ProviderMessage::Assistant {
-                    content,
-                    tool_calls: std::mem::take(calls),
+                output.push(cookiecode_providers::PersistedTurn {
+                    message: ProviderMessage::Assistant {
+                        content,
+                        tool_calls: std::mem::take(calls),
+                    },
+                    opaque: if *opaque_usable {
+                        opaque
+                            .take()
+                            .map(|state| cookiecode_providers::AssistantTurnOpaque {
+                                provider: provider_protocol(state.provider),
+                                payload: state.payload,
+                            })
+                    } else {
+                        let _ = opaque.take();
+                        None
+                    },
                 });
+                for (call_index, ((tool_call_id, run_id), provider_tool_call_id)) in emitted_ids
+                    .into_iter()
+                    .zip(emitted_provider_ids)
+                    .enumerate()
+                {
+                    let emitted_index = emitted_calls.len();
+                    emitted_calls.push(EmittedToolCall {
+                        assistant_index,
+                        call_index,
+                        segment,
+                        run_id,
+                        provider_tool_call_id,
+                        result: None,
+                    });
+                    pending_calls
+                        .entry((tool_call_id, run_id))
+                        .or_default()
+                        .push_back(emitted_index);
+                }
+                *opaque_usable = true;
             }
         };
     for event in events {
         match &event.event {
             Event::RunStarted { input, .. } => {
-                flush_assistant(&mut output, &mut assistant_text, &mut assistant_calls);
-                output.push(ProviderMessage::User {
-                    content: vec![ContentPart::Text {
-                        text: input.clone(),
-                    }],
+                flush_assistant(
+                    &mut output,
+                    &mut assistant_text,
+                    &mut assistant_calls,
+                    &mut assistant_call_ids,
+                    &mut assistant_opaque,
+                    &mut assistant_opaque_usable,
+                    segment,
+                    &mut emitted_calls,
+                    &mut pending_calls,
+                );
+                segment += 1;
+                output.push(cookiecode_providers::PersistedTurn {
+                    message: ProviderMessage::User {
+                        content: vec![ContentPart::Text {
+                            text: input.clone(),
+                        }],
+                    },
+                    opaque: None,
                 });
             }
             Event::UserInputSubmitted { input } => {
@@ -4085,9 +4267,22 @@ fn assemble_messages(events: &[EventEnvelope]) -> Vec<ProviderMessage> {
             }
             Event::UserInputApplied { user_input_seq } => {
                 if let Some(input) = pending_steering.remove(user_input_seq) {
-                    flush_assistant(&mut output, &mut assistant_text, &mut assistant_calls);
-                    output.push(ProviderMessage::User {
-                        content: vec![ContentPart::Text { text: input }],
+                    flush_assistant(
+                        &mut output,
+                        &mut assistant_text,
+                        &mut assistant_calls,
+                        &mut assistant_call_ids,
+                        &mut assistant_opaque,
+                        &mut assistant_opaque_usable,
+                        segment,
+                        &mut emitted_calls,
+                        &mut pending_calls,
+                    );
+                    output.push(cookiecode_providers::PersistedTurn {
+                        message: ProviderMessage::User {
+                            content: vec![ContentPart::Text { text: input }],
+                        },
+                        opaque: None,
                     });
                 }
             }
@@ -4096,48 +4291,242 @@ fn assemble_messages(events: &[EventEnvelope]) -> Vec<ProviderMessage> {
                 tool_call_id,
                 tool,
                 arguments,
-            } => assistant_calls.push(cookiecode_providers::ToolCall {
-                id: tool_call_id.to_string(),
-                name: tool.clone(),
-                arguments: arguments.clone(),
-            }),
+                provider_tool_call_id,
+                provider_protocol: call_protocol,
+            } => {
+                let Some(run_id) = event.run_id else {
+                    assistant_opaque_usable = false;
+                    continue;
+                };
+                let canonical_id = tool_call_id.to_string();
+                let provider_id = provider_tool_call_id
+                    .as_ref()
+                    .filter(|_| {
+                        matches!(
+                            (call_protocol.map(provider_protocol), target_protocol),
+                            (Some(call_protocol), Some(target_protocol))
+                                if call_protocol == target_protocol
+                        )
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| canonical_id.clone());
+                assistant_call_ids.push((*tool_call_id, run_id));
+                assistant_calls.push(cookiecode_providers::ToolCall {
+                    id: provider_id,
+                    name: tool.clone(),
+                    arguments: arguments.clone(),
+                });
+            }
+            Event::AttemptAbandoned => {
+                assistant_text.clear();
+                assistant_calls.clear();
+                assistant_call_ids.clear();
+                assistant_opaque = None;
+                assistant_opaque_usable = true;
+                segment += 1;
+            }
+            Event::TurnOpaque { state } => assistant_opaque = Some(state.clone()),
             Event::ToolCallCompleted {
                 tool_call_id,
                 result,
             } => {
-                flush_assistant(&mut output, &mut assistant_text, &mut assistant_calls);
-                output.push(ProviderMessage::Tool {
-                    result: cookiecode_providers::ToolResult {
-                        tool_call_id: tool_call_id.to_string(),
-                        content: result.content.clone(),
-                        is_error: false,
-                    },
+                let Some(run_id) = event.run_id else {
+                    continue;
+                };
+                if assistant_call_ids.contains(&(*tool_call_id, run_id)) {
+                    flush_assistant(
+                        &mut output,
+                        &mut assistant_text,
+                        &mut assistant_calls,
+                        &mut assistant_call_ids,
+                        &mut assistant_opaque,
+                        &mut assistant_opaque_usable,
+                        segment,
+                        &mut emitted_calls,
+                        &mut pending_calls,
+                    );
+                }
+                let occurrence =
+                    pending_calls
+                        .get_mut(&(*tool_call_id, run_id))
+                        .and_then(|pending| {
+                            if pending.is_empty() {
+                                return None;
+                            }
+                            let position = pending
+                                .iter()
+                                .position(|index| {
+                                    emitted_calls[*index].segment == segment
+                                        && emitted_calls[*index].run_id == run_id
+                                })
+                                .unwrap_or(0);
+                            pending.remove(position)
+                        });
+                let Some(occurrence) = occurrence else {
+                    continue;
+                };
+                let provider_tool_call_id = emitted_calls[occurrence].provider_tool_call_id.clone();
+                emitted_calls[occurrence].result = Some(cookiecode_providers::ToolResult {
+                    tool_call_id: provider_tool_call_id,
+                    content: result.content.clone(),
+                    is_error: false,
                 });
             }
             Event::ToolCallFailed {
                 tool_call_id,
                 message,
             } => {
-                flush_assistant(&mut output, &mut assistant_text, &mut assistant_calls);
-                output.push(ProviderMessage::Tool {
-                    result: cookiecode_providers::ToolResult {
-                        tool_call_id: tool_call_id.to_string(),
-                        content: message.clone(),
-                        is_error: true,
-                    },
+                let Some(run_id) = event.run_id else {
+                    continue;
+                };
+                if assistant_call_ids.contains(&(*tool_call_id, run_id)) {
+                    flush_assistant(
+                        &mut output,
+                        &mut assistant_text,
+                        &mut assistant_calls,
+                        &mut assistant_call_ids,
+                        &mut assistant_opaque,
+                        &mut assistant_opaque_usable,
+                        segment,
+                        &mut emitted_calls,
+                        &mut pending_calls,
+                    );
+                }
+                let occurrence =
+                    pending_calls
+                        .get_mut(&(*tool_call_id, run_id))
+                        .and_then(|pending| {
+                            if pending.is_empty() {
+                                return None;
+                            }
+                            let position = pending
+                                .iter()
+                                .position(|index| {
+                                    emitted_calls[*index].segment == segment
+                                        && emitted_calls[*index].run_id == run_id
+                                })
+                                .unwrap_or(0);
+                            pending.remove(position)
+                        });
+                let Some(occurrence) = occurrence else {
+                    continue;
+                };
+                let provider_tool_call_id = emitted_calls[occurrence].provider_tool_call_id.clone();
+                emitted_calls[occurrence].result = Some(cookiecode_providers::ToolResult {
+                    tool_call_id: provider_tool_call_id,
+                    content: message.clone(),
+                    is_error: true,
                 });
             }
-            Event::RunCompleted { .. }
-            | Event::RunFailed { .. }
-            | Event::RunCancelled { .. }
-            | Event::RunInterrupted { .. } => {
-                flush_assistant(&mut output, &mut assistant_text, &mut assistant_calls);
+            Event::RunCompleted { .. } => {
+                flush_assistant(
+                    &mut output,
+                    &mut assistant_text,
+                    &mut assistant_calls,
+                    &mut assistant_call_ids,
+                    &mut assistant_opaque,
+                    &mut assistant_opaque_usable,
+                    segment,
+                    &mut emitted_calls,
+                    &mut pending_calls,
+                );
+                segment += 1;
+            }
+            Event::RunFailed { .. } | Event::RunCancelled { .. } | Event::RunInterrupted { .. } => {
+                if assistant_calls.is_empty() {
+                    assistant_text.clear();
+                    assistant_opaque = None;
+                    assistant_opaque_usable = true;
+                    assistant_call_ids.clear();
+                } else {
+                    flush_assistant(
+                        &mut output,
+                        &mut assistant_text,
+                        &mut assistant_calls,
+                        &mut assistant_call_ids,
+                        &mut assistant_opaque,
+                        &mut assistant_opaque_usable,
+                        segment,
+                        &mut emitted_calls,
+                        &mut pending_calls,
+                    );
+                }
+                segment += 1;
             }
             _ => {}
         }
     }
-    flush_assistant(&mut output, &mut assistant_text, &mut assistant_calls);
-    output
+    flush_assistant(
+        &mut output,
+        &mut assistant_text,
+        &mut assistant_calls,
+        &mut assistant_call_ids,
+        &mut assistant_opaque,
+        &mut assistant_opaque_usable,
+        segment,
+        &mut emitted_calls,
+        &mut pending_calls,
+    );
+    finalize_persisted_turns(output, emitted_calls)
+}
+
+fn finalize_persisted_turns(
+    output: Vec<cookiecode_providers::PersistedTurn>,
+    emitted_calls: Vec<EmittedToolCall>,
+) -> Vec<cookiecode_providers::PersistedTurn> {
+    let mut results_by_assistant: HashMap<usize, Vec<(usize, cookiecode_providers::ToolResult)>> =
+        HashMap::new();
+    for call in emitted_calls {
+        if let Some(result) = call.result {
+            results_by_assistant
+                .entry(call.assistant_index)
+                .or_default()
+                .push((call.call_index, result));
+        }
+    }
+    let mut finalized = Vec::new();
+    for (assistant_index, turn) in output.into_iter().enumerate() {
+        let cookiecode_providers::PersistedTurn { message, opaque } = turn;
+        let ProviderMessage::Assistant {
+            content,
+            tool_calls,
+        } = message
+        else {
+            finalized.push(cookiecode_providers::PersistedTurn { message, opaque });
+            continue;
+        };
+        let mut results = results_by_assistant
+            .remove(&assistant_index)
+            .unwrap_or_default();
+        results.sort_by_key(|(call_index, _)| *call_index);
+        let retained_indices: HashSet<_> =
+            results.iter().map(|(call_index, _)| *call_index).collect();
+        let original_call_count = tool_calls.len();
+        let tool_calls: Vec<_> = tool_calls
+            .into_iter()
+            .enumerate()
+            .filter_map(|(call_index, call)| retained_indices.contains(&call_index).then_some(call))
+            .collect();
+        let opaque = (tool_calls.len() == original_call_count)
+            .then_some(opaque)
+            .flatten();
+        if !content.is_empty() || !tool_calls.is_empty() || opaque.is_some() {
+            finalized.push(cookiecode_providers::PersistedTurn {
+                message: ProviderMessage::Assistant {
+                    content,
+                    tool_calls,
+                },
+                opaque,
+            });
+            finalized.extend(results.into_iter().map(|(_, result)| {
+                cookiecode_providers::PersistedTurn {
+                    message: ProviderMessage::Tool { result },
+                    opaque: None,
+                }
+            }));
+        }
+    }
+    finalized
 }
 
 #[cfg(test)]
@@ -4354,6 +4743,127 @@ mod tests {
         requests: Mutex<Vec<Vec<ProviderMessage>>>,
     }
 
+    struct OpaqueRecordingProvider {
+        protocol: ProviderProtocol,
+        artifact: Value,
+        fail_after_first: bool,
+        calls: AtomicUsize,
+        requests: Mutex<Vec<ProviderRequest>>,
+    }
+
+    struct RecordingNoopProvider {
+        protocol: Option<ProviderProtocol>,
+        requests: Mutex<Vec<ProviderRequest>>,
+    }
+
+    #[async_trait]
+    impl Provider for RecordingNoopProvider {
+        fn capabilities(&self, _: &ModelId) -> cookiecode_providers::ProviderCapabilities {
+            cookiecode_providers::ProviderCapabilities::default()
+        }
+
+        fn protocol(&self, _: &ModelId) -> Option<ProviderProtocol> {
+            self.protocol
+        }
+
+        async fn stream(
+            &self,
+            request: ProviderRequest,
+        ) -> Result<
+            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
+            ProviderError,
+        > {
+            self.requests
+                .lock()
+                .expect("requests lock poisoned")
+                .push(request);
+            Ok(stream::iter([Ok(NormalizedEvent::Stop {
+                reason: StopReason::EndTurn,
+            })])
+            .boxed())
+        }
+    }
+
+    #[async_trait]
+    impl Provider for OpaqueRecordingProvider {
+        fn capabilities(&self, _: &ModelId) -> cookiecode_providers::ProviderCapabilities {
+            cookiecode_providers::ProviderCapabilities::default()
+        }
+
+        fn protocol(&self, _: &ModelId) -> Option<ProviderProtocol> {
+            Some(self.protocol)
+        }
+
+        async fn stream(
+            &self,
+            request: ProviderRequest,
+        ) -> Result<
+            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
+            ProviderError,
+        > {
+            self.requests
+                .lock()
+                .expect("requests lock poisoned")
+                .push(request);
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(stream::iter([
+                    Ok(NormalizedEvent::TextDelta {
+                        text: "first".into(),
+                    }),
+                    Ok(NormalizedEvent::TurnOpaque {
+                        state: cookiecode_providers::AssistantTurnOpaque {
+                            provider: self.protocol,
+                            payload: self.artifact.clone(),
+                        },
+                    }),
+                    Ok(NormalizedEvent::Stop {
+                        reason: StopReason::EndTurn,
+                    }),
+                ])
+                .boxed());
+            }
+            if self.fail_after_first {
+                return Err(ProviderError::EntryTerminal {
+                    message: "advance fallback".into(),
+                });
+            }
+            Ok(stream::iter([Ok(NormalizedEvent::Stop {
+                reason: StopReason::EndTurn,
+            })])
+            .boxed())
+        }
+    }
+
+    struct MeaningfulFailureProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for MeaningfulFailureProvider {
+        fn capabilities(&self, _: &ModelId) -> cookiecode_providers::ProviderCapabilities {
+            cookiecode_providers::ProviderCapabilities::default()
+        }
+
+        async fn stream(
+            &self,
+            _: ProviderRequest,
+        ) -> Result<
+            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
+            ProviderError,
+        > {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(stream::iter([
+                Ok(NormalizedEvent::TextDelta {
+                    text: "partial".into(),
+                }),
+                Err(ProviderError::EntryRetryable {
+                    message: "dropped".into(),
+                }),
+            ])
+            .boxed())
+        }
+    }
+
     struct BlockingProvider {
         calls: AtomicUsize,
         release: Notify,
@@ -4528,6 +5038,8 @@ mod tests {
                     tool_call_id: call,
                     tool: "delegate".into(),
                     arguments: Value::Null,
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
                 },
             )
             .await
@@ -5012,6 +5524,8 @@ mod tests {
                     tool_call_id: call,
                     tool: "delegate".into(),
                     arguments: Value::Null,
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
                 },
             )
             .await
@@ -5112,6 +5626,8 @@ mod tests {
                     tool_call_id: call,
                     tool: "delegate".into(),
                     arguments: Value::Null,
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
                 },
             )
             .await
@@ -5213,6 +5729,8 @@ mod tests {
                     tool_call_id: call,
                     tool: "delegate".into(),
                     arguments: Value::Null,
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
                 },
             )
             .await
@@ -5310,6 +5828,8 @@ mod tests {
                     tool_call_id: call,
                     tool: "delegate".into(),
                     arguments: Value::Null,
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
                 },
             )
             .await
@@ -5899,6 +6419,8 @@ mod tests {
                     tool_call_id: call,
                     tool: "read".into(),
                     arguments: Value::Null,
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
                 },
             )
             .await
@@ -5914,6 +6436,625 @@ mod tests {
                 event.event,
                 Event::ToolCallFailed { tool_call_id, .. } if tool_call_id == call
             )
+        }));
+    }
+
+    #[tokio::test]
+    async fn terminal_recovery_replays_only_paired_tool_calls_and_results() {
+        let provider = Arc::new(RecordingNoopProvider {
+            protocol: None,
+            requests: Mutex::new(Vec::new()),
+        });
+        let (_directory, engine) = test_engine(provider.clone());
+        for (index, terminal) in [
+            Event::RunInterrupted { reason: None },
+            Event::RunCancelled { reason: None },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let session = engine
+                .create_session(".", "test")
+                .expect("create session")
+                .id;
+            let run = RunId::new_v7();
+            let call = ToolCallId::new_v7();
+            engine
+                .append(
+                    session,
+                    Some(run),
+                    Event::RunStarted {
+                        client_run_id: format!("terminal-{index}"),
+                        input: "input".into(),
+                    },
+                )
+                .await
+                .expect("start event");
+            engine
+                .append(
+                    session,
+                    Some(run),
+                    Event::ToolCallStarted {
+                        tool_call_id: call,
+                        tool: "read".into(),
+                        arguments: Value::Null,
+                        provider_tool_call_id: None,
+                        provider_protocol: None,
+                    },
+                )
+                .await
+                .expect("tool event");
+            engine
+                .append(session, Some(run), terminal)
+                .await
+                .expect("terminal event");
+            engine.resume(session).await.expect("recover tool result");
+            engine
+                .start_run(RunStartParams {
+                    session_id: session,
+                    client_run_id: format!("follow-up-{index}"),
+                    input: "follow up".into(),
+                })
+                .await
+                .expect("start follow-up");
+            wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
+            let request = provider
+                .requests
+                .lock()
+                .expect("requests lock poisoned")
+                .last()
+                .cloned()
+                .expect("follow-up request");
+            let calls: std::collections::HashSet<_> = request
+                .persisted_turns
+                .iter()
+                .flat_map(|turn| match &turn.message {
+                    ProviderMessage::Assistant { tool_calls, .. } => tool_calls
+                        .iter()
+                        .map(|call| call.id.clone())
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            let results: std::collections::HashSet<_> = request
+                .persisted_turns
+                .iter()
+                .filter_map(|turn| match &turn.message {
+                    ProviderMessage::Tool { result } => Some(result.tool_call_id.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(calls, results, "terminal recovery must preserve only pairs");
+            assert_eq!(calls, std::collections::HashSet::from([call.to_string()]));
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_tool_call_and_result_remain_in_the_follow_up_request() {
+        let provider = Arc::new(RecordingNoopProvider {
+            protocol: None,
+            requests: Mutex::new(Vec::new()),
+        });
+        let (_directory, engine) = test_engine(provider.clone());
+        let session = engine
+            .create_session(".", "test")
+            .expect("create session")
+            .id;
+        let run = RunId::new_v7();
+        let call = ToolCallId::new_v7();
+        for event in [
+            Event::RunStarted {
+                client_run_id: "completed".into(),
+                input: "input".into(),
+            },
+            Event::ToolCallStarted {
+                tool_call_id: call,
+                tool: "read".into(),
+                arguments: Value::Null,
+                provider_tool_call_id: None,
+                provider_protocol: None,
+            },
+            Event::ToolCallCompleted {
+                tool_call_id: call,
+                result: cookiecode_protocol::ToolResult {
+                    content: "result".into(),
+                    truncated: false,
+                },
+            },
+            Event::RunCompleted { final_text: None },
+        ] {
+            engine
+                .append(session, Some(run), event)
+                .await
+                .expect("completed history event");
+        }
+        engine
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "follow-up".into(),
+                input: "follow up".into(),
+            })
+            .await
+            .expect("start follow-up");
+        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
+        let request = provider
+            .requests
+            .lock()
+            .expect("requests lock poisoned")
+            .last()
+            .cloned()
+            .expect("follow-up request");
+        assert!(request.persisted_turns.iter().any(|turn| {
+            matches!(&turn.message, ProviderMessage::Assistant { tool_calls, .. } if tool_calls.iter().any(|tool| tool.id == call.to_string()))
+        }));
+        assert!(request.persisted_turns.iter().any(|turn| {
+            matches!(&turn.message, ProviderMessage::Tool { result } if result.tool_call_id == call.to_string())
+        }));
+    }
+
+    #[tokio::test]
+    async fn abandoned_tool_call_and_late_native_result_are_omitted_from_request() {
+        let provider = Arc::new(RecordingNoopProvider {
+            protocol: Some(ProviderProtocol::OpenAiResponses),
+            requests: Mutex::new(Vec::new()),
+        });
+        let (_directory, engine) = test_engine(provider.clone());
+        let session = engine
+            .create_session(".", "test")
+            .expect("create session")
+            .id;
+        let run = RunId::new_v7();
+        let call = ToolCallId::new_v7();
+        for event in [
+            Event::RunStarted {
+                client_run_id: "abandoned".into(),
+                input: "input".into(),
+            },
+            Event::ToolCallStarted {
+                tool_call_id: call,
+                tool: "read".into(),
+                arguments: Value::Null,
+                provider_tool_call_id: Some("native-orphan".into()),
+                provider_protocol: Some(cookiecode_protocol::ProviderProtocol::OpenAiResponses),
+            },
+            Event::AttemptAbandoned,
+            Event::ToolCallFailed {
+                tool_call_id: call,
+                message: "late synthetic failure".into(),
+            },
+            Event::RunCompleted { final_text: None },
+        ] {
+            engine
+                .append(session, Some(run), event)
+                .await
+                .expect("abandoned history event");
+        }
+        engine
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "follow-up".into(),
+                input: "follow up".into(),
+            })
+            .await
+            .expect("start follow-up");
+        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
+        let request = provider
+            .requests
+            .lock()
+            .expect("requests lock poisoned")
+            .last()
+            .cloned()
+            .expect("follow-up request");
+        assert!(!request.persisted_turns.iter().any(|turn| {
+            matches!(&turn.message, ProviderMessage::Assistant { tool_calls, .. } if tool_calls.iter().any(|tool| tool.id == call.to_string() || tool.id == "native-orphan"))
+                || matches!(&turn.message, ProviderMessage::Tool { result } if result.tool_call_id == call.to_string() || result.tool_call_id == "native-orphan")
+        }));
+    }
+
+    #[tokio::test]
+    async fn mixed_tool_batch_emits_only_the_call_with_a_result() {
+        let provider = Arc::new(RecordingNoopProvider {
+            protocol: None,
+            requests: Mutex::new(Vec::new()),
+        });
+        let (_directory, engine) = test_engine(provider.clone());
+        let session = engine
+            .create_session(".", "test")
+            .expect("create session")
+            .id;
+        let run = RunId::new_v7();
+        let paired = ToolCallId::new_v7();
+        let unpaired = ToolCallId::new_v7();
+        for event in [
+            Event::RunStarted {
+                client_run_id: "mixed".into(),
+                input: "input".into(),
+            },
+            Event::ToolCallStarted {
+                tool_call_id: paired,
+                tool: "read".into(),
+                arguments: Value::Null,
+                provider_tool_call_id: None,
+                provider_protocol: None,
+            },
+            Event::ToolCallStarted {
+                tool_call_id: unpaired,
+                tool: "write".into(),
+                arguments: Value::Null,
+                provider_tool_call_id: None,
+                provider_protocol: None,
+            },
+            Event::ToolCallCompleted {
+                tool_call_id: paired,
+                result: cookiecode_protocol::ToolResult {
+                    content: "result".into(),
+                    truncated: false,
+                },
+            },
+            Event::RunCompleted { final_text: None },
+        ] {
+            engine
+                .append(session, Some(run), event)
+                .await
+                .expect("mixed history event");
+        }
+        engine
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "follow-up".into(),
+                input: "follow up".into(),
+            })
+            .await
+            .expect("start follow-up");
+        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
+        let request = provider
+            .requests
+            .lock()
+            .expect("requests lock poisoned")
+            .last()
+            .cloned()
+            .expect("follow-up request");
+        let calls: std::collections::HashSet<_> = request
+            .persisted_turns
+            .iter()
+            .flat_map(|turn| match &turn.message {
+                ProviderMessage::Assistant { tool_calls, .. } => tool_calls
+                    .iter()
+                    .map(|tool| tool.id.clone())
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let results: std::collections::HashSet<_> = request
+            .persisted_turns
+            .iter()
+            .filter_map(|turn| match &turn.message {
+                ProviderMessage::Tool { result } => Some(result.tool_call_id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls, std::collections::HashSet::from([paired.to_string()]));
+        assert_eq!(results, calls);
+        assert!(!calls.contains(&unpaired.to_string()));
+    }
+
+    #[tokio::test]
+    async fn delayed_result_is_replayed_next_to_its_call_before_later_turns() {
+        let provider = Arc::new(RecordingNoopProvider {
+            protocol: None,
+            requests: Mutex::new(Vec::new()),
+        });
+        let (_directory, engine) = test_engine(provider.clone());
+        let session = engine
+            .create_session(".", "test")
+            .expect("create session")
+            .id;
+        let interrupted_run = RunId::new_v7();
+        let later_run = RunId::new_v7();
+        let call = ToolCallId::new_v7();
+        for (run, event) in [
+            (
+                interrupted_run,
+                Event::RunStarted {
+                    client_run_id: "interrupted".into(),
+                    input: "original user".into(),
+                },
+            ),
+            (
+                interrupted_run,
+                Event::ToolCallStarted {
+                    tool_call_id: call,
+                    tool: "read".into(),
+                    arguments: Value::Null,
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
+                },
+            ),
+            (interrupted_run, Event::RunInterrupted { reason: None }),
+            (
+                later_run,
+                Event::RunStarted {
+                    client_run_id: "later".into(),
+                    input: "intervening user".into(),
+                },
+            ),
+            (
+                later_run,
+                Event::TextDelta {
+                    text: "intervening model".into(),
+                },
+            ),
+            (later_run, Event::RunCompleted { final_text: None }),
+            (
+                interrupted_run,
+                Event::ToolCallFailed {
+                    tool_call_id: call,
+                    message: "late synthetic failure".into(),
+                },
+            ),
+        ] {
+            engine
+                .append(session, Some(run), event)
+                .await
+                .expect("delayed history event");
+        }
+        engine
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "follow-up".into(),
+                input: "follow up".into(),
+            })
+            .await
+            .expect("start follow-up");
+        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
+        let request = provider
+            .requests
+            .lock()
+            .expect("requests lock poisoned")
+            .last()
+            .cloned()
+            .expect("follow-up request");
+        let call_index = request
+            .persisted_turns
+            .iter()
+            .position(|turn| {
+                matches!(&turn.message, ProviderMessage::Assistant { tool_calls, .. } if tool_calls.iter().any(|tool| tool.id == call.to_string()))
+            })
+            .expect("assistant call");
+        assert!(matches!(
+            &request.persisted_turns[call_index + 1].message,
+            ProviderMessage::Tool { result } if result.tool_call_id == call.to_string()
+        ));
+        let later_user_index = request
+            .persisted_turns
+            .iter()
+            .position(|turn| {
+                matches!(&turn.message, ProviderMessage::User { content } if matches!(content.as_slice(), [ContentPart::Text { text }] if text == "intervening user"))
+            })
+            .expect("intervening user");
+        assert!(call_index + 1 < later_user_index);
+    }
+
+    #[tokio::test]
+    async fn repeated_tool_id_keeps_only_the_occurrence_with_a_result() {
+        let provider = Arc::new(RecordingNoopProvider {
+            protocol: None,
+            requests: Mutex::new(Vec::new()),
+        });
+        let (_directory, engine) = test_engine(provider.clone());
+        let session = engine
+            .create_session(".", "test")
+            .expect("create session")
+            .id;
+        let shared_call = ToolCallId::new_v7();
+        let first_run = RunId::new_v7();
+        let second_run = RunId::new_v7();
+        for (run, event) in [
+            (
+                first_run,
+                Event::RunStarted {
+                    client_run_id: "first".into(),
+                    input: "first user".into(),
+                },
+            ),
+            (
+                first_run,
+                Event::ToolCallStarted {
+                    tool_call_id: shared_call,
+                    tool: "read".into(),
+                    arguments: Value::Null,
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
+                },
+            ),
+            (first_run, Event::RunCompleted { final_text: None }),
+            (
+                second_run,
+                Event::RunStarted {
+                    client_run_id: "second".into(),
+                    input: "second user".into(),
+                },
+            ),
+            (
+                second_run,
+                Event::ToolCallStarted {
+                    tool_call_id: shared_call,
+                    tool: "write".into(),
+                    arguments: Value::Null,
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
+                },
+            ),
+            (
+                second_run,
+                Event::ToolCallFailed {
+                    tool_call_id: shared_call,
+                    message: "paired second occurrence".into(),
+                },
+            ),
+            (second_run, Event::RunCompleted { final_text: None }),
+        ] {
+            engine
+                .append(session, Some(run), event)
+                .await
+                .expect("repeated-id history event");
+        }
+        engine
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "follow-up".into(),
+                input: "follow up".into(),
+            })
+            .await
+            .expect("start follow-up");
+        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
+        let request = provider
+            .requests
+            .lock()
+            .expect("requests lock poisoned")
+            .last()
+            .cloned()
+            .expect("follow-up request");
+        let calls: Vec<_> = request
+            .persisted_turns
+            .iter()
+            .flat_map(|turn| match &turn.message {
+                ProviderMessage::Assistant { tool_calls, .. } => tool_calls
+                    .iter()
+                    .map(|tool| tool.name.clone())
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let results: Vec<_> = request
+            .persisted_turns
+            .iter()
+            .filter_map(|turn| match &turn.message {
+                ProviderMessage::Tool { result } => Some(result.content.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls, vec!["write"]);
+        assert_eq!(results, vec!["paired second occurrence"]);
+    }
+
+    #[tokio::test]
+    async fn delayed_repeated_id_results_match_their_own_run_occurrence() {
+        let provider = Arc::new(RecordingNoopProvider {
+            protocol: Some(ProviderProtocol::OpenAiResponses),
+            requests: Mutex::new(Vec::new()),
+        });
+        let (_directory, engine) = test_engine(provider.clone());
+        let session = engine
+            .create_session(".", "test")
+            .expect("create session")
+            .id;
+        let shared_call = ToolCallId::new_v7();
+        let first_run = RunId::new_v7();
+        let second_run = RunId::new_v7();
+        let orphan_run = RunId::new_v7();
+        for (run, event) in [
+            (
+                first_run,
+                Event::RunStarted {
+                    client_run_id: "first".into(),
+                    input: "first user".into(),
+                },
+            ),
+            (
+                first_run,
+                Event::ToolCallStarted {
+                    tool_call_id: shared_call,
+                    tool: "read".into(),
+                    arguments: Value::Null,
+                    provider_tool_call_id: Some("native-first".into()),
+                    provider_protocol: Some(cookiecode_protocol::ProviderProtocol::OpenAiResponses),
+                },
+            ),
+            (first_run, Event::RunInterrupted { reason: None }),
+            (
+                second_run,
+                Event::RunStarted {
+                    client_run_id: "second".into(),
+                    input: "second user".into(),
+                },
+            ),
+            (
+                second_run,
+                Event::ToolCallStarted {
+                    tool_call_id: shared_call,
+                    tool: "write".into(),
+                    arguments: Value::Null,
+                    provider_tool_call_id: Some("native-second".into()),
+                    provider_protocol: Some(cookiecode_protocol::ProviderProtocol::OpenAiResponses),
+                },
+            ),
+            (second_run, Event::RunInterrupted { reason: None }),
+            (
+                second_run,
+                Event::ToolCallFailed {
+                    tool_call_id: shared_call,
+                    message: "second delayed result".into(),
+                },
+            ),
+            (
+                first_run,
+                Event::ToolCallFailed {
+                    tool_call_id: shared_call,
+                    message: "first delayed result".into(),
+                },
+            ),
+            (
+                orphan_run,
+                Event::ToolCallFailed {
+                    tool_call_id: shared_call,
+                    message: "orphaned delayed result".into(),
+                },
+            ),
+        ] {
+            engine
+                .append(session, Some(run), event)
+                .await
+                .expect("repeated delayed history event");
+        }
+        engine
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "follow-up".into(),
+                input: "follow up".into(),
+            })
+            .await
+            .expect("start follow-up");
+        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
+        let request = provider
+            .requests
+            .lock()
+            .expect("requests lock poisoned")
+            .last()
+            .cloned()
+            .expect("follow-up request");
+        let pairs: Vec<_> = request
+            .persisted_turns
+            .windows(2)
+            .filter_map(|entries| match (&entries[0].message, &entries[1].message) {
+                (
+                    ProviderMessage::Assistant { tool_calls, .. },
+                    ProviderMessage::Tool { result },
+                ) if tool_calls.len() == 1 => {
+                    Some((tool_calls[0].id.clone(), result.content.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("native-first".into(), "first delayed result".into()),
+                ("native-second".into(), "second delayed result".into()),
+            ]
+        );
+        assert!(!request.persisted_turns.iter().any(|turn| {
+            matches!(&turn.message, ProviderMessage::Tool { result } if result.content == "orphaned delayed result")
         }));
     }
 
@@ -8015,5 +9156,319 @@ mod tests {
         );
         assert_eq!(run_cancel_count(&engine, child), 1);
         engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn opaque_artifacts_persist_and_replay_after_reopen() {
+        let artifact = serde_json::json!({
+            "items": [{"type": "reasoning", "id": "reasoning_native", "encrypted_content": "ciphertext"}]
+        });
+        let provider = Arc::new(OpaqueRecordingProvider {
+            protocol: ProviderProtocol::OpenAiResponses,
+            artifact: artifact.clone(),
+            fail_after_first: false,
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let (directory, engine) = test_engine(provider.clone());
+        let session = engine
+            .create_session(".", "test")
+            .expect("create session")
+            .id;
+        engine
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "first".into(),
+                input: "first input".into(),
+            })
+            .await
+            .expect("start first run");
+        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
+        assert!(engine
+            .inner
+            .store
+            .get(session)
+            .expect("session")
+            .log
+            .events()
+            .iter()
+            .any(|event| matches!(&event.event, Event::TurnOpaque { state } if state.payload == artifact)));
+        engine.shutdown().await;
+
+        let reopened = reopen_test_engine(&directory, provider.clone()).await;
+        reopened
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "second".into(),
+                input: "second input".into(),
+            })
+            .await
+            .expect("start second run");
+        wait_for_session_status(&reopened, session, &SessionStatus::Completed).await;
+        let requests = provider.requests.lock().expect("requests lock poisoned");
+        let replay = requests.last().expect("second provider request");
+        assert!(replay.persisted_turns.iter().any(|turn| {
+            turn.opaque.as_ref().is_some_and(|opaque| {
+                opaque.provider == ProviderProtocol::OpenAiResponses && opaque.payload == artifact
+            })
+        }));
+    }
+
+    #[tokio::test]
+    async fn fallback_discards_foreign_opaque_without_removing_it_from_the_log() {
+        let artifact = serde_json::json!({"message": {"role": "assistant", "content": "native"}});
+        let primary = Arc::new(OpaqueRecordingProvider {
+            protocol: ProviderProtocol::AnthropicMessages,
+            artifact: artifact.clone(),
+            fail_after_first: true,
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let fallback = Arc::new(OpaqueRecordingProvider {
+            protocol: ProviderProtocol::OpenAiChatCompletions,
+            artifact: serde_json::json!({"message": {"role": "assistant", "content": "fallback"}}),
+            fail_after_first: false,
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let mut config = test_config();
+        config.providers.insert(
+            "fallback".into(),
+            ProviderConfig {
+                kind: ProviderType::OpenAi,
+                api_key_env: None,
+                base_url: None,
+                api: None,
+            },
+        );
+        config
+            .agents
+            .get_mut("test")
+            .expect("test profile")
+            .models
+            .push(ModelConfig {
+                provider: "fallback".into(),
+                model: "fallback-model".into(),
+            });
+        let engine = Engine::open(EngineOptions {
+            data_dir: directory.path().join("data"),
+            cwd: directory.path().to_owned(),
+            config,
+            providers: HashMap::<String, Arc<dyn Provider>>::from([
+                ("test".into(), primary as Arc<dyn Provider>),
+                ("fallback".into(), fallback.clone() as Arc<dyn Provider>),
+            ]),
+            tools: Vec::new(),
+        })
+        .expect("open engine");
+        let session = engine
+            .create_session(".", "test")
+            .expect("create session")
+            .id;
+        for (client_run_id, input) in [("first", "first input"), ("second", "second input")] {
+            engine
+                .start_run(RunStartParams {
+                    session_id: session,
+                    client_run_id: client_run_id.into(),
+                    input: input.into(),
+                })
+                .await
+                .expect("start run");
+            wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
+        }
+        let requests = fallback.requests.lock().expect("requests lock poisoned");
+        let request = requests.first().expect("fallback request");
+        assert!(request.persisted_turns.iter().any(|turn| {
+            turn.opaque
+                .as_ref()
+                .is_some_and(|opaque| opaque.provider == ProviderProtocol::AnthropicMessages)
+        }));
+        assert!(
+            cookiecode_providers::openai::encode_history(
+                &request.persisted_turns,
+                cookiecode_providers::openai::OpenAiEndpoint::ChatCompletions,
+            )
+            .discarded_opaque
+        );
+        assert!(engine
+            .inner
+            .store
+            .get(session)
+            .expect("session")
+            .log
+            .events()
+            .iter()
+            .any(|event| matches!(&event.event, Event::TurnOpaque { state } if state.payload == artifact)));
+    }
+
+    #[test]
+    fn tool_call_ids_are_native_only_for_matching_protocol_replay() {
+        let session = SessionId::new_v7();
+        let run = RunId::new_v7();
+        let call = ToolCallId::new_v7();
+        let events = vec![
+            EventEnvelope {
+                session_id: session,
+                run_id: Some(run),
+                seq: 1,
+                timestamp: jiff::Timestamp::now(),
+                event: Event::RunStarted {
+                    client_run_id: "run".into(),
+                    input: "input".into(),
+                },
+            },
+            EventEnvelope {
+                session_id: session,
+                run_id: Some(run),
+                seq: 2,
+                timestamp: jiff::Timestamp::now(),
+                event: Event::TurnOpaque {
+                    state: TurnOpaque {
+                        provider: cookiecode_protocol::ProviderProtocol::OpenAiResponses,
+                        payload: serde_json::json!({"items": [{"type": "function_call", "call_id": "native-call"}]}),
+                    },
+                },
+            },
+            EventEnvelope {
+                session_id: session,
+                run_id: Some(run),
+                seq: 3,
+                timestamp: jiff::Timestamp::now(),
+                event: Event::ToolCallStarted {
+                    tool_call_id: call,
+                    tool: "read".into(),
+                    arguments: serde_json::json!({"path": "file"}),
+                    provider_tool_call_id: Some("native-call".into()),
+                    provider_protocol: Some(cookiecode_protocol::ProviderProtocol::OpenAiResponses),
+                },
+            },
+            EventEnvelope {
+                session_id: session,
+                run_id: Some(run),
+                seq: 4,
+                timestamp: jiff::Timestamp::now(),
+                event: Event::ToolCallCompleted {
+                    tool_call_id: call,
+                    result: cookiecode_protocol::ToolResult {
+                        content: "result".into(),
+                        truncated: false,
+                    },
+                },
+            },
+        ];
+        let same = assemble_persisted_turns(&events, Some(ProviderProtocol::OpenAiResponses));
+        let foreign =
+            assemble_persisted_turns(&events, Some(ProviderProtocol::OpenAiChatCompletions));
+        let tool_id = |turns: &[cookiecode_providers::PersistedTurn]| match &turns[2].message {
+            ProviderMessage::Tool { result } => result.tool_call_id.clone(),
+            _ => panic!("tool result expected"),
+        };
+        assert_eq!(tool_id(&same), "native-call");
+        assert_eq!(tool_id(&foreign), call.to_string());
+        assert!(matches!(
+            &foreign[1].message,
+            ProviderMessage::Assistant { tool_calls, .. } if tool_calls[0].id == call.to_string()
+        ));
+        let mut unknown_events = events.clone();
+        if let Event::ToolCallStarted {
+            provider_protocol, ..
+        } = &mut unknown_events[2].event
+        {
+            *provider_protocol = None;
+        } else {
+            panic!("tool call expected");
+        }
+        let unknown = assemble_persisted_turns(&unknown_events, None);
+        assert_eq!(tool_id(&unknown), call.to_string());
+        assert!(matches!(
+            &unknown[1].message,
+            ProviderMessage::Assistant { tool_calls, .. } if tool_calls[0].id == call.to_string()
+        ));
+    }
+
+    #[tokio::test]
+    async fn meaningful_stream_failure_advances_without_a_same_entry_retry() {
+        let primary = Arc::new(MeaningfulFailureProvider {
+            calls: AtomicUsize::new(0),
+        });
+        let fallback = Arc::new(OpaqueRecordingProvider {
+            protocol: ProviderProtocol::OpenAiChatCompletions,
+            artifact: serde_json::json!({"message": {"role": "assistant", "content": "fallback"}}),
+            fail_after_first: false,
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let mut config = test_config();
+        config.providers.insert(
+            "fallback".into(),
+            ProviderConfig {
+                kind: ProviderType::OpenAi,
+                api_key_env: None,
+                base_url: None,
+                api: None,
+            },
+        );
+        config
+            .agents
+            .get_mut("test")
+            .expect("test profile")
+            .models
+            .push(ModelConfig {
+                provider: "fallback".into(),
+                model: "fallback-model".into(),
+            });
+        let engine = Engine::open(EngineOptions {
+            data_dir: directory.path().join("data"),
+            cwd: directory.path().to_owned(),
+            config,
+            providers: HashMap::<String, Arc<dyn Provider>>::from([
+                ("test".into(), primary.clone() as Arc<dyn Provider>),
+                ("fallback".into(), fallback.clone() as Arc<dyn Provider>),
+            ]),
+            tools: Vec::new(),
+        })
+        .expect("open engine");
+        let session = engine
+            .create_session(".", "test")
+            .expect("create session")
+            .id;
+        engine
+            .start_run(RunStartParams {
+                session_id: session,
+                client_run_id: "run".into(),
+                input: "input".into(),
+            })
+            .await
+            .expect("start run");
+        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
+        assert_eq!(primary.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fallback.calls.load(Ordering::SeqCst), 1);
+        let fallback_request = fallback
+            .requests
+            .lock()
+            .expect("requests lock poisoned")
+            .first()
+            .cloned()
+            .expect("fallback request");
+        assert!(!fallback_request.persisted_turns.iter().any(|turn| {
+            matches!(
+                &turn.message,
+                ProviderMessage::Assistant { content, .. }
+                    if content.iter().any(|part| matches!(part, ContentPart::Text { text } if text == "partial"))
+            )
+        }));
+        assert!(
+            engine
+                .inner
+                .store
+                .get(session)
+                .expect("session")
+                .log
+                .events()
+                .iter()
+                .any(|event| matches!(event.event, Event::AttemptAbandoned))
+        );
     }
 }

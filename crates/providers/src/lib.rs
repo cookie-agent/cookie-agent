@@ -339,6 +339,13 @@ fn status_code(value: &Value) -> Option<reqwest::StatusCode> {
 pub trait Provider: Send + Sync {
     fn capabilities(&self, model: &ModelId) -> ProviderCapabilities;
 
+    /// The native protocol used to encode this model's persisted history.
+    /// Generic test and custom providers may leave this unknown, in which case
+    /// the engine uses normalized reconstruction with canonical tool IDs.
+    fn protocol(&self, _model: &ModelId) -> Option<ProviderProtocol> {
+        None
+    }
+
     async fn stream(
         &self,
         request: ProviderRequest,

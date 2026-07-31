@@ -171,6 +171,8 @@ ToolCallStarted         ToolCallProgress        ToolCallCompleted
 ToolCallFailed          ApprovalRequested       ApprovalResolved
 ToolStdinSubmitted      (redacted audit: byte count only, §7.1)
 ToolCallLinked          (delegate call → child session backlink)
+AttemptAbandoned        (failed model-attempt boundary; not prompt history, §6.1)
+TurnOpaque              (provider-native assistant continuation artifact, §6.2)
 ModelFallback           (chain advance: from model, to model, reason, §6.1)
 UsageReported
 ```
@@ -407,6 +409,11 @@ run is retained as a cancellation-pending tombstone; no further in-process
 retry is attempted, so reopen is required to reconcile it rather than silently
 leaving a durable `Running` projection.
 
+The same retained-active/reopen-required rule applies if persisting provider
+attempt state (deltas, usage, or `TurnOpaque`) fails: the provider loop surfaces
+the error and attempts its terminal append once; if that append also fails, the
+active entry remains as a tombstone and no in-process recovery is attempted.
+
 `invocation_id` is derived by the engine from
 `(parent_session_id, parent_run_id, parent_tool_call_id)` — all
 engine-generated, so the tuple is globally unique by construction; it never
@@ -471,7 +478,10 @@ next `run.start` on that session): the engine appends synthetic tool-result
 events to the session log for calls left pending by the interruption. These
 are **post-terminal annotations** on the interrupted run — they are consumed
 by the *next* run's prompt assembly (so the model sees why its tool calls
-failed) and never revive the old loop. Re-resolution **never re-executes**
+failed) and never revive the old loop. Assembly relocates a delayed synthetic
+result beside its originating assistant call, before any later user/model turn,
+so the persisted log's annotation position cannot produce invalid provider
+ordering. Re-resolution **never re-executes**
 pending calls:
 
 - Built-in tool calls (read/write/edit/bash): synthetic failure
@@ -561,7 +571,8 @@ must be replayed verbatim in later requests:
 
 Therefore: adapters emit **opaque provider-state artifacts** alongside
 normalized events (per assistant turn and per block where applicable). The
-engine persists them in the session log with the turn, and request assembly
+engine persists each one as the durable `TurnOpaque` event in the session log
+with its assistant turn, and request assembly
 replays them through the same adapter's history encoder — provider-native
 data takes precedence over normalized reconstruction for every turn it
 exists for; normalized reconstruction is the fallback for synthetic turns
@@ -584,6 +595,16 @@ struct EncodedHistory { system: Vec<Value>, messages: Vec<Value>, discarded_opaq
 assembly. When it is non-empty, the selected adapter invokes its history
 encoder while building the actual HTTP body; `messages` remains the
 normalized-only path for callers that have no persisted transcript.
+
+`TurnOpaque` is an ordinary persisted protocol event (and therefore survives
+JSONL reopen), tagged with its `ProviderProtocol` and untyped native payload.
+`ToolCallStarted` also retains the issuing protocol and provider-native call
+ID beside the engine-generated call ID. On same-protocol replay, prompt
+assembly uses those native IDs verbatim for tool calls and results; on a
+cross-protocol fallback it uses engine IDs while the selected adapter marks
+the foreign artifact discarded and reconstructs that turn normally. Artifacts
+remain in the log after a fallback, so a later run starting at the chain head
+can replay them again.
 
 The Anthropic and compatible adapters expose
 `encode_history(&[PersistedTurn]) -> EncodedHistory`; OpenAI exposes
@@ -635,7 +656,30 @@ Semantics:
 - **Partial output is abandoned on fallback**: if a stream fails midway, the
   partial deltas are discarded client-visibly (marked abandoned), and the
   completion restarts on the next entry against the same committed
-  conversation state. Committed tool results are never replayed or lost.
+  conversation state. The engine keeps the raw events in the JSONL audit log,
+  then appends `AttemptAbandoned`; prompt assembly discards the accumulated
+  assistant state for that attempt at this boundary. Earlier committed turns
+  and tool results remain in the next request. `ModelFallback` remains the
+  sole provider-chain advance/degradation signal. Committed tool results are
+  never replayed or lost. Prompt assembly maintains an active attempt segment
+  and an emitted-call set: `AttemptAbandoned` clears only active calls and
+  their native IDs, while calls already emitted in an earlier committed segment
+  remain eligible for their result. A terminal run boundary closes the active
+  segment and promotes only calls that have a later result into that emitted
+  set. A result is emitted only when its call is in the set, then consumes the
+  entry; calls without any result are never emitted. Thus a late result after
+  an abandoned call is omitted, while a synthetic post-terminal recovery result
+  retains an already-emitted matching call and is replayed immediately after
+  that call, before later turns. Pairing keys each occurrence by the
+  engine-generated `(tool_call_id, run_id)` tuple; a result without a run
+  association, or without an exact emitted occurrence, is omitted rather than
+  guessed. If omitting a call would make an opaque
+  assistant artifact invalid, that turn falls back to normalized replay.
+- **Meaningful-output retry guard:** the engine's streaming attempt runner is
+  the single same-entry retry layer and uses the provider executor's rule:
+  retry only before text, reasoning, or tool-call output has been observed.
+  A retryable failure after meaningful output advances directly to the next
+  fallback entry, never receives a second same-entry retry.
 - **Per-run stickiness**: once the chain advances, the remainder of the run
   stays on the new entry (no flip-flopping under sustained rate limiting);
   the next run starts again from the chain head.
@@ -996,7 +1040,10 @@ Notes:
   tools in an unsandboxed harness). Trust decisions are stored in
   `~/.local/share/cookiecode/trust.json`, keyed by canonical workspace path
   plus a content hash of the workspace config file — editing the file
-  re-prompts.
+  re-prompts. The `cookiecode` CLI prompts only when stdin and stdout are
+  TTYs; an untrusted config in a non-TTY invocation (including `daemon`) is
+  refused unless the user explicitly passes `--trust-workspace`, which records
+  trust for the current config contents.
 - Effective policy is snapshotted at session creation (§4.5).
 
 ---

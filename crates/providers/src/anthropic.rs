@@ -101,6 +101,10 @@ impl Provider for AnthropicProvider {
         }
     }
 
+    fn protocol(&self, _model: &ModelId) -> Option<ProviderProtocol> {
+        Some(ProviderProtocol::AnthropicMessages)
+    }
+
     async fn stream(
         &self,
         request: ProviderRequest,

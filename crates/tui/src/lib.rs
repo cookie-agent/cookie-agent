@@ -176,6 +176,8 @@ mod tests {
                 tool_call_id: call,
                 tool: "bash".into(),
                 arguments: serde_json::json!({}),
+                provider_tool_call_id: None,
+                provider_protocol: None,
             },
         });
         assert_eq!(
@@ -245,6 +247,8 @@ mod tests {
                 tool_call_id: call,
                 tool: "bash".into(),
                 arguments: serde_json::json!({}),
+                provider_tool_call_id: None,
+                provider_protocol: None,
             },
         });
         assert!(store.sessions[&session].output[&(call, true)].has_gap);
@@ -403,6 +407,8 @@ mod tests {
                 tool_call_id: call,
                 tool: "bash".into(),
                 arguments: serde_json::json!({}),
+                provider_tool_call_id: None,
+                provider_protocol: None,
             },
         });
         assert_eq!(store.sessions[&session].generation, 0);
@@ -429,6 +435,8 @@ mod tests {
                         tool_call_id: call,
                         tool: "bash".into(),
                         arguments: serde_json::json!({}),
+                        provider_tool_call_id: None,
+                        provider_protocol: None,
                     },
                 }),
             }),
@@ -494,6 +502,8 @@ mod tests {
                     tool_call_id: call,
                     tool: "bash".into(),
                     arguments: serde_json::json!({}),
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
                 },
             }),
         });
@@ -515,6 +525,8 @@ mod tests {
                 tool_call_id: call,
                 tool: "bash".into(),
                 arguments: serde_json::json!({}),
+                provider_tool_call_id: None,
+                provider_protocol: None,
             },
         });
         let _ = store.apply_delivery(crate::ClientDelivery::ReplayStart {
@@ -536,6 +548,8 @@ mod tests {
                     tool_call_id: call,
                     tool: "bash".into(),
                     arguments: serde_json::json!({}),
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
                 },
             }),
         });
@@ -558,6 +572,8 @@ mod tests {
                     tool_call_id: call,
                     tool: "bash".into(),
                     arguments: serde_json::json!({}),
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
                 },
             }),
         });

@@ -117,6 +117,13 @@ impl Provider for OpenAiProvider {
         }
     }
 
+    fn protocol(&self, model: &ModelId) -> Option<ProviderProtocol> {
+        Some(match self.endpoint(model) {
+            OpenAiEndpoint::ChatCompletions => self.opaque_protocol,
+            OpenAiEndpoint::Responses => ProviderProtocol::OpenAiResponses,
+        })
+    }
+
     async fn stream(
         &self,
         request: ProviderRequest,

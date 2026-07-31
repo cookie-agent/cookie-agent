@@ -463,6 +463,8 @@ mod tests {
                     tool_call_id: call,
                     tool: "delegate".into(),
                     arguments: Value::Null,
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
                 },
             )
             .await
@@ -652,6 +654,8 @@ mod tests {
                     tool_call_id: grandchild_call,
                     tool: "delegate".into(),
                     arguments: Value::Null,
+                    provider_tool_call_id: None,
+                    provider_protocol: None,
                 },
             )
             .await

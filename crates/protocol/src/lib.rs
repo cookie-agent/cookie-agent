@@ -375,6 +375,23 @@ pub struct ToolResult {
     pub truncated: bool,
 }
 
+/// The exact provider wire protocol that produced an opaque assistant artifact.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderProtocol {
+    AnthropicMessages,
+    OpenAiChatCompletions,
+    OpenAiResponses,
+    OpenAiCompatible,
+}
+
+/// Provider-native state needed to replay an assistant turn exactly.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+pub struct TurnOpaque {
+    pub provider: ProviderProtocol,
+    pub payload: Value,
+}
+
 /// A durable event payload from a session event log.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -420,6 +437,12 @@ pub enum Event {
         tool_call_id: ToolCallId,
         tool: String,
         arguments: Value,
+        /// The provider-native call ID, retained for same-protocol replay.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_tool_call_id: Option<String>,
+        /// Protocol that issued `provider_tool_call_id`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_protocol: Option<ProviderProtocol>,
     },
     ToolCallProgress {
         tool_call_id: ToolCallId,
@@ -459,6 +482,12 @@ pub enum Event {
     ToolCallLinked {
         tool_call_id: ToolCallId,
         child_session_id: SessionId,
+    },
+    /// Boundary after provider output from an attempt that did not commit.
+    AttemptAbandoned,
+    /// Opaque native assistant state emitted by a provider at turn finalization.
+    TurnOpaque {
+        state: TurnOpaque,
     },
     ModelFallback {
         from: ModelRef,
@@ -985,6 +1014,8 @@ mod tests {
                 tool_call_id: call_id(),
                 tool: "read".into(),
                 arguments: serde_json::json!({"path": "x"}),
+                provider_tool_call_id: Some("call_native".into()),
+                provider_protocol: Some(ProviderProtocol::OpenAiResponses),
             },
             Event::ToolCallProgress {
                 tool_call_id: call_id(),
@@ -1028,6 +1059,13 @@ mod tests {
             Event::ToolCallLinked {
                 tool_call_id: call_id(),
                 child_session_id: SessionId(Uuid::from_u128(7)),
+            },
+            Event::AttemptAbandoned,
+            Event::TurnOpaque {
+                state: TurnOpaque {
+                    provider: ProviderProtocol::OpenAiResponses,
+                    payload: serde_json::json!({"items": []}),
+                },
             },
             Event::ModelFallback {
                 from: model.clone(),

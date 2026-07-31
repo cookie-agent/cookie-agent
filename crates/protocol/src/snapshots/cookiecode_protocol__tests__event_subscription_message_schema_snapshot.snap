@@ -407,6 +407,24 @@ expression: schema_for!(EventSubscriptionMessage)
           "type": "object",
           "properties": {
             "arguments": true,
+            "provider_protocol": {
+              "description": "Protocol that issued `provider_tool_call_id`.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ProviderProtocol"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "provider_tool_call_id": {
+              "description": "The provider-native call ID, retained for same-protocol replay.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "tool": {
               "type": "string"
             },
@@ -612,6 +630,36 @@ expression: schema_for!(EventSubscriptionMessage)
           ]
         },
         {
+          "description": "Boundary after provider output from an attempt that did not commit.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "attempt_abandoned"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Opaque native assistant state emitted by a provider at turn finalization.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/TurnOpaque"
+            },
+            "type": {
+              "type": "string",
+              "const": "turn_opaque"
+            }
+          },
+          "required": [
+            "type",
+            "state"
+          ]
+        },
+        {
           "type": "object",
           "properties": {
             "attempts": {
@@ -809,6 +857,16 @@ expression: schema_for!(EventSubscriptionMessage)
         "permission_rules"
       ]
     },
+    "ProviderProtocol": {
+      "description": "The exact provider wire protocol that produced an opaque assistant artifact.",
+      "type": "string",
+      "enum": [
+        "anthropic_messages",
+        "open_ai_chat_completions",
+        "open_ai_responses",
+        "open_ai_compatible"
+      ]
+    },
     "SessionMeta": {
       "description": "Session metadata cached for querying; the event log remains authoritative.",
       "type": "object",
@@ -931,6 +989,20 @@ expression: schema_for!(EventSubscriptionMessage)
       "required": [
         "content",
         "truncated"
+      ]
+    },
+    "TurnOpaque": {
+      "description": "Provider-native state needed to replay an assistant turn exactly.",
+      "type": "object",
+      "properties": {
+        "payload": true,
+        "provider": {
+          "$ref": "#/$defs/ProviderProtocol"
+        }
+      },
+      "required": [
+        "provider",
+        "payload"
       ]
     },
     "Usage": {
