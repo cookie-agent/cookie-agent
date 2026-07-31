@@ -91,7 +91,9 @@ providers ◄── engine ◄────── tools        (built-ins + deleg
 - `tools` → `engine` (implements `ToolProvider`; delegate reaches the engine
   exclusively through its client API — an in-process handle — which is what
   keeps it splittable into a separate binary later)
-- `tui` → `protocol` (client side only)
+- `tui` → `protocol`, `server` (client side only; `server` supplies the
+  current `MessageStream` transport adapters for in-process and WebSocket
+  connections, never engine APIs)
 - `cookiecode` → `engine`, `providers`, `tools`, `config`, `server`, `tui`
 
 `engine` never imports `tools`; the composition root registers the built-in
@@ -382,10 +384,15 @@ never to live admission. A journal record mapping a known `invocation_id` to
 *different* parameters is corruption: the actor refuses it and surfaces an
 error rather than silently choosing one.
 
-If the initial `DelegationStarted` append/fsync **fails**, the actor rolls
-back the in-memory reservation and the invocation fails terminally — a retry
-then re-admits fresh instead of attaching to a phantom reservation that has
-no durable record and never will.
+If any journal append/fsync **fails**, the actor enters a poisoned fail-stop
+state and rejects every later mutation until engine reopen. The failed write
+may have reached the file despite the error, so allocating a fresh reservation
+in the same process could conflict with a durable or torn record. On reopen,
+the normal JSONL torn-tail recovery establishes the authoritative state.
+The mutation that first fails is returned to its caller as its underlying I/O
+error; the poisoned state makes later mutations return `Poisoned`. Startup
+reconciliation propagates that first repair error from `Engine::open` rather
+than silently publishing a half-repaired engine.
 
 `invocation_id` is derived by the engine from
 `(parent_session_id, parent_run_id, parent_tool_call_id)` — all
@@ -397,18 +404,33 @@ depends on provider-supplied tool-call IDs.
 ```
 1. Journal actor: reserve(invocation) — atomic check-and-reserve
 2. Append DelegationStarted { invocation_id, parent ids, child_session_id,
-   effective child policy } to delegations.jsonl
+    immutable request payload { task, context, success criteria, expected output },
+    effective child policy, immutable-argument fingerprint } to
+   delegations.jsonl. The fingerprint covers task, context, success criteria,
+   expected output, profile, and effective child policy; a duplicate invocation
+   must match all of them.
 3. Build the child session directory under a TEMPORARY name:
    write events.jsonl containing a complete, fsynced SessionCreated event
    { origin: Delegated{...} }; write meta.json; fsync the directory.
    Then atomically rename into place and fsync the parent directory.
    A child is VALID iff the rename completed and its events.jsonl parses
    with a valid SessionCreated.
-4. Append ToolCallLinked { tool_call_id, child_session_id } to the parent log
+4. Send `EnsureToolCallLinked { tool_call_id, child_session_id }` to the parent
+   session actor. The actor atomically checks its log and appends the backlink
+   only if absent. Every creator and re-delivery uses this command before
+   journal-link/start; startup recovery performs the same actor-atomic ensure
+   before the engine is published. The child run cannot start before this
+   durable backlink exists.
 5. Append DelegationLinked { invocation_id } to the journal
 6. Start the child run (client_run_id derived from invocation_id);
    append DelegationRunStarted { invocation_id, child_run_id }
 ```
+
+The child's initial input is rendered deterministically as four labelled
+sections: `Task:` followed by task text, then `Context:`, `Success criteria:`,
+and `Expected output:` followed by compact JSON for each corresponding payload
+value. The payload, not the fingerprint, is used when an unstarted child is
+recovered.
 
 **JSONL torn-tail recovery.** Any JSONL file (session logs, journal) may end
 in a partial record after a crash. On load, every file is truncated to its
@@ -422,7 +444,8 @@ last complete newline-delimited record before projections are built.
 | Valid child, no `ToolCallLinked` in parent | Append the missing `ToolCallLinked` (journal is authoritative for the edge; parent log for rendering) |
 | Linked, no `DelegationLinked` confirmation | Append the confirmation |
 | **Valid child, no `RunStarted` in its log** (crash between steps 5 and 6) | Child is *unstarted*. On parent resume, delegation starts the run **exactly once** — the idempotent `client_run_id` makes a double start impossible — and the invocation proceeds normally. If the parent session is never resumed, nothing runs |
-| Child session with no journal record (foreign/orphan) | Mark `interrupted`, keep queryable; never auto-attached |
+| Child session with no journal record (foreign/orphan) | Mark every non-interrupted run `interrupted`, keep queryable; exclude it from tree projections and never auto-attach |
+| Journaled child whose parent run is cancelled | Mark an active/interrupted child run `cancelled`; parent resume records a structured cancelled delegate result |
 | Pending delegate call in a session log, **no journal reservation** (crash between the in-memory reservation and the `DelegationStarted` append) | Nothing durable was ever created. On parent resume the call resolves as a synthetic interrupted failure — the parent's model may simply retry the delegation in the next run |
 
 **Run resume semantics.** On restart, every non-terminal run (parent or
@@ -443,13 +466,34 @@ pending calls:
   → started exactly once (above). Child interrupted → structured failure
   naming the (still queryable) child session. The child is never re-run
   under the same invocation.
+  A cancelled parent is distinct from an orphan: its journaled child is
+  cancelled and its pending delegate call receives a structured cancelled
+  result, whereas only parentless/unjournaled children are interrupted.
+
+For an unstarted child, the parent actor registers one recovery waiter keyed by
+the pending parent call. Repeated `session.resume` operations observe that
+waiter rather than re-resolving the call; its eventual result returns through
+the parent actor's normal tool-result command.
+
+All synthetic delegate failures use the parent actor's atomic
+`ResolveDelegateFailureIfPending` command. A late tool result for an already
+resolved call is acknowledged as a no-op, so it cannot abort the parent loop
+or prevent later parallel tool results from being committed. If journal run
+confirmation fails after child start, the engine cancels the child before
+resolving the parent failure. The cancellation event is asynchronous; a crash
+before it is durable reopens the child as interrupted and recovery resolves it.
 
 **Crash windows while the daemon is live** are covered by the same
 reservation: re-delivery of an invocation (e.g. a retried tool call) finds
-the existing reservation and attaches rather than duplicating. Parent
-cancellation propagates: the engine cancels the tool invocation → delegation
-cancels the child → a late child success is discarded, never injected into
-the cancelled parent.
+the existing reservation, repairs a missing parent link or journal confirmation,
+and attaches rather than duplicating. Parent cancellation propagates through
+the complete journal tree (including in-flight pre-confirmation admissions) →
+delegation cancels every descendant → a late child success is discarded, never
+injected into the cancelled parent. Cancellation can race provider scheduling:
+the engine catches it immediately after run start, while child tool execution
+remains permission/cancellation guarded. Abandoning a delegate-result wait
+schedules the same child cancellation when a Tokio runtime handle is available;
+teardown outside any live runtime is best-effort.
 
 ---
 
@@ -1017,13 +1061,18 @@ Protocol surface (transport-independent):
   last_delivered_seq }`, which clients pass back as the exclusive replay
   cursor. They also carry ephemeral output-delta envelopes (§7.1) with per-call
   byte offsets and atomic snapshot-to-live handoff for in-flight streaming
-  calls.
+  calls. An output snapshot includes its `stdout` or `stderr` stream explicitly
+  so an empty snapshot remains unambiguous. `approval.respond` includes the
+  owning `session_id`, because approval IDs are resolved by that session's
+  event log.
 - `ts-rs` generates TypeScript bindings from `protocol` types; `schemars`
   generates JSON Schemas (tool parameters, protocol).
 - Wire enum encoding is stable: data-carrying protocol enums use internally
   tagged `snake_case` objects with a `type` discriminator, while unit enums
   are `snake_case` strings; `DepthLimit` uses adjacent `kind`/`value` tags,
-  and JSON-RPC IDs/responses remain untagged as required by JSON-RPC 2.0.
+  and JSON-RPC IDs/responses remain untagged as required by JSON-RPC 2.0;
+  request IDs may be strings, integer numbers, or explicit `null` (which is
+  distinct from an absent notification ID).
 
 ---
 

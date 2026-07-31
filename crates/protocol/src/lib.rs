@@ -53,10 +53,11 @@ uuid_id!(RunId);
 uuid_id!(ToolCallId);
 uuid_id!(InvocationId);
 
-/// A JSON-RPC request identifier. JSON-RPC allows either strings or numbers.
+/// A JSON-RPC request identifier. JSON-RPC allows strings, numbers, or null.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(untagged)]
 pub enum JsonRpcId {
+    Null,
     Number(i64),
     String(String),
 }
@@ -512,6 +513,15 @@ pub struct OutputSnapshot {
     pub chunks: Vec<OutputDelta>,
 }
 
+/// A retained output snapshot paired with the stream it represents. This is
+/// required on the wire because an empty snapshot has no chunk from which a
+/// client could otherwise determine whether it is stdout or stderr.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+pub struct OutputSnapshotEnvelope {
+    pub stream: OutputStream,
+    pub snapshot: OutputSnapshot,
+}
+
 /// Parameters for `session.create`.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 pub struct SessionCreateParams {
@@ -674,6 +684,8 @@ pub struct EventsSubscribeResult {
 /// suggested pattern when granting `always`.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 pub struct ApprovalRespondParams {
+    /// The session which owns the pending approval.
+    pub session_id: SessionId,
     pub approval_id: String,
     pub decision: ApprovalDecision,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -816,6 +828,7 @@ mod tests {
 
     #[test]
     fn serde_round_trips_all_enums() {
+        round_trip(JsonRpcId::Null);
         round_trip(JsonRpcId::Number(1));
         round_trip(JsonRpcId::String("request".into()));
         round_trip(Response::Success(SuccessResponse {

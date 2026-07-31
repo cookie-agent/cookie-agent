@@ -70,6 +70,7 @@ pub struct SessionStore {
     project_dir: PathBuf,
     sessions_dir: PathBuf,
     sessions: Mutex<HashMap<SessionId, SessionProjection>>,
+    creation: Mutex<()>,
 }
 
 impl SessionStore {
@@ -93,6 +94,7 @@ impl SessionStore {
             project_dir,
             sessions_dir: sessions_dir.clone(),
             sessions: Mutex::new(HashMap::new()),
+            creation: Mutex::new(()),
         });
         for entry in fs::read_dir(&sessions_dir).map_err(|source| SessionError::Io {
             path: sessions_dir.clone(),
@@ -131,11 +133,26 @@ impl SessionStore {
         meta: SessionMeta,
         policy: PolicySnapshot,
     ) -> Result<Arc<EventLog>, SessionError> {
+        self.create_with_status(meta, policy).map(|(log, _)| log)
+    }
+
+    /// Creates a session atomically and reports whether this caller won creation.
+    pub fn create_with_status(
+        &self,
+        meta: SessionMeta,
+        policy: PolicySnapshot,
+    ) -> Result<(Arc<EventLog>, bool), SessionError> {
+        let _creation = self
+            .creation
+            .lock()
+            .expect("session creation lock poisoned");
         let final_dir = self.sessions_dir.join(meta.id.to_string());
         if final_dir.exists() {
-            return Ok(self.get(meta.id)?.log);
+            return Ok((self.get(meta.id)?.log, false));
         }
-        let temporary = self.sessions_dir.join(format!(".{}.tmp", meta.id));
+        let temporary = self
+            .sessions_dir
+            .join(format!(".{}.{}.tmp", meta.id, SessionId::new_v7()));
         fs::create_dir_all(&temporary).map_err(|source| SessionError::Io {
             path: temporary.clone(),
             source,
@@ -155,10 +172,16 @@ impl SessionStore {
             },
         )?;
         fsync_directory(&temporary)?;
-        fs::rename(&temporary, &final_dir).map_err(|source| SessionError::Io {
-            path: final_dir.clone(),
-            source,
-        })?;
+        if let Err(source) = fs::rename(&temporary, &final_dir) {
+            if source.kind() == std::io::ErrorKind::AlreadyExists || final_dir.exists() {
+                let _ = fs::remove_dir_all(&temporary);
+                return Ok((self.get(meta.id)?.log, false));
+            }
+            return Err(SessionError::Io {
+                path: final_dir.clone(),
+                source,
+            });
+        }
         fsync_directory(&self.sessions_dir)?;
         let final_log = EventLog::open(final_dir.join("events.jsonl"), meta.id)?;
         let result = projection(final_log.clone())?;
@@ -166,7 +189,7 @@ impl SessionStore {
             .lock()
             .expect("session store lock poisoned")
             .insert(meta.id, result);
-        Ok(final_log)
+        Ok((final_log, true))
     }
 
     pub fn get(&self, id: SessionId) -> Result<SessionProjection, SessionError> {

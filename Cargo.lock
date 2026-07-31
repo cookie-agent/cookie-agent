@@ -519,10 +519,20 @@ name = "cookiecode-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
+ "cookiecode-config",
  "cookiecode-engine",
  "cookiecode-protocol",
+ "cookiecode-providers",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
  "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
  "tower-http 0.7.0",
  "tracing",
 ]
@@ -552,9 +562,23 @@ name = "cookiecode-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "base64",
+ "cookiecode-config",
+ "cookiecode-engine",
  "cookiecode-protocol",
+ "cookiecode-providers",
+ "cookiecode-server",
  "crossterm",
+ "futures-util",
+ "jiff",
  "ratatui",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
@@ -632,6 +656,7 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
+ "futures-core",
  "mio",
  "parking_lot",
  "rustix",
