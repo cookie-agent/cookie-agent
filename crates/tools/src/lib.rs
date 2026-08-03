@@ -1,102 +1,139 @@
-//! Built-in tools and the delegation tool provider.
+//! Protocol-v6 prepared built-in tools.
 
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use cookie_agent_engine::{
-    SessionToolContext, ToolCall, ToolError, ToolInvocationContext, ToolProvider, ToolSpec,
+    PreparedTool, SessionToolContext, ToolCall, ToolError, ToolPreparationContext, ToolProvider,
+    ToolSpec,
+};
+use cookie_agent_protocol::{
+    ActionKind, ApprovalBoundary, ApprovalCapability, ApprovalResourceSource,
+    PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
+    PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, Sha256Digest,
 };
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 
-pub(crate) const RESULT_LIMIT: usize = 32 * 1024;
-
-pub(crate) fn truncate_text(value: &mut String, limit: usize) -> bool {
-    if value.len() <= limit {
-        return false;
-    }
-    let mut boundary = limit;
-    while !value.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    value.truncate(boundary);
-    true
-}
+pub mod bash;
+pub mod delegate;
+pub mod edit;
+pub mod fs_cap;
+pub mod glob;
+pub mod grep;
+pub mod read;
+pub mod write;
 
 pub(crate) fn schema<T: JsonSchema>() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(T)).expect("tool schemas serialize")
 }
 
-pub(crate) fn result<T: Serialize>(value: &T, truncated: bool) -> cookie_agent_engine::ToolResult {
-    let content = serde_json::to_string(value).expect("tool result serializes");
-    let mut was_truncated = truncated;
-    let content = if content.len() > RESULT_LIMIT {
-        was_truncated = true;
-        serde_json::json!({ "truncated": true, "message": "result exceeded the output size cap" })
-            .to_string()
-    } else {
-        content
-    };
-    cookie_agent_engine::ToolResult {
-        content,
-        truncated: was_truncated,
-    }
+pub(crate) fn tool_error(error: impl std::fmt::Display) -> ToolError {
+    ToolError::execution(error.to_string())
 }
 
-pub(crate) fn tool_error(error: impl std::fmt::Display) -> cookie_agent_engine::ToolError {
-    cookie_agent_engine::ToolError::Failed(error.to_string())
+pub(crate) fn parse_args<T: DeserializeOwned>(
+    tool: &str,
+    value: serde_json::Value,
+) -> Result<T, ToolError> {
+    serde_json::from_value(value).map_err(|error| {
+        tool_error(format!(
+            "The {tool} tool was called with invalid arguments: {error}.\nPlease rewrite the input so it satisfies the expected schema."
+        ))
+    })
 }
 
-/// Resolves paths relative to the workspace passed when the tool provider is built.
-/// Existing paths are canonicalized; new targets canonicalize their nearest existing
-/// ancestor, matching the permission layer's path semantics.
-pub(crate) fn canonical_path(workspace: &Path, input: &str) -> io::Result<PathBuf> {
-    let requested = Path::new(input);
-    let absolute = if requested.is_absolute() {
-        requested.to_path_buf()
-    } else {
-        workspace.join(requested)
-    };
-    if absolute.exists() {
-        return fs::canonicalize(absolute);
-    }
-    let mut ancestor = absolute.as_path();
-    let mut suffix = Vec::new();
-    while !ancestor.exists() {
-        let name = ancestor.file_name().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "path has no existing ancestor")
-        })?;
-        suffix.push(name.to_os_string());
-        ancestor = ancestor.parent().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "path has no existing ancestor")
-        })?;
-    }
-    let mut canonical = fs::canonicalize(ancestor)?;
-    for component in suffix.iter().rev() {
-        canonical.push(component);
-    }
-    Ok(canonical)
+pub(crate) fn prepared_operation<T: Serialize>(
+    tool: &str,
+    normalized_arguments: &T,
+    capabilities: Vec<(ActionKind, &str)>,
+    resources: Vec<PreparedApprovalResource>,
+    execution_context_bytes: &[u8],
+) -> Result<PreparedOperationIdentity, ToolError> {
+    let arguments = serde_json::to_vec(normalized_arguments).map_err(tool_error)?;
+    let capabilities = capabilities
+        .into_iter()
+        .map(|(action, operation)| {
+            Ok(ApprovalCapability {
+                action,
+                operation: PreparedCapabilityOperation::new(format!("{tool}:{operation}"))
+                    .map_err(tool_error)?,
+            })
+        })
+        .collect::<Result<Vec<_>, ToolError>>()?;
+    PreparedOperationIdentity::new(
+        Sha256Digest::of_bytes(&arguments),
+        capabilities,
+        resources,
+        Sha256Digest::of_bytes(execution_context_bytes),
+    )
+    .map_err(tool_error)
 }
 
-pub(crate) fn workspace_path(workspace: impl Into<PathBuf>) -> PathBuf {
-    let workspace = workspace.into();
-    fs::canonicalize(&workspace).unwrap_or(workspace)
+pub(crate) fn prepared_resource(
+    action: ActionKind,
+    logical_kind: &str,
+    stable_label_bytes: &[u8],
+    binding_bytes: &[u8],
+    lifetime: PreparedBindingLifetime,
+    source: ApprovalResourceSource,
+) -> Result<PreparedApprovalResource, ToolError> {
+    let label = Sha256Digest::of_bytes(stable_label_bytes);
+    let mut complete_binding = Vec::new();
+    complete_binding.extend_from_slice(logical_kind.as_bytes());
+    complete_binding.push(0);
+    complete_binding.extend_from_slice(stable_label_bytes);
+    complete_binding.push(0);
+    complete_binding.extend_from_slice(binding_bytes);
+    Ok(PreparedApprovalResource {
+        capability: action,
+        canonical: PreparedResourceIdentity::new(format!("{logical_kind}:{}", label.as_str()))
+            .map_err(tool_error)?,
+        binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(&complete_binding),
+        binding_lifetime: lifetime,
+        boundary: if action == ActionKind::Bash {
+            ApprovalBoundary::CommandPrefix {
+                prefix: String::from_utf8_lossy(stable_label_bytes).into_owned(),
+            }
+        } else {
+            ApprovalBoundary::Exact
+        },
+        source,
+    })
 }
 
-/// Uses the engine-frozen session workspace. The fallback keeps direct tool
-/// construction usable in unit tests that do not create an engine context.
-pub(crate) fn workspace_for<'a>(ctx: &'a ToolInvocationContext, fallback: &'a Path) -> &'a Path {
-    if ctx.workspace_root.as_os_str().is_empty() {
-        fallback
-    } else {
-        &ctx.workspace_root
+pub(crate) fn prepared_path_resources(
+    action: ActionKind,
+    logical_kind: &str,
+    canonical_path: &Path,
+    workspace: &Path,
+    binding_bytes: &[u8],
+) -> Result<(Vec<PreparedApprovalResource>, Vec<String>, bool), ToolError> {
+    let label = canonical_path.to_string_lossy();
+    let mut resources = vec![prepared_resource(
+        action,
+        logical_kind,
+        label.as_bytes(),
+        binding_bytes,
+        PreparedBindingLifetime::ProcessLocal,
+        ApprovalResourceSource::PrimaryOperation,
+    )?];
+    let mut labels = vec![label.to_string()];
+    let external = !canonical_path.starts_with(workspace);
+    if external {
+        resources.push(prepared_resource(
+            ActionKind::ExternalDirectory,
+            "external-directory",
+            label.as_bytes(),
+            binding_bytes,
+            PreparedBindingLifetime::ProcessLocal,
+            ApprovalResourceSource::ExternalDirectoryGuard,
+        )?);
+        labels.push(label.to_string());
     }
+    Ok((resources, labels, external))
 }
 
-/// The single provider used to register all filesystem and process built-ins.
 #[derive(Debug)]
 pub struct BuiltinTools {
     read: read::ReadTool,
@@ -105,21 +142,19 @@ pub struct BuiltinTools {
     bash: bash::BashTool,
     grep: grep::GrepTool,
     glob: glob::GlobTool,
-    list: list::ListTool,
 }
 
 impl BuiltinTools {
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
-        let workspace = workspace_path(workspace);
+        let workspace = workspace.into();
         Self {
             read: read::ReadTool::new(workspace.clone()),
             write: write::WriteTool::new(workspace.clone()),
             edit: edit::EditTool::new(workspace.clone()),
             bash: bash::BashTool::new(workspace.clone()),
             grep: grep::GrepTool::new(workspace.clone()),
-            glob: glob::GlobTool::new(workspace.clone()),
-            list: list::ListTool::new(workspace),
+            glob: glob::GlobTool::new(workspace),
         }
     }
 }
@@ -140,33 +175,95 @@ impl ToolProvider for BuiltinTools {
         tools.extend(self.bash.tools_for_session(ctx)?);
         tools.extend(self.grep.tools_for_session(ctx)?);
         tools.extend(self.glob.tools_for_session(ctx)?);
-        tools.extend(self.list.tools_for_session(ctx)?);
         Ok(tools)
     }
 
-    async fn invoke(
+    async fn prepare(
         &self,
-        ctx: ToolInvocationContext,
+        ctx: ToolPreparationContext,
         call: ToolCall,
-    ) -> Result<cookie_agent_engine::ToolResult, ToolError> {
+    ) -> Result<PreparedTool, ToolError> {
         match call.name.as_str() {
-            "read" => self.read.invoke(ctx, call).await,
-            "write" => self.write.invoke(ctx, call).await,
-            "edit" => self.edit.invoke(ctx, call).await,
-            "bash" => self.bash.invoke(ctx, call).await,
-            "grep" => self.grep.invoke(ctx, call).await,
-            "glob" => self.glob.invoke(ctx, call).await,
-            "list" => self.list.invoke(ctx, call).await,
+            "read" => self.read.prepare(ctx, call).await,
+            "write" => self.write.prepare(ctx, call).await,
+            "edit" => self.edit.prepare(ctx, call).await,
+            "bash" => self.bash.prepare(ctx, call).await,
+            "grep" => self.grep.prepare(ctx, call).await,
+            "glob" => self.glob.prepare(ctx, call).await,
             _ => Err(tool_error(format!("unknown built-in tool `{}`", call.name))),
         }
     }
 }
 
-pub mod bash;
-pub mod delegate;
-pub mod edit;
-pub mod glob;
-pub mod grep;
-pub mod list;
-pub mod read;
-pub mod write;
+#[cfg(test)]
+mod tests {
+    use cookie_agent_protocol::{
+        ActionKind, ApprovalBoundary, ApprovalCapability, ApprovalResourceSource,
+        OperationFingerprint, PreparedApprovalResource, PreparedBindingLifetime,
+        PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
+        PreparedResourceIdentity, Sha256Digest,
+    };
+
+    #[test]
+    fn fixed_identity_v6_fingerprint_is_golden_and_deterministic() {
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(b"normalized arguments without raw paths"),
+            vec![ApprovalCapability {
+                action: ActionKind::Bash,
+                operation: PreparedCapabilityOperation::new("execute").expect("operation"),
+            }],
+            vec![PreparedApprovalResource {
+                capability: ActionKind::Bash,
+                canonical: PreparedResourceIdentity::new("command:git-status").expect("identity"),
+                binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
+                    b"executable-content-and-open-directory-binding",
+                ),
+                binding_lifetime: PreparedBindingLifetime::ProcessLocal,
+                boundary: ApprovalBoundary::CommandPrefix {
+                    prefix: "git status".into(),
+                },
+                source: ApprovalResourceSource::PrimaryOperation,
+            }],
+            Sha256Digest::of_bytes(b"execution context"),
+        )
+        .expect("prepared operation");
+        let fingerprint = OperationFingerprint::from_prepared_operation(&operation);
+        assert_eq!(
+            fingerprint.digest().as_str(),
+            "87a4bc54435b2aa6d305ec0f423cb41f261d517b39918bcfe8a485e2508c81c5"
+        );
+        assert_eq!(
+            fingerprint,
+            OperationFingerprint::from_prepared_operation(&operation)
+        );
+    }
+
+    #[test]
+    fn absent_write_v6_fingerprint_is_golden() {
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(b"write arguments with content digest"),
+            vec![ApprovalCapability {
+                action: ActionKind::Write,
+                operation: PreparedCapabilityOperation::new("write:replace").expect("operation"),
+            }],
+            vec![PreparedApprovalResource {
+                capability: ActionKind::Write,
+                canonical: PreparedResourceIdentity::new("file:expected-absent").expect("identity"),
+                binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
+                    b"anchor-identity\0parent-identity\0basename\0expected-absent\0new-content",
+                ),
+                binding_lifetime: PreparedBindingLifetime::ProcessLocal,
+                boundary: ApprovalBoundary::Exact,
+                source: ApprovalResourceSource::PrimaryOperation,
+            }],
+            Sha256Digest::of_bytes(b"held workspace identity"),
+        )
+        .expect("prepared operation");
+        assert_eq!(
+            OperationFingerprint::from_prepared_operation(&operation)
+                .digest()
+                .as_str(),
+            "55e549ae8fe7646873db06b523032b14883c06e52a5c1e6ccbd4302031b465f7"
+        );
+    }
+}

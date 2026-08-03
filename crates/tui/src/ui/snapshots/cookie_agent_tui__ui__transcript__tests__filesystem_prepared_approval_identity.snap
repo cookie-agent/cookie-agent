@@ -1,0 +1,61 @@
+---
+source: crates/tui/src/ui/transcript.rs
+expression: "stable_approval_snapshot(&approval, approval_content(&approval))"
+---
+PERMISSION REQUIRED · ESCALATED
+consent target: ./.cookie/config.toml
+approval id: <approval-id>
+request revision: 12
+trigger: ModelToolApproval
+operation fingerprint: <operation-fingerprint>
+normalized-arguments digest: <normalized-arguments-digest>
+execution-context digest: <execution-context-digest>
+prepared capability lifetime: ProcessLocal
+
+CAPABILITIES (2)
+1. action: Read
+   operation: open-read
+   lifetime: ProcessLocal
+2. action: ExternalDirectory
+   operation: authorize-boundary
+   lifetime: ProcessLocal
+
+RESOURCES (2)
+1. action: Read
+   normalized identity: ./.cookie/config.toml
+   canonical identity: filesystem:workspace-config
+   binding digest: <resource-1-binding-digest>
+   boundary: exact
+   binding lifetime: ProcessLocal
+   source: PrimaryOperation
+2. action: ExternalDirectory
+   normalized identity: ../shared-config
+   canonical identity: directory:external-config
+   binding digest: <resource-2-binding-digest>
+   boundary: exact
+   binding lifetime: ProcessLocal
+   source: ExternalDirectoryGuard
+
+EVALUATIONS (2)
+1. resource binding digest: <resource-1-binding-digest>
+   result effect: Ask
+   trace action: Read
+   trace normalized resource: ./.cookie/config.toml
+   trace effect: Ask
+   precedence reason: workspace read requires review
+   candidate rules (1):
+      1. rule id: workspace-read-review · source layer: workspace · effect: Ask
+2. resource binding digest: <resource-2-binding-digest>
+   result effect: Ask
+   trace action: ExternalDirectory
+   trace normalized resource: ../shared-config
+   trace effect: Ask
+   precedence reason: model requested access outside the workspace
+   candidate rules (1):
+      1. rule id: external-directory-review · source layer: global · effect: Ask
+
+RESPONSE CONSTRAINTS
+allow approve once: true
+allow delegation-tree grant: false
+allow cancel: true
+expires at: never

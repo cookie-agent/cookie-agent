@@ -1,0 +1,21 @@
+# Cookie Agent TUI configuration (schema version 1)
+#
+# Location: $XDG_CONFIG_HOME/cookie_agent/tui.toml
+# Fallback: ~/.config/cookie_agent/tui.toml
+#
+# This file is independent from engine/workspace config. There is no
+# workspace layer and no environment-variable override for these keys; a
+# missing file uses the defaults shown below, and unknown keys or malformed
+# values are rejected with an actionable path/key error.
+
+# Minimum diagnostic event level rendered in the conversation pane.
+# One of: "debug" | "info" | "warning" | "error". Default: "warning".
+# Rows below the threshold stay in the session projection — hidden rows
+# reappear when the level is lowered with /events at runtime (view-only;
+# this file is never rewritten).
+minimum_event_level = "warning"
+
+# Theme override. One of: "default" | "mono" | "high-contrast".
+# Precedence: this key > COOKIE_THEME > terminal detection.
+# NO_COLOR and TERM=dumb always force monochrome regardless of this key.
+# theme = "default"

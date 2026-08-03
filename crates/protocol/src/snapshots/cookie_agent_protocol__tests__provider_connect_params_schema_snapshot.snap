@@ -1,0 +1,50 @@
+---
+source: crates/protocol/src/lib.rs
+expression: schema
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProviderConnectParams",
+  "description": "Secret-bearing parameters for `provider.connect`; request transport is the\nsole serialization boundary for `credentials`.",
+  "type": "object",
+  "properties": {
+    "catalog_revision": {
+      "type": "string"
+    },
+    "client_connect_id": {
+      "type": "string"
+    },
+    "credentials": {
+      "$ref": "#/$defs/ProviderCredentials"
+    },
+    "provider_id": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "client_connect_id",
+    "provider_id",
+    "catalog_revision",
+    "credentials"
+  ],
+  "$defs": {
+    "ProviderCredentials": {
+      "description": "Credential values accepted only by `provider.connect` request transport.\nThis type must never be embedded in events, results, errors, logs, examples,\nor persistence records.",
+      "type": "object",
+      "properties": {
+        "values": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "writeOnly": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "values"
+      ]
+    }
+  }
+}

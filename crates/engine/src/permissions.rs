@@ -1,81 +1,95 @@
-//! Explainable permission evaluation and tree-scoped runtime approvals.
+//! Permission evaluation over immutable protocol-v6 prepared-operation manifests.
 
 use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
+    collections::{HashMap, HashSet},
     sync::Mutex,
 };
 
-use cookie_agent_config::{PermissionEffect, PolicySnapshot, RuleSource, simple_wildcard_match};
+use cookie_agent_config::{PolicySnapshot, simple_wildcard_match};
 use cookie_agent_protocol::{
-    ActionKind, ApprovalResource, DecisionTrace, Effect, MatchedPermissionRule, SessionId,
+    ActionKind, ApprovalEvaluation, DecisionTrace, Effect, MatchedPermissionRule,
+    OperationFingerprint, PreparedOperationIdentity, SessionId, TreeApprovalGrant,
+    TreeApprovalGrantId,
 };
 use thiserror::Error;
-use tree_sitter::Parser;
 
 #[derive(Debug, Error)]
 pub enum PermissionError {
     #[error("unknown permission action `{0}`")]
     UnknownAction(String),
-    #[error("could not canonicalize path {path}: {source}")]
-    Canonicalize {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct ApprovalKey {
     root: SessionId,
-    action: ActionKind,
-    pattern: String,
+    fingerprint: OperationFingerprint,
 }
 
 #[derive(Debug, Default)]
 pub struct ApprovalStore {
-    grants: Mutex<HashMap<ApprovalKey, ()>>,
+    grants: Mutex<HashMap<ApprovalKey, TreeApprovalGrant>>,
 }
 
 impl ApprovalStore {
-    pub fn grant(&self, root: SessionId, action: ActionKind, pattern: String) {
+    pub fn grant(&self, grant: TreeApprovalGrant) {
         self.grants
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(
                 ApprovalKey {
-                    root,
-                    action,
-                    pattern,
+                    root: grant.root_session_id(),
+                    fingerprint: grant.operation_fingerprint().clone(),
                 },
-                (),
+                grant,
             );
     }
+
     #[must_use]
-    pub fn allows(&self, root: SessionId, action: ActionKind, resource: &str) -> bool {
+    pub fn matching(
+        &self,
+        root: SessionId,
+        operation: &PreparedOperationIdentity,
+    ) -> Option<TreeApprovalGrant> {
+        let fingerprint = OperationFingerprint::from_prepared_operation(operation);
         self.grants
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .keys()
-            .any(|key| {
-                key.root == root
-                    && key.action == action
-                    && simple_wildcard_match(&key.pattern, resource)
+            .get(&ApprovalKey { root, fingerprint })
+            .filter(|grant| {
+                grant.capabilities() == operation.capabilities()
+                    && grant.resources() == operation.resources()
             })
+            .cloned()
+    }
+
+    #[must_use]
+    pub fn for_root(&self, root: SessionId) -> Vec<TreeApprovalGrant> {
+        self.grants
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|(key, _)| key.root == root)
+            .map(|(_, grant)| grant.clone())
+            .collect()
+    }
+
+    pub fn invalidate_grants(&self, ids: &HashSet<TreeApprovalGrantId>) {
+        self.grants
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|_, grant| !ids.contains(&grant.grant_id()));
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct PermissionDecision {
     pub effect: Effect,
-    pub trace: DecisionTrace,
-    pub always_allowed: bool,
-    pub asking_resources: Vec<ApprovalResource>,
+    pub evaluations: Vec<ApprovalEvaluation>,
 }
 
 #[derive(Debug, Default)]
 pub struct PermissionPipeline {
-    consecutive: Mutex<HashMap<SessionId, (ActionKind, String, u8)>>,
+    _private: (),
 }
 
 impl PermissionPipeline {
@@ -86,190 +100,69 @@ impl PermissionPipeline {
             "bash" => Ok(ActionKind::Bash),
             "grep" => Ok(ActionKind::Grep),
             "glob" => Ok(ActionKind::Glob),
-            "list" => Ok(ActionKind::List),
             "delegate" => Ok(ActionKind::Delegate),
             "external_directory" => Ok(ActionKind::ExternalDirectory),
             other => Err(PermissionError::UnknownAction(other.into())),
         }
     }
 
-    pub fn decide(
+    #[must_use]
+    pub fn decide_operation(
         &self,
         policy: &PolicySnapshot,
-        approvals: &ApprovalStore,
-        root: SessionId,
-        session: SessionId,
-        action: ActionKind,
-        resource: String,
+        operation: &PreparedOperationIdentity,
+        policy_labels: &[String],
     ) -> PermissionDecision {
-        self.decide_resources(policy, approvals, root, session, vec![(action, resource)])
-    }
-
-    pub fn decide_resources(
-        &self,
-        policy: &PolicySnapshot,
-        approvals: &ApprovalStore,
-        root: SessionId,
-        session: SessionId,
-        resources: Vec<(ActionKind, String)>,
-    ) -> PermissionDecision {
-        let signature = resources
+        assert_eq!(operation.resources().len(), policy_labels.len());
+        let evaluations = operation
+            .resources()
             .iter()
-            .map(|(action, resource)| format!("{action:?}:{resource}"))
-            .collect::<Vec<_>>()
-            .join("\u{1f}");
-        let action = resources
-            .first()
-            .map(|(action, _)| *action)
-            .unwrap_or(ActionKind::Read);
-        let decisions = resources
-            .iter()
-            .map(|(action, resource)| {
-                base_decide(policy, approvals, root, *action, resource.clone())
+            .zip(policy_labels)
+            .map(|(resource, normalized)| {
+                let candidates = matching_rules(policy, resource.capability, normalized);
+                let (effect, reason) = candidates.last().map_or(
+                    (Effect::Ask, "no matching rule; ask by default".to_owned()),
+                    |rule| (rule.effect, "last matching rule".to_owned()),
+                );
+                ApprovalEvaluation {
+                    resource_digest: resource.binding_digest.clone(),
+                    effect,
+                    trace: DecisionTrace {
+                        action: resource.capability,
+                        normalized_resource: normalized.clone(),
+                        candidates,
+                        effect,
+                        precedence_reason: reason,
+                    },
+                }
             })
             .collect::<Vec<_>>();
-        let mut selected = decisions
-            .iter()
-            .find(|decision| {
-                decision.effect == Effect::Deny
-                    && decision.trace.candidates.iter().any(|rule| rule.hard)
-            })
-            .or_else(|| {
-                decisions
-                    .iter()
-                    .find(|decision| decision.effect == Effect::Deny)
-            })
-            .or_else(|| {
-                decisions
-                    .iter()
-                    .find(|decision| decision.effect == Effect::Ask)
-            })
-            .or_else(|| decisions.first())
-            .cloned()
-            .expect("permission resources are non-empty");
-        let count = {
-            let mut calls = self
-                .consecutive
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            match calls.get_mut(&session) {
-                Some((previous_action, previous_resource, count))
-                    if *previous_action == action && *previous_resource == signature =>
-                {
-                    *count = count.saturating_add(1);
-                    *count
-                }
-                _ => {
-                    calls.insert(session, (action, signature, 1));
-                    1
-                }
-            }
+        let effect = if evaluations.iter().any(|item| item.effect == Effect::Deny) {
+            Effect::Deny
+        } else if evaluations.iter().any(|item| item.effect == Effect::Ask) {
+            Effect::Ask
+        } else {
+            Effect::Allow
         };
-        if count >= 3 && selected.effect != Effect::Deny {
-            selected.effect = Effect::Ask;
-            selected.trace.effect = Effect::Ask;
-            selected.trace.precedence_reason = "doom-loop guard (third identical call)".into();
-            selected.always_allowed = false;
-            selected.asking_resources = resources
-                .iter()
-                .map(|(action, resource)| ApprovalResource {
-                    action: *action,
-                    resource: resource.clone(),
-                    suggested_pattern: format!("{resource} *"),
-                })
-                .collect();
-        }
-        if selected.effect == Effect::Ask && selected.asking_resources.is_empty() {
-            selected.asking_resources = decisions
-                .iter()
-                .filter(|decision| decision.effect == Effect::Ask)
-                .map(|decision| ApprovalResource {
-                    action: decision.trace.action,
-                    resource: decision.trace.normalized_resource.clone(),
-                    suggested_pattern: format!("{} *", decision.trace.normalized_resource),
-                })
-                .collect();
-        }
-        selected
-    }
-
-    pub fn reset_call_streak(&self, session: SessionId) {
-        self.consecutive
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .retain(|id, _| *id != session);
-    }
-}
-
-fn base_decide(
-    policy: &PolicySnapshot,
-    approvals: &ApprovalStore,
-    root: SessionId,
-    action: ActionKind,
-    resource: String,
-) -> PermissionDecision {
-    let candidates = matching_rules(policy, action, &resource);
-    if let Some(rule) = candidates
-        .iter()
-        .find(|rule| rule.hard && rule.effect == Effect::Deny)
-    {
-        let reason = format!(
-            "hard deny rule {}",
-            rule.rule_id.as_deref().unwrap_or("builtin")
-        );
-        return decision(action, resource, candidates, Effect::Deny, reason, false);
-    }
-    if approvals.allows(root, action, &resource) {
-        return decision(
-            action,
-            resource,
-            candidates,
-            Effect::Allow,
-            "tree-shared runtime approval".into(),
-            true,
-        );
-    }
-    if let Some(rule) = candidates.last() {
-        let effect = rule.effect;
-        return decision(
-            action,
-            resource,
-            candidates,
+        PermissionDecision {
             effect,
-            "last matching rule".into(),
-            effect != Effect::Ask,
-        );
+            evaluations,
+        }
     }
-    let effect = tier(policy, action);
-    decision(
-        action,
-        resource,
-        candidates,
-        effect,
-        "tier default".into(),
-        effect != Effect::Ask,
-    )
-}
 
-fn decision(
-    action: ActionKind,
-    normalized_resource: String,
-    candidates: Vec<MatchedPermissionRule>,
-    effect: Effect,
-    precedence_reason: String,
-    always_allowed: bool,
-) -> PermissionDecision {
-    PermissionDecision {
-        effect,
-        trace: DecisionTrace {
-            action,
-            normalized_resource,
-            candidates,
-            effect,
-            precedence_reason,
-        },
-        always_allowed,
-        asking_resources: Vec::new(),
+    #[must_use]
+    pub fn tool_visible(policy: &PolicySnapshot, tool: &str) -> bool {
+        let Ok(action) = Self::action_for_tool(tool) else {
+            return true;
+        };
+        policy
+            .permissions
+            .rules
+            .iter()
+            .rfind(|rule| {
+                action_from_config(&rule.action).ok() == Some(action) && rule.resource == "*"
+            })
+            .is_none_or(|rule| effect(&rule.effect) != Effect::Deny)
     }
 }
 
@@ -278,482 +171,256 @@ fn matching_rules(
     action: ActionKind,
     resource: &str,
 ) -> Vec<MatchedPermissionRule> {
-    let mut rules = Vec::new();
-    // The documented guard defaults are lower priority than configuration.
-    if action == ActionKind::Read && is_dotenv(resource) {
-        rules.push(MatchedPermissionRule {
-            rule_id: None,
-            source_layer: "builtin".into(),
-            effect: Effect::Ask,
-            hard: false,
-        });
-    }
-    if action == ActionKind::ExternalDirectory {
-        rules.push(MatchedPermissionRule {
-            rule_id: None,
-            source_layer: "builtin".into(),
-            effect: Effect::Ask,
-            hard: false,
-        });
-    }
-    for rule in &policy.permissions.rules {
-        if action_from_config(&rule.action).ok() == Some(action)
-            && simple_wildcard_match(&rule.resource, resource)
-        {
-            rules.push(MatchedPermissionRule {
-                rule_id: Some(rule.id.clone()),
-                source_layer: source(rule.source).into(),
-                effect: effect(&rule.effect),
-                hard: rule.hard,
-            });
-        }
-    }
-    rules
+    policy
+        .permissions
+        .rules
+        .iter()
+        .filter(|rule| {
+            action_from_config(&rule.action).ok() == Some(action)
+                && simple_wildcard_match(&rule.resource, resource)
+        })
+        .map(|rule| MatchedPermissionRule {
+            rule_id: Some(rule.id.clone()),
+            source_layer: format!("{:?}", rule.source).to_ascii_lowercase(),
+            effect: effect(&rule.effect),
+        })
+        .collect()
 }
 
-fn action_from_config(value: &str) -> Result<ActionKind, PermissionError> {
-    PermissionPipeline::action_for_tool(value)
+fn action_from_config(action: &str) -> Result<ActionKind, PermissionError> {
+    PermissionPipeline::action_for_tool(action)
 }
-fn effect(value: &str) -> Effect {
-    match value {
+
+fn effect(effect: &str) -> Effect {
+    match effect {
         "allow" => Effect::Allow,
         "deny" => Effect::Deny,
         _ => Effect::Ask,
     }
 }
-fn source(source: RuleSource) -> &'static str {
-    match source {
-        RuleSource::Builtin => "builtin",
-        RuleSource::User => "user",
-        RuleSource::Workspace => "workspace",
-        RuleSource::Env => "env",
-        RuleSource::Profile => "profile",
-    }
-}
-fn tier(policy: &PolicySnapshot, action: ActionKind) -> Effect {
-    let source = match action {
-        ActionKind::Read | ActionKind::List | ActionKind::Grep | ActionKind::Glob => {
-            policy.permissions.read
-        }
-        ActionKind::Write => policy.permissions.write,
-        ActionKind::Bash => policy.permissions.exec,
-        ActionKind::Delegate => policy.permissions.delegate,
-        // Config has no separate external-directory tier yet.  The built-in
-        // ask guard is the documented fallback; matching configured rules may
-        // still override it above.
-        ActionKind::ExternalDirectory => return Effect::Ask,
-    };
-    match source {
-        PermissionEffect::Allow => Effect::Allow,
-        PermissionEffect::Ask => Effect::Ask,
-        PermissionEffect::Deny => Effect::Deny,
-    }
-}
-fn is_dotenv(resource: &str) -> bool {
-    let name = Path::new(resource)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    (name == ".env" || name.starts_with(".env.")) && !name.ends_with(".example")
-}
-
-/// Canonicalizes the nearest existing ancestor so a not-yet-created write
-/// target is classified safely and symlink-aware.
-pub fn canonical_resource(
-    workspace: &Path,
-    target: &Path,
-) -> Result<(String, bool), PermissionError> {
-    let workspace = workspace
-        .canonicalize()
-        .map_err(|source| PermissionError::Canonicalize {
-            path: workspace.into(),
-            source,
-        })?;
-    let absolute = if target.is_absolute() {
-        target.to_owned()
-    } else {
-        workspace.join(target)
-    };
-    let mut ancestor = absolute.clone();
-    let mut suffix = Vec::new();
-    while !ancestor.exists() {
-        let Some(name) = ancestor.file_name().map(|name| name.to_owned()) else {
-            break;
-        };
-        suffix.push(name);
-        if !ancestor.pop() {
-            break;
-        }
-    }
-    let mut normalized =
-        ancestor
-            .canonicalize()
-            .map_err(|source| PermissionError::Canonicalize {
-                path: ancestor.clone(),
-                source,
-            })?;
-    for component in suffix.iter().rev() {
-        normalized.push(component);
-    }
-    let external = !normalized.starts_with(&workspace);
-    Ok(if external {
-        (normalized.to_string_lossy().into_owned(), true)
-    } else {
-        (
-            normalized
-                .strip_prefix(&workspace)
-                .unwrap_or(&normalized)
-                .to_string_lossy()
-                .into_owned(),
-            false,
-        )
-    })
-}
-
-/// Extracts every tree-sitter `command` node, including commands nested in
-/// pipelines, substitutions, and boolean lists. On parse failure it returns
-/// the whole input, as required by the policy contract.
-#[must_use]
-pub fn bash_subcommands(source: &str) -> Vec<String> {
-    let mut parser = Parser::new();
-    if parser
-        .set_language(&tree_sitter_bash::LANGUAGE.into())
-        .is_err()
-    {
-        return vec![source.into()];
-    }
-    let Some(tree) = parser.parse(source, None) else {
-        return vec![source.into()];
-    };
-    let mut nodes = Vec::new();
-    let mut iterator = tree.walk();
-    loop {
-        let node = iterator.node();
-        if node.kind() == "command" {
-            nodes.push(
-                node.utf8_text(source.as_bytes())
-                    .unwrap_or(source)
-                    .trim()
-                    .to_owned(),
-            );
-        }
-        if iterator.goto_first_child() {
-            continue;
-        }
-        loop {
-            if iterator.goto_next_sibling() {
-                break;
-            }
-            if !iterator.goto_parent() {
-                return if nodes.is_empty() {
-                    vec![source.into()]
-                } else {
-                    nodes
-                };
-            }
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, path::Path};
+    use std::{collections::BTreeSet, fs};
 
     use cookie_agent_config::{
-        DelegationPolicy, DepthLimit, PermissionEffect, PermissionRule, PolicySnapshot,
-        ProfileSnapshot, ResolvedPermissions, ResultLimits, RuleSource,
+        AgentType, DelegationPolicy, DepthLimit, PermissionRule, PolicySnapshot, ProfileSnapshot,
+        ResolvedPermissions, ResultLimits, RuleSource, load_layered,
     };
-    use cookie_agent_protocol::{ActionKind, Effect, SessionId};
-    use uuid::Uuid;
+    use cookie_agent_protocol::{
+        ActionKind, ApprovalBoundary, ApprovalCapability, ApprovalResourceSource,
+        PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
+        PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, Sha256Digest,
+    };
 
-    use super::{ApprovalStore, PermissionPipeline, bash_subcommands, canonical_resource};
+    use super::PermissionPipeline;
 
     fn policy(rules: Vec<PermissionRule>) -> PolicySnapshot {
         PolicySnapshot {
             profile: ProfileSnapshot {
                 name: "test".into(),
-                r#type: cookie_agent_config::AgentType::All,
+                r#type: AgentType::Primary,
             },
             models: Vec::new(),
             tools: BTreeSet::new(),
-            permissions: ResolvedPermissions {
-                read: PermissionEffect::Ask,
-                write: PermissionEffect::Ask,
-                exec: PermissionEffect::Ask,
-                delegate: PermissionEffect::Ask,
-                rules,
-            },
+            permissions: ResolvedPermissions { rules },
             delegation: DelegationPolicy {
                 enabled: false,
                 allowed_profiles: BTreeSet::new(),
-                depth_limit: DepthLimit::Unlimited,
+                depth_limit: DepthLimit::Finite(0),
             },
             result_limits: ResultLimits::default(),
         }
     }
 
-    #[test]
-    fn hard_deny_precedes_approval_and_last_match_wins() {
-        let id = SessionId(Uuid::from_u128(1));
-        let rules = vec![
-            PermissionRule {
-                id: "allow".into(),
-                action: "bash".into(),
-                resource: "git *".into(),
-                effect: "allow".into(),
-                hard: false,
-                source: RuleSource::Profile,
-            },
-            PermissionRule {
-                id: "deny".into(),
-                action: "bash".into(),
-                resource: "git push *".into(),
-                effect: "deny".into(),
-                hard: true,
-                source: RuleSource::Profile,
-            },
-        ];
-        let approvals = ApprovalStore::default();
-        approvals.grant(id, ActionKind::Bash, "*".into());
-        let decision = PermissionPipeline::default().decide(
-            &policy(rules),
-            &approvals,
-            id,
-            id,
-            ActionKind::Bash,
-            "git push --force".into(),
-        );
-        assert_eq!(decision.effect, Effect::Deny);
-        assert!(decision.trace.precedence_reason.contains("hard deny"));
-    }
-
-    #[test]
-    fn shell_parser_visits_boolean_list_commands() {
-        let commands = bash_subcommands("git status && git log -1");
-        assert!(commands.iter().any(|command| command == "git status"));
-        assert!(commands.iter().any(|command| command == "git log -1"));
-    }
-
-    #[test]
-    fn aggregate_resources_denies_regardless_of_ask_deny_order_and_discloses_all_asks() {
-        let id = SessionId(Uuid::from_u128(2));
-        let rules = vec![
-            PermissionRule {
-                id: "ask".into(),
-                action: "bash".into(),
-                resource: "ask command".into(),
-                effect: "ask".into(),
-                hard: false,
-                source: RuleSource::Profile,
-            },
-            PermissionRule {
-                id: "deny".into(),
-                action: "bash".into(),
-                resource: "deny command".into(),
-                effect: "deny".into(),
-                hard: false,
-                source: RuleSource::Profile,
-            },
-            PermissionRule {
-                id: "ask-two".into(),
-                action: "bash".into(),
-                resource: "another ask".into(),
-                effect: "ask".into(),
-                hard: false,
-                source: RuleSource::Profile,
-            },
-        ];
-        let pipeline = PermissionPipeline::default();
-        let approvals = ApprovalStore::default();
-        for resources in [
-            vec![
-                (ActionKind::Bash, "ask command".into()),
-                (ActionKind::Bash, "deny command".into()),
-            ],
-            vec![
-                (ActionKind::Bash, "deny command".into()),
-                (ActionKind::Bash, "ask command".into()),
-            ],
-        ] {
-            assert_eq!(
-                pipeline
-                    .decide_resources(&policy(rules.clone()), &approvals, id, id, resources)
-                    .effect,
-                Effect::Deny
-            );
+    fn rule(id: &str, action: &str, resource: &str, effect: &str) -> PermissionRule {
+        PermissionRule {
+            id: id.into(),
+            action: action.into(),
+            resource: resource.into(),
+            effect: effect.into(),
+            source: RuleSource::User,
         }
-        let decision = pipeline.decide_resources(
-            &policy(rules),
-            &approvals,
-            id,
-            id,
-            vec![
-                (ActionKind::Bash, "ask command".into()),
-                (ActionKind::Bash, "another ask".into()),
-            ],
+    }
+
+    fn resource(action: ActionKind, label: &str, binding: &[u8]) -> PreparedApprovalResource {
+        PreparedApprovalResource {
+            capability: action,
+            canonical: PreparedResourceIdentity::new(format!(
+                "label:{}",
+                Sha256Digest::of_bytes(label.as_bytes()).as_str()
+            ))
+            .expect("identity"),
+            binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(binding),
+            binding_lifetime: PreparedBindingLifetime::ProcessLocal,
+            boundary: ApprovalBoundary::CommandPrefix {
+                prefix: label.into(),
+            },
+            source: if action == ActionKind::ExternalDirectory {
+                ApprovalResourceSource::ExternalDirectoryGuard
+            } else {
+                ApprovalResourceSource::PrimaryOperation
+            },
+        }
+    }
+
+    fn operation(resources: Vec<PreparedApprovalResource>) -> PreparedOperationIdentity {
+        let mut capabilities = vec![ApprovalCapability {
+            action: ActionKind::Read,
+            operation: PreparedCapabilityOperation::new("read:read").expect("operation"),
+        }];
+        if resources
+            .iter()
+            .any(|resource| resource.capability == ActionKind::ExternalDirectory)
+        {
+            capabilities.push(ApprovalCapability {
+                action: ActionKind::ExternalDirectory,
+                operation: PreparedCapabilityOperation::new("read:external").expect("operation"),
+            });
+        }
+        PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(b"args"),
+            capabilities,
+            resources,
+            Sha256Digest::of_bytes(b"context"),
+        )
+        .expect("operation")
+    }
+
+    fn decide(
+        policy: &PolicySnapshot,
+        resources: Vec<PreparedApprovalResource>,
+    ) -> super::PermissionDecision {
+        let labels = resources
+            .iter()
+            .map(|resource| match &resource.boundary {
+                ApprovalBoundary::CommandPrefix { prefix } => prefix.clone(),
+                _ => unreachable!("test resources carry explicit labels"),
+            })
+            .collect::<Vec<_>>();
+        PermissionPipeline::default().decide_operation(policy, &operation(resources), &labels)
+    }
+
+    #[test]
+    fn exact_rule_matches_normalized_label_not_opaque_identity() {
+        let decision = decide(
+            &policy(vec![rule("exact", "read", "/workspace/a.txt", "allow")]),
+            vec![resource(ActionKind::Read, "/workspace/a.txt", b"file")],
         );
-        assert_eq!(decision.effect, Effect::Ask);
+        assert_eq!(decision.effect, cookie_agent_protocol::Effect::Allow);
         assert_eq!(
-            decision
-                .asking_resources
+            decision.evaluations[0].trace.normalized_resource,
+            "/workspace/a.txt"
+        );
+    }
+
+    #[test]
+    fn wildcard_and_last_matching_deny_are_applied_to_labels() {
+        let decision = decide(
+            &policy(vec![
+                rule("allow", "read", "/workspace/*", "allow"),
+                rule("deny", "read", "*/secret.txt", "deny"),
+            ]),
+            vec![resource(
+                ActionKind::Read,
+                "/workspace/secret.txt",
+                b"secret",
+            )],
+        );
+        assert_eq!(decision.effect, cookie_agent_protocol::Effect::Deny);
+        assert_eq!(decision.evaluations[0].trace.candidates.len(), 2);
+    }
+
+    #[test]
+    fn later_workspace_allow_overrides_user_deny() {
+        let temp = tempfile::TempDir::new().expect("temporary config directory");
+        let user = temp.path().join("user.toml");
+        let workspace = temp.path().join("workspace.toml");
+        fs::write(
+            &user,
+            "[[permissions.rules]]\nid = \"user-deny\"\naction = \"read\"\nresource = \"/workspace/*\"\neffect = \"deny\"\n",
+        )
+        .expect("write user config");
+        fs::write(
+            &workspace,
+            "[[permissions.rules]]\nid = \"workspace-allow\"\naction = \"read\"\nresource = \"/workspace/*\"\neffect = \"allow\"\n",
+        )
+        .expect("write workspace config");
+        let config = load_layered(Some(&user), Some(&workspace)).expect("load layered config");
+        assert_eq!(
+            config
+                .permissions
+                .rules
                 .iter()
-                .map(|resource| resource.resource.as_str())
+                .map(|rule| (rule.id.as_str(), rule.source))
                 .collect::<Vec<_>>(),
-            vec!["ask command", "another ask"]
-        );
-    }
-
-    #[test]
-    fn doom_loop_uses_complete_signature_and_different_signature_resets_streak() {
-        let id = SessionId(Uuid::from_u128(3));
-        let rules = vec![PermissionRule {
-            id: "allow-bash".into(),
-            action: "bash".into(),
-            resource: "*".into(),
-            effect: "allow".into(),
-            hard: false,
-            source: RuleSource::Profile,
-        }];
-        let pipeline = PermissionPipeline::default();
-        let approvals = ApprovalStore::default();
-        let signature = || {
-            vec![
-                (ActionKind::Bash, "git status".into()),
-                (ActionKind::Bash, "git log -1".into()),
+            [
+                ("user-deny", RuleSource::User),
+                ("workspace-allow", RuleSource::Workspace),
             ]
-        };
-        assert_eq!(
-            pipeline
-                .decide_resources(&policy(rules.clone()), &approvals, id, id, signature())
-                .effect,
-            Effect::Allow
         );
-        assert_eq!(
-            pipeline
-                .decide_resources(&policy(rules.clone()), &approvals, id, id, signature())
-                .effect,
-            Effect::Allow
+
+        let decision = decide(
+            &policy(config.permissions.rules),
+            vec![resource(
+                ActionKind::Read,
+                "/workspace/public.txt",
+                b"public",
+            )],
         );
-        let doom =
-            pipeline.decide_resources(&policy(rules.clone()), &approvals, id, id, signature());
-        assert_eq!(doom.effect, Effect::Ask);
-        assert_eq!(doom.asking_resources.len(), 2);
-        assert!(doom.trace.precedence_reason.starts_with("doom-loop guard"));
+        assert_eq!(decision.effect, cookie_agent_protocol::Effect::Allow);
+        assert_eq!(decision.evaluations[0].trace.candidates.len(), 2);
         assert_eq!(
-            pipeline
-                .decide_resources(
-                    &policy(rules),
-                    &approvals,
-                    id,
-                    id,
-                    vec![
-                        (ActionKind::Bash, "git status".into()),
-                        (ActionKind::Bash, "git diff".into()),
-                    ],
-                )
-                .effect,
-            Effect::Allow
+            decision.evaluations[0].trace.candidates[1].source_layer,
+            "workspace"
         );
     }
 
     #[test]
-    fn doom_loop_signature_distinguishes_resource_order() {
-        let id = SessionId(Uuid::from_u128(6));
-        let rules = vec![PermissionRule {
-            id: "allow-bash".into(),
-            action: "bash".into(),
-            resource: "*".into(),
-            effect: "allow".into(),
-            hard: false,
-            source: RuleSource::Profile,
-        }];
-        let pipeline = PermissionPipeline::default();
-        let approvals = ApprovalStore::default();
-        let forward = vec![
-            (ActionKind::Bash, "git status".into()),
-            (ActionKind::Bash, "git log -1".into()),
-        ];
-        let reverse = forward.iter().cloned().rev().collect();
-
-        for _ in 0..2 {
-            assert_eq!(
-                pipeline
-                    .decide_resources(&policy(rules.clone()), &approvals, id, id, forward.clone())
-                    .effect,
-                Effect::Allow
-            );
-        }
-        assert_eq!(
-            pipeline
-                .decide_resources(&policy(rules.clone()), &approvals, id, id, reverse)
-                .effect,
-            Effect::Allow,
-            "a reordered compound call must not inherit the prior doom-loop streak"
+    fn wildcard_allow_applies_to_non_secret_workspace_path() {
+        let decision = decide(
+            &policy(vec![rule("allow", "read", "/workspace/*", "allow")]),
+            vec![resource(
+                ActionKind::Read,
+                "/workspace/public.txt",
+                b"public",
+            )],
         );
-        assert_eq!(
-            pipeline
-                .decide_resources(&policy(rules), &approvals, id, id, forward)
-                .effect,
-            Effect::Allow,
-            "the reordered call resets the consecutive-call streak"
-        );
+        assert_eq!(decision.effect, cookie_agent_protocol::Effect::Allow);
     }
 
     #[test]
-    fn external_directory_resource_remains_asked_when_read_tier_allows() {
-        let id = SessionId(Uuid::from_u128(4));
-        let mut policy = policy(Vec::new());
-        policy.permissions.read = PermissionEffect::Allow;
-        let approvals = ApprovalStore::default();
-        let pipeline = PermissionPipeline::default();
-        let resources = vec![
-            (
-                ActionKind::ExternalDirectory,
-                "/outside/workspace/file".into(),
-            ),
-            (ActionKind::Read, "/outside/workspace/file".into()),
-        ];
-        let decision = pipeline.decide_resources(&policy, &approvals, id, id, resources.clone());
-        assert_eq!(decision.effect, Effect::Ask);
-        assert_eq!(decision.trace.action, ActionKind::ExternalDirectory);
-        assert_eq!(decision.asking_resources.len(), 1);
-        assert_eq!(
-            decision.asking_resources[0].action,
-            ActionKind::ExternalDirectory
-        );
-        approvals.grant(
-            id,
-            ActionKind::ExternalDirectory,
-            "/outside/workspace/file *".into(),
-        );
-        assert_eq!(
-            pipeline
-                .decide_resources(&policy, &approvals, id, id, resources)
-                .effect,
-            Effect::Allow
-        );
-    }
-
-    #[test]
-    fn canonicalization_failure_fallback_still_uses_external_directory_guard() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let missing_workspace = directory.path().join("missing-workspace");
-        assert!(canonical_resource(&missing_workspace, Path::new("outside-file")).is_err());
-
-        let id = SessionId(Uuid::from_u128(5));
-        let mut policy = policy(Vec::new());
-        policy.permissions.read = PermissionEffect::Allow;
-        let decision = PermissionPipeline::default().decide_resources(
-            &policy,
-            &ApprovalStore::default(),
-            id,
-            id,
+    fn external_guard_requires_separate_approval_despite_read_wildcard() {
+        let decision = decide(
+            &policy(vec![rule("read-all", "read", "*", "allow")]),
             vec![
-                (ActionKind::ExternalDirectory, "outside-file".into()),
-                (ActionKind::Read, "outside-file".into()),
+                resource(ActionKind::Read, "/etc/passwd", b"passwd"),
+                resource(ActionKind::ExternalDirectory, "/etc/passwd", b"external"),
             ],
         );
-        assert_eq!(decision.effect, Effect::Ask);
-        assert_eq!(decision.trace.action, ActionKind::ExternalDirectory);
+        assert_eq!(
+            decision.evaluations[0].effect,
+            cookie_agent_protocol::Effect::Allow
+        );
+        assert_eq!(
+            decision.evaluations[1].effect,
+            cookie_agent_protocol::Effect::Ask
+        );
+        assert_eq!(decision.effect, cookie_agent_protocol::Effect::Ask);
+    }
+
+    #[test]
+    fn explicit_external_rule_can_allow_external_read() {
+        let decision = decide(
+            &policy(vec![
+                rule("read-all", "read", "*", "allow"),
+                rule("external-etc", "external_directory", "/etc/*", "allow"),
+            ]),
+            vec![
+                resource(ActionKind::Read, "/etc/passwd", b"passwd"),
+                resource(ActionKind::ExternalDirectory, "/etc/passwd", b"external"),
+            ],
+        );
+        assert_eq!(decision.effect, cookie_agent_protocol::Effect::Allow);
     }
 }

@@ -1,6 +1,5 @@
 ---
 source: crates/protocol/src/lib.rs
-assertion_line: 1084
 expression: schema_for!(EventEnvelope)
 ---
 {
@@ -19,6 +18,10 @@ expression: schema_for!(EventEnvelope)
       ],
       "format": "uuid"
     },
+    "schema_version": {
+      "type": "integer",
+      "const": 6
+    },
     "seq": {
       "type": "integer",
       "format": "uint64",
@@ -33,7 +36,9 @@ expression: schema_for!(EventEnvelope)
       "format": "date-time"
     }
   },
+  "additionalProperties": false,
   "required": [
+    "schema_version",
     "session_id",
     "seq",
     "timestamp",
@@ -49,7 +54,6 @@ expression: schema_for!(EventEnvelope)
         "bash",
         "grep",
         "glob",
-        "list",
         "delegate",
         "external_directory"
       ]
@@ -64,53 +68,500 @@ expression: schema_for!(EventEnvelope)
         "internal"
       ]
     },
-    "ApprovalDecision": {
-      "description": "A user's answer to a pending approval request.",
+    "ApprovalBoundary": {
+      "description": "Matching boundary for one canonical resource. Clients cannot edit it.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "exact"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "prefix": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "command_prefix"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "prefix"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "root_session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "delegation_tree"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "root_session_id"
+          ]
+        }
+      ]
+    },
+    "ApprovalCapability": {
+      "description": "One capability required by the exact operation.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ActionKind"
+        },
+        "operation": {
+          "description": "Stable semantic prepared-capability operation; never a raw path, descriptor, or temp name.",
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._:-]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "operation"
+      ]
+    },
+    "ApprovalConstraints": {
+      "description": "Server-authored response constraints. There is intentionally no scope editor.",
+      "type": "object",
+      "properties": {
+        "allow_once": {
+          "type": "boolean"
+        },
+        "allow_tree_grant": {
+          "type": "boolean"
+        },
+        "cancellable": {
+          "type": "boolean"
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "allow_once",
+        "allow_tree_grant",
+        "cancellable"
+      ]
+    },
+    "ApprovalDecisionSource": {
+      "description": "Origin of an approval decision.",
       "type": "string",
       "enum": [
-        "once",
-        "always",
-        "reject"
+        "policy",
+        "model",
+        "internal_agent",
+        "tree_grant",
+        "user",
+        "doom_loop_guard",
+        "system"
       ]
     },
-    "ApprovalResource": {
-      "description": "One resource disclosed by an approval request.",
+    "ApprovalEvaluation": {
+      "description": "One permission evaluation retained for an approval resource.",
       "type": "object",
       "properties": {
-        "action": {
-          "$ref": "#/$defs/ActionKind"
+        "effect": {
+          "$ref": "#/$defs/Effect"
         },
-        "resource": {
-          "type": "string"
+        "resource_digest": {
+          "$ref": "#/$defs/PreparedResourceDigest"
         },
-        "suggested_pattern": {
+        "trace": {
+          "$ref": "#/$defs/DecisionTrace"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "resource_digest",
+        "effect",
+        "trace"
+      ]
+    },
+    "ApprovalFeedback": {
+      "description": "Optional human feedback associated with a user decision.",
+      "type": "object",
+      "properties": {
+        "message": {
           "type": "string"
         }
       },
+      "additionalProperties": false,
       "required": [
-        "action",
-        "resource",
-        "suggested_pattern"
+        "message"
       ]
     },
-    "ApprovedScope": {
-      "description": "One runtime approval scope granted by an `always` response.",
+    "ApprovalFinalDecision": {
+      "description": "Final decision persisted after policy, internal-agent, grant, or user input.",
       "type": "object",
       "properties": {
-        "action": {
-          "$ref": "#/$defs/ActionKind"
+        "feedback": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalFeedback"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
-        "resource": {
-          "type": "string"
+        "outcome": {
+          "$ref": "#/$defs/ApprovalFinalOutcome"
         },
-        "scope": {
+        "reason_code": {
+          "$ref": "#/$defs/ApprovalReasonCode"
+        },
+        "source": {
+          "$ref": "#/$defs/ApprovalDecisionSource"
+        },
+        "tree_grant_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "source",
+        "reason_code"
+      ]
+    },
+    "ApprovalFinalOutcome": {
+      "description": "Terminal approval outcome.",
+      "type": "string",
+      "enum": [
+        "approved",
+        "rejected",
+        "cancelled",
+        "expired"
+      ]
+    },
+    "ApprovalInternalDecision": {
+      "description": "Complete internal decision with stable explanation data.",
+      "type": "object",
+      "properties": {
+        "decision": {
+          "$ref": "#/$defs/ApprovalInternalDecisionKind"
+        },
+        "evaluations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalEvaluation"
+          }
+        },
+        "reason_code": {
+          "$ref": "#/$defs/ApprovalReasonCode"
+        },
+        "source": {
+          "$ref": "#/$defs/ApprovalDecisionSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "source",
+        "reason_code",
+        "evaluations"
+      ]
+    },
+    "ApprovalInternalDecisionKind": {
+      "description": "Engine/internal-agent decision before user interaction.",
+      "type": "string",
+      "enum": [
+        "allow",
+        "deny",
+        "ask",
+        "escalate"
+      ]
+    },
+    "ApprovalReasonCode": {
+      "description": "Stable machine-readable reasons for approval decisions and failures.",
+      "type": "string",
+      "enum": [
+        "policy_allowed",
+        "policy_denied",
+        "policy_requires_approval",
+        "model_requested",
+        "internal_agent_allowed",
+        "internal_agent_denied",
+        "tree_grant_matched",
+        "user_approved_once",
+        "user_approved_tree",
+        "user_rejected",
+        "user_cancelled",
+        "request_cancelled",
+        "doom_loop_detected",
+        "constraint_violation",
+        "operation_changed",
+        "prepared_capability_lost",
+        "unsupported_platform",
+        "approval_expired",
+        "escalated",
+        "unattended",
+        "system_error"
+      ]
+    },
+    "ApprovalRequest": {
+      "description": "Immutable request payload presented to clients.",
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "constraints": {
+          "$ref": "#/$defs/ApprovalConstraints"
+        },
+        "evaluations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalEvaluation"
+          }
+        },
+        "operation": {
+          "$ref": "#/$defs/PreparedOperationIdentity"
+        },
+        "operation_fingerprint": {
+          "$ref": "#/$defs/OperationFingerprint"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "trigger": {
+          "$ref": "#/$defs/ApprovalTrigger"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "approval_id",
+        "revision",
+        "trigger",
+        "operation_fingerprint",
+        "operation",
+        "evaluations",
+        "constraints"
+      ]
+    },
+    "ApprovalResourceSource": {
+      "description": "Why a resource is part of an approval request.",
+      "type": "string",
+      "enum": [
+        "primary_operation",
+        "secondary_operation",
+        "external_directory_guard",
+        "model_request",
+        "doom_loop_guard"
+      ]
+    },
+    "ApprovalTrigger": {
+      "description": "What caused approval evaluation to begin.",
+      "type": "string",
+      "enum": [
+        "permission_policy",
+        "model_tool_approval",
+        "internal_agent",
+        "doom_loop"
+      ]
+    },
+    "ApprovalUserDecision": {
+      "description": "A user's constrained response. Grant boundaries remain server-authored.",
+      "type": "string",
+      "enum": [
+        "approve_once",
+        "approve_tree",
+        "reject",
+        "cancel"
+      ]
+    },
+    "ArtifactReference": {
+      "description": "An opaque, non-filesystem reference to a private engine artifact.",
+      "type": "object",
+      "properties": {
+        "uri": {
           "type": "string"
         }
       },
+      "additionalProperties": false,
       "required": [
-        "action",
-        "resource",
-        "scope"
+        "uri"
+      ]
+    },
+    "ContextCheckpoint": {
+      "description": "Durable model-visible context checkpoint. Raw history remains in the log.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "model": {
+              "$ref": "#/$defs/ModelRef"
+            },
+            "native_context": {
+              "$ref": "#/$defs/NativeContextArtifact"
+            },
+            "type": {
+              "type": "string",
+              "const": "provider_native"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "model",
+            "native_context"
+          ]
+        },
+        {
+          "description": "A bounded, integrity-checked internal summary checkpoint.",
+          "type": "object",
+          "properties": {
+            "byte_length": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "sha256": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_summary"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "summary",
+            "byte_length",
+            "sha256",
+            "invocation_id",
+            "internal_run_id"
+          ]
+        }
+      ]
+    },
+    "ContextCheckpointBoundaries": {
+      "description": "Event-sequence boundaries covered by a context checkpoint.",
+      "type": "object",
+      "properties": {
+        "input_through_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "prior_checkpoint_seq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "source_from_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "source_through_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "source_from_seq",
+        "source_through_seq",
+        "input_through_seq"
+      ]
+    },
+    "ContextCheckpointBudgets": {
+      "description": "Frozen token and byte budgets used to produce a checkpoint.",
+      "type": "object",
+      "properties": {
+        "context_limit_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens_after": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens_before": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_summary_bytes": {
+          "type": "integer",
+          "maximum": 2097152,
+          "minimum": 0
+        },
+        "target_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "trigger_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "context_limit_tokens",
+        "trigger_tokens",
+        "target_tokens",
+        "input_tokens_before",
+        "input_tokens_after",
+        "max_summary_bytes"
       ]
     },
     "DecisionTrace": {
@@ -136,6 +587,7 @@ expression: schema_for!(EventEnvelope)
           "type": "string"
         }
       },
+      "additionalProperties": false,
       "required": [
         "action",
         "normalized_resource",
@@ -166,6 +618,7 @@ expression: schema_for!(EventEnvelope)
           "minimum": 0
         }
       },
+      "additionalProperties": false,
       "required": [
         "enabled",
         "allowed_profiles",
@@ -189,6 +642,7 @@ expression: schema_for!(EventEnvelope)
               "minimum": 0
             }
           },
+          "additionalProperties": false,
           "required": [
             "kind",
             "value"
@@ -202,6 +656,7 @@ expression: schema_for!(EventEnvelope)
               "const": "unlimited"
             }
           },
+          "additionalProperties": false,
           "required": [
             "kind"
           ]
@@ -231,6 +686,7 @@ expression: schema_for!(EventEnvelope)
               "const": "session_created"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "meta"
@@ -242,18 +698,27 @@ expression: schema_for!(EventEnvelope)
             "client_run_id": {
               "type": "string"
             },
+            "current_profile": {
+              "$ref": "#/$defs/ProfileIdentity"
+            },
             "input": {
               "type": "string"
+            },
+            "profile": {
+              "$ref": "#/$defs/ProfileSnapshot"
             },
             "type": {
               "type": "string",
               "const": "run_started"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "client_run_id",
-            "input"
+            "input",
+            "profile",
+            "current_profile"
           ]
         },
         {
@@ -268,6 +733,7 @@ expression: schema_for!(EventEnvelope)
               "const": "user_input_submitted"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "input"
@@ -287,6 +753,7 @@ expression: schema_for!(EventEnvelope)
               "minimum": 0
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "user_input_seq"
@@ -306,6 +773,7 @@ expression: schema_for!(EventEnvelope)
               "const": "run_completed"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type"
           ]
@@ -321,6 +789,7 @@ expression: schema_for!(EventEnvelope)
               "const": "run_failed"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "message"
@@ -340,6 +809,7 @@ expression: schema_for!(EventEnvelope)
               "const": "run_cancelled"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type"
           ]
@@ -358,6 +828,7 @@ expression: schema_for!(EventEnvelope)
               "const": "run_interrupted"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type"
           ]
@@ -373,6 +844,7 @@ expression: schema_for!(EventEnvelope)
               "const": "text_delta"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "text"
@@ -389,6 +861,7 @@ expression: schema_for!(EventEnvelope)
               "const": "reasoning_delta"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "text"
@@ -398,19 +871,12 @@ expression: schema_for!(EventEnvelope)
           "type": "object",
           "properties": {
             "arguments": true,
-            "provider_protocol": {
-              "description": "Protocol that issued `provider_tool_call_id`.",
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ProviderProtocol"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+            "model_call_id": {
+              "description": "Oven semantic tool-call identity used to pair model history.",
+              "type": "string"
             },
-            "provider_tool_call_id": {
-              "description": "The provider-native call ID, retained for same-protocol replay.",
+            "provider_item_id": {
+              "description": "Provider item identity, when distinct from the Oven semantic ID.",
               "type": [
                 "string",
                 "null"
@@ -420,6 +886,7 @@ expression: schema_for!(EventEnvelope)
               "type": "string"
             },
             "tool_call_id": {
+              "description": "Engine-generated durable execution and audit identity.",
               "type": "string",
               "format": "uuid"
             },
@@ -428,9 +895,11 @@ expression: schema_for!(EventEnvelope)
               "const": "tool_call_started"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "tool_call_id",
+            "model_call_id",
             "tool",
             "arguments"
           ]
@@ -450,6 +919,7 @@ expression: schema_for!(EventEnvelope)
               "const": "tool_call_progress"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "tool_call_id",
@@ -471,6 +941,7 @@ expression: schema_for!(EventEnvelope)
               "const": "tool_call_completed"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "tool_call_id",
@@ -480,6 +951,9 @@ expression: schema_for!(EventEnvelope)
         {
           "type": "object",
           "properties": {
+            "code": {
+              "$ref": "#/$defs/ToolCallFailureCode"
+            },
             "message": {
               "type": "string"
             },
@@ -492,87 +966,198 @@ expression: schema_for!(EventEnvelope)
               "const": "tool_call_failed"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "tool_call_id",
+            "code",
             "message"
           ]
         },
         {
           "type": "object",
           "properties": {
-            "action": {
-              "$ref": "#/$defs/ActionKind"
-            },
-            "approval_id": {
-              "type": "string"
-            },
-            "decision_trace": {
-              "$ref": "#/$defs/DecisionTrace"
-            },
-            "resource": {
-              "type": "string"
-            },
-            "resources": {
-              "type": "array",
-              "default": [],
-              "items": {
-                "$ref": "#/$defs/ApprovalResource"
-              }
-            },
-            "suggested_pattern": {
-              "type": "string"
+            "request": {
+              "$ref": "#/$defs/ApprovalRequest"
             },
             "type": {
               "type": "string",
               "const": "approval_requested"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
-            "approval_id",
-            "action",
-            "resource",
-            "suggested_pattern",
-            "decision_trace"
+            "request"
           ]
         },
         {
           "type": "object",
           "properties": {
             "approval_id": {
-              "type": "string"
-            },
-            "approved_scope": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "approved_scopes": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/ApprovedScope"
-              }
+              "type": "string",
+              "format": "uuid"
             },
             "decision": {
-              "$ref": "#/$defs/ApprovalDecision"
-            },
-            "feedback": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "$ref": "#/$defs/ApprovalInternalDecision"
             },
             "type": {
               "type": "string",
-              "const": "approval_resolved"
+              "const": "approval_evaluated"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "approval_id",
             "decision"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "approval_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "reason_code": {
+              "$ref": "#/$defs/ApprovalReasonCode"
+            },
+            "type": {
+              "type": "string",
+              "const": "approval_escalated"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "approval_id",
+            "reason_code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "approval_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "client_response_id": {
+              "type": "string"
+            },
+            "decision": {
+              "$ref": "#/$defs/ApprovalUserDecision"
+            },
+            "feedback": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ApprovalFeedback"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "approval_user_decision_recorded"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "approval_id",
+            "client_response_id",
+            "decision"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "approval_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "decision": {
+              "$ref": "#/$defs/ApprovalFinalDecision"
+            },
+            "type": {
+              "type": "string",
+              "const": "approval_finalized"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "approval_id",
+            "decision"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "approval_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "reason_code": {
+              "$ref": "#/$defs/ApprovalReasonCode"
+            },
+            "type": {
+              "type": "string",
+              "const": "approval_cancelled"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "approval_id",
+            "reason_code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "approval_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "operation_fingerprint": {
+              "$ref": "#/$defs/OperationFingerprint"
+            },
+            "repetitions": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "approval_doom_loop_detected"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "approval_id",
+            "operation_fingerprint",
+            "repetitions"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "grant": {
+              "$ref": "#/$defs/TreeApprovalGrant"
+            },
+            "type": {
+              "type": "string",
+              "const": "tree_approval_grant_committed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "grant"
           ]
         },
         {
@@ -592,6 +1177,7 @@ expression: schema_for!(EventEnvelope)
               "const": "tool_stdin_submitted"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "tool_call_id",
@@ -614,6 +1200,7 @@ expression: schema_for!(EventEnvelope)
               "const": "tool_call_linked"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "tool_call_id",
@@ -629,25 +1216,62 @@ expression: schema_for!(EventEnvelope)
               "const": "attempt_abandoned"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type"
           ]
         },
         {
-          "description": "Opaque native assistant state emitted by a provider at turn finalization.",
+          "description": "Complete normalized assistant turn committed after a valid Oven finish.",
           "type": "object",
           "properties": {
-            "state": {
-              "$ref": "#/$defs/TurnOpaque"
+            "input_through_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "model": {
+              "$ref": "#/$defs/ModelRef"
+            },
+            "turn": {
+              "$ref": "#/$defs/PersistedModelTurn"
             },
             "type": {
               "type": "string",
-              "const": "turn_opaque"
+              "const": "model_turn_committed"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
-            "state"
+            "model",
+            "input_through_seq",
+            "turn"
+          ]
+        },
+        {
+          "description": "Complete ordered Oven replay decisions made before model output.",
+          "type": "object",
+          "properties": {
+            "decisions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ReplayDecision"
+              }
+            },
+            "model": {
+              "$ref": "#/$defs/ModelRef"
+            },
+            "type": {
+              "type": "string",
+              "const": "model_replay_evaluated"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "model",
+            "decisions"
           ]
         },
         {
@@ -658,11 +1282,11 @@ expression: schema_for!(EventEnvelope)
               "format": "uint32",
               "minimum": 0
             },
+            "error": {
+              "$ref": "#/$defs/ModelErrorSummary"
+            },
             "from": {
               "$ref": "#/$defs/ModelRef"
-            },
-            "reason": {
-              "type": "string"
             },
             "to": {
               "$ref": "#/$defs/ModelRef"
@@ -672,12 +1296,296 @@ expression: schema_for!(EventEnvelope)
               "const": "model_fallback"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "from",
             "to",
-            "reason",
+            "error",
             "attempts"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "backend": {
+              "$ref": "#/$defs/InternalAgentBackend"
+            },
+            "call": {
+              "$ref": "#/$defs/SafeInternalAgentCall"
+            },
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/$defs/InternalAgentKind"
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_started"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id",
+            "internal_run_id",
+            "kind",
+            "backend",
+            "call"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/$defs/InternalAgentKind"
+            },
+            "result": {
+              "$ref": "#/$defs/SafeInternalAgentResult"
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_completed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id",
+            "internal_run_id",
+            "kind",
+            "result"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "failure": {
+              "$ref": "#/$defs/InternalAgentFailure"
+            },
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/$defs/InternalAgentKind"
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_failed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id",
+            "internal_run_id",
+            "kind",
+            "failure"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/$defs/InternalAgentKind"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_cancelled"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id",
+            "internal_run_id",
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/$defs/InternalAgentKind"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_interrupted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id",
+            "internal_run_id",
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "failure": {
+              "$ref": "#/$defs/InternalAgentFailure"
+            },
+            "from": {
+              "$ref": "#/$defs/InternalAgentBackend"
+            },
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/$defs/InternalAgentKind"
+            },
+            "to": {
+              "$ref": "#/$defs/InternalAgentBackend"
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_fallback"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id",
+            "internal_run_id",
+            "kind",
+            "from",
+            "to",
+            "failure",
+            "attempts"
+          ]
+        },
+        {
+          "description": "A self-validating checkpoint commit with frozen boundaries and budgets.",
+          "type": "object",
+          "properties": {
+            "boundaries": {
+              "$ref": "#/$defs/ContextCheckpointBoundaries"
+            },
+            "budgets": {
+              "$ref": "#/$defs/ContextCheckpointBudgets"
+            },
+            "checkpoint": {
+              "$ref": "#/$defs/ContextCheckpoint"
+            },
+            "type": {
+              "type": "string",
+              "const": "context_checkpoint_committed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "checkpoint",
+            "boundaries",
+            "budgets"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "commit": {
+              "$ref": "#/$defs/SessionTitleCommit"
+            },
+            "input_through_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "session_title_committed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "input_through_seq",
+            "commit"
+          ]
+        }
+      ]
+    },
+    "InternalAgentBackend": {
+      "description": "Backend selected for one internal-agent attempt.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "model": {
+              "$ref": "#/$defs/ModelRef"
+            },
+            "profile": {
+              "$ref": "#/$defs/ProfileSnapshot"
+            },
+            "type": {
+              "type": "string",
+              "const": "model"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "profile",
+            "model"
           ]
         },
         {
@@ -688,18 +1596,76 @@ expression: schema_for!(EventEnvelope)
             },
             "type": {
               "type": "string",
-              "const": "usage_reported"
-            },
-            "usage": {
-              "$ref": "#/$defs/Usage"
+              "const": "provider_native"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
-            "model",
-            "usage"
+            "model"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "builtin"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "name",
+            "revision"
           ]
         }
+      ]
+    },
+    "InternalAgentFailure": {
+      "description": "Sanitized internal-agent failure. Provider bodies and secrets are excluded.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "model_error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelErrorSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ]
+    },
+    "InternalAgentKind": {
+      "description": "Engine-owned internal agent purpose.",
+      "type": "string",
+      "enum": [
+        "approval",
+        "context_compaction",
+        "session_title"
       ]
     },
     "MatchedPermissionRule": {
@@ -708,9 +1674,6 @@ expression: schema_for!(EventEnvelope)
       "properties": {
         "effect": {
           "$ref": "#/$defs/Effect"
-        },
-        "hard": {
-          "type": "boolean"
         },
         "rule_id": {
           "type": [
@@ -724,24 +1687,268 @@ expression: schema_for!(EventEnvelope)
       },
       "required": [
         "source_layer",
-        "effect",
-        "hard"
+        "effect"
+      ]
+    },
+    "ModelErrorKind": {
+      "description": "The normalized category of an Oven model error.",
+      "type": "string",
+      "enum": [
+        "transport",
+        "timeout",
+        "rate_limited",
+        "auth",
+        "permission_denied",
+        "invalid_request",
+        "model_not_found",
+        "context_length",
+        "quota",
+        "overload",
+        "unsupported",
+        "unexpected_eof",
+        "invalid_response",
+        "invalid_tool_input",
+        "content_filter",
+        "replay",
+        "native_context",
+        "provider",
+        "abort",
+        "unknown"
+      ]
+    },
+    "ModelErrorStage": {
+      "description": "The phase in which an Oven model error occurred.",
+      "type": "string",
+      "enum": [
+        "unknown",
+        "request_validation",
+        "request_encoding",
+        "connect",
+        "response_headers",
+        "response_body",
+        "stream_read",
+        "stream_decode",
+        "stream_event",
+        "stream_finalize",
+        "replay_encode",
+        "replay_decode",
+        "native_context_encode",
+        "native_context_decode",
+        "middleware"
+      ]
+    },
+    "ModelErrorSummary": {
+      "description": "Structured safe model failure details exposed by protocol events.\n\nOven's sanitized response body is intentionally excluded.",
+      "type": "object",
+      "properties": {
+        "bytes_received": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "http_status": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "kind": {
+          "$ref": "#/$defs/ModelErrorKind"
+        },
+        "message": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retry_after_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "stage": {
+          "$ref": "#/$defs/ModelErrorStage"
+        },
+        "vendor_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "message",
+        "retryable",
+        "stage",
+        "bytes_received"
+      ]
+    },
+    "ModelFinishReason": {
+      "description": "A semantic model completion reason.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "stop",
+            "tool_calls",
+            "length",
+            "content_filter",
+            "cancelled",
+            "error",
+            "aborted",
+            "timeout",
+            "refused",
+            "unknown"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "other": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "other"
+          ]
+        }
       ]
     },
     "ModelRef": {
       "description": "A model entry in a profile fallback chain.",
       "type": "object",
       "properties": {
-        "model": {
+        "adapter_id": {
+          "description": "Oven adapter identity used for native replay compatibility.",
           "type": "string"
         },
-        "provider": {
+        "model_id": {
+          "description": "Exact provider model, deployment, or resource identity.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Cookie-agent configuration alias.",
+          "type": "string"
+        },
+        "provider_id": {
+          "description": "Serving provider identity.",
           "type": "string"
         }
       },
+      "additionalProperties": false,
       "required": [
-        "provider",
-        "model"
+        "name",
+        "provider_id",
+        "model_id",
+        "adapter_id"
+      ]
+    },
+    "NativeContextArtifact": {
+      "description": "Safe persisted metadata for a provider-native context artifact.\nThe opaque payload is retained only in the private artifact store.",
+      "type": "object",
+      "properties": {
+        "adapter_id": {
+          "type": "string"
+        },
+        "byte_length": {
+          "type": "integer",
+          "format": "uint64",
+          "maximum": 33554432,
+          "minimum": 0
+        },
+        "reference": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "scope": {
+          "$ref": "#/$defs/NativeContextScope"
+        },
+        "sha256": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "adapter_id",
+        "scope",
+        "byte_length",
+        "sha256",
+        "reference"
+      ]
+    },
+    "NativeContextScope": {
+      "description": "Provider, model, and behavior-affecting resource scope for native context.",
+      "type": "object",
+      "properties": {
+        "model_id": {
+          "type": "string"
+        },
+        "provider_id": {
+          "type": "string"
+        },
+        "resource_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "provider_id",
+        "model_id",
+        "resource_id"
+      ]
+    },
+    "NativeReplayArtifact": {
+      "description": "A bounded Oven native replay artifact tied to an exact adapter and scope.\n\nThe payload is correctness state. Debug output redacts it, and construction\nplus deserialization enforce the 2 MiB serialized-payload boundary.",
+      "type": "object",
+      "properties": {
+        "adapter_id": {
+          "type": "string"
+        },
+        "payload": {
+          "x-max-serialized-bytes": 2097152
+        },
+        "scope": {
+          "$ref": "#/$defs/NativeContextScope"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "adapter_id",
+        "scope",
+        "payload"
+      ]
+    },
+    "OperationFingerprint": {
+      "description": "The exact canonical operation fingerprint used for idempotency and consent.",
+      "type": "object",
+      "properties": {
+        "digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "digest"
       ]
     },
     "PermissionRule": {
@@ -754,9 +1961,6 @@ expression: schema_for!(EventEnvelope)
         "effect": {
           "$ref": "#/$defs/Effect"
         },
-        "hard": {
-          "type": "boolean"
-        },
         "id": {
           "type": "string"
         },
@@ -768,8 +1972,676 @@ expression: schema_for!(EventEnvelope)
         "id",
         "action",
         "resource",
-        "effect",
-        "hard"
+        "effect"
+      ]
+    },
+    "PersistedAssistantPart": {
+      "description": "Ordered replay-relevant content in one completed Oven assistant turn.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "reasoning"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "input": true,
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "name": {
+              "type": "string"
+            },
+            "provider_item_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "raw_input": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_call"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "name",
+            "input"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "content": {
+              "$ref": "#/$defs/PersistedToolContent"
+            },
+            "is_error": {
+              "type": "boolean"
+            },
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "tool_call_id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_result"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "tool_call_id",
+            "content",
+            "is_error"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/PersistedFilePart"
+            },
+            "type": {
+              "type": "string",
+              "const": "file"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "excerpt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "media_type": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "source"
+            },
+            "url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "tool_call_id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_approval"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "tool_call_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "data": true,
+            "kind": {
+              "type": "string"
+            },
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "type": {
+              "type": "string",
+              "const": "custom"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "kind",
+            "data"
+          ]
+        }
+      ]
+    },
+    "PersistedContentValue": {
+      "description": "One value inside mixed model-visible tool output.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/PersistedFilePart"
+            },
+            "type": {
+              "type": "string",
+              "const": "file"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "json"
+            },
+            "value": true
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ]
+        }
+      ]
+    },
+    "PersistedFilePart": {
+      "description": "A persisted MIME-typed file referenced by model content.",
+      "type": "object",
+      "properties": {
+        "filename": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "source": {
+          "$ref": "#/$defs/PersistedFileSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "media_type",
+        "source"
+      ]
+    },
+    "PersistedFileSource": {
+      "description": "A MIME-typed model file source. Inline bytes, inline text, and base64 are\ndeliberately absent: persisted files are references only.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "byte_length": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "reference": {
+              "$ref": "#/$defs/ArtifactReference"
+            },
+            "sha256": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "type": {
+              "type": "string",
+              "const": "artifact"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "byte_length",
+            "sha256",
+            "reference"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "url"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "url"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "provider_id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "provider_reference"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "provider_id",
+            "id"
+          ]
+        }
+      ]
+    },
+    "PersistedModelTurn": {
+      "description": "A complete committed Oven assistant turn used for durable normalized replay.",
+      "type": "object",
+      "properties": {
+        "content": {
+          "description": "Ordered role-safe assistant content.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PersistedAssistantPart"
+          }
+        },
+        "finish_reason": {
+          "$ref": "#/$defs/ModelFinishReason"
+        },
+        "native_replay": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeReplayArtifact"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider_metadata": {
+          "description": "Safe provider-specific terminal metadata retained by Oven at finish.",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "provider_options": {
+          "description": "Provider options scoped to the assistant message.",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "response_metadata": {
+          "description": "Safe provider response metadata retained by Oven at finish.",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "content",
+        "provider_options",
+        "finish_reason",
+        "usage",
+        "response_metadata",
+        "provider_metadata",
+        "warnings"
+      ]
+    },
+    "PersistedToolContent": {
+      "description": "Model-visible tool output retained inside a committed assistant turn.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "json"
+            },
+            "value": true
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "mixed"
+            },
+            "values": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/PersistedContentValue"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "values"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "denied"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "PreparedApprovalResource": {
+      "description": "One immutable prepared canonical resource disclosed by an approval request.\n`source` is provenance only and never contributes to operation identity.",
+      "type": "object",
+      "properties": {
+        "binding_digest": {
+          "$ref": "#/$defs/PreparedResourceDigest"
+        },
+        "binding_lifetime": {
+          "$ref": "#/$defs/PreparedBindingLifetime"
+        },
+        "boundary": {
+          "$ref": "#/$defs/ApprovalBoundary"
+        },
+        "canonical": {
+          "description": "Stable logical prepared-resource identity; never a raw path, descriptor, or temp name.",
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._:-]*$"
+        },
+        "capability": {
+          "$ref": "#/$defs/ActionKind"
+        },
+        "source": {
+          "$ref": "#/$defs/ApprovalResourceSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "capability",
+        "canonical",
+        "binding_digest",
+        "binding_lifetime",
+        "boundary",
+        "source"
+      ]
+    },
+    "PreparedBindingLifetime": {
+      "description": "Restart stability of a prepared resource binding. Filesystem descriptor\nbindings are process-local and cannot back durable tree grants.",
+      "type": "string",
+      "enum": [
+        "process_local",
+        "restart_stable"
+      ]
+    },
+    "PreparedCapabilityLifetime": {
+      "description": "Prepared execution capabilities exist only in the preparing daemon process.",
+      "type": "string",
+      "enum": [
+        "process_local"
+      ]
+    },
+    "PreparedOperationIdentity": {
+      "description": "Complete canonical identity of one prepared tool operation. Arguments are\nrepresented by the digest of their normalized, resource-reference form so\nraw paths and process-local descriptor/temp identifiers never enter the\ndurable identity.",
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalCapability"
+          }
+        },
+        "capability_lifetime": {
+          "$ref": "#/$defs/PreparedCapabilityLifetime"
+        },
+        "execution_context_digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "normalized_arguments_digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PreparedApprovalResource"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "normalized_arguments_digest",
+        "capabilities",
+        "resources",
+        "execution_context_digest",
+        "capability_lifetime"
+      ]
+    },
+    "PreparedResourceDigest": {
+      "description": "Domain-separated SHA-256 digest binding an immutable prepared resource to\nthe exact process-local capability held by the engine.",
+      "type": "object",
+      "properties": {
+        "digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "digest"
+      ]
+    },
+    "ProfileIdentity": {
+      "description": "Identity of the profile selected for the current run.",
+      "type": "object",
+      "properties": {
+        "agent_type": {
+          "$ref": "#/$defs/AgentType"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "agent_type"
       ]
     },
     "ProfileSnapshot": {
@@ -804,6 +2676,7 @@ expression: schema_for!(EventEnvelope)
           }
         }
       },
+      "additionalProperties": false,
       "required": [
         "name",
         "agent_type",
@@ -813,14 +2686,170 @@ expression: schema_for!(EventEnvelope)
         "permission_rules"
       ]
     },
-    "ProviderProtocol": {
-      "description": "The exact provider wire protocol that produced an opaque assistant artifact.",
-      "type": "string",
-      "enum": [
-        "anthropic_messages",
-        "open_ai_chat_completions",
-        "open_ai_responses",
-        "open_ai_compatible"
+    "ReplayDecision": {
+      "description": "One ordered replay decision for a request history entry.",
+      "type": "object",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/ReplayDisposition"
+        },
+        "history_index": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "history_index",
+        "disposition"
+      ]
+    },
+    "ReplayDisposition": {
+      "description": "How Oven handled one assistant history entry while encoding a request.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "replayed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "no_artifact"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "expected": {
+              "type": "string"
+            },
+            "found": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "discarded_foreign_adapter"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "found",
+            "expected"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "expected": {
+              "$ref": "#/$defs/NativeContextScope"
+            },
+            "found": {
+              "$ref": "#/$defs/NativeContextScope"
+            },
+            "type": {
+              "type": "string",
+              "const": "discarded_foreign_scope"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "found",
+            "expected"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "discarded_invalid_payload"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "reconstructed_normalized"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "SafeInternalAgentCall": {
+      "description": "Sanitized description of an internal-agent call.",
+      "type": "object",
+      "properties": {
+        "input_digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "input_summary": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "input_summary",
+        "input_digest"
+      ]
+    },
+    "SafeInternalAgentResult": {
+      "description": "Sanitized terminal result metadata for an internal-agent call.",
+      "type": "object",
+      "properties": {
+        "output_digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "output_summary": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "output_summary",
+        "output_digest"
       ]
     },
     "SessionMeta": {
@@ -839,13 +2868,21 @@ expression: schema_for!(EventEnvelope)
         },
         "profile": {
           "$ref": "#/$defs/ProfileSnapshot"
+        },
+        "title": {
+          "description": "Non-blank UTF-8 title without control characters.",
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1
         }
       },
+      "additionalProperties": false,
       "required": [
         "id",
         "origin",
         "cwd",
-        "profile"
+        "profile",
+        "title"
       ]
     },
     "SessionOrigin": {
@@ -859,6 +2896,7 @@ expression: schema_for!(EventEnvelope)
               "const": "root"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type"
           ]
@@ -896,6 +2934,7 @@ expression: schema_for!(EventEnvelope)
               "const": "delegated"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "root_session_id",
@@ -923,6 +2962,7 @@ expression: schema_for!(EventEnvelope)
               "const": "forked"
             }
           },
+          "additionalProperties": false,
           "required": [
             "type",
             "source_session_id",
@@ -931,41 +2971,282 @@ expression: schema_for!(EventEnvelope)
         }
       ]
     },
-    "ToolResult": {
-      "description": "The result sent back to the model when a tool call completes.",
-      "type": "object",
-      "properties": {
-        "content": {
-          "type": "string"
+    "SessionTitleCommit": {
+      "description": "Strict durable title commit. Variant shape makes source/operation identity\nand `client_rename_id` requirements unrepresentable as invalid combinations.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "client_rename_id": {
+              "description": "Non-empty idempotency key without control characters.",
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1
+            },
+            "title": {
+              "description": "Non-blank UTF-8 title without control characters.",
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "user_set"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "title",
+            "client_rename_id"
+          ]
         },
-        "truncated": {
-          "type": "boolean"
+        {
+          "type": "object",
+          "properties": {
+            "client_rename_id": {
+              "description": "Non-empty idempotency key without control characters.",
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "user_clear"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "client_rename_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "client_rename_id": {
+              "description": "Non-empty idempotency key without control characters.",
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "user_reset"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "client_rename_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "title": {
+              "description": "Non-blank UTF-8 title without control characters.",
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_set"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "title",
+            "invocation_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "title": {
+              "description": "Non-blank UTF-8 title without control characters.",
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "fallback_set"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "title"
+          ]
         }
-      },
-      "required": [
-        "content",
-        "truncated"
       ]
     },
-    "TurnOpaque": {
-      "description": "Provider-native state needed to replay an assistant turn exactly.",
+    "ToolAttachment": {
+      "description": "A durable attachment produced by a tool. Binary bytes live only in the\nengine artifact store and are never embedded in protocol events.",
       "type": "object",
       "properties": {
-        "payload": true,
-        "provider": {
-          "$ref": "#/$defs/ProviderProtocol"
+        "byte_length": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "filename": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mime_type": {
+          "type": "string"
+        },
+        "reference": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "sha256": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
         }
       },
+      "additionalProperties": false,
       "required": [
-        "provider",
-        "payload"
+        "mime_type",
+        "byte_length",
+        "sha256",
+        "reference"
+      ]
+    },
+    "ToolCallFailureCode": {
+      "description": "Stable failure code for a tool operation that did not execute successfully.",
+      "type": "string",
+      "enum": [
+        "operation_changed",
+        "prepared_capability_lost",
+        "unsupported_platform",
+        "execution_failed"
+      ]
+    },
+    "ToolOutputTruncation": {
+      "description": "Details about engine-bounded output and its retained complete artifact.",
+      "type": "object",
+      "properties": {
+        "original_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "original_lines": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "retained": {
+          "$ref": "#/$defs/ArtifactReference"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "original_bytes",
+        "original_lines",
+        "retained"
+      ]
+    },
+    "ToolResult": {
+      "description": "The rich result sent back to the model and persisted in session history.",
+      "type": "object",
+      "properties": {
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolAttachment"
+          }
+        },
+        "metadata": true,
+        "output": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "truncation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolOutputTruncation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "output",
+        "metadata",
+        "attachments"
+      ]
+    },
+    "TreeApprovalGrant": {
+      "description": "A durable exact grant shared by one delegation tree.",
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalCapability"
+          }
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "grant_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "operation_fingerprint": {
+          "$ref": "#/$defs/OperationFingerprint"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PreparedApprovalResource"
+          }
+        },
+        "root_session_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "grant_id",
+        "root_session_id",
+        "approval_id",
+        "operation_fingerprint",
+        "capabilities",
+        "resources",
+        "created_at"
       ]
     },
     "Usage": {
-      "description": "Aggregate model usage attributed to a child session.",
+      "description": "Complete normalized Oven token accounting.\n\nInclusive totals are persisted exactly as reported and are never derived by\nadding component fields. Provider-specific raw usage is intentionally not a\nclient protocol field.",
       "type": "object",
       "properties": {
-        "cached_input_tokens": {
+        "input_tokens": {
           "type": [
             "integer",
             "null"
@@ -973,21 +3254,56 @@ expression: schema_for!(EventEnvelope)
           "format": "uint64",
           "minimum": 0
         },
-        "input_tokens": {
-          "type": "integer",
+        "input_tokens_cache_read": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens_cache_write": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens_no_cache": {
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint64",
           "minimum": 0
         },
         "output_tokens": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens_reasoning": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens_text": {
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint64",
           "minimum": 0
         }
       },
-      "required": [
-        "input_tokens",
-        "output_tokens"
-      ]
+      "additionalProperties": false
     }
   }
 }

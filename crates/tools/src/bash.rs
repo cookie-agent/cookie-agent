@@ -1,80 +1,98 @@
 use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
+    env,
+    ffi::OsString,
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
+    process::Stdio,
     time::Duration,
 };
 
 use async_trait::async_trait;
 use cookie_agent_engine::{
-    SessionToolContext, ToolCall, ToolError, ToolInvocationContext, ToolProvider, ToolSpec,
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
+    ToolPreparationContext, ToolProvider, ToolResult, ToolSpec,
 };
-use cookie_agent_protocol::OutputStream;
-use process_wrap::tokio::{CommandWrap, ProcessGroup};
+use cookie_agent_protocol::{
+    ActionKind, ApprovalResourceSource, OutputStream, PreparedBindingLifetime,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    task::JoinHandle,
+    io::AsyncReadExt,
+    process::{Child, Command},
 };
 
-use crate::{RESULT_LIMIT, result, schema, tool_error, workspace_for, workspace_path};
-
-const DEFAULT_TIMEOUT_MS: u64 = 120_000;
-const MAX_TIMEOUT_MS: u64 = 600_000;
-const STREAM_RESULT_LIMIT: usize = RESULT_LIMIT / 3;
+use crate::{fs_cap, parse_args, prepared_operation, prepared_resource, schema};
 
 #[derive(Debug)]
 pub struct BashTool {
-    workspace: PathBuf,
+    _workspace: PathBuf,
 }
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+
+#[derive(Debug, Deserialize, JsonSchema, Serialize)]
 struct BashArgs {
     command: String,
-    #[schemars(range(min = 1, max = 600_000))]
-    timeout_ms: Option<u64>,
+    #[serde(default = "default_timeout")]
+    timeout: u64,
     #[serde(default)]
     interactive: bool,
 }
-#[derive(Serialize)]
-struct BashOutput {
-    status: String,
-    exit_code: Option<i32>,
-    stdout: String,
-    stderr: String,
-    timed_out: bool,
-    cancelled: bool,
-    truncated: bool,
+
+fn default_timeout() -> u64 {
+    120_000
 }
 
-#[derive(Default)]
-struct Captured {
-    data: Vec<u8>,
-    truncated: bool,
+struct BashExecutor {
+    args: BashArgs,
+    cwd: fs_cap::PreparedExisting,
+    executable: fs_cap::PreparedExisting,
 }
-impl Captured {
-    fn push(&mut self, chunk: &[u8]) {
-        let remaining = STREAM_RESULT_LIMIT.saturating_sub(self.data.len());
-        let copied = remaining.min(chunk.len());
-        self.data.extend_from_slice(&chunk[..copied]);
-        self.truncated |= copied < chunk.len();
+
+struct ProcessGroupChild {
+    child: Option<Child>,
+    process_group: i32,
+    complete: bool,
+}
+
+impl ProcessGroupChild {
+    fn kill_group(&mut self) {
+        unsafe {
+            libc::kill(-self.process_group, libc::SIGKILL);
+        }
+        if let Some(child) = &mut self.child {
+            let _ = child.start_kill();
+        }
+    }
+
+    async fn kill_and_reap(&mut self) {
+        self.kill_group();
+        if let Some(child) = &mut self.child {
+            let _ = child.wait().await;
+        }
+        self.complete = true;
     }
 }
 
-fn lossy_complete_prefix(bytes: &[u8]) -> String {
-    let bytes = match std::str::from_utf8(bytes) {
-        Ok(_) => bytes,
-        Err(error) if error.error_len().is_none() => &bytes[..error.valid_up_to()],
-        Err(_) => bytes,
-    };
-    String::from_utf8_lossy(bytes).into_owned()
+impl Drop for ProcessGroupChild {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.kill_group();
+            if let Some(mut child) = self.child.take()
+                && let Ok(runtime) = tokio::runtime::Handle::try_current()
+            {
+                runtime.spawn(async move {
+                    let _ = child.wait().await;
+                });
+            }
+        }
+    }
 }
 
 impl BashTool {
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
-            workspace: workspace_path(workspace),
+            _workspace: workspace.into(),
         }
     }
 }
@@ -84,319 +102,338 @@ impl Default for BashTool {
     }
 }
 
-async fn drain<R: tokio::io::AsyncRead + Unpin>(
-    mut reader: R,
-    stream: OutputStream,
-    progress: cookie_agent_engine::ProgressSink,
-    captured: Arc<Mutex<Captured>>,
-) -> Result<(), ToolError> {
-    let mut buffer = [0_u8; 8192];
-    loop {
-        let count = reader.read(&mut buffer).await.map_err(tool_error)?;
-        if count == 0 {
-            return Ok(());
-        }
-        progress.output(stream, &buffer[..count]);
-        captured
-            .lock()
-            .expect("output capture lock poisoned")
-            .push(&buffer[..count]);
-    }
-}
-
 #[async_trait]
 impl ToolProvider for BashTool {
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             name: "bash".into(),
-            description: "Run a shell command with streamed stdout/stderr.".into(),
+            description: "Execute one prepared shell command.".into(),
             parameters: schema::<BashArgs>(),
         }])
     }
-    async fn invoke(
+
+    async fn prepare(
         &self,
-        mut ctx: ToolInvocationContext,
+        ctx: ToolPreparationContext,
         call: ToolCall,
-    ) -> Result<cookie_agent_engine::ToolResult, ToolError> {
-        if call.name != "bash" {
-            return Err(tool_error("bash tool received another tool name"));
+    ) -> Result<PreparedTool, ToolError> {
+        let mut args: BashArgs = parse_args("bash", call.arguments)?;
+        if args.command.trim().is_empty() {
+            return Err(ToolError::execution("command must not be empty"));
         }
-        let args: BashArgs = serde_json::from_value(call.arguments).map_err(tool_error)?;
-        let timeout = args.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
-        if timeout == 0 || timeout > MAX_TIMEOUT_MS {
-            return Err(tool_error("timeout_ms must be between 1 and 600000"));
-        }
-        let workspace = if ctx.cwd.as_os_str().is_empty() {
-            workspace_for(&ctx, &self.workspace).to_owned()
-        } else {
-            ctx.cwd.clone()
-        };
-        let command = args.command.clone();
-        let mut wrapped = CommandWrap::with_new("sh", move |process| {
-            process
-                .arg("-c")
-                .arg(command)
-                .current_dir(workspace)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
-        });
-        wrapped.wrap(ProcessGroup::leader());
-        let mut child = wrapped.spawn().map_err(tool_error)?;
-        let stdout = child
-            .stdout()
-            .take()
-            .ok_or_else(|| tool_error("stdout was not piped"))?;
-        let stderr = child
-            .stderr()
-            .take()
-            .ok_or_else(|| tool_error("stderr was not piped"))?;
-        let stdout_capture = Arc::new(Mutex::new(Captured::default()));
-        let stderr_capture = Arc::new(Mutex::new(Captured::default()));
-        let stdout_task = tokio::spawn(drain(
-            stdout,
-            OutputStream::Stdout,
-            ctx.progress.clone(),
-            stdout_capture.clone(),
-        ));
-        let stderr_task = tokio::spawn(drain(
-            stderr,
-            OutputStream::Stderr,
-            ctx.progress.clone(),
-            stderr_capture.clone(),
-        ));
-        let mut stdin_task: Option<JoinHandle<Result<(), ToolError>>> = None;
         if args.interactive {
-            let mut stdin = child
-                .stdin()
-                .take()
-                .ok_or_else(|| tool_error("stdin was not piped"))?;
-            if let Some(mut input) = ctx.stdin.take() {
-                stdin_task = Some(tokio::spawn(async move {
-                    while let Some(write) = input.recv().await {
-                        if !write.data.is_empty() {
-                            stdin.write_all(&write.data).await.map_err(tool_error)?;
-                            stdin.flush().await.map_err(tool_error)?;
-                        }
-                        if write.eof {
-                            return Ok(());
-                        }
-                    }
-                    Ok(())
-                }));
-            }
-        } else {
-            child.stdin().take();
+            return Err(ToolError::unsupported_security(
+                "interactive prepared bash is not supported",
+            ));
         }
-        let (status, timed_out, cancelled) = tokio::select! {
-            status = child.wait() => (status.map_err(tool_error)?, false, false),
-            _ = tokio::time::sleep(Duration::from_millis(timeout)) => { child.start_kill().map_err(tool_error)?; (child.wait().await.map_err(tool_error)?, true, false) },
-            _ = ctx.cancellation.cancelled() => { child.start_kill().map_err(tool_error)?; (child.wait().await.map_err(tool_error)?, false, true) },
-        };
-        if let Some(task) = stdin_task {
-            task.abort();
+        if args.timeout == 0 {
+            args.timeout = default_timeout();
         }
-        stdout_task.await.map_err(tool_error)??;
-        stderr_task.await.map_err(tool_error)??;
-        let stdout = stdout_capture.lock().expect("output capture lock poisoned");
-        let stderr = stderr_capture.lock().expect("output capture lock poisoned");
-        let truncated = stdout.truncated || stderr.truncated;
-        Ok(result(
-            &BashOutput {
-                status: if timed_out {
-                    "timed_out".into()
-                } else if cancelled {
-                    "cancelled".into()
-                } else {
-                    "exited".into()
-                },
-                exit_code: status.code(),
-                stdout: lossy_complete_prefix(&stdout.data),
-                stderr: lossy_complete_prefix(&stderr.data),
-                timed_out,
-                cancelled,
-                truncated,
-            },
-            truncated,
-        ))
+        let executable_path = resolve_executable("bash")?;
+        let executable = fs_cap::prepare_existing(Path::new("/"), &executable_path)?;
+        if executable.directory || executable.identity.mode & 0o111 == 0 {
+            return Err(ToolError::unsupported_security(
+                "prepared bash executable is not an executable regular file",
+            ));
+        }
+        let command_resource = prepared_resource(
+            ActionKind::Bash,
+            "command",
+            args.command.as_bytes(),
+            args.command.as_bytes(),
+            PreparedBindingLifetime::RestartStable,
+            ApprovalResourceSource::PrimaryOperation,
+        )?;
+        let cwd = fs_cap::prepare_existing(std::path::Path::new("/"), &ctx.cwd)?;
+        if !cwd.directory {
+            return Err(ToolError::unsupported_security(
+                "bash cwd is not a directory",
+            ));
+        }
+        let mut executable_binding = executable.manifest_bytes()?;
+        executable_binding.extend_from_slice(executable_path.as_os_str().as_encoded_bytes());
+        let executable_resource = prepared_resource(
+            ActionKind::Bash,
+            "executable",
+            args.command.as_bytes(),
+            &executable_binding,
+            PreparedBindingLifetime::ProcessLocal,
+            ApprovalResourceSource::SecondaryOperation,
+        )?;
+        let mut context = cwd.manifest_bytes()?;
+        context.extend_from_slice(&executable_binding);
+        let operation = prepared_operation(
+            "bash",
+            &args,
+            vec![(ActionKind::Bash, "execute")],
+            vec![command_resource, executable_resource],
+            &context,
+        )?;
+        let policy_labels = vec![args.command.clone(), args.command.clone()];
+        PreparedTool::new(
+            operation,
+            None,
+            Box::new(BashExecutor {
+                args,
+                cwd,
+                executable,
+            }),
+        )
+        .with_policy_labels(policy_labels)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::{fs, time::Duration};
-
-    use cookie_agent_engine::{
-        ProgressSink, ToolCall, ToolInvocationContext, ToolProvider, events::OutputMessage,
-    };
-    use cookie_agent_protocol::{OutputStream, RunId, SessionId, ToolCallId};
-    use process_wrap::tokio::{CommandWrap, ProcessGroup};
-    use tempfile::tempdir;
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        sync::mpsc,
-    };
-
-    use super::BashTool;
-
-    fn context(hub: cookie_agent_engine::events::OutputHub) -> ToolInvocationContext {
-        let (progress, _) = mpsc::channel(1);
-        ToolInvocationContext {
-            session: SessionId::new_v7(),
-            run: RunId::new_v7(),
-            cwd: std::env::current_dir().expect("current directory"),
-            workspace_root: std::env::current_dir().expect("current directory"),
-            progress: ProgressSink::new(progress, hub),
-            cancellation: tokio_util::sync::CancellationToken::new(),
-            stdin: None,
-        }
+#[async_trait]
+impl PreparedExecutor for BashExecutor {
+    async fn revalidate(&self) -> Result<(), ToolError> {
+        self.cwd.revalidate()?;
+        self.executable.revalidate()
     }
 
-    #[tokio::test]
-    async fn streams_stdout_and_stderr_as_distinct_deltas() {
-        let directory = tempdir().expect("temporary directory");
-        let tool = BashTool::new(directory.path());
-        let call_id = ToolCallId::new_v7();
-        let hub = cookie_agent_engine::events::OutputHub::new(call_id, 1024);
-        let (_, mut stdout) = hub.subscribe(OutputStream::Stdout, 8);
-        let (_, mut stderr) = hub.subscribe(OutputStream::Stderr, 8);
-        let result = tool
-            .invoke(
-                context(hub),
-                ToolCall {
-                    id: call_id,
-                    name: "bash".into(),
-                    arguments: serde_json::json!({"command":"printf out; printf err >&2"}),
-                },
-            )
-            .await
-            .expect("bash result");
-        assert!(result.content.contains("out"));
-        match tokio::time::timeout(Duration::from_secs(1), stdout.recv())
-            .await
-            .expect("stdout delta timeout")
-            .expect("stdout delta")
-        {
-            OutputMessage::Delta(delta) => assert_eq!(delta.stream, OutputStream::Stdout),
-            OutputMessage::Gap(_) => panic!("unexpected stdout gap"),
+    async fn execute(
+        self: Box<Self>,
+        context: ToolExecutionContext,
+    ) -> Result<ToolResult, ToolError> {
+        self.cwd.revalidate()?;
+        self.executable.revalidate()?;
+        if context.cancellation.is_cancelled() {
+            return Err(ToolError::execution("prepared bash cancelled"));
         }
-        match tokio::time::timeout(Duration::from_secs(1), stderr.recv())
-            .await
-            .expect("stderr delta timeout")
-            .expect("stderr delta")
-        {
-            OutputMessage::Delta(delta) => assert_eq!(delta.stream, OutputStream::Stderr),
-            OutputMessage::Gap(_) => panic!("unexpected stderr gap"),
+        let mut command = Command::new(self.executable.proc_fd_path());
+        command
+            .arg("-lc")
+            .arg(&self.args.command)
+            .current_dir(self.cwd.proc_fd_path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
         }
-    }
-
-    #[tokio::test]
-    async fn timeout_kills_the_entire_process_group() {
-        let directory = tempdir().expect("temporary directory");
-        let pid_file = directory.path().join("child.pid");
-        let tool = BashTool::new(directory.path());
-        let call_id = ToolCallId::new_v7();
-        let hub = cookie_agent_engine::events::OutputHub::new(call_id, 1024);
-        let command = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
-        let result = tool
-            .invoke(
-                context(hub),
-                ToolCall {
-                    id: call_id,
-                    name: "bash".into(),
-                    arguments: serde_json::json!({"command":command,"timeout_ms":50}),
-                },
-            )
-            .await
-            .expect("timeout result");
-        assert!(result.content.contains("timed_out"));
-        let pid = fs::read_to_string(pid_file)
-            .expect("child pid")
-            .trim()
-            .to_owned();
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(
-            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
-            "background child survived group kill"
-        );
-    }
-
-    #[tokio::test]
-    async fn stdin_round_trip_through_cat_like_process() {
-        let mut command = CommandWrap::with_new("sh", |process| {
-            process
-                .arg("-c")
-                .arg("cat")
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(|error| ToolError::execution(error.to_string()))?;
+        let process_group = child
+            .id()
+            .and_then(|id| i32::try_from(id).ok())
+            .ok_or_else(|| ToolError::execution("prepared bash child has no process id"))?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ToolError::execution("bash stdout pipe missing"))?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| ToolError::execution("bash stderr pipe missing"))?;
+        let stdout_task = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).await.map(|_| bytes)
         });
-        command.wrap(ProcessGroup::leader());
-        let mut child = command.spawn().expect("spawn cat");
-        let mut stdin = child.stdin().take().expect("stdin");
-        let mut stdout = child.stdout().take().expect("stdout");
-        stdin.write_all(b"round trip\n").await.expect("write stdin");
-        drop(stdin);
-        let mut output = String::new();
-        stdout
-            .read_to_string(&mut output)
+        let stderr_task = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).await.map(|_| bytes)
+        });
+        let mut grouped = ProcessGroupChild {
+            child: Some(child),
+            process_group,
+            complete: false,
+        };
+        enum WaitOutcome {
+            Finished(std::io::Result<std::process::ExitStatus>),
+            TimedOut,
+            Cancelled,
+        }
+        let outcome = {
+            let wait = grouped
+                .child
+                .as_mut()
+                .expect("prepared child exists")
+                .wait();
+            tokio::pin!(wait);
+            tokio::select! {
+                result = tokio::time::timeout(Duration::from_millis(self.args.timeout), &mut wait) => {
+                    match result {
+                        Ok(result) => WaitOutcome::Finished(result),
+                        Err(_) => WaitOutcome::TimedOut,
+                    }
+                }
+                _ = context.cancellation.cancelled() => WaitOutcome::Cancelled,
+            }
+        };
+        let status = match outcome {
+            WaitOutcome::Finished(result) => {
+                grouped.complete = true;
+                result.map_err(|error| ToolError::execution(error.to_string()))?
+            }
+            WaitOutcome::TimedOut => {
+                grouped.kill_and_reap().await;
+                return Err(ToolError::execution("bash timed out"));
+            }
+            WaitOutcome::Cancelled => {
+                grouped.kill_and_reap().await;
+                return Err(ToolError::execution("prepared bash cancelled"));
+            }
+        };
+        grouped.kill_group();
+        let stdout = stdout_task
             .await
-            .expect("read stdout");
-        child.wait().await.expect("reap cat");
-        assert_eq!(output, "round trip\n");
+            .map_err(|error| ToolError::execution(error.to_string()))?
+            .map_err(|error| ToolError::execution(error.to_string()))?;
+        let stderr = stderr_task
+            .await
+            .map_err(|error| ToolError::execution(error.to_string()))?
+            .map_err(|error| ToolError::execution(error.to_string()))?;
+        context.progress.output(OutputStream::Stdout, &stdout);
+        context.progress.output(OutputStream::Stderr, &stderr);
+        let stdout = String::from_utf8_lossy(&stdout);
+        let stderr = String::from_utf8_lossy(&stderr);
+        Ok(ToolResult {
+            title: "Bash".into(),
+            output: format!("{stdout}{stderr}"),
+            metadata: serde_json::json!({"status":status.code(),"success":status.success()}),
+            truncation: None,
+            attachments: Vec::new(),
+        })
+    }
+}
+
+fn resolve_executable(name: &str) -> Result<PathBuf, ToolError> {
+    let path =
+        env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/local/bin:/usr/bin:/bin"));
+    resolve_executable_in_path(name, &path)
+}
+
+fn resolve_executable_in_path(name: &str, path: &std::ffi::OsStr) -> Result<PathBuf, ToolError> {
+    for directory in env::split_paths(path) {
+        let candidate = directory.join(name);
+        let Ok(metadata) = std::fs::symlink_metadata(&candidate) else {
+            continue;
+        };
+        if !metadata.file_type().is_symlink() && metadata.is_file() && metadata.mode() & 0o111 != 0
+        {
+            return candidate
+                .canonicalize()
+                .map_err(|error| ToolError::execution(error.to_string()));
+        }
+    }
+    Err(ToolError::execution(format!(
+        "unable to resolve executable `{name}` from PATH during preparation"
+    )))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+
+    use cookie_agent_engine::{ToolError, ToolProvider};
+    use cookie_agent_protocol::{RunId, SessionId, ToolCallId};
+
+    use super::{BashTool, resolve_executable_in_path};
+
+    #[test]
+    fn fake_path_swap_cannot_change_prepared_executable() {
+        let root = tempfile::tempdir().expect("root");
+        let bin = root.path().join("bin");
+        fs::create_dir(&bin).expect("bin");
+        let executable = bin.join("bash");
+        fs::write(&executable, "#!/bin/sh\nexit 0\n").expect("executable");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).expect("mode");
+        let path = resolve_executable_in_path("bash", bin.as_os_str()).expect("resolve");
+        let prepared = crate::fs_cap::prepare_existing(Path::new("/"), &path).expect("prepare");
+        fs::rename(&executable, bin.join("old-bash")).expect("swap old");
+        fs::write(&executable, "#!/bin/sh\nexit 42\n").expect("replacement");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).expect("mode");
+        assert!(matches!(
+            prepared.revalidate(),
+            Err(ToolError::OperationChanged(_))
+        ));
     }
 
     #[tokio::test]
-    async fn capped_valid_utf8_output_discards_only_the_partial_codepoint() {
-        let directory = tempdir().expect("temporary directory");
-        let tool = BashTool::new(directory.path());
-        let call_id = ToolCallId::new_v7();
-        let hub = cookie_agent_engine::events::OutputHub::new(call_id, 1024);
-        let prefix = super::STREAM_RESULT_LIMIT - 2;
+    async fn interactive_is_rejected_during_prepare() {
+        let root = tempfile::tempdir().expect("root");
+        let tool = BashTool::new(root.path());
         let result = tool
-            .invoke(
-                context(hub),
-                ToolCall {
-                    id: call_id,
+            .prepare(
+                cookie_agent_engine::ToolPreparationContext {
+                    session: SessionId::new_v7(),
+                    run: RunId::new_v7(),
+                    cwd: root.path().to_owned(),
+                    workspace_root: root.path().to_owned(),
+                },
+                cookie_agent_engine::ToolCall {
+                    id: ToolCallId::new_v7(),
                     name: "bash".into(),
                     arguments: serde_json::json!({
-                        "command": format!(
-                            "printf '%*s' {prefix} '' | tr ' ' a; printf '\\360\\237\\230\\200'"
-                        )
+                        "command": "echo unsafe",
+                        "interactive": true
                     }),
                 },
             )
-            .await
-            .expect("bash result");
-        let output: serde_json::Value = serde_json::from_str(&result.content).expect("bash JSON");
-
-        assert_eq!(output["stdout"], "a".repeat(prefix));
-        assert!(
-            !output["stdout"]
-                .as_str()
-                .expect("stdout")
-                .contains('\u{fffd}')
-        );
-        assert!(result.truncated);
+            .await;
+        assert!(matches!(result, Err(ToolError::UnsupportedSecurity(_))));
     }
 
     #[tokio::test]
-    async fn invalid_process_bytes_are_lossy_safe() {
-        let directory = tempdir().expect("temporary directory");
-        let tool = BashTool::new(directory.path());
-        let call_id = ToolCallId::new_v7();
-        let result = tool
-            .invoke(
-                context(cookie_agent_engine::events::OutputHub::new(call_id, 1024)),
-                ToolCall {
-                    id: call_id,
-                    name: "bash".into(),
-                    arguments: serde_json::json!({"command":"printf '\\377bad'"}),
-                },
-            )
-            .await
-            .expect("bash result");
-        let output: serde_json::Value = serde_json::from_str(&result.content).expect("bash JSON");
-
-        assert_eq!(output["stdout"], "�bad");
+    async fn killing_prepared_process_group_removes_descendants() {
+        let root = tempfile::tempdir().expect("root");
+        let pid_file = root.path().join("pid");
+        let shell = resolve_executable_in_path(
+            "bash",
+            std::ffi::OsStr::new("/usr/local/bin:/usr/bin:/bin"),
+        )
+        .expect("shell");
+        let mut command = tokio::process::Command::new(shell);
+        command
+            .arg("-c")
+            .arg(format!(
+                "sleep 30 & echo $! > '{}'; wait",
+                pid_file.display()
+            ))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let child = command.spawn().expect("spawn group");
+        let process_group = i32::try_from(child.id().expect("pid")).expect("pid fits");
+        let mut grouped = super::ProcessGroupChild {
+            child: Some(child),
+            process_group,
+            complete: false,
+        };
+        for _ in 0..100 {
+            if pid_file.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let descendant: i32 = fs::read_to_string(&pid_file)
+            .expect("descendant pid")
+            .trim()
+            .parse()
+            .expect("numeric pid");
+        grouped.kill_and_reap().await;
+        for _ in 0..100 {
+            let alive = unsafe { libc::kill(descendant, 0) == 0 };
+            if !alive {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("descendant process survived process-group cancellation");
     }
 }

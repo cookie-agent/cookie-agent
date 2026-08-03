@@ -1,0 +1,16 @@
+[package]
+name = "syntect-bincode-compat"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+description = "Private bincode 1 API compatibility surface for cookie-agent's vendored syntect"
+
+[lib]
+name = "bincode"
+path = "src/lib.rs"
+
+[dependencies]
+bincode_reloaded = { version = "=3.1.15", path = "../bincode-reloaded", default-features = false, features = ["std", "serde"] }
+serde = "1.0"

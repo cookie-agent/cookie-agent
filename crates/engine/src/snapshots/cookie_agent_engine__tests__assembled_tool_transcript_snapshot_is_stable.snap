@@ -1,36 +1,90 @@
 ---
-source: crates/engine/src/lib.rs
-expression: messages
+source: crates/engine/src/model_history.rs
+expression: history
 ---
 [
   {
-    "role": "user",
-    "content": [
-      {
-        "type": "text",
-        "text": "inspect the workspace"
-      }
-    ]
-  },
-  {
-    "role": "assistant",
-    "content": [],
-    "tool_calls": [
-      {
-        "id": "00000000-0000-0000-0000-000000000008",
-        "name": "read",
-        "arguments": {
-          "path": "README.md"
+    "type": "user",
+    "value": {
+      "content": [
+        {
+          "type": "text",
+          "value": {
+            "text": "inspect the workspace",
+            "metadata": null
+          }
         }
-      }
-    ]
+      ],
+      "provider_options": {}
+    }
   },
   {
-    "role": "tool",
-    "result": {
-      "tool_call_id": "00000000-0000-0000-0000-000000000008",
-      "content": "contents",
-      "is_error": false
+    "type": "assistant",
+    "value": {
+      "message": {
+        "content": [
+          {
+            "type": "tool_call",
+            "value": {
+              "id": "provider-call",
+              "provider_item_id": null,
+              "name": "read",
+              "input": {
+                "filePath": "README.md"
+              },
+              "raw_input": null,
+              "metadata": null
+            }
+          }
+        ],
+        "provider_options": {}
+      },
+      "finish": {
+        "usage": {
+          "input_tokens": null,
+          "input_tokens_no_cache": null,
+          "input_tokens_cache_read": null,
+          "input_tokens_cache_write": null,
+          "output_tokens": null,
+          "output_tokens_text": null,
+          "output_tokens_reasoning": null,
+          "raw": null
+        },
+        "finish_reason": "tool_calls",
+        "response_metadata": {},
+        "provider_metadata": {},
+        "native_replay": null
+      }
+    }
+  },
+  {
+    "type": "tool",
+    "value": {
+      "results": [
+        {
+          "tool_call_id": "provider-call",
+          "content": {
+            "type": "mixed",
+            "value": [
+              {
+                "type": "text",
+                "value": "contents"
+              },
+              {
+                "type": "json",
+                "value": {
+                  "metadata": {},
+                  "title": "Read README.md",
+                  "truncation": null
+                }
+              }
+            ]
+          },
+          "is_error": false,
+          "metadata": null
+        }
+      ],
+      "provider_options": {}
     }
   }
 ]

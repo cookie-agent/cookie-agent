@@ -1,38 +1,36 @@
-use std::path::PathBuf;
-
+use crate::{
+    fs_cap, parse_args, prepared_operation, prepared_path_resources, prepared_resource, schema,
+};
 use async_trait::async_trait;
 use cookie_agent_engine::{
-    SessionToolContext, ToolCall, ToolError, ToolInvocationContext, ToolProvider, ToolSpec,
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
+    ToolPreparationContext, ToolProvider, ToolResult, ToolSpec,
 };
-use ignore::{Match, WalkBuilder, overrides::OverrideBuilder};
+use cookie_agent_protocol::{
+    ActionKind, ApprovalResourceSource, PreparedBindingLifetime, Sha256Digest,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
-use crate::{canonical_path, result, schema, tool_error, workspace_for, workspace_path};
-
-const MATCH_LIMIT: usize = 1_000;
 #[derive(Debug)]
 pub struct GlobTool {
     workspace: PathBuf,
 }
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Deserialize, JsonSchema, Serialize)]
 struct GlobArgs {
     pattern: String,
     path: Option<String>,
-    #[schemars(range(min = 1, max = 10_000))]
-    max_results: Option<usize>,
 }
-#[derive(Serialize)]
-struct GlobOutput {
-    paths: Vec<String>,
-    truncated: bool,
+struct GlobExecutor {
+    result: ToolResult,
+    bindings: Vec<fs_cap::PreparedExisting>,
 }
 impl GlobTool {
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
-            workspace: workspace_path(workspace),
+            workspace: workspace.into(),
         }
     }
 }
@@ -47,81 +45,243 @@ impl ToolProvider for GlobTool {
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             name: "glob".into(),
-            description: "Find files using a glob pattern while honoring .gitignore.".into(),
+            description: "List a prepared filesystem snapshot matching a wildcard.".into(),
             parameters: schema::<GlobArgs>(),
         }])
     }
-    async fn invoke(
+    async fn prepare(
         &self,
-        ctx: ToolInvocationContext,
+        ctx: ToolPreparationContext,
         call: ToolCall,
-    ) -> Result<cookie_agent_engine::ToolResult, ToolError> {
-        if call.name != "glob" {
-            return Err(tool_error("glob tool received another tool name"));
+    ) -> Result<PreparedTool, ToolError> {
+        let args: GlobArgs = parse_args("glob", call.arguments)?;
+        let root = args.path.as_ref().map_or_else(
+            || ctx.cwd.clone(),
+            |path| {
+                if Path::new(path).is_absolute() {
+                    PathBuf::from(path)
+                } else {
+                    ctx.cwd.join(path)
+                }
+            },
+        );
+        let mut paths = collect(&root, &args.pattern)?;
+        if paths.len() > 1024 {
+            return Err(ToolError::resource_limit(
+                "glob snapshot exceeds the 1024-object capability limit",
+            ));
         }
-        let args: GlobArgs = serde_json::from_value(call.arguments).map_err(tool_error)?;
-        if args
-            .max_results
-            .is_some_and(|value| value == 0 || value > 10_000)
-        {
-            return Err(tool_error("max_results must be between 1 and 10000"));
+        paths.sort();
+        let mut bindings = vec![fs_cap::prepare_existing(Path::new("/"), &root)?];
+        let canonical_root = bindings[0].display_path.clone();
+        bindings.extend(
+            paths
+                .iter()
+                .map(|path| fs_cap::prepare_existing(Path::new("/"), Path::new(path)))
+                .collect::<Result<Vec<_>, ToolError>>()?,
+        );
+        let snapshot =
+            serde_json::to_vec(&paths).map_err(|error| ToolError::execution(error.to_string()))?;
+        let mut complete_binding = snapshot.clone();
+        for binding in &bindings {
+            complete_binding.extend_from_slice(&binding.manifest_bytes()?);
         }
-        let root = match args.path {
-            Some(path) => {
-                canonical_path(workspace_for(&ctx, &self.workspace), &path).map_err(tool_error)?
-            }
-            None => workspace_for(&ctx, &self.workspace).to_owned(),
+        let (mut resources, mut policy_labels, external) = prepared_path_resources(
+            ActionKind::Glob,
+            "path",
+            &canonical_root,
+            &self.workspace,
+            &complete_binding,
+        )?;
+        resources.push(prepared_resource(
+            ActionKind::Glob,
+            "glob",
+            args.pattern.as_bytes(),
+            &complete_binding,
+            PreparedBindingLifetime::ProcessLocal,
+            ApprovalResourceSource::SecondaryOperation,
+        )?);
+        policy_labels.push(args.pattern.clone());
+        let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
+        let operation = prepared_operation(
+            "glob",
+            &args,
+            if external {
+                vec![
+                    (ActionKind::Glob, "list"),
+                    (ActionKind::ExternalDirectory, "guard"),
+                ]
+            } else {
+                vec![(ActionKind::Glob, "list")]
+            },
+            resources,
+            &context,
+        )?;
+        let result = ToolResult {
+            title: format!("Glob {}", args.pattern),
+            output: paths.join("\n"),
+            metadata: serde_json::json!({"matches":paths.len(),"snapshot_sha256":Sha256Digest::of_bytes(&snapshot)}),
+            truncation: None,
+            attachments: Vec::new(),
         };
-        let mut overrides = OverrideBuilder::new(&root);
-        overrides.add(&args.pattern).map_err(tool_error)?;
-        let overrides = overrides.build().map_err(tool_error)?;
-        let limit = args.max_results.unwrap_or(MATCH_LIMIT).min(MATCH_LIMIT);
-        let mut paths = Vec::new();
-        let mut truncated = false;
-        for entry in WalkBuilder::new(&root).hidden(false).build() {
-            let entry = entry.map_err(tool_error)?;
-            if entry.path() == root || !entry.file_type().is_some_and(|kind| kind.is_file()) {
-                continue;
-            }
-            if !matches!(overrides.matched(entry.path(), false), Match::Whitelist(_)) {
-                continue;
-            }
-            if paths.len() == limit {
-                truncated = true;
-                break;
-            }
-            paths.push(entry.path().display().to_string());
+        PreparedTool::new(operation, None, Box::new(GlobExecutor { result, bindings }))
+            .with_policy_labels(policy_labels)
+    }
+}
+fn collect(root: &Path, pattern: &str) -> Result<Vec<String>, ToolError> {
+    let mut overrides = ignore::overrides::OverrideBuilder::new(root);
+    overrides
+        .add(pattern)
+        .map_err(|error| ToolError::execution(error.to_string()))?;
+    let overrides = overrides
+        .build()
+        .map_err(|error| ToolError::execution(error.to_string()))?;
+    let mut output = Vec::new();
+    for entry in ignore::WalkBuilder::new(root)
+        .follow_links(false)
+        .require_git(false)
+        .build()
+    {
+        let entry = entry.map_err(|error| ToolError::execution(error.to_string()))?;
+        let relative = entry.path().strip_prefix(root).unwrap_or(entry.path());
+        if entry.file_type().is_some_and(|kind| kind.is_file())
+            && overrides.matched(relative, false).is_whitelist()
+        {
+            output.push(entry.path().display().to_string());
         }
-        Ok(result(&GlobOutput { paths, truncated }, truncated))
+    }
+    Ok(output)
+}
+#[async_trait]
+impl PreparedExecutor for GlobExecutor {
+    async fn revalidate(&self) -> Result<(), ToolError> {
+        for binding in &self.bindings {
+            binding.revalidate()?;
+        }
+        Ok(())
+    }
+
+    async fn execute(
+        self: Box<Self>,
+        context: ToolExecutionContext,
+    ) -> Result<ToolResult, ToolError> {
+        if context.cancellation.is_cancelled() {
+            return Err(ToolError::execution("prepared glob cancelled"));
+        }
+        for binding in &self.bindings {
+            binding.revalidate()?;
+        }
+        Ok(self.result)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, os::unix::fs::symlink};
 
-    use ignore::{Match, WalkBuilder, overrides::OverrideBuilder};
-    use tempfile::tempdir;
+    use cookie_agent_engine::{ToolCall, ToolPreparationContext, ToolProvider};
+    use cookie_agent_protocol::{OperationFingerprint, RunId, SessionId, ToolCallId};
+
+    use super::{GlobTool, collect};
+
+    fn context(root: &std::path::Path) -> ToolPreparationContext {
+        ToolPreparationContext {
+            session: SessionId::new_v7(),
+            run: RunId::new_v7(),
+            cwd: root.to_owned(),
+            workspace_root: root.to_owned(),
+        }
+    }
 
     #[test]
-    fn respects_gitignore_when_matching() {
-        let directory = tempdir().expect("temporary directory");
-        fs::create_dir(directory.path().join(".git")).expect("git directory");
-        fs::write(directory.path().join(".gitignore"), "ignored.rs\n").expect("gitignore");
-        fs::write(directory.path().join("visible.rs"), "").expect("visible");
-        fs::write(directory.path().join("ignored.rs"), "").expect("ignored");
-        let mut overrides = OverrideBuilder::new(directory.path());
-        overrides.add("*.rs").expect("glob pattern");
-        let overrides = overrides.build().expect("glob overrides");
-        let found: Vec<_> = WalkBuilder::new(directory.path())
-            .build()
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry.file_type().is_some_and(|kind| kind.is_file())
-                    && matches!(overrides.matched(entry.path(), false), Match::Whitelist(_))
-            })
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(found, vec!["visible.rs"]);
+    fn glob_respects_gitignore() {
+        let root = tempfile::tempdir().expect("root");
+        fs::write(root.path().join(".gitignore"), "ignored.rs\n").expect("ignore");
+        fs::write(root.path().join("visible.rs"), "visible").expect("visible");
+        fs::write(root.path().join("ignored.rs"), "ignored").expect("ignored");
+        let paths = collect(root.path(), "*.rs").expect("glob");
+        assert!(paths.iter().any(|path| path.ends_with("visible.rs")));
+        assert!(!paths.iter().any(|path| path.ends_with("ignored.rs")));
+    }
+
+    #[test]
+    fn recursive_glob_traverses_nested_directories() {
+        let root = tempfile::tempdir().expect("root");
+        fs::create_dir_all(root.path().join("src/nested")).expect("tree");
+        fs::write(root.path().join("src/nested/lib.rs"), "value").expect("file");
+        let paths = collect(root.path(), "**/*.rs").expect("glob");
+        assert!(paths.iter().any(|path| path.ends_with("src/nested/lib.rs")));
+    }
+
+    #[test]
+    fn glob_does_not_follow_symlinked_directories() {
+        let root = tempfile::tempdir().expect("root");
+        let external = tempfile::tempdir().expect("external");
+        fs::write(external.path().join("secret.rs"), "secret").expect("secret");
+        symlink(external.path(), root.path().join("linked")).expect("link");
+        let paths = collect(root.path(), "**/*.rs").expect("glob");
+        assert!(!paths.iter().any(|path| path.ends_with("secret.rs")));
+    }
+
+    #[tokio::test]
+    async fn prepared_manifest_retains_path_and_glob_labels() {
+        let root = tempfile::tempdir().expect("root");
+        fs::write(root.path().join("value.rs"), "value").expect("file");
+        let prepared = GlobTool::new(root.path())
+            .prepare(
+                context(root.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "glob".into(),
+                    arguments: serde_json::json!({"pattern":"*.rs"}),
+                },
+            )
+            .await
+            .expect("prepare");
+        let labels = prepared
+            .policy_labels()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"*.rs"));
+        assert!(
+            labels
+                .iter()
+                .any(|label| *label == root.path().to_string_lossy())
+        );
+    }
+
+    #[tokio::test]
+    async fn distinct_globs_have_distinct_fingerprints() {
+        let root = tempfile::tempdir().expect("root");
+        fs::write(root.path().join("a.rs"), "a").expect("rs");
+        fs::write(root.path().join("a.txt"), "a").expect("txt");
+        let tool = GlobTool::new(root.path());
+        let rs = tool
+            .prepare(
+                context(root.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "glob".into(),
+                    arguments: serde_json::json!({"pattern":"*.rs"}),
+                },
+            )
+            .await
+            .expect("rs");
+        let txt = tool
+            .prepare(
+                context(root.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "glob".into(),
+                    arguments: serde_json::json!({"pattern":"*.txt"}),
+                },
+            )
+            .await
+            .expect("txt");
+        assert_ne!(
+            OperationFingerprint::from_prepared_operation(rs.operation()),
+            OperationFingerprint::from_prepared_operation(txt.operation())
+        );
     }
 }

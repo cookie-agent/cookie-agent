@@ -1,42 +1,33 @@
 //! Ratatui frontend for cookie agent's versioned JSON-RPC protocol.
 
 pub mod client;
+pub mod config;
+pub mod markdown;
 pub mod state;
+pub mod theme;
 pub mod ui;
 
-pub use client::{Client, ClientDelivery, ClientError};
-pub use ui::run_with_client;
-
-/// Kept for the composition root's pre-Phase-5 entrypoint. Embedders must
-/// construct a [`Client`] (in-process or WebSocket), handshake it, then call
-/// [`run_with_client`].
-pub fn run() -> anyhow::Result<()> {
-    Err(anyhow::anyhow!(
-        "the TUI needs a connected client; use cookie_agent_tui::run_with_client"
-    ))
-}
+pub use client::{Client, ClientDelivery, ClientError, read_daemon_token, validate_websocket_url};
+pub use ui::{run_with_client, run_with_new_session};
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::{BTreeMap, HashMap},
-        sync::Arc,
-    };
+    use std::{fs, sync::Arc};
 
-    use async_trait::async_trait;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
-    use cookie_agent_config::{AgentProfile, Config, ModelConfig, ProviderConfig, ProviderType};
+    use cookie_agent_config::{Config, load_layered};
     use cookie_agent_engine::{Engine, EngineOptions};
+    use cookie_agent_models::{Catalog, CredentialStore, ModelSetManager};
     use cookie_agent_protocol::{
-        ActionKind, ApprovalResource, DecisionTrace, Effect, Event, EventEnvelope,
-        EventSubscriptionMessage, MatchedPermissionRule, OutputDelta, OutputSnapshot,
-        OutputSnapshotEnvelope, OutputStream, SessionCreateParams, SessionId, ToolCallId,
-    };
-    use cookie_agent_providers::{
-        ModelId, NormalizedEvent, Provider, ProviderCapabilities, ProviderError, ProviderRequest,
+        ActionKind, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
+        ApprovalId, ApprovalRequest, ApprovalResourceSource, ApprovalTrigger, DecisionTrace,
+        Effect, Event, EventEnvelope, EventSchemaVersion, EventSubscriptionMessage,
+        MatchedPermissionRule, ModelListParams, OutputDelta, OutputSnapshot,
+        OutputSnapshotEnvelope, OutputStream, PreparedApprovalResource, PreparedBindingLifetime,
+        PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
+        PreparedResourceIdentity, SessionCreateParams, SessionId, Sha256Digest, ToolCallId,
     };
     use cookie_agent_server::Server;
-    use futures_util::{StreamExt, stream};
     use jiff::Timestamp;
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -46,63 +37,136 @@ mod tests {
         ui::App,
     };
 
-    struct ScriptedFakeProvider;
-
-    #[async_trait]
-    impl Provider for ScriptedFakeProvider {
-        fn capabilities(&self, _: &ModelId) -> ProviderCapabilities {
-            ProviderCapabilities::default()
-        }
-
-        async fn stream(
-            &self,
-            _: ProviderRequest,
-        ) -> Result<
-            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
-            ProviderError,
-        > {
-            Ok(stream::pending().boxed())
-        }
-    }
-
     fn in_process_server() -> (tempfile::TempDir, Arc<Server>) {
         let directory = tempfile::tempdir().expect("temporary data directory");
-        let mut config = Config::default();
-        config.providers.insert(
-            "fake".into(),
-            ProviderConfig {
-                kind: ProviderType::OpenAi,
-                api_key_env: None,
-                base_url: None,
-                api: None,
-            },
+        let path = directory.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+[models.scripted]
+provider_id = "test"
+model_id = "scripted"
+endpoint = "https://example.test/v1"
+adaptor = "openai-responses"
+
+[models.scripted.auth]
+type = "openai"
+api_key = "test-secret"
+
+[models.scripted.capabilities]
+features = ["max_output_tokens", "tool_calling"]
+cancellation = "local_only"
+compaction = "unsupported"
+
+[models.scripted.capabilities.limits]
+context = 4096
+
+[models.scripted.capabilities.modalities]
+input = ["text"]
+output = ["text"]
+
+[models.scripted.capabilities.media]
+input = {}
+
+[models.scripted.capabilities.replay]
+policy = "never"
+capability = "unsupported"
+reasoning = false
+
+[models.scripted.settings]
+
+[agents.primary]
+type = "primary"
+models = ["scripted"]
+"#,
+        )
+        .expect("write test config");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+                .expect("private test root");
+        }
+        let config: Config = load_layered(None, Some(&path)).expect("load test config");
+        let catalog = Arc::new(Catalog::embedded().expect("embedded catalog"));
+        let model_manager = Arc::new(
+            ModelSetManager::new(
+                config.models.clone(),
+                Arc::clone(&catalog),
+                CredentialStore::new(directory.path().join("credentials")),
+            )
+            .expect("model manager"),
         );
-        config.agents = BTreeMap::from([(
-            "primary".into(),
-            AgentProfile {
-                r#type: cookie_agent_config::AgentType::Primary,
-                models: vec![ModelConfig {
-                    provider: "fake".into(),
-                    model: "scripted".into(),
-                }],
-                ..AgentProfile::default()
-            },
-        )]);
-        let provider: Arc<dyn Provider> = Arc::new(ScriptedFakeProvider);
-        let providers = HashMap::from([("fake".into(), provider)]);
         let engine = Engine::open(EngineOptions {
             data_dir: directory.path().join("data"),
             cwd: directory.path().to_owned(),
             config: config.clone(),
-            providers: providers.clone(),
+            model_manager: Arc::clone(&model_manager),
             tools: Vec::new(),
         })
         .expect("open engine");
-        (directory, Arc::new(Server::new(engine, config, providers)))
+        (
+            directory,
+            Arc::new(Server::new(engine, model_manager, catalog)),
+        )
     }
 
     fn call_id() -> ToolCallId {
         ToolCallId::new_v7()
+    }
+
+    fn approval_request() -> ApprovalRequest {
+        let resource = PreparedApprovalResource {
+            capability: ActionKind::Bash,
+            canonical: PreparedResourceIdentity::new("command:git-status")
+                .expect("prepared resource identity"),
+            binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"git status"),
+            binding_lifetime: PreparedBindingLifetime::RestartStable,
+            boundary: ApprovalBoundary::CommandPrefix {
+                prefix: "git status".into(),
+            },
+            source: ApprovalResourceSource::PrimaryOperation,
+        };
+        let resource_digest = resource.binding_digest.clone();
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(b"normalized arguments"),
+            vec![ApprovalCapability {
+                action: ActionKind::Bash,
+                operation: PreparedCapabilityOperation::new("execute")
+                    .expect("prepared capability operation"),
+            }],
+            vec![resource],
+            Sha256Digest::of_bytes(b"execution context"),
+        )
+        .expect("prepared operation");
+        ApprovalRequest::new(
+            ApprovalId::new_v7(),
+            7,
+            ApprovalTrigger::PermissionPolicy,
+            operation,
+            vec![ApprovalEvaluation {
+                resource_digest,
+                effect: Effect::Ask,
+                trace: DecisionTrace {
+                    action: ActionKind::Bash,
+                    normalized_resource: "git status".into(),
+                    candidates: vec![MatchedPermissionRule {
+                        rule_id: None,
+                        source_layer: "test".into(),
+                        effect: Effect::Ask,
+                    }],
+                    effect: Effect::Ask,
+                    precedence_reason: "test".into(),
+                },
+            }],
+            ApprovalConstraints {
+                allow_once: true,
+                allow_tree_grant: true,
+                cancellable: true,
+                expires_at: None,
+            },
+        )
+        .expect("approval request")
     }
 
     #[test]
@@ -168,16 +232,17 @@ mod tests {
             },
         });
         store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: session,
             run_id: None,
             seq: 1,
             timestamp: Timestamp::now(),
             event: Event::ToolCallStarted {
                 tool_call_id: call,
+                model_call_id: "model-call".into(),
+                provider_item_id: None,
                 tool: "bash".into(),
                 arguments: serde_json::json!({}),
-                provider_tool_call_id: None,
-                provider_protocol: None,
             },
         });
         assert_eq!(
@@ -190,32 +255,18 @@ mod tests {
     fn terminal_run_expires_pending_approvals() {
         let session = SessionId::new_v7();
         let mut store = StateStore::default();
-        let trace = DecisionTrace {
-            action: ActionKind::Bash,
-            normalized_resource: "git status".into(),
-            candidates: Vec::new(),
-            effect: Effect::Ask,
-            precedence_reason: "test".into(),
-        };
         store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: session,
             run_id: None,
             seq: 1,
             timestamp: Timestamp::now(),
             event: Event::ApprovalRequested {
-                approval_id: "approval".into(),
-                action: ActionKind::Bash,
-                resource: "git status".into(),
-                suggested_pattern: "git status *".into(),
-                resources: vec![ApprovalResource {
-                    action: ActionKind::Bash,
-                    resource: "git status".into(),
-                    suggested_pattern: "git status *".into(),
-                }],
-                decision_trace: trace,
+                request: approval_request(),
             },
         });
         store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: session,
             run_id: None,
             seq: 2,
@@ -239,16 +290,17 @@ mod tests {
             });
         }
         store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: session,
             run_id: None,
             seq: 1,
             timestamp: Timestamp::now(),
             event: Event::ToolCallStarted {
                 tool_call_id: call,
+                model_call_id: "model-call".into(),
+                provider_item_id: None,
                 tool: "bash".into(),
                 arguments: serde_json::json!({}),
-                provider_tool_call_id: None,
-                provider_protocol: None,
             },
         });
         assert!(store.sessions[&session].output[&(call, true)].has_gap);
@@ -260,6 +312,11 @@ mod tests {
         let (directory, server) = in_process_server();
         let client = Client::connect_in_process(server);
         client.handshake().await.expect("handshake");
+        let models = client
+            .list_models(ModelListParams::default())
+            .await
+            .expect("list models");
+        assert_eq!(models.models[0].name, "scripted");
         let session = client
             .create_session(SessionCreateParams {
                 cwd: directory.path().display().to_string(),
@@ -268,8 +325,9 @@ mod tests {
             .await
             .expect("session")
             .session;
-        let mut app = App::new(client).await;
+        let mut app = App::new(client).await.expect("TUI config");
         app.store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: session.id,
             run_id: None,
             seq: 2,
@@ -279,48 +337,37 @@ mod tests {
             },
         });
         app.store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: session.id,
             run_id: None,
             seq: 3,
             timestamp: Timestamp::now(),
             event: Event::ApprovalRequested {
-                approval_id: "approval".into(),
-                action: ActionKind::Bash,
-                resource: "git status".into(),
-                suggested_pattern: "git status *".into(),
-                resources: vec![ApprovalResource {
-                    action: ActionKind::Bash,
-                    resource: "git status".into(),
-                    suggested_pattern: "git status *".into(),
-                }],
-                decision_trace: DecisionTrace {
-                    action: ActionKind::Bash,
-                    normalized_resource: "git status".into(),
-                    candidates: vec![MatchedPermissionRule {
-                        rule_id: None,
-                        source_layer: "test".into(),
-                        effect: Effect::Ask,
-                        hard: false,
-                    }],
-                    effect: Effect::Ask,
-                    precedence_reason: "test".into(),
-                },
+                request: approval_request(),
             },
         });
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("test terminal");
-        terminal
-            .draw(|frame| app.draw_for_test(frame))
-            .expect("app render");
-        let buffer = terminal.backend().buffer();
-        let rendered = (0..buffer.area.height)
-            .flat_map(|y| (0..buffer.area.width).map(move |x| buffer[(x, y)].symbol().to_owned()))
-            .collect::<String>();
-        assert!(rendered.contains("Conversation"));
-        assert!(rendered.contains("Approval"));
-        assert!(rendered.contains("streamed assistant text"));
-        assert!(rendered.contains("git status"));
-        assert!(rendered.contains("Session tree"));
+        for (width, height) in [(40, 12), (80, 24), (160, 50)] {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).expect("test terminal");
+            terminal
+                .draw(|frame| app.draw_for_test(frame))
+                .expect("app render");
+            let buffer = terminal.backend().buffer();
+            let rendered = (0..buffer.area.height)
+                .flat_map(|y| {
+                    (0..buffer.area.width).map(move |x| buffer[(x, y)].symbol().to_owned())
+                })
+                .collect::<String>();
+            assert!(rendered.contains("Approval"));
+            assert!(rendered.contains("Agents"));
+            if width >= 80 {
+                assert!(rendered.contains("Conversation"));
+            }
+            if (width, height) == (80, 24) {
+                assert!(rendered.contains("ASSISTANT"));
+                assert!(rendered.contains("git status"));
+            }
+        }
     }
 
     #[tokio::test]
@@ -353,11 +400,48 @@ mod tests {
         assert!(replayed.iter().all(|event| event.session_id == session.id));
     }
 
+    #[tokio::test]
+    async fn local_startup_creates_a_fresh_root_while_attach_keeps_existing_selection() {
+        let (directory, server) = in_process_server();
+        let setup = Client::connect_in_process(server.clone());
+        setup.handshake().await.expect("setup handshake");
+        let existing = setup
+            .create_session(SessionCreateParams {
+                cwd: directory.path().display().to_string(),
+                profile: "primary".into(),
+            })
+            .await
+            .expect("existing session")
+            .session;
+
+        let attached = Client::connect_in_process(server.clone());
+        attached.handshake().await.expect("attach handshake");
+        let attached_app = App::new(attached).await.expect("attached TUI config");
+        assert_eq!(attached_app.store.sessions.len(), 1);
+        assert!(attached_app.store.sessions.contains_key(&existing.id));
+
+        let local = Client::connect_in_process(server);
+        local.handshake().await.expect("local handshake");
+        let local_app = App::new_with_new_session(local)
+            .await
+            .expect("local TUI config");
+        assert_eq!(local_app.store.sessions.len(), 1);
+        let local_session = local_app
+            .store
+            .sessions
+            .keys()
+            .next()
+            .copied()
+            .expect("new local root session");
+        assert_ne!(local_session, existing.id);
+    }
+
     #[test]
     fn state_store_reduces_events_and_surfaces_gap_cursor() {
         let session = SessionId::new_v7();
         let mut store = StateStore::default();
         store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: session,
             run_id: None,
             seq: 1,
@@ -368,6 +452,7 @@ mod tests {
         });
         // Replayed duplicate is ignored, preserving the projection.
         store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: session,
             run_id: None,
             seq: 1,
@@ -392,6 +477,7 @@ mod tests {
         let call = call_id();
         let mut store = StateStore::default();
         store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: session,
             run_id: None,
             seq: 1,
@@ -399,16 +485,17 @@ mod tests {
             event: Event::TextDelta { text: "old".into() },
         });
         store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: session,
             run_id: None,
             seq: 2,
             timestamp: Timestamp::now(),
             event: Event::ToolCallStarted {
                 tool_call_id: call,
+                model_call_id: "model-call".into(),
+                provider_item_id: None,
                 tool: "bash".into(),
                 arguments: serde_json::json!({}),
-                provider_tool_call_id: None,
-                provider_protocol: None,
             },
         });
         assert_eq!(store.sessions[&session].generation, 0);
@@ -427,16 +514,17 @@ mod tests {
                 generation: 1,
                 final_seq: 2,
                 event: Box::new(EventEnvelope {
+                    schema_version: EventSchemaVersion::current(),
                     session_id: session,
                     run_id: None,
                     seq: 2,
                     timestamp: Timestamp::now(),
                     event: Event::ToolCallStarted {
                         tool_call_id: call,
+                        model_call_id: "model-call".into(),
+                        provider_item_id: None,
                         tool: "bash".into(),
                         arguments: serde_json::json!({}),
-                        provider_tool_call_id: None,
-                        provider_protocol: None,
                     },
                 }),
             }),
@@ -467,6 +555,7 @@ mod tests {
         let call = call_id();
         let mut store = StateStore::default();
         store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: session,
             run_id: None,
             seq: 1,
@@ -494,16 +583,17 @@ mod tests {
             generation: 1,
             final_seq: 1,
             event: Box::new(EventEnvelope {
+                schema_version: EventSchemaVersion::current(),
                 session_id: session,
                 run_id: None,
                 seq: 1,
                 timestamp: Timestamp::now(),
                 event: Event::ToolCallStarted {
                     tool_call_id: call,
+                    model_call_id: "model-call".into(),
+                    provider_item_id: None,
                     tool: "bash".into(),
                     arguments: serde_json::json!({}),
-                    provider_tool_call_id: None,
-                    provider_protocol: None,
                 },
             }),
         });
@@ -517,16 +607,17 @@ mod tests {
         let call = call_id();
         let mut store = StateStore::default();
         store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: session,
             run_id: None,
             seq: 1,
             timestamp: Timestamp::now(),
             event: Event::ToolCallStarted {
                 tool_call_id: call,
+                model_call_id: "model-call".into(),
+                provider_item_id: None,
                 tool: "bash".into(),
                 arguments: serde_json::json!({}),
-                provider_tool_call_id: None,
-                provider_protocol: None,
             },
         });
         let _ = store.apply_delivery(crate::ClientDelivery::ReplayStart {
@@ -540,16 +631,17 @@ mod tests {
             generation: 1,
             final_seq: 2,
             event: Box::new(EventEnvelope {
+                schema_version: EventSchemaVersion::current(),
                 session_id: session,
                 run_id: None,
                 seq: 2,
                 timestamp: Timestamp::now(),
                 event: Event::ToolCallStarted {
                     tool_call_id: call,
+                    model_call_id: "model-call".into(),
+                    provider_item_id: None,
                     tool: "bash".into(),
                     arguments: serde_json::json!({}),
-                    provider_tool_call_id: None,
-                    provider_protocol: None,
                 },
             }),
         });
@@ -564,16 +656,17 @@ mod tests {
             generation: 2,
             final_seq: 1,
             event: Box::new(EventEnvelope {
+                schema_version: EventSchemaVersion::current(),
                 session_id: session,
                 run_id: None,
                 seq: 1,
                 timestamp: Timestamp::now(),
                 event: Event::ToolCallStarted {
                     tool_call_id: call,
+                    model_call_id: "model-call".into(),
+                    provider_item_id: None,
                     tool: "bash".into(),
                     arguments: serde_json::json!({}),
-                    provider_tool_call_id: None,
-                    provider_protocol: None,
                 },
             }),
         });
@@ -607,6 +700,7 @@ mod tests {
         let session = SessionId::new_v7();
         let mut store = StateStore::default();
         store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: session,
             run_id: None,
             seq: 1,
@@ -626,6 +720,7 @@ mod tests {
             generation: 1,
             final_seq: 2,
             event: Box::new(EventEnvelope {
+                schema_version: EventSchemaVersion::current(),
                 session_id: session,
                 run_id: None,
                 seq: 2,
@@ -643,6 +738,7 @@ mod tests {
             session,
             2,
             vec![EventEnvelope {
+                schema_version: EventSchemaVersion::current(),
                 session_id: session,
                 run_id: None,
                 seq: 1,
@@ -661,6 +757,7 @@ mod tests {
         let session = SessionId::new_v7();
         let mut store = StateStore::default();
         store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: session,
             run_id: None,
             seq: 1,
@@ -671,6 +768,7 @@ mod tests {
             session,
             1,
             vec![EventEnvelope {
+                schema_version: EventSchemaVersion::current(),
                 session_id: session,
                 run_id: None,
                 seq: 1,

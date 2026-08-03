@@ -2,19 +2,29 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex as StdMutex},
+    env, fmt, fs,
+    net::IpAddr,
+    path::PathBuf,
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    AgentListParams, AgentListResult, ApprovalRespondParams, ApprovalRespondResult, ClientHello,
-    Event, EventEnvelope, EventSubscriptionMessage, EventsSubscribeParams, EventsSubscribeResult,
-    JsonRpcError, JsonRpcId, Notification, OutputDelta, OutputGap, OutputSnapshotEnvelope,
-    OutputStream, PROTOCOL_VERSION, Request, Response, RunCancelParams, RunCancelResult,
-    RunStartParams, RunStartResult, RunSteerParams, RunSteerResult, RunToolStdinParams,
-    RunToolStdinResult, ServerHello, SessionCreateParams, SessionCreateResult, SessionId,
-    SessionListParams, SessionListResult, SessionTreeParams, SessionTreeResult, ToolCallId,
+    AgentListParams, AgentListResult, ApprovalListParams, ApprovalListResult,
+    ApprovalRespondParams, ApprovalRespondResult, CatalogModelListParams, CatalogModelListResult,
+    CatalogProviderListParams, CatalogProviderListResult, ClientHello, Event, EventEnvelope,
+    EventSubscriptionMessage, EventsSubscribeParams, EventsSubscribeResult, JsonRpcError,
+    JsonRpcId, ModelListParams, ModelListResult, Notification, OutputDelta, OutputGap,
+    OutputSnapshotEnvelope, OutputStream, ProtocolVersion, ProviderConnectParams,
+    ProviderConnectResult, Response, RunCancelParams, RunCancelResult, RunStartParams,
+    RunStartResult, RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
+    ServerHello, SessionCreateParams, SessionCreateResult, SessionId, SessionListParams,
+    SessionListResult, SessionRenameParams, SessionRenameResult, SessionTreeParams,
+    SessionTreeResult, ToolCallId,
 };
 use cookie_agent_server::{MessageFrame, MessageStream, Server, TransportError, in_process_pair};
 use futures_util::{SinkExt, StreamExt};
@@ -23,7 +33,8 @@ use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::Instant;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest, http::Uri};
+use zeroize::{Zeroize, Zeroizing};
 
 const COMMAND_QUEUE_CAPACITY: usize = 128;
 const RECOVERY_ATTEMPTS: usize = 6;
@@ -74,10 +85,12 @@ pub enum ClientError {
     InvalidFrame(#[from] serde_json::Error),
     #[error("JSON-RPC error: {0:?}")]
     Rpc(JsonRpcError),
-    #[error("protocol version mismatch: server is {server}, client is {client}")]
-    VersionMismatch { server: u32, client: u32 },
     #[error("websocket error: {0}")]
     WebSocket(String),
+    #[error("daemon authentication token is unavailable")]
+    TokenUnavailable,
+    #[error("daemon authentication token path is unsafe")]
+    UnsafeToken,
     #[error("a subscription replay is already in progress")]
     ReplayInProgress,
     #[error("subscription replay response timed out")]
@@ -94,9 +107,78 @@ struct ReplayRequest {
 struct Command {
     id: i64,
     method: String,
-    params: Option<Value>,
+    params: SerializedParams,
     replay: Option<ReplayRequest>,
     response: oneshot::Sender<Result<Value, ClientError>>,
+}
+
+struct SerializedParams {
+    value: Value,
+    sensitive: bool,
+}
+
+impl Drop for SerializedParams {
+    fn drop(&mut self) {
+        if self.sensitive {
+            zeroize_json(&mut self.value);
+            record_sensitive_serialized_wipe();
+        }
+    }
+}
+
+struct ProviderConnectGuard(ProviderConnectParams);
+
+impl Drop for ProviderConnectGuard {
+    fn drop(&mut self) {
+        for credential in self.0.credentials.values.values_mut() {
+            credential.zeroize();
+        }
+        record_provider_connect_wipe();
+    }
+}
+
+#[derive(Serialize)]
+struct BorrowedRequest<'a> {
+    jsonrpc: &'static str,
+    id: i64,
+    method: &'a str,
+    params: &'a Value,
+}
+
+enum OutboundFrame {
+    Public(MessageFrame),
+    Sensitive(SensitiveFrame),
+}
+
+/// A serialized secret-bearing request retained in a wiping buffer until the
+/// transport accepts ownership. Once dispatched, WebSocket/channel/kernel
+/// buffers are transport-owned and cannot honestly be promised to be wiped by
+/// the TUI.
+struct SensitiveFrame {
+    text: Zeroizing<String>,
+}
+
+impl SensitiveFrame {
+    fn new(text: String) -> Self {
+        Self {
+            text: Zeroizing::new(text),
+        }
+    }
+}
+
+impl fmt::Debug for SensitiveFrame {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SensitiveFrame(<redacted>)")
+    }
+}
+
+impl Drop for SensitiveFrame {
+    fn drop(&mut self) {
+        if !self.text.is_empty() {
+            self.text.zeroize();
+            record_sensitive_frame_wipe();
+        }
+    }
 }
 
 struct PendingCommand {
@@ -149,6 +231,8 @@ pub struct Client {
     deliveries: Arc<StdMutex<Option<mpsc::UnboundedReceiver<ClientDelivery>>>>,
     subscriptions: Arc<Mutex<HashMap<SessionId, Subscription>>>,
     recovery: Arc<RecoveryQueue>,
+    #[cfg(test)]
+    pending_command_count: Arc<AtomicUsize>,
 }
 
 impl Client {
@@ -170,6 +254,7 @@ impl Client {
             state: StdMutex::new(RecoveryQueueState::default()),
         });
         let (control_sender, control_rx) = mpsc::unbounded_channel();
+        let pending_command_count = Arc::new(AtomicUsize::new(0));
         tokio::spawn(connection_task(
             stream,
             command_rx,
@@ -177,12 +262,15 @@ impl Client {
             delivery_sender,
             subscriptions.clone(),
             recovery.clone(),
+            pending_command_count.clone(),
         ));
         let client = Self {
             commands,
             deliveries,
             subscriptions,
             recovery: recovery.clone(),
+            #[cfg(test)]
+            pending_command_count,
         };
         spawn_recovery_worker(
             client.commands.clone(),
@@ -206,7 +294,16 @@ impl Client {
 
     /// Connect to the daemon's WebSocket endpoint.
     pub async fn connect_websocket(url: &str) -> Result<Self, ClientError> {
-        let (socket, _) = tokio_tungstenite::connect_async(url)
+        let token = read_daemon_token()?;
+        Self::connect_websocket_with_token(url, &token).await
+    }
+
+    /// Connect with an explicit bearer token. The token is used only to build
+    /// the WebSocket upgrade request and is never retained by the client.
+    pub async fn connect_websocket_with_token(url: &str, token: &str) -> Result<Self, ClientError> {
+        validate_websocket_url(url)?;
+        let request = authenticated_request(url, token)?;
+        let (socket, _) = tokio_tungstenite::connect_async(request)
             .await
             .map_err(|error| ClientError::WebSocket(error.to_string()))?;
         Ok(Self::connect_stream(WebSocketClientStream { socket }))
@@ -218,16 +315,10 @@ impl Client {
             .call(
                 "handshake",
                 &ClientHello {
-                    protocol_version: PROTOCOL_VERSION,
+                    protocol_version: ProtocolVersion::current(),
                 },
             )
             .await?;
-        if hello.protocol_version != PROTOCOL_VERSION {
-            return Err(ClientError::VersionMismatch {
-                server: hello.protocol_version,
-                client: PROTOCOL_VERSION,
-            });
-        }
         Ok(hello)
     }
 
@@ -262,11 +353,51 @@ impl Client {
         self.call("session.tree", &params).await
     }
 
+    pub async fn rename_session(
+        &self,
+        params: SessionRenameParams,
+    ) -> Result<SessionRenameResult, ClientError> {
+        self.call("session.rename", &params).await
+    }
+
+    pub async fn list_catalog_providers(
+        &self,
+        params: CatalogProviderListParams,
+    ) -> Result<CatalogProviderListResult, ClientError> {
+        self.call("catalog.provider.list", &params).await
+    }
+
+    pub async fn list_catalog_models(
+        &self,
+        params: CatalogModelListParams,
+    ) -> Result<CatalogModelListResult, ClientError> {
+        self.call("catalog.model.list", &params).await
+    }
+
+    pub fn connect_provider(
+        &self,
+        params: ProviderConnectParams,
+    ) -> impl std::future::Future<Output = Result<ProviderConnectResult, ClientError>> + '_ {
+        let params = ProviderConnectGuard(params);
+        async move {
+            let value =
+                send_command(&self.commands, "provider.connect", &params.0, None, true).await?;
+            Ok(serde_json::from_value(value)?)
+        }
+    }
+
     pub async fn list_agents(
         &self,
         params: AgentListParams,
     ) -> Result<AgentListResult, ClientError> {
         self.call("agent.list", &params).await
+    }
+
+    pub async fn list_models(
+        &self,
+        params: ModelListParams,
+    ) -> Result<ModelListResult, ClientError> {
+        self.call("model.list", &params).await
     }
 
     pub async fn start_run(&self, params: RunStartParams) -> Result<RunStartResult, ClientError> {
@@ -296,6 +427,13 @@ impl Client {
         params: ApprovalRespondParams,
     ) -> Result<ApprovalRespondResult, ClientError> {
         self.call("approval.respond", &params).await
+    }
+
+    pub async fn list_approvals(
+        &self,
+        params: ApprovalListParams,
+    ) -> Result<ApprovalListResult, ClientError> {
+        self.call("approval.list", &params).await
     }
 
     /// Start an initial cursor replay. Its contents are delivered only through
@@ -369,9 +507,107 @@ impl Client {
         P: Serialize,
         R: DeserializeOwned,
     {
-        let value = send_command(&self.commands, method, params, None).await?;
+        let value = send_command(&self.commands, method, params, None, false).await?;
         Ok(serde_json::from_value(value)?)
     }
+
+    #[cfg(test)]
+    fn pending_command_count(&self) -> usize {
+        self.pending_command_count.load(Ordering::Relaxed)
+    }
+}
+
+/// Validate an attach endpoint before opening a network connection.
+pub fn validate_websocket_url(url: &str) -> Result<(), ClientError> {
+    let uri = url
+        .parse::<Uri>()
+        .map_err(|error| ClientError::WebSocket(format!("invalid WebSocket URL: {error}")))?;
+    let scheme = uri
+        .scheme_str()
+        .ok_or_else(|| ClientError::WebSocket("WebSocket URL must include a scheme".into()))?;
+    if !scheme.eq_ignore_ascii_case("ws") && !scheme.eq_ignore_ascii_case("wss") {
+        return Err(ClientError::WebSocket(
+            "WebSocket URL must use the ws or wss scheme".into(),
+        ));
+    }
+    let authority = uri
+        .authority()
+        .ok_or_else(|| ClientError::WebSocket("WebSocket URL must include a host".into()))?;
+    if authority.as_str().contains('@') {
+        return Err(ClientError::WebSocket(
+            "WebSocket URL must not contain credentials".into(),
+        ));
+    }
+    let host = authority.host();
+    let host_without_brackets = host.trim_start_matches('[').trim_end_matches(']');
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host_without_brackets
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if !loopback {
+        return Err(ClientError::WebSocket(
+            "WebSocket URL host must be loopback".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn authenticated_request(
+    url: &str,
+    token: &str,
+) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, ClientError> {
+    if token.len() != 43
+        || !token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(ClientError::UnsafeToken);
+    }
+    let mut request = url
+        .into_client_request()
+        .map_err(|error| ClientError::WebSocket(error.to_string()))?;
+    let authorization = Zeroizing::new(format!("Bearer {token}"));
+    let value = authorization
+        .parse()
+        .map_err(|_| ClientError::UnsafeToken)?;
+    request.headers_mut().insert("authorization", value);
+    Ok(request)
+}
+
+/// Read the daemon bearer token from its private per-user location.
+pub fn read_daemon_token() -> Result<Zeroizing<String>, ClientError> {
+    let home = env::var_os("HOME").ok_or(ClientError::TokenUnavailable)?;
+    let path = PathBuf::from(home).join(".local/share/cookie_agent/daemon/token-v1");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let metadata = fs::symlink_metadata(&path).map_err(|_| ClientError::TokenUnavailable)?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.uid() != rustix_uid()
+            || metadata.mode() & 0o777 != 0o600
+            || metadata.nlink() != 1
+            || metadata.len() != 43
+        {
+            return Err(ClientError::UnsafeToken);
+        }
+    }
+    #[cfg(not(unix))]
+    return Err(ClientError::UnsafeToken);
+
+    #[cfg(unix)]
+    {
+        let token = fs::read_to_string(path).map_err(|_| ClientError::TokenUnavailable)?;
+        authenticated_request("ws://127.0.0.1/", &token)?;
+        Ok(Zeroizing::new(token))
+    }
+}
+
+#[cfg(unix)]
+fn rustix_uid() -> u32 {
+    // SAFETY: `geteuid` has no preconditions and does not retain pointers.
+    unsafe { libc::geteuid() }
 }
 
 async fn prepare_subscription(
@@ -427,7 +663,7 @@ async fn request_replay_with_timeout(
     };
     let _ = tokio::time::timeout(
         timeout,
-        send_command(commands, "events.subscribe", &params, Some(replay)),
+        send_command(commands, "events.subscribe", &params, Some(replay), false),
     )
     .await
     .map_err(|_| ClientError::ReplayTimedOut)??;
@@ -439,24 +675,37 @@ async fn send_command<P>(
     method: &str,
     params: &P,
     replay: Option<ReplayRequest>,
+    sensitive: bool,
 ) -> Result<Value, ClientError>
 where
     P: Serialize,
 {
     let (response, receiver) = oneshot::channel();
     let id = NEXT_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let params = serde_json::to_value(params)?;
+    let params = SerializedParams {
+        value: serde_json::to_value(params)?,
+        sensitive,
+    };
     commands
         .send(Command {
             id,
             method: method.to_owned(),
-            params: Some(params),
+            params,
             replay,
             response,
         })
         .await
         .map_err(|_| ClientError::Closed)?;
     receiver.await.map_err(|_| ClientError::Closed)?
+}
+
+fn zeroize_json(value: &mut Value) {
+    match value {
+        Value::String(value) => value.zeroize(),
+        Value::Array(values) => values.iter_mut().for_each(zeroize_json),
+        Value::Object(values) => values.values_mut().for_each(zeroize_json),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
 }
 
 fn spawn_recovery_worker(
@@ -591,6 +840,7 @@ async fn connection_task<S>(
     deliveries: mpsc::UnboundedSender<ClientDelivery>,
     subscriptions: Arc<Mutex<HashMap<SessionId, Subscription>>>,
     recovery: Arc<RecoveryQueue>,
+    pending_command_count: Arc<AtomicUsize>,
 ) where
     S: MessageStream,
 {
@@ -600,13 +850,21 @@ async fn connection_task<S>(
     loop {
         tokio::select! {
             Some(command) = commands.recv() => {
-                let request = Request::new(JsonRpcId::Number(command.id), command.method, command.params);
-                match serde_json::to_value(request) {
-                    Ok(value) => match stream.send(MessageFrame::Value(value)).await {
-                        Ok(()) => { pending.insert(command.id, PendingCommand { replay: command.replay, response: command.response }); }
-                        Err(_) => { let _ = command.response.send(Err(ClientError::Closed)); break; }
-                    },
-                    Err(error) => { let _ = command.response.send(Err(ClientError::InvalidFrame(error))); }
+                prune_cancelled_commands(&mut pending);
+                if !command.response.is_closed() {
+                    let request = BorrowedRequest {
+                        jsonrpc: "2.0",
+                        id: command.id,
+                        method: &command.method,
+                        params: &command.params.value,
+                    };
+                    match serialize_outbound_frame(request, command.params.sensitive) {
+                        Ok(frame) => match send_outbound_frame(&mut stream, frame).await {
+                            Ok(()) => { pending.insert(command.id, PendingCommand { replay: command.replay, response: command.response }); }
+                            Err(_) => { let _ = command.response.send(Err(ClientError::Closed)); break; }
+                        },
+                        Err(error) => { let _ = command.response.send(Err(ClientError::InvalidFrame(error))); }
+                    }
                 }
             }
             Some(control) = controls.recv() => match control {
@@ -615,6 +873,7 @@ async fn connection_task<S>(
                 }
             },
             _ = replay_timeout.tick() => {
+                prune_cancelled_commands(&mut pending);
                 release_expired_replays(&subscriptions, &deliveries, &recovery, &mut tool_sessions).await;
             }
             incoming = stream.recv() => {
@@ -622,6 +881,7 @@ async fn connection_task<S>(
                     Ok(Some(frame)) => frame,
                     Ok(None) | Err(_) => break,
                 };
+                prune_cancelled_commands(&mut pending);
                 if let Err(error) = handle_frame(
                     frame,
                     &mut pending,
@@ -635,10 +895,80 @@ async fn connection_task<S>(
             }
             else => break,
         }
+        pending_command_count.store(pending.len(), Ordering::Relaxed);
     }
     for (_, pending) in pending {
         let _ = pending.response.send(Err(ClientError::Closed));
     }
+    pending_command_count.store(0, Ordering::Relaxed);
+}
+
+fn serialize_outbound_frame(
+    request: BorrowedRequest<'_>,
+    sensitive: bool,
+) -> Result<OutboundFrame, serde_json::Error> {
+    if sensitive {
+        serde_json::to_string(&request)
+            .map(SensitiveFrame::new)
+            .map(OutboundFrame::Sensitive)
+    } else {
+        serde_json::to_value(request)
+            .map(MessageFrame::Value)
+            .map(OutboundFrame::Public)
+    }
+}
+
+async fn send_outbound_frame<S>(stream: &mut S, frame: OutboundFrame) -> Result<(), TransportError>
+where
+    S: MessageStream,
+{
+    match frame {
+        OutboundFrame::Public(frame) => stream.send(frame).await,
+        OutboundFrame::Sensitive(mut frame) => {
+            // Move the sole serialized allocation into the transport. Dropping
+            // before this point wipes it; after this point the transport owns
+            // any frame/socket copies and defines their lifetime.
+            let text = std::mem::take(&mut *frame.text);
+            stream.send(MessageFrame::Text(text)).await
+        }
+    }
+}
+
+#[cfg(test)]
+static PROVIDER_CONNECT_WIPE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+static SENSITIVE_SERIALIZED_WIPE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+static SENSITIVE_FRAME_WIPE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+fn record_provider_connect_wipe() {
+    PROVIDER_CONNECT_WIPE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+fn record_provider_connect_wipe() {}
+
+#[cfg(test)]
+fn record_sensitive_serialized_wipe() {
+    SENSITIVE_SERIALIZED_WIPE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+fn record_sensitive_serialized_wipe() {}
+
+#[cfg(test)]
+fn record_sensitive_frame_wipe() {
+    SENSITIVE_FRAME_WIPE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+fn record_sensitive_frame_wipe() {}
+
+fn prune_cancelled_commands(pending: &mut HashMap<i64, PendingCommand>) {
+    pending.retain(|_, command| !command.response.is_closed());
 }
 
 fn resolve_malformed_response(error: ClientError, pending: &mut HashMap<i64, PendingCommand>) {
@@ -1126,8 +1456,26 @@ mod tests {
         )
     }
 
+    #[test]
+    fn websocket_auth_uses_a_bearer_header_without_url_credentials() {
+        let token = "A".repeat(43);
+        let request =
+            authenticated_request("ws://127.0.0.1:7419/ws", &token).expect("authenticated request");
+        assert_eq!(request.uri().to_string(), "ws://127.0.0.1:7419/ws");
+        assert_eq!(
+            request
+                .headers()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some(format!("Bearer {token}").as_str())
+        );
+        assert!(!request.uri().to_string().contains(&token));
+        assert!(authenticated_request("ws://127.0.0.1:7419/ws", "sentinel-secret").is_err());
+    }
+
     fn event(session_id: SessionId, seq: u64) -> EventEnvelope {
         EventEnvelope {
+            schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
             session_id,
             run_id: None,
             seq,
@@ -1323,6 +1671,197 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn timed_out_calls_are_pruned_and_late_responses_are_harmless() {
+        let (incoming, incoming_rx) = mpsc::unbounded_channel();
+        let (sent, mut sent_rx) = mpsc::unbounded_channel();
+        let client = Client::connect_stream(ScriptedStream {
+            incoming: incoming_rx,
+            sent,
+        });
+        let mut timed_out_requests = Vec::new();
+
+        for _ in 0..32 {
+            let call = tokio::spawn({
+                let client = client.clone();
+                async move {
+                    tokio::time::timeout(
+                        Duration::from_millis(5),
+                        client.create_session(SessionCreateParams {
+                            cwd: "/workspace".into(),
+                            profile: "primary".into(),
+                        }),
+                    )
+                    .await
+                }
+            });
+            let MessageFrame::Value(request) =
+                tokio::time::timeout(Duration::from_secs(1), sent_rx.recv())
+                    .await
+                    .expect("session.create request timeout")
+                    .expect("connection open")
+            else {
+                panic!("expected value request");
+            };
+            assert_eq!(request["method"], "session.create");
+            timed_out_requests.push(request);
+            assert!(call.await.expect("call task").is_err());
+        }
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while client.pending_command_count() != 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("cancelled requests were not pruned");
+        assert_eq!(client.pending_command_count(), 0);
+
+        for request in timed_out_requests {
+            incoming
+                .send(MessageFrame::Value(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": null,
+                })))
+                .expect("late response");
+        }
+
+        let list = tokio::spawn({
+            let client = client.clone();
+            async move { client.list_agents(AgentListParams::default()).await }
+        });
+        let MessageFrame::Value(request) =
+            tokio::time::timeout(Duration::from_secs(1), sent_rx.recv())
+                .await
+                .expect("agent.list request timeout")
+                .expect("connection open")
+        else {
+            panic!("expected value request");
+        };
+        assert_eq!(request["method"], "agent.list");
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": { "agents": [] },
+            })))
+            .expect("agent.list response");
+        assert!(
+            list.await
+                .expect("list task")
+                .expect("agent.list result")
+                .agents
+                .is_empty()
+        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while client.pending_command_count() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("completed request remained pending");
+        assert_eq!(client.pending_command_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancelled_provider_connect_wipes_source_and_serialized_credentials() {
+        let source_before = PROVIDER_CONNECT_WIPE_COUNT.load(Ordering::Relaxed);
+        let serialized_before = SENSITIVE_SERIALIZED_WIPE_COUNT.load(Ordering::Relaxed);
+        let (_incoming, incoming_rx) = mpsc::unbounded_channel();
+        let (sent, mut sent_rx) = mpsc::unbounded_channel();
+        let client = Client::connect_stream(ScriptedStream {
+            incoming: incoming_rx,
+            sent,
+        });
+        let connect = tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .connect_provider(ProviderConnectParams {
+                        client_connect_id: "connect-test".into(),
+                        provider_id: "test".into(),
+                        catalog_revision: "catalog-test".into(),
+                        credentials: cookie_agent_protocol::ProviderCredentials {
+                            values: std::collections::BTreeMap::from([(
+                                "API_KEY".into(),
+                                "sentinel-secret".into(),
+                            )]),
+                        },
+                    })
+                    .await
+            }
+        });
+        let mut request = tokio::time::timeout(Duration::from_secs(1), sent_rx.recv())
+            .await
+            .expect("provider.connect request timeout")
+            .expect("connection open");
+        assert!(matches!(
+            &request,
+            MessageFrame::Text(text)
+                if text.contains("\"method\":\"provider.connect\"")
+                    && text.contains("sentinel-secret")
+        ));
+        if let MessageFrame::Text(text) = &mut request {
+            text.zeroize();
+        }
+        drop(request);
+        connect.abort();
+        let _ = connect.await;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while PROVIDER_CONNECT_WIPE_COUNT.load(Ordering::Relaxed) <= source_before
+                || SENSITIVE_SERIALIZED_WIPE_COUNT.load(Ordering::Relaxed) <= serialized_before
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("credential guards were not dropped after cancellation");
+    }
+
+    #[test]
+    fn sensitive_frame_debug_is_redacted_and_drop_is_observable() {
+        let before = SENSITIVE_FRAME_WIPE_COUNT.load(Ordering::Relaxed);
+        let frame = SensitiveFrame::new("sentinel-secret".into());
+        let debug = format!("{frame:?}");
+        assert_eq!(debug, "SensitiveFrame(<redacted>)");
+        assert!(!debug.contains("sentinel-secret"));
+        drop(frame);
+        assert!(SENSITIVE_FRAME_WIPE_COUNT.load(Ordering::Relaxed) > before);
+    }
+
+    #[test]
+    fn cancelled_unpolled_sensitive_dispatch_drops_the_wiping_frame() {
+        let before = SENSITIVE_FRAME_WIPE_COUNT.load(Ordering::Relaxed);
+        let mut stream = ClosingStream;
+        let dispatch = send_outbound_frame(
+            &mut stream,
+            OutboundFrame::Sensitive(SensitiveFrame::new("sentinel-secret".into())),
+        );
+        drop(dispatch);
+        assert!(SENSITIVE_FRAME_WIPE_COUNT.load(Ordering::Relaxed) > before);
+    }
+
+    #[tokio::test]
+    async fn unpolled_provider_connect_future_still_wipes_owned_credentials() {
+        let source_before = PROVIDER_CONNECT_WIPE_COUNT.load(Ordering::Relaxed);
+        let client = Client::connect_stream(ClosingStream);
+        let connect = client.connect_provider(ProviderConnectParams {
+            client_connect_id: "unpolled".into(),
+            provider_id: "test".into(),
+            catalog_revision: "catalog-test".into(),
+            credentials: cookie_agent_protocol::ProviderCredentials {
+                values: std::collections::BTreeMap::from([(
+                    "API_KEY".into(),
+                    "sentinel-secret".into(),
+                )]),
+            },
+        });
+        drop(connect);
+        assert!(PROVIDER_CONNECT_WIPE_COUNT.load(Ordering::Relaxed) > source_before);
+    }
+
+    #[tokio::test]
     async fn non_contiguous_buffered_tail_keeps_prefix_cursor_and_recovers() {
         let session_id = SessionId::new_v7();
         let subscriptions = Arc::new(Mutex::new(HashMap::new()));
@@ -1457,16 +1996,17 @@ mod tests {
         let (recovery, _recovery_receiver) = recovery();
         let mut tools = HashMap::new();
         let started = EventEnvelope {
+            schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
             session_id,
             run_id: None,
             seq: 1,
             timestamp: Timestamp::now(),
             event: Event::ToolCallStarted {
                 tool_call_id: call_id,
+                model_call_id: "model-call".into(),
+                provider_item_id: None,
                 tool: "bash".into(),
                 arguments: serde_json::json!({}),
-                provider_tool_call_id: None,
-                provider_protocol: None,
             },
         };
         begin_replay(

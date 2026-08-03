@@ -16,6 +16,16 @@ bug fixes that restore documented behavior) do **not** require a doc update.
 
 When in doubt whether a change is architectural: it is. Update the doc.
 
+## No backwards compatibility
+
+Never write or keep code for backwards compatibility with earlier states of
+this project's own code, data, formats, or protocols. When something changes,
+change it outright: no legacy decoders, no deprecated config keys, no
+migration shims, no dual code paths, no `#[deprecated]` grace periods. This
+applies to every change, regardless of direction — had a decision gone the
+other way, the same rule would hold. Internal history is irrelevant; only the
+current design matters.
+
 ## Zero warnings
 
 All warnings are addressed, not ignored: `cargo build`, `cargo clippy`, and

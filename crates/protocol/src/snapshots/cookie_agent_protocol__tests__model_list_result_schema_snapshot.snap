@@ -1,0 +1,68 @@
+---
+source: crates/protocol/src/lib.rs
+expression: schema_for!(ModelListResult)
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModelListResult",
+  "description": "Result for `model.list`.",
+  "type": "object",
+  "properties": {
+    "catalog_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ModelRef"
+      }
+    },
+    "revision": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "revision",
+    "generated_at",
+    "models"
+  ],
+  "$defs": {
+    "ModelRef": {
+      "description": "A model entry in a profile fallback chain.",
+      "type": "object",
+      "properties": {
+        "adapter_id": {
+          "description": "Oven adapter identity used for native replay compatibility.",
+          "type": "string"
+        },
+        "model_id": {
+          "description": "Exact provider model, deployment, or resource identity.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Cookie-agent configuration alias.",
+          "type": "string"
+        },
+        "provider_id": {
+          "description": "Serving provider identity.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "provider_id",
+        "model_id",
+        "adapter_id"
+      ]
+    }
+  }
+}

@@ -1,0 +1,123 @@
+---
+source: crates/protocol/src/lib.rs
+expression: schema_for!(SessionTitleCommit)
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionTitleCommit",
+  "description": "Strict durable title commit. Variant shape makes source/operation identity\nand `client_rename_id` requirements unrepresentable as invalid combinations.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "client_rename_id": {
+          "description": "Non-empty idempotency key without control characters.",
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "title": {
+          "description": "Non-blank UTF-8 title without control characters.",
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "user_set"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "title",
+        "client_rename_id"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "client_rename_id": {
+          "description": "Non-empty idempotency key without control characters.",
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "user_clear"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "client_rename_id"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "client_rename_id": {
+          "description": "Non-empty idempotency key without control characters.",
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "user_reset"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "client_rename_id"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "invocation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "title": {
+          "description": "Non-blank UTF-8 title without control characters.",
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "internal_agent_set"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "title",
+        "invocation_id"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "title": {
+          "description": "Non-blank UTF-8 title without control characters.",
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "fallback_set"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "title"
+      ]
+    }
+  ]
+}

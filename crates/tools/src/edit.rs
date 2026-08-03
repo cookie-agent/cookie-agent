@@ -1,54 +1,43 @@
-use std::{
-    collections::hash_map::DefaultHasher,
-    fs,
-    hash::{Hash, Hasher},
-    path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use cookie_agent_engine::{
-    SessionToolContext, ToolCall, ToolError, ToolInvocationContext, ToolProvider, ToolSpec,
+    PreparedExecutor, PreparedSerializationKey, PreparedTool, SessionToolContext, ToolCall,
+    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolResult, ToolSpec,
 };
+use cookie_agent_protocol::{ActionKind, Sha256Digest};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use similar::TextDiff;
-use tempfile::NamedTempFile;
 
-use crate::{canonical_path, result, schema, tool_error, workspace_for, workspace_path};
+use crate::{fs_cap, parse_args, prepared_operation, prepared_path_resources, schema};
 
 #[derive(Debug)]
 pub struct EditTool {
     workspace: PathBuf,
 }
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+
+#[derive(Debug, Deserialize, JsonSchema, Serialize)]
 struct EditArgs {
-    path: String,
+    #[serde(rename = "filePath")]
+    file_path: String,
+    #[serde(rename = "oldString")]
     old_string: String,
+    #[serde(rename = "newString")]
     new_string: String,
-    #[schemars(range(min = 1))]
-    expected_count: usize,
+    #[serde(rename = "replaceAll", default)]
+    replace_all: bool,
 }
-#[derive(Serialize)]
-struct EditOutput {
-    status: &'static str,
-    path: String,
-    replacements: usize,
-    diff: String,
-}
-#[derive(Serialize)]
-struct ConflictOutput {
-    status: &'static str,
-    path: String,
-    message: &'static str,
-    diff: String,
+
+struct EditExecutor {
+    target: fs_cap::PreparedExisting,
+    new_bytes: Vec<u8>,
 }
 
 impl EditTool {
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
-            workspace: workspace_path(workspace),
+            workspace: workspace.into(),
         }
     }
 }
@@ -58,133 +47,156 @@ impl Default for EditTool {
     }
 }
 
-fn file_hash(bytes: &[u8]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    hasher.finish()
-}
-fn occurrence_count(source: &str, needle: &str) -> usize {
-    source.match_indices(needle).count()
-}
-
-fn edit_file(
-    path: &Path,
-    old: &str,
-    new: &str,
-    expected_count: usize,
-    before_rename: impl FnOnce(),
-) -> Result<cookie_agent_engine::ToolResult, ToolError> {
-    if old.is_empty() {
-        return Err(tool_error("old_string must not be empty"));
-    }
-    let original = fs::read(path).map_err(tool_error)?;
-    let original_hash = file_hash(&original);
-    let source = String::from_utf8(original.clone())
-        .map_err(|_| tool_error("edit only supports UTF-8 files"))?;
-    let count = occurrence_count(&source, old);
-    let diff = TextDiff::from_lines(&source, source.replace(old, new))
-        .unified_diff()
-        .header("before", "after")
-        .to_string();
-    if count != expected_count {
-        return Ok(result(
-            &ConflictOutput {
-                status: "conflict",
-                path: path.display().to_string(),
-                message: "exact match occurrence count changed or did not match expected_count",
-                diff,
-            },
-            false,
-        ));
-    }
-    let replacement = source.replace(old, new);
-    let parent = path
-        .parent()
-        .ok_or_else(|| tool_error("edit target has no parent directory"))?;
-    let mut temporary = NamedTempFile::new_in(parent).map_err(tool_error)?;
-    use std::io::Write as _;
-    temporary
-        .write_all(replacement.as_bytes())
-        .map_err(tool_error)?;
-    temporary.as_file().sync_all().map_err(tool_error)?;
-    before_rename();
-    let current = fs::read(path).map_err(tool_error)?;
-    if file_hash(&current) != original_hash {
-        return Ok(result(
-            &ConflictOutput {
-                status: "conflict",
-                path: path.display().to_string(),
-                message: "file changed before atomic rename",
-                diff,
-            },
-            false,
-        ));
-    }
-    temporary
-        .persist(path)
-        .map_err(|error| tool_error(error.error))?;
-    Ok(result(
-        &EditOutput {
-            status: "ok",
-            path: path.display().to_string(),
-            replacements: count,
-            diff,
-        },
-        false,
-    ))
-}
-
 #[async_trait]
 impl ToolProvider for EditTool {
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             name: "edit".into(),
-            description:
-                "Replace an exact string only when its occurrence count matches expected_count."
-                    .into(),
+            description: "Apply a precomputed semantic replacement atomically.".into(),
             parameters: schema::<EditArgs>(),
         }])
     }
-    async fn invoke(
+
+    async fn prepare(
         &self,
-        ctx: ToolInvocationContext,
+        ctx: ToolPreparationContext,
         call: ToolCall,
-    ) -> Result<cookie_agent_engine::ToolResult, ToolError> {
-        if call.name != "edit" {
-            return Err(tool_error("edit tool received another tool name"));
+    ) -> Result<PreparedTool, ToolError> {
+        let args: EditArgs = parse_args("edit", call.arguments)?;
+        fs_cap::ensure_atomic_write_supported()?;
+        if args.old_string.is_empty() {
+            return Err(ToolError::execution("oldString must not be empty"));
         }
-        let args: EditArgs = serde_json::from_value(call.arguments).map_err(tool_error)?;
-        if args.expected_count == 0 {
-            return Err(tool_error("expected_count must be at least 1"));
+        let target = fs_cap::prepare_existing(&ctx.cwd, std::path::Path::new(&args.file_path))?;
+        if target.directory {
+            return Err(ToolError::unsupported_security(
+                "edit target is a directory",
+            ));
         }
-        let path =
-            canonical_path(workspace_for(&ctx, &self.workspace), &args.path).map_err(tool_error)?;
-        edit_file(
-            &path,
-            &args.old_string,
-            &args.new_string,
-            args.expected_count,
-            || {},
+        let bytes = target.read_bytes()?;
+        let text =
+            String::from_utf8(bytes).map_err(|_| ToolError::execution("edit requires UTF-8"))?;
+        let count = text.matches(&args.old_string).count();
+        if count == 0 {
+            return Err(ToolError::execution("oldString was not found"));
+        }
+        if !args.replace_all && count != 1 {
+            return Err(ToolError::execution(format!(
+                "oldString matched {count} times"
+            )));
+        }
+        let replaced = if args.replace_all {
+            text.replace(&args.old_string, &args.new_string)
+        } else {
+            text.replacen(&args.old_string, &args.new_string, 1)
+        };
+        let new_bytes = replaced.into_bytes();
+        let mut binding = target.identity.canonical_bytes();
+        binding.extend_from_slice(target.content_digest.as_str().as_bytes());
+        binding.extend_from_slice(
+            Sha256Digest::of_bytes(args.old_string.as_bytes())
+                .as_str()
+                .as_bytes(),
+        );
+        binding.extend_from_slice(
+            Sha256Digest::of_bytes(args.new_string.as_bytes())
+                .as_str()
+                .as_bytes(),
+        );
+        binding.extend_from_slice(&(count as u64).to_be_bytes());
+        binding.extend_from_slice(Sha256Digest::of_bytes(&new_bytes).as_str().as_bytes());
+        binding.extend_from_slice(&target.manifest_bytes()?);
+        let (resources, policy_labels, external) = prepared_path_resources(
+            ActionKind::Write,
+            "file",
+            &target.display_path,
+            &self.workspace,
+            &binding,
+        )?;
+        let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
+        let operation = prepared_operation(
+            "edit",
+            &args,
+            if external {
+                vec![
+                    (ActionKind::Write, "edit"),
+                    (ActionKind::ExternalDirectory, "guard"),
+                ]
+            } else {
+                vec![(ActionKind::Write, "edit")]
+            },
+            resources,
+            &context,
+        )?;
+        let mut serialization_key = target.identity.device.to_be_bytes().to_vec();
+        serialization_key.extend_from_slice(&target.identity.inode.to_be_bytes());
+        PreparedTool::new(
+            operation,
+            Some(PreparedSerializationKey::new(serialization_key)),
+            Box::new(EditExecutor { target, new_bytes }),
         )
+        .with_policy_labels(policy_labels)
+    }
+}
+
+#[async_trait]
+impl PreparedExecutor for EditExecutor {
+    async fn revalidate(&self) -> Result<(), ToolError> {
+        self.target.revalidate()
+    }
+
+    async fn execute(
+        self: Box<Self>,
+        context: ToolExecutionContext,
+    ) -> Result<ToolResult, ToolError> {
+        if context.cancellation.is_cancelled() {
+            return Err(ToolError::execution(
+                "prepared edit cancelled before commit",
+            ));
+        }
+        let outcome = self.target.replace_atomically(&self.new_bytes)?;
+        Ok(ToolResult {
+            title: format!("Edited {}", self.target.display_path.display()),
+            output: "Edit applied atomically".into(),
+            metadata: serde_json::json!({"new_sha256":Sha256Digest::of_bytes(&self.new_bytes),"cleanup_warning":outcome.cleanup_warning}),
+            truncation: None,
+            attachments: Vec::new(),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::edit_file;
     use std::fs;
-    use tempfile::tempdir;
 
-    #[test]
-    fn detects_change_before_rename() {
-        let directory = tempdir().expect("temporary directory");
-        let path = directory.path().join("file.txt");
-        fs::write(&path, "before").expect("seed file");
-        let result = edit_file(&path, "before", "after", 1, || {
-            fs::write(&path, "external").expect("external write")
-        })
-        .expect("conflict result");
-        assert!(result.content.contains("conflict"));
-        assert_eq!(fs::read_to_string(path).expect("read file"), "external");
+    use cookie_agent_engine::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
+    use cookie_agent_protocol::{RunId, SessionId, ToolCallId};
+
+    use super::EditTool;
+
+    #[tokio::test]
+    async fn ambiguous_single_replacement_is_rejected_before_approval() {
+        let root = tempfile::tempdir().expect("root");
+        fs::write(root.path().join("value.txt"), "same same").expect("fixture");
+        let result = EditTool::new(root.path())
+            .prepare(
+                ToolPreparationContext {
+                    session: SessionId::new_v7(),
+                    run: RunId::new_v7(),
+                    cwd: root.path().to_owned(),
+                    workspace_root: root.path().to_owned(),
+                },
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "edit".into(),
+                    arguments: serde_json::json!({
+                        "filePath":"value.txt",
+                        "oldString":"same",
+                        "newString":"new"
+                    }),
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(ToolError::Failed(_))));
     }
 }

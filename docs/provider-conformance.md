@@ -1,299 +1,180 @@
-# Provider adapter conformance checklist
+# Oven 0.4 model and catalog conformance
 
-Derived from OpenCode's provider layer (`anomalyco/opencode` dev @ e024e2e,
-2026-07-31) and primary vendor docs. Each adapter in `crates/providers` is
-implemented and tested against this checklist (see ARCHITECTURE.md §6.2).
+`crates/models` is cookie-agent's model-composition boundary. It constructs
+published Oven adapters from explicit static declarations and from reviewed,
+credential-backed models.dev recipes. It performs no model-name inference,
+network discovery, build-time download, runtime catalog refresh, or provider
+probe.
 
-Legend: **MUST** = coding-agent correctness. **NICE** = fidelity/cost/UX.
-`Compat` = typical generic OpenAI-compatible endpoint: **Yes** / **Probe** / **No**.
+## Published Oven pins
 
----
+The workspace pins exactly:
 
-## 1. Format and provider inventory
+| Package | Version |
+|---|---:|
+| `oven-sdk` | 0.4.0 |
+| `oven-sdk-anthropic` | 0.5.0 |
+| `oven-sdk-openai` | 0.4.0 |
+| `oven-sdk-google` | 0.4.0 |
+| `oven-sdk-google-vertex` | 0.4.0 |
+| `oven-sdk-bedrock` | 0.3.0 |
+| `oven-sdk-azure` | 0.3.0 |
+| `oven-sdk-cohere` | 0.2.0 |
+| `oven-sdk-open-responses` | 0.2.0 |
 
-The useful unit is **wire format**, not vendor branding: model catalogs can
-route many vendor names onto the same format, and one vendor can offer
-several (DeepSeek offers both OpenAI-compatible Chat and an
-Anthropic-compatible endpoint).
+Static declarations retain all listed adapters except MiniMax and Claude
+Platform on AWS. Static Anthropic configuration uses
+`native_context_discriminator`; Vertex derives
+`google_vertex_native_context_scope`; official OpenAI and Azure Responses
+require explicit compaction settings whenever `CompactionCapability::Native`
+is declared. No former discriminator or Vertex scope names are accepted.
 
-| Wire-format family | Providers (examples) | Important OpenCode special cases |
-|---|---|---|
-| Anthropic Messages + SSE | Anthropic; Vertex Anthropic; Anthropic-compatible Kimi/MiniMax/DeepSeek routes | `interleaved-thinking` + fine-grained tool streaming headers; filters empty messages but retains signed/redacted reasoning (`provider/transform.ts` L166-193) |
-| Google generateContent / Vertex Gemini + SSE | Google AI Studio, Vertex | Gemini schema lowering (numeric enums → strings); thinking enabled by default for reasoning models |
-| Amazon Bedrock Converse + AWS EventStream | Bedrock-hosted Claude/Nova/Meta/Mistral/… | Region/profile/cross-region model-ID normalization; binary event-stream framing |
-| OpenAI Responses + SSE/WS | OpenAI; Azure default; xAI default; Bedrock Mantle | Defaults `store:false`; requests encrypted reasoning for compatible models |
-| OpenAI Chat Completions + SSE | Generic compatible; DeepSeek, Groq, Cerebras, DeepInfra, Together, Fireworks, Baseten, Mistral, Perplexity, Venice, DashScope, NVIDIA, Cloudflare; Azure Chat; xAI Chat; OpenRouter Chat | DeepSeek empty-reasoning workaround; Mistral tool-ID normalization (exactly 9 alphanumerics); Snowflake role patches |
-| OpenRouter (OpenAI-shaped router) | OpenRouter | Nonstandard `usage`, `reasoning`, `prompt_cache_key` body fields; attribution headers |
-| Provider-native non-OAI | Cohere v2, Alibaba native, Vercel AI Gateway, GitLab workflow | GitLab workflow is server-side tool execution, not client function calling |
+`ScriptedModel` implements deterministic FIFO streaming and native compaction,
+including captured requests, delay, cancellation, exhaustion, and planned
+errors.
 
-Primary docs: Anthropic Messages/thinking, OpenAI Responses, OpenAI Chat,
-Gemini function calling, Bedrock Converse, Azure Responses, OpenRouter,
-Cohere Chat, Mistral function calling.
+## Pinned models.dev catalog
 
----
+The exact upstream `snapshotPayload` from `anomalyco/models.dev` commit
+`c3057690bbb8bd41cafdefadcd2a7b958e2a4642` is vendored at
+`crates/models/catalog/models-dev.json`:
 
-## 2. Cross-format requirements (every adapter)
+- size: 3,567,054 bytes;
+- SHA-256: `d65af0b058204954f6b08af537fa13e91f251c618d69d8c20a2d5915731d482a`;
+- no trailing newline;
+- MIT attribution: copyright 2025 models.dev.
 
-- [ ] **MUST — Preserve an ordered, typed transcript, not merely role/text.**
-  Persist provider-native opaque fields alongside normalized content:
-  block/item type, IDs, call IDs, signatures, encrypted/redacted blobs,
-  finish data, unknown provider fields. A reconstructed "assistant text"
-  turn loses the state required to continue tool/reasoning conversations.
-- [ ] **MUST — Separate provider object ID from tool-call ID.** Responses
-  `item.id` vs `call_id`, Chat `tool_calls[].id`, Anthropic `tool_use.id`,
-  Bedrock `toolUseId` are not interchangeable.
-- [ ] **MUST — Treat tool calls as an ordered batch.** Append all original
-  assistant calls and every corresponding result before the next model turn.
-  Never drop a failed tool result; encode it as the provider's error result.
-- [ ] **MUST — Preserve unknown structured output** (hosted tools, citations,
-  safety metadata, annotations, refusal data, computer-use actions) as opaque
-  data even if not executed/rendered.
-- [ ] **MUST — Do not blindly retry a completed/partially streamed request.**
-  Retry only before meaningful output, or via an idempotent/resumable
-  provider mechanism.
-- [ ] **NICE — Track inclusive and component usage separately** (input,
-  cache-read, cache-write, output, reasoning tokens have different inclusion
-  rules per provider; do not double-add subsets).
+The authoritative inputs are the upstream provider/model TOMLs, schema, and
+generator. The upstream repository-root `models.json` is not the vendored
+artifact. `scripts/update_models_dev.py --check --source ...` is strictly
+offline and requires an already-prepared pinned checkout; it never clones or
+runs `bun install`. Network cloning/dependency installation is isolated behind
+explicit opt-in `--update`. Cargo builds, tests, and runtime code never invoke
+the updater or access the network.
 
----
+The parser retains the complete upstream document internally, applies bounded
+record/string/date/limit validation, and emits provider/model projections in
+stable provider/model order. Catalog revision is `sha256:<hex>` over the
+canonical secret-free projection, including behavior-affecting effective
+package/API recipe inputs. Canonical model IDs are emitted only when the exact
+`<provider>/<model>` metadata key exists. Wrapper models are never guessed into
+a canonical family.
 
-## 3. Anthropic Messages
+Known and supported are distinct states. A provider can be present in the
+catalog and still have no safe construction recipe.
 
-| Requirement | Priority / Compat | Why it breaks if missed |
-|---|---|---|
-| Preserve every assistant content block **in exact original order** (`thinking`, `redacted_thinking`, `text`, `tool_use`, server-tool blocks/results). Replay `thinking` with original text + `signature`; replay `redacted_thinking` as opaque `data` | **MUST** / No | Claude validates signed thinking against history; reordering/stripping breaks the next request |
-| Preserve thinking that is empty but signed/redacted | **MUST** / No | Signature/redacted payload is state, not emptiness |
-| Interleaved thinking: reasoning can occur before/between tool calls and text; keep block boundaries and indices | **MUST** when enabled / No | "All reasoning first" assumption loses valid turns |
-| Echo each `tool_use`, then user `tool_result` with exact `tool_use_id`; multiple results per user turn; `is_error` | **MUST** / No | Pairing is protocol validity |
-| Distinguish local `tool_use` from `server_tool_use`; never locally execute server tools; preserve server results for replay | **MUST** if hosted tools / No | Duplicate actions or lost context |
-| `cache_control` at allowed positions; cap breakpoints (4); retain cache read/write accounting | **MUST** when caching exposed / No | Extra markers → 400; lost markers → cost/latency regression |
-| Preserve `stop_reason`/`stop_sequence`; map `tool_use`, `max_tokens`, `end_turn`, `pause_turn`, refusal separately | **MUST** / Probe | `pause_turn`/`max_tokens` as completion truncates the turn |
-| Native image/document blocks where attachments claimed; preserve MIME/type/source, also in tool results | **MUST** if advertised / No | Textifying media bloats context, breaks visual tasks |
-| Thinking-mode/model compatibility (budget_tokens, adaptive, effort, interleaving headers vary by Claude generation) | **MUST** when exposing controls / No | Obsolete modes → HTTP 400 |
+## Generated recipe allowlist
 
-Streaming:
+Initial generated support is deliberately limited to:
 
-- [ ] **MUST:** parse `message_start` usage, `content_block_start`, indexed
-  deltas, `content_block_stop`, final `message_delta`; accept `ping`.
-- [ ] **MUST:** append `input_json_delta.partial_json` by block index; parse
-  JSON only at block stop.
-- [ ] **MUST:** retain `signature_delta` (often arrives after thinking text).
-- [ ] **MUST:** SSE `error` is a terminal provider error despite HTTP 200.
-- [ ] **NICE:** final `message_delta.usage` is authoritative; can supersede
-  `message_start` usage.
+- first-party Anthropic Messages;
+- exact hand-reviewed OpenAI model IDs mapped to either Responses or Chat;
+- first-party Google generateContent;
+- first-party Cohere v2 Chat;
+- OpenRouter's reviewed HTTPS compatible Chat endpoint;
+- effective `@ai-sdk/openai-compatible` models whose endpoint is HTTPS and
+  whose provider declares exactly one credential field.
 
-Cancellation/errors:
+Vertex, Azure, Bedrock, standardized Open Responses, MiniMax, Claude Platform
+on AWS, ambiguous package reuse, insecure endpoints, deprecated offerings, and
+records requiring provider body/header injection remain explicit unsupported
+states. Experimental provider bodies/headers are ignored and never injected.
 
-- [ ] **MUST:** abort HTTP stream on cancellation; stop local tool
-  scheduling; partial transcript is incomplete, not success.
-- [ ] **MUST:** classify `429` rate limit vs **`529 overloaded_error`**
-  (retry with backoff); `413 request_too_large`/context overflow; 400
-  validation. Inspect in-stream `error.type`, not just HTTP status.
+Generated descriptors are text-in/text-out only. They may use explicit catalog
+tool-calling, structured-output, and temperature booleans, but never infer
+parallel tools, tool-input deltas, top-p, media, reasoning, native replay, or
+native compaction. Cancellation is local. Default maximum output is
+`min(16_384, catalog_output_limit)`.
 
----
+Generated aliases are exact `provider_id/model_id` strings. Static aliases may
+not collide with them.
 
-## 4. OpenAI Chat Completions
+## Credential persistence
 
-| Requirement | Priority / Compat | Why it breaks if missed |
-|---|---|---|
-| Replay assistant `tool_calls` retaining every `id`, name, exact serialized arguments; subsequent `role:"tool"` messages with matching `tool_call_id` | **MUST** / Yes | Result without the original call is invalid |
-| Multiple/parallel `tool_calls` in one assistant message; preserve array order | **MUST** / Yes | Dropped calls stay permanently pending |
-| Assistant `content: null` with tool calls; `content` + calls; preserve `refusal`/content-filter data | **MUST** / Yes (null/tools), Probe (refusal) | Valid tool-call turns often have null content |
-| Preserve/replay `reasoning_content`/`reasoning_details` where the endpoint requires it (DeepSeek); omit deliberately elsewhere | **MUST** for such profiles / Probe | Unknown extensions → 400; missing required reasoning breaks continuation |
-| Project tool schemas to the OpenAI JSON-Schema subset; honor `strict:true` rules or don't claim it | **MUST** for tools / Probe | Unsupported shapes → 400 or invalid arguments |
-| Tool errors as tool messages, not fabricated assistant replies | **MUST** / Yes | Model must diagnose failures |
-| Capture cache/reasoning token details in `usage` | **MUST** for telemetry / Probe | Subset fields are not additive |
+`provider.connect` values are not configuration fields. On Unix they are stored
+at `~/.local/share/cookie_agent/credentials/store-v1.json` with a sibling lock:
 
-Streaming:
+- directories are current-user-owned mode 0700;
+- store, lock, and temporary files are current-user-owned regular mode 0600;
+- traversal is anchored at a current-user-owned, non-group/world-writable home
+  or data directory and uses dirfd-relative no-follow opens for every component;
+- symlinks, ancestor replacement attempts, hard-linked files, weak modes, and
+  unexpected object types are rejected throughout traversal;
+- every transaction takes an advisory cross-process lock and rereads under it;
+- writes use a same-directory exclusive temp, file fsync, atomic rename, and
+  parent-directory fsync;
+- malformed, oversized, wrongly owned, or weak-permission state fails closed.
 
-- [ ] **MUST:** tolerate role-only initial delta, empty deltas,
-  `content:null`, usage-only chunk with `choices: []`.
-- [ ] **MUST:** key tool-call assembly by choice + `tool_calls[].index`;
-  IDs/names may arrive only in the first fragment.
-- [ ] **MUST:** finalize/parse arguments only at
-  `finish_reason:"tool_calls"` or stream end; malformed JSON = model
-  failure, not transport success.
-- [ ] **MUST:** recognize `stop`, `length`, `content_filter`,
-  `tool_calls`/legacy `function_call`.
-- [ ] **MUST:** consume SSE comments/keepalives and terminal `[DONE]`;
-  never JSON-decode them.
+The store contains sorted credentials, connection timestamp, generation UUID,
+catalog revision, a random local HMAC key, and durable idempotency receipts.
+Receipts contain only HMAC-SHA256 over the canonical secret-bearing request,
+never the raw secret. Reusing an ID with the same request returns the original
+result; a different request conflicts. Persistent connect is disabled on
+non-Unix platforms until equivalent ACL guarantees are implemented.
 
-Cancellation/errors:
+CLI and TUI credential entry use best-effort process-memory hygiene. Owned
+input, request, and serialized-parameter buffers are wiped on submission,
+cancellation, connection loss, and drop where ownership permits. The client
+keeps a cancellation-safe guard around both the source request and its queued
+serialized parameters; unavoidable allocator, transport, kernel, terminal, and
+daemon-side copies remain outside that guarantee. Credential values are moved
+between owned buffers rather than cloned for convenience.
 
-- [ ] **MUST:** classify `429` rate limit, `400` invalid/schema/context,
-  `401/403`, `404` model, `413`, `5xx` transient; provider error-body `code`
-  values `model_not_found`, `invalid_model`, and model-does-not-exist variants
-  are entry-terminal even when sent with 5xx. Profile endpoint-specific context
-  strings (`context_length_exceeded`, vendor wordings, Azure content-filter
-  400).
-- [ ] **NICE:** preserve `x-request-id`, retry-after, rate-limit headers.
-- [ ] **Compat reality:** Chat usually works; reasoning fields, strict
-  tools, multimodal, stream usage, cache controls, exact error bodies are
-  all **Probe**.
+Connect reporting is phase-specific: `provider.connect` acceptance, subsequent
+`model.list` refresh, `agent.list` refresh, and optional initial
+`session.create` are separate outcomes. An empty profile configuration is a
+valid setup state and does not issue `session.create`. A configured enabled
+profile whose models were unresolved may become runnable after connection;
+profiles explicitly configured disabled remain disabled.
 
----
+## Atomic model snapshots
 
-## 5. OpenAI Responses
+`ModelSetManager` publishes immutable `Arc<ModelSnapshot>` values through an
+atomic swap and serializes refresh/connect with a mutex. A candidate unions
+explicit static models with eligible models from connected providers and is
+fully constructed and validated before the credential transaction is committed
+and before publication. There is no network probe.
 
-| Requirement | Priority / Compat | Why it breaks if missed |
-|---|---|---|
-| Preserve the ordered heterogeneous `output`/`input` item list (`message`, `reasoning`, `function_call`, `function_call_output`, `item_reference`, opaque hosted-tool items) | **MUST** / No-Probe | Responses is item-oriented; role-collapse loses state |
-| Pair `function_call_output.call_id` with the original `function_call.call_id`, NOT item `id` | **MUST** / Probe | Wrong pairing makes results unavailable |
-| Stateful mode: `previous_response_id`/`item_reference` only when server storage is available | **MUST** / Probe | References to non-stored items fail |
-| `store:false` stateless: preserve and replay reasoning items with `encrypted_content` plus intervening function calls/results since last user turn; request `include:["reasoning.encrypted_content"]` when required | **MUST** / No-Probe | Reasoning continuity degrades or requests rejected |
-| Retain reasoning item `id`, summary ordering, encrypted state, phase/opaque fields | **MUST** / No-Probe | Continuation state, not decoration |
-| Ignore hosted/provider-executed tools for LOCAL dispatch, but preserve/replay their items | **MUST** when hosted tools / No-Probe | Local execution duplicates actions |
-| Distinguish `response.completed`/`incomplete`/`failed`; map `max_output_tokens`/filters correctly | **MUST** / Probe | Incomplete ≠ success |
-| Image content in `function_call_output` where visual tools supported | **NICE** generally / No-Probe | Stringified screenshots destroy semantics |
+Snapshots are retained by configuration fingerprint for the current daemon
+lifetime only. On every credential refresh, each retained fingerprint is
+rebuilt exclusively from the new candidate's concrete adapters when alias,
+descriptor, defaults, and complete behavior fingerprint all match. Any retained
+snapshot with an unmatched entry is dropped. Publication and frozen resolution
+are serialized around the atomic swap, so already-acquired adapter handles may
+finish while every later resolution uses the latest credential generation.
 
-Streaming:
+The retained map is not persisted. Restart rebuilds only the current snapshot
+from validated current config, the pinned catalog, and latest credentials.
+Obsolete persisted frozen bindings remain readable but fail execution when
+their exact fingerprint is absent; there is no alias fallback. A binding whose
+behavior is unchanged across secret-only rotation retains its revision and
+resolves through the current adapter/current credentials.
 
-- [ ] **MUST:** `response.output_item.added` precedes argument deltas; key
-  assembly by item ID while emitting user-visible call ID.
-- [ ] **MUST:** handle full-call-only delivery in `response.output_item.done`
-  (some clones skip argument deltas).
-- [ ] **MUST:** track reasoning summary parts by (item ID, summary_index);
-  retain encrypted content on the item.
-- [ ] **MUST:** terminate on completed/incomplete/failed; do not require
-  `[DONE]`.
-- [ ] **MUST:** parse top-level `error` and nested `response.error` after
-  HTTP 200.
-- [ ] **NICE:** record response ID/service tier/final usage.
+Revisions include all safe behavior-affecting descriptor/default/catalog data
+and exclude credential values; rotating only a secret can therefore preserve
+the model revision.
+Static config congruence uses the same per-entry behavior fingerprint, covering
+endpoint identity, auth shape without credential values, adapter settings,
+header names without values, declarations, defaults, native-context scope
+inputs, and compaction settings.
+Debug output and errors expose no endpoint credentials, header values, HMAC
+keys, or credential values.
 
-Cancellation/errors:
+## Workspace configuration authority
 
-- [ ] **MUST:** cancel HTTP/SSE/WS locally; background Responses need the
-  provider cancellation lifecycle — disconnect ≠ server stopped/unbilled.
-- [ ] **MUST:** `response.failed` and SSE `error` are failures despite 200.
-- [ ] **MUST:** classify `context_length_exceeded`, `max_output_tokens`
-  incomplete, 429/`rate_limit_exceeded`, `insufficient_quota`, 5xx.
-- [ ] **Compat reality:** "OpenAI-compatible" usually means Chat, NOT the
-  Responses item model, encrypted reasoning, references, or hosted tools.
+Local `cookie` and `cookie daemon` startup unconditionally load and validate the
+ordinary Figment-composed configuration stack (`built-in defaults < user TOML <
+workspace TOML`) once for the current directory. Figment is used only for
+default/TOML composition; environment is not a configuration layer and is
+available solely through restricted explicit `${env:NAME}` interpolation in
+approved model fields. There is no persisted workspace-acceptance state. A stale
+`~/.local/share/cookie_agent/trust.json` is never inspected or modified, even
+when malformed or represented by a symlink or FIFO; `attach` and `connect` do
+not inspect current-directory configuration at all.
 
----
-
-## 6. Gemini / Vertex (post-MVP)
-
-- [ ] **MUST:** `systemInstruction` separate from `contents`.
-- [ ] **MUST:** preserve `thought:true` parts + `thoughtSignature`
-  (including on `functionCall` parts) and replay in the same location.
-- [ ] **MUST:** `functionResponse` with matching name/position per call.
-- [ ] **MUST:** translate tool schemas to Gemini's dialect deliberately.
-- [ ] **MUST:** capture `promptFeedback`, safety ratings, empty-candidate
-  blocks, safety/recitation finish reasons.
-- [ ] **MUST:** inline media preserved (MIME/data), not textified.
-- [ ] **NICE/MUST-budgets:** `promptTokenCount`, cached, candidate, and
-  `thoughtsTokenCount` have distinct inclusion semantics.
-- Streaming: candidates may be absent or carry thought/text/function/usage
-  only; no reasoning-then-text ordering assumption; preserve late thought
-  signatures.
-- Errors: `400 INVALID_ARGUMENT`, `401/403`, `404`, `429
-  RESOURCE_EXHAUSTED`, `500`, `503 UNAVAILABLE`; safety blocks are normal
-  responses with metadata, not retries.
-
-## 7. Amazon Bedrock Converse (post-MVP)
-
-- [ ] **MUST:** Converse body model (`messages`, `system`, `toolConfig`,
-  `inferenceConfig`, `additionalModelRequestFields`) + SigV4 signing.
-- [ ] **MUST:** preserve `reasoningContent` (text, signature,
-  `redactedContent`); signatures cover the conversation — modified/missing
-  history errors.
-- [ ] **MUST:** `toolUse.toolUseId` ↔ `toolResult.toolUseId`; structured
-  text/JSON/image result blocks.
-- [ ] **MUST:** positional `cachePoint` blocks per model limits; cache
-  read/write fields.
-- [ ] **MUST:** native image/document constraints; `guardrail_intervened`
-  etc. stop reasons.
-- Streaming: **AWS binary EventStream** (frame CRC/headers, not SSE);
-  correlate by `contentBlockIndex`; completion only after `messageStop` AND
-  trailing `metadata`; parse event-stream exceptions
-  (`internalServerException`, `modelStreamErrorException`,
-  `validationException`, `throttlingException`,
-  `serviceUnavailableException`).
-- Errors: 400 ValidationException (context variants), 403, 404, 424
-  ModelErrorException, 429 throttling, 500, 503.
-
----
-
-## 8. Vendor deviations
-
-- **Azure:** `/openai/v1` conventions + deployment naming; api-key and Entra
-  auth; Responses-vs-Chat selection is deployment/API-version dependent;
-  content filtering is a distinct outcome (400 `content_filter`, mid-stream
-  error events at HTTP 200).
-- **OpenRouter:** capability-variant routing per request; use
-  `provider.require_parameters:true`/pin routing when tools/reasoning/strict
-  schemas matter; preserve `reasoning` extensions; `usage:{include:true}`;
-  router retries may land on different providers with different behavior.
-- **DeepSeek:** profile both OpenAI-compatible and Anthropic-compatible
-  interfaces; `reasoning_content` replay where required (empty field only
-  where required, not globally).
-- **Mistral:** tool-ID restrictions (9 alphanumerics); result ordering
-  immediately after tool turn; model-specific reasoning controls.
-- **Groq/Cerebras/DeepInfra/Together/Fireworks/Baseten/Perplexity/Venice/
-  NVIDIA/Cloudflare/etc.:** Chat checklist as base; capability-probe streamed
-  argument deltas, parallel calls, images, `stream_options.include_usage`,
-  strict tools, reasoning replay, cache fields, max-token spelling; preserve
-  provider-specific raw fields.
-- **xAI:** Chat + Responses; encrypted reasoning replay in Responses;
-  reasoning models may reject ordinary sampling params.
-- **Cohere/Alibaba/Vercel Gateway/GitLab:** do not route through generic
-  OpenAI compatibility; represent server-executed tools separately.
-
----
-
-## 9. Streaming transport (all formats)
-
-- [ ] **MUST:** incremental UTF-8 decoding; CRLF/LF; multi-line `data:`;
-  comments/keepalives; blank-event boundaries; `[DONE]` where applicable.
-  Never assume one network chunk = one event.
-- [ ] **MUST:** accept role-only, usage-only, ping, empty-delta,
-  metadata-only events.
-- [ ] **MUST:** append raw argument fragments; parse once per call at
-  completion; never concatenate same-name calls.
-- [ ] **MUST:** accept initial, final, or only-final usage; don't finish
-  before trailing usage metadata.
-- [ ] **MUST:** every parser has a terminal in-band error path (errors after
-  HTTP 200).
-- [ ] **MUST:** key by provider-native index/item ID/block ID, never by
-  displayed text order.
-- [ ] **MUST:** separate connect/header, overall, and stream-idle deadlines.
-- [ ] **MUST:** propagate abort to the socket and cancel queued local tools;
-  transcript stays interrupted; disconnect ≠ server stopped/unbilled.
-
----
-
-## 10. Error-classification reality
-
-| Family | Retryable overload/rate-limit | Context/length |
-|---|---|---|
-| Anthropic | 429; **529 overloaded_error**; 5xx | 400 validation/context wording; 413 request_too_large |
-| OpenAI Chat/Responses | 429/quota; 5xx; in-band failures | `context_length_exceeded`; Responses `incomplete` w/ max_output_tokens |
-| Azure | 429/`too_many_requests`/`no_capacity`; in-stream errors at 200 | 400 `content_filter`; deployment-specific wording |
-| Google/Gemini | 429 RESOURCE_EXHAUSTED; 503; 500 | 400 INVALID_ARGUMENT; safety blocks are normal responses |
-| Bedrock | 429 ThrottlingException; 500; 503; 424 ModelError; stream exceptions | 400 ValidationException (model-specific wording) |
-| OpenRouter/compatible | 429 + 5xx/502/503/504 (router/upstream dependent) | Upstream text, router error object, or silent truncation |
-| DeepSeek/Mistral/Groq/… | usually 429 + 5xx, varying bodies | 400 with vendor-specific message/code |
-
-**MUST classifier rule:** classify from `(HTTP status, provider error
-code/type, body text, in-stream event type, retry-after headers)` — never
-from status alone.
-
----
-
-## Bottom line for `openai_compatible`
-
-- **Claim by default (MUST-supported):** chat text, assistant tool-call
-  echo, tool-result `tool_call_id` pairing, standard Chat SSE, basic
-  429/5xx handling.
-- **Probe before enabling:** parallel calls, tool argument deltas, images,
-  `stream_options.include_usage`, strict JSON schema, `reasoning_content`,
-  cache fields, vendor max-token names.
-- **Never claim without a profile:** Anthropic signed/redacted thinking,
-  Gemini thought signatures, Bedrock Converse/EventStream/SigV4, Responses
-  item references/encrypted reasoning/hosted tools, provider-native
-  documents/cache controls.
-
-**Architectural conclusion:** round-trip fidelity is a first-class persisted
-data model (ARCHITECTURE.md §6.2). Normalized events alone are insufficient
-for Anthropic, Responses, Gemini, and Bedrock continuations.
+This makes the workspace layer authoritative configuration input: it may set
+model endpoints and supported auth/header values through environment
+interpolation, and its later permission rules may override matching user rules
+under last-match ordering. Runtime operation authority is still the frozen
+effective policy, any exact approval/tree grant it requires, and the validated
+descriptor-bound prepared capability checked before execution.

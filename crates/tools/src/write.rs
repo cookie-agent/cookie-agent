@@ -1,61 +1,46 @@
-use std::{
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use cookie_agent_engine::{
-    SessionToolContext, ToolCall, ToolError, ToolInvocationContext, ToolProvider, ToolSpec,
+    PreparedExecutor, PreparedSerializationKey, PreparedTool, SessionToolContext, ToolCall,
+    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolResult, ToolSpec,
 };
+use cookie_agent_protocol::ActionKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tempfile::NamedTempFile;
 
-use crate::{canonical_path, result, schema, tool_error, workspace_for, workspace_path};
+use crate::{fs_cap, parse_args, prepared_operation, prepared_path_resources, schema};
 
 #[derive(Debug)]
 pub struct WriteTool {
     workspace: PathBuf,
 }
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+
+#[derive(Debug, Deserialize, JsonSchema, Serialize)]
 struct WriteArgs {
-    path: String,
+    #[serde(rename = "filePath")]
+    file_path: String,
     content: String,
 }
-#[derive(Serialize)]
-struct WriteOutput {
-    path: String,
-    bytes_written: usize,
+
+struct WriteExecutor {
+    target: fs_cap::PreparedTarget,
+    bytes: Vec<u8>,
 }
 
 impl WriteTool {
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
-            workspace: workspace_path(workspace),
+            workspace: workspace.into(),
         }
     }
 }
+
 impl Default for WriteTool {
     fn default() -> Self {
         Self::new(std::env::current_dir().expect("current directory"))
     }
-}
-
-pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), ToolError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| tool_error("write target has no parent directory"))?;
-    fs::create_dir_all(parent).map_err(tool_error)?;
-    let mut temporary = NamedTempFile::new_in(parent).map_err(tool_error)?;
-    temporary.write_all(contents).map_err(tool_error)?;
-    temporary.as_file().sync_all().map_err(tool_error)?;
-    temporary
-        .persist(path)
-        .map_err(|error| tool_error(error.error))?;
-    Ok(())
 }
 
 #[async_trait]
@@ -63,46 +48,175 @@ impl ToolProvider for WriteTool {
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             name: "write".into(),
-            description: "Atomically write a file, creating parent directories.".into(),
+            description: "Atomically write an exact descriptor-bound target.".into(),
             parameters: schema::<WriteArgs>(),
         }])
     }
-    async fn invoke(
+
+    async fn prepare(
         &self,
-        ctx: ToolInvocationContext,
+        ctx: ToolPreparationContext,
         call: ToolCall,
-    ) -> Result<cookie_agent_engine::ToolResult, ToolError> {
-        if call.name != "write" {
-            return Err(tool_error("write tool received another tool name"));
-        }
-        let args: WriteArgs = serde_json::from_value(call.arguments).map_err(tool_error)?;
-        let path =
-            canonical_path(workspace_for(&ctx, &self.workspace), &args.path).map_err(tool_error)?;
-        atomic_write(&path, args.content.as_bytes())?;
-        Ok(result(
-            &WriteOutput {
-                path: path.display().to_string(),
-                bytes_written: args.content.len(),
+    ) -> Result<PreparedTool, ToolError> {
+        let args: WriteArgs = parse_args("write", call.arguments)?;
+        fs_cap::ensure_atomic_write_supported()?;
+        let target = fs_cap::prepare_target(&ctx.cwd, std::path::Path::new(&args.file_path))?;
+        let mut binding = match &target {
+            fs_cap::PreparedTarget::Existing(existing) => {
+                if existing.directory {
+                    return Err(ToolError::unsupported_security(
+                        "write target is a directory",
+                    ));
+                }
+                let mut bytes = existing.identity.canonical_bytes();
+                bytes.extend_from_slice(existing.content_digest.as_str().as_bytes());
+                bytes
+            }
+            fs_cap::PreparedTarget::Absent(_) => b"expected-absent".to_vec(),
+        };
+        binding.extend_from_slice(
+            cookie_agent_protocol::Sha256Digest::of_bytes(args.content.as_bytes())
+                .as_str()
+                .as_bytes(),
+        );
+        binding.extend_from_slice(&target.manifest_bytes()?);
+        let display_path = match &target {
+            fs_cap::PreparedTarget::Existing(target) => &target.display_path,
+            fs_cap::PreparedTarget::Absent(target) => &target.display_path,
+        };
+        let (resources, policy_labels, external) = prepared_path_resources(
+            ActionKind::Write,
+            "file",
+            display_path,
+            &self.workspace,
+            &binding,
+        )?;
+        let serialization_key = target.serialization_bytes()?;
+        let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
+        let operation = prepared_operation(
+            "write",
+            &args,
+            if external {
+                vec![
+                    (ActionKind::Write, "replace"),
+                    (ActionKind::ExternalDirectory, "guard"),
+                ]
+            } else {
+                vec![(ActionKind::Write, "replace")]
             },
-            false,
-        ))
+            resources,
+            &context,
+        )?;
+        PreparedTool::new(
+            operation,
+            Some(PreparedSerializationKey::new(serialization_key)),
+            Box::new(WriteExecutor {
+                target,
+                bytes: args.content.into_bytes(),
+            }),
+        )
+        .with_policy_labels(policy_labels)
+    }
+}
+
+#[async_trait]
+impl PreparedExecutor for WriteExecutor {
+    async fn revalidate(&self) -> Result<(), ToolError> {
+        self.target.revalidate()
+    }
+
+    async fn execute(
+        self: Box<Self>,
+        context: ToolExecutionContext,
+    ) -> Result<ToolResult, ToolError> {
+        if context.cancellation.is_cancelled() {
+            return Err(ToolError::execution(
+                "prepared write cancelled before commit",
+            ));
+        }
+        let (path, outcome) = match &self.target {
+            fs_cap::PreparedTarget::Existing(target) => {
+                let outcome = target.replace_atomically(&self.bytes)?;
+                (target.display_path.clone(), outcome)
+            }
+            fs_cap::PreparedTarget::Absent(target) => {
+                let outcome = target.create_atomically(&self.bytes)?;
+                (target.display_path.clone(), outcome)
+            }
+        };
+        Ok(ToolResult {
+            title: format!("Wrote {}", path.display()),
+            output: format!("Wrote {} bytes to {}", self.bytes.len(), path.display()),
+            metadata: serde_json::json!({"bytes":self.bytes.len(),"cleanup_warning":outcome.cleanup_warning}),
+            truncation: None,
+            attachments: Vec::new(),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use cookie_agent_engine::{ToolCall, ToolPreparationContext, ToolProvider};
+    use cookie_agent_protocol::{OperationFingerprint, RunId, SessionId, ToolCallId};
 
-    use tempfile::tempdir;
+    use super::WriteTool;
 
-    use super::atomic_write;
+    fn context(root: &std::path::Path) -> ToolPreparationContext {
+        ToolPreparationContext {
+            session: SessionId::new_v7(),
+            run: RunId::new_v7(),
+            cwd: root.to_owned(),
+            workspace_root: root.to_owned(),
+        }
+    }
 
-    #[test]
-    fn atomically_replaces_and_creates_parents() {
-        let directory = tempdir().expect("temporary directory");
-        let path = directory.path().join("nested/file.txt");
-        atomic_write(&path, b"first").expect("first atomic write");
-        atomic_write(&path, b"second").expect("replacement atomic write");
-        assert_eq!(fs::read_to_string(path).expect("read result"), "second");
+    #[tokio::test]
+    async fn distinct_write_content_has_distinct_fingerprint() {
+        let root = tempfile::tempdir().expect("root");
+        let tool = WriteTool::new(root.path());
+        let first = tool
+            .prepare(
+                context(root.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "write".into(),
+                    arguments: serde_json::json!({"filePath":"value.txt","content":"one"}),
+                },
+            )
+            .await
+            .expect("first");
+        let second = tool
+            .prepare(
+                context(root.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "write".into(),
+                    arguments: serde_json::json!({"filePath":"value.txt","content":"two"}),
+                },
+            )
+            .await
+            .expect("second");
+        assert_ne!(
+            OperationFingerprint::from_prepared_operation(first.operation()),
+            OperationFingerprint::from_prepared_operation(second.operation())
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_subtree_write_prepares_without_creating_components() {
+        let root = tempfile::tempdir().expect("root");
+        let prepared = WriteTool::new(root.path())
+            .prepare(
+                context(root.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "write".into(),
+                    arguments: serde_json::json!({"filePath":"a/b/value.txt","content":"value"}),
+                },
+            )
+            .await
+            .expect("prepare");
+        assert!(!root.path().join("a").exists());
+        assert_eq!(prepared.operation().resources().len(), 1);
     }
 }

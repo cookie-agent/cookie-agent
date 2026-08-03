@@ -1,21 +1,21 @@
-//! Layered TOML configuration, policy snapshots, and workspace trust storage.
+//! Layered TOML configuration and policy snapshots.
 //!
 //! Permission-rule arrays are the one exception to normal Figment merge
 //! semantics. [`load_layered`] merges the TOML values itself, concatenating
 //! `permissions.rules` arrays while replacing all other arrays, before using
-//! Figment for environment input and Serde for typed extraction.
+//! Figment and Serde for typed extraction.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env, fs,
-    hash::Hasher,
-    io,
+    env, fmt, fs, io,
     path::{Path, PathBuf},
 };
 
+use cookie_agent_models::{ConfiguredModel, FrozenModelBinding, ModelSet, build_model_set};
 use figment::{
     Figment,
-    providers::{Env, Format, Serialized, Toml},
+    error::{Actual as FigmentActual, Error as FigmentError, Kind as FigmentErrorKind},
+    providers::Serialized,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -24,40 +24,242 @@ use toml::Value;
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 7419;
 const DEFAULT_DELEGATE_RESULT_BYTES: usize = 32 * 1024;
+const DEFAULT_TOOL_OUTPUT_MAX_LINES: usize = 2_000;
+const DEFAULT_TOOL_OUTPUT_MAX_BYTES: usize = 50 * 1024;
+const CONFIG_SCHEMA_VERSION: u32 = 5;
+const MAX_CHECKPOINT_BYTES: usize = 2 * 1024 * 1024;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default = "current_schema_version")]
+    pub schema_version: u32,
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
-    pub providers: BTreeMap<String, ProviderConfig>,
-    /// Rules and tier defaults applied to every profile.
+    pub models: BTreeMap<String, ConfiguredModel>,
+    /// Ordered rules applied to every profile.
     #[serde(default)]
     pub permissions: PermissionConfig,
     #[serde(default)]
+    pub tool_output: ToolOutputConfig,
+    #[serde(default)]
     pub agents: BTreeMap<String, AgentProfile>,
+    #[serde(default)]
+    pub internal_agents: InternalAgentsConfig,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        let mut agents = BTreeMap::new();
-        agents.insert(
-            "compaction".to_owned(),
-            AgentProfile {
-                r#type: AgentType::Internal,
-                ..AgentProfile::default()
-            },
-        );
         Self {
+            schema_version: current_schema_version(),
             server: ServerConfig::default(),
-            providers: BTreeMap::new(),
+            models: BTreeMap::new(),
             permissions: PermissionConfig::default(),
-            agents,
+            tool_output: ToolOutputConfig::default(),
+            agents: BTreeMap::new(),
+            internal_agents: InternalAgentsConfig::default(),
         }
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+const fn current_schema_version() -> u32 {
+    CONFIG_SCHEMA_VERSION
+}
+
+/// Explicit engine-internal agent profiles and bounded policies.
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InternalAgentsConfig {
+    #[serde(default)]
+    pub approval: InternalModelAgentConfig,
+    #[serde(default)]
+    pub context_compaction: ContextCompactionConfig,
+    #[serde(default)]
+    pub session_title: SessionTitleConfig,
+}
+
+/// Model chain and hard execution budgets for one internal agent.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InternalModelAgentConfig {
+    /// Exact static aliases or exact `provider/model` catalog aliases.
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default = "default_internal_input_tokens")]
+    pub max_input_tokens: u64,
+    #[serde(default = "default_internal_output_tokens")]
+    pub max_output_tokens: u64,
+    #[serde(default = "default_internal_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for InternalModelAgentConfig {
+    fn default() -> Self {
+        Self {
+            models: Vec::new(),
+            max_input_tokens: default_internal_input_tokens(),
+            max_output_tokens: default_internal_output_tokens(),
+            timeout_ms: default_internal_timeout_ms(),
+        }
+    }
+}
+
+const fn default_internal_input_tokens() -> u64 {
+    16_384
+}
+
+const fn default_internal_output_tokens() -> u64 {
+    2_048
+}
+
+const fn default_internal_timeout_ms() -> u64 {
+    30_000
+}
+
+/// Context thresholds and bounded summary/native persistence behavior.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextCompactionConfig {
+    #[serde(default)]
+    pub profile: InternalModelAgentConfig,
+    #[serde(default = "default_soft_threshold_percent")]
+    pub soft_threshold_percent: u8,
+    #[serde(default = "default_hard_threshold_percent")]
+    pub hard_threshold_percent: u8,
+    #[serde(default = "default_target_percent")]
+    pub target_percent: u8,
+    #[serde(default = "default_summary_bytes")]
+    pub max_summary_bytes: usize,
+    #[serde(default = "default_native_context_bytes")]
+    pub max_native_context_bytes: usize,
+    #[serde(default)]
+    pub persistence: CompactionPersistencePolicy,
+}
+
+impl Default for ContextCompactionConfig {
+    fn default() -> Self {
+        Self {
+            profile: InternalModelAgentConfig::default(),
+            soft_threshold_percent: default_soft_threshold_percent(),
+            hard_threshold_percent: default_hard_threshold_percent(),
+            target_percent: default_target_percent(),
+            max_summary_bytes: default_summary_bytes(),
+            max_native_context_bytes: default_native_context_bytes(),
+            persistence: CompactionPersistencePolicy::default(),
+        }
+    }
+}
+
+const fn default_soft_threshold_percent() -> u8 {
+    70
+}
+const fn default_hard_threshold_percent() -> u8 {
+    85
+}
+const fn default_target_percent() -> u8 {
+    50
+}
+const fn default_summary_bytes() -> usize {
+    256 * 1024
+}
+const fn default_native_context_bytes() -> usize {
+    MAX_CHECKPOINT_BYTES
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionPersistencePolicy {
+    SummaryOnly,
+    #[default]
+    NativePreferred,
+    NativeOnly,
+}
+
+/// Session-title model profile and deterministic fallback policy.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionTitleConfig {
+    #[serde(default)]
+    pub profile: InternalModelAgentConfig,
+    #[serde(default)]
+    pub policy: SessionTitlePolicy,
+}
+
+impl Default for SessionTitleConfig {
+    fn default() -> Self {
+        Self {
+            profile: InternalModelAgentConfig {
+                max_input_tokens: 4_096,
+                max_output_tokens: 128,
+                timeout_ms: 10_000,
+                models: Vec::new(),
+            },
+            policy: SessionTitlePolicy::default(),
+        }
+    }
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionTitlePolicy {
+    #[serde(default = "default_title_max_chars")]
+    pub max_chars: usize,
+    #[serde(default = "default_title_input_messages")]
+    pub max_input_messages: usize,
+    #[serde(default = "default_enabled")]
+    pub generate_on_first_turn: bool,
+    #[serde(default = "default_enabled")]
+    pub fallback_to_input_excerpt: bool,
+}
+
+impl Default for SessionTitlePolicy {
+    fn default() -> Self {
+        Self {
+            max_chars: default_title_max_chars(),
+            max_input_messages: default_title_input_messages(),
+            generate_on_first_turn: true,
+            fallback_to_input_excerpt: true,
+        }
+    }
+}
+
+const fn default_title_max_chars() -> usize {
+    80
+}
+const fn default_title_input_messages() -> usize {
+    4
+}
+
+/// Model-visible tool-output preview limits. Full output is retained separately.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolOutputConfig {
+    #[serde(default = "default_tool_output_max_lines")]
+    pub max_lines: usize,
+    #[serde(default = "default_tool_output_max_bytes")]
+    pub max_bytes: usize,
+}
+
+impl Default for ToolOutputConfig {
+    fn default() -> Self {
+        Self {
+            max_lines: default_tool_output_max_lines(),
+            max_bytes: default_tool_output_max_bytes(),
+        }
+    }
+}
+
+const fn default_tool_output_max_lines() -> usize {
+    DEFAULT_TOOL_OUTPUT_MAX_LINES
+}
+
+const fn default_tool_output_max_bytes() -> usize {
+    DEFAULT_TOOL_OUTPUT_MAX_BYTES
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     #[serde(default = "default_host")]
     pub host: String,
@@ -82,40 +284,15 @@ const fn default_port() -> u16 {
     DEFAULT_PORT
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ProviderConfig {
-    #[serde(rename = "type")]
-    pub kind: ProviderType,
-    pub api_key_env: Option<String>,
-    pub base_url: Option<String>,
-    pub api: Option<OpenAiApi>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum ProviderType {
-    #[serde(rename = "anthropic")]
-    Anthropic,
-    #[serde(rename = "openai")]
-    OpenAi,
-    #[serde(rename = "openai-compatible")]
-    OpenAiCompatible,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OpenAiApi {
-    Responses,
-    Completions,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentProfile {
     #[serde(rename = "type", default)]
     pub r#type: AgentType,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default)]
-    pub models: Vec<ModelConfig>,
+    pub models: Vec<String>,
     #[serde(default)]
     pub tools: Vec<String>,
     #[serde(default)]
@@ -151,13 +328,8 @@ const fn default_enabled() -> bool {
     true
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ModelConfig {
-    pub provider: String,
-    pub model: String,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DelegationConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -166,56 +338,29 @@ pub struct DelegationConfig {
     pub limit: Option<u32>,
 }
 
-/// Defaults applied globally when a profile does not override the tier.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// Ordered permission rules applied globally.
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PermissionConfig {
-    #[serde(default = "default_permission_tier")]
-    pub read: String,
-    #[serde(default = "default_permission_tier")]
-    pub write: String,
-    #[serde(default = "default_permission_tier")]
-    pub exec: String,
-    #[serde(default = "default_permission_tier")]
-    pub delegate: String,
     #[serde(default)]
     pub rules: Vec<PermissionRule>,
 }
 
-impl Default for PermissionConfig {
-    fn default() -> Self {
-        Self {
-            read: default_permission_tier(),
-            write: default_permission_tier(),
-            exec: default_permission_tier(),
-            delegate: default_permission_tier(),
-            rules: Vec::new(),
-        }
-    }
-}
-
-/// A profile's tier values are optional so global tier defaults remain effective.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+/// A profile's ordered rules are appended after global rules.
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentPermissionConfig {
-    pub read: Option<String>,
-    pub write: Option<String>,
-    pub exec: Option<String>,
-    pub delegate: Option<String>,
     #[serde(default)]
     pub rules: Vec<PermissionRule>,
 }
 
-fn default_permission_tier() -> String {
-    "ask".to_owned()
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PermissionRule {
     pub id: String,
     pub action: String,
     pub resource: String,
     pub effect: String,
-    #[serde(default)]
-    pub hard: bool,
     /// Internal merge provenance, persisted in policy snapshots for decision traces.
     #[serde(rename = "__source", default)]
     pub source: RuleSource,
@@ -228,16 +373,7 @@ pub enum RuleSource {
     Builtin,
     User,
     Workspace,
-    Env,
     Profile,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PermissionEffect {
-    Allow,
-    Ask,
-    Deny,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -275,10 +411,10 @@ impl DepthLimit {
 }
 
 /// Serializable configured policy retained in a session event log.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 pub struct PolicySnapshot {
     pub profile: ProfileSnapshot,
-    pub models: Vec<ModelConfig>,
+    pub models: Vec<FrozenModelBinding>,
     pub tools: BTreeSet<String>,
     pub permissions: ResolvedPermissions,
     pub delegation: DelegationPolicy,
@@ -288,7 +424,7 @@ pub struct PolicySnapshot {
 /// Parent policy inputs needed to materialize a child profile.
 pub struct ChildPolicyParent {
     depth_limit: DepthLimit,
-    models: Option<Vec<ModelConfig>>,
+    models: Option<Vec<FrozenModelBinding>>,
 }
 
 impl From<DepthLimit> for ChildPolicyParent {
@@ -309,44 +445,81 @@ impl From<&PolicySnapshot> for ChildPolicyParent {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProfileSnapshot {
     pub name: String,
     #[serde(rename = "type")]
     pub r#type: AgentType,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ResolvedPermissions {
-    pub read: PermissionEffect,
-    pub write: PermissionEffect,
-    pub exec: PermissionEffect,
-    pub delegate: PermissionEffect,
     pub rules: Vec<PermissionRule>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DelegationPolicy {
     pub enabled: bool,
     pub allowed_profiles: BTreeSet<String>,
     pub depth_limit: DepthLimit,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ResultLimits {
     pub delegate_result_bytes: usize,
+    pub tool_output_max_lines: usize,
+    pub tool_output_max_bytes: usize,
 }
 
 impl Default for ResultLimits {
     fn default() -> Self {
         Self {
             delegate_result_bytes: DEFAULT_DELEGATE_RESULT_BYTES,
+            tool_output_max_lines: DEFAULT_TOOL_OUTPUT_MAX_LINES,
+            tool_output_max_bytes: DEFAULT_TOOL_OUTPUT_MAX_BYTES,
         }
     }
 }
 
-#[derive(Debug, Error)]
+macro_rules! redacted_debug {
+    ($($type:ty),+ $(,)?) => {
+        $(
+            impl fmt::Debug for $type {
+                fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    formatter.debug_struct(stringify!($type)).finish_non_exhaustive()
+                }
+            }
+        )+
+    };
+}
+
+// Interpolated values are credentials or endpoints, so avoid exposing them
+// through Debug output.
+redacted_debug!(
+    Config,
+    ServerConfig,
+    AgentProfile,
+    DelegationConfig,
+    PermissionConfig,
+    AgentPermissionConfig,
+    PermissionRule,
+    PolicySnapshot,
+    ProfileSnapshot,
+    ResolvedPermissions,
+    DelegationPolicy,
+    ResultLimits,
+    ToolOutputConfig,
+    InternalAgentsConfig,
+    InternalModelAgentConfig,
+    ContextCompactionConfig,
+    SessionTitleConfig,
+    SessionTitlePolicy,
+);
+
+#[derive(Error)]
 pub enum ConfigError {
+    #[error("unsupported config schema version {found}; expected 5")]
+    SchemaVersion { found: u32 },
     #[error("could not read {layer:?} configuration {path}: {source}")]
     Read {
         layer: RuleSource,
@@ -361,70 +534,94 @@ pub enum ConfigError {
         #[source]
         source: toml::de::Error,
     },
-    #[error("configuration extraction failed: {0}")]
-    Figment(#[source] Box<figment::Error>),
-    #[error("merged configuration extraction failed: {0}")]
-    Extract(#[source] toml::de::Error),
+    #[error(
+        "could not resolve environment variable `{variable}` at `{key}` in {layer:?} configuration {path}: {reason}"
+    )]
+    EnvironmentInterpolation {
+        layer: RuleSource,
+        path: PathBuf,
+        key: String,
+        variable: String,
+        reason: &'static str,
+    },
+    #[error("configuration extraction failed: {detail}")]
+    Figment { detail: String },
+    #[error("merged configuration extraction failed: {detail}")]
+    Extract { detail: String },
     #[error("could not construct built-in configuration: {0}")]
     Serialize(#[source] toml::ser::Error),
     #[error("profile `{profile}` has an empty model chain")]
     EmptyModels { profile: String },
-    #[error("profile `{profile}` references unknown provider `{provider}`")]
-    UnknownProvider { profile: String, provider: String },
-    #[error("profile `{profile}` allows unknown profile `{allowed_profile}`")]
-    UnknownAllowedProfile {
-        profile: String,
-        allowed_profile: String,
-    },
-    #[error("profile `{profile}` allows primary-only profile `{allowed_profile}`")]
-    PrimaryAllowedProfile {
-        profile: String,
-        allowed_profile: String,
-    },
-    #[error("profile `{profile}` allows internal profile `{allowed_profile}`")]
-    InternalAllowedProfile {
-        profile: String,
-        allowed_profile: String,
-    },
+    #[error("profile `{profile}` references unknown model alias `{alias}`")]
+    UnknownModelAlias { profile: String, alias: String },
+    #[error("installed model set does not match the loaded model configuration")]
+    InstalledModelSetMismatch,
+    #[error("could not construct configured models: {0}")]
+    Models(#[from] cookie_agent_models::ModelBuildError),
+    #[error("profile `{profile}` allows unknown profile")]
+    UnknownAllowedProfile { profile: String },
+    #[error("profile `{profile}` allows a primary-only profile")]
+    PrimaryAllowedProfile { profile: String },
+    #[error("profile `{profile}` allows internal profile")]
+    InternalAllowedProfile { profile: String },
     #[error("internal agents cannot be disabled: `{profile}`")]
     InternalAgentDisabled { profile: String },
     #[error("profile `{profile}` enables delegation with no allowed profiles")]
     EmptyAllowedProfiles { profile: String },
-    #[error("invalid {tier} tier `{value}` in {scope}")]
-    InvalidTier {
-        scope: String,
-        tier: &'static str,
-        value: String,
-    },
-    #[error("invalid permission effect `{value}` in {scope} rule `{rule}`")]
-    InvalidEffect {
-        scope: String,
-        rule: String,
-        value: String,
-    },
+    #[error("invalid permission effect in {scope}")]
+    InvalidEffect { scope: String },
+    #[error("tool_output.{field} must be greater than zero")]
+    InvalidToolOutputLimit { field: &'static str },
     #[error("unknown profile `{0}`")]
     UnknownProfile(String),
+    #[error("profile `{0}` is disabled")]
+    DisabledProfile(String),
+    #[error("internal agent `{agent}` has an invalid {field} budget")]
+    InvalidInternalBudget {
+        agent: &'static str,
+        field: &'static str,
+    },
+    #[error("context compaction thresholds must satisfy target < soft < hard <= 100")]
+    InvalidCompactionThresholds,
+    #[error("context compaction {field} exceeds the 2 MiB persistence ceiling")]
+    CompactionPersistenceTooLarge { field: &'static str },
+    #[error("session title policy requires positive max_chars and max_input_messages")]
+    InvalidTitlePolicy,
 }
 
-/// Builds the standard Figment stack. It is useful to callers that need
-/// Figment-native provenance but does not perform the permission-rule append.
-#[must_use]
-pub fn build_figment(user_config: Option<&Path>, workspace_config: Option<&Path>) -> Figment {
+impl fmt::Debug for ConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("ConfigError")
+            .field(&self.to_string())
+            .finish()
+    }
+}
+
+/// Builds the standard Figment stack, resolving TOML environment expressions.
+///
+/// Only model endpoints, static authentication values, and static header values are interpolated.
+/// It is useful to callers that need Figment-native provenance but does not
+/// perform the permission-rule append.
+pub fn build_figment(
+    user_config: Option<&Path>,
+    workspace_config: Option<&Path>,
+) -> Result<Figment, ConfigError> {
     let mut figment = Figment::from(Serialized::defaults(Config::default()));
-    if let Some(path) = user_config {
-        figment = figment.merge(Toml::file(path));
+    if let Some(value) = load_optional_file(user_config, RuleSource::User)? {
+        figment = figment.merge(Serialized::defaults(value));
     }
-    if let Some(path) = workspace_config {
-        figment = figment.merge(Toml::file(path));
+    if let Some(value) = load_optional_file(workspace_config, RuleSource::Workspace)? {
+        figment = figment.merge(Serialized::defaults(value));
     }
-    figment.merge(Env::prefixed("COOKIE_AGENT_").split("__"))
+    Ok(figment)
 }
 
 /// Extracts and validates a pre-built Figment stack.
 pub fn load_from(figment: Figment) -> Result<Config, ConfigError> {
-    let config: Config = figment
-        .extract()
-        .map_err(|error| ConfigError::Figment(Box::new(error)))?;
+    let config: Config = figment.extract().map_err(|error| ConfigError::Figment {
+        detail: safe_figment_error(error),
+    })?;
     config.validate()?;
     Ok(config)
 }
@@ -438,8 +635,10 @@ pub fn load(workspace: &Path) -> Result<Config, ConfigError> {
 
 /// Loads config with the documented layer order.
 ///
-/// Missing user and workspace files are simply absent layers. Environment is
-/// collected through Figment's `Env` provider, then merged as the final layer.
+/// Missing user and workspace files are simply absent layers. TOML
+/// interpolation is restricted to `models.*.endpoint`,
+/// `models.*.auth` credential fields, and `models.*.headers.*`; all other
+/// strings remain literal.
 pub fn load_layered(
     user_config: Option<&Path>,
     workspace_config: Option<&Path>,
@@ -449,14 +648,108 @@ pub fn load_layered(
     merge_optional_file(&mut merged, user_config, RuleSource::User)?;
     merge_optional_file(&mut merged, workspace_config, RuleSource::Workspace)?;
 
-    let environment: Value = Figment::from(Env::prefixed("COOKIE_AGENT_").split("__"))
+    let config: Config = Figment::from(Serialized::defaults(merged))
         .extract()
-        .map_err(|error| ConfigError::Figment(Box::new(error)))?;
-    merge_value(&mut merged, environment, RuleSource::Env, &[]);
-
-    let config: Config = merged.try_into().map_err(ConfigError::Extract)?;
+        .map_err(|error| ConfigError::Extract {
+            detail: safe_figment_error(error),
+        })?;
     config.validate()?;
     Ok(config)
+}
+
+fn safe_figment_error(error: FigmentError) -> String {
+    error
+        .into_iter()
+        .map(|error| {
+            let path = safe_error_path(&error);
+            match error.kind {
+                FigmentErrorKind::InvalidType(actual, expected) => format!(
+                    "invalid type at `{path}`: found {}, expected {expected}",
+                    safe_actual_type(&actual)
+                ),
+                FigmentErrorKind::InvalidValue(_, expected) => {
+                    format!("invalid value at `{path}`: expected {expected}")
+                }
+                FigmentErrorKind::InvalidLength(_, expected) => {
+                    format!("invalid length at `{path}`: expected {expected}")
+                }
+                FigmentErrorKind::UnknownVariant(_, expected) => format!(
+                    "unknown variant at `{path}`: expected one of {}",
+                    expected.join(", ")
+                ),
+                FigmentErrorKind::UnknownField(_, expected) => format!(
+                    "unknown field at `{path}`: expected one of {}",
+                    expected.join(", ")
+                ),
+                FigmentErrorKind::MissingField(_) => {
+                    format!("missing field at `{path}`")
+                }
+                FigmentErrorKind::DuplicateField(_) => {
+                    format!("duplicate field at `{path}`")
+                }
+                FigmentErrorKind::ISizeOutOfRange(_) => {
+                    format!("signed integer out of range at `{path}`")
+                }
+                FigmentErrorKind::USizeOutOfRange(_) => {
+                    format!("unsigned integer out of range at `{path}`")
+                }
+                FigmentErrorKind::Unsupported(actual) => {
+                    format!("unsupported type {} at `{path}`", safe_actual_type(&actual))
+                }
+                FigmentErrorKind::UnsupportedKey(actual, expected) => format!(
+                    "unsupported key type {} at `{path}`: expected {expected}",
+                    safe_actual_type(&actual)
+                ),
+                FigmentErrorKind::Message(_) => {
+                    format!("invalid configuration at `{path}`")
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn safe_error_path(error: &FigmentError) -> String {
+    let mut path = error.path.clone();
+    let field = match &error.kind {
+        FigmentErrorKind::UnknownField(field, _) => Some(field.as_str()),
+        FigmentErrorKind::MissingField(field) => Some(field.as_ref()),
+        FigmentErrorKind::DuplicateField(field) => Some(*field),
+        _ => None,
+    };
+    if let Some(field) = field
+        && path.last().is_none_or(|segment| segment != field)
+    {
+        path.push(field.to_owned());
+    }
+    if path.is_empty() {
+        "root".to_owned()
+    } else {
+        path.join(".")
+    }
+}
+
+const fn safe_actual_type(actual: &FigmentActual) -> &'static str {
+    match actual {
+        FigmentActual::Bool(_) => "boolean",
+        FigmentActual::Unsigned(_) => "unsigned integer",
+        FigmentActual::Signed(_) => "signed integer",
+        FigmentActual::Float(_) => "floating-point number",
+        FigmentActual::Char(_) => "character",
+        FigmentActual::Str(_) => "string",
+        FigmentActual::Bytes(_) => "bytes",
+        FigmentActual::Unit => "unit",
+        FigmentActual::Option => "option",
+        FigmentActual::NewtypeStruct => "newtype struct",
+        FigmentActual::Seq => "sequence",
+        FigmentActual::Map => "map",
+        FigmentActual::Enum => "enum",
+        FigmentActual::UnitVariant => "unit variant",
+        FigmentActual::NewtypeVariant => "newtype variant",
+        FigmentActual::TupleVariant => "tuple variant",
+        FigmentActual::StructVariant => "struct variant",
+        FigmentActual::Other(_) => "other",
+    }
 }
 
 /// Concatenates permission rules in already-established layer order.
@@ -466,9 +759,25 @@ pub fn merge_permission_rules(layers: Vec<Vec<PermissionRule>>) -> Vec<Permissio
 }
 
 impl Config {
+    /// Constructs all configured aliases exactly once into an immutable model set.
+    pub fn build_model_set(&self) -> Result<ModelSet, ConfigError> {
+        build_model_set(&self.models).map_err(ConfigError::Models)
+    }
+
     /// Checks cross-reference and policy constraints after typed extraction.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.schema_version != CONFIG_SCHEMA_VERSION {
+            return Err(ConfigError::SchemaVersion {
+                found: self.schema_version,
+            });
+        }
         validate_permission_config(&self.permissions, "global")?;
+        if self.tool_output.max_lines == 0 {
+            return Err(ConfigError::InvalidToolOutputLimit { field: "max_lines" });
+        }
+        if self.tool_output.max_bytes == 0 {
+            return Err(ConfigError::InvalidToolOutputLimit { field: "max_bytes" });
+        }
 
         for (name, profile) in &self.agents {
             if profile.r#type == AgentType::Primary && profile.models.is_empty() {
@@ -476,16 +785,16 @@ impl Config {
                     profile: name.clone(),
                 });
             }
-            if !profile.enabled && (profile.r#type == AgentType::Internal || name == "compaction") {
+            if !profile.enabled && profile.r#type == AgentType::Internal {
                 return Err(ConfigError::InternalAgentDisabled {
                     profile: name.clone(),
                 });
             }
-            for model in &profile.models {
-                if !self.providers.contains_key(&model.provider) {
-                    return Err(ConfigError::UnknownProvider {
+            for alias in &profile.models {
+                if !is_known_model_reference(&self.models, alias) {
+                    return Err(ConfigError::UnknownModelAlias {
                         profile: name.clone(),
-                        provider: model.provider.clone(),
+                        alias: alias.clone(),
                     });
                 }
             }
@@ -499,55 +808,112 @@ impl Config {
                 let Some(target) = self.agents.get(allowed_profile) else {
                     return Err(ConfigError::UnknownAllowedProfile {
                         profile: name.clone(),
-                        allowed_profile: allowed_profile.clone(),
                     });
                 };
                 if target.r#type == AgentType::Primary {
                     return Err(ConfigError::PrimaryAllowedProfile {
                         profile: name.clone(),
-                        allowed_profile: allowed_profile.clone(),
                     });
                 }
                 if target.r#type == AgentType::Internal {
                     return Err(ConfigError::InternalAllowedProfile {
                         profile: name.clone(),
-                        allowed_profile: allowed_profile.clone(),
                     });
                 }
             }
+        }
+        self.validate_internal_agents()?;
+        Ok(())
+    }
+
+    fn validate_internal_agents(&self) -> Result<(), ConfigError> {
+        validate_internal_profile("approval", &self.internal_agents.approval, &self.models)?;
+        validate_internal_profile(
+            "context_compaction",
+            &self.internal_agents.context_compaction.profile,
+            &self.models,
+        )?;
+        validate_internal_profile(
+            "session_title",
+            &self.internal_agents.session_title.profile,
+            &self.models,
+        )?;
+        let compaction = &self.internal_agents.context_compaction;
+        if !(compaction.target_percent < compaction.soft_threshold_percent
+            && compaction.soft_threshold_percent < compaction.hard_threshold_percent
+            && compaction.hard_threshold_percent <= 100)
+        {
+            return Err(ConfigError::InvalidCompactionThresholds);
+        }
+        for (field, value) in [
+            ("max_summary_bytes", compaction.max_summary_bytes),
+            (
+                "max_native_context_bytes",
+                compaction.max_native_context_bytes,
+            ),
+        ] {
+            if value == 0 || value > MAX_CHECKPOINT_BYTES {
+                return Err(ConfigError::CompactionPersistenceTooLarge { field });
+            }
+        }
+        let title = &self.internal_agents.session_title.policy;
+        if title.max_chars == 0 || title.max_input_messages == 0 {
+            return Err(ConfigError::InvalidTitlePolicy);
         }
         Ok(())
     }
 
     /// Resolves exactly global permissions plus the named profile's overlay.
     /// Parent profile policy is deliberately not an input to this operation.
-    pub fn materialize_policy(&self, profile_name: &str) -> Result<PolicySnapshot, ConfigError> {
-        self.materialize_with_parent(profile_name, DepthLimit::Unlimited, None)
+    pub fn materialize_policy(
+        &self,
+        model_set: &ModelSet,
+        profile_name: &str,
+    ) -> Result<PolicySnapshot, ConfigError> {
+        self.materialize_with_parent(model_set, profile_name, DepthLimit::Unlimited, None)
     }
 
     /// Materializes a child profile with the parent's frozen policy.
     /// Empty child model chains inherit the parent's resolved model chain.
     pub fn materialize_child_policy(
         &self,
+        model_set: &ModelSet,
         profile_name: &str,
         parent: impl Into<ChildPolicyParent>,
     ) -> Result<PolicySnapshot, ConfigError> {
         let parent = parent.into();
-        self.materialize_with_parent(profile_name, parent.depth_limit, parent.models.as_deref())
+        self.materialize_with_parent(
+            model_set,
+            profile_name,
+            parent.depth_limit,
+            parent.models.as_deref(),
+        )
     }
 
     fn materialize_with_parent(
         &self,
+        model_set: &ModelSet,
         profile_name: &str,
         parent_limit: DepthLimit,
-        parent_models: Option<&[ModelConfig]>,
+        parent_models: Option<&[FrozenModelBinding]>,
     ) -> Result<PolicySnapshot, ConfigError> {
         self.validate()?;
         let profile = self
             .agents
             .get(profile_name)
             .ok_or_else(|| ConfigError::UnknownProfile(profile_name.to_owned()))?;
-
+        if !profile.enabled {
+            return Err(ConfigError::DisabledProfile(profile_name.to_owned()));
+        }
+        let static_set = self.build_model_set()?;
+        for (alias, expected) in static_set.entries() {
+            let Some(installed) = model_set.get(alias) else {
+                return Err(ConfigError::InstalledModelSetMismatch);
+            };
+            if installed.behavior_fingerprint() != expected.behavior_fingerprint() {
+                return Err(ConfigError::InstalledModelSetMismatch);
+            }
+        }
         let mut rules = self.permissions.rules.clone();
         rules.extend(profile.permissions.rules.iter().cloned().map(|mut rule| {
             rule.source = RuleSource::Profile;
@@ -561,7 +927,15 @@ impl Config {
                     profile: profile_name.to_owned(),
                 })?
         } else {
-            profile.models.clone()
+            profile
+                .models
+                .iter()
+                .map(|alias| {
+                    model_set
+                        .freeze(alias)
+                        .map_err(cookie_agent_models::ModelBuildError::from)
+                })
+                .collect::<Result<Vec<_>, _>>()?
         };
 
         Ok(PolicySnapshot {
@@ -571,19 +945,7 @@ impl Config {
             },
             models,
             tools: profile.tools.iter().cloned().collect(),
-            permissions: ResolvedPermissions {
-                read: resolve_tier(profile.permissions.read.as_deref(), &self.permissions.read),
-                write: resolve_tier(
-                    profile.permissions.write.as_deref(),
-                    &self.permissions.write,
-                ),
-                exec: resolve_tier(profile.permissions.exec.as_deref(), &self.permissions.exec),
-                delegate: resolve_tier(
-                    profile.permissions.delegate.as_deref(),
-                    &self.permissions.delegate,
-                ),
-                rules,
-            },
+            permissions: ResolvedPermissions { rules },
             delegation: DelegationPolicy {
                 enabled: profile.delegation.enabled,
                 allowed_profiles: profile
@@ -594,20 +956,61 @@ impl Config {
                     .collect(),
                 depth_limit: DepthLimit::for_child(profile.delegation.limit, parent_limit),
             },
-            result_limits: ResultLimits::default(),
+            result_limits: ResultLimits {
+                delegate_result_bytes: DEFAULT_DELEGATE_RESULT_BYTES,
+                tool_output_max_lines: self.tool_output.max_lines,
+                tool_output_max_bytes: self.tool_output.max_bytes,
+            },
         })
     }
 }
 
-fn resolve_tier(overlay: Option<&str>, default: &str) -> PermissionEffect {
-    parse_effect(overlay.unwrap_or(default)).expect("validated permission tier")
+fn validate_internal_profile(
+    name: &'static str,
+    profile: &InternalModelAgentConfig,
+    static_models: &BTreeMap<String, ConfiguredModel>,
+) -> Result<(), ConfigError> {
+    for (field, value) in [
+        ("max_input_tokens", profile.max_input_tokens),
+        ("max_output_tokens", profile.max_output_tokens),
+        ("timeout_ms", profile.timeout_ms),
+    ] {
+        if value == 0 {
+            return Err(ConfigError::InvalidInternalBudget { agent: name, field });
+        }
+    }
+    for alias in &profile.models {
+        if !is_known_model_reference(static_models, alias) {
+            return Err(ConfigError::UnknownModelAlias {
+                profile: name.to_owned(),
+                alias: alias.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn is_known_model_reference(
+    static_models: &BTreeMap<String, ConfiguredModel>,
+    alias: &str,
+) -> bool {
+    static_models.contains_key(alias) || is_exact_catalog_alias(alias)
+}
+
+fn is_exact_catalog_alias(alias: &str) -> bool {
+    let Some((provider, model)) = alias.split_once('/') else {
+        return false;
+    };
+    valid_catalog_alias_segment(provider)
+        && model.split('/').all(valid_catalog_alias_segment)
+        && !alias.chars().any(char::is_control)
+}
+
+fn valid_catalog_alias_segment(segment: &str) -> bool {
+    !segment.is_empty() && segment != "." && segment != ".." && segment.trim() == segment
 }
 
 fn validate_permission_config(config: &PermissionConfig, scope: &str) -> Result<(), ConfigError> {
-    validate_tier(&config.read, scope, "read")?;
-    validate_tier(&config.write, scope, "write")?;
-    validate_tier(&config.exec, scope, "exec")?;
-    validate_tier(&config.delegate, scope, "delegate")?;
     validate_rules(&config.rules, scope)
 }
 
@@ -615,50 +1018,22 @@ fn validate_agent_permissions(
     config: &AgentPermissionConfig,
     profile: &str,
 ) -> Result<(), ConfigError> {
-    for (tier, value) in [
-        ("read", config.read.as_deref()),
-        ("write", config.write.as_deref()),
-        ("exec", config.exec.as_deref()),
-        ("delegate", config.delegate.as_deref()),
-    ] {
-        if let Some(value) = value {
-            validate_tier(value, profile, tier)?;
-        }
-    }
     validate_rules(&config.rules, profile)
-}
-
-fn validate_tier(value: &str, scope: &str, tier: &'static str) -> Result<(), ConfigError> {
-    if parse_effect(value).is_none() {
-        return Err(ConfigError::InvalidTier {
-            scope: scope.to_owned(),
-            tier,
-            value: value.to_owned(),
-        });
-    }
-    Ok(())
 }
 
 fn validate_rules(rules: &[PermissionRule], scope: &str) -> Result<(), ConfigError> {
     for rule in rules {
-        if parse_effect(&rule.effect).is_none() {
+        if !valid_effect(&rule.effect) {
             return Err(ConfigError::InvalidEffect {
                 scope: scope.to_owned(),
-                rule: rule.id.clone(),
-                value: rule.effect.clone(),
             });
         }
     }
     Ok(())
 }
 
-fn parse_effect(value: &str) -> Option<PermissionEffect> {
-    match value {
-        "allow" => Some(PermissionEffect::Allow),
-        "ask" => Some(PermissionEffect::Ask),
-        "deny" => Some(PermissionEffect::Deny),
-        _ => None,
-    }
+fn valid_effect(value: &str) -> bool {
+    matches!(value, "allow" | "ask" | "deny")
 }
 
 fn default_value() -> Result<Value, ConfigError> {
@@ -670,15 +1045,26 @@ fn merge_optional_file(
     path: Option<&Path>,
     source: RuleSource,
 ) -> Result<(), ConfigError> {
-    let Some(path) = path else {
+    let Some(value) = load_optional_file(path, source)? else {
         return Ok(());
+    };
+    merge_value(merged, value, source, &[]);
+    Ok(())
+}
+
+fn load_optional_file(
+    path: Option<&Path>,
+    layer: RuleSource,
+) -> Result<Option<Value>, ConfigError> {
+    let Some(path) = path else {
+        return Ok(None);
     };
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(source_error) => {
             return Err(ConfigError::Read {
-                layer: source,
+                layer,
                 path: path.to_owned(),
                 source: source_error,
             });
@@ -687,12 +1073,145 @@ fn merge_optional_file(
     let value = contents
         .parse::<Value>()
         .map_err(|source_error| ConfigError::Toml {
-            layer: source,
+            layer,
             path: path.to_owned(),
             source: source_error,
         })?;
-    merge_value(merged, value, source, &[]);
+    let mut value = value;
+    interpolate_value(&mut value, layer, path, &mut Vec::new())?;
+    Ok(Some(value))
+}
+
+fn interpolate_value(
+    value: &mut Value,
+    layer: RuleSource,
+    source_path: &Path,
+    key_path: &mut Vec<String>,
+) -> Result<(), ConfigError> {
+    match value {
+        Value::String(value) => {
+            if is_interpolation_path(key_path) {
+                *value = interpolate_string(value, layer, source_path, key_path)?;
+            }
+        }
+        Value::Array(values) => {
+            for (index, value) in values.iter_mut().enumerate() {
+                if let Some(last_index) = key_path.len().checked_sub(1) {
+                    let key = std::mem::take(&mut key_path[last_index]);
+                    key_path[last_index] = format!("{key}[{index}]");
+                    interpolate_value(value, layer, source_path, key_path)?;
+                    key_path[last_index] = key;
+                } else {
+                    key_path.push(format!("[{index}]"));
+                    interpolate_value(value, layer, source_path, key_path)?;
+                    key_path.pop();
+                }
+            }
+        }
+        Value::Table(values) => {
+            for (key, value) in values {
+                key_path.push(key.clone());
+                interpolate_value(value, layer, source_path, key_path)?;
+                key_path.pop();
+            }
+        }
+        _ => {}
+    }
     Ok(())
+}
+
+fn is_interpolation_path(path: &[String]) -> bool {
+    matches!(path, [models, _, endpoint]
+        if models == "models" && endpoint == "endpoint")
+        || matches!(path, [models, _, auth, field]
+        if models == "models" && auth == "auth" && is_auth_interpolation_field(field))
+        || matches!(path, [models, _, headers, _]
+            if models == "models" && headers == "headers")
+}
+
+fn is_auth_interpolation_field(field: &str) -> bool {
+    matches!(
+        field,
+        "value" | "token" | "api_key" | "access_key_id" | "secret_access_key" | "session_token"
+    )
+}
+
+fn interpolate_string(
+    value: &str,
+    layer: RuleSource,
+    source_path: &Path,
+    key_path: &[String],
+) -> Result<String, ConfigError> {
+    let mut result = String::with_capacity(value.len());
+    let mut cursor = 0;
+
+    while let Some(offset) = value[cursor..].find('$') {
+        let dollar = cursor + offset;
+        result.push_str(&value[cursor..dollar]);
+        let bytes = value.as_bytes();
+        if bytes.get(dollar + 1) == Some(&b'$') {
+            result.push('$');
+            cursor = dollar + 2;
+            continue;
+        }
+        if !value[dollar..].starts_with("${env:") {
+            result.push('$');
+            cursor = dollar + 1;
+            continue;
+        }
+
+        let name_start = dollar + "${env:".len();
+        let Some(first) = bytes.get(name_start) else {
+            result.push('$');
+            cursor = dollar + 1;
+            continue;
+        };
+        if !first.is_ascii_alphabetic() && *first != b'_' {
+            result.push('$');
+            cursor = dollar + 1;
+            continue;
+        }
+        let mut name_end = name_start + 1;
+        while bytes
+            .get(name_end)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        {
+            name_end += 1;
+        }
+        if bytes.get(name_end) != Some(&b'}') {
+            result.push('$');
+            cursor = dollar + 1;
+            continue;
+        }
+
+        let variable = &value[name_start..name_end];
+        let resolved = match env::var_os(variable) {
+            Some(value) => {
+                value
+                    .into_string()
+                    .map_err(|_| ConfigError::EnvironmentInterpolation {
+                        layer,
+                        path: source_path.to_owned(),
+                        key: key_path.join("."),
+                        variable: variable.to_owned(),
+                        reason: "value is not valid UTF-8",
+                    })?
+            }
+            None => {
+                return Err(ConfigError::EnvironmentInterpolation {
+                    layer,
+                    path: source_path.to_owned(),
+                    key: key_path.join("."),
+                    variable: variable.to_owned(),
+                    reason: "variable is not set",
+                });
+            }
+        };
+        result.push_str(&resolved);
+        cursor = name_end + 1;
+    }
+    result.push_str(&value[cursor..]);
+    Ok(result)
 }
 
 fn merge_value(base: &mut Value, overlay: Value, source: RuleSource, path: &[String]) {
@@ -756,7 +1275,6 @@ const fn source_name(source: RuleSource) -> &'static str {
         RuleSource::Builtin => "builtin",
         RuleSource::User => "user",
         RuleSource::Workspace => "workspace",
-        RuleSource::Env => "env",
         RuleSource::Profile => "profile",
     }
 }
@@ -806,412 +1324,4 @@ fn wildcard_match(pattern: &str, resource: &str) -> bool {
         pattern_index += 1;
     }
     pattern_index == pattern.len()
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct TrustStore {
-    #[serde(default)]
-    entries: BTreeMap<String, TrustEntry>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct TrustEntry {
-    content_hash: String,
-}
-
-#[derive(Debug, Error)]
-pub enum TrustError {
-    #[error("could not determine the home directory")]
-    HomeUnavailable,
-    #[error("could not canonicalize workspace {path}: {source}")]
-    Canonicalize {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error("could not read trust store {path}: {source}")]
-    Read {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error("could not parse trust store {path}: {source}")]
-    Parse {
-        path: PathBuf,
-        #[source]
-        source: serde_json::Error,
-    },
-    #[error("could not write trust store {path}: {source}")]
-    Write {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error("could not encode trust store: {0}")]
-    Encode(#[source] serde_json::Error),
-}
-
-impl TrustStore {
-    pub fn load(path: &Path) -> Result<Self, TrustError> {
-        match fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|source| TrustError::Parse {
-                path: path.to_owned(),
-                source,
-            }),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(source) => Err(TrustError::Read {
-                path: path.to_owned(),
-                source,
-            }),
-        }
-    }
-
-    pub fn is_trusted(&self, workspace: &Path, config_bytes: &[u8]) -> Result<bool, TrustError> {
-        let workspace = canonical_workspace(workspace)?;
-        Ok(self
-            .entries
-            .get(&workspace)
-            .is_some_and(|entry| entry.content_hash == config_hash(config_bytes)))
-    }
-
-    pub fn needs_retrust(&self, workspace: &Path, config_bytes: &[u8]) -> Result<bool, TrustError> {
-        Ok(!self.is_trusted(workspace, config_bytes)?)
-    }
-
-    pub fn record_trust(
-        &mut self,
-        workspace: &Path,
-        config_bytes: &[u8],
-    ) -> Result<(), TrustError> {
-        self.entries.insert(
-            canonical_workspace(workspace)?,
-            TrustEntry {
-                content_hash: config_hash(config_bytes),
-            },
-        );
-        Ok(())
-    }
-
-    pub fn save(&self, path: &Path) -> Result<(), TrustError> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|source| TrustError::Write {
-                path: path.to_owned(),
-                source,
-            })?;
-        }
-        let bytes = serde_json::to_vec_pretty(self).map_err(TrustError::Encode)?;
-        fs::write(path, bytes).map_err(|source| TrustError::Write {
-            path: path.to_owned(),
-            source,
-        })
-    }
-}
-
-pub fn trust_store_path() -> Result<PathBuf, TrustError> {
-    let home = env::var_os("HOME").ok_or(TrustError::HomeUnavailable)?;
-    Ok(PathBuf::from(home).join(".local/share/cookie_agent/trust.json"))
-}
-
-pub fn is_trusted(workspace: &Path, config_bytes: &[u8]) -> Result<bool, TrustError> {
-    TrustStore::load(&trust_store_path()?)?.is_trusted(workspace, config_bytes)
-}
-
-pub fn needs_retrust(workspace: &Path, config_bytes: &[u8]) -> Result<bool, TrustError> {
-    TrustStore::load(&trust_store_path()?)?.needs_retrust(workspace, config_bytes)
-}
-
-pub fn record_trust(workspace: &Path, config_bytes: &[u8]) -> Result<(), TrustError> {
-    let path = trust_store_path()?;
-    let mut store = TrustStore::load(&path)?;
-    store.record_trust(workspace, config_bytes)?;
-    store.save(&path)
-}
-
-fn canonical_workspace(workspace: &Path) -> Result<String, TrustError> {
-    workspace
-        .canonicalize()
-        .map(|path| path.to_string_lossy().into_owned())
-        .map_err(|source| TrustError::Canonicalize {
-            path: workspace.to_owned(),
-            source,
-        })
-}
-
-fn config_hash(bytes: &[u8]) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    hasher.write(bytes);
-    format!("{:016x}", hasher.finish())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use insta::assert_json_snapshot;
-    use tempfile::TempDir;
-
-    use super::*;
-
-    const BASE: &str = r#"
-[providers.test]
-type = "openai-compatible"
-base_url = "http://localhost/v1"
-
-[agents.primary]
-type = "primary"
-models = [{ provider = "test", model = "one" }]
-tools = ["read", "bash"]
-
-[agents.primary.delegation]
-enabled = true
-allowed_profiles = ["worker"]
-
-[agents.worker]
-type = "subagent"
-models = [{ provider = "test", model = "two" }]
-tools = ["read"]
-"#;
-
-    fn config_tree() -> (TempDir, PathBuf, PathBuf) {
-        let temp = TempDir::new().expect("tempdir");
-        let user = temp.path().join("user.toml");
-        let workspace = temp.path().join("workspace.toml");
-        (temp, user, workspace)
-    }
-
-    fn write(path: &Path, contents: &str) {
-        fs::write(path, contents).expect("write config");
-    }
-
-    #[test]
-    fn layers_replace_normal_arrays_and_append_rules() {
-        let (_temp, user, workspace) = config_tree();
-        write(
-            &user,
-            &format!(
-                "{BASE}\n[agents.primary.permissions]\nread = \"allow\"\n[[agents.primary.permissions.rules]]\nid = \"user\"\naction = \"bash\"\nresource = \"git status *\"\neffect = \"allow\"\n"
-            ),
-        );
-        write(
-            &workspace,
-            "[server]\nport = 8000\n[agents.primary]\ntools = [\"grep\"]\n[agents.primary.permissions]\n[[agents.primary.permissions.rules]]\nid = \"workspace\"\naction = \"bash\"\nresource = \"git push *\"\neffect = \"deny\"\n",
-        );
-
-        let config = load_layered(Some(&user), Some(&workspace)).expect("load config");
-        assert_eq!(config.server.port, 8000);
-        assert_eq!(config.agents["primary"].tools, ["grep"]);
-        let rules = &config.agents["primary"].permissions.rules;
-        assert_eq!(
-            rules
-                .iter()
-                .map(|rule| rule.id.as_str())
-                .collect::<Vec<_>>(),
-            ["user", "workspace"]
-        );
-        assert_eq!(rules[0].source, RuleSource::User);
-        assert_eq!(rules[1].source, RuleSource::Workspace);
-    }
-
-    #[test]
-    fn validates_every_cross_reference_and_permission_failure() {
-        let cases = [
-            (
-                "[agents.a]\ntype = \"primary\"\nmodels = []",
-                "empty model chain",
-            ),
-            (
-                "[agents.a]\nmodels = [{ provider = \"missing\", model = \"x\" }]",
-                "unknown provider",
-            ),
-            (
-                "[providers.p]\ntype = \"anthropic\"\n[agents.a]\nmodels = [{ provider = \"p\", model = \"x\" }]\n[agents.a.delegation]\nallowed_profiles = [\"missing\"]",
-                "unknown profile",
-            ),
-            (
-                "[providers.p]\ntype = \"anthropic\"\n[agents.a]\nmodels = [{ provider = \"p\", model = \"x\" }]\n[agents.b]\ntype = \"primary\"\nmodels = [{ provider = \"p\", model = \"x\" }]\n[agents.a.delegation]\nallowed_profiles = [\"b\"]",
-                "primary-only",
-            ),
-            (
-                "[providers.p]\ntype = \"anthropic\"\n[agents.a]\nmodels = [{ provider = \"p\", model = \"x\" }]\n[agents.a.delegation]\nenabled = true",
-                "no allowed profiles",
-            ),
-            ("[permissions]\nread = \"sometimes\"", "invalid read tier"),
-            (
-                "[permissions]\n[[permissions.rules]]\nid = \"bad\"\naction = \"bash\"\nresource = \"x\"\neffect = \"maybe\"",
-                "invalid permission effect",
-            ),
-        ];
-        for (input, expected) in cases {
-            let (_temp, user, workspace) = config_tree();
-            write(&workspace, input);
-            let error = load_layered(Some(&user), Some(&workspace)).expect_err("invalid config");
-            assert!(error.to_string().contains(expected), "{error}");
-        }
-    }
-
-    #[test]
-    fn snapshot_includes_global_and_own_rules_only() {
-        let (_temp, user, workspace) = config_tree();
-        write(
-            &workspace,
-            &format!(
-                "{BASE}\n[[permissions.rules]]\nid = \"global\"\naction = \"read\"\nresource = \"*\"\neffect = \"allow\"\n[[agents.primary.permissions.rules]]\nid = \"primary\"\naction = \"bash\"\nresource = \"git status *\"\neffect = \"allow\"\n[[agents.worker.permissions.rules]]\nid = \"worker\"\naction = \"bash\"\nresource = \"*\"\neffect = \"deny\"\n"
-            ),
-        );
-        let config = load_layered(Some(&user), Some(&workspace)).expect("load config");
-        let snapshot = config.materialize_policy("primary").expect("snapshot");
-        assert_eq!(snapshot.models[0].model, "one");
-        assert_eq!(
-            snapshot
-                .permissions
-                .rules
-                .iter()
-                .map(|rule| rule.id.as_str())
-                .collect::<Vec<_>>(),
-            ["global", "primary"]
-        );
-        assert_eq!(snapshot.permissions.rules[1].source, RuleSource::Profile);
-        assert_eq!(snapshot.delegation.depth_limit, DepthLimit::Unlimited);
-        assert_eq!(
-            config
-                .materialize_child_policy("worker", DepthLimit::Finite(2))
-                .expect("child snapshot")
-                .delegation
-                .depth_limit,
-            DepthLimit::Finite(1)
-        );
-        assert_eq!(
-            DepthLimit::for_child(Some(4), DepthLimit::Finite(2)),
-            DepthLimit::Finite(1)
-        );
-    }
-
-    #[test]
-    fn materialized_policy_snapshot_is_stable() {
-        let (_temp, user, workspace) = config_tree();
-        write(
-            &workspace,
-            &format!(
-                "{BASE}\n[[permissions.rules]]\nid = \"global\"\naction = \"read\"\nresource = \"*\"\neffect = \"allow\"\n[[agents.primary.permissions.rules]]\nid = \"primary\"\naction = \"bash\"\nresource = \"git status *\"\neffect = \"allow\"\n"
-            ),
-        );
-        let config = load_layered(Some(&user), Some(&workspace)).expect("load config");
-        assert_json_snapshot!(
-            config
-                .materialize_policy("primary")
-                .expect("policy snapshot")
-        );
-    }
-
-    #[test]
-    fn parses_internal_profiles_and_defaults_enabled() {
-        let (_temp, user, workspace) = config_tree();
-        write(&workspace, "[agents.maintenance]\ntype = \"internal\"");
-
-        let config = load_layered(Some(&user), Some(&workspace)).expect("load config");
-        let profile = &config.agents["maintenance"];
-        assert_eq!(profile.r#type, AgentType::Internal);
-        assert!(profile.enabled);
-    }
-
-    #[test]
-    fn rejects_disabled_internal_profiles_and_internal_delegate_targets() {
-        let cases = [
-            (
-                "[agents.maintenance]\ntype = \"internal\"\nenabled = false",
-                "internal agents cannot be disabled",
-            ),
-            (
-                "[providers.p]\ntype = \"anthropic\"\n[agents.primary]\ntype = \"primary\"\nmodels = [{ provider = \"p\", model = \"x\" }]\n[agents.primary.delegation]\nallowed_profiles = [\"compaction\"]",
-                "allows internal profile",
-            ),
-        ];
-        for (input, expected) in cases {
-            let (_temp, user, workspace) = config_tree();
-            write(&workspace, input);
-            let error = load_layered(Some(&user), Some(&workspace)).expect_err("invalid config");
-            assert!(error.to_string().contains(expected), "{error}");
-        }
-    }
-
-    #[test]
-    fn compaction_is_builtin_and_cannot_be_disabled() {
-        let (_temp, user, workspace) = config_tree();
-        write(&workspace, "[agents.compaction]\ntools = [\"read\"]");
-        let config = load_layered(Some(&user), Some(&workspace)).expect("load config");
-        let compaction = &config.agents["compaction"];
-        assert_eq!(compaction.r#type, AgentType::Internal);
-        assert!(compaction.enabled);
-        assert_eq!(compaction.tools, ["read"]);
-        assert!(compaction.models.is_empty());
-
-        write(&workspace, "[agents.compaction]\nenabled = false");
-        let error = load_layered(Some(&user), Some(&workspace)).expect_err("invalid config");
-        assert!(
-            error
-                .to_string()
-                .contains("internal agents cannot be disabled")
-        );
-    }
-
-    #[test]
-    fn empty_model_chains_are_inherited_by_children_but_rejected_at_roots() {
-        let (_temp, user, workspace) = config_tree();
-        write(
-            &workspace,
-            "[providers.p]\ntype = \"anthropic\"\n[agents.root]\ntype = \"primary\"\nmodels = [{ provider = \"p\", model = \"root\" }]\n[agents.child]\ntype = \"subagent\"\n[agents.all_child]\ntype = \"all\"\n[agents.internal_child]\ntype = \"internal\"",
-        );
-        let config = load_layered(Some(&user), Some(&workspace)).expect("load config");
-        let parent = config.materialize_policy("root").expect("root snapshot");
-        let child = config
-            .materialize_child_policy("child", &parent)
-            .expect("child snapshot");
-        assert_eq!(child.models, parent.models);
-        assert!(config.materialize_policy("all_child").is_err());
-        assert!(config.materialize_policy("internal_child").is_err());
-
-        write(
-            &workspace,
-            "[agents.root]\ntype = \"primary\"\n[agents.child]\ntype = \"subagent\"\n[agents.all_child]\ntype = \"all\"\n[agents.internal_child]\ntype = \"internal\"",
-        );
-        let error = load_layered(Some(&user), Some(&workspace)).expect_err("invalid config");
-        assert!(error.to_string().contains("empty model chain"));
-    }
-
-    #[test]
-    fn trust_store_requires_retrust_after_config_changes() {
-        let temp = TempDir::new().expect("tempdir");
-        let workspace = temp.path().join("workspace");
-        fs::create_dir(&workspace).expect("workspace");
-        let store_path = temp.path().join("trust.json");
-        let bytes = b"[server]\nport = 7419\n";
-
-        let mut store = TrustStore::load(&store_path).expect("empty store");
-        assert!(store.needs_retrust(&workspace, bytes).expect("check trust"));
-        store.record_trust(&workspace, bytes).expect("record trust");
-        store.save(&store_path).expect("save trust");
-
-        let store = TrustStore::load(&store_path).expect("load trust");
-        assert!(store.is_trusted(&workspace, bytes).expect("trusted"));
-        assert!(
-            store
-                .needs_retrust(&workspace, b"changed")
-                .expect("changed")
-        );
-    }
-
-    #[test]
-    fn wildcard_matches_documented_and_edge_cases() {
-        assert!(simple_wildcard_match("git status *", "git status"));
-        assert!(simple_wildcard_match(
-            "git status *",
-            "git status --porcelain"
-        ));
-        assert!(simple_wildcard_match("*", "dir/nested/file"));
-        assert!(simple_wildcard_match("file?.txt", "file1.txt"));
-        assert!(!simple_wildcard_match("file?.txt", "file12.txt"));
-        assert!(simple_wildcard_match("", ""));
-        assert!(!simple_wildcard_match("", "x"));
-        assert!(!simple_wildcard_match("git status *", "git stash"));
-    }
 }

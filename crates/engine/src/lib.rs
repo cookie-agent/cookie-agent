@@ -2,7 +2,9 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    fs,
     future::Future,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
@@ -17,23 +19,39 @@ use std::sync::mpsc as std_mpsc;
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_config::{
-    AgentType as ConfigAgentType, Config, DepthLimit as ConfigDepthLimit, PolicySnapshot,
+    AgentType as ConfigAgentType, CompactionPersistencePolicy, Config,
+    DepthLimit as ConfigDepthLimit, InternalModelAgentConfig, PolicySnapshot,
 };
+use cookie_agent_models::ModelSetManager;
 use cookie_agent_protocol::{
-    AgentDescriptor, AgentListResult, AgentType, ApprovalDecision, ApprovalRespondResult,
-    ApprovedScope, ChildSummary, Event, EventEnvelope, EventSubscriptionMessage,
-    EventsSubscribeResult, InvocationId, ModelRef, RunCancelResult, RunId, RunStartParams,
-    RunStartResult, RunSteerResult, RunToolStdinParams, RunToolStdinResult, SessionId, SessionMeta,
-    SessionOrigin, SessionStatus, ToolCallId, TurnOpaque,
-};
-use cookie_agent_providers::{
-    ContentPart, ModelId, ModelRef as ProviderModelRef, NormalizedEvent, Provider, ProviderError,
-    ProviderErrorClass, ProviderMessage, ProviderProtocol, ProviderRequest, StopReason,
-    ToolDefinition,
+    AgentDescriptor, AgentListResult, AgentType, ApprovalConstraints, ApprovalDecisionSource,
+    ApprovalEvaluation, ApprovalFinalDecision, ApprovalFinalOutcome, ApprovalId,
+    ApprovalInternalDecision, ApprovalInternalDecisionKind, ApprovalListResult, ApprovalReasonCode,
+    ApprovalRecord, ApprovalRequest, ApprovalRespondErrorCode, ApprovalRespondParams,
+    ApprovalRespondResult, ApprovalStatus, ApprovalTrigger, ApprovalUserDecision,
+    ArtifactReference, ChildSummary, ContextCheckpoint, ContextCheckpointBoundaries,
+    ContextCheckpointBudgets, ContextCheckpointCommit, Event, EventEnvelope,
+    EventSubscriptionMessage, EventsSubscribeResult, InternalAgentBackend, InternalAgentFailure,
+    InternalAgentInvocationId, InternalAgentKind, InternalAgentRunId, InternalSummaryCheckpoint,
+    InvocationId, ModelRef, NativeContextArtifact, OperationFingerprint, OutputStream,
+    PersistedAssistantPart, PersistedModelTurn, PreparedOperationIdentity, ProfileIdentity,
+    RunCancelResult, RunId, RunStartParams, RunStartResult, RunSteerResult, RunToolStdinParams,
+    RunToolStdinResult, SafeInternalAgentCall, SafeInternalAgentResult, SessionId, SessionMeta,
+    SessionOrigin, SessionRenameChange, SessionRenameParams, SessionRenameResult, SessionStatus,
+    SessionTitle, SessionTitleCommit, Sha256Digest, SummaryByteLimit, ToolAttachment,
+    ToolCallFailureCode, ToolCallId, ToolOutputTruncation, TreeApprovalGrant,
 };
 use futures_util::StreamExt;
+use oven_sdk::{
+    CompactionCapability, CompactionRequest, JsonSchema, ModelError, Request as ModelRequest,
+    ToolDefinition,
+};
+use rustix::fs::{
+    AtFlags, Dir, FileType, Mode, OFlags, fchmod, fsync, openat, renameat, statat, unlinkat,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -43,15 +61,33 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub mod actor;
+#[cfg(test)]
+mod delegation_tests;
 pub mod events;
+pub mod grant_journal;
 pub mod journal;
+mod media;
+mod model_bridge;
+mod model_history;
+mod model_policy;
 pub mod permissions;
+#[cfg(test)]
+mod prepared_tests;
+#[cfg(test)]
+mod responses_fixture_tests;
 pub mod run;
+#[cfg(test)]
+mod security_tests;
 pub mod session;
 
 use actor::SessionActor;
 use events::{EventLogError, OutputHub};
+use grant_journal::{GrantInvalidationJournal, GrantJournalError};
 use journal::{DelegationJournal, JournalError};
+pub use media::approved_media_type;
+use model_bridge::{AbortBridge, TurnAccumulator};
+use model_history::{assemble_model_context, persist_turn, replay_decisions, wire_model};
+use model_policy::{ErrorPolicy, classify as classify_model_error, summary as model_error_summary};
 use permissions::{ApprovalStore, PermissionPipeline};
 use session::{SessionError, SessionStore};
 
@@ -71,11 +107,7 @@ pub struct ToolCall {
     pub name: String,
     pub arguments: Value,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ToolResult {
-    pub content: String,
-    pub truncated: bool,
-}
+pub use cookie_agent_protocol::ToolResult;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolProgress {
     pub tool_call_id: ToolCallId,
@@ -154,11 +186,27 @@ impl Drop for DelegateAwait {
 pub struct ProgressSink {
     sender: mpsc::Sender<ToolProgress>,
     output: OutputHub,
+    capture: Option<OutputCapture>,
 }
 impl ProgressSink {
     #[must_use]
     pub fn new(sender: mpsc::Sender<ToolProgress>, output: OutputHub) -> Self {
-        Self { sender, output }
+        Self {
+            sender,
+            output,
+            capture: None,
+        }
+    }
+    fn with_capture(
+        sender: mpsc::Sender<ToolProgress>,
+        output: OutputHub,
+        capture: OutputCapture,
+    ) -> Self {
+        Self {
+            sender,
+            output,
+            capture: Some(capture),
+        }
     }
     pub async fn send(&self, progress: ToolProgress) -> Result<(), ToolError> {
         self.sender
@@ -166,8 +214,11 @@ impl ProgressSink {
             .await
             .map_err(|_| ToolError::ProgressSinkClosed)
     }
-    pub fn output(&self, stream: cookie_agent_protocol::OutputStream, data: &[u8]) {
+    pub fn output(&self, stream: OutputStream, data: &[u8]) {
         self.output.emit(stream, data);
+        if let Some(capture) = &self.capture {
+            capture.write(stream, data);
+        }
     }
 }
 
@@ -199,17 +250,47 @@ pub struct StdinWrite {
     pub eof: bool,
 }
 
-#[derive(Debug)]
-pub struct ToolInvocationContext {
+#[derive(Clone, Debug)]
+pub struct ToolPreparationContext {
     pub session: SessionId,
     pub run: RunId,
-    /// Resolved working directory frozen in the session metadata.
     pub cwd: PathBuf,
-    /// Workspace root used for permission canonicalization.
     pub workspace_root: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct ToolExecutionContext {
+    pub session: SessionId,
+    pub run: RunId,
     pub progress: ProgressSink,
     pub cancellation: CancellationToken,
     pub stdin: Option<ToolStdin>,
+    artifacts: Arc<ArtifactStore>,
+}
+
+impl ToolExecutionContext {
+    pub fn retain_attachment(
+        &self,
+        mime_type: impl Into<String>,
+        filename: Option<String>,
+        bytes: &[u8],
+    ) -> Result<ToolAttachment, ToolError> {
+        let mime_type = mime_type.into();
+        let path = filename.as_deref().map_or_else(PathBuf::new, PathBuf::from);
+        validate_attachment(&mime_type, &path, bytes)?;
+        let (reference, sha256) = self
+            .artifacts
+            .retain(bytes)
+            .map_err(|error| ToolError::execution(error.to_string()))?;
+        Ok(ToolAttachment {
+            mime_type,
+            filename,
+            byte_length: bytes.len() as u64,
+            sha256: Sha256Digest::new(sha256)
+                .map_err(|error| ToolError::execution(error.to_string()))?,
+            reference,
+        })
+    }
 }
 #[derive(Debug, Error)]
 pub enum ToolError {
@@ -217,15 +298,159 @@ pub enum ToolError {
     ProgressSinkClosed,
     #[error("tool failed: {0}")]
     Failed(String),
+    #[error("prepared operation changed: {0}")]
+    OperationChanged(String),
+    #[error("unsupported prepared-operation security: {0}")]
+    UnsupportedSecurity(String),
+    #[error("prepared operation is unsupported on this platform: {0}")]
+    UnsupportedPlatform(String),
+    #[error("prepared capability resource limit exceeded: {0}")]
+    ResourceLimit(String),
 }
+
+impl ToolError {
+    #[must_use]
+    pub fn operation_changed(message: impl Into<String>) -> Self {
+        Self::OperationChanged(message.into())
+    }
+
+    #[must_use]
+    pub fn unsupported_security(message: impl Into<String>) -> Self {
+        Self::UnsupportedSecurity(message.into())
+    }
+
+    #[must_use]
+    pub fn unsupported_platform(message: impl Into<String>) -> Self {
+        Self::UnsupportedPlatform(message.into())
+    }
+
+    #[must_use]
+    pub fn resource_limit(message: impl Into<String>) -> Self {
+        Self::ResourceLimit(message.into())
+    }
+
+    #[must_use]
+    pub fn execution(message: impl Into<String>) -> Self {
+        Self::Failed(message.into())
+    }
+
+    #[must_use]
+    pub const fn code(&self) -> ToolCallFailureCode {
+        match self {
+            Self::ProgressSinkClosed => ToolCallFailureCode::ExecutionFailed,
+            Self::Failed(_) => ToolCallFailureCode::ExecutionFailed,
+            Self::OperationChanged(_) => ToolCallFailureCode::OperationChanged,
+            Self::UnsupportedSecurity(_) | Self::ResourceLimit(_) => {
+                ToolCallFailureCode::ExecutionFailed
+            }
+            Self::UnsupportedPlatform(_) => ToolCallFailureCode::UnsupportedPlatform,
+        }
+    }
+
+    #[must_use]
+    pub fn message(&self) -> String {
+        match self {
+            Self::ProgressSinkClosed => "tool progress sink closed".into(),
+            Self::Failed(message)
+            | Self::OperationChanged(message)
+            | Self::UnsupportedSecurity(message)
+            | Self::UnsupportedPlatform(message)
+            | Self::ResourceLimit(message) => message.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct PreparedSerializationKey(Vec<u8>);
+
+impl PreparedSerializationKey {
+    #[must_use]
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
+        Self(bytes.into())
+    }
+}
+
+#[async_trait]
+pub trait PreparedExecutor: Send + Sync {
+    async fn revalidate(&self) -> Result<(), ToolError>;
+
+    async fn execute(
+        self: Box<Self>,
+        context: ToolExecutionContext,
+    ) -> Result<ToolResult, ToolError>;
+}
+
+pub struct PreparedTool {
+    operation: PreparedOperationIdentity,
+    policy_labels: Vec<String>,
+    serialization_key: Option<PreparedSerializationKey>,
+    executor: PreparedExecutorCell,
+}
+
+type PreparedExecutorCell = Arc<tokio::sync::Mutex<Option<Box<dyn PreparedExecutor>>>>;
+
+impl PreparedTool {
+    #[must_use]
+    pub fn new(
+        operation: PreparedOperationIdentity,
+        serialization_key: Option<PreparedSerializationKey>,
+        executor: Box<dyn PreparedExecutor>,
+    ) -> Self {
+        let policy_labels = operation
+            .resources()
+            .iter()
+            .map(|resource| resource.canonical.as_str().to_owned())
+            .collect();
+        Self {
+            operation,
+            policy_labels,
+            serialization_key,
+            executor: Arc::new(tokio::sync::Mutex::new(Some(executor))),
+        }
+    }
+
+    #[must_use]
+    pub const fn operation(&self) -> &PreparedOperationIdentity {
+        &self.operation
+    }
+
+    pub fn with_policy_labels(mut self, labels: Vec<String>) -> Result<Self, ToolError> {
+        if labels.len() != self.operation.resources().len() {
+            return Err(ToolError::execution(
+                "prepared policy labels do not cover every resource",
+            ));
+        }
+        for (resource, label) in self.operation.resources().iter().zip(&labels) {
+            let expected = Sha256Digest::of_bytes(label.as_bytes());
+            if resource
+                .canonical
+                .as_str()
+                .rsplit_once(':')
+                .is_none_or(|(_, digest)| digest != expected.as_str())
+            {
+                return Err(ToolError::execution(
+                    "prepared policy label does not match its immutable resource identity",
+                ));
+            }
+        }
+        self.policy_labels = labels;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn policy_labels(&self) -> &[String] {
+        &self.policy_labels
+    }
+}
+
 #[async_trait]
 pub trait ToolProvider: Send + Sync {
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError>;
-    async fn invoke(
+    async fn prepare(
         &self,
-        ctx: ToolInvocationContext,
+        ctx: ToolPreparationContext,
         call: ToolCall,
-    ) -> Result<ToolResult, ToolError>;
+    ) -> Result<PreparedTool, ToolError>;
 }
 
 #[derive(Clone)]
@@ -233,7 +458,7 @@ pub struct EngineOptions {
     pub data_dir: PathBuf,
     pub cwd: PathBuf,
     pub config: Config,
-    pub providers: HashMap<String, Arc<dyn Provider>>,
+    pub model_manager: Arc<ModelSetManager>,
     pub tools: Vec<Arc<dyn ToolProvider>>,
 }
 
@@ -245,10 +470,16 @@ pub enum EngineError {
     Journal(#[from] JournalError),
     #[error(transparent)]
     Event(#[from] EventLogError),
+    #[error(transparent)]
+    GrantJournal(#[from] GrantJournalError),
+    #[error("tool output storage error: {0}")]
+    ToolOutput(#[from] std::io::Error),
     #[error("configuration error: {0}")]
     Config(#[source] Box<cookie_agent_config::ConfigError>),
     #[error("profile `{0}` is subagent-only")]
     SubagentOnly(String),
+    #[error("profile `{0}` is disabled")]
+    DisabledProfile(String),
     #[error("run {0} not found")]
     MissingRun(RunId),
     #[error("session {0} is already running")]
@@ -257,10 +488,23 @@ pub enum EngineError {
     RunIdempotencyConflict,
     #[error("tool call is not running or is not interactive")]
     StdinUnavailable,
+    #[error("approval `{approval_id}` is not pending for session {session_id}")]
+    ApprovalNotPending {
+        session_id: SessionId,
+        approval_id: ApprovalId,
+    },
+    #[error("approval response conflicts with durable approval state")]
+    ApprovalConflict,
+    #[error("approval response was rejected: {0:?}")]
+    ApprovalResponse(Box<ApprovalRespondFailure>),
+    #[error("client rename id conflicts with a durable rename operation")]
+    RenameConflict,
     #[error("invalid base64 stdin: {0}")]
     Base64(#[from] base64::DecodeError),
-    #[error("provider failure: {0}")]
-    Provider(#[from] cookie_agent_providers::ProviderError),
+    #[error("model failure: {0}")]
+    Model(Box<ModelError>),
+    #[error("model history failure: {0}")]
+    ModelHistory(#[from] model_history::HistoryError),
     #[error("tool `{0}` is unavailable")]
     MissingTool(String),
     #[error("session actor for {0} is unavailable")]
@@ -269,9 +513,30 @@ pub enum EngineError {
     ActorStopped,
 }
 
+/// Atomic, secret-safe rejection details produced by the serialized approval transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApprovalRespondFailure {
+    pub code: ApprovalRespondErrorCode,
+    pub session_id: SessionId,
+    pub approval_id: ApprovalId,
+    pub client_response_id: String,
+    pub current_status: Option<ApprovalStatus>,
+    pub current_revision: Option<u64>,
+    pub current_expires_at: Option<jiff::Timestamp>,
+    pub current_operation_fingerprint: Option<OperationFingerprint>,
+}
+
+impl From<ModelError> for EngineError {
+    fn from(error: ModelError) -> Self {
+        Self::Model(Box::new(error))
+    }
+}
+
 #[derive(Debug)]
 struct ActiveRun {
     session: SessionId,
+    policy: Arc<PolicySnapshot>,
+    internal_agents: AcceptedInternalAgents,
     cancellation: CancellationToken,
     cancelled_committed: Mutex<bool>,
     stdin: Mutex<HashMap<ToolCallId, mpsc::Sender<StdinWrite>>>,
@@ -279,22 +544,138 @@ struct ActiveRun {
     prompt_seq: AtomicU64,
 }
 
-struct AttemptEvents {
-    events: Vec<NormalizedEvent>,
-    protocol: Option<ProviderProtocol>,
+struct AttemptTurn {
+    turn: PersistedModelTurn,
 }
 
-struct EmittedToolCall {
-    assistant_index: usize,
-    call_index: usize,
-    segment: u64,
-    run_id: RunId,
-    provider_tool_call_id: String,
-    result: Option<cookie_agent_providers::ToolResult>,
+#[derive(Clone, Debug)]
+struct ApprovalOutcome {
+    approved: bool,
+    feedback: Option<String>,
+}
+
+struct PendingApproval {
+    sender: oneshot::Sender<ApprovalOutcome>,
+    executor: PreparedExecutorCell,
+}
+
+#[derive(Clone, Copy)]
+enum PreparedApprovalInvalidation {
+    OperationChanged,
+    PreparedCapabilityLost,
+}
+
+#[derive(Clone, Copy)]
+enum ApprovalTerminal {
+    Cancelled,
+    Expired,
+}
+
+enum ApprovalEvaluationTransition {
+    Resolved(ApprovalOutcome),
+    Escalated(oneshot::Receiver<ApprovalOutcome>),
+}
+
+struct PreparedToolCall {
+    call: ToolCall,
+    prepared: Result<PreparedTool, ToolFailure>,
+}
+
+#[derive(Clone, Debug)]
+struct ToolFailure {
+    code: ToolCallFailureCode,
+    message: String,
+}
+
+impl From<ToolError> for ToolFailure {
+    fn from(error: ToolError) -> Self {
+        Self {
+            code: error.code(),
+            message: error.message(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FrozenInternalAgentProfile {
+    snapshot: cookie_agent_protocol::ProfileSnapshot,
+    models: Vec<cookie_agent_models::FrozenModelBinding>,
+    limits: InternalModelAgentConfig,
+}
+
+struct InternalAgentRuntime {
+    approval: FrozenInternalAgentProfile,
+    context_compaction: FrozenInternalAgentProfile,
+    session_title: FrozenInternalAgentProfile,
+}
+
+#[derive(Clone, Debug)]
+struct AcceptedInternalAgents {
+    approval: FrozenInternalAgentProfile,
+    context_compaction: FrozenInternalAgentProfile,
+    session_title: FrozenInternalAgentProfile,
+}
+
+impl AcceptedInternalAgents {
+    fn profile(&self, kind: InternalAgentKind) -> &FrozenInternalAgentProfile {
+        match kind {
+            InternalAgentKind::Approval => &self.approval,
+            InternalAgentKind::ContextCompaction => &self.context_compaction,
+            InternalAgentKind::SessionTitle => &self.session_title,
+        }
+    }
+}
+
+impl InternalAgentRuntime {
+    fn freeze(config: &Config, manager: &ModelSetManager) -> Result<Self, EngineError> {
+        let snapshot = manager.current();
+        Ok(Self {
+            approval: freeze_internal_profile(
+                "approval",
+                &config.internal_agents.approval,
+                snapshot.model_set(),
+            )?,
+            context_compaction: freeze_internal_profile(
+                "context_compaction",
+                &config.internal_agents.context_compaction.profile,
+                snapshot.model_set(),
+            )?,
+            session_title: freeze_internal_profile(
+                "session_title",
+                &config.internal_agents.session_title.profile,
+                snapshot.model_set(),
+            )?,
+        })
+    }
+
+    fn accept(&self, owner: &PolicySnapshot) -> AcceptedInternalAgents {
+        AcceptedInternalAgents {
+            approval: inherit_internal_profile(&self.approval, owner),
+            context_compaction: inherit_internal_profile(&self.context_compaction, owner),
+            session_title: inherit_internal_profile(&self.session_title, owner),
+        }
+    }
+}
+
+struct InternalAgentTextResult {
+    invocation_id: InternalAgentInvocationId,
+    internal_run_id: InternalAgentRunId,
+    text: String,
+}
+
+enum PendingTool {
+    Prepared(PreparedToolCall),
+    ImmediateFailure(ToolFailure),
 }
 
 #[cfg(test)]
 struct PromptSnapshotHook {
+    reached: Mutex<Option<oneshot::Sender<()>>>,
+    release: tokio::sync::Notify,
+}
+
+#[cfg(test)]
+struct ApprovalEvaluationHook {
     reached: Mutex<Option<oneshot::Sender<()>>>,
     release: tokio::sync::Notify,
 }
@@ -332,6 +713,14 @@ struct PersistedSubscriber {
 
 const SESSION_MAILBOX_CAPACITY: usize = 256;
 const PERSISTED_SUBSCRIBER_QUEUE_CAPACITY: usize = 256;
+const MAX_PENDING_PREPARED_TOOLS: usize = 64;
+/// Semantic revision of the bounded-summary prompt/runtime contract.
+/// This is intentionally independent of the protocol and event schema version.
+const BOUNDED_SUMMARY_BUILTIN_REVISION: &str =
+    "context-compaction.bounded-summary.prompt-runtime.1";
+/// Semantic revision of the no-model builtin runtime contract.
+/// This is intentionally independent of the protocol and event schema version.
+const UNAVAILABLE_BUILTIN_REVISION: &str = "internal-agent.unavailable.runtime.1";
 
 #[allow(clippy::large_enum_variant)]
 enum SessionCommand {
@@ -379,10 +768,37 @@ enum SessionCommand {
     Resume {
         reply: oneshot::Sender<Result<SessionMeta, EngineError>>,
     },
+    Rename {
+        params: SessionRenameParams,
+        reply: oneshot::Sender<Result<SessionRenameResult, EngineError>>,
+    },
+    ApprovalRespond {
+        params: ApprovalRespondParams,
+        reply: oneshot::Sender<Result<ApprovalRespondResult, EngineError>>,
+    },
+    ApprovalCapabilityInvalid {
+        params: ApprovalRespondParams,
+        invalidation: PreparedApprovalInvalidation,
+        reply: oneshot::Sender<Result<ApprovalRespondResult, EngineError>>,
+    },
+    ApprovalEvaluationComplete {
+        run: RunId,
+        request: ApprovalRequest,
+        executor: PreparedExecutorCell,
+        decision: ApprovalInternalDecisionKind,
+        cancelled: bool,
+        reply: oneshot::Sender<Result<ApprovalEvaluationTransition, EngineError>>,
+    },
+    ApprovalTerminal {
+        run: RunId,
+        approval_id: ApprovalId,
+        terminal: ApprovalTerminal,
+        reply: oneshot::Sender<Result<bool, EngineError>>,
+    },
     ToolResult {
         run: RunId,
         tool_call_id: ToolCallId,
-        result: Result<ToolResult, String>,
+        result: Result<ToolResult, ToolFailure>,
         reply: oneshot::Sender<Result<bool, EngineError>>,
     },
     ResolveDelegateFailureIfPending {
@@ -412,9 +828,13 @@ enum SessionCommand {
 
 struct Inner {
     config: Config,
+    artifacts: Arc<ArtifactStore>,
+    mutation_locks: Mutex<HashMap<PreparedSerializationKey, Arc<tokio::sync::Mutex<()>>>>,
     store: Arc<SessionStore>,
     journal: Arc<DelegationJournal>,
-    providers: HashMap<String, Arc<dyn Provider>>,
+    grant_journal: Arc<GrantInvalidationJournal>,
+    model_manager: Arc<ModelSetManager>,
+    internal_agents: InternalAgentRuntime,
     tools: Mutex<Vec<Arc<dyn ToolProvider>>>,
     approvals: ApprovalStore,
     permissions: PermissionPipeline,
@@ -425,14 +845,18 @@ struct Inner {
     actors: Mutex<HashMap<SessionId, SessionActor<SessionCommand>>>,
     output_hubs: Mutex<HashMap<ToolCallId, OutputHub>>,
     finalized_output_hubs: Mutex<VecDeque<ToolCallId>>,
-    pending_approvals: Mutex<HashMap<String, oneshot::Sender<ApprovalDecision>>>,
+    pending_approvals: Mutex<HashMap<(SessionId, ApprovalId), PendingApproval>>,
     runtime: Option<tokio::runtime::Handle>,
     admission_tasks: Mutex<Vec<JoinHandle<()>>>,
     admission_blocking_tasks: Mutex<Vec<JoinHandle<()>>>,
     admission_tasks_closing: AtomicBool,
     recovery_waiters: Mutex<HashSet<(SessionId, RunId, ToolCallId)>>,
     #[cfg(test)]
+    test_model_set: Mutex<Option<cookie_agent_models::ModelSet>>,
+    #[cfg(test)]
     prompt_snapshot_hook: Mutex<Option<Arc<PromptSnapshotHook>>>,
+    #[cfg(test)]
+    approval_evaluation_hook: Mutex<Option<Arc<ApprovalEvaluationHook>>>,
     #[cfg(test)]
     gap_send_hook: Mutex<Option<GapSendHook>>,
     #[cfg(test)]
@@ -441,6 +865,651 @@ struct Inner {
     admission_blocking_hook: Mutex<Option<AdmissionBlockingHook>>,
     #[cfg(test)]
     abandoned_sweep_hook: Mutex<Option<AbandonedSweepHook>>,
+}
+
+const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+
+#[derive(Debug)]
+struct ArtifactStore {
+    directory_handle: Arc<fs::File>,
+    writes: Mutex<()>,
+}
+
+impl ArtifactStore {
+    fn open(directory: PathBuf) -> std::io::Result<Arc<Self>> {
+        prepare_private_directory(&directory)?;
+        let expected = fs::symlink_metadata(&directory)?;
+        let handle = rustix::fs::open(
+            &directory,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let handle = fs::File::from(handle);
+        ensure_same_object(&handle.metadata()?, &expected)?;
+        validate_owned_directory(&handle)?;
+        fchmod(&handle, Mode::from_raw_mode(0o700))?;
+        let store = Arc::new(Self {
+            directory_handle: Arc::new(handle),
+            writes: Mutex::new(()),
+        });
+        store.cleanup_temporary_artifacts()?;
+        store.validate_existing_artifacts()?;
+        Ok(store)
+    }
+
+    fn retain(&self, content: &[u8]) -> std::io::Result<(ArtifactReference, String)> {
+        let digest = sha256_hex(content);
+        let _write = self
+            .writes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(mut existing) = self.open_existing(&digest)? {
+            if hash_file(&mut existing)?.0 != digest {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "artifact digest collision or corrupt retained artifact",
+                ));
+            }
+        } else {
+            let temporary_name = format!(".{digest}.{}.tmp", Uuid::now_v7());
+            let result = (|| -> std::io::Result<()> {
+                let temporary = openat(
+                    &*self.directory_handle,
+                    &temporary_name,
+                    OFlags::WRONLY
+                        | OFlags::CREATE
+                        | OFlags::EXCL
+                        | OFlags::NOFOLLOW
+                        | OFlags::CLOEXEC,
+                    Mode::from_raw_mode(0o600),
+                )?;
+                let mut temporary = fs::File::from(temporary);
+                validate_owned_regular_file(&temporary)?;
+                temporary.write_all(content)?;
+                temporary.sync_all()?;
+                drop(temporary);
+                renameat(
+                    &*self.directory_handle,
+                    &temporary_name,
+                    &*self.directory_handle,
+                    &digest,
+                )?;
+                let final_file = self
+                    .open_existing(&digest)?
+                    .ok_or_else(|| std::io::Error::other("retained artifact disappeared"))?;
+                validate_owned_regular_file(&final_file)?;
+                fchmod(&final_file, Mode::from_raw_mode(0o600))?;
+                fsync(&*self.directory_handle)?;
+                Ok(())
+            })();
+            if result.is_err() {
+                let _ = unlinkat(&*self.directory_handle, &temporary_name, AtFlags::empty());
+            }
+            result?;
+        }
+        Ok((
+            ArtifactReference {
+                uri: format!("artifact://sha256/{digest}"),
+            },
+            digest,
+        ))
+    }
+
+    fn open_existing(&self, name: &str) -> std::io::Result<Option<fs::File>> {
+        match openat(
+            &*self.directory_handle,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(file) => {
+                let file = fs::File::from(file);
+                validate_owned_regular_file(&file)?;
+                fchmod(&file, Mode::from_raw_mode(0o600))?;
+                Ok(Some(file))
+            }
+            Err(error) if error == rustix::io::Errno::NOENT => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn cleanup_temporary_artifacts(&self) -> std::io::Result<()> {
+        for name in directory_names(&self.directory_handle)? {
+            if !valid_temporary_artifact_name(&name) {
+                continue;
+            }
+            let stat = statat(&*self.directory_handle, &name, AtFlags::SYMLINK_NOFOLLOW)?;
+            if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+                continue;
+            }
+            validate_stat_owner(&stat, "temporary artifact")?;
+            let Some(file) = self.open_existing(&name)? else {
+                continue;
+            };
+            validate_owned_regular_file(&file)?;
+            ensure_stat_same_object(&file.metadata()?, &stat)?;
+            unlinkat(&*self.directory_handle, &name, AtFlags::empty())?;
+        }
+        fsync(&*self.directory_handle)?;
+        Ok(())
+    }
+
+    fn validate_existing_artifacts(&self) -> std::io::Result<()> {
+        for name in directory_names(&self.directory_handle)? {
+            if is_digest_name(&name) {
+                let mut file = self.open_existing(&name)?.ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "existing artifact disappeared during validation",
+                    )
+                })?;
+                if hash_file(&mut file)?.0 != name {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "existing artifact content does not match its digest name",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn create_capture_file(&self, name: &str) -> std::io::Result<fs::File> {
+        if !valid_temporary_artifact_name(name) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid capture artifact name",
+            ));
+        }
+        let file = openat(
+            &*self.directory_handle,
+            name,
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        )?;
+        let file = fs::File::from(file);
+        validate_owned_regular_file(&file)?;
+        Ok(file)
+    }
+
+    fn commit_capture(&self, name: &str) -> std::io::Result<(CapturedArtifact, u64)> {
+        let _write = self
+            .writes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut temporary = self
+            .open_existing(name)?
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "capture missing"))?;
+        let (digest, byte_length, newlines) = hash_file(&mut temporary)?;
+        temporary.sync_all()?;
+        drop(temporary);
+        if let Some(mut existing) = self.open_existing(&digest)? {
+            if hash_file(&mut existing)?.0 != digest {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "artifact digest collision or corrupt retained artifact",
+                ));
+            }
+            unlinkat(&*self.directory_handle, name, AtFlags::empty())?;
+        } else {
+            renameat(
+                &*self.directory_handle,
+                name,
+                &*self.directory_handle,
+                &digest,
+            )?;
+            let final_file = self
+                .open_existing(&digest)?
+                .ok_or_else(|| std::io::Error::other("capture artifact disappeared"))?;
+            validate_owned_regular_file(&final_file)?;
+            fchmod(&final_file, Mode::from_raw_mode(0o600))?;
+        }
+        fsync(&*self.directory_handle)?;
+        Ok((
+            CapturedArtifact {
+                reference: ArtifactReference {
+                    uri: format!("artifact://sha256/{digest}"),
+                },
+                sha256: digest,
+                byte_length,
+            },
+            newlines,
+        ))
+    }
+
+    fn discard_capture(&self, name: &str) {
+        if valid_temporary_artifact_name(name) {
+            let _ = unlinkat(&*self.directory_handle, name, AtFlags::empty());
+        }
+    }
+
+    fn preview(&self, digest: &str, max_bytes: usize) -> std::io::Result<(String, bool)> {
+        let mut file = self
+            .open_existing(digest)?
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing"))?;
+        let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
+        std::io::Read::by_ref(&mut file)
+            .take(max_bytes.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)?;
+        let truncated = bytes.len() > max_bytes;
+        bytes.truncate(max_bytes);
+        Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated))
+    }
+
+    fn read_verified_attachment(&self, attachment: &ToolAttachment) -> std::io::Result<Vec<u8>> {
+        if !is_digest_name(attachment.sha256.as_str())
+            || attachment.reference.uri != format!("artifact://sha256/{}", attachment.sha256)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "attachment reference and digest do not match",
+            ));
+        }
+        let mut file = self
+            .open_existing(attachment.sha256.as_str())?
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "attachment artifact is missing",
+                )
+            })?;
+        let (digest, byte_length, _) = hash_file(&mut file)?;
+        if digest != attachment.sha256.as_str() || byte_length != attachment.byte_length {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "attachment artifact digest or length is corrupt",
+            ));
+        }
+        file.seek(SeekFrom::Start(0))?;
+        let capacity = usize::try_from(byte_length).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "attachment length does not fit in memory",
+            )
+        })?;
+        let mut bytes = Vec::with_capacity(capacity);
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    fn read_verified_native_context(
+        &self,
+        artifact: &cookie_agent_protocol::NativeContextArtifact,
+    ) -> std::io::Result<String> {
+        if artifact.reference.uri != format!("artifact://sha256/{}", artifact.sha256) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "native context reference and digest do not match",
+            ));
+        }
+        let mut file = self
+            .open_existing(artifact.sha256.as_str())?
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "native context artifact is missing",
+                )
+            })?;
+        let (digest, byte_length, _) = hash_file(&mut file)?;
+        if digest != artifact.sha256.as_str() || byte_length != artifact.byte_length {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "native context artifact digest or length is corrupt",
+            ));
+        }
+        file.seek(SeekFrom::Start(0))?;
+        let mut payload = String::new();
+        file.read_to_string(&mut payload)?;
+        Ok(payload)
+    }
+}
+
+fn hash_file(file: &mut fs::File) -> std::io::Result<(String, u64, u64)> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut hash = Sha256::new();
+    let mut total = 0_u64;
+    let mut newlines = 0_u64;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+        total = total.saturating_add(count as u64);
+        newlines = newlines.saturating_add(
+            buffer[..count]
+                .iter()
+                .filter(|byte| **byte == b'\n')
+                .count() as u64,
+        );
+    }
+    file.seek(SeekFrom::Start(0))?;
+    let digest = hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Ok((digest, total, newlines))
+}
+
+#[derive(Clone, Debug)]
+struct OutputCapture {
+    store: Arc<ArtifactStore>,
+    stdout: Arc<CaptureStream>,
+    stderr: Arc<CaptureStream>,
+    _cleanup: Arc<CaptureCleanup>,
+}
+
+#[derive(Debug)]
+struct CaptureStream {
+    name: String,
+    file: Mutex<fs::File>,
+    error: Mutex<Option<String>>,
+}
+
+#[derive(Debug)]
+struct CaptureCleanup {
+    store: Arc<ArtifactStore>,
+    stdout_name: String,
+    stderr_name: String,
+}
+
+impl Drop for CaptureCleanup {
+    fn drop(&mut self) {
+        self.store.discard_capture(&self.stdout_name);
+        self.store.discard_capture(&self.stderr_name);
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CapturedArtifact {
+    reference: ArtifactReference,
+    sha256: String,
+    byte_length: u64,
+}
+
+fn composed_bash_output_lines(base: &str, stdout_newlines: u64, stderr_newlines: u64) -> u64 {
+    // The two fixed delimiters are "\n\nstdout:\n" and "\n\nstderr:\n":
+    // six newline bytes total. split('\n') line count is newline count + one.
+    base.split('\n').count() as u64 + stdout_newlines + stderr_newlines + 6
+}
+
+impl OutputCapture {
+    fn new(store: Arc<ArtifactStore>) -> std::io::Result<Self> {
+        let id = Uuid::now_v7();
+        let stdout_name = format!(".capture-{id}-stdout.tmp");
+        let stderr_name = format!(".capture-{id}-stderr.tmp");
+        let stdout = store.create_capture_file(&stdout_name)?;
+        let stderr = match store.create_capture_file(&stderr_name) {
+            Ok(stderr) => stderr,
+            Err(error) => {
+                store.discard_capture(&stdout_name);
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            store: store.clone(),
+            stdout: Arc::new(CaptureStream {
+                name: stdout_name.clone(),
+                file: Mutex::new(stdout),
+                error: Mutex::new(None),
+            }),
+            stderr: Arc::new(CaptureStream {
+                name: stderr_name.clone(),
+                file: Mutex::new(stderr),
+                error: Mutex::new(None),
+            }),
+            _cleanup: Arc::new(CaptureCleanup {
+                store,
+                stdout_name,
+                stderr_name,
+            }),
+        })
+    }
+
+    fn write(&self, stream: OutputStream, data: &[u8]) {
+        let capture = match stream {
+            OutputStream::Stdout => &self.stdout,
+            OutputStream::Stderr => &self.stderr,
+        };
+        if capture
+            .error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+        {
+            return;
+        }
+        if let Err(error) = capture
+            .file
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .write_all(data)
+        {
+            *capture
+                .error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.to_string());
+        }
+    }
+
+    fn finish(
+        &self,
+        mut result: ToolResult,
+        max_lines: usize,
+        max_bytes: usize,
+    ) -> std::io::Result<ToolResult> {
+        for stream in [&self.stdout, &self.stderr] {
+            if let Some(error) = stream
+                .error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+            {
+                self.discard();
+                return Err(std::io::Error::other(format!(
+                    "tool output capture failed: {error}"
+                )));
+            }
+            stream
+                .file
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .sync_all()?;
+        }
+        let (stdout, stdout_newlines) = match self.store.commit_capture(&self.stdout.name) {
+            Ok(stdout) => stdout,
+            Err(error) => {
+                self.discard();
+                return Err(error);
+            }
+        };
+        let (stderr, stderr_newlines) = match self.store.commit_capture(&self.stderr.name) {
+            Ok(stderr) => stderr,
+            Err(error) => {
+                self.store.discard_capture(&self.stderr.name);
+                return Err(error);
+            }
+        };
+        let base_output_bytes = result.output.len() as u64;
+        let original_lines =
+            composed_bash_output_lines(&result.output, stdout_newlines, stderr_newlines);
+        let preview_budget = max_bytes.saturating_sub(result.output.len()).max(1);
+        let (stdout_preview, stdout_truncated) =
+            self.store.preview(&stdout.sha256, preview_budget)?;
+        let (stderr_preview, stderr_truncated) =
+            self.store.preview(&stderr.sha256, preview_budget)?;
+        let complete_for_budget = format!(
+            "{}\n\nstdout:\n{}\n\nstderr:\n{}",
+            result.output, stdout_preview, stderr_preview
+        );
+        let preview = truncate_tool_output(&complete_for_budget, max_lines, max_bytes)
+            .map_or(complete_for_budget.clone(), |preview| preview.content);
+        let stream_truncated = stdout_truncated || stderr_truncated;
+        let output_truncated = preview != complete_for_budget || stream_truncated;
+        result.output = preview;
+        let streams = serde_json::json!({"stdout": stdout.clone(), "stderr": stderr.clone()});
+        match &mut result.metadata {
+            Value::Object(metadata) => {
+                metadata.insert("streams".into(), streams.clone());
+            }
+            metadata => {
+                *metadata = serde_json::json!({"tool": metadata.clone(), "streams": streams});
+            }
+        }
+        if output_truncated {
+            let manifest = serde_json::to_vec(&serde_json::json!({
+                "title": result.title,
+                "streams": streams,
+            }))?;
+            let (retained, _) = self.store.retain(&manifest)?;
+            result.truncation = Some(ToolOutputTruncation {
+                original_bytes: base_output_bytes + stdout.byte_length + stderr.byte_length + 20,
+                original_lines,
+                retained,
+            });
+        }
+        Ok(result)
+    }
+
+    fn discard(&self) {
+        self.store.discard_capture(&self.stdout.name);
+        self.store.discard_capture(&self.stderr.name);
+    }
+}
+
+fn validate_owned_directory(directory: &fs::File) -> std::io::Result<()> {
+    let metadata = directory.metadata()?;
+    if !metadata.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "artifact store root is not a directory",
+        ));
+    }
+    validate_owner(&metadata, "artifact store root")
+}
+
+fn validate_owned_regular_file(file: &fs::File) -> std::io::Result<()> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "artifact object is not a regular file",
+        ));
+    }
+    validate_owner(&metadata, "artifact object")
+}
+
+fn validate_owner(metadata: &fs::Metadata, object: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        if metadata.uid() != rustix::process::geteuid().as_raw() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("{object} is not owned by the current user"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_stat_owner(stat: &rustix::fs::Stat, object: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if stat.st_uid != rustix::process::geteuid().as_raw() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{object} is not owned by the current user"),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_same_object(opened: &fs::Metadata, path: &fs::Metadata) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        if opened.dev() != path.dev() || opened.ino() != path.ino() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "authorized read target changed while it was being opened",
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    if opened.is_file() != path.is_file()
+        || opened.is_dir() != path.is_dir()
+        || opened.len() != path.len()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "authorized read target changed while it was being opened",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_stat_same_object(opened: &fs::Metadata, path: &rustix::fs::Stat) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        if opened.dev() != path.st_dev || opened.ino() != path.st_ino {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "artifact object changed during validation",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn directory_names(directory: &fs::File) -> std::io::Result<Vec<String>> {
+    let mut names = Vec::new();
+    let mut entries = Dir::read_from(directory)?;
+    for entry in &mut entries {
+        let entry = entry?;
+        let name = entry.file_name().to_bytes();
+        if matches!(name, b"." | b"..") {
+            continue;
+        }
+        if let Ok(name) = std::str::from_utf8(name) {
+            names.push(name.to_owned());
+        }
+    }
+    Ok(names)
+}
+
+fn valid_temporary_artifact_name(name: &str) -> bool {
+    if let Some(value) = name
+        .strip_prefix(".capture-")
+        .and_then(|value| value.strip_suffix(".tmp"))
+    {
+        let Some((id, stream)) = value.rsplit_once('-') else {
+            return false;
+        };
+        return matches!(stream, "stdout" | "stderr") && Uuid::parse_str(id).is_ok();
+    }
+    let Some(value) = name
+        .strip_prefix('.')
+        .and_then(|value| value.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let Some((digest, id)) = value.split_once('.') else {
+        return false;
+    };
+    is_digest_name(digest) && Uuid::parse_str(id).is_ok()
+}
+
+fn is_digest_name(name: &str) -> bool {
+    name.len() == 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[derive(Clone, Copy)]
@@ -603,15 +1672,54 @@ pub struct Engine {
 pub type EngineClient = Engine;
 
 impl Engine {
+    fn resolve_model(
+        &self,
+        binding: &cookie_agent_models::FrozenModelBinding,
+    ) -> Result<cookie_agent_models::ModelEntry, EngineError> {
+        #[cfg(test)]
+        if let Some(model_set) = self
+            .inner
+            .test_model_set
+            .lock()
+            .expect("test model set lock poisoned")
+            .as_ref()
+            && model_set.fingerprint() == &binding.configuration_fingerprint
+        {
+            return model_set.get(&binding.alias).cloned().ok_or_else(|| {
+                EngineError::from(ModelError::invalid_request(
+                    "test model alias is unavailable",
+                ))
+            });
+        }
+        self.inner
+            .model_manager
+            .resolve_frozen(binding)
+            .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))
+    }
+
     pub fn open(options: EngineOptions) -> Result<Self, EngineError> {
+        options
+            .config
+            .validate()
+            .map_err(|error| EngineError::Config(Box::new(error)))?;
         let store = SessionStore::open(&options.data_dir, &options.cwd)?;
+        let artifacts = ArtifactStore::open(store.project_dir_path().join("artifacts"))?;
         let journal = DelegationJournal::open(store.project_dir_path().join("delegations.jsonl"))?;
+        let grant_journal = GrantInvalidationJournal::open(
+            store.project_dir_path().join("grant-invalidations.jsonl"),
+        )?;
+        let internal_agents =
+            InternalAgentRuntime::freeze(&options.config, &options.model_manager)?;
         let engine = Self {
             inner: Arc::new(Inner {
                 config: options.config,
+                artifacts,
+                mutation_locks: Mutex::new(HashMap::new()),
                 store,
                 journal,
-                providers: options.providers,
+                grant_journal,
+                model_manager: options.model_manager,
+                internal_agents,
                 tools: Mutex::new(options.tools),
                 approvals: ApprovalStore::default(),
                 permissions: PermissionPipeline::default(),
@@ -629,7 +1737,11 @@ impl Engine {
                 admission_tasks_closing: AtomicBool::new(false),
                 recovery_waiters: Mutex::new(HashSet::new()),
                 #[cfg(test)]
+                test_model_set: Mutex::new(None),
+                #[cfg(test)]
                 prompt_snapshot_hook: Mutex::new(None),
+                #[cfg(test)]
+                approval_evaluation_hook: Mutex::new(None),
                 #[cfg(test)]
                 gap_send_hook: Mutex::new(None),
                 #[cfg(test)]
@@ -661,6 +1773,16 @@ impl Engine {
     #[must_use]
     pub fn client(&self) -> EngineClient {
         self.clone()
+    }
+
+    fn mutation_lock(&self, key: &PreparedSerializationKey) -> Arc<tokio::sync::Mutex<()>> {
+        self.inner
+            .mutation_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     fn spawn_admission_task<F>(&self, runtime: &tokio::runtime::Handle, task: F) -> bool
@@ -779,10 +1901,12 @@ impl Engine {
         cwd: impl AsRef<Path>,
         profile: &str,
     ) -> Result<SessionMeta, EngineError> {
+        self.require_enabled_profile(profile)?;
+        let snapshot = self.inner.model_manager.current();
         let policy = self
             .inner
             .config
-            .materialize_policy(profile)
+            .materialize_policy(snapshot.model_set(), profile)
             .map_err(|error| EngineError::Config(Box::new(error)))?;
         if matches!(
             policy.profile.r#type,
@@ -808,6 +1932,7 @@ impl Engine {
         parent_run_id: RunId,
         parent_tool_call_id: ToolCallId,
         profile: &str,
+        child_policy: PolicySnapshot,
         request_fingerprint: String,
         request: journal::DelegateRequestPayload,
         admission: Option<(InvocationId, u64)>,
@@ -831,18 +1956,21 @@ impl Engine {
                 "delegate parent run is terminal".into(),
             ));
         }
-        let parent_limit = parent.policy.delegation.depth_limit;
-        if !parent.policy.delegation.enabled
+        let parent_policy = self
+            .inner
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&parent_run_id)
+            .map(|active| active.policy.clone())
+            .unwrap_or_else(|| Arc::new(parent.policy.clone()));
+        let parent_limit = parent_policy.delegation.depth_limit;
+        if !parent_policy.delegation.enabled
             || !parent_limit.allows_delegation()
-            || !parent.policy.delegation.allowed_profiles.contains(profile)
+            || !parent_policy.delegation.allowed_profiles.contains(profile)
         {
             return Err(EngineError::MissingTool("delegate admission denied".into()));
         }
-        let child_policy = self
-            .inner
-            .config
-            .materialize_child_policy(profile, &parent.policy)
-            .map_err(|error| EngineError::Config(Box::new(error)))?;
         let invocation_id = invocation_id(parent_session_id, parent_run_id, parent_tool_call_id);
         let journal = self.inner.journal.clone();
         let journal_policy = child_policy.clone();
@@ -1255,10 +2383,7 @@ impl Engine {
                 Some(parent_run_id),
                 Event::ToolCallCompleted {
                     tool_call_id: parent_tool_call_id,
-                    result: cookie_agent_protocol::ToolResult {
-                        content: result.content,
-                        truncated: false,
-                    },
+                    result,
                 },
             )
             .await?;
@@ -1322,10 +2447,20 @@ impl Engine {
                 "delegate parent run is interrupted; use recovery".into(),
             ));
         }
+        let parent_policy = self
+            .inner
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&invocation.parent_run_id)
+            .map(|active| active.policy.clone())
+            .unwrap_or_else(|| Arc::new(parent.policy.clone()));
+        self.require_enabled_profile(&invocation.profile)?;
+        let snapshot = self.inner.model_manager.current();
         let child_policy = self
             .inner
             .config
-            .materialize_child_policy(&invocation.profile, &parent.policy)
+            .materialize_child_policy(snapshot.model_set(), &invocation.profile, &*parent_policy)
             .map_err(|error| EngineError::Config(Box::new(error)))?;
         let fingerprint = serde_json::to_string(&(
             &invocation.profile,
@@ -1348,6 +2483,7 @@ impl Engine {
                 invocation.parent_run_id,
                 invocation.parent_tool_call_id,
                 &invocation.profile,
+                child_policy,
                 fingerprint,
                 request,
                 Some((invocation_id, generation)),
@@ -1452,15 +2588,11 @@ impl Engine {
                     }
                 }
                 SessionStatus::Completed => {
-                    let report = child
-                        .runs
-                        .get(&handle.child_run_id)
-                        .and_then(|run| run.final_text.clone())
-                        .unwrap_or_else(|| "child completed without a final report".into());
-                    let result = bound_delegate_result(
-                        report,
-                        child.policy.result_limits.delegate_result_bytes,
-                    );
+                    let result = completed_delegate_result(
+                        &child,
+                        Some(handle.child_run_id),
+                        &self.inner.artifacts,
+                    )?;
                     self.clear_delegate_admissions(handle.invocation_id);
                     return Ok(result);
                 }
@@ -1565,10 +2697,7 @@ impl Engine {
             Some(run_id),
             Event::ToolCallCompleted {
                 tool_call_id,
-                result: cookie_agent_protocol::ToolResult {
-                    content: result.content,
-                    truncated: result.truncated,
-                },
+                result,
             },
         )?;
         Ok(true)
@@ -1658,6 +2787,7 @@ impl Engine {
                             session_id: entry.reservation.child_session_id,
                             client_run_id,
                             input: render_delegate_input(&entry.request),
+                            profile: None,
                         },
                         admission,
                         reply,
@@ -2157,8 +3287,24 @@ impl Engine {
         self.request(id, |reply| SessionCommand::Resume { reply })
             .await
     }
+    pub async fn rename_session(
+        &self,
+        params: SessionRenameParams,
+    ) -> Result<SessionRenameResult, EngineError> {
+        let session_id = params.session_id;
+        let reset = matches!(params.change, SessionRenameChange::Reset);
+        let mut result = self
+            .request(session_id, |reply| SessionCommand::Rename { params, reply })
+            .await?;
+        if reset {
+            self.generate_title_after_reset(session_id).await?;
+            result.session = self.inner.store.get(session_id)?.meta;
+        }
+        Ok(result)
+    }
     #[must_use]
     pub fn list_agents(&self) -> AgentListResult {
+        let snapshot = self.inner.model_manager.current();
         AgentListResult {
             agents: self
                 .inner
@@ -2166,22 +3312,34 @@ impl Engine {
                 .agents
                 .iter()
                 .filter(|(_, profile)| {
-                    profile.enabled
-                        && matches!(
-                            profile.r#type,
-                            ConfigAgentType::Primary | ConfigAgentType::All
-                        )
+                    matches!(
+                        profile.r#type,
+                        ConfigAgentType::Primary | ConfigAgentType::All
+                    )
                 })
                 .map(|(name, profile)| AgentDescriptor {
                     name: name.clone(),
                     agent_type: agent_type(profile.r#type),
-                    enabled: profile.enabled,
+                    enabled: profile.enabled
+                        && !profile.models.is_empty()
+                        && profile
+                            .models
+                            .iter()
+                            .all(|alias| snapshot.model_set().get(alias).is_some()),
                     models: profile
                         .models
                         .iter()
-                        .map(|model| ModelRef {
-                            provider: model.provider.clone(),
-                            model: model.model.clone(),
+                        .filter_map(|alias| snapshot.model_set().get(alias))
+                        .map(|entry| ModelRef {
+                            name: entry.alias().to_owned(),
+                            provider_id: entry
+                                .descriptor()
+                                .identity
+                                .provider_id
+                                .as_str()
+                                .to_owned(),
+                            model_id: entry.descriptor().identity.model_id.as_str().to_owned(),
+                            adapter_id: entry.descriptor().adapter_id.as_str().to_owned(),
                         })
                         .collect(),
                 })
@@ -2225,6 +3383,10 @@ impl Engine {
         tool_call_id: ToolCallId,
         result: Result<ToolResult, String>,
     ) -> Result<(), EngineError> {
+        let result = result.map_err(|message| ToolFailure {
+            code: ToolCallFailureCode::ExecutionFailed,
+            message,
+        });
         self.submit_tool_result_status(session, run, tool_call_id, result)
             .await
             .and_then(|committed| {
@@ -2239,7 +3401,7 @@ impl Engine {
         session: SessionId,
         run: RunId,
         tool_call_id: ToolCallId,
-        result: Result<ToolResult, String>,
+        result: Result<ToolResult, ToolFailure>,
     ) -> Result<bool, EngineError> {
         self.request(session, |reply| SessionCommand::ToolResult {
             run,
@@ -2499,24 +3661,43 @@ impl Engine {
                 let _ = reply.send(result);
             }
             SessionCommand::Cancel { run, reply } => {
-                let result = self
-                    .inner
-                    .active
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .get(&run)
-                    .cloned()
-                    .filter(|active| active.session == session)
-                    .ok_or(EngineError::MissingRun(run))
-                    .map(|active| {
-                        active.cancellation.cancel();
-                        active
-                            .stdin
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .clear();
-                        RunCancelResult { cancelled: true }
-                    });
+                let result = (|| {
+                    let active = self
+                        .inner
+                        .active
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .get(&run)
+                        .cloned()
+                        .filter(|active| active.session == session)
+                        .ok_or(EngineError::MissingRun(run))?;
+                    active.cancellation.cancel();
+                    active
+                        .stdin
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clear();
+                    let events = self.inner.store.get(session)?.log.events();
+                    let pending = approval_records(session, &events)
+                        .into_values()
+                        .filter(|record| {
+                            matches!(
+                                record.status,
+                                ApprovalStatus::Pending | ApprovalStatus::Escalated
+                            ) && approval_run_id(&events, record.request.approval_id()) == Some(run)
+                        })
+                        .map(|record| record.request.approval_id())
+                        .collect::<Vec<_>>();
+                    for approval_id in pending {
+                        self.approval_terminal_direct(
+                            session,
+                            run,
+                            approval_id,
+                            ApprovalTerminal::Cancelled,
+                        )?;
+                    }
+                    Ok(RunCancelResult { cancelled: true })
+                })();
                 let _ = reply.send(result);
             }
             SessionCommand::Stdin { params, reply } => {
@@ -2596,6 +3777,78 @@ impl Engine {
                     .and_then(|()| Ok(self.inner.store.get(session)?.meta));
                 let _ = reply.send(result);
             }
+            SessionCommand::Rename { params, reply } => {
+                let result = (|| {
+                    let projection = self.inner.store.get(session)?;
+                    if let Some(record) = projection.rename_records.get(&params.client_rename_id) {
+                        if record.conflicts_with(&params) {
+                            return Err(EngineError::RenameConflict);
+                        }
+                        return Ok(SessionRenameResult {
+                            client_rename_id: params.client_rename_id,
+                            session: projection.meta,
+                        });
+                    }
+                    let commit = match params.change {
+                        SessionRenameChange::Set { title } => SessionTitleCommit::UserSet {
+                            title,
+                            client_rename_id: params.client_rename_id.clone(),
+                        },
+                        SessionRenameChange::Clear => SessionTitleCommit::UserClear {
+                            client_rename_id: params.client_rename_id.clone(),
+                        },
+                        SessionRenameChange::Reset => SessionTitleCommit::UserReset {
+                            client_rename_id: params.client_rename_id.clone(),
+                        },
+                    };
+                    let input_through_seq =
+                        projection.log.events().last().map_or(0, |event| event.seq);
+                    self.append_direct(
+                        session,
+                        None,
+                        Event::SessionTitleCommitted {
+                            input_through_seq,
+                            commit,
+                        },
+                    )?;
+                    Ok(SessionRenameResult {
+                        client_rename_id: params.client_rename_id,
+                        session: self.inner.store.get(session)?.meta,
+                    })
+                })();
+                let _ = reply.send(result);
+            }
+            SessionCommand::ApprovalRespond { params, reply } => {
+                let _ = reply.send(self.approval_respond_direct(params));
+            }
+            SessionCommand::ApprovalCapabilityInvalid {
+                params,
+                invalidation,
+                reply,
+            } => {
+                let _ = reply.send(self.approval_capability_invalid_direct(params, invalidation));
+            }
+            SessionCommand::ApprovalEvaluationComplete {
+                run,
+                request,
+                executor,
+                decision,
+                cancelled,
+                reply,
+            } => {
+                let _ = reply.send(self.approval_evaluation_complete_direct(
+                    session, run, request, executor, decision, cancelled,
+                ));
+            }
+            SessionCommand::ApprovalTerminal {
+                run,
+                approval_id,
+                terminal,
+                reply,
+            } => {
+                let _ =
+                    reply.send(self.approval_terminal_direct(session, run, approval_id, terminal));
+            }
             SessionCommand::ToolResult {
                 run,
                 tool_call_id,
@@ -2615,14 +3868,12 @@ impl Engine {
                     let event = match result {
                         Ok(result) => Event::ToolCallCompleted {
                             tool_call_id,
-                            result: cookie_agent_protocol::ToolResult {
-                                content: result.content,
-                                truncated: result.truncated,
-                            },
+                            result,
                         },
-                        Err(message) => Event::ToolCallFailed {
+                        Err(failure) => Event::ToolCallFailed {
                             tool_call_id,
-                            message,
+                            code: failure.code,
+                            message: failure.message,
                         },
                     };
                     self.append_direct(session, Some(run), event).map(|()| true)
@@ -2764,12 +4015,17 @@ impl Engine {
             ));
         }
         let session = self.inner.store.get(params.session_id)?;
+        let selected_profile = params
+            .profile
+            .as_deref()
+            .unwrap_or(&session.policy.profile.name)
+            .to_owned();
         if let Some(run) = session
             .runs
             .values()
             .find(|run| run.client_run_id == params.client_run_id)
         {
-            if run.input != params.input {
+            if run.input != params.input || run.current_profile.name != selected_profile {
                 return Err(EngineError::RunIdempotencyConflict);
             }
             return Ok(RunStartResult { run_id: run.id });
@@ -2778,6 +4034,36 @@ impl Engine {
             return Err(EngineError::SessionRunning(params.session_id));
         }
         self.resolve_interrupted_direct(params.session_id).await?;
+        if params.profile.is_some() {
+            self.require_enabled_profile(&selected_profile)?;
+        }
+        let run_policy = if selected_profile == session.policy.profile.name {
+            session.policy.clone()
+        } else {
+            let snapshot = self.inner.model_manager.current();
+            self.inner
+                .config
+                .materialize_policy(snapshot.model_set(), &selected_profile)
+                .map_err(|error| EngineError::Config(Box::new(error)))?
+        };
+        match (&session.meta.origin, run_policy.profile.r#type) {
+            (
+                SessionOrigin::Root | SessionOrigin::Forked { .. },
+                ConfigAgentType::Subagent | ConfigAgentType::Internal,
+            )
+            | (
+                SessionOrigin::Delegated { .. },
+                ConfigAgentType::Primary | ConfigAgentType::Internal,
+            ) => {
+                return Err(EngineError::SubagentOnly(selected_profile));
+            }
+            _ => {}
+        }
+        let profile = wire_profile(&run_policy);
+        let current_profile = ProfileIdentity {
+            name: run_policy.profile.name.clone(),
+            agent_type: agent_type(run_policy.profile.r#type),
+        };
         let run_id = RunId::new_v7();
         self.append_direct(
             params.session_id,
@@ -2785,10 +4071,14 @@ impl Engine {
             Event::RunStarted {
                 client_run_id: params.client_run_id,
                 input: params.input,
+                profile,
+                current_profile,
             },
         )?;
         let active = Arc::new(ActiveRun {
             session: params.session_id,
+            internal_agents: self.inner.internal_agents.accept(&run_policy),
+            policy: Arc::new(run_policy),
             cancellation: CancellationToken::new(),
             cancelled_committed: Mutex::new(false),
             stdin: Mutex::new(HashMap::new()),
@@ -2840,6 +4130,19 @@ impl Engine {
         Ok(RunStartResult { run_id })
     }
 
+    fn require_enabled_profile(&self, profile_name: &str) -> Result<(), EngineError> {
+        if self
+            .inner
+            .config
+            .agents
+            .get(profile_name)
+            .is_some_and(|profile| !profile.enabled)
+        {
+            return Err(EngineError::DisabledProfile(profile_name.to_owned()));
+        }
+        Ok(())
+    }
+
     async fn run_loop(&self, run_id: RunId, active: Arc<ActiveRun>) -> Result<(), EngineError> {
         // Sticky chain position belongs to this run, not one agent-loop pass.
         let mut fallback_entry = 0_usize;
@@ -2848,24 +4151,15 @@ impl Engine {
                 self.append_run_cancelled_once(&active, run_id, None)?;
                 return Ok(());
             }
-            let session = self.inner.store.get(active.session)?;
-            let tools = self.tool_definitions(active.session)?;
-            let chain: Vec<_> = session
-                .policy
-                .models
-                .iter()
-                .map(|model| ProviderModelRef {
-                    provider: model.provider.clone(),
-                    model: ModelId(model.model.clone()),
-                })
-                .collect();
+            let tools = self.tool_definitions(active.session, &active.policy)?;
             let prompt_events = self.prompt_events(active.session, run_id).await?;
             let attempt = match self
                 .stream_attempt(
                     active.session,
                     run_id,
                     &active.cancellation,
-                    &chain,
+                    &active.policy.models,
+                    &active.internal_agents,
                     &mut fallback_entry,
                     prompt_events,
                     tools,
@@ -2889,47 +4183,78 @@ impl Engine {
                     return Ok(());
                 }
             };
-            let mut calls: Vec<(ToolCallId, String, String)> = Vec::new();
-            let mut args: HashMap<String, String> = HashMap::new();
-            let mut final_text = String::new();
-            let mut tool_use = false;
-            let attempt_protocol = attempt.protocol;
-            for event in attempt.events {
-                match event {
-                    NormalizedEvent::TextDelta { text } => final_text.push_str(&text),
-                    NormalizedEvent::ReasoningDelta { .. } => {}
-                    NormalizedEvent::ToolCallStart { tool_call_id, tool } => {
-                        // Provider IDs are transport-local correlation keys only.
-                        // Persisted invocation IDs are allocated by the engine.
-                        let id = ToolCallId::new_v7();
-                        args.insert(tool_call_id.clone(), String::new());
-                        calls.push((id, tool_call_id, tool));
-                        tool_use = true;
-                    }
-                    NormalizedEvent::ToolArgsDelta {
-                        tool_call_id,
-                        delta,
-                    } => args.entry(tool_call_id).or_default().push_str(&delta),
-                    NormalizedEvent::ToolCallEnd { .. } => {}
-                    NormalizedEvent::Usage { .. } => {}
-                    NormalizedEvent::TurnOpaque { .. } => {}
-                    NormalizedEvent::Stop { reason } => {
-                        if reason == StopReason::Cancelled {
-                            active.cancellation.cancel();
-                        }
-                    }
-                }
+            let final_text = attempt
+                .turn
+                .content
+                .iter()
+                .filter_map(|part| match part {
+                    PersistedAssistantPart::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>();
+            if matches!(
+                attempt.turn.finish_reason,
+                cookie_agent_protocol::ModelFinishReason::Cancelled
+                    | cookie_agent_protocol::ModelFinishReason::Aborted
+            ) {
+                active.cancellation.cancel();
             }
+            let in_stream_results = attempt
+                .turn
+                .content
+                .iter()
+                .filter_map(|part| match part {
+                    PersistedAssistantPart::ToolResult { tool_call_id, .. } => {
+                        Some(tool_call_id.as_str())
+                    }
+                    _ => None,
+                })
+                .collect::<HashSet<_>>();
+            let approvals = attempt
+                .turn
+                .content
+                .iter()
+                .filter_map(|part| match part {
+                    PersistedAssistantPart::ToolApproval {
+                        tool_call_id,
+                        message,
+                        ..
+                    } => Some((tool_call_id.as_str(), message.clone())),
+                    _ => None,
+                })
+                .collect::<HashMap<_, _>>();
+            let calls = attempt
+                .turn
+                .content
+                .iter()
+                .filter_map(|part| match part {
+                    PersistedAssistantPart::ToolCall {
+                        id,
+                        provider_item_id,
+                        name,
+                        input,
+                        ..
+                    } if !in_stream_results.contains(id.as_str()) => Some((
+                        ToolCallId::new_v7(),
+                        id.clone(),
+                        provider_item_id.clone(),
+                        name.clone(),
+                        input.clone(),
+                        approvals.get(id.as_str()).cloned().flatten(),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
             if active.cancellation.is_cancelled() {
                 self.append_run_cancelled_once(&active, run_id, None)?;
                 return Ok(());
             }
-            if !tool_use {
+            if calls.is_empty() {
                 let steering = self
                     .request(active.session, |reply| {
                         SessionCommand::CompleteIfNoSteering {
                             run: run_id,
-                            final_text: (!final_text.is_empty()).then_some(final_text),
+                            final_text: (!final_text.is_empty()).then_some(final_text.clone()),
                             reply,
                         }
                     })
@@ -2939,11 +4264,15 @@ impl Engine {
                 }
                 return Ok(());
             }
-            let mut tasks = Vec::new();
-            for (id, raw_id, tool) in &calls {
-                let arguments =
-                    serde_json::from_str(args.get(raw_id).map(String::as_str).unwrap_or("{}"))
-                        .unwrap_or(Value::Object(Default::default()));
+            if calls.len() > MAX_PENDING_PREPARED_TOOLS {
+                return Err(ModelError::invalid_response(format!(
+                    "model requested {} prepared tools; the limit is {MAX_PENDING_PREPARED_TOOLS}",
+                    calls.len()
+                ))
+                .into());
+            }
+            let mut prepared = Vec::new();
+            for (id, model_call_id, provider_item_id, tool, arguments, approval) in &calls {
                 self.inner
                     .output_hubs
                     .lock()
@@ -2955,402 +4284,1529 @@ impl Engine {
                     Some(run_id),
                     Event::ToolCallStarted {
                         tool_call_id: *id,
+                        model_call_id: model_call_id.clone(),
+                        provider_item_id: provider_item_id.clone(),
                         tool: tool.clone(),
                         arguments: arguments.clone(),
-                        provider_tool_call_id: attempt_protocol.map(|_| raw_id.clone()),
-                        provider_protocol: attempt_protocol.map(wire_provider_protocol),
                     },
                 )
                 .await?;
-                tasks.push(self.spawn_tool(
-                    active.clone(),
-                    run_id,
-                    ToolCall {
-                        id: *id,
-                        name: tool.clone(),
-                        arguments,
-                    },
+                let call = ToolCall {
+                    id: *id,
+                    name: tool.clone(),
+                    arguments: arguments.clone(),
+                };
+                prepared.push((
+                    self.prepare_tool_call(active.session, run_id, call, &active.policy)
+                        .await,
+                    approval.clone(),
                 ));
+            }
+            let mut tasks = Vec::new();
+            for (prepared, approval) in prepared {
+                if prepared.prepared.is_err() {
+                    let Err(error) = prepared.prepared else {
+                        unreachable!()
+                    };
+                    tasks.push(PendingTool::ImmediateFailure(error));
+                    continue;
+                }
+                if let Some(message) = approval {
+                    let outcome = self
+                        .request_model_approval(
+                            &active,
+                            run_id,
+                            prepared
+                                .prepared
+                                .as_ref()
+                                .expect("prepared operation")
+                                .operation(),
+                            &prepared
+                                .prepared
+                                .as_ref()
+                                .expect("prepared operation")
+                                .policy_labels,
+                            prepared
+                                .prepared
+                                .as_ref()
+                                .expect("prepared operation")
+                                .executor
+                                .clone(),
+                            Some(message),
+                        )
+                        .await?;
+                    if outcome.approved {
+                        tasks.push(PendingTool::Prepared(prepared));
+                    } else {
+                        tasks.push(PendingTool::ImmediateFailure(ToolFailure {
+                            code: ToolCallFailureCode::ExecutionFailed,
+                            message: denied_tool_failure(
+                                ApprovalDecisionSource::Model,
+                                "model approval refused by user",
+                                outcome.feedback,
+                            ),
+                        }));
+                    }
+                } else {
+                    tasks.push(PendingTool::Prepared(prepared));
+                }
             }
             // Awaiting task handles is outside any session actor. Results are
             // committed in provider tool-call order, regardless of completion order.
             for (id, task) in calls.iter().map(|call| call.0).zip(tasks) {
-                if active.cancellation.is_cancelled() {
-                    self.append_run_cancelled_once(&active, run_id, None)?;
-                    return Ok(());
-                }
-                let task_result = task.await;
-                if active.cancellation.is_cancelled() {
-                    self.append_run_cancelled_once(&active, run_id, None)?;
-                    return Ok(());
-                }
-                let result = match task_result {
-                    Ok(result) => result,
-                    Err(error) => Err(error.to_string()),
+                let result = if active.cancellation.is_cancelled() {
+                    Err(ToolFailure {
+                        code: ToolCallFailureCode::ExecutionFailed,
+                        message: "tool call cancelled after it started".into(),
+                    })
+                } else {
+                    match task {
+                        PendingTool::Prepared(prepared) => {
+                            self.execute_tool(active.clone(), run_id, prepared).await
+                        }
+                        PendingTool::ImmediateFailure(failure) => Err(failure),
+                    }
                 };
                 self.submit_tool_result_status(active.session, run_id, id, result)
                     .await?;
             }
+            if active.cancellation.is_cancelled() {
+                self.append_run_cancelled_once(&active, run_id, None)?;
+                return Ok(());
+            }
         }
     }
 
-    /// Streams one model attempt directly into the session actor.  The event
-    /// vector is retained only for the current attempt so a failed fallback
-    /// never contributes partial output to the next attempt's tool handling.
+    /// Streams one Oven attempt directly into the session actor and commits a
+    /// complete turn only after strict lifecycle validation succeeds.
     #[allow(clippy::too_many_arguments)]
     async fn stream_attempt(
         &self,
         session: SessionId,
         run: RunId,
         cancellation: &CancellationToken,
-        chain: &[ProviderModelRef],
+        chain: &[cookie_agent_models::FrozenModelBinding],
+        internal_agents: &AcceptedInternalAgents,
         sticky_entry: &mut usize,
         prompt_events: Vec<EventEnvelope>,
         tools: Vec<ToolDefinition>,
-    ) -> Result<AttemptEvents, ProviderError> {
+    ) -> Result<AttemptTurn, EngineError> {
         let mut entry = *sticky_entry;
-        let mut last_error = ProviderError::EntryTerminal {
-            message: "model fallback chain is empty".into(),
-        };
+        let mut last_error = ModelError::invalid_request("model fallback chain is empty");
         let mut first_request = true;
         while entry < chain.len() {
-            let model = &chain[entry];
-            let Some(provider) = self.inner.providers.get(&model.provider) else {
-                last_error = ProviderError::EntryTerminal {
-                    message: format!("provider '{}' is not registered", model.provider),
-                };
-                if let Some(next) = chain.get(entry + 1) {
-                    self.append(
-                        session,
-                        Some(run),
-                        Event::ModelFallback {
-                            from: wire_model(model),
-                            to: wire_model(next),
-                            reason: last_error.to_string(),
-                            attempts: 0,
-                        },
-                    )
-                    .await
-                    .map_err(provider_persistence_error)?;
-                    entry += 1;
-                    *sticky_entry = entry;
-                    first_request = false;
-                    continue;
-                }
-                return Err(last_error);
-            };
-            let mut attempts = 0;
+            let binding = &chain[entry];
+            let model = self.resolve_model(binding)?;
+            let mut attempts = 0_u32;
+            let mut context_recovery_attempted = false;
             loop {
+                attempts += 1;
                 let request_events = if first_request {
                     first_request = false;
                     prompt_events.clone()
                 } else {
-                    self.prompt_events(session, run).await.map_err(|error| {
-                        ProviderError::RunTerminal {
-                            message: error.to_string(),
-                        }
-                    })?
+                    self.prompt_events(session, run).await?
                 };
-                let protocol = provider.protocol(&model.model);
-                let persisted_turns = assemble_persisted_turns(&request_events, protocol);
-                let request = ProviderRequest {
-                    model: model.model.clone(),
-                    messages: persisted_turns
-                        .iter()
-                        .map(|turn| turn.message.clone())
-                        .collect(),
-                    persisted_turns,
-                    tools: tools.clone(),
-                    ..ProviderRequest::default()
+                let request_events = self
+                    .maybe_compact_context(
+                        session,
+                        run,
+                        cancellation,
+                        binding,
+                        &model,
+                        internal_agents.profile(InternalAgentKind::ContextCompaction),
+                        request_events,
+                        false,
+                    )
+                    .await?;
+                let input_through_seq = request_events.last().map_or(0, |event| event.seq);
+                let context =
+                    assemble_model_context(&request_events, &self.inner.artifacts, binding)?;
+                let mut request = ModelRequest::new(context.history).with_tools(tools.clone());
+                if let Some(native_context) = context.native_context {
+                    request = request.with_native_context(native_context);
+                }
+                let request = model.prepare_request(request);
+                let abort = AbortBridge::new(cancellation.clone());
+                let response = tokio::select! {
+                    result = model.model().stream(request, abort.signal()) => result,
+                    _ = cancellation.cancelled() => {
+                        abort.abort();
+                        Err(ModelError::abort("model request was cancelled"))
+                    }
                 };
-                let stream = tokio::select! {
-                    result = provider.stream(request) => result,
-                    _ = cancellation.cancelled() => Err(ProviderError::RunTerminal { message: "cancelled".into() }),
-                };
-                let (result, meaningful_output) = match stream {
-                    Ok(mut stream) => {
-                        let mut events = Vec::new();
+                let (result, meaningful_output) = match response {
+                    Ok(response) => {
+                        let oven_sdk::StreamResponse {
+                            mut stream,
+                            request,
+                            response,
+                        } = response;
+                        self.append(
+                            session,
+                            Some(run),
+                            Event::ModelReplayEvaluated {
+                                model: wire_model(binding),
+                                decisions: replay_decisions(&request.replay.decisions),
+                            },
+                        )
+                        .await?;
+                        let mut accumulator = TurnAccumulator::default();
                         let mut failure = None;
                         let mut meaningful_output = false;
                         loop {
                             let item = tokio::select! {
                                 item = stream.next() => item,
                                 _ = cancellation.cancelled() => {
-                                    failure = Some(ProviderError::RunTerminal { message: "cancelled".into() });
+                                    abort.abort();
+                                    failure = Some(Box::new(ModelError::abort("model stream was cancelled")));
                                     break;
-                                },
+                                }
                             };
                             let Some(item) = item else { break };
                             match item {
-                                Ok(event) => {
-                                    meaningful_output |= is_meaningful_output(&event);
-                                    match &event {
-                                        NormalizedEvent::TextDelta { text } => {
+                                Ok(part) => match accumulator.push(part) {
+                                    Ok(effect) => {
+                                        meaningful_output |= effect.meaningful;
+                                        if let Some(text) = effect.text_delta {
                                             self.append(
                                                 session,
                                                 Some(run),
-                                                Event::TextDelta { text: text.clone() },
+                                                Event::TextDelta { text },
                                             )
-                                            .await
-                                            .map_err(provider_persistence_error)?;
+                                            .await?;
                                         }
-                                        NormalizedEvent::ReasoningDelta { text } => {
+                                        if let Some(text) = effect.reasoning_delta {
                                             self.append(
                                                 session,
                                                 Some(run),
-                                                Event::ReasoningDelta { text: text.clone() },
+                                                Event::ReasoningDelta { text },
                                             )
-                                            .await
-                                            .map_err(provider_persistence_error)?;
+                                            .await?;
                                         }
-                                        NormalizedEvent::Usage {
-                                            input_tokens,
-                                            output_tokens,
-                                            cache_read_tokens,
-                                        } => {
-                                            self.append(
-                                                session,
-                                                Some(run),
-                                                Event::UsageReported {
-                                                    model: wire_model(model),
-                                                    usage: cookie_agent_protocol::Usage {
-                                                        input_tokens: *input_tokens,
-                                                        output_tokens: *output_tokens,
-                                                        cached_input_tokens: Some(
-                                                            *cache_read_tokens,
-                                                        ),
-                                                    },
-                                                },
-                                            )
-                                            .await
-                                            .map_err(provider_persistence_error)?;
-                                        }
-                                        NormalizedEvent::TurnOpaque { state } => {
-                                            self.append(
-                                                session,
-                                                Some(run),
-                                                Event::TurnOpaque {
-                                                    state: TurnOpaque {
-                                                        provider: wire_provider_protocol(
-                                                            state.provider,
-                                                        ),
-                                                        payload: state.payload.clone(),
-                                                    },
-                                                },
-                                            )
-                                            .await
-                                            .map_err(provider_persistence_error)?;
-                                        }
-                                        _ => {}
                                     }
-                                    events.push(event);
-                                }
+                                    Err(error) => {
+                                        failure = Some(error);
+                                        break;
+                                    }
+                                },
                                 Err(error) => {
-                                    failure = Some(error);
+                                    failure = Some(Box::new(error));
                                     break;
                                 }
                             }
                         }
-                        (failure.map_or(Ok(events), Err), meaningful_output)
+                        let completed = match failure {
+                            Some(error) => Err(error),
+                            None => accumulator.finish(),
+                        };
+                        let completed = completed.map(|mut turn| {
+                            for (key, value) in response.response_metadata {
+                                turn.finish.response_metadata.entry(key).or_insert(value);
+                            }
+                            if let Some(status) = response.http_status {
+                                turn.finish
+                                    .response_metadata
+                                    .entry("oven.http_status".into())
+                                    .or_insert_with(|| serde_json::Value::from(status));
+                            }
+                            if let Some(request_id) = response.request_id {
+                                turn.finish
+                                    .response_metadata
+                                    .entry("oven.request_id".into())
+                                    .or_insert_with(|| serde_json::Value::from(request_id));
+                            }
+                            if !request.provider_metadata.is_empty() {
+                                turn.finish.provider_metadata.insert(
+                                    "oven.request".into(),
+                                    serde_json::to_value(request.provider_metadata)
+                                        .expect("safe request metadata serializes"),
+                                );
+                            }
+                            turn
+                        });
+                        (completed, meaningful_output)
                     }
-                    Err(error) => (Err(error), false),
+                    Err(error) => (Err(Box::new(error)), false),
                 };
                 match result {
-                    Ok(events) => {
-                        return Ok(AttemptEvents { events, protocol });
-                    }
-                    Err(error) if error.class() == ProviderErrorClass::RunTerminal => {
-                        self.append(session, Some(run), Event::AttemptAbandoned)
-                            .await
-                            .map_err(provider_persistence_error)?;
-                        return Err(error);
+                    Ok(turn) => {
+                        let turn = persist_turn(turn, &self.inner.artifacts)?;
+                        let model = wire_model(binding);
+                        self.append(
+                            session,
+                            Some(run),
+                            Event::ModelTurnCommitted {
+                                model: model.clone(),
+                                input_through_seq,
+                                turn: turn.clone(),
+                            },
+                        )
+                        .await?;
+                        self.maybe_generate_session_title(
+                            session,
+                            run,
+                            input_through_seq,
+                            &turn,
+                            cancellation,
+                            internal_agents.profile(InternalAgentKind::SessionTitle),
+                        )
+                        .await?;
+                        return Ok(AttemptTurn { turn });
                     }
                     Err(error)
-                        if error.class() == ProviderErrorClass::EntryRetryable
-                            && attempts < 2
+                        if error.kind == oven_sdk::ModelErrorKind::ContextLength
+                            && !meaningful_output
+                            && !context_recovery_attempted =>
+                    {
+                        self.append(session, Some(run), Event::AttemptAbandoned)
+                            .await?;
+                        context_recovery_attempted = true;
+                        let before = self
+                            .inner
+                            .store
+                            .get(session)?
+                            .log
+                            .events()
+                            .iter()
+                            .rev()
+                            .find_map(|event| {
+                                matches!(event.event, Event::ContextCheckpointCommitted { .. })
+                                    .then_some(event.seq)
+                            })
+                            .unwrap_or(0);
+                        let recovery_events = self.prompt_events(session, run).await?;
+                        let recovered = self
+                            .maybe_compact_context(
+                                session,
+                                run,
+                                cancellation,
+                                binding,
+                                &model,
+                                internal_agents.profile(InternalAgentKind::ContextCompaction),
+                                recovery_events,
+                                true,
+                            )
+                            .await?;
+                        let after = recovered
+                            .iter()
+                            .rev()
+                            .find_map(|event| {
+                                matches!(event.event, Event::ContextCheckpointCommitted { .. })
+                                    .then_some(event.seq)
+                            })
+                            .unwrap_or(0);
+                        if after > before {
+                            continue;
+                        }
+                        return Err(EngineError::Model(error));
+                    }
+                    Err(error) if classify_model_error(&error) == ErrorPolicy::FailRun => {
+                        self.append(session, Some(run), Event::AttemptAbandoned)
+                            .await?;
+                        return Err(EngineError::Model(error));
+                    }
+                    Err(error)
+                        if classify_model_error(&error) == ErrorPolicy::RetryEntry
+                            && attempts <= 2
                             && !meaningful_output =>
                     {
                         self.append(session, Some(run), Event::AttemptAbandoned)
-                            .await
-                            .map_err(provider_persistence_error)?;
-                        attempts += 1;
+                            .await?;
                         tokio::select! {
                             _ = tokio::time::sleep(std::time::Duration::from_millis(100_u64 << (attempts - 1))) => {}
-                            _ = cancellation.cancelled() => return Err(ProviderError::RunTerminal { message: "cancelled".into() }),
+                            _ = cancellation.cancelled() => return Err(ModelError::abort("model retry was cancelled").into()),
                         }
                     }
                     Err(error) => {
                         self.append(session, Some(run), Event::AttemptAbandoned)
-                            .await
-                            .map_err(provider_persistence_error)?;
-                        last_error = error;
+                            .await?;
+                        last_error = *error;
                         break;
                     }
                 }
             }
             let Some(next) = chain.get(entry + 1) else {
-                return Err(last_error);
+                return Err(last_error.into());
             };
             self.append(
                 session,
                 Some(run),
                 Event::ModelFallback {
-                    from: wire_model(model),
+                    from: wire_model(binding),
                     to: wire_model(next),
-                    reason: last_error.to_string(),
-                    attempts: attempts + 1,
+                    error: model_error_summary(&last_error),
+                    attempts,
                 },
             )
-            .await
-            .map_err(provider_persistence_error)?;
+            .await?;
             entry += 1;
             *sticky_entry = entry;
         }
-        Err(last_error)
+        Err(last_error.into())
     }
 
-    fn spawn_tool(
+    #[allow(clippy::too_many_arguments)]
+    async fn maybe_compact_context(
+        &self,
+        session: SessionId,
+        run: RunId,
+        cancellation: &CancellationToken,
+        binding: &cookie_agent_models::FrozenModelBinding,
+        model: &cookie_agent_models::ModelEntry,
+        internal_profile: &FrozenInternalAgentProfile,
+        events: Vec<EventEnvelope>,
+        force: bool,
+    ) -> Result<Vec<EventEnvelope>, EngineError> {
+        let Some(context_limit) = binding.descriptor.capabilities.limits.context else {
+            return Ok(events);
+        };
+        let config = &self.inner.config.internal_agents.context_compaction;
+        let context = assemble_model_context(&events, &self.inner.artifacts, binding)?;
+        let serialized = serde_json::to_vec(&context.history)
+            .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
+        let input_tokens_before = (serialized.len() as u64).div_ceil(4);
+        let soft_tokens = context_limit.saturating_mul(config.soft_threshold_percent as u64) / 100;
+        let hard_tokens = context_limit.saturating_mul(config.hard_threshold_percent as u64) / 100;
+        if !force && input_tokens_before < soft_tokens {
+            return Ok(events);
+        }
+        let input_through_seq = events.last().map_or(0, |event| event.seq);
+        if events.iter().rev().any(|event| {
+            matches!(
+                &event.event,
+                Event::ContextCheckpointCommitted { commit }
+                    if commit.boundaries().input_through_seq >= input_through_seq
+            )
+        }) {
+            return Ok(events);
+        }
+        let hard = input_tokens_before >= hard_tokens;
+        let target_tokens = context_limit.saturating_mul(config.target_percent as u64) / 100;
+        let previous = events.iter().rev().find_map(|event| match &event.event {
+            Event::ContextCheckpointCommitted { .. } => Some(event.seq),
+            _ => None,
+        });
+        let source_from_seq = previous.map_or(1, |seq| seq.saturating_add(1));
+        let boundaries = ContextCheckpointBoundaries {
+            source_from_seq,
+            source_through_seq: input_through_seq,
+            input_through_seq,
+            prior_checkpoint_seq: previous,
+        };
+        let summary_limit = SummaryByteLimit::new(config.max_summary_bytes as u64)
+            .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
+
+        let native_input_within_budget =
+            input_tokens_before <= internal_profile.limits.max_input_tokens;
+        if config.persistence == CompactionPersistencePolicy::NativeOnly
+            && binding.descriptor.capabilities.compaction == CompactionCapability::Native
+            && !native_input_within_budget
+        {
+            if hard {
+                return Err(ModelError::new(
+                    oven_sdk::ModelErrorKind::ContextLength,
+                    "hard context limit reached and native compaction input exceeded its budget",
+                )
+                .into());
+            }
+            return Ok(events);
+        }
+        if config.persistence != CompactionPersistencePolicy::SummaryOnly
+            && binding.descriptor.capabilities.compaction == CompactionCapability::Native
+            && native_input_within_budget
+        {
+            let invocation_id = InternalAgentInvocationId::new_v7();
+            let internal_run_id = InternalAgentRunId::new_v7();
+            let backend = InternalAgentBackend::ProviderNative {
+                model: wire_model(binding),
+            };
+            let digest = Sha256Digest::of_bytes(&serialized);
+            self.append(
+                session,
+                Some(run),
+                Event::InternalAgentStarted {
+                    invocation_id,
+                    internal_run_id,
+                    kind: InternalAgentKind::ContextCompaction,
+                    backend: backend.clone(),
+                    call: SafeInternalAgentCall {
+                        name: "provider_native_compaction".into(),
+                        input_summary: format!("bounded native compaction input ({input_tokens_before} estimated tokens)"),
+                        input_digest: digest,
+                    },
+                },
+            )
+            .await?;
+            let mut request = ModelRequest::new(context.history);
+            if let Some(native_context) = context.native_context {
+                request = request.with_native_context(native_context);
+            }
+            let request = model.prepare_request(request);
+            let abort = AbortBridge::new(cancellation.child_token());
+            let compact_future = model
+                .model()
+                .compact(CompactionRequest::new(request), abort.signal());
+            let compact = tokio::select! {
+                result = tokio::time::timeout(
+                    std::time::Duration::from_millis(internal_profile.limits.timeout_ms),
+                    compact_future,
+                ) => match result {
+                    Ok(result) => result,
+                    Err(_) => {
+                        abort.abort();
+                        Err(ModelError::timeout("provider-native compaction timed out"))
+                    }
+                },
+                _ = cancellation.cancelled() => {
+                    abort.abort();
+                    self.append(
+                        session,
+                        Some(run),
+                        Event::InternalAgentCancelled {
+                            invocation_id,
+                            internal_run_id,
+                            kind: InternalAgentKind::ContextCompaction,
+                            reason: Some("parent run cancelled".into()),
+                        },
+                    ).await?;
+                    return Err(ModelError::abort("context compaction was cancelled").into());
+                }
+            };
+            match compact {
+                Ok(result)
+                    if result.native_context.adapter_id() == &binding.descriptor.adapter_id
+                        && result.native_context.scope().provider_id
+                            == binding.descriptor.identity.provider_id
+                        && result.native_context.scope().model_id
+                            == binding.descriptor.identity.model_id
+                        && result.usage.input_tokens.is_none_or(|tokens| {
+                            tokens <= internal_profile.limits.max_input_tokens
+                        })
+                        && result.usage.output_tokens.is_none_or(|tokens| {
+                            tokens <= internal_profile.limits.max_output_tokens
+                        }) =>
+                {
+                    let payload = serde_json::to_vec(&result.native_context).map_err(|error| {
+                        EngineError::from(ModelError::native_context(error.to_string()))
+                    })?;
+                    if payload.len() <= config.max_native_context_bytes {
+                        let (reference, digest) = self.inner.artifacts.retain(&payload)?;
+                        let checkpoint = ContextCheckpoint::ProviderNative {
+                            model: wire_model(binding),
+                            native_context: NativeContextArtifact {
+                                adapter_id: result.native_context.adapter_id().as_str().to_owned(),
+                                scope: cookie_agent_protocol::NativeContextScope {
+                                    provider_id: result
+                                        .native_context
+                                        .scope()
+                                        .provider_id
+                                        .as_str()
+                                        .to_owned(),
+                                    model_id: result
+                                        .native_context
+                                        .scope()
+                                        .model_id
+                                        .as_str()
+                                        .to_owned(),
+                                    resource_id: result
+                                        .native_context
+                                        .scope()
+                                        .resource_id
+                                        .as_str()
+                                        .to_owned(),
+                                },
+                                byte_length: payload.len() as u64,
+                                sha256: Sha256Digest::new(digest).map_err(|error| {
+                                    EngineError::from(ModelError::native_context(error.to_string()))
+                                })?,
+                                reference,
+                            },
+                        };
+                        self.append(
+                            session,
+                            Some(run),
+                            Event::InternalAgentCompleted {
+                                invocation_id,
+                                internal_run_id,
+                                kind: InternalAgentKind::ContextCompaction,
+                                result: SafeInternalAgentResult {
+                                    output_summary: format!(
+                                        "validated native context ({} bytes)",
+                                        payload.len()
+                                    ),
+                                    output_digest: Sha256Digest::of_bytes(&payload),
+                                },
+                            },
+                        )
+                        .await?;
+                        let budgets = ContextCheckpointBudgets {
+                            context_limit_tokens: context_limit,
+                            trigger_tokens: soft_tokens,
+                            target_tokens,
+                            input_tokens_before,
+                            input_tokens_after: target_tokens,
+                            max_summary_bytes: summary_limit,
+                        };
+                        let commit = ContextCheckpointCommit::new(checkpoint, boundaries, budgets)
+                            .map_err(|error| {
+                                EngineError::from(ModelError::native_context(error.to_string()))
+                            })?;
+                        self.append(
+                            session,
+                            Some(run),
+                            Event::ContextCheckpointCommitted { commit },
+                        )
+                        .await?;
+                        return Ok(self.inner.store.get(session)?.log.events());
+                    }
+                    self.append(
+                        session,
+                        Some(run),
+                        Event::InternalAgentFailed {
+                            invocation_id,
+                            internal_run_id,
+                            kind: InternalAgentKind::ContextCompaction,
+                            failure: InternalAgentFailure {
+                                code: "native_context_too_large".into(),
+                                message: "provider-native context exceeded the configured persistence bound".into(),
+                                retryable: false,
+                                model_error: None,
+                            },
+                        },
+                    ).await?;
+                }
+                Ok(_) => {
+                    self.append(
+                        session,
+                        Some(run),
+                        Event::InternalAgentFailed {
+                            invocation_id,
+                            internal_run_id,
+                            kind: InternalAgentKind::ContextCompaction,
+                            failure: InternalAgentFailure {
+                                code: "native_context_scope_mismatch".into(),
+                                message: "provider-native context did not match the exact configured model scope".into(),
+                                retryable: false,
+                                model_error: None,
+                            },
+                        },
+                    ).await?;
+                }
+                Err(error) => {
+                    self.append(
+                        session,
+                        Some(run),
+                        Event::InternalAgentFailed {
+                            invocation_id,
+                            internal_run_id,
+                            kind: InternalAgentKind::ContextCompaction,
+                            failure: InternalAgentFailure {
+                                code: "native_compaction_failed".into(),
+                                message: error.message.clone(),
+                                retryable: error.retryable,
+                                model_error: Some(model_error_summary(&error)),
+                            },
+                        },
+                    )
+                    .await?;
+                }
+            }
+            if config.persistence != CompactionPersistencePolicy::NativeOnly {
+                let fallback_backend = internal_profile.models.first().map_or_else(
+                    || InternalAgentBackend::Builtin {
+                        name: "bounded_summary".into(),
+                        revision: BOUNDED_SUMMARY_BUILTIN_REVISION.into(),
+                    },
+                    |binding| InternalAgentBackend::Model {
+                        profile: Box::new(internal_profile.snapshot.clone()),
+                        model: wire_model(binding),
+                    },
+                );
+                self.append(
+                    session,
+                    Some(run),
+                    Event::InternalAgentFallback {
+                        invocation_id,
+                        internal_run_id,
+                        kind: InternalAgentKind::ContextCompaction,
+                        from: backend,
+                        to: fallback_backend,
+                        failure: InternalAgentFailure {
+                            code: "native_compaction_unusable".into(),
+                            message:
+                                "provider-native compaction did not produce a valid checkpoint"
+                                    .into(),
+                            retryable: false,
+                            model_error: None,
+                        },
+                        attempts: 1,
+                    },
+                )
+                .await?;
+            }
+            if config.persistence == CompactionPersistencePolicy::NativeOnly {
+                if hard {
+                    return Err(ModelError::new(
+                        oven_sdk::ModelErrorKind::ContextLength,
+                        "hard context limit reached and provider-native compaction failed",
+                    )
+                    .into());
+                }
+                return Ok(events);
+            }
+        }
+
+        let durable = serde_json::to_string(&events)
+            .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
+        let summary = self
+            .run_internal_text_agent(
+                session,
+                Some(run),
+                InternalAgentKind::ContextCompaction,
+                internal_profile,
+                format!(
+                    "Summarize the durable conversation below without omitting system policy, approval boundaries, attachments, or complete tool call/result pairs. Return summary text only.\n{durable}"
+                ),
+                cancellation,
+            )
+            .await;
+        match summary {
+            Ok(summary) if !summary.text.trim().is_empty() => {
+                let checkpoint = InternalSummaryCheckpoint::new(
+                    summary.text,
+                    summary.invocation_id,
+                    summary.internal_run_id,
+                    summary_limit,
+                )
+                .map_err(|error| {
+                    EngineError::from(ModelError::invalid_response(error.to_string()))
+                })?;
+                let input_tokens_after = checkpoint.byte_length().div_ceil(4);
+                let budgets = ContextCheckpointBudgets {
+                    context_limit_tokens: context_limit,
+                    trigger_tokens: soft_tokens,
+                    target_tokens,
+                    input_tokens_before,
+                    input_tokens_after,
+                    max_summary_bytes: summary_limit,
+                };
+                let commit = ContextCheckpointCommit::new(
+                    ContextCheckpoint::InternalSummary { checkpoint },
+                    boundaries,
+                    budgets,
+                )
+                .map_err(|error| {
+                    EngineError::from(ModelError::invalid_response(error.to_string()))
+                })?;
+                self.append(
+                    session,
+                    Some(run),
+                    Event::ContextCheckpointCommitted { commit },
+                )
+                .await?;
+                Ok(self.inner.store.get(session)?.log.events())
+            }
+            _ if hard => Err(ModelError::new(
+                oven_sdk::ModelErrorKind::ContextLength,
+                "hard context limit reached and no valid context checkpoint could be produced",
+            )
+            .into()),
+            _ => Ok(events),
+        }
+    }
+
+    async fn maybe_generate_session_title(
+        &self,
+        session: SessionId,
+        run: RunId,
+        input_through_seq: u64,
+        turn: &PersistedModelTurn,
+        cancellation: &CancellationToken,
+        internal_profile: &FrozenInternalAgentProfile,
+    ) -> Result<(), EngineError> {
+        let policy = &self.inner.config.internal_agents.session_title.policy;
+        if !policy.generate_on_first_turn {
+            return Ok(());
+        }
+        let events = self.inner.store.get(session)?.log.events();
+        if !automatic_title_eligible(&events) {
+            return Ok(());
+        }
+        let input = events
+            .iter()
+            .find_map(|event| match &event.event {
+                Event::RunStarted { input, .. } if event.run_id == Some(run) => Some(input.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let answer = turn
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                PersistedAssistantPart::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        let prompt = format!(
+            "Return only a short plain-text session title. No quotes, markup, or explanation.\nUser: {}\nAssistant: {}",
+            truncate_utf8(&input, 8 * 1024),
+            truncate_utf8(&answer, 8 * 1024)
+        );
+        let generated = self
+            .run_internal_text_agent(
+                session,
+                Some(run),
+                InternalAgentKind::SessionTitle,
+                internal_profile,
+                prompt,
+                cancellation,
+            )
+            .await;
+        let commit = match generated {
+            Ok(result) => validate_generated_title(&result.text, policy.max_chars)
+                .map(|title| SessionTitleCommit::InternalAgentSet {
+                    title,
+                    invocation_id: result.invocation_id,
+                })
+                .or_else(|| {
+                    policy
+                        .fallback_to_input_excerpt
+                        .then(|| fallback_title(&input, policy.max_chars))
+                        .flatten()
+                        .map(|title| SessionTitleCommit::FallbackSet { title })
+                }),
+            Err(_) => policy
+                .fallback_to_input_excerpt
+                .then(|| fallback_title(&input, policy.max_chars))
+                .flatten()
+                .map(|title| SessionTitleCommit::FallbackSet { title }),
+        };
+        if let Some(commit) = commit {
+            self.append(
+                session,
+                Some(run),
+                Event::SessionTitleCommitted {
+                    input_through_seq,
+                    commit,
+                },
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn generate_title_after_reset(&self, session: SessionId) -> Result<(), EngineError> {
+        let projection = self.inner.store.get(session)?;
+        let events = projection.log.events();
+        if !automatic_title_eligible(&events) {
+            return Ok(());
+        }
+        let Some((run, input_through_seq, turn)) =
+            events.iter().rev().find_map(|event| match &event.event {
+                Event::ModelTurnCommitted {
+                    input_through_seq,
+                    turn,
+                    ..
+                } => event
+                    .run_id
+                    .map(|run| (run, *input_through_seq, turn.clone())),
+                _ => None,
+            })
+        else {
+            return Ok(());
+        };
+        let internal = self.inner.internal_agents.accept(&projection.policy);
+        self.maybe_generate_session_title(
+            session,
+            run,
+            input_through_seq,
+            &turn,
+            &CancellationToken::new(),
+            internal.profile(InternalAgentKind::SessionTitle),
+        )
+        .await
+    }
+
+    async fn prepare_tool_call(
+        &self,
+        session_id: SessionId,
+        run: RunId,
+        call: ToolCall,
+        policy: &PolicySnapshot,
+    ) -> PreparedToolCall {
+        let session = match self.inner.store.get(session_id) {
+            Ok(session) => session,
+            Err(error) => {
+                return PreparedToolCall {
+                    call,
+                    prepared: Err(ToolFailure {
+                        code: ToolCallFailureCode::ExecutionFailed,
+                        message: error.to_string(),
+                    }),
+                };
+            }
+        };
+        let delegate_enabled = policy.delegation.enabled
+            && policy.delegation.depth_limit.allows_delegation()
+            && !policy.delegation.allowed_profiles.is_empty();
+        if (call.name == "delegate" && !delegate_enabled)
+            || (call.name != "delegate"
+                && (!policy.tools.contains(&call.name)
+                    || !PermissionPipeline::tool_visible(policy, &call.name)))
+        {
+            return PreparedToolCall {
+                prepared: Err(ToolFailure {
+                    code: ToolCallFailureCode::ExecutionFailed,
+                    message: format!("tool `{}` is not enabled for this session", call.name),
+                }),
+                call,
+            };
+        }
+        let providers = self
+            .inner
+            .tools
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let provider = providers.into_iter().find(|provider| {
+            provider
+                .tools_for_session(&SessionToolContext {
+                    session: session_id,
+                })
+                .ok()
+                .is_some_and(|tools| tools.iter().any(|tool| tool.name == call.name))
+        });
+        let Some(provider) = provider else {
+            return PreparedToolCall {
+                prepared: Err(ToolFailure {
+                    code: ToolCallFailureCode::ExecutionFailed,
+                    message: format!("tool `{}` is unavailable", call.name),
+                }),
+                call,
+            };
+        };
+        let context = ToolPreparationContext {
+            session: session_id,
+            run,
+            cwd: resolved_session_cwd(&session.meta.cwd),
+            workspace_root: resolved_session_cwd(&session.meta.cwd),
+        };
+        let prepared = provider
+            .prepare(context, call.clone())
+            .await
+            .map_err(Into::into);
+        PreparedToolCall { call, prepared }
+    }
+
+    async fn run_internal_text_agent(
+        &self,
+        session: SessionId,
+        parent_run: Option<RunId>,
+        kind: InternalAgentKind,
+        profile: &FrozenInternalAgentProfile,
+        input: String,
+        cancellation: &CancellationToken,
+    ) -> Result<InternalAgentTextResult, EngineError> {
+        let name = match kind {
+            InternalAgentKind::Approval => "approval",
+            InternalAgentKind::ContextCompaction => "context_compaction",
+            InternalAgentKind::SessionTitle => "session_title",
+        };
+        let profile = profile.clone();
+        let max_input_bytes = usize::try_from(profile.limits.max_input_tokens)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(4);
+        let input = truncate_utf8(&input, max_input_bytes);
+        let invocation_id = InternalAgentInvocationId::new_v7();
+        let internal_run_id = InternalAgentRunId::new_v7();
+        let call = SafeInternalAgentCall {
+            name: name.to_owned(),
+            input_summary: format!("bounded {name} input ({} bytes)", input.len()),
+            input_digest: Sha256Digest::of_bytes(input.as_bytes()),
+        };
+        let mut previous_backend = None;
+        let mut last_failure = InternalAgentFailure {
+            code: "profile_unavailable".into(),
+            message: "no configured internal model is available".into(),
+            retryable: false,
+            model_error: None,
+        };
+        for (index, binding) in profile.models.iter().enumerate() {
+            let backend = InternalAgentBackend::Model {
+                profile: Box::new(profile.snapshot.clone()),
+                model: wire_model(binding),
+            };
+            if index == 0 {
+                self.append(
+                    session,
+                    parent_run,
+                    Event::InternalAgentStarted {
+                        invocation_id,
+                        internal_run_id,
+                        kind,
+                        backend: backend.clone(),
+                        call: call.clone(),
+                    },
+                )
+                .await?;
+            } else if let Some(from) = previous_backend.take() {
+                self.append(
+                    session,
+                    parent_run,
+                    Event::InternalAgentFallback {
+                        invocation_id,
+                        internal_run_id,
+                        kind,
+                        from,
+                        to: backend.clone(),
+                        failure: last_failure.clone(),
+                        attempts: index as u32,
+                    },
+                )
+                .await?;
+            }
+            let model = match self.resolve_model(binding) {
+                Ok(model) => model,
+                Err(error) => {
+                    last_failure = InternalAgentFailure {
+                        code: "model_unavailable".into(),
+                        message: error.to_string(),
+                        retryable: false,
+                        model_error: None,
+                    };
+                    previous_backend = Some(backend);
+                    continue;
+                }
+            };
+            let history = vec![oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(
+                vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
+                    input.clone(),
+                ))],
+            ))];
+            let mut request = ModelRequest::new(history);
+            request.inference.max_output_tokens = Some(profile.limits.max_output_tokens);
+            let request = model.prepare_request(request);
+            let abort = AbortBridge::new(cancellation.child_token());
+            let call_future = model.model().complete(request, abort.signal());
+            let result = tokio::select! {
+                result = tokio::time::timeout(
+                    std::time::Duration::from_millis(profile.limits.timeout_ms),
+                    call_future,
+                ) => match result {
+                    Ok(result) => result,
+                    Err(_) => {
+                        abort.abort();
+                        Err(ModelError::timeout("internal agent timed out"))
+                    },
+                },
+                _ = cancellation.cancelled() => {
+                    abort.abort();
+                    self.append(
+                        session,
+                        parent_run,
+                        Event::InternalAgentCancelled {
+                            invocation_id,
+                            internal_run_id,
+                            kind,
+                            reason: Some("parent run cancelled".into()),
+                        },
+                    ).await?;
+                    return Err(ModelError::abort("internal agent was cancelled").into());
+                }
+            };
+            match result {
+                Ok(completed) => {
+                    let output = completed
+                        .turn
+                        .message
+                        .content
+                        .iter()
+                        .filter_map(|part| match part {
+                            oven_sdk::AssistantPart::Text(text) => Some(text.text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<String>();
+                    let max_output_bytes = usize::try_from(profile.limits.max_output_tokens)
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(4);
+                    if output.len() > max_output_bytes {
+                        last_failure = InternalAgentFailure {
+                            code: "output_too_large".into(),
+                            message: "internal agent output exceeded its hard bound".into(),
+                            retryable: false,
+                            model_error: None,
+                        };
+                        previous_backend = Some(backend);
+                        continue;
+                    }
+                    self.append(
+                        session,
+                        parent_run,
+                        Event::InternalAgentCompleted {
+                            invocation_id,
+                            internal_run_id,
+                            kind,
+                            result: SafeInternalAgentResult {
+                                output_summary: format!(
+                                    "validated {name} output ({} bytes)",
+                                    output.len()
+                                ),
+                                output_digest: Sha256Digest::of_bytes(output.as_bytes()),
+                            },
+                        },
+                    )
+                    .await?;
+                    return Ok(InternalAgentTextResult {
+                        invocation_id,
+                        internal_run_id,
+                        text: output,
+                    });
+                }
+                Err(error) => {
+                    last_failure = InternalAgentFailure {
+                        code: "model_failure".into(),
+                        message: error.message.clone(),
+                        retryable: error.retryable,
+                        model_error: Some(model_error_summary(&error)),
+                    };
+                    previous_backend = Some(backend);
+                }
+            }
+        }
+        if profile.models.is_empty() {
+            self.append(
+                session,
+                parent_run,
+                Event::InternalAgentStarted {
+                    invocation_id,
+                    internal_run_id,
+                    kind,
+                    backend: InternalAgentBackend::Builtin {
+                        name: "unavailable".into(),
+                        revision: UNAVAILABLE_BUILTIN_REVISION.into(),
+                    },
+                    call,
+                },
+            )
+            .await?;
+        }
+        self.append(
+            session,
+            parent_run,
+            Event::InternalAgentFailed {
+                invocation_id,
+                internal_run_id,
+                kind,
+                failure: last_failure,
+            },
+        )
+        .await?;
+        Err(ModelError::invalid_response("internal agent failed safely").into())
+    }
+
+    async fn request_model_approval(
+        &self,
+        active: &ActiveRun,
+        run: RunId,
+        operation: &PreparedOperationIdentity,
+        policy_labels: &[String],
+        executor: PreparedExecutorCell,
+        message: Option<String>,
+    ) -> Result<ApprovalOutcome, EngineError> {
+        let request = approval_request_for_operation(
+            ApprovalTrigger::ModelToolApproval,
+            operation.clone(),
+            operation
+                .resources()
+                .iter()
+                .zip(policy_labels)
+                .map(|(resource, label)| cookie_agent_protocol::DecisionTrace {
+                    action: resource.capability,
+                    normalized_resource: label.clone(),
+                    candidates: Vec::new(),
+                    effect: cookie_agent_protocol::Effect::Ask,
+                    precedence_reason: message
+                        .clone()
+                        .unwrap_or_else(|| "model requested tool approval".into()),
+                })
+                .collect(),
+            false,
+            approval_expiry(
+                active
+                    .internal_agents
+                    .profile(InternalAgentKind::Approval)
+                    .limits
+                    .timeout_ms,
+            ),
+        );
+        self.await_user_approval(active, run, request, executor, false)
+            .await
+    }
+
+    async fn await_user_approval(
+        &self,
+        active: &ActiveRun,
+        run: RunId,
+        request: ApprovalRequest,
+        executor: PreparedExecutorCell,
+        allow_prior_grant: bool,
+    ) -> Result<ApprovalOutcome, EngineError> {
+        let approval_id = request.approval_id();
+        let session = self.inner.store.get(active.session)?;
+        let root = root_id(&session.meta.origin, active.session);
+        if allow_prior_grant
+            && let Some(grant) = self.inner.approvals.matching(root, request.operation())
+        {
+            let decision = ApprovalInternalDecision {
+                decision: ApprovalInternalDecisionKind::Allow,
+                source: ApprovalDecisionSource::TreeGrant,
+                reason_code: ApprovalReasonCode::TreeGrantMatched,
+                evaluations: request.evaluations().to_vec(),
+            };
+            self.append(
+                active.session,
+                Some(run),
+                Event::ApprovalRequested {
+                    request: request.clone(),
+                },
+            )
+            .await?;
+            self.append(
+                active.session,
+                Some(run),
+                Event::ApprovalEvaluated {
+                    approval_id,
+                    decision,
+                },
+            )
+            .await?;
+            self.append(
+                active.session,
+                Some(run),
+                Event::ApprovalFinalized {
+                    approval_id,
+                    decision: ApprovalFinalDecision {
+                        outcome: ApprovalFinalOutcome::Approved,
+                        source: ApprovalDecisionSource::TreeGrant,
+                        reason_code: ApprovalReasonCode::TreeGrantMatched,
+                        feedback: None,
+                        tree_grant_id: Some(grant.grant_id()),
+                    },
+                },
+            )
+            .await?;
+            return Ok(ApprovalOutcome {
+                approved: true,
+                feedback: None,
+            });
+        }
+
+        self.append(
+            active.session,
+            Some(run),
+            Event::ApprovalRequested {
+                request: request.clone(),
+            },
+        )
+        .await?;
+
+        let repetitions = self
+            .inner
+            .store
+            .get(active.session)?
+            .log
+            .events()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.event,
+                    Event::ApprovalRequested { request: prior }
+                        if prior.operation_fingerprint() == request.operation_fingerprint()
+                )
+            })
+            .count() as u32;
+        if repetitions >= 3 {
+            self.append(
+                active.session,
+                Some(run),
+                Event::ApprovalDoomLoopDetected {
+                    approval_id,
+                    operation_fingerprint: request.operation_fingerprint().clone(),
+                    repetitions,
+                },
+            )
+            .await?;
+            self.append(
+                active.session,
+                Some(run),
+                Event::ApprovalFinalized {
+                    approval_id,
+                    decision: ApprovalFinalDecision {
+                        outcome: ApprovalFinalOutcome::Rejected,
+                        source: ApprovalDecisionSource::DoomLoopGuard,
+                        reason_code: ApprovalReasonCode::DoomLoopDetected,
+                        feedback: None,
+                        tree_grant_id: None,
+                    },
+                },
+            )
+            .await?;
+            return Ok(ApprovalOutcome {
+                approved: false,
+                feedback: None,
+            });
+        }
+
+        if request
+            .evaluations()
+            .iter()
+            .any(|evaluation| evaluation.effect == cookie_agent_protocol::Effect::Deny)
+        {
+            let decision = ApprovalInternalDecision {
+                decision: ApprovalInternalDecisionKind::Deny,
+                source: ApprovalDecisionSource::Policy,
+                reason_code: ApprovalReasonCode::PolicyDenied,
+                evaluations: request.evaluations().to_vec(),
+            };
+            self.append(
+                active.session,
+                Some(run),
+                Event::ApprovalEvaluated {
+                    approval_id,
+                    decision,
+                },
+            )
+            .await?;
+            self.append(
+                active.session,
+                Some(run),
+                Event::ApprovalFinalized {
+                    approval_id,
+                    decision: ApprovalFinalDecision {
+                        outcome: ApprovalFinalOutcome::Rejected,
+                        source: ApprovalDecisionSource::Policy,
+                        reason_code: ApprovalReasonCode::PolicyDenied,
+                        feedback: None,
+                        tree_grant_id: None,
+                    },
+                },
+            )
+            .await?;
+            return Ok(ApprovalOutcome {
+                approved: false,
+                feedback: None,
+            });
+        }
+
+        let safe_resources = request
+            .evaluations()
+            .iter()
+            .map(|evaluation| evaluation.trace.normalized_resource.as_str())
+            .collect::<Vec<_>>();
+        let safe_operations = request
+            .operation()
+            .capabilities()
+            .iter()
+            .map(|capability| capability.operation.as_str())
+            .collect::<Vec<_>>();
+        let prompt = serde_json::to_string(&serde_json::json!({
+            "instruction": "Return strict JSON only: {\"decision\":\"allow\"|\"deny\"|\"ask\"}.",
+            "cwd": session.meta.cwd,
+            "operations": safe_operations,
+            "resource_labels": safe_resources,
+        }))
+        .expect("safe approval prompt serializes");
+        #[cfg(test)]
+        let hook = {
+            self.inner
+                .approval_evaluation_hook
+                .lock()
+                .expect("approval evaluation hook lock poisoned")
+                .take()
+        };
+        #[cfg(test)]
+        if let Some(hook) = hook {
+            if let Some(reached) = hook
+                .reached
+                .lock()
+                .expect("approval evaluation reached lock poisoned")
+                .take()
+            {
+                let _ = reached.send(());
+            }
+            hook.release.notified().await;
+        }
+        let internal_kind = match self
+            .run_internal_text_agent(
+                active.session,
+                Some(run),
+                InternalAgentKind::Approval,
+                active.internal_agents.profile(InternalAgentKind::Approval),
+                prompt,
+                &active.cancellation,
+            )
+            .await
+        {
+            Ok(result) => {
+                parse_internal_approval(&result.text).unwrap_or(ApprovalInternalDecisionKind::Ask)
+            }
+            Err(_) => ApprovalInternalDecisionKind::Ask,
+        };
+        let transition = self
+            .request(active.session, |reply| {
+                SessionCommand::ApprovalEvaluationComplete {
+                    run,
+                    request: request.clone(),
+                    executor: executor.clone(),
+                    decision: internal_kind,
+                    cancelled: active.cancellation.is_cancelled(),
+                    reply,
+                }
+            })
+            .await?;
+        let mut receiver = match transition {
+            ApprovalEvaluationTransition::Resolved(outcome) => return Ok(outcome),
+            ApprovalEvaluationTransition::Escalated(receiver) => receiver,
+        };
+        let expiry_wait = approval_expiry_wait(request.constraints().expires_at);
+        tokio::select! {
+            decision = &mut receiver => decision.map_err(|_| EngineError::ActorStopped),
+            _ = active.cancellation.cancelled() => {
+                let finalized = self.request(active.session, |reply| {
+                    SessionCommand::ApprovalTerminal {
+                        run,
+                        approval_id,
+                        terminal: ApprovalTerminal::Cancelled,
+                        reply,
+                    }
+                }).await?;
+                if finalized {
+                    Ok(ApprovalOutcome {
+                        approved: false,
+                        feedback: Some("cancelled".into()),
+                    })
+                } else {
+                    receiver.await.map_err(|_| EngineError::ActorStopped)
+                }
+            },
+            _ = tokio::time::sleep(expiry_wait) => {
+                let finalized = self.request(active.session, |reply| {
+                    SessionCommand::ApprovalTerminal {
+                        run,
+                        approval_id,
+                        terminal: ApprovalTerminal::Expired,
+                        reply,
+                    }
+                }).await?;
+                if finalized {
+                    Ok(ApprovalOutcome {
+                        approved: false,
+                        feedback: Some("approval expired unattended".into()),
+                    })
+                } else {
+                    receiver.await.map_err(|_| EngineError::ActorStopped)
+                }
+            }
+        }
+    }
+
+    async fn execute_tool(
         &self,
         active: Arc<ActiveRun>,
         run: RunId,
-        call: ToolCall,
-    ) -> JoinHandle<Result<ToolResult, String>> {
+        prepared: PreparedToolCall,
+    ) -> Result<ToolResult, ToolFailure> {
         let engine = self.clone();
-        tokio::spawn(async move {
-            let session = match engine.inner.store.get(active.session) {
-                Ok(session) => session,
-                Err(error) => return Err(error.to_string()),
-            };
-            let delegate_enabled = session.policy.delegation.enabled
-                && session.policy.delegation.depth_limit.allows_delegation()
-                && !session.policy.delegation.allowed_profiles.is_empty();
-            if (call.name == "delegate" && !delegate_enabled)
-                || (call.name != "delegate" && !session.policy.tools.contains(&call.name))
-            {
-                return Err(format!(
-                    "tool `{}` is not enabled for this session",
-                    call.name
-                ));
-            }
-            let action = PermissionPipeline::action_for_tool(&call.name)
-                .map_err(|error| error.to_string())?;
-            let root = root_id(&session.meta.origin, active.session);
-            let raw_resource = resource_for(&call);
-            let resources = if action == cookie_agent_protocol::ActionKind::Bash {
-                permissions::bash_subcommands(&raw_resource)
-            } else if matches!(
-                action,
-                cookie_agent_protocol::ActionKind::Read
-                    | cookie_agent_protocol::ActionKind::Write
-                    | cookie_agent_protocol::ActionKind::List
-            ) {
-                permissions::canonical_resource(
-                    Path::new(&session.meta.cwd),
-                    Path::new(&raw_resource),
-                )
-                .map(|(resource, external)| {
-                    if external {
-                        vec![format!("external:{resource}"), resource]
-                    } else {
-                        vec![resource]
-                    }
-                })
-                .unwrap_or_else(|_| vec![format!("external:{raw_resource}"), raw_resource])
+        {
+            let PreparedToolCall { call, prepared } = prepared;
+            let prepared = prepared?;
+            let operation = prepared.operation.clone();
+            let policy_labels = prepared.policy_labels.clone();
+            let _serialization_guard = if let Some(key) = &prepared.serialization_key {
+                Some(engine.mutation_lock(key).lock_owned().await)
             } else {
-                vec![raw_resource]
+                None
             };
-            let resources = resources
-                .into_iter()
-                .map(|resource| match resource.strip_prefix("external:") {
-                    Some(resource) => (
-                        cookie_agent_protocol::ActionKind::ExternalDirectory,
-                        resource.to_owned(),
-                    ),
-                    None => (action, resource),
-                })
-                .collect();
-            let permission = engine.inner.permissions.decide_resources(
-                &session.policy,
-                &engine.inner.approvals,
-                root,
-                active.session,
-                resources,
+            let permission = engine.inner.permissions.decide_operation(
+                &active.policy,
+                &operation,
+                &policy_labels,
             );
-            let resource = permission.trace.normalized_resource.clone();
             if permission.effect != cookie_agent_protocol::Effect::Allow {
                 if permission.effect == cookie_agent_protocol::Effect::Ask {
-                    let approval_id = format!("{}:{}", run, call.id);
-                    let suggested_pattern = permission
-                        .asking_resources
-                        .first()
-                        .map(|resource| resource.suggested_pattern.clone())
-                        .unwrap_or_else(|| format!("{resource} *"));
-                    let (approval_tx, approval_rx) = oneshot::channel();
-                    engine
-                        .inner
-                        .pending_approvals
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .insert(approval_id.clone(), approval_tx);
-                    if engine
-                        .append(
-                            active.session,
-                            Some(run),
-                            Event::ApprovalRequested {
-                                approval_id: approval_id.clone(),
-                                action: permission.trace.action,
-                                resource: resource.clone(),
-                                suggested_pattern,
-                                resources: permission.asking_resources.clone(),
-                                decision_trace: permission.trace,
-                            },
-                        )
+                    let allow_tree_grant = operation.resources().iter().all(|resource| {
+                        resource.binding_lifetime
+                            == cookie_agent_protocol::PreparedBindingLifetime::RestartStable
+                            && !matches!(
+                                resource.capability,
+                                cookie_agent_protocol::ActionKind::Read
+                                    | cookie_agent_protocol::ActionKind::Write
+                                    | cookie_agent_protocol::ActionKind::Grep
+                                    | cookie_agent_protocol::ActionKind::Glob
+                                    | cookie_agent_protocol::ActionKind::ExternalDirectory
+                            )
+                    });
+                    let request = ApprovalRequest::new(
+                        ApprovalId::new_v7(),
+                        1,
+                        ApprovalTrigger::PermissionPolicy,
+                        operation.clone(),
+                        permission.evaluations.clone(),
+                        ApprovalConstraints {
+                            allow_once: true,
+                            allow_tree_grant,
+                            cancellable: true,
+                            expires_at: approval_expiry(
+                                active
+                                    .internal_agents
+                                    .profile(InternalAgentKind::Approval)
+                                    .limits
+                                    .timeout_ms,
+                            ),
+                        },
+                    )
+                    .map_err(|error| ToolFailure {
+                        code: ToolCallFailureCode::ExecutionFailed,
+                        message: error.to_string(),
+                    })?;
+                    let outcome = engine
+                        .await_user_approval(&active, run, request, prepared.executor.clone(), true)
                         .await
-                        .is_err()
-                    {
-                        engine
-                            .inner
-                            .pending_approvals
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .remove(&approval_id);
-                        return Err("could not persist approval request".into());
-                    }
-                    let decision = tokio::select! {
-                        decision = approval_rx => decision.map_err(|_| "approval request was abandoned".to_owned())?,
-                        _ = active.cancellation.cancelled() => {
-                            engine.inner.pending_approvals.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&approval_id);
-                            return Err("cancelled".into());
-                        }
-                    };
-                    if matches!(decision, ApprovalDecision::Once | ApprovalDecision::Always) {
-                        // The actual approval is persisted by approval_respond;
-                        // this task merely resumes after the actor releases it.
-                    } else {
-                        return Err("permission refused by user".into());
+                        .map_err(|error| ToolFailure {
+                            code: ToolCallFailureCode::ExecutionFailed,
+                            message: error.to_string(),
+                        })?;
+                    if !outcome.approved {
+                        return Err(ToolFailure {
+                            code: ToolCallFailureCode::ExecutionFailed,
+                            message: denied_tool_failure(
+                                ApprovalDecisionSource::Policy,
+                                "permission refused by user",
+                                outcome.feedback,
+                            ),
+                        });
                     }
                 } else {
-                    return Err("permission denied".into());
+                    return Err(ToolFailure {
+                        code: ToolCallFailureCode::ExecutionFailed,
+                        message: denied_tool_failure(
+                            ApprovalDecisionSource::Policy,
+                            "permission denied",
+                            None,
+                        ),
+                    });
                 }
             }
-            let providers = engine
-                .inner
-                .tools
+            let executor = prepared
+                .executor
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            let provider = providers
-                .iter()
-                .find(|provider| {
-                    provider
-                        .tools_for_session(&SessionToolContext {
-                            session: active.session,
-                        })
-                        .ok()
-                        .is_some_and(|tools| tools.iter().any(|tool| tool.name == call.name))
-                })
-                .cloned()
-                .ok_or_else(|| EngineError::MissingTool(call.name.clone()).to_string())?;
+                .await
+                .take()
+                .ok_or_else(|| ToolFailure {
+                    code: ToolCallFailureCode::PreparedCapabilityLost,
+                    message: "prepared executor capability was already consumed or lost".into(),
+                })?;
             let (progress_tx, mut progress_rx) = mpsc::channel(64);
             let hub = engine
                 .inner
@@ -3366,6 +5822,13 @@ impl Engine {
                     .get("interactive")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
+            let capture = (call.name == "bash")
+                .then(|| OutputCapture::new(engine.inner.artifacts.clone()))
+                .transpose()
+                .map_err(|error| ToolFailure {
+                    code: ToolCallFailureCode::ExecutionFailed,
+                    message: format!("tool output capture setup failed: {error}"),
+                })?;
             let (stdin_tx, stdin) = ToolStdin::channel(64);
             if interactive {
                 active
@@ -3374,18 +5837,23 @@ impl Engine {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .insert(call.id, stdin_tx);
             }
-            let invoke = provider.invoke(
-                ToolInvocationContext {
-                    session: active.session,
-                    run,
-                    cwd: resolved_session_cwd(&session.meta.cwd),
-                    workspace_root: resolved_session_cwd(&session.meta.cwd),
-                    progress: ProgressSink::new(progress_tx, hub.clone()),
-                    cancellation: active.cancellation.child_token(),
-                    stdin: interactive.then_some(stdin),
-                },
-                call.clone(),
-            );
+            let invoke = executor.execute(ToolExecutionContext {
+                session: active.session,
+                run,
+                progress: capture.as_ref().map_or_else(
+                    || ProgressSink::new(progress_tx.clone(), hub.clone()),
+                    |capture| {
+                        ProgressSink::with_capture(
+                            progress_tx.clone(),
+                            hub.clone(),
+                            capture.clone(),
+                        )
+                    },
+                ),
+                cancellation: active.cancellation.child_token(),
+                stdin: interactive.then_some(stdin),
+                artifacts: engine.inner.artifacts.clone(),
+            });
             tokio::pin!(invoke);
             loop {
                 tokio::select! {
@@ -3401,7 +5869,36 @@ impl Engine {
                         // session actor.
                         hub.finalize();
                         engine.retain_finalized_output_hub(call.id);
-                        return result.map(bound_tool_result).map_err(|error| error.to_string());
+                        return match result {
+                            Ok(result) => {
+                                let bounded = if let Some(capture) = &capture {
+                                    capture.finish(
+                                        result,
+                                        active.policy.result_limits.tool_output_max_lines,
+                                        active.policy.result_limits.tool_output_max_bytes,
+                                    )
+                                } else {
+                                    bound_tool_result(
+                                        result,
+                                        &call.name,
+                                        call.id,
+                                        &engine.inner.artifacts,
+                                        active.policy.result_limits.tool_output_max_lines,
+                                        active.policy.result_limits.tool_output_max_bytes,
+                                    )
+                                };
+                                bounded.map_err(|error| ToolFailure {
+                                    code: ToolCallFailureCode::ExecutionFailed,
+                                    message: error.to_string(),
+                                })
+                            }
+                            Err(error) => {
+                                if let Some(capture) = &capture {
+                                    capture.discard();
+                                }
+                                Err(error.into())
+                            }
+                        };
                     }
                     Some(progress) = progress_rx.recv() => {
                         let _ = engine.append(active.session, Some(run), Event::ToolCallProgress { tool_call_id: progress.tool_call_id, message: progress.message }).await;
@@ -3412,115 +5909,598 @@ impl Engine {
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .remove(&call.id);
+                        if let Some(capture) = &capture {
+                            capture.discard();
+                        }
                         hub.finalize();
                         engine.retain_finalized_output_hub(call.id);
-                        return Err("cancelled".into());
+                        return Err(ToolFailure {
+                            code: ToolCallFailureCode::ExecutionFailed,
+                            message: "tool call cancelled after it started".into(),
+                        });
                     }
                 }
             }
-        })
+        }
     }
 
     pub async fn approval_respond(
         &self,
-        session: SessionId,
-        approval_id: String,
-        decision: ApprovalDecision,
-        scope: Option<String>,
-        feedback: Option<String>,
+        params: ApprovalRespondParams,
     ) -> Result<ApprovalRespondResult, EngineError> {
-        let projection = self.inner.store.get(session)?;
-        let requested = projection
-            .log
-            .events()
-            .into_iter()
-            .find_map(|event| match event.event {
-                Event::ApprovalRequested {
-                    approval_id: ref id,
-                    action,
-                    ref resource,
-                    ref suggested_pattern,
-                    ref resources,
-                    ref decision_trace,
-                    ..
-                } if *id == approval_id => Some((
-                    action,
-                    resource.clone(),
-                    suggested_pattern.clone(),
-                    resources.clone(),
-                    decision_trace
-                        .precedence_reason
-                        .starts_with("doom-loop guard"),
-                )),
-                _ => None,
-            });
-        let decision = if requested
-            .as_ref()
-            .is_some_and(|(_, _, _, _, doom_loop)| *doom_loop)
-            && decision == ApprovalDecision::Always
-        {
-            ApprovalDecision::Reject
-        } else {
-            decision
-        };
-        let effective_scope = requested.as_ref().map(|(_, _, suggested_pattern, _, _)| {
-            scope.clone().unwrap_or_else(|| suggested_pattern.clone())
-        });
-        let mut approved_scopes = Vec::new();
-        if let Some((action, primary_resource, _, resources, _)) = requested
-            && decision == ApprovalDecision::Always
-        {
-            for resource in resources {
-                let scope = if resource.action == action && resource.resource == primary_resource {
-                    effective_scope
-                        .clone()
-                        .expect("requested approval has scope")
-                } else {
-                    resource.suggested_pattern
-                };
-                self.inner.approvals.grant(
-                    root_id(&projection.meta.origin, session),
-                    resource.action,
-                    scope.clone(),
-                );
-                approved_scopes.push(ApprovedScope {
-                    action: resource.action,
-                    resource: resource.resource,
-                    scope,
-                });
-            }
-        }
-        self.append(
-            session,
-            None,
-            Event::ApprovalResolved {
-                approval_id: approval_id.clone(),
-                decision,
-                approved_scope: (decision == ApprovalDecision::Always)
-                    .then_some(effective_scope)
-                    .flatten(),
-                approved_scopes,
-                feedback,
-            },
-        )
-        .await?;
-        if let Some(sender) = self
+        let executor = self
             .inner
             .pending_approvals
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&approval_id)
-        {
-            let _ = sender.send(decision);
+            .get(&(params.session_id, params.approval_id))
+            .map(|pending| pending.executor.clone());
+        let Some(executor) = executor else {
+            return self
+                .request(params.session_id, |reply| SessionCommand::ApprovalRespond {
+                    params,
+                    reply,
+                })
+                .await;
+        };
+
+        let guard = executor.lock_owned().await;
+        let invalidation = match guard.as_ref() {
+            Some(executor) => executor.revalidate().await.err().map(|error| match error {
+                ToolError::OperationChanged(_) => PreparedApprovalInvalidation::OperationChanged,
+                _ => PreparedApprovalInvalidation::PreparedCapabilityLost,
+            }),
+            None => Some(PreparedApprovalInvalidation::PreparedCapabilityLost),
+        };
+        if let Some(invalidation) = invalidation {
+            return self
+                .request(params.session_id, |reply| {
+                    SessionCommand::ApprovalCapabilityInvalid {
+                        params,
+                        invalidation,
+                        reply,
+                    }
+                })
+                .await;
         }
-        Ok(ApprovalRespondResult {
-            approval_id,
+        self.request(params.session_id, |reply| SessionCommand::ApprovalRespond {
+            params,
+            reply,
+        })
+        .await
+    }
+
+    fn approval_evaluation_complete_direct(
+        &self,
+        session: SessionId,
+        run: RunId,
+        request: ApprovalRequest,
+        executor: PreparedExecutorCell,
+        decision: ApprovalInternalDecisionKind,
+        cancelled: bool,
+    ) -> Result<ApprovalEvaluationTransition, EngineError> {
+        let approval_id = request.approval_id();
+        let events = self.inner.store.get(session)?.log.events();
+        let Some(record) = approval_records(session, &events).remove(&approval_id) else {
+            return Err(EngineError::ApprovalNotPending {
+                session_id: session,
+                approval_id,
+            });
+        };
+        if record.status != ApprovalStatus::Pending
+            || approval_run_id(&events, approval_id) != Some(run)
+        {
+            return Err(EngineError::ApprovalNotPending {
+                session_id: session,
+                approval_id,
+            });
+        }
+        if cancelled {
+            self.approval_terminal_direct(session, run, approval_id, ApprovalTerminal::Cancelled)?;
+            return Ok(ApprovalEvaluationTransition::Resolved(ApprovalOutcome {
+                approved: false,
+                feedback: Some("cancelled".into()),
+            }));
+        }
+        if approval_deadline_exhausted(request.constraints().expires_at) {
+            self.approval_terminal_direct(session, run, approval_id, ApprovalTerminal::Expired)?;
+            return Ok(ApprovalEvaluationTransition::Resolved(ApprovalOutcome {
+                approved: false,
+                feedback: Some("approval expired unattended".into()),
+            }));
+        }
+
+        let source = ApprovalDecisionSource::InternalAgent;
+        let reason_code = match decision {
+            ApprovalInternalDecisionKind::Allow => ApprovalReasonCode::InternalAgentAllowed,
+            ApprovalInternalDecisionKind::Deny => ApprovalReasonCode::InternalAgentDenied,
+            ApprovalInternalDecisionKind::Ask | ApprovalInternalDecisionKind::Escalate => {
+                ApprovalReasonCode::Escalated
+            }
+        };
+        self.append_direct(
+            session,
+            Some(run),
+            Event::ApprovalEvaluated {
+                approval_id,
+                decision: ApprovalInternalDecision {
+                    decision,
+                    source,
+                    reason_code,
+                    evaluations: request.evaluations().to_vec(),
+                },
+            },
+        )?;
+        if matches!(
             decision,
+            ApprovalInternalDecisionKind::Allow | ApprovalInternalDecisionKind::Deny
+        ) {
+            let approved = decision == ApprovalInternalDecisionKind::Allow;
+            self.append_direct(
+                session,
+                Some(run),
+                Event::ApprovalFinalized {
+                    approval_id,
+                    decision: ApprovalFinalDecision {
+                        outcome: if approved {
+                            ApprovalFinalOutcome::Approved
+                        } else {
+                            ApprovalFinalOutcome::Rejected
+                        },
+                        source,
+                        reason_code,
+                        feedback: None,
+                        tree_grant_id: None,
+                    },
+                },
+            )?;
+            return Ok(ApprovalEvaluationTransition::Resolved(ApprovalOutcome {
+                approved,
+                feedback: None,
+            }));
+        }
+
+        self.append_direct(
+            session,
+            Some(run),
+            Event::ApprovalEscalated {
+                approval_id,
+                reason_code: ApprovalReasonCode::Escalated,
+            },
+        )?;
+        let (sender, receiver) = oneshot::channel();
+        let replaced = self
+            .inner
+            .pending_approvals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert((session, approval_id), PendingApproval { sender, executor });
+        if replaced.is_some() {
+            return Err(EngineError::ApprovalConflict);
+        }
+        Ok(ApprovalEvaluationTransition::Escalated(receiver))
+    }
+
+    fn approval_respond_direct(
+        &self,
+        params: ApprovalRespondParams,
+    ) -> Result<ApprovalRespondResult, EngineError> {
+        let projection = self.inner.store.get(params.session_id)?;
+        let events = projection.log.events();
+        if let Some((recorded_approval_id, recorded_decision, recorded_feedback)) =
+            events.iter().find_map(|event| match &event.event {
+                Event::ApprovalUserDecisionRecorded {
+                    approval_id,
+                    client_response_id,
+                    decision,
+                    feedback,
+                } if client_response_id == &params.client_response_id => {
+                    Some((*approval_id, *decision, feedback.clone()))
+                }
+                _ => None,
+            })
+        {
+            let Some(request) =
+                approval_records(params.session_id, &events).remove(&recorded_approval_id)
+            else {
+                return Err(approval_response_failure(
+                    &params,
+                    ApprovalRespondErrorCode::ApprovalNotFound,
+                    None,
+                ));
+            };
+            if recorded_approval_id != params.approval_id
+                || recorded_decision != params.decision
+                || recorded_feedback != params.feedback
+                || approval_request_revision(&request.request) != params.request_revision
+                || request.request.operation_fingerprint() != &params.operation_fingerprint
+            {
+                return Err(approval_response_failure(
+                    &params,
+                    ApprovalRespondErrorCode::IdempotencyConflict,
+                    Some(&request),
+                ));
+            }
+            return Ok(ApprovalRespondResult {
+                client_response_id: params.client_response_id,
+                approval: request,
+            });
+        }
+
+        let mut records = approval_records(params.session_id, &events);
+        let Some(record) = records.remove(&params.approval_id) else {
+            return Err(approval_response_failure(
+                &params,
+                ApprovalRespondErrorCode::ApprovalNotFound,
+                None,
+            ));
+        };
+        if !matches!(
+            record.status,
+            ApprovalStatus::Pending | ApprovalStatus::Escalated
+        ) {
+            return Err(approval_response_failure(
+                &params,
+                ApprovalRespondErrorCode::ApprovalNotPending,
+                Some(&record),
+            ));
+        }
+        let run_id =
+            approval_run_id(&events, params.approval_id).ok_or(EngineError::ApprovalConflict)?;
+        if approval_deadline_exhausted(record.request.constraints().expires_at) {
+            self.approval_terminal_direct(
+                params.session_id,
+                run_id,
+                params.approval_id,
+                ApprovalTerminal::Expired,
+            )?;
+            let current = approval_records(
+                params.session_id,
+                &self.inner.store.get(params.session_id)?.log.events(),
+            )
+            .remove(&params.approval_id);
+            return Err(approval_response_failure(
+                &params,
+                ApprovalRespondErrorCode::ApprovalNotPending,
+                current.as_ref(),
+            ));
+        }
+        if record.status != ApprovalStatus::Escalated {
+            return Err(approval_response_failure(
+                &params,
+                ApprovalRespondErrorCode::ApprovalNotPending,
+                Some(&record),
+            ));
+        }
+        if approval_request_revision(&record.request) != params.request_revision {
+            return Err(approval_response_failure(
+                &params,
+                ApprovalRespondErrorCode::ApprovalRevisionConflict,
+                Some(&record),
+            ));
+        }
+        if record.request.operation_fingerprint() != &params.operation_fingerprint {
+            return Err(approval_response_failure(
+                &params,
+                ApprovalRespondErrorCode::OperationFingerprintMismatch,
+                Some(&record),
+            ));
+        }
+        let allowed = match params.decision {
+            ApprovalUserDecision::ApproveOnce => record.request.constraints().allow_once,
+            ApprovalUserDecision::ApproveTree => record.request.constraints().allow_tree_grant,
+            ApprovalUserDecision::Reject => true,
+            ApprovalUserDecision::Cancel => record.request.constraints().cancellable,
+        };
+        if !allowed {
+            return Err(approval_response_failure(
+                &params,
+                ApprovalRespondErrorCode::DecisionNotAllowed,
+                Some(&record),
+            ));
+        }
+        self.append_direct(
+            params.session_id,
+            Some(run_id),
+            Event::ApprovalUserDecisionRecorded {
+                approval_id: params.approval_id,
+                client_response_id: params.client_response_id.clone(),
+                decision: params.decision,
+                feedback: params.feedback.clone(),
+            },
+        )?;
+        let root = root_id(&projection.meta.origin, params.session_id);
+        let grant = if params.decision == ApprovalUserDecision::ApproveTree {
+            Some(
+                TreeApprovalGrant::new(
+                    cookie_agent_protocol::TreeApprovalGrantId::new_v7(),
+                    root,
+                    params.approval_id,
+                    record.request.operation_fingerprint().clone(),
+                    record.request.operation().capabilities().to_vec(),
+                    record.request.operation().resources().to_vec(),
+                    jiff::Timestamp::now(),
+                )
+                .map_err(|_| EngineError::ApprovalConflict)?,
+            )
+        } else {
+            None
+        };
+        if let Some(grant) = &grant {
+            self.append_direct(
+                params.session_id,
+                Some(run_id),
+                Event::TreeApprovalGrantCommitted {
+                    grant: grant.clone(),
+                },
+            )?;
+            self.inner.approvals.grant(grant.clone());
+        }
+        let (outcome, reason_code, approved) = match params.decision {
+            ApprovalUserDecision::ApproveOnce => (
+                ApprovalFinalOutcome::Approved,
+                ApprovalReasonCode::UserApprovedOnce,
+                true,
+            ),
+            ApprovalUserDecision::ApproveTree => (
+                ApprovalFinalOutcome::Approved,
+                ApprovalReasonCode::UserApprovedTree,
+                true,
+            ),
+            ApprovalUserDecision::Reject => (
+                ApprovalFinalOutcome::Rejected,
+                ApprovalReasonCode::UserRejected,
+                false,
+            ),
+            ApprovalUserDecision::Cancel => (
+                ApprovalFinalOutcome::Cancelled,
+                ApprovalReasonCode::UserCancelled,
+                false,
+            ),
+        };
+        self.append_direct(
+            params.session_id,
+            Some(run_id),
+            Event::ApprovalFinalized {
+                approval_id: params.approval_id,
+                decision: ApprovalFinalDecision {
+                    outcome,
+                    source: ApprovalDecisionSource::User,
+                    reason_code,
+                    feedback: params.feedback.clone(),
+                    tree_grant_id: grant.as_ref().map(|grant| grant.grant_id()),
+                },
+            },
+        )?;
+        if let Some(pending) = self
+            .inner
+            .pending_approvals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&(params.session_id, params.approval_id))
+        {
+            let _ = pending.sender.send(ApprovalOutcome {
+                approved,
+                feedback: params
+                    .feedback
+                    .as_ref()
+                    .map(|feedback| feedback.message.clone()),
+            });
+        }
+        let events = self.inner.store.get(params.session_id)?.log.events();
+        let approval = approval_records(params.session_id, &events)
+            .remove(&params.approval_id)
+            .ok_or(EngineError::ApprovalConflict)?;
+        Ok(ApprovalRespondResult {
+            client_response_id: params.client_response_id,
+            approval,
         })
     }
 
-    fn tool_definitions(&self, session: SessionId) -> Result<Vec<ToolDefinition>, EngineError> {
-        let policy = self.inner.store.get(session)?.policy;
+    fn approval_capability_invalid_direct(
+        &self,
+        params: ApprovalRespondParams,
+        invalidation: PreparedApprovalInvalidation,
+    ) -> Result<ApprovalRespondResult, EngineError> {
+        let projection = self.inner.store.get(params.session_id)?;
+        let events = projection.log.events();
+        if events.iter().any(|event| {
+            matches!(
+                &event.event,
+                Event::ApprovalUserDecisionRecorded { client_response_id, .. }
+                    if client_response_id == &params.client_response_id
+            )
+        }) {
+            return self.approval_respond_direct(params);
+        }
+        let mut records = approval_records(params.session_id, &events);
+        let Some(record) = records.remove(&params.approval_id) else {
+            return Err(approval_response_failure(
+                &params,
+                ApprovalRespondErrorCode::ApprovalNotFound,
+                None,
+            ));
+        };
+        if record.status != ApprovalStatus::Escalated {
+            return Err(approval_response_failure(
+                &params,
+                ApprovalRespondErrorCode::ApprovalNotPending,
+                Some(&record),
+            ));
+        }
+        if approval_request_revision(&record.request) != params.request_revision {
+            return Err(approval_response_failure(
+                &params,
+                ApprovalRespondErrorCode::ApprovalRevisionConflict,
+                Some(&record),
+            ));
+        }
+        if record.request.operation_fingerprint() != &params.operation_fingerprint {
+            return Err(approval_response_failure(
+                &params,
+                ApprovalRespondErrorCode::OperationFingerprintMismatch,
+                Some(&record),
+            ));
+        }
+        let run_id =
+            approval_run_id(&events, params.approval_id).ok_or(EngineError::ApprovalConflict)?;
+        let reason_code = match invalidation {
+            PreparedApprovalInvalidation::OperationChanged => ApprovalReasonCode::OperationChanged,
+            PreparedApprovalInvalidation::PreparedCapabilityLost => {
+                ApprovalReasonCode::PreparedCapabilityLost
+            }
+        };
+        self.append_direct(
+            params.session_id,
+            Some(run_id),
+            Event::ApprovalCancelled {
+                approval_id: params.approval_id,
+                reason_code,
+            },
+        )?;
+        self.append_direct(
+            params.session_id,
+            Some(run_id),
+            Event::ApprovalFinalized {
+                approval_id: params.approval_id,
+                decision: ApprovalFinalDecision {
+                    outcome: ApprovalFinalOutcome::Cancelled,
+                    source: ApprovalDecisionSource::System,
+                    reason_code,
+                    feedback: None,
+                    tree_grant_id: None,
+                },
+            },
+        )?;
+        if let Some(pending) = self
+            .inner
+            .pending_approvals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&(params.session_id, params.approval_id))
+        {
+            let _ = pending.sender.send(ApprovalOutcome {
+                approved: false,
+                feedback: Some(match invalidation {
+                    PreparedApprovalInvalidation::OperationChanged => {
+                        "prepared operation changed before approval response".into()
+                    }
+                    PreparedApprovalInvalidation::PreparedCapabilityLost => {
+                        "prepared capability was lost before approval response".into()
+                    }
+                }),
+            });
+        }
+        let current = approval_records(
+            params.session_id,
+            &self.inner.store.get(params.session_id)?.log.events(),
+        )
+        .remove(&params.approval_id);
+        Err(approval_response_failure(
+            &params,
+            ApprovalRespondErrorCode::OperationChanged,
+            current.as_ref(),
+        ))
+    }
+
+    fn approval_terminal_direct(
+        &self,
+        session: SessionId,
+        run: RunId,
+        approval_id: ApprovalId,
+        terminal: ApprovalTerminal,
+    ) -> Result<bool, EngineError> {
+        let events = self.inner.store.get(session)?.log.events();
+        let Some(record) = approval_records(session, &events).remove(&approval_id) else {
+            return Ok(false);
+        };
+        if !matches!(
+            record.status,
+            ApprovalStatus::Pending | ApprovalStatus::Escalated
+        ) || approval_run_id(&events, approval_id) != Some(run)
+        {
+            return Ok(false);
+        }
+        let (reason_code, outcome, final_reason) = match terminal {
+            ApprovalTerminal::Cancelled => (
+                ApprovalReasonCode::RequestCancelled,
+                ApprovalFinalOutcome::Cancelled,
+                ApprovalReasonCode::RequestCancelled,
+            ),
+            ApprovalTerminal::Expired => (
+                ApprovalReasonCode::ApprovalExpired,
+                ApprovalFinalOutcome::Expired,
+                ApprovalReasonCode::Unattended,
+            ),
+        };
+        self.append_direct(
+            session,
+            Some(run),
+            Event::ApprovalCancelled {
+                approval_id,
+                reason_code,
+            },
+        )?;
+        self.append_direct(
+            session,
+            Some(run),
+            Event::ApprovalFinalized {
+                approval_id,
+                decision: ApprovalFinalDecision {
+                    outcome,
+                    source: ApprovalDecisionSource::System,
+                    reason_code: final_reason,
+                    feedback: None,
+                    tree_grant_id: None,
+                },
+            },
+        )?;
+        if let Some(pending) = self
+            .inner
+            .pending_approvals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&(session, approval_id))
+        {
+            let _ = pending.sender.send(ApprovalOutcome {
+                approved: false,
+                feedback: Some(match terminal {
+                    ApprovalTerminal::Cancelled => "cancelled".into(),
+                    ApprovalTerminal::Expired => "approval expired unattended".into(),
+                }),
+            });
+        }
+        Ok(true)
+    }
+
+    #[must_use]
+    pub fn list_approvals(
+        &self,
+        root_session_id: SessionId,
+        status: Option<ApprovalStatus>,
+    ) -> ApprovalListResult {
+        let approvals = self
+            .inner
+            .store
+            .all()
+            .into_iter()
+            .filter(|session| root_id(&session.meta.origin, session.meta.id) == root_session_id)
+            .flat_map(|session| {
+                approval_records(session.meta.id, &session.log.events()).into_values()
+            })
+            .filter(|record| status.is_none_or(|status| record.status == status))
+            .collect();
+        ApprovalListResult {
+            approvals,
+            tree_grants: self.inner.approvals.for_root(root_session_id),
+        }
+    }
+
+    fn tool_definitions(
+        &self,
+        session: SessionId,
+        policy: &PolicySnapshot,
+    ) -> Result<Vec<ToolDefinition>, EngineError> {
         let delegate_enabled = policy.delegation.enabled
             && policy.delegation.depth_limit.allows_delegation()
             && !policy.delegation.allowed_profiles.is_empty();
@@ -3537,24 +6517,77 @@ impl Engine {
                 .tools_for_session(&SessionToolContext { session })
                 .map_err(|error| EngineError::MissingTool(error.to_string()))?
             {
-                if ((tool.name != "delegate" && policy.tools.contains(&tool.name))
+                if ((tool.name != "delegate"
+                    && policy.tools.contains(&tool.name)
+                    && PermissionPipeline::tool_visible(policy, &tool.name))
                     || (tool.name == "delegate" && delegate_enabled))
                     && names.insert(tool.name.clone())
                 {
-                    output.push(ToolDefinition {
-                        name: tool.name,
-                        description: tool.description,
-                        input_schema: tool.parameters,
-                    });
+                    let schema = JsonSchema::new(tool.parameters).map_err(|error| {
+                        EngineError::MissingTool(format!(
+                            "tool `{}` has invalid JSON Schema: {error}",
+                            tool.name
+                        ))
+                    })?;
+                    output.push(ToolDefinition::new(tool.name, tool.description, schema));
                 }
             }
         }
+        output.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(output)
     }
 
     fn reconcile(&self) -> Result<(), EngineError> {
         // Every active run from a previous process is terminally interrupted.
         for session in self.inner.store.all() {
+            let mut internal = HashMap::new();
+            for event in session.log.events() {
+                match event.event {
+                    Event::InternalAgentStarted {
+                        invocation_id,
+                        internal_run_id,
+                        kind,
+                        ..
+                    } => {
+                        internal.insert((invocation_id, internal_run_id), (kind, event.run_id));
+                    }
+                    Event::InternalAgentCompleted {
+                        invocation_id,
+                        internal_run_id,
+                        ..
+                    }
+                    | Event::InternalAgentFailed {
+                        invocation_id,
+                        internal_run_id,
+                        ..
+                    }
+                    | Event::InternalAgentCancelled {
+                        invocation_id,
+                        internal_run_id,
+                        ..
+                    }
+                    | Event::InternalAgentInterrupted {
+                        invocation_id,
+                        internal_run_id,
+                        ..
+                    } => {
+                        internal.remove(&(invocation_id, internal_run_id));
+                    }
+                    _ => {}
+                }
+            }
+            for ((invocation_id, internal_run_id), (kind, parent_run)) in internal {
+                self.append_blocking(
+                    session.meta.id,
+                    parent_run,
+                    Event::InternalAgentInterrupted {
+                        invocation_id,
+                        internal_run_id,
+                        kind,
+                        reason: Some("daemon restart".into()),
+                    },
+                )?;
+            }
             for run in session
                 .runs
                 .values()
@@ -3565,6 +6598,58 @@ impl Engine {
                     Some(run.id),
                     Event::RunInterrupted {
                         reason: Some("daemon restart".into()),
+                    },
+                )?;
+            }
+            for run in session.runs.values() {
+                for (tool_call_id, tool) in &run.pending_calls {
+                    if tool == "delegate" {
+                        continue;
+                    }
+                    let failure = restart_tool_failure();
+                    self.append_blocking(
+                        session.meta.id,
+                        Some(run.id),
+                        Event::ToolCallFailed {
+                            tool_call_id: *tool_call_id,
+                            code: failure.code,
+                            message: failure.message,
+                        },
+                    )?;
+                }
+            }
+            for record in approval_records(session.meta.id, &session.log.events())
+                .into_values()
+                .filter(|record| {
+                    matches!(
+                        record.status,
+                        ApprovalStatus::Pending | ApprovalStatus::Escalated
+                    )
+                })
+            {
+                let approval_run =
+                    approval_run_id(&session.log.events(), record.request.approval_id())
+                        .ok_or(EngineError::ApprovalConflict)?;
+                self.append_blocking(
+                    session.meta.id,
+                    Some(approval_run),
+                    Event::ApprovalCancelled {
+                        approval_id: record.request.approval_id(),
+                        reason_code: ApprovalReasonCode::PreparedCapabilityLost,
+                    },
+                )?;
+                self.append_blocking(
+                    session.meta.id,
+                    Some(approval_run),
+                    Event::ApprovalFinalized {
+                        approval_id: record.request.approval_id(),
+                        decision: ApprovalFinalDecision {
+                            outcome: ApprovalFinalOutcome::Cancelled,
+                            source: ApprovalDecisionSource::System,
+                            reason_code: ApprovalReasonCode::PreparedCapabilityLost,
+                            feedback: None,
+                            tree_grant_id: None,
+                        },
                     },
                 )?;
             }
@@ -3630,6 +6715,11 @@ impl Engine {
                         Event::RunStarted {
                             client_run_id: format!("orphan:{invocation_id}"),
                             input: "orphaned delegated session".into(),
+                            profile: wire_profile(&session.policy),
+                            current_profile: ProfileIdentity {
+                                name: session.policy.profile.name.clone(),
+                                agent_type: agent_type(session.policy.profile.r#type),
+                            },
                         },
                     )?;
                     self.append_blocking(
@@ -3665,6 +6755,35 @@ impl Engine {
 
     async fn resolve_interrupted_direct(&self, session_id: SessionId) -> Result<(), EngineError> {
         let session = self.inner.store.get(session_id)?;
+        let approval_records = approval_records(session_id, &session.log.events());
+        for record in approval_records.values().filter(|record| {
+            matches!(
+                record.status,
+                ApprovalStatus::Pending | ApprovalStatus::Escalated
+            )
+        }) {
+            let Some(run_id) = approval_run_id(&session.log.events(), record.request.approval_id())
+            else {
+                continue;
+            };
+            let decision = restart_approval_decision();
+            self.append_direct(
+                session_id,
+                Some(run_id),
+                Event::ApprovalCancelled {
+                    approval_id: record.request.approval_id(),
+                    reason_code: ApprovalReasonCode::PreparedCapabilityLost,
+                },
+            )?;
+            self.append_direct(
+                session_id,
+                Some(run_id),
+                Event::ApprovalFinalized {
+                    approval_id: record.request.approval_id(),
+                    decision,
+                },
+            )?;
+        }
         for run in session.runs.values().filter(|run| {
             matches!(
                 run.status,
@@ -3690,14 +6809,10 @@ impl Engine {
                             Some(run.id),
                             Event::ToolCallCompleted {
                                 tool_call_id: *call,
-                                result: cookie_agent_protocol::ToolResult {
-                                    content: delegate_failure_result(
-                                        None,
-                                        "delegate interrupted by daemon restart: no durable reservation",
-                                    )
-                                    .content,
-                                    truncated: false,
-                                },
+                                result: delegate_failure_result(
+                                    None,
+                                    "delegate interrupted by daemon restart: no durable reservation",
+                                ),
                             },
                         )?;
                         continue;
@@ -3713,10 +6828,7 @@ impl Engine {
                             Some(run.id),
                             Event::ToolCallCompleted {
                                 tool_call_id: *call,
-                                result: cookie_agent_protocol::ToolResult {
-                                    content: result.content,
-                                    truncated: false,
-                                },
+                                result,
                             },
                         )?;
                         continue;
@@ -3729,38 +6841,27 @@ impl Engine {
                                 Some(run.id),
                                 Event::ToolCallCompleted {
                                     tool_call_id: *call,
-                                    result: cookie_agent_protocol::ToolResult {
-                                        content: delegate_failure_result(
-                                            Some(child_id),
-                                            "delegate child session is missing",
-                                        )
-                                        .content,
-                                        truncated: false,
-                                    },
+                                    result: delegate_failure_result(
+                                        Some(child_id),
+                                        "delegate child session is missing",
+                                    ),
                                 },
                             )?;
                             continue;
                         }
                     };
                     if child.status == SessionStatus::Completed {
-                        let report = entry
-                            .child_run_id
-                            .and_then(|run_id| child.runs.get(&run_id))
-                            .and_then(|child_run| child_run.final_text.clone())
-                            .unwrap_or_else(|| "child completed without a final report".into());
-                        let result = bound_delegate_result(
-                            report,
-                            child.policy.result_limits.delegate_result_bytes,
-                        );
+                        let result = completed_delegate_result(
+                            &child,
+                            entry.child_run_id,
+                            &self.inner.artifacts,
+                        )?;
                         self.append_direct(
                             session_id,
                             Some(run.id),
                             Event::ToolCallCompleted {
                                 tool_call_id: *call,
-                                result: cookie_agent_protocol::ToolResult {
-                                    content: result.content,
-                                    truncated: result.truncated,
-                                },
+                                result,
                             },
                         )?;
                     } else if child.status == SessionStatus::Cancelled {
@@ -3770,10 +6871,7 @@ impl Engine {
                             Some(run.id),
                             Event::ToolCallCompleted {
                                 tool_call_id: *call,
-                                result: cookie_agent_protocol::ToolResult {
-                                    content: result.content,
-                                    truncated: result.truncated,
-                                },
+                                result,
                             },
                         )?;
                     } else if entry.child_run_id.is_none() {
@@ -3838,24 +6936,22 @@ impl Engine {
                             Some(run.id),
                             Event::ToolCallCompleted {
                                 tool_call_id: *call,
-                                result: cookie_agent_protocol::ToolResult {
-                                    content: delegate_failure_result(
-                                        Some(child_id),
-                                        "delegate child interrupted by daemon restart",
-                                    )
-                                    .content,
-                                    truncated: false,
-                                },
+                                result: delegate_failure_result(
+                                    Some(child_id),
+                                    "delegate child interrupted by daemon restart",
+                                ),
                             },
                         )?;
                     }
                 } else {
+                    let failure = restart_tool_failure();
                     self.append_direct(
                         session_id,
                         Some(run.id),
                         Event::ToolCallFailed {
                             tool_call_id: *call,
-                            message: "interrupted by daemon restart".into(),
+                            code: failure.code,
+                            message: failure.message,
                         },
                     )?;
                 }
@@ -3866,47 +6962,37 @@ impl Engine {
 
     fn rebuild_approvals(&self) {
         for session in self.inner.store.all() {
-            let mut pending = HashMap::new();
             for envelope in session.log.events() {
-                match envelope.event {
-                    Event::ApprovalRequested {
-                        approval_id,
-                        action,
-                        suggested_pattern,
-                        resources,
-                        ..
-                    } => {
-                        pending.insert(approval_id, (action, suggested_pattern, resources));
-                    }
-                    Event::ApprovalResolved {
-                        approval_id,
-                        decision: ApprovalDecision::Always,
-                        approved_scope,
-                        approved_scopes,
-                        ..
-                    } => {
-                        if !approved_scopes.is_empty() {
-                            for scope in approved_scopes {
-                                self.inner.approvals.grant(
-                                    root_id(&session.meta.origin, session.meta.id),
-                                    scope.action,
-                                    scope.scope,
-                                );
-                            }
-                        } else if let Some((action, suggested_pattern, _)) =
-                            pending.get(&approval_id)
-                        {
-                            self.inner.approvals.grant(
-                                root_id(&session.meta.origin, session.meta.id),
-                                *action,
-                                approved_scope.unwrap_or_else(|| suggested_pattern.clone()),
-                            );
-                        }
-                    }
-                    _ => {}
+                if let Event::TreeApprovalGrantCommitted { grant } = envelope.event
+                    && grant.resources().iter().all(|resource| {
+                        resource.binding_lifetime
+                            == cookie_agent_protocol::PreparedBindingLifetime::RestartStable
+                    })
+                {
+                    self.inner.approvals.grant(grant);
                 }
             }
         }
+        self.inner
+            .approvals
+            .invalidate_grants(&self.inner.grant_journal.invalidated_ids());
+    }
+}
+
+fn restart_approval_decision() -> ApprovalFinalDecision {
+    ApprovalFinalDecision {
+        outcome: ApprovalFinalOutcome::Cancelled,
+        source: ApprovalDecisionSource::System,
+        reason_code: ApprovalReasonCode::PreparedCapabilityLost,
+        feedback: None,
+        tree_grant_id: None,
+    }
+}
+
+fn restart_tool_failure() -> ToolFailure {
+    ToolFailure {
+        code: ToolCallFailureCode::PreparedCapabilityLost,
+        message: "prepared capability lost during daemon restart".into(),
     }
 }
 
@@ -3916,17 +7002,68 @@ fn session_meta(
     cwd: &Path,
     policy: &PolicySnapshot,
 ) -> SessionMeta {
-    let profile = cookie_agent_protocol::ProfileSnapshot {
+    let profile = wire_profile(policy);
+    SessionMeta {
+        id,
+        origin,
+        cwd: cwd.to_string_lossy().into_owned(),
+        profile,
+        title: None,
+    }
+}
+
+fn freeze_internal_profile(
+    name: &str,
+    config: &InternalModelAgentConfig,
+    model_set: &cookie_agent_models::ModelSet,
+) -> Result<FrozenInternalAgentProfile, EngineError> {
+    let models = config
+        .models
+        .iter()
+        .map(|alias| {
+            model_set
+                .freeze(alias)
+                .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(FrozenInternalAgentProfile {
+        snapshot: cookie_agent_protocol::ProfileSnapshot {
+            name: name.to_owned(),
+            agent_type: AgentType::Internal,
+            models: models.iter().map(wire_model).collect(),
+            tools: Vec::new(),
+            delegation: cookie_agent_protocol::DelegationSnapshot {
+                enabled: false,
+                allowed_profiles: Vec::new(),
+                depth_limit: cookie_agent_protocol::DepthLimit::Finite(0),
+                result_limit_bytes: 0,
+            },
+            permission_rules: Vec::new(),
+        },
+        models,
+        limits: config.clone(),
+    })
+}
+
+fn inherit_internal_profile(
+    configured: &FrozenInternalAgentProfile,
+    owner: &PolicySnapshot,
+) -> FrozenInternalAgentProfile {
+    if !configured.models.is_empty() {
+        return configured.clone();
+    }
+    FrozenInternalAgentProfile {
+        snapshot: wire_profile(owner),
+        models: owner.models.clone(),
+        limits: configured.limits.clone(),
+    }
+}
+
+fn wire_profile(policy: &PolicySnapshot) -> cookie_agent_protocol::ProfileSnapshot {
+    cookie_agent_protocol::ProfileSnapshot {
         name: policy.profile.name.clone(),
         agent_type: agent_type(policy.profile.r#type),
-        models: policy
-            .models
-            .iter()
-            .map(|model| ModelRef {
-                provider: model.provider.clone(),
-                model: model.model.clone(),
-            })
-            .collect(),
+        models: policy.models.iter().map(wire_model).collect(),
         tools: policy.tools.iter().cloned().collect(),
         delegation: cookie_agent_protocol::DelegationSnapshot {
             enabled: policy.delegation.enabled,
@@ -3950,16 +7087,9 @@ fn session_meta(
                             "deny" => cookie_agent_protocol::Effect::Deny,
                             _ => cookie_agent_protocol::Effect::Ask,
                         },
-                        hard: rule.hard,
                     })
             })
             .collect(),
-    };
-    SessionMeta {
-        id,
-        origin,
-        cwd: cwd.to_string_lossy().into_owned(),
-        profile,
     }
 }
 fn agent_type(value: ConfigAgentType) -> AgentType {
@@ -3990,12 +7120,6 @@ fn resolved_session_cwd(cwd: &str) -> PathBuf {
     cwd.canonicalize().unwrap_or(cwd)
 }
 
-fn wire_model(model: &ProviderModelRef) -> ModelRef {
-    ModelRef {
-        provider: model.provider.clone(),
-        model: model.model.0.clone(),
-    }
-}
 fn invocation_id(session: SessionId, run: RunId, call: ToolCallId) -> InvocationId {
     InvocationId(Uuid::from_u128(hash_parts(&[
         &session.to_string(),
@@ -4013,25 +7137,360 @@ fn hash_parts(parts: &[&str]) -> u128 {
     parts.hash(&mut second);
     (high << 64) | second.finish() as u128
 }
-fn resource_for(call: &ToolCall) -> String {
-    call.arguments
-        .get("regex")
-        .or_else(|| call.arguments.get("pattern"))
-        .or_else(|| call.arguments.get("path"))
-        .or_else(|| call.arguments.get("command"))
-        .or_else(|| call.arguments.get("profile"))
-        .and_then(Value::as_str)
-        .unwrap_or(&call.name)
-        .to_owned()
+fn approval_request_for_operation(
+    trigger: ApprovalTrigger,
+    operation: PreparedOperationIdentity,
+    traces: Vec<cookie_agent_protocol::DecisionTrace>,
+    allow_tree_grant: bool,
+    expires_at: Option<jiff::Timestamp>,
+) -> ApprovalRequest {
+    let evaluations = operation
+        .resources()
+        .iter()
+        .zip(traces)
+        .map(|(resource, trace)| ApprovalEvaluation {
+            resource_digest: resource.binding_digest.clone(),
+            effect: trace.effect,
+            trace,
+        })
+        .collect::<Vec<_>>();
+    ApprovalRequest::new(
+        ApprovalId::new_v7(),
+        1,
+        trigger,
+        operation,
+        evaluations,
+        ApprovalConstraints {
+            allow_once: true,
+            allow_tree_grant,
+            cancellable: true,
+            expires_at,
+        },
+    )
+    .expect("prepared approval request is complete")
 }
 
-fn bound_tool_result(mut result: ToolResult) -> ToolResult {
-    const MODEL_RESULT_LIMIT: usize = 32 * 1024;
-    if result.content.len() > MODEL_RESULT_LIMIT {
-        result.content.truncate(MODEL_RESULT_LIMIT);
-        result.truncated = true;
+fn approval_expiry(timeout_ms: u64) -> Option<jiff::Timestamp> {
+    jiff::Timestamp::now()
+        .checked_add(std::time::Duration::from_millis(timeout_ms))
+        .ok()
+}
+
+fn approval_response_failure(
+    params: &ApprovalRespondParams,
+    code: ApprovalRespondErrorCode,
+    current: Option<&ApprovalRecord>,
+) -> EngineError {
+    EngineError::ApprovalResponse(Box::new(ApprovalRespondFailure {
+        code,
+        session_id: params.session_id,
+        approval_id: params.approval_id,
+        client_response_id: params.client_response_id.clone(),
+        current_status: current.map(|record| record.status),
+        current_revision: current.map(|record| approval_request_revision(&record.request)),
+        current_expires_at: current.and_then(|record| record.request.constraints().expires_at),
+        current_operation_fingerprint: current
+            .map(|record| record.request.operation_fingerprint().clone()),
+    }))
+}
+
+fn approval_deadline_exhausted(expires_at: Option<jiff::Timestamp>) -> bool {
+    expires_at.is_some_and(|expires_at| expires_at <= jiff::Timestamp::now())
+}
+
+fn approval_expiry_wait(expires_at: Option<jiff::Timestamp>) -> std::time::Duration {
+    let Some(expires_at) = expires_at else {
+        return std::time::Duration::from_secs(100 * 365 * 24 * 60 * 60);
+    };
+    let now = jiff::Timestamp::now();
+    if expires_at <= now {
+        std::time::Duration::ZERO
+    } else {
+        expires_at.duration_since(now).unsigned_abs()
     }
-    result
+}
+
+fn approval_request_revision(request: &ApprovalRequest) -> u64 {
+    serde_json::to_value(request)
+        .ok()
+        .and_then(|value| value.get("revision").and_then(Value::as_u64))
+        .expect("protocol approval request always serializes its revision")
+}
+
+fn truncate_utf8(value: &str, maximum: usize) -> String {
+    if value.len() <= maximum {
+        return value.to_owned();
+    }
+    let mut end = maximum;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
+}
+
+fn validate_generated_title(value: &str, max_chars: usize) -> Option<SessionTitle> {
+    let value = value
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_matches(['"', '\'', '`'])
+        .trim();
+    if value.is_empty() {
+        return None;
+    }
+    let bounded = value.chars().take(max_chars).collect::<String>();
+    SessionTitle::new(bounded).ok()
+}
+
+fn automatic_title_eligible(events: &[EventEnvelope]) -> bool {
+    let mut latest_automatic = None;
+    let mut latest_user = None;
+    for event in events {
+        if let Event::SessionTitleCommitted { commit, .. } = &event.event {
+            match commit {
+                SessionTitleCommit::InternalAgentSet { .. }
+                | SessionTitleCommit::FallbackSet { .. } => latest_automatic = Some(event.seq),
+                SessionTitleCommit::UserSet { .. } | SessionTitleCommit::UserClear { .. } => {
+                    latest_user = Some((event.seq, false));
+                }
+                SessionTitleCommit::UserReset { .. } => latest_user = Some((event.seq, true)),
+            }
+        }
+    }
+    match latest_user {
+        Some((_, false)) => false,
+        Some((reset_seq, true)) => latest_automatic.is_none_or(|seq| seq < reset_seq),
+        None => latest_automatic.is_none(),
+    }
+}
+
+fn parse_internal_approval(value: &str) -> Option<ApprovalInternalDecisionKind> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Decision {
+        decision: String,
+    }
+    match serde_json::from_str::<Decision>(value.trim())
+        .ok()?
+        .decision
+        .as_str()
+    {
+        "allow" => Some(ApprovalInternalDecisionKind::Allow),
+        "deny" => Some(ApprovalInternalDecisionKind::Deny),
+        "ask" => Some(ApprovalInternalDecisionKind::Ask),
+        _ => None,
+    }
+}
+
+fn fallback_title(input: &str, max_chars: usize) -> Option<SessionTitle> {
+    let normalized = input.split_whitespace().collect::<Vec<_>>().join(" ");
+    let bounded = normalized.chars().take(max_chars).collect::<String>();
+    SessionTitle::new(bounded).ok()
+}
+
+fn approval_records(
+    session_id: SessionId,
+    events: &[EventEnvelope],
+) -> HashMap<ApprovalId, ApprovalRecord> {
+    let mut records = HashMap::<ApprovalId, ApprovalRecord>::new();
+    for envelope in events {
+        match &envelope.event {
+            Event::ApprovalRequested { request } => {
+                records.insert(
+                    request.approval_id(),
+                    ApprovalRecord {
+                        session_id,
+                        request: request.clone(),
+                        status: ApprovalStatus::Pending,
+                        internal_decision: None,
+                        user_decision: None,
+                        final_decision: None,
+                    },
+                );
+            }
+            Event::ApprovalEvaluated {
+                approval_id,
+                decision,
+            } => {
+                if let Some(record) = records.get_mut(approval_id) {
+                    record.internal_decision = Some(decision.clone());
+                }
+            }
+            Event::ApprovalEscalated { approval_id, .. } => {
+                if let Some(record) = records.get_mut(approval_id) {
+                    record.status = ApprovalStatus::Escalated;
+                }
+            }
+            Event::ApprovalUserDecisionRecorded {
+                approval_id,
+                decision,
+                ..
+            } => {
+                if let Some(record) = records.get_mut(approval_id) {
+                    record.user_decision = Some(*decision);
+                }
+            }
+            Event::ApprovalFinalized {
+                approval_id,
+                decision,
+            } => {
+                if let Some(record) = records.get_mut(approval_id) {
+                    record.status = match decision.outcome {
+                        ApprovalFinalOutcome::Approved => ApprovalStatus::Approved,
+                        ApprovalFinalOutcome::Rejected => ApprovalStatus::Rejected,
+                        ApprovalFinalOutcome::Cancelled => ApprovalStatus::Cancelled,
+                        ApprovalFinalOutcome::Expired => ApprovalStatus::Expired,
+                    };
+                    record.final_decision = Some(decision.clone());
+                }
+            }
+            Event::ApprovalCancelled { approval_id, .. } => {
+                if let Some(record) = records.get_mut(approval_id) {
+                    record.status = ApprovalStatus::Cancelled;
+                }
+            }
+            _ => {}
+        }
+    }
+    records
+}
+
+fn approval_run_id(events: &[EventEnvelope], approval_id: ApprovalId) -> Option<RunId> {
+    events.iter().find_map(|event| match &event.event {
+        Event::ApprovalRequested { request } if request.approval_id() == approval_id => {
+            event.run_id
+        }
+        _ => None,
+    })
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DeniedToolFailure {
+    kind: String,
+    source: ApprovalDecisionSource,
+    reason: String,
+    feedback: Option<String>,
+}
+
+fn denied_tool_failure(
+    source: ApprovalDecisionSource,
+    reason: impl Into<String>,
+    feedback: Option<String>,
+) -> String {
+    serde_json::to_string(&DeniedToolFailure {
+        kind: "tool_denied".into(),
+        source,
+        reason: reason.into(),
+        feedback,
+    })
+    .expect("denied tool failure serializes")
+}
+
+struct TruncatedToolOutput {
+    content: String,
+}
+
+fn truncate_tool_output(
+    output: &str,
+    max_lines: usize,
+    max_bytes: usize,
+) -> Option<TruncatedToolOutput> {
+    let lines = output.split('\n').collect::<Vec<_>>();
+    let line_truncated = lines.len() > max_lines;
+    let mut preview = lines
+        .iter()
+        .take(max_lines)
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let byte_truncated = output.len() > max_bytes || preview.len() > max_bytes;
+    if !line_truncated && !byte_truncated {
+        return None;
+    }
+    if preview.len() > max_bytes {
+        let mut boundary = max_bytes;
+        while boundary > 0 && !preview.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        preview.truncate(boundary);
+    }
+    Some(TruncatedToolOutput { content: preview })
+}
+
+fn bound_tool_result(
+    mut result: ToolResult,
+    _tool_name: &str,
+    _call_id: ToolCallId,
+    artifacts: &ArtifactStore,
+    max_lines: usize,
+    max_bytes: usize,
+) -> std::io::Result<ToolResult> {
+    let Some(preview) = truncate_tool_output(&result.output, max_lines, max_bytes) else {
+        return Ok(result);
+    };
+    let original_bytes = result.output.len() as u64;
+    let original_lines = result.output.split('\n').count() as u64;
+    let (retained, _) = artifacts.retain(result.output.as_bytes())?;
+    result.output = preview.content;
+    result.truncation = Some(ToolOutputTruncation {
+        original_bytes,
+        original_lines,
+        retained,
+    });
+    Ok(result)
+}
+
+fn prepare_private_directory(directory: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(directory) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "artifact store root must be a non-symlink directory",
+                ));
+            }
+            validate_owner(&metadata, "artifact store root")?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(directory)?;
+            let metadata = fs::symlink_metadata(directory)?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "artifact store root must be a non-symlink directory",
+                ));
+            }
+            validate_owner(&metadata, "artifact store root")?;
+        }
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
+fn sha256_hex(content: &[u8]) -> String {
+    Sha256::digest(content)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn validate_attachment(mime_type: &str, path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+    if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
+        return Err(ToolError::resource_limit(format!(
+            "attachment is {} bytes; the limit is {MAX_ATTACHMENT_BYTES} bytes",
+            bytes.len()
+        )));
+    }
+    let validated = approved_media_type(path, bytes)?
+        .ok_or_else(|| ToolError::execution("attachment is not a supported image or PDF"))?;
+    if validated != mime_type {
+        return Err(ToolError::execution(format!(
+            "attachment MIME mismatch: declared {mime_type}, validated {validated}"
+        )));
+    }
+    Ok(())
 }
 
 fn delegate_client_run_id(invocation_id: InvocationId) -> String {
@@ -4050,20 +7509,41 @@ fn render_delegate_input(request: &journal::DelegateRequestPayload) -> String {
     )
 }
 
-fn bound_delegate_result(content: String, limit: usize) -> ToolResult {
-    if content.len() <= limit {
-        return ToolResult {
-            content,
-            truncated: false,
-        };
-    }
-    let mut boundary = limit.min(content.len());
-    while boundary > 0 && !content.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
+fn completed_delegate_result(
+    child: &session::SessionProjection,
+    child_run_id: Option<RunId>,
+    artifacts: &ArtifactStore,
+) -> std::io::Result<ToolResult> {
+    let output = child_run_id
+        .and_then(|child_run_id| child.runs.get(&child_run_id))
+        .and_then(|run| run.final_text.clone())
+        .unwrap_or_else(|| "child completed without a final report".into());
+    bound_tool_result(
+        ToolResult {
+            title: "Delegate report".into(),
+            output,
+            metadata: serde_json::json!({
+                "status": "completed",
+                "child_session_id": child.meta.id,
+            }),
+            truncation: None,
+            attachments: Vec::new(),
+        },
+        "delegate",
+        ToolCallId::new_v7(),
+        artifacts,
+        usize::MAX,
+        child.policy.result_limits.delegate_result_bytes,
+    )
+}
+
+fn structured_delegate_result(title: &str, metadata: Value) -> ToolResult {
     ToolResult {
-        content: content[..boundary].to_owned(),
-        truncated: true,
+        title: title.into(),
+        output: metadata.to_string(),
+        metadata,
+        truncation: None,
+        attachments: Vec::new(),
     }
 }
 
@@ -4071,42 +7551,39 @@ fn cancelled_delegate_result(
     child_session_id: SessionId,
     partial_report: Option<String>,
 ) -> ToolResult {
-    ToolResult {
-        content: serde_json::json!({
+    structured_delegate_result(
+        "Delegate cancelled",
+        serde_json::json!({
             "status": "cancelled",
             "child_session_id": child_session_id,
             "partial_report": partial_report,
-        })
-        .to_string(),
-        truncated: false,
-    }
+        }),
+    )
 }
 
 fn cancelled_delegate_result_with_reason(
     child_session_id: Option<SessionId>,
     reason: &str,
 ) -> ToolResult {
-    ToolResult {
-        content: serde_json::json!({
+    structured_delegate_result(
+        "Delegate cancelled",
+        serde_json::json!({
             "status": "cancelled",
             "child_session_id": child_session_id,
             "reason": reason,
-        })
-        .to_string(),
-        truncated: false,
-    }
+        }),
+    )
 }
 
 fn delegate_failure_result(child_session_id: Option<SessionId>, reason: &str) -> ToolResult {
-    ToolResult {
-        content: serde_json::json!({
+    structured_delegate_result(
+        "Delegate failed",
+        serde_json::json!({
             "status": "failed",
             "child_session_id": child_session_id,
             "reason": reason,
-        })
-        .to_string(),
-        truncated: false,
-    }
+        }),
+    )
 }
 
 fn is_journal_append_failure(error: &EngineError) -> bool {
@@ -4118,5953 +7595,27 @@ fn is_journal_append_failure(error: &EngineError) -> bool {
     )
 }
 
-fn wire_provider_protocol(protocol: ProviderProtocol) -> cookie_agent_protocol::ProviderProtocol {
-    match protocol {
-        ProviderProtocol::AnthropicMessages => {
-            cookie_agent_protocol::ProviderProtocol::AnthropicMessages
-        }
-        ProviderProtocol::OpenAiChatCompletions => {
-            cookie_agent_protocol::ProviderProtocol::OpenAiChatCompletions
-        }
-        ProviderProtocol::OpenAiResponses => {
-            cookie_agent_protocol::ProviderProtocol::OpenAiResponses
-        }
-        ProviderProtocol::OpenAiCompatible => {
-            cookie_agent_protocol::ProviderProtocol::OpenAiCompatible
-        }
-    }
-}
-
-fn provider_protocol(protocol: cookie_agent_protocol::ProviderProtocol) -> ProviderProtocol {
-    match protocol {
-        cookie_agent_protocol::ProviderProtocol::AnthropicMessages => {
-            ProviderProtocol::AnthropicMessages
-        }
-        cookie_agent_protocol::ProviderProtocol::OpenAiChatCompletions => {
-            ProviderProtocol::OpenAiChatCompletions
-        }
-        cookie_agent_protocol::ProviderProtocol::OpenAiResponses => {
-            ProviderProtocol::OpenAiResponses
-        }
-        cookie_agent_protocol::ProviderProtocol::OpenAiCompatible => {
-            ProviderProtocol::OpenAiCompatible
-        }
-    }
-}
-
-fn is_meaningful_output(event: &NormalizedEvent) -> bool {
-    matches!(
-        event,
-        NormalizedEvent::TextDelta { .. }
-            | NormalizedEvent::ReasoningDelta { .. }
-            | NormalizedEvent::ToolCallStart { .. }
-            | NormalizedEvent::ToolArgsDelta { .. }
-            | NormalizedEvent::ToolCallEnd { .. }
-    )
-}
-
-fn provider_persistence_error(error: EngineError) -> ProviderError {
-    ProviderError::RunTerminal {
-        message: format!("could not persist provider attempt state: {error}"),
-    }
-}
-
 #[cfg(test)]
-fn assemble_messages(events: &[EventEnvelope]) -> Vec<ProviderMessage> {
-    assemble_persisted_turns(events, None)
-        .into_iter()
-        .map(|turn| turn.message)
-        .collect()
-}
-
-fn assemble_persisted_turns(
-    events: &[EventEnvelope],
-    target_protocol: Option<ProviderProtocol>,
-) -> Vec<cookie_agent_providers::PersistedTurn> {
-    let mut output = Vec::new();
-    let mut assistant_text = String::new();
-    let mut assistant_calls = Vec::new();
-    let mut assistant_call_ids: Vec<(ToolCallId, RunId)> = Vec::new();
-    let mut assistant_opaque = None;
-    let mut assistant_opaque_usable = true;
-    let mut pending_steering = HashMap::new();
-    let mut segment = 0_u64;
-    let mut emitted_calls = Vec::new();
-    let mut pending_calls: HashMap<(ToolCallId, RunId), VecDeque<usize>> = HashMap::new();
-    let flush_assistant =
-        |output: &mut Vec<cookie_agent_providers::PersistedTurn>,
-         text: &mut String,
-         calls: &mut Vec<cookie_agent_providers::ToolCall>,
-         call_ids: &mut Vec<(ToolCallId, RunId)>,
-         opaque: &mut Option<TurnOpaque>,
-         opaque_usable: &mut bool,
-         segment: u64,
-         emitted_calls: &mut Vec<EmittedToolCall>,
-         pending_calls: &mut HashMap<(ToolCallId, RunId), VecDeque<usize>>| {
-            if !text.is_empty() || !calls.is_empty() || opaque.is_some() {
-                let emitted_ids = std::mem::take(call_ids);
-                let emitted_provider_ids: Vec<_> =
-                    calls.iter().map(|call| call.id.clone()).collect();
-                let assistant_index = output.len();
-                let content = if !text.is_empty() {
-                    vec![ContentPart::Text {
-                        text: std::mem::take(text),
-                    }]
-                } else {
-                    Vec::new()
-                };
-                output.push(cookie_agent_providers::PersistedTurn {
-                    message: ProviderMessage::Assistant {
-                        content,
-                        tool_calls: std::mem::take(calls),
-                    },
-                    opaque: if *opaque_usable {
-                        opaque
-                            .take()
-                            .map(|state| cookie_agent_providers::AssistantTurnOpaque {
-                                provider: provider_protocol(state.provider),
-                                payload: state.payload,
-                            })
-                    } else {
-                        let _ = opaque.take();
-                        None
-                    },
-                });
-                for (call_index, ((tool_call_id, run_id), provider_tool_call_id)) in emitted_ids
-                    .into_iter()
-                    .zip(emitted_provider_ids)
-                    .enumerate()
-                {
-                    let emitted_index = emitted_calls.len();
-                    emitted_calls.push(EmittedToolCall {
-                        assistant_index,
-                        call_index,
-                        segment,
-                        run_id,
-                        provider_tool_call_id,
-                        result: None,
-                    });
-                    pending_calls
-                        .entry((tool_call_id, run_id))
-                        .or_default()
-                        .push_back(emitted_index);
-                }
-                *opaque_usable = true;
-            }
-        };
-    for event in events {
-        match &event.event {
-            Event::RunStarted { input, .. } => {
-                flush_assistant(
-                    &mut output,
-                    &mut assistant_text,
-                    &mut assistant_calls,
-                    &mut assistant_call_ids,
-                    &mut assistant_opaque,
-                    &mut assistant_opaque_usable,
-                    segment,
-                    &mut emitted_calls,
-                    &mut pending_calls,
-                );
-                segment += 1;
-                output.push(cookie_agent_providers::PersistedTurn {
-                    message: ProviderMessage::User {
-                        content: vec![ContentPart::Text {
-                            text: input.clone(),
-                        }],
-                    },
-                    opaque: None,
-                });
-            }
-            Event::UserInputSubmitted { input } => {
-                pending_steering.insert(event.seq, input.clone());
-            }
-            Event::UserInputApplied { user_input_seq } => {
-                if let Some(input) = pending_steering.remove(user_input_seq) {
-                    flush_assistant(
-                        &mut output,
-                        &mut assistant_text,
-                        &mut assistant_calls,
-                        &mut assistant_call_ids,
-                        &mut assistant_opaque,
-                        &mut assistant_opaque_usable,
-                        segment,
-                        &mut emitted_calls,
-                        &mut pending_calls,
-                    );
-                    output.push(cookie_agent_providers::PersistedTurn {
-                        message: ProviderMessage::User {
-                            content: vec![ContentPart::Text { text: input }],
-                        },
-                        opaque: None,
-                    });
-                }
-            }
-            Event::TextDelta { text } => assistant_text.push_str(text),
-            Event::ToolCallStarted {
-                tool_call_id,
-                tool,
-                arguments,
-                provider_tool_call_id,
-                provider_protocol: call_protocol,
-            } => {
-                let Some(run_id) = event.run_id else {
-                    assistant_opaque_usable = false;
-                    continue;
-                };
-                let canonical_id = tool_call_id.to_string();
-                let provider_id = provider_tool_call_id
-                    .as_ref()
-                    .filter(|_| {
-                        matches!(
-                            (call_protocol.map(provider_protocol), target_protocol),
-                            (Some(call_protocol), Some(target_protocol))
-                                if call_protocol == target_protocol
-                        )
-                    })
-                    .cloned()
-                    .unwrap_or_else(|| canonical_id.clone());
-                assistant_call_ids.push((*tool_call_id, run_id));
-                assistant_calls.push(cookie_agent_providers::ToolCall {
-                    id: provider_id,
-                    name: tool.clone(),
-                    arguments: arguments.clone(),
-                });
-            }
-            Event::AttemptAbandoned => {
-                assistant_text.clear();
-                assistant_calls.clear();
-                assistant_call_ids.clear();
-                assistant_opaque = None;
-                assistant_opaque_usable = true;
-                segment += 1;
-            }
-            Event::TurnOpaque { state } => assistant_opaque = Some(state.clone()),
-            Event::ToolCallCompleted {
-                tool_call_id,
-                result,
-            } => {
-                let Some(run_id) = event.run_id else {
-                    continue;
-                };
-                if assistant_call_ids.contains(&(*tool_call_id, run_id)) {
-                    flush_assistant(
-                        &mut output,
-                        &mut assistant_text,
-                        &mut assistant_calls,
-                        &mut assistant_call_ids,
-                        &mut assistant_opaque,
-                        &mut assistant_opaque_usable,
-                        segment,
-                        &mut emitted_calls,
-                        &mut pending_calls,
-                    );
-                }
-                let occurrence =
-                    pending_calls
-                        .get_mut(&(*tool_call_id, run_id))
-                        .and_then(|pending| {
-                            if pending.is_empty() {
-                                return None;
-                            }
-                            let position = pending
-                                .iter()
-                                .position(|index| {
-                                    emitted_calls[*index].segment == segment
-                                        && emitted_calls[*index].run_id == run_id
-                                })
-                                .unwrap_or(0);
-                            pending.remove(position)
-                        });
-                let Some(occurrence) = occurrence else {
-                    continue;
-                };
-                let provider_tool_call_id = emitted_calls[occurrence].provider_tool_call_id.clone();
-                emitted_calls[occurrence].result = Some(cookie_agent_providers::ToolResult {
-                    tool_call_id: provider_tool_call_id,
-                    content: result.content.clone(),
-                    is_error: false,
-                });
-            }
-            Event::ToolCallFailed {
-                tool_call_id,
-                message,
-            } => {
-                let Some(run_id) = event.run_id else {
-                    continue;
-                };
-                if assistant_call_ids.contains(&(*tool_call_id, run_id)) {
-                    flush_assistant(
-                        &mut output,
-                        &mut assistant_text,
-                        &mut assistant_calls,
-                        &mut assistant_call_ids,
-                        &mut assistant_opaque,
-                        &mut assistant_opaque_usable,
-                        segment,
-                        &mut emitted_calls,
-                        &mut pending_calls,
-                    );
-                }
-                let occurrence =
-                    pending_calls
-                        .get_mut(&(*tool_call_id, run_id))
-                        .and_then(|pending| {
-                            if pending.is_empty() {
-                                return None;
-                            }
-                            let position = pending
-                                .iter()
-                                .position(|index| {
-                                    emitted_calls[*index].segment == segment
-                                        && emitted_calls[*index].run_id == run_id
-                                })
-                                .unwrap_or(0);
-                            pending.remove(position)
-                        });
-                let Some(occurrence) = occurrence else {
-                    continue;
-                };
-                let provider_tool_call_id = emitted_calls[occurrence].provider_tool_call_id.clone();
-                emitted_calls[occurrence].result = Some(cookie_agent_providers::ToolResult {
-                    tool_call_id: provider_tool_call_id,
-                    content: message.clone(),
-                    is_error: true,
-                });
-            }
-            Event::RunCompleted { .. } => {
-                flush_assistant(
-                    &mut output,
-                    &mut assistant_text,
-                    &mut assistant_calls,
-                    &mut assistant_call_ids,
-                    &mut assistant_opaque,
-                    &mut assistant_opaque_usable,
-                    segment,
-                    &mut emitted_calls,
-                    &mut pending_calls,
-                );
-                segment += 1;
-            }
-            Event::RunFailed { .. } | Event::RunCancelled { .. } | Event::RunInterrupted { .. } => {
-                if assistant_calls.is_empty() {
-                    assistant_text.clear();
-                    assistant_opaque = None;
-                    assistant_opaque_usable = true;
-                    assistant_call_ids.clear();
-                } else {
-                    flush_assistant(
-                        &mut output,
-                        &mut assistant_text,
-                        &mut assistant_calls,
-                        &mut assistant_call_ids,
-                        &mut assistant_opaque,
-                        &mut assistant_opaque_usable,
-                        segment,
-                        &mut emitted_calls,
-                        &mut pending_calls,
-                    );
-                }
-                segment += 1;
-            }
-            _ => {}
-        }
-    }
-    flush_assistant(
-        &mut output,
-        &mut assistant_text,
-        &mut assistant_calls,
-        &mut assistant_call_ids,
-        &mut assistant_opaque,
-        &mut assistant_opaque_usable,
-        segment,
-        &mut emitted_calls,
-        &mut pending_calls,
-    );
-    finalize_persisted_turns(output, emitted_calls)
-}
-
-fn finalize_persisted_turns(
-    output: Vec<cookie_agent_providers::PersistedTurn>,
-    emitted_calls: Vec<EmittedToolCall>,
-) -> Vec<cookie_agent_providers::PersistedTurn> {
-    let mut results_by_assistant: HashMap<usize, Vec<(usize, cookie_agent_providers::ToolResult)>> =
-        HashMap::new();
-    for call in emitted_calls {
-        if let Some(result) = call.result {
-            results_by_assistant
-                .entry(call.assistant_index)
-                .or_default()
-                .push((call.call_index, result));
-        }
-    }
-    let mut finalized = Vec::new();
-    for (assistant_index, turn) in output.into_iter().enumerate() {
-        let cookie_agent_providers::PersistedTurn { message, opaque } = turn;
-        let ProviderMessage::Assistant {
-            content,
-            tool_calls,
-        } = message
-        else {
-            finalized.push(cookie_agent_providers::PersistedTurn { message, opaque });
-            continue;
-        };
-        let mut results = results_by_assistant
-            .remove(&assistant_index)
-            .unwrap_or_default();
-        results.sort_by_key(|(call_index, _)| *call_index);
-        let retained_indices: HashSet<_> =
-            results.iter().map(|(call_index, _)| *call_index).collect();
-        let original_call_count = tool_calls.len();
-        let tool_calls: Vec<_> = tool_calls
-            .into_iter()
-            .enumerate()
-            .filter_map(|(call_index, call)| retained_indices.contains(&call_index).then_some(call))
-            .collect();
-        let opaque = (tool_calls.len() == original_call_count)
-            .then_some(opaque)
-            .flatten();
-        if !content.is_empty() || !tool_calls.is_empty() || opaque.is_some() {
-            finalized.push(cookie_agent_providers::PersistedTurn {
-                message: ProviderMessage::Assistant {
-                    content,
-                    tool_calls,
-                },
-                opaque,
-            });
-            finalized.extend(results.into_iter().map(|(_, result)| {
-                cookie_agent_providers::PersistedTurn {
-                    message: ProviderMessage::Tool { result },
-                    opaque: None,
-                }
-            }));
-        }
-    }
-    finalized
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        collections::BTreeMap,
-        io::Write,
-        sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        },
-        time::Duration,
-    };
-
-    use async_trait::async_trait;
-    use cookie_agent_config::{
-        AgentProfile, DelegationConfig, ModelConfig, ProviderConfig, ProviderType,
-    };
-    use futures_util::{StreamExt, stream};
-    use tokio::sync::{Barrier, Notify};
-
-    use super::*;
-
-    struct NoopProvider;
-
-    #[async_trait]
-    impl Provider for NoopProvider {
-        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
-            cookie_agent_providers::ProviderCapabilities::default()
-        }
-
-        async fn stream(
-            &self,
-            _: ProviderRequest,
-        ) -> Result<
-            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
-            ProviderError,
-        > {
-            Ok(stream::iter([Ok(NormalizedEvent::Stop {
-                reason: StopReason::EndTurn,
-            })])
-            .boxed())
-        }
-    }
-
-    struct ReportProvider;
-
-    #[async_trait]
-    impl Provider for ReportProvider {
-        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
-            cookie_agent_providers::ProviderCapabilities::default()
-        }
-
-        async fn stream(
-            &self,
-            _: ProviderRequest,
-        ) -> Result<
-            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
-            ProviderError,
-        > {
-            Ok(stream::iter([
-                Ok(NormalizedEvent::TextDelta {
-                    text: "child report".into(),
-                }),
-                Ok(NormalizedEvent::Stop {
-                    reason: StopReason::EndTurn,
-                }),
-            ])
-            .boxed())
-        }
-    }
-
-    struct TwoTurnBatchProvider {
-        calls: AtomicUsize,
-    }
-
-    #[async_trait]
-    impl Provider for TwoTurnBatchProvider {
-        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
-            cookie_agent_providers::ProviderCapabilities::default()
-        }
-
-        async fn stream(
-            &self,
-            _: ProviderRequest,
-        ) -> Result<
-            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
-            ProviderError,
-        > {
-            let call = self.calls.fetch_add(1, Ordering::SeqCst);
-            let events = if call == 0 {
-                vec![
-                    Ok(NormalizedEvent::ToolCallStart {
-                        tool_call_id: "delegate-call".into(),
-                        tool: "delegate".into(),
-                    }),
-                    Ok(NormalizedEvent::ToolCallEnd {
-                        tool_call_id: "delegate-call".into(),
-                    }),
-                    Ok(NormalizedEvent::ToolCallStart {
-                        tool_call_id: "read-call".into(),
-                        tool: "read".into(),
-                    }),
-                    Ok(NormalizedEvent::ToolArgsDelta {
-                        tool_call_id: "read-call".into(),
-                        delta: r#"{"path":"file"}"#.into(),
-                    }),
-                    Ok(NormalizedEvent::ToolCallEnd {
-                        tool_call_id: "read-call".into(),
-                    }),
-                    Ok(NormalizedEvent::Stop {
-                        reason: StopReason::EndTurn,
-                    }),
-                ]
-            } else {
-                vec![
-                    Ok(NormalizedEvent::TextDelta {
-                        text: "advanced".into(),
-                    }),
-                    Ok(NormalizedEvent::Stop {
-                        reason: StopReason::EndTurn,
-                    }),
-                ]
-            };
-            Ok(stream::iter(events).boxed())
-        }
-    }
-
-    struct BatchToolProvider {
-        release_delegate: Notify,
-    }
-
-    struct InteractiveProvider {
-        calls: AtomicUsize,
-    }
-
-    #[async_trait]
-    impl Provider for InteractiveProvider {
-        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
-            cookie_agent_providers::ProviderCapabilities::default()
-        }
-
-        async fn stream(
-            &self,
-            _: ProviderRequest,
-        ) -> Result<
-            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
-            ProviderError,
-        > {
-            let events = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                vec![
-                    Ok(NormalizedEvent::ToolCallStart {
-                        tool_call_id: "interactive".into(),
-                        tool: "bash".into(),
-                    }),
-                    Ok(NormalizedEvent::ToolArgsDelta {
-                        tool_call_id: "interactive".into(),
-                        delta: r#"{"command":"cat","interactive":true}"#.into(),
-                    }),
-                    Ok(NormalizedEvent::ToolCallEnd {
-                        tool_call_id: "interactive".into(),
-                    }),
-                    Ok(NormalizedEvent::Stop {
-                        reason: StopReason::EndTurn,
-                    }),
-                ]
-            } else {
-                vec![Ok(NormalizedEvent::Stop {
-                    reason: StopReason::EndTurn,
-                })]
-            };
-            Ok(stream::iter(events).boxed())
-        }
-    }
-
-    struct InteractiveTool {
-        started: Notify,
-        hold: Option<Arc<Notify>>,
-        consumed: Mutex<Option<oneshot::Sender<()>>>,
-        writes: Mutex<Vec<StdinWrite>>,
-    }
-
-    #[async_trait]
-    impl ToolProvider for InteractiveTool {
-        fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
-            Ok(vec![ToolSpec {
-                name: "bash".into(),
-                description: "test interactive bash".into(),
-                parameters: Value::Null,
-            }])
-        }
-
-        async fn invoke(
-            &self,
-            mut ctx: ToolInvocationContext,
-            _: ToolCall,
-        ) -> Result<ToolResult, ToolError> {
-            let mut stdin = ctx.stdin.take().expect("interactive stdin");
-            let mut consumed = self
-                .consumed
-                .lock()
-                .expect("interactive consumed lock poisoned")
-                .take();
-            self.started.notify_one();
-            if let Some(hold) = &self.hold {
-                hold.notified().await;
-            }
-            while let Some(write) = stdin.recv().await {
-                ctx.progress
-                    .output(cookie_agent_protocol::OutputStream::Stdout, &write.data);
-                let eof = write.eof;
-                self.writes
-                    .lock()
-                    .expect("interactive writes lock poisoned")
-                    .push(write);
-                if let Some(consumed) = consumed.take() {
-                    let _ = consumed.send(());
-                }
-                if eof {
-                    break;
-                }
-            }
-            Ok(ToolResult {
-                content: "interactive complete".into(),
-                truncated: false,
-            })
-        }
-    }
-
-    #[async_trait]
-    impl ToolProvider for BatchToolProvider {
-        fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
-            Ok(vec![
-                ToolSpec {
-                    name: "delegate".into(),
-                    description: "test delegate".into(),
-                    parameters: Value::Null,
-                },
-                ToolSpec {
-                    name: "read".into(),
-                    description: "test read".into(),
-                    parameters: Value::Null,
-                },
-            ])
-        }
-
-        async fn invoke(
-            &self,
-            _: ToolInvocationContext,
-            call: ToolCall,
-        ) -> Result<ToolResult, ToolError> {
-            if call.name == "delegate" {
-                self.release_delegate.notified().await;
-                Ok(ToolResult {
-                    content: "late delegate result".into(),
-                    truncated: false,
-                })
-            } else {
-                Ok(ToolResult {
-                    content: "legitimate read result".into(),
-                    truncated: false,
-                })
-            }
-        }
-    }
-
-    struct SteeringProvider {
-        calls: AtomicUsize,
-        first_started: Arc<Barrier>,
-        release_first: Notify,
-        requests: Mutex<Vec<Vec<ProviderMessage>>>,
-    }
-
-    #[async_trait]
-    impl Provider for SteeringProvider {
-        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
-            cookie_agent_providers::ProviderCapabilities::default()
-        }
-
-        async fn stream(
-            &self,
-            request: ProviderRequest,
-        ) -> Result<
-            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
-            ProviderError,
-        > {
-            self.requests
-                .lock()
-                .expect("requests lock poisoned")
-                .push(request.messages);
-            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                self.first_started.wait().await;
-                self.release_first.notified().await;
-            }
-            Ok(stream::iter([
-                Ok(NormalizedEvent::TextDelta {
-                    text: "done".into(),
-                }),
-                Ok(NormalizedEvent::Stop {
-                    reason: StopReason::EndTurn,
-                }),
-            ])
-            .boxed())
-        }
-    }
-
-    struct RetrySteeringProvider {
-        calls: AtomicUsize,
-        first_started: Arc<Barrier>,
-        release_first: Notify,
-        requests: Mutex<Vec<Vec<ProviderMessage>>>,
-    }
-
-    struct OpaqueRecordingProvider {
-        protocol: ProviderProtocol,
-        artifact: Value,
-        fail_after_first: bool,
-        calls: AtomicUsize,
-        requests: Mutex<Vec<ProviderRequest>>,
-    }
-
-    struct RecordingNoopProvider {
-        protocol: Option<ProviderProtocol>,
-        requests: Mutex<Vec<ProviderRequest>>,
-    }
-
-    #[async_trait]
-    impl Provider for RecordingNoopProvider {
-        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
-            cookie_agent_providers::ProviderCapabilities::default()
-        }
-
-        fn protocol(&self, _: &ModelId) -> Option<ProviderProtocol> {
-            self.protocol
-        }
-
-        async fn stream(
-            &self,
-            request: ProviderRequest,
-        ) -> Result<
-            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
-            ProviderError,
-        > {
-            self.requests
-                .lock()
-                .expect("requests lock poisoned")
-                .push(request);
-            Ok(stream::iter([Ok(NormalizedEvent::Stop {
-                reason: StopReason::EndTurn,
-            })])
-            .boxed())
-        }
-    }
-
-    #[async_trait]
-    impl Provider for OpaqueRecordingProvider {
-        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
-            cookie_agent_providers::ProviderCapabilities::default()
-        }
-
-        fn protocol(&self, _: &ModelId) -> Option<ProviderProtocol> {
-            Some(self.protocol)
-        }
-
-        async fn stream(
-            &self,
-            request: ProviderRequest,
-        ) -> Result<
-            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
-            ProviderError,
-        > {
-            self.requests
-                .lock()
-                .expect("requests lock poisoned")
-                .push(request);
-            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                return Ok(stream::iter([
-                    Ok(NormalizedEvent::TextDelta {
-                        text: "first".into(),
-                    }),
-                    Ok(NormalizedEvent::TurnOpaque {
-                        state: cookie_agent_providers::AssistantTurnOpaque {
-                            provider: self.protocol,
-                            payload: self.artifact.clone(),
-                        },
-                    }),
-                    Ok(NormalizedEvent::Stop {
-                        reason: StopReason::EndTurn,
-                    }),
-                ])
-                .boxed());
-            }
-            if self.fail_after_first {
-                return Err(ProviderError::EntryTerminal {
-                    message: "advance fallback".into(),
-                });
-            }
-            Ok(stream::iter([Ok(NormalizedEvent::Stop {
-                reason: StopReason::EndTurn,
-            })])
-            .boxed())
-        }
-    }
-
-    struct MeaningfulFailureProvider {
-        calls: AtomicUsize,
-    }
-
-    #[async_trait]
-    impl Provider for MeaningfulFailureProvider {
-        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
-            cookie_agent_providers::ProviderCapabilities::default()
-        }
-
-        async fn stream(
-            &self,
-            _: ProviderRequest,
-        ) -> Result<
-            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
-            ProviderError,
-        > {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(stream::iter([
-                Ok(NormalizedEvent::TextDelta {
-                    text: "partial".into(),
-                }),
-                Err(ProviderError::EntryRetryable {
-                    message: "dropped".into(),
-                }),
-            ])
-            .boxed())
-        }
-    }
-
-    struct BlockingProvider {
-        calls: AtomicUsize,
-        release: Notify,
-    }
-
-    #[async_trait]
-    impl Provider for BlockingProvider {
-        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
-            cookie_agent_providers::ProviderCapabilities::default()
-        }
-
-        async fn stream(
-            &self,
-            _: ProviderRequest,
-        ) -> Result<
-            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
-            ProviderError,
-        > {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.release.notified().await;
-            Ok(stream::iter([Ok(NormalizedEvent::Stop {
-                reason: StopReason::EndTurn,
-            })])
-            .boxed())
-        }
-    }
-
-    #[async_trait]
-    impl Provider for RetrySteeringProvider {
-        fn capabilities(&self, _: &ModelId) -> cookie_agent_providers::ProviderCapabilities {
-            cookie_agent_providers::ProviderCapabilities::default()
-        }
-
-        async fn stream(
-            &self,
-            request: ProviderRequest,
-        ) -> Result<
-            futures_util::stream::BoxStream<'static, Result<NormalizedEvent, ProviderError>>,
-            ProviderError,
-        > {
-            self.requests
-                .lock()
-                .expect("requests lock poisoned")
-                .push(request.messages);
-            let call = self.calls.fetch_add(1, Ordering::SeqCst);
-            if call == 0 {
-                self.first_started.wait().await;
-                self.release_first.notified().await;
-            }
-            if call < 2 {
-                return Ok(stream::iter([Err(ProviderError::EntryRetryable {
-                    message: "retry".into(),
-                })])
-                .boxed());
-            }
-            Ok(stream::iter([Ok(NormalizedEvent::Stop {
-                reason: StopReason::EndTurn,
-            })])
-            .boxed())
-        }
-    }
-
-    fn test_config() -> Config {
-        let mut config = Config::default();
-        config.providers.insert(
-            "test".into(),
-            ProviderConfig {
-                kind: ProviderType::OpenAi,
-                api_key_env: None,
-                base_url: None,
-                api: None,
-            },
-        );
-        config.agents = BTreeMap::from([
-            (
-                "test".into(),
-                AgentProfile {
-                    r#type: ConfigAgentType::Primary,
-                    models: vec![ModelConfig {
-                        provider: "test".into(),
-                        model: "test-model".into(),
-                    }],
-                    delegation: DelegationConfig {
-                        enabled: true,
-                        allowed_profiles: vec!["worker".into()],
-                        limit: None,
-                    },
-                    ..AgentProfile::default()
-                },
-            ),
-            (
-                "worker".into(),
-                AgentProfile {
-                    r#type: ConfigAgentType::Subagent,
-                    models: vec![ModelConfig {
-                        provider: "test".into(),
-                        model: "test-model".into(),
-                    }],
-                    ..AgentProfile::default()
-                },
-            ),
-        ]);
-        config
-    }
-
-    fn test_engine(provider: Arc<dyn Provider>) -> (tempfile::TempDir, Engine) {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let engine = Engine::open(EngineOptions {
-            data_dir: directory.path().join("data"),
-            cwd: directory.path().to_owned(),
-            config: test_config(),
-            providers: HashMap::from([("test".into(), provider)]),
-            tools: Vec::new(),
-        })
-        .expect("open engine");
-        (directory, engine)
-    }
-
-    async fn reopen_test_engine(
-        directory: &tempfile::TempDir,
-        provider: Arc<dyn Provider>,
-    ) -> Engine {
-        let data_dir = directory.path().join("data");
-        let cwd = directory.path().to_owned();
-        tokio::task::spawn_blocking(move || {
-            Engine::open(EngineOptions {
-                data_dir,
-                cwd,
-                config: test_config(),
-                providers: HashMap::from([("test".into(), provider)]),
-                tools: Vec::new(),
-            })
-        })
-        .await
-        .expect("reopen task")
-        .expect("reopen engine")
-    }
-
-    fn reopen_test_engine_in_runtime(
-        directory: &tempfile::TempDir,
-        provider: Arc<dyn Provider>,
-    ) -> Engine {
-        Engine::open(EngineOptions {
-            data_dir: directory.path().join("data"),
-            cwd: directory.path().to_owned(),
-            config: test_config(),
-            providers: HashMap::from([("test".into(), provider)]),
-            tools: Vec::new(),
-        })
-        .expect("reopen engine from Tokio runtime")
-    }
-
-    async fn reconcile_test_engine(engine: &Engine) {
-        let engine = engine.clone();
-        tokio::task::spawn_blocking(move || engine.reconcile())
-            .await
-            .expect("reconcile task")
-            .expect("reconcile engine");
-    }
-
-    async fn pending_delegate_parent(
-        engine: &Engine,
-    ) -> (SessionId, RunId, ToolCallId, DelegateInvocation) {
-        let parent = engine
-            .create_session(".", "test")
-            .expect("create parent")
-            .id;
-        let parent_run = RunId::new_v7();
-        let call = ToolCallId::new_v7();
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::RunStarted {
-                    client_run_id: "parent".into(),
-                    input: "delegate".into(),
-                },
-            )
-            .await
-            .expect("start parent");
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::ToolCallStarted {
-                    tool_call_id: call,
-                    tool: "delegate".into(),
-                    arguments: Value::Null,
-                    provider_tool_call_id: None,
-                    provider_protocol: None,
-                },
-            )
-            .await
-            .expect("start delegate call");
-        (
-            parent,
-            parent_run,
-            call,
-            delegate_invocation(parent, parent_run, call, "child task"),
-        )
-    }
-
-    fn delegate_request(invocation: &DelegateInvocation) -> journal::DelegateRequestPayload {
-        journal::DelegateRequestPayload {
-            task: invocation.task.clone(),
-            context: invocation.context.clone(),
-            success_criteria: invocation.success_criteria.clone(),
-            expected_output: invocation.expected_output.clone(),
-        }
-    }
-
-    fn child_policy_for(engine: &Engine, invocation: &DelegateInvocation) -> PolicySnapshot {
-        let parent = engine
-            .inner
-            .store
-            .get(invocation.parent_session_id)
-            .expect("parent projection");
-        engine
-            .inner
-            .config
-            .materialize_child_policy(&invocation.profile, &parent.policy)
-            .expect("child policy")
-    }
-
-    fn write_started_delegation(
-        engine: &Engine,
-        invocation: &DelegateInvocation,
-        child_session_id: SessionId,
-        child_policy: &PolicySnapshot,
-    ) -> InvocationId {
-        let invocation_id = invocation_id(
-            invocation.parent_session_id,
-            invocation.parent_run_id,
-            invocation.parent_tool_call_id,
-        );
-        let request = delegate_request(invocation);
-        let request_fingerprint = serde_json::to_string(&(
-            &invocation.profile,
-            &invocation.task,
-            &invocation.context,
-            &invocation.success_criteria,
-            &invocation.expected_output,
-            child_policy,
-        ))
-        .expect("delegate fingerprint");
-        events::append_jsonl(
-            engine.inner.journal.path(),
-            &journal::JournalRecord::DelegationStarted {
-                reservation: journal::DelegationReservation {
-                    invocation_id,
-                    parent_session_id: invocation.parent_session_id,
-                    parent_run_id: invocation.parent_run_id,
-                    parent_tool_call_id: invocation.parent_tool_call_id,
-                    child_session_id,
-                },
-                child_policy: Box::new(child_policy.clone()),
-                request_fingerprint,
-                task: request.task.clone(),
-                request,
-            },
-        )
-        .expect("write delegation reservation");
-        invocation_id
-    }
-
-    fn write_linked_delegation(engine: &Engine, invocation_id: InvocationId) {
-        events::append_jsonl(
-            engine.inner.journal.path(),
-            &journal::JournalRecord::DelegationLinked { invocation_id },
-        )
-        .expect("write delegation link");
-    }
-
-    fn write_run_started_delegation(
-        engine: &Engine,
-        invocation_id: InvocationId,
-        child_run_id: RunId,
-    ) {
-        events::append_jsonl(
-            engine.inner.journal.path(),
-            &journal::JournalRecord::DelegationRunStarted {
-                invocation_id,
-                child_run_id,
-            },
-        )
-        .expect("write delegation run confirmation");
-    }
-
-    fn persist_delegated_child(
-        engine: &Engine,
-        invocation: &DelegateInvocation,
-        child_session_id: SessionId,
-        child_policy: PolicySnapshot,
-    ) {
-        let parent = engine
-            .inner
-            .store
-            .get(invocation.parent_session_id)
-            .expect("parent projection");
-        let meta = session_meta(
-            child_session_id,
-            SessionOrigin::Delegated {
-                root_session_id: invocation.parent_session_id,
-                parent_session_id: invocation.parent_session_id,
-                parent_run_id: invocation.parent_run_id,
-                parent_tool_call_id: invocation.parent_tool_call_id,
-                invocation_id: invocation_id(
-                    invocation.parent_session_id,
-                    invocation.parent_run_id,
-                    invocation.parent_tool_call_id,
-                ),
-                depth: 1,
-            },
-            std::path::Path::new(&parent.meta.cwd),
-            &child_policy,
-        );
-        engine
-            .inner
-            .store
-            .create(meta, child_policy)
-            .expect("persist child session");
-    }
-
-    fn append_child_event(engine: &Engine, child: SessionId, run: RunId, event: Event) {
-        let log = engine.inner.store.get(child).expect("child projection").log;
-        log.append(Some(run), event).expect("append child event");
-        engine
-            .inner
-            .store
-            .update(child)
-            .expect("refresh child projection");
-    }
-
-    fn journal_records(engine: &Engine) -> Vec<journal::JournalRecord> {
-        events::load_jsonl(engine.inner.journal.path()).expect("read delegation journal")
-    }
-
-    fn append_torn_journal_tail(engine: &Engine, tail: &[u8]) {
-        let mut journal = std::fs::OpenOptions::new()
-            .append(true)
-            .open(engine.inner.journal.path())
-            .expect("open delegation journal");
-        journal.write_all(tail).expect("write torn journal tail");
-        journal.sync_all().expect("sync torn journal tail");
-    }
-
-    fn obstruct_journal_appends(engine: &Engine) -> std::path::PathBuf {
-        let path = engine.inner.journal.path();
-        let saved = path.with_extension("poisoned");
-        std::fs::rename(path, &saved).expect("park journal");
-        std::fs::create_dir(path).expect("replace journal with directory");
-        saved
-    }
-
-    fn restore_journal_path(engine: &Engine, saved: &std::path::Path) {
-        let path = engine.inner.journal.path();
-        std::fs::remove_dir(path).expect("remove journal obstruction");
-        std::fs::rename(saved, path).expect("restore journal");
-    }
-
-    async fn reserve_live_delegation(
-        engine: &Engine,
-        invocation: &DelegateInvocation,
-        child_policy: PolicySnapshot,
-    ) -> journal::JournalEntry {
-        let fingerprint = serde_json::to_string(&(
-            &invocation.profile,
-            &invocation.task,
-            &invocation.context,
-            &invocation.success_criteria,
-            &invocation.expected_output,
-            &child_policy,
-        ))
-        .expect("delegate fingerprint");
-        let journal = engine.inner.journal.clone();
-        let invocation_id = invocation_id(
-            invocation.parent_session_id,
-            invocation.parent_run_id,
-            invocation.parent_tool_call_id,
-        );
-        let parent_session_id = invocation.parent_session_id;
-        let parent_run_id = invocation.parent_run_id;
-        let parent_tool_call_id = invocation.parent_tool_call_id;
-        let request = delegate_request(invocation);
-        tokio::task::spawn_blocking(move || {
-            journal.reserve(
-                invocation_id,
-                parent_session_id,
-                parent_run_id,
-                parent_tool_call_id,
-                child_policy,
-                fingerprint,
-                request,
-            )
-        })
-        .await
-        .expect("reserve task")
-        .expect("reserve delegation")
-    }
-
-    async fn wait_for_session_status(
-        engine: &Engine,
-        session: SessionId,
-        expected: &SessionStatus,
-    ) {
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if &engine
-                    .inner
-                    .store
-                    .get(session)
-                    .expect("session projection")
-                    .status
-                    == expected
-                {
-                    return;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("session did not reach expected status");
-    }
-
-    fn journal_link_count(engine: &Engine, invocation_id: InvocationId) -> usize {
-        journal_records(engine)
-            .iter()
-            .filter(|record| {
-                matches!(record, journal::JournalRecord::DelegationLinked { invocation_id: id } if *id == invocation_id)
-            })
-            .count()
-    }
-
-    fn journal_run_count(
-        engine: &Engine,
-        invocation_id: InvocationId,
-        child_run_id: RunId,
-    ) -> usize {
-        journal_records(engine)
-            .iter()
-            .filter(|record| {
-                matches!(record, journal::JournalRecord::DelegationRunStarted { invocation_id: id, child_run_id: run } if *id == invocation_id && *run == child_run_id)
-            })
-            .count()
-    }
-
-    fn child_run_start_count(engine: &Engine, child: SessionId) -> usize {
-        engine
-            .inner
-            .store
-            .get(child)
-            .expect("child projection")
-            .log
-            .events()
-            .iter()
-            .filter(|event| matches!(event.event, Event::RunStarted { .. }))
-            .count()
-    }
-
-    fn child_run_id(engine: &Engine, child: SessionId) -> RunId {
-        *engine
-            .inner
-            .store
-            .get(child)
-            .expect("child projection")
-            .runs
-            .keys()
-            .next()
-            .expect("child run")
-    }
-
-    fn run_cancel_count(engine: &Engine, session: SessionId) -> usize {
-        engine
-            .inner
-            .store
-            .get(session)
-            .expect("session projection")
-            .log
-            .events()
-            .iter()
-            .filter(|event| matches!(event.event, Event::RunCancelled { .. }))
-            .count()
-    }
-
-    fn parent_delegate_completion_count(
-        engine: &Engine,
-        parent: SessionId,
-        call: ToolCallId,
-    ) -> usize {
-        engine
-            .inner
-            .store
-            .get(parent)
-            .expect("parent projection")
-            .log
-            .events()
-            .iter()
-            .filter(|event| {
-                matches!(event.event, Event::ToolCallCompleted { tool_call_id, .. } if tool_call_id == call)
-            })
-            .count()
-    }
-
-    async fn wait_for_delegate_completion(
-        engine: &Engine,
-        parent: SessionId,
-        call: ToolCallId,
-    ) -> cookie_agent_protocol::ToolResult {
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if let Some(result) = engine
-                    .inner
-                    .store
-                    .get(parent)
-                    .expect("parent projection")
-                    .log
-                    .events()
-                    .into_iter()
-                    .find_map(|event| match event.event {
-                        Event::ToolCallCompleted {
-                            tool_call_id,
-                            result,
-                        } if tool_call_id == call => Some(result),
-                        _ => None,
-                    })
-                {
-                    return result;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("delegate result was not committed")
-    }
-
-    fn approval_request_event(
-        approval_id: &str,
-        resources: Vec<cookie_agent_protocol::ApprovalResource>,
-        precedence_reason: &str,
-    ) -> Event {
-        let (action, resource, suggested_pattern) = {
-            let primary = resources.first().expect("approval has a resource");
-            (
-                primary.action,
-                primary.resource.clone(),
-                primary.suggested_pattern.clone(),
-            )
-        };
-        Event::ApprovalRequested {
-            approval_id: approval_id.into(),
-            action,
-            resource: resource.clone(),
-            suggested_pattern,
-            resources,
-            decision_trace: cookie_agent_protocol::DecisionTrace {
-                action,
-                normalized_resource: resource,
-                candidates: Vec::new(),
-                effect: cookie_agent_protocol::Effect::Ask,
-                precedence_reason: precedence_reason.into(),
-            },
-        }
-    }
-
-    async fn start_with_admission(
-        engine: &Engine,
-        child: SessionId,
-        invocation_id: InvocationId,
-        generation: u64,
-        input: String,
-    ) -> Result<RunStartResult, EngineError> {
-        let actor = engine
-            .inner
-            .actors
-            .lock()
-            .expect("actor registry lock poisoned")
-            .get(&child)
-            .cloned()
-            .expect("child actor");
-        let (reply, receiver) = tokio::sync::oneshot::channel();
-        actor
-            .send(SessionCommand::Start {
-                params: RunStartParams {
-                    session_id: child,
-                    client_run_id: delegate_client_run_id(invocation_id),
-                    input,
-                },
-                admission: Some((invocation_id, generation)),
-                reply,
-            })
-            .await
-            .expect("queue child start");
-        receiver.await.expect("child start reply")
-    }
-
-    fn envelope(seq: u64, event: Event) -> EventEnvelope {
-        EventEnvelope {
-            session_id: SessionId::new_v7(),
-            run_id: Some(RunId::new_v7()),
-            seq,
-            timestamp: jiff::Timestamp::now(),
-            event,
-        }
-    }
-
-    fn delegate_invocation(
-        session: SessionId,
-        run: RunId,
-        call: ToolCallId,
-        task: &str,
-    ) -> DelegateInvocation {
-        DelegateInvocation {
-            parent_session_id: session,
-            parent_run_id: run,
-            parent_tool_call_id: call,
-            profile: "worker".into(),
-            task: task.into(),
-            context: vec![serde_json::json!({"note": "context"})],
-            success_criteria: vec!["done".into()],
-            expected_output: serde_json::json!({"format": "text"}),
-        }
-    }
-
-    fn visible_messages(messages: &[ProviderMessage]) -> Vec<(&'static str, String)> {
-        messages
-            .iter()
-            .filter_map(|message| match message {
-                ProviderMessage::User { content } => {
-                    content.first().and_then(|content| match content {
-                        ContentPart::Text { text } => Some(("user", text.clone())),
-                        _ => None,
-                    })
-                }
-                ProviderMessage::Assistant { content, .. } => {
-                    content.first().and_then(|content| match content {
-                        ContentPart::Text { text } => Some(("assistant", text.clone())),
-                        _ => None,
-                    })
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    async fn running_delegate(engine: &Engine, provider: &BlockingProvider) -> DelegateHandle {
-        let parent = engine
-            .create_session(".", "test")
-            .expect("create parent")
-            .id;
-        let parent_run = engine
-            .start_run(RunStartParams {
-                session_id: parent,
-                client_run_id: "parent".into(),
-                input: "delegate".into(),
-            })
-            .await
-            .expect("start parent")
-            .run_id;
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while provider.calls.load(Ordering::SeqCst) < 1 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("parent provider did not start");
-        let call = ToolCallId::new_v7();
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::ToolCallStarted {
-                    tool_call_id: call,
-                    tool: "delegate".into(),
-                    arguments: Value::Null,
-                    provider_tool_call_id: None,
-                    provider_protocol: None,
-                },
-            )
-            .await
-            .expect("delegate call");
-        let handle = engine
-            .delegate_invoke(delegate_invocation(parent, parent_run, call, "child task"))
-            .await
-            .expect("delegate invoke");
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while provider.calls.load(Ordering::SeqCst) < 2 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("child provider did not start");
-        handle
-    }
-
-    #[tokio::test]
-    async fn concurrent_appends_do_not_deadlock() {
-        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let appends = (0..512).map(|index| {
-            let engine = engine.clone();
-            tokio::spawn(async move {
-                if index % 3 == 0 {
-                    engine
-                        .submit_tool_result(
-                            session,
-                            RunId::new_v7(),
-                            ToolCallId::new_v7(),
-                            Ok(ToolResult {
-                                content: index.to_string(),
-                                truncated: false,
-                            }),
-                        )
-                        .await
-                } else {
-                    engine
-                        .append(
-                            session,
-                            None,
-                            Event::ToolCallProgress {
-                                tool_call_id: ToolCallId::new_v7(),
-                                message: index.to_string(),
-                            },
-                        )
-                        .await
-                }
-            })
-        });
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            futures_util::future::join_all(appends),
-        )
-        .await
-        .expect("concurrent appends timed out")
-        .into_iter()
-        .enumerate()
-        .for_each(|(index, result)| {
-            let result = result.expect("append task panicked");
-            if index % 3 == 0 {
-                assert!(matches!(result, Err(EngineError::MissingTool(_))));
-            } else {
-                result.expect("append failed");
-            }
-        });
-    }
-
-    #[tokio::test]
-    async fn delegate_invocation_starts_the_child_exactly_once_and_rejects_fingerprint_conflicts() {
-        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
-        let parent = engine
-            .create_session(".", "test")
-            .expect("create parent")
-            .id;
-        let parent_run = RunId::new_v7();
-        let call = ToolCallId::new_v7();
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::RunStarted {
-                    client_run_id: "parent".into(),
-                    input: "delegate".into(),
-                },
-            )
-            .await
-            .expect("parent start");
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::ToolCallStarted {
-                    tool_call_id: call,
-                    tool: "delegate".into(),
-                    arguments: Value::Null,
-                    provider_tool_call_id: None,
-                    provider_protocol: None,
-                },
-            )
-            .await
-            .expect("delegate call");
-        let request = delegate_invocation(parent, parent_run, call, "child task");
-        let left_engine = engine.clone();
-        let right_engine = engine.clone();
-        let (first, second) = tokio::join!(
-            left_engine.delegate_invoke(request.clone()),
-            right_engine.delegate_invoke(request)
-        );
-        let first = first.expect("first invocation");
-        let second = second.expect("redelivery");
-        assert_eq!(first, second);
-        let child = engine
-            .inner
-            .store
-            .get(first.child_session_id)
-            .expect("child");
-        let parent_events = engine.inner.store.get(parent).expect("parent").log.events();
-        let links: Vec<_> = parent_events
-            .iter()
-            .filter(|event| {
-                matches!(event.event, Event::ToolCallLinked { tool_call_id, child_session_id }
-                    if tool_call_id == call && child_session_id == first.child_session_id)
-            })
-            .collect();
-        assert_eq!(links.len(), 1);
-        let call_started = parent_events
-            .iter()
-            .find(|event| {
-                matches!(event.event, Event::ToolCallStarted { tool_call_id, .. } if tool_call_id == call)
-            })
-            .expect("parent tool call");
-        assert!(call_started.seq < links[0].seq);
-        let child_run_started = child
-            .log
-            .events()
-            .into_iter()
-            .find(|event| matches!(event.event, Event::RunStarted { .. }))
-            .expect("child run start");
-        assert!(links[0].timestamp <= child_run_started.timestamp);
-        assert_eq!(
-            child
-                .log
-                .events()
-                .into_iter()
-                .filter(|event| matches!(event.event, Event::RunStarted { .. }))
-                .count(),
-            1
-        );
-        let conflict = engine
-            .delegate_invoke(delegate_invocation(
-                parent,
-                parent_run,
-                call,
-                "different task",
-            ))
-            .await;
-        assert!(matches!(
-            conflict,
-            Err(EngineError::Journal(JournalError::Corrupt(_)))
-        ));
-    }
-
-    #[tokio::test]
-    async fn parent_cancellation_cancels_child_and_returns_structured_delegate_result() {
-        let provider = Arc::new(BlockingProvider {
-            calls: AtomicUsize::new(0),
-            release: Notify::new(),
-        });
-        let (_directory, engine) = test_engine(provider.clone());
-        let parent = engine
-            .create_session(".", "test")
-            .expect("create parent")
-            .id;
-        let parent_run = engine
-            .start_run(RunStartParams {
-                session_id: parent,
-                client_run_id: "parent".into(),
-                input: "delegate".into(),
-            })
-            .await
-            .expect("start parent")
-            .run_id;
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while provider.calls.load(Ordering::SeqCst) < 1 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("parent provider did not start");
-        let call = ToolCallId::new_v7();
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::ToolCallStarted {
-                    tool_call_id: call,
-                    tool: "delegate".into(),
-                    arguments: Value::Null,
-                    provider_tool_call_id: None,
-                    provider_protocol: None,
-                },
-            )
-            .await
-            .expect("delegate call");
-        let handle = tokio::time::timeout(
-            Duration::from_secs(2),
-            engine.delegate_invoke(delegate_invocation(parent, parent_run, call, "child task")),
-        )
-        .await
-        .expect("delegate invocation timed out")
-        .expect("delegate invoke");
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while provider.calls.load(Ordering::SeqCst) < 2 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("child provider did not start");
-        tokio::time::timeout(Duration::from_secs(2), engine.cancel_run(parent_run))
-            .await
-            .expect("parent cancellation timed out")
-            .expect("cancel parent");
-        let result = tokio::time::timeout(Duration::from_secs(2), engine.await_delegate(handle))
-            .await
-            .expect("delegate cancellation did not settle")
-            .expect("delegate result");
-        assert_eq!(
-            serde_json::from_str::<Value>(&result.content).expect("structured result")["status"],
-            "cancelled"
-        );
-        assert_eq!(
-            engine
-                .inner
-                .store
-                .get(handle.child_session_id)
-                .expect("child")
-                .status,
-            SessionStatus::Cancelled
-        );
-    }
-
-    #[tokio::test]
-    async fn dropping_delegate_wait_cancels_the_child() {
-        let provider = Arc::new(BlockingProvider {
-            calls: AtomicUsize::new(0),
-            release: Notify::new(),
-        });
-        let (_directory, engine) = test_engine(provider.clone());
-        let handle = running_delegate(&engine, &provider).await;
-        drop(engine.await_delegate(handle));
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if engine
-                    .inner
-                    .store
-                    .get(handle.child_session_id)
-                    .expect("child")
-                    .status
-                    == SessionStatus::Cancelled
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("dropped wait did not cancel child");
-    }
-
-    #[tokio::test]
-    async fn unstarted_linked_child_starts_once_during_resume_reconciliation() {
-        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
-        let parent = engine
-            .create_session(".", "test")
-            .expect("create parent")
-            .id;
-        let parent_run = RunId::new_v7();
-        let call = ToolCallId::new_v7();
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::RunStarted {
-                    client_run_id: "parent".into(),
-                    input: "delegate".into(),
-                },
-            )
-            .await
-            .expect("parent start");
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::ToolCallStarted {
-                    tool_call_id: call,
-                    tool: "delegate".into(),
-                    arguments: Value::Null,
-                    provider_tool_call_id: None,
-                    provider_protocol: None,
-                },
-            )
-            .await
-            .expect("delegate call");
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::RunInterrupted { reason: None },
-            )
-            .await
-            .expect("interrupt parent");
-        let child = engine
-            .create_child(
-                parent,
-                parent_run,
-                call,
-                "worker",
-                "crash-window-fingerprint".into(),
-                journal::DelegateRequestPayload {
-                    task: "child task".into(),
-                    context: Vec::new(),
-                    success_criteria: Vec::new(),
-                    expected_output: Value::Null,
-                },
-                None,
-            )
-            .await
-            .expect("create unstarted child");
-        assert!(
-            engine
-                .inner
-                .store
-                .get(child.id)
-                .expect("child")
-                .runs
-                .is_empty()
-        );
-        engine.resume(parent).await.expect("resume parent");
-        engine.resume(parent).await.expect("repeat resume");
-        assert_eq!(
-            engine
-                .inner
-                .store
-                .get(child.id)
-                .expect("child")
-                .log
-                .events()
-                .into_iter()
-                .filter(|event| matches!(event.event, Event::RunStarted { .. }))
-                .count(),
-            1
-        );
-    }
+mod builtin_revision_tests {
+    use super::{BOUNDED_SUMMARY_BUILTIN_REVISION, UNAVAILABLE_BUILTIN_REVISION};
 
     #[test]
-    fn delegate_result_bounding_preserves_utf8() {
-        let result = bound_delegate_result("éé".into(), 3);
-        assert_eq!(result.content, "é");
-        assert!(result.truncated);
-    }
-
-    #[test]
-    fn assembled_tool_transcript_snapshot_is_stable() {
-        let call = ToolCallId(Uuid::from_u128(8));
-        let session = SessionId(Uuid::from_u128(9));
-        let run = RunId(Uuid::from_u128(10));
-        let envelope = |seq, event| EventEnvelope {
-            session_id: session,
-            run_id: Some(run),
-            seq,
-            timestamp: jiff::Timestamp::now(),
-            event,
-        };
-        let messages = assemble_messages(&[
-            envelope(
-                1,
-                Event::RunStarted {
-                    client_run_id: "snapshot".into(),
-                    input: "inspect the workspace".into(),
-                },
-            ),
-            envelope(
-                2,
-                Event::ToolCallStarted {
-                    tool_call_id: call,
-                    tool: "read".into(),
-                    arguments: serde_json::json!({"path": "README.md"}),
-                    provider_tool_call_id: None,
-                    provider_protocol: None,
-                },
-            ),
-            envelope(
-                3,
-                Event::ToolCallCompleted {
-                    tool_call_id: call,
-                    result: cookie_agent_protocol::ToolResult {
-                        content: "contents".into(),
-                        truncated: false,
-                    },
-                },
-            ),
-        ]);
-        insta::assert_json_snapshot!(messages);
-    }
-
-    #[tokio::test]
-    async fn interactive_stdin_preserves_order_eof_and_rejects_after_completion() {
-        let mut config = test_config();
-        let profile = config.agents.get_mut("test").expect("test profile");
-        profile.tools = vec!["bash".into()];
-        profile.permissions.exec = Some("allow".into());
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let tool = Arc::new(InteractiveTool {
-            started: Notify::new(),
-            hold: None,
-            consumed: Mutex::new(None),
-            writes: Mutex::new(Vec::new()),
-        });
-        let engine = Engine::open(EngineOptions {
-            data_dir: directory.path().join("data"),
-            cwd: directory.path().to_owned(),
-            config,
-            providers: HashMap::from([(
-                "test".into(),
-                Arc::new(InteractiveProvider {
-                    calls: AtomicUsize::new(0),
-                }) as Arc<dyn Provider>,
-            )]),
-            tools: vec![tool.clone() as Arc<dyn ToolProvider>],
-        })
-        .expect("open engine");
-        let session = engine.create_session(".", "test").expect("session").id;
-        let run = engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "interactive".into(),
-                input: "run bash".into(),
-            })
-            .await
-            .expect("start run")
-            .run_id;
-        tool.started.notified().await;
-        let call = engine
-            .inner
-            .store
-            .get(session)
-            .expect("session")
-            .log
-            .events()
-            .into_iter()
-            .find_map(|event| match event.event {
-                Event::ToolCallStarted {
-                    tool_call_id,
-                    ref tool,
-                    ..
-                } if tool == "bash" => Some(tool_call_id),
-                _ => None,
-            })
-            .expect("interactive call");
-        let (_, mut stdout) = engine
-            .subscribe_tool_output(call, cookie_agent_protocol::OutputStream::Stdout)
-            .expect("output hub");
-
-        for (data, eof) in [(b"first".as_slice(), false), (b"second".as_slice(), true)] {
-            assert!(
-                engine
-                    .tool_stdin(RunToolStdinParams {
-                        run_id: run,
-                        call_id: call,
-                        data: Some(STANDARD.encode(data)),
-                        eof,
-                    })
-                    .await
-                    .expect("submit stdin")
-                    .accepted
-            );
-        }
-        match stdout.recv().await.expect("stdout delta") {
-            events::OutputMessage::Delta(delta) => {
-                assert_eq!(delta.data, STANDARD.encode(b"first"))
-            }
-            events::OutputMessage::Gap(_) => panic!("unexpected output gap"),
-        }
-        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
-        match stdout.recv().await.expect("final stdout delta") {
-            events::OutputMessage::Delta(delta) => {
-                assert_eq!(delta.data, STANDARD.encode(b"second"))
-            }
-            events::OutputMessage::Gap(_) => panic!("unexpected output gap"),
-        }
-        assert!(stdout.recv().await.is_none());
+    fn builtin_revisions_describe_semantic_contracts_not_protocol_versions() {
         assert_eq!(
-            tool.writes
-                .lock()
-                .expect("interactive writes lock poisoned")
-                .iter()
-                .map(|write| (write.data.clone(), write.eof))
-                .collect::<Vec<_>>(),
-            vec![(b"first".to_vec(), false), (b"second".to_vec(), true)]
+            BOUNDED_SUMMARY_BUILTIN_REVISION,
+            "context-compaction.bounded-summary.prompt-runtime.1"
         );
-        assert!(
-            engine
-                .tool_stdin(RunToolStdinParams {
-                    run_id: run,
-                    call_id: call,
-                    data: None,
-                    eof: true,
-                })
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn cancellation_discards_queued_interactive_stdin() {
-        let mut config = test_config();
-        let profile = config.agents.get_mut("test").expect("test profile");
-        profile.tools = vec!["bash".into()];
-        profile.permissions.exec = Some("allow".into());
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let release = Arc::new(Notify::new());
-        let (consumed, consumed_rx) = oneshot::channel();
-        let tool = Arc::new(InteractiveTool {
-            started: Notify::new(),
-            hold: Some(release.clone()),
-            consumed: Mutex::new(Some(consumed)),
-            writes: Mutex::new(Vec::new()),
-        });
-        let engine = Engine::open(EngineOptions {
-            data_dir: directory.path().join("data"),
-            cwd: directory.path().to_owned(),
-            config,
-            providers: HashMap::from([(
-                "test".into(),
-                Arc::new(InteractiveProvider {
-                    calls: AtomicUsize::new(0),
-                }) as Arc<dyn Provider>,
-            )]),
-            tools: vec![tool.clone() as Arc<dyn ToolProvider>],
-        })
-        .expect("open engine");
-        let session = engine.create_session(".", "test").expect("session").id;
-        let run = engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "cancel-interactive".into(),
-                input: "run bash".into(),
-            })
-            .await
-            .expect("start run")
-            .run_id;
-        tool.started.notified().await;
-        let call = engine
-            .inner
-            .store
-            .get(session)
-            .expect("session")
-            .log
-            .events()
-            .into_iter()
-            .find_map(|event| match event.event {
-                Event::ToolCallStarted {
-                    tool_call_id,
-                    ref tool,
-                    ..
-                } if tool == "bash" => Some(tool_call_id),
-                _ => None,
-            })
-            .expect("interactive call");
-        engine
-            .tool_stdin(RunToolStdinParams {
-                run_id: run,
-                call_id: call,
-                data: Some(STANDARD.encode(b"queued")),
-                eof: false,
-            })
-            .await
-            .expect("queue stdin before cancellation");
-        engine.cancel_run(run).await.expect("cancel run");
-        wait_for_session_status(&engine, session, &SessionStatus::Cancelled).await;
-        release.notify_one();
-        assert!(
-            consumed_rx.await.is_err(),
-            "releasing the held invocation consumed stdin after cancellation"
-        );
-        assert!(
-            tool.writes
-                .lock()
-                .expect("interactive writes lock poisoned")
-                .is_empty()
-        );
-        assert!(
-            engine
-                .tool_stdin(RunToolStdinParams {
-                    run_id: run,
-                    call_id: call,
-                    data: None,
-                    eof: true,
-                })
-                .await
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn reconciliation_marks_journalless_orphans_interrupted() {
-        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
-        let policy = engine
-            .inner
-            .config
-            .materialize_policy("worker")
-            .expect("worker policy");
-        let orphan = SessionId::new_v7();
-        let meta = session_meta(
-            orphan,
-            SessionOrigin::Delegated {
-                root_session_id: SessionId::new_v7(),
-                parent_session_id: SessionId::new_v7(),
-                parent_run_id: RunId::new_v7(),
-                parent_tool_call_id: ToolCallId::new_v7(),
-                invocation_id: InvocationId(Uuid::from_u128(9)),
-                depth: 1,
-            },
-            std::path::Path::new("."),
-            &policy,
-        );
-        engine
-            .inner
-            .store
-            .create(meta, policy)
-            .expect("create orphan");
-        engine.spawn_actor(orphan);
-        engine.reconcile().expect("reconcile orphan");
         assert_eq!(
-            engine.inner.store.get(orphan).expect("orphan").status,
-            SessionStatus::Interrupted
+            UNAVAILABLE_BUILTIN_REVISION,
+            "internal-agent.unavailable.runtime.1"
         );
-    }
-
-    #[tokio::test]
-    async fn steering_after_prompt_snapshot_restarts_no_tool_turn() {
-        let provider = Arc::new(SteeringProvider {
-            calls: AtomicUsize::new(0),
-            first_started: Arc::new(Barrier::new(2)),
-            release_first: Notify::new(),
-            requests: Mutex::new(Vec::new()),
-        });
-        let (_directory, engine) = test_engine(provider.clone());
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let (reached, reached_rx) = oneshot::channel();
-        let hook = Arc::new(PromptSnapshotHook {
-            reached: Mutex::new(Some(reached)),
-            release: Notify::new(),
-        });
-        *engine
-            .inner
-            .prompt_snapshot_hook
-            .lock()
-            .expect("prompt snapshot hook lock poisoned") = Some(hook.clone());
-        let run = engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "first".into(),
-                input: "initial".into(),
-            })
-            .await
-            .expect("start run")
-            .run_id;
-        tokio::time::timeout(Duration::from_secs(2), reached_rx)
-            .await
-            .expect("prompt snapshot was not reached")
-            .expect("prompt snapshot hook dropped");
-        let steering = engine
-            .steer(run, "steering input".into())
-            .await
-            .expect("steer run");
-        assert!(steering.accepted);
-        hook.release.notify_one();
-        provider.first_started.wait().await;
-        let (_, mut events) = engine.subscribe(session, None).await.expect("subscribe");
-        provider.release_first.notify_one();
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while let Some(event) = events.recv().await {
-                if matches!(
-                    event,
-                    EventSubscriptionMessage::Event {
-                        event: EventEnvelope {
-                            event: Event::RunCompleted { .. },
-                            ..
-                        }
-                    }
-                ) {
-                    return;
-                }
-            }
-            panic!("event subscription closed before completion");
-        })
-        .await
-        .expect("run did not complete");
-        let requests = provider.requests.lock().expect("requests lock poisoned");
-        assert_eq!(requests.len(), 2);
-        let initial = requests[1]
-            .iter()
-            .position(|message| {
-                matches!(message, ProviderMessage::User { content }
-                if matches!(content.as_slice(), [ContentPart::Text { text }] if text == "initial"))
-            })
-            .expect("initial user input");
-        let assistant = requests[1]
-            .iter()
-            .position(|message| {
-                matches!(message, ProviderMessage::Assistant { content, .. }
-                if matches!(content.as_slice(), [ContentPart::Text { text }] if text == "done"))
-            })
-            .expect("first assistant response");
-        let steering = requests[1]
-            .iter()
-            .position(|message| matches!(message, ProviderMessage::User { content }
-                if matches!(content.as_slice(), [ContentPart::Text { text }] if text == "steering input")))
-            .expect("steering input");
-        assert!(initial < assistant && assistant < steering);
-    }
-
-    #[test]
-    fn three_turn_steering_boundaries_are_durable_and_distinct() {
-        let events = vec![
-            envelope(
-                1,
-                Event::RunStarted {
-                    client_run_id: "run".into(),
-                    input: "initial".into(),
-                },
-            ),
-            envelope(2, Event::TextDelta { text: "one".into() }),
-            envelope(
-                3,
-                Event::UserInputSubmitted {
-                    input: "steer-one".into(),
-                },
-            ),
-            envelope(
-                4,
-                Event::TextDelta {
-                    text: "-tail".into(),
-                },
-            ),
-            envelope(5, Event::UserInputApplied { user_input_seq: 3 }),
-            envelope(6, Event::TextDelta { text: "two".into() }),
-            envelope(
-                7,
-                Event::UserInputSubmitted {
-                    input: "steer-two".into(),
-                },
-            ),
-            envelope(
-                8,
-                Event::TextDelta {
-                    text: "-tail".into(),
-                },
-            ),
-            envelope(9, Event::UserInputApplied { user_input_seq: 7 }),
-            envelope(
-                10,
-                Event::TextDelta {
-                    text: "three".into(),
-                },
-            ),
-            envelope(11, Event::RunCompleted { final_text: None }),
-        ];
-        let expected = vec![
-            ("user", "initial".into()),
-            ("assistant", "one-tail".into()),
-            ("user", "steer-one".into()),
-            ("assistant", "two-tail".into()),
-            ("user", "steer-two".into()),
-            ("assistant", "three".into()),
-        ];
-        assert_eq!(visible_messages(&assemble_messages(&events)), expected);
-        assert_eq!(visible_messages(&assemble_messages(&events)), expected);
-    }
-
-    #[tokio::test]
-    async fn steering_during_failed_attempt_is_included_in_retry() {
-        let provider = Arc::new(RetrySteeringProvider {
-            calls: AtomicUsize::new(0),
-            first_started: Arc::new(Barrier::new(2)),
-            release_first: Notify::new(),
-            requests: Mutex::new(Vec::new()),
-        });
-        let (_directory, engine) = test_engine(provider.clone());
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let run = engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "retry".into(),
-                input: "initial".into(),
-            })
-            .await
-            .expect("start run")
-            .run_id;
-        provider.first_started.wait().await;
-        engine
-            .steer(run, "retry steering".into())
-            .await
-            .expect("steer");
-        provider.release_first.notify_one();
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if provider.calls.load(Ordering::SeqCst) >= 3 {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("retry did not start");
-        let requests = provider.requests.lock().expect("requests lock poisoned");
-        assert!(requests[2].iter().any(|message| {
-            matches!(message, ProviderMessage::User { content }
-                if matches!(content.as_slice(), [ContentPart::Text { text }] if text == "retry steering"))
-        }));
-        assert_eq!(
-            engine
-                .inner
-                .store
-                .get(session)
-                .expect("session")
-                .log
-                .events()
-                .iter()
-                .filter(|event| matches!(event.event, Event::UserInputApplied { .. }))
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn completed_and_reopened_sessions_replay_durable_steering_boundaries() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let run = RunId::new_v7();
-        for event in [
-            Event::RunStarted {
-                client_run_id: "completed".into(),
-                input: "initial".into(),
-            },
-            Event::TextDelta {
-                text: "answer".into(),
-            },
-            Event::UserInputSubmitted {
-                input: "steering".into(),
-            },
+        for revision in [
+            BOUNDED_SUMMARY_BUILTIN_REVISION,
+            UNAVAILABLE_BUILTIN_REVISION,
         ] {
-            engine
-                .append(session, Some(run), event)
-                .await
-                .expect("append event");
+            assert!(!revision.starts_with('v'));
+            assert!(!revision.contains("protocol"));
+            assert!(!revision.contains("event-schema"));
         }
-        let events = engine
-            .inner
-            .store
-            .get(session)
-            .expect("session")
-            .log
-            .events();
-        let steering_seq = events
-            .iter()
-            .find(|event| matches!(event.event, Event::UserInputSubmitted { .. }))
-            .expect("steering event")
-            .seq;
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::UserInputApplied {
-                    user_input_seq: steering_seq,
-                },
-            )
-            .await
-            .expect("correct boundary");
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::TextDelta {
-                    text: "second".into(),
-                },
-            )
-            .await
-            .expect("second answer");
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::UserInputSubmitted {
-                    input: "second steering".into(),
-                },
-            )
-            .await
-            .expect("second steering");
-        let second_steering_seq = engine
-            .inner
-            .store
-            .get(session)
-            .expect("session")
-            .log
-            .events()
-            .into_iter()
-            .rev()
-            .find(|event| matches!(event.event, Event::UserInputSubmitted { .. }))
-            .expect("second steering event")
-            .seq;
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::UserInputApplied {
-                    user_input_seq: second_steering_seq,
-                },
-            )
-            .await
-            .expect("second boundary");
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::TextDelta {
-                    text: "third".into(),
-                },
-            )
-            .await
-            .expect("third answer");
-        engine
-            .append(session, Some(run), Event::RunCompleted { final_text: None })
-            .await
-            .expect("complete run");
-        engine.shutdown().await;
-        drop(engine);
-        let reopened = Engine::open(EngineOptions {
-            data_dir: directory.path().join("data"),
-            cwd: directory.path().to_owned(),
-            config: test_config(),
-            providers: HashMap::from([(
-                "test".into(),
-                Arc::new(NoopProvider) as Arc<dyn Provider>,
-            )]),
-            tools: Vec::new(),
-        })
-        .expect("reopen engine");
-        let replay = reopened
-            .inner
-            .store
-            .get(session)
-            .expect("replayed session")
-            .log
-            .events();
-        assert_eq!(
-            visible_messages(&assemble_messages(&replay)),
-            vec![
-                ("user", "initial".into()),
-                ("assistant", "answer".into()),
-                ("user", "steering".into()),
-                ("assistant", "second".into()),
-                ("user", "second steering".into()),
-                ("assistant", "third".into()),
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn resumed_jsonl_rebuild_preserves_applied_steering_boundary() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let run = RunId::new_v7();
-        for event in [
-            Event::RunStarted {
-                client_run_id: "interrupted".into(),
-                input: "initial".into(),
-            },
-            Event::TextDelta {
-                text: "partial".into(),
-            },
-            Event::UserInputSubmitted {
-                input: "steering".into(),
-            },
-        ] {
-            engine
-                .append(session, Some(run), event)
-                .await
-                .expect("append event");
-        }
-        let steering_seq = engine
-            .inner
-            .store
-            .get(session)
-            .expect("session")
-            .log
-            .events()
-            .into_iter()
-            .find(|event| matches!(event.event, Event::UserInputSubmitted { .. }))
-            .expect("steering event")
-            .seq;
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::UserInputApplied {
-                    user_input_seq: steering_seq,
-                },
-            )
-            .await
-            .expect("boundary");
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::TextDelta {
-                    text: "later partial".into(),
-                },
-            )
-            .await
-            .expect("later partial");
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::UserInputSubmitted {
-                    input: "later steering".into(),
-                },
-            )
-            .await
-            .expect("later steering");
-        let later_steering_seq = engine
-            .inner
-            .store
-            .get(session)
-            .expect("session")
-            .log
-            .events()
-            .into_iter()
-            .rev()
-            .find(|event| matches!(event.event, Event::UserInputSubmitted { .. }))
-            .expect("later steering event")
-            .seq;
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::UserInputApplied {
-                    user_input_seq: later_steering_seq,
-                },
-            )
-            .await
-            .expect("later boundary");
-        engine
-            .append(session, Some(run), Event::RunInterrupted { reason: None })
-            .await
-            .expect("interrupt run");
-        engine.shutdown().await;
-        drop(engine);
-        let reopened = Engine::open(EngineOptions {
-            data_dir: directory.path().join("data"),
-            cwd: directory.path().to_owned(),
-            config: test_config(),
-            providers: HashMap::from([(
-                "test".into(),
-                Arc::new(NoopProvider) as Arc<dyn Provider>,
-            )]),
-            tools: Vec::new(),
-        })
-        .expect("reopen engine");
-        reopened.resume(session).await.expect("resume session");
-        let replay = reopened
-            .inner
-            .store
-            .get(session)
-            .expect("replayed session")
-            .log
-            .events();
-        assert_eq!(
-            visible_messages(&assemble_messages(&replay)),
-            vec![
-                ("user", "initial".into()),
-                ("assistant", "partial".into()),
-                ("user", "steering".into()),
-                ("assistant", "later partial".into()),
-                ("user", "later steering".into()),
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn resume_resolves_interrupted_calls_through_the_actor() {
-        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let run = RunId::new_v7();
-        let call = ToolCallId::new_v7();
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::RunStarted {
-                    client_run_id: "interrupted".into(),
-                    input: "input".into(),
-                },
-            )
-            .await
-            .expect("start event");
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::ToolCallStarted {
-                    tool_call_id: call,
-                    tool: "read".into(),
-                    arguments: Value::Null,
-                    provider_tool_call_id: None,
-                    provider_protocol: None,
-                },
-            )
-            .await
-            .expect("tool event");
-        engine
-            .append(session, Some(run), Event::RunInterrupted { reason: None })
-            .await
-            .expect("interrupt event");
-        engine.resume(session).await.expect("resume");
-        let (replay, _live) = engine.subscribe(session, None).await.expect("subscribe");
-        assert!(replay.events.into_iter().any(|event| {
-            matches!(
-                event.event,
-                Event::ToolCallFailed { tool_call_id, .. } if tool_call_id == call
-            )
-        }));
-    }
-
-    #[tokio::test]
-    async fn terminal_recovery_replays_only_paired_tool_calls_and_results() {
-        let provider = Arc::new(RecordingNoopProvider {
-            protocol: None,
-            requests: Mutex::new(Vec::new()),
-        });
-        let (_directory, engine) = test_engine(provider.clone());
-        for (index, terminal) in [
-            Event::RunInterrupted { reason: None },
-            Event::RunCancelled { reason: None },
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let session = engine
-                .create_session(".", "test")
-                .expect("create session")
-                .id;
-            let run = RunId::new_v7();
-            let call = ToolCallId::new_v7();
-            engine
-                .append(
-                    session,
-                    Some(run),
-                    Event::RunStarted {
-                        client_run_id: format!("terminal-{index}"),
-                        input: "input".into(),
-                    },
-                )
-                .await
-                .expect("start event");
-            engine
-                .append(
-                    session,
-                    Some(run),
-                    Event::ToolCallStarted {
-                        tool_call_id: call,
-                        tool: "read".into(),
-                        arguments: Value::Null,
-                        provider_tool_call_id: None,
-                        provider_protocol: None,
-                    },
-                )
-                .await
-                .expect("tool event");
-            engine
-                .append(session, Some(run), terminal)
-                .await
-                .expect("terminal event");
-            engine.resume(session).await.expect("recover tool result");
-            engine
-                .start_run(RunStartParams {
-                    session_id: session,
-                    client_run_id: format!("follow-up-{index}"),
-                    input: "follow up".into(),
-                })
-                .await
-                .expect("start follow-up");
-            wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
-            let request = provider
-                .requests
-                .lock()
-                .expect("requests lock poisoned")
-                .last()
-                .cloned()
-                .expect("follow-up request");
-            let calls: std::collections::HashSet<_> = request
-                .persisted_turns
-                .iter()
-                .flat_map(|turn| match &turn.message {
-                    ProviderMessage::Assistant { tool_calls, .. } => tool_calls
-                        .iter()
-                        .map(|call| call.id.clone())
-                        .collect::<Vec<_>>(),
-                    _ => Vec::new(),
-                })
-                .collect();
-            let results: std::collections::HashSet<_> = request
-                .persisted_turns
-                .iter()
-                .filter_map(|turn| match &turn.message {
-                    ProviderMessage::Tool { result } => Some(result.tool_call_id.clone()),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(calls, results, "terminal recovery must preserve only pairs");
-            assert_eq!(calls, std::collections::HashSet::from([call.to_string()]));
-        }
-    }
-
-    #[tokio::test]
-    async fn completed_tool_call_and_result_remain_in_the_follow_up_request() {
-        let provider = Arc::new(RecordingNoopProvider {
-            protocol: None,
-            requests: Mutex::new(Vec::new()),
-        });
-        let (_directory, engine) = test_engine(provider.clone());
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let run = RunId::new_v7();
-        let call = ToolCallId::new_v7();
-        for event in [
-            Event::RunStarted {
-                client_run_id: "completed".into(),
-                input: "input".into(),
-            },
-            Event::ToolCallStarted {
-                tool_call_id: call,
-                tool: "read".into(),
-                arguments: Value::Null,
-                provider_tool_call_id: None,
-                provider_protocol: None,
-            },
-            Event::ToolCallCompleted {
-                tool_call_id: call,
-                result: cookie_agent_protocol::ToolResult {
-                    content: "result".into(),
-                    truncated: false,
-                },
-            },
-            Event::RunCompleted { final_text: None },
-        ] {
-            engine
-                .append(session, Some(run), event)
-                .await
-                .expect("completed history event");
-        }
-        engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "follow-up".into(),
-                input: "follow up".into(),
-            })
-            .await
-            .expect("start follow-up");
-        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
-        let request = provider
-            .requests
-            .lock()
-            .expect("requests lock poisoned")
-            .last()
-            .cloned()
-            .expect("follow-up request");
-        assert!(request.persisted_turns.iter().any(|turn| {
-            matches!(&turn.message, ProviderMessage::Assistant { tool_calls, .. } if tool_calls.iter().any(|tool| tool.id == call.to_string()))
-        }));
-        assert!(request.persisted_turns.iter().any(|turn| {
-            matches!(&turn.message, ProviderMessage::Tool { result } if result.tool_call_id == call.to_string())
-        }));
-    }
-
-    #[tokio::test]
-    async fn abandoned_tool_call_and_late_native_result_are_omitted_from_request() {
-        let provider = Arc::new(RecordingNoopProvider {
-            protocol: Some(ProviderProtocol::OpenAiResponses),
-            requests: Mutex::new(Vec::new()),
-        });
-        let (_directory, engine) = test_engine(provider.clone());
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let run = RunId::new_v7();
-        let call = ToolCallId::new_v7();
-        for event in [
-            Event::RunStarted {
-                client_run_id: "abandoned".into(),
-                input: "input".into(),
-            },
-            Event::ToolCallStarted {
-                tool_call_id: call,
-                tool: "read".into(),
-                arguments: Value::Null,
-                provider_tool_call_id: Some("native-orphan".into()),
-                provider_protocol: Some(cookie_agent_protocol::ProviderProtocol::OpenAiResponses),
-            },
-            Event::AttemptAbandoned,
-            Event::ToolCallFailed {
-                tool_call_id: call,
-                message: "late synthetic failure".into(),
-            },
-            Event::RunCompleted { final_text: None },
-        ] {
-            engine
-                .append(session, Some(run), event)
-                .await
-                .expect("abandoned history event");
-        }
-        engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "follow-up".into(),
-                input: "follow up".into(),
-            })
-            .await
-            .expect("start follow-up");
-        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
-        let request = provider
-            .requests
-            .lock()
-            .expect("requests lock poisoned")
-            .last()
-            .cloned()
-            .expect("follow-up request");
-        assert!(!request.persisted_turns.iter().any(|turn| {
-            matches!(&turn.message, ProviderMessage::Assistant { tool_calls, .. } if tool_calls.iter().any(|tool| tool.id == call.to_string() || tool.id == "native-orphan"))
-                || matches!(&turn.message, ProviderMessage::Tool { result } if result.tool_call_id == call.to_string() || result.tool_call_id == "native-orphan")
-        }));
-    }
-
-    #[tokio::test]
-    async fn mixed_tool_batch_emits_only_the_call_with_a_result() {
-        let provider = Arc::new(RecordingNoopProvider {
-            protocol: None,
-            requests: Mutex::new(Vec::new()),
-        });
-        let (_directory, engine) = test_engine(provider.clone());
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let run = RunId::new_v7();
-        let paired = ToolCallId::new_v7();
-        let unpaired = ToolCallId::new_v7();
-        for event in [
-            Event::RunStarted {
-                client_run_id: "mixed".into(),
-                input: "input".into(),
-            },
-            Event::ToolCallStarted {
-                tool_call_id: paired,
-                tool: "read".into(),
-                arguments: Value::Null,
-                provider_tool_call_id: None,
-                provider_protocol: None,
-            },
-            Event::ToolCallStarted {
-                tool_call_id: unpaired,
-                tool: "write".into(),
-                arguments: Value::Null,
-                provider_tool_call_id: None,
-                provider_protocol: None,
-            },
-            Event::ToolCallCompleted {
-                tool_call_id: paired,
-                result: cookie_agent_protocol::ToolResult {
-                    content: "result".into(),
-                    truncated: false,
-                },
-            },
-            Event::RunCompleted { final_text: None },
-        ] {
-            engine
-                .append(session, Some(run), event)
-                .await
-                .expect("mixed history event");
-        }
-        engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "follow-up".into(),
-                input: "follow up".into(),
-            })
-            .await
-            .expect("start follow-up");
-        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
-        let request = provider
-            .requests
-            .lock()
-            .expect("requests lock poisoned")
-            .last()
-            .cloned()
-            .expect("follow-up request");
-        let calls: std::collections::HashSet<_> = request
-            .persisted_turns
-            .iter()
-            .flat_map(|turn| match &turn.message {
-                ProviderMessage::Assistant { tool_calls, .. } => tool_calls
-                    .iter()
-                    .map(|tool| tool.id.clone())
-                    .collect::<Vec<_>>(),
-                _ => Vec::new(),
-            })
-            .collect();
-        let results: std::collections::HashSet<_> = request
-            .persisted_turns
-            .iter()
-            .filter_map(|turn| match &turn.message {
-                ProviderMessage::Tool { result } => Some(result.tool_call_id.clone()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(calls, std::collections::HashSet::from([paired.to_string()]));
-        assert_eq!(results, calls);
-        assert!(!calls.contains(&unpaired.to_string()));
-    }
-
-    #[tokio::test]
-    async fn delayed_result_is_replayed_next_to_its_call_before_later_turns() {
-        let provider = Arc::new(RecordingNoopProvider {
-            protocol: None,
-            requests: Mutex::new(Vec::new()),
-        });
-        let (_directory, engine) = test_engine(provider.clone());
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let interrupted_run = RunId::new_v7();
-        let later_run = RunId::new_v7();
-        let call = ToolCallId::new_v7();
-        for (run, event) in [
-            (
-                interrupted_run,
-                Event::RunStarted {
-                    client_run_id: "interrupted".into(),
-                    input: "original user".into(),
-                },
-            ),
-            (
-                interrupted_run,
-                Event::ToolCallStarted {
-                    tool_call_id: call,
-                    tool: "read".into(),
-                    arguments: Value::Null,
-                    provider_tool_call_id: None,
-                    provider_protocol: None,
-                },
-            ),
-            (interrupted_run, Event::RunInterrupted { reason: None }),
-            (
-                later_run,
-                Event::RunStarted {
-                    client_run_id: "later".into(),
-                    input: "intervening user".into(),
-                },
-            ),
-            (
-                later_run,
-                Event::TextDelta {
-                    text: "intervening model".into(),
-                },
-            ),
-            (later_run, Event::RunCompleted { final_text: None }),
-            (
-                interrupted_run,
-                Event::ToolCallFailed {
-                    tool_call_id: call,
-                    message: "late synthetic failure".into(),
-                },
-            ),
-        ] {
-            engine
-                .append(session, Some(run), event)
-                .await
-                .expect("delayed history event");
-        }
-        engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "follow-up".into(),
-                input: "follow up".into(),
-            })
-            .await
-            .expect("start follow-up");
-        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
-        let request = provider
-            .requests
-            .lock()
-            .expect("requests lock poisoned")
-            .last()
-            .cloned()
-            .expect("follow-up request");
-        let call_index = request
-            .persisted_turns
-            .iter()
-            .position(|turn| {
-                matches!(&turn.message, ProviderMessage::Assistant { tool_calls, .. } if tool_calls.iter().any(|tool| tool.id == call.to_string()))
-            })
-            .expect("assistant call");
-        assert!(matches!(
-            &request.persisted_turns[call_index + 1].message,
-            ProviderMessage::Tool { result } if result.tool_call_id == call.to_string()
-        ));
-        let later_user_index = request
-            .persisted_turns
-            .iter()
-            .position(|turn| {
-                matches!(&turn.message, ProviderMessage::User { content } if matches!(content.as_slice(), [ContentPart::Text { text }] if text == "intervening user"))
-            })
-            .expect("intervening user");
-        assert!(call_index + 1 < later_user_index);
-    }
-
-    #[tokio::test]
-    async fn repeated_tool_id_keeps_only_the_occurrence_with_a_result() {
-        let provider = Arc::new(RecordingNoopProvider {
-            protocol: None,
-            requests: Mutex::new(Vec::new()),
-        });
-        let (_directory, engine) = test_engine(provider.clone());
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let shared_call = ToolCallId::new_v7();
-        let first_run = RunId::new_v7();
-        let second_run = RunId::new_v7();
-        for (run, event) in [
-            (
-                first_run,
-                Event::RunStarted {
-                    client_run_id: "first".into(),
-                    input: "first user".into(),
-                },
-            ),
-            (
-                first_run,
-                Event::ToolCallStarted {
-                    tool_call_id: shared_call,
-                    tool: "read".into(),
-                    arguments: Value::Null,
-                    provider_tool_call_id: None,
-                    provider_protocol: None,
-                },
-            ),
-            (first_run, Event::RunCompleted { final_text: None }),
-            (
-                second_run,
-                Event::RunStarted {
-                    client_run_id: "second".into(),
-                    input: "second user".into(),
-                },
-            ),
-            (
-                second_run,
-                Event::ToolCallStarted {
-                    tool_call_id: shared_call,
-                    tool: "write".into(),
-                    arguments: Value::Null,
-                    provider_tool_call_id: None,
-                    provider_protocol: None,
-                },
-            ),
-            (
-                second_run,
-                Event::ToolCallFailed {
-                    tool_call_id: shared_call,
-                    message: "paired second occurrence".into(),
-                },
-            ),
-            (second_run, Event::RunCompleted { final_text: None }),
-        ] {
-            engine
-                .append(session, Some(run), event)
-                .await
-                .expect("repeated-id history event");
-        }
-        engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "follow-up".into(),
-                input: "follow up".into(),
-            })
-            .await
-            .expect("start follow-up");
-        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
-        let request = provider
-            .requests
-            .lock()
-            .expect("requests lock poisoned")
-            .last()
-            .cloned()
-            .expect("follow-up request");
-        let calls: Vec<_> = request
-            .persisted_turns
-            .iter()
-            .flat_map(|turn| match &turn.message {
-                ProviderMessage::Assistant { tool_calls, .. } => tool_calls
-                    .iter()
-                    .map(|tool| tool.name.clone())
-                    .collect::<Vec<_>>(),
-                _ => Vec::new(),
-            })
-            .collect();
-        let results: Vec<_> = request
-            .persisted_turns
-            .iter()
-            .filter_map(|turn| match &turn.message {
-                ProviderMessage::Tool { result } => Some(result.content.clone()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(calls, vec!["write"]);
-        assert_eq!(results, vec!["paired second occurrence"]);
-    }
-
-    #[tokio::test]
-    async fn delayed_repeated_id_results_match_their_own_run_occurrence() {
-        let provider = Arc::new(RecordingNoopProvider {
-            protocol: Some(ProviderProtocol::OpenAiResponses),
-            requests: Mutex::new(Vec::new()),
-        });
-        let (_directory, engine) = test_engine(provider.clone());
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let shared_call = ToolCallId::new_v7();
-        let first_run = RunId::new_v7();
-        let second_run = RunId::new_v7();
-        let orphan_run = RunId::new_v7();
-        for (run, event) in [
-            (
-                first_run,
-                Event::RunStarted {
-                    client_run_id: "first".into(),
-                    input: "first user".into(),
-                },
-            ),
-            (
-                first_run,
-                Event::ToolCallStarted {
-                    tool_call_id: shared_call,
-                    tool: "read".into(),
-                    arguments: Value::Null,
-                    provider_tool_call_id: Some("native-first".into()),
-                    provider_protocol: Some(
-                        cookie_agent_protocol::ProviderProtocol::OpenAiResponses,
-                    ),
-                },
-            ),
-            (first_run, Event::RunInterrupted { reason: None }),
-            (
-                second_run,
-                Event::RunStarted {
-                    client_run_id: "second".into(),
-                    input: "second user".into(),
-                },
-            ),
-            (
-                second_run,
-                Event::ToolCallStarted {
-                    tool_call_id: shared_call,
-                    tool: "write".into(),
-                    arguments: Value::Null,
-                    provider_tool_call_id: Some("native-second".into()),
-                    provider_protocol: Some(
-                        cookie_agent_protocol::ProviderProtocol::OpenAiResponses,
-                    ),
-                },
-            ),
-            (second_run, Event::RunInterrupted { reason: None }),
-            (
-                second_run,
-                Event::ToolCallFailed {
-                    tool_call_id: shared_call,
-                    message: "second delayed result".into(),
-                },
-            ),
-            (
-                first_run,
-                Event::ToolCallFailed {
-                    tool_call_id: shared_call,
-                    message: "first delayed result".into(),
-                },
-            ),
-            (
-                orphan_run,
-                Event::ToolCallFailed {
-                    tool_call_id: shared_call,
-                    message: "orphaned delayed result".into(),
-                },
-            ),
-        ] {
-            engine
-                .append(session, Some(run), event)
-                .await
-                .expect("repeated delayed history event");
-        }
-        engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "follow-up".into(),
-                input: "follow up".into(),
-            })
-            .await
-            .expect("start follow-up");
-        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
-        let request = provider
-            .requests
-            .lock()
-            .expect("requests lock poisoned")
-            .last()
-            .cloned()
-            .expect("follow-up request");
-        let pairs: Vec<_> = request
-            .persisted_turns
-            .windows(2)
-            .filter_map(|entries| match (&entries[0].message, &entries[1].message) {
-                (
-                    ProviderMessage::Assistant { tool_calls, .. },
-                    ProviderMessage::Tool { result },
-                ) if tool_calls.len() == 1 => {
-                    Some((tool_calls[0].id.clone(), result.content.clone()))
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            pairs,
-            vec![
-                ("native-first".into(), "first delayed result".into()),
-                ("native-second".into(), "second delayed result".into()),
-            ]
-        );
-        assert!(!request.persisted_turns.iter().any(|turn| {
-            matches!(&turn.message, ProviderMessage::Tool { result } if result.content == "orphaned delayed result")
-        }));
-    }
-
-    #[tokio::test]
-    async fn terminal_event_overflow_emits_a_gap() {
-        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let (_, mut live) = engine.subscribe(session, None).await.expect("subscribe");
-        for index in 0..255 {
-            engine
-                .append(
-                    session,
-                    None,
-                    Event::TextDelta {
-                        text: index.to_string(),
-                    },
-                )
-                .await
-                .expect("append");
-        }
-        let (reached, wait_for_gap) = std_mpsc::channel();
-        let (release_gap, released) = std_mpsc::channel();
-        *engine
-            .inner
-            .gap_send_hook
-            .lock()
-            .expect("gap send hook lock poisoned") = Some(GapSendHook {
-            reached,
-            release: released,
-        });
-        let append_engine = engine.clone();
-        let terminal = tokio::spawn(async move {
-            append_engine
-                .append(session, None, Event::RunCompleted { final_text: None })
-                .await
-        });
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            tokio::task::spawn_blocking(move || wait_for_gap.recv()),
-        )
-        .await
-        .expect("gap was not sent")
-        .expect("gap wait task panicked")
-        .expect("gap sender dropped");
-        let drain = tokio::spawn(async move {
-            let mut gap = None;
-            loop {
-                match live.recv().await {
-                    Some(EventSubscriptionMessage::Gap {
-                        session_id,
-                        last_delivered_seq,
-                    }) => {
-                        assert_eq!(session_id, session);
-                        gap = Some(last_delivered_seq);
-                        let _ = release_gap.send(());
-                    }
-                    Some(EventSubscriptionMessage::Event { .. }) => {}
-                    None => break,
-                }
-            }
-            (gap, true)
-        });
-        terminal
-            .await
-            .expect("terminal append task panicked")
-            .expect("terminal append");
-        let (gap, closed) = tokio::time::timeout(Duration::from_secs(2), drain)
-            .await
-            .expect("live subscription did not close")
-            .expect("drain task panicked");
-        assert_eq!(gap, Some(256));
-        assert!(closed, "subscription did not close after Gap");
-    }
-
-    #[tokio::test]
-    async fn reopen_reserved_delegation_without_child_resolves_structured_failure_once() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let (parent, _parent_run, _call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let child = SessionId::new_v7();
-        let invocation_id = write_started_delegation(&engine, &invocation, child, &policy);
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
-        assert!(
-            reopened.inner.store.get(child).is_err(),
-            "missing child was recreated"
-        );
-        reopened.resume(parent).await.expect("resume parent");
-        reopened.resume(parent).await.expect("repeat resume parent");
-
-        let completions: Vec<_> = reopened
-            .inner
-            .store
-            .get(parent)
-            .expect("parent projection")
-            .log
-            .events()
-            .into_iter()
-            .filter_map(|event| match event.event {
-                Event::ToolCallCompleted { result, .. } => Some(result),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(completions.len(), 1);
-        assert_eq!(
-            serde_json::from_str::<Value>(&completions[0].content).expect("structured failure")["status"],
-            "failed"
-        );
-        assert_eq!(
-            journal_records(&reopened)
-                .iter()
-                .filter(|record| matches!(record, journal::JournalRecord::DelegationStarted { reservation, .. } if reservation.invocation_id == invocation_id))
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn reopen_inside_runtime_interrupts_a_partial_run_without_panicking() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let session = engine.create_session(".", "test").expect("session").id;
-        let run = RunId::new_v7();
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::RunStarted {
-                    client_run_id: "crashed".into(),
-                    input: "before restart".into(),
-                },
-            )
-            .await
-            .expect("persist run start");
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::TextDelta {
-                    text: "partial output".into(),
-                },
-            )
-            .await
-            .expect("persist partial output");
-        drop(engine);
-
-        let reopened = reopen_test_engine_in_runtime(&directory, Arc::new(NoopProvider));
-        let projection = reopened
-            .inner
-            .store
-            .get(session)
-            .expect("reconciled session");
-        assert_eq!(
-            projection.runs.get(&run).expect("interrupted run").status,
-            SessionStatus::Interrupted
-        );
-        assert!(projection.log.events().iter().any(|event| {
-            matches!(event.event, Event::RunInterrupted { ref reason }
-                if reason.as_deref() == Some("daemon restart"))
-        }));
-        reopened
-            .resume(session)
-            .await
-            .expect("resume interrupted session");
-        reopened
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "continued".into(),
-                input: "continue".into(),
-            })
-            .await
-            .expect("continue after reconciliation");
-        wait_for_session_status(&reopened, session, &SessionStatus::Completed).await;
-    }
-
-    #[tokio::test]
-    async fn reopen_inside_runtime_interrupts_a_run_with_pending_approval_without_panicking() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let session = engine.create_session(".", "test").expect("session").id;
-        let run = RunId::new_v7();
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::RunStarted {
-                    client_run_id: "approval-crash".into(),
-                    input: "await approval".into(),
-                },
-            )
-            .await
-            .expect("persist run start");
-        engine
-            .append(
-                session,
-                Some(run),
-                approval_request_event(
-                    "pending-restart-approval",
-                    vec![cookie_agent_protocol::ApprovalResource {
-                        action: cookie_agent_protocol::ActionKind::Bash,
-                        resource: "git status".into(),
-                        suggested_pattern: "git status *".into(),
-                    }],
-                    "awaiting approval",
-                ),
-            )
-            .await
-            .expect("persist approval request");
-        drop(engine);
-
-        let reopened = reopen_test_engine_in_runtime(&directory, Arc::new(NoopProvider));
-        let projection = reopened
-            .inner
-            .store
-            .get(session)
-            .expect("reconciled session");
-        assert_eq!(
-            projection.runs.get(&run).expect("interrupted run").status,
-            SessionStatus::Interrupted
-        );
-        assert!(projection.log.events().iter().any(|event| {
-            matches!(&event.event, Event::ApprovalRequested { approval_id, .. }
-                if approval_id == "pending-restart-approval")
-        }));
-        reopened
-            .resume(session)
-            .await
-            .expect("resume approval session");
-    }
-
-    #[tokio::test]
-    async fn reopen_inside_runtime_replays_committed_prefix_before_continuation() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let session = engine.create_session(".", "test").expect("session").id;
-        let run = RunId::new_v7();
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::RunStarted {
-                    client_run_id: "crashed".into(),
-                    input: "original input".into(),
-                },
-            )
-            .await
-            .expect("persist run start");
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::TextDelta {
-                    text: "committed prefix".into(),
-                },
-            )
-            .await
-            .expect("persist partial output");
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::UserInputSubmitted {
-                    input: "preserve committed prefix".into(),
-                },
-            )
-            .await
-            .expect("persist steering input");
-        let steering_seq = engine
-            .inner
-            .store
-            .get(session)
-            .expect("session")
-            .log
-            .events()
-            .into_iter()
-            .rev()
-            .find(|event| matches!(event.event, Event::UserInputSubmitted { .. }))
-            .expect("steering event")
-            .seq;
-        engine
-            .append(
-                session,
-                Some(run),
-                Event::UserInputApplied {
-                    user_input_seq: steering_seq,
-                },
-            )
-            .await
-            .expect("persist steering boundary");
-        drop(engine);
-
-        let provider = Arc::new(RecordingNoopProvider {
-            protocol: None,
-            requests: Mutex::new(Vec::new()),
-        });
-        let reopened = reopen_test_engine_in_runtime(&directory, provider.clone());
-        reopened
-            .resume(session)
-            .await
-            .expect("resume interrupted session");
-        reopened
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "continued".into(),
-                input: "continue from prefix".into(),
-            })
-            .await
-            .expect("start continuation");
-        wait_for_session_status(&reopened, session, &SessionStatus::Completed).await;
-        let request = provider
-            .requests
-            .lock()
-            .expect("requests lock poisoned")
-            .last()
-            .cloned()
-            .expect("continuation request");
-        assert_eq!(
-            visible_messages(&request.messages),
-            vec![
-                ("user", "original input".into()),
-                ("assistant", "committed prefix".into()),
-                ("user", "preserve committed prefix".into()),
-                ("user", "continue from prefix".into()),
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn reopen_repairs_missing_parent_link_exactly_once() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let (parent, _parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let child = SessionId::new_v7();
-        let invocation_id = write_started_delegation(&engine, &invocation, child, &policy);
-        persist_delegated_child(&engine, &invocation, child, policy);
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
-        reconcile_test_engine(&reopened).await;
-        let parent_events = reopened
-            .inner
-            .store
-            .get(parent)
-            .expect("parent projection")
-            .log
-            .events();
-        assert_eq!(
-            parent_events
-                .iter()
-                .filter(|event| {
-                    matches!(event.event, Event::ToolCallLinked { tool_call_id, child_session_id }
-                        if tool_call_id == call && child_session_id == child)
-                })
-                .count(),
-            1
-        );
-        assert_eq!(journal_link_count(&reopened, invocation_id), 1);
-    }
-
-    #[tokio::test]
-    async fn reopen_confirms_link_and_redelivery_uses_existing_child() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let child = SessionId::new_v7();
-        let invocation_id = write_started_delegation(&engine, &invocation, child, &policy);
-        persist_delegated_child(&engine, &invocation, child, policy);
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::ToolCallLinked {
-                    tool_call_id: call,
-                    child_session_id: child,
-                },
-            )
-            .await
-            .expect("persist parent link");
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
-        assert_eq!(journal_link_count(&reopened, invocation_id), 1);
-        let handle = reopened
-            .delegate_invoke(invocation)
-            .await
-            .expect("redeliver delegate invocation");
-        assert_eq!(handle.child_session_id, child);
-        assert_eq!(journal_link_count(&reopened, invocation_id), 1);
-        assert_eq!(
-            reopened
-                .children(parent)
-                .into_iter()
-                .filter(|summary| summary.id == child)
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn reopen_confirms_existing_child_run_without_double_starting_it() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let (parent, _parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let child = SessionId::new_v7();
-        let invocation_id = write_started_delegation(&engine, &invocation, child, &policy);
-        persist_delegated_child(&engine, &invocation, child, policy);
-        write_linked_delegation(&engine, invocation_id);
-        let child_run = RunId::new_v7();
-        append_child_event(
-            &engine,
-            child,
-            child_run,
-            Event::RunStarted {
-                client_run_id: delegate_client_run_id(invocation_id),
-                input: render_delegate_input(&delegate_request(&invocation)),
-            },
-        );
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
-        reopened.resume(parent).await.expect("resume parent");
-        reopened.resume(parent).await.expect("repeat resume parent");
-        let result = wait_for_delegate_completion(&reopened, parent, call).await;
-        assert_eq!(
-            serde_json::from_str::<Value>(&result.content).expect("structured failure")["status"],
-            "failed"
-        );
-        assert_eq!(child_run_start_count(&reopened, child), 1);
-        assert_eq!(journal_run_count(&reopened, invocation_id, child_run), 1);
-    }
-
-    #[tokio::test]
-    async fn reopen_reconstructs_completed_delegate_result_once_with_utf8_boundary() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let (parent, _parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let limit = policy.result_limits.delegate_result_bytes;
-        let child = SessionId::new_v7();
-        let invocation_id = write_started_delegation(&engine, &invocation, child, &policy);
-        persist_delegated_child(&engine, &invocation, child, policy);
-        write_linked_delegation(&engine, invocation_id);
-        let child_run = RunId::new_v7();
-        append_child_event(
-            &engine,
-            child,
-            child_run,
-            Event::RunStarted {
-                client_run_id: delegate_client_run_id(invocation_id),
-                input: "completed child".into(),
-            },
-        );
-        append_child_event(
-            &engine,
-            child,
-            child_run,
-            Event::RunCompleted {
-                final_text: Some(format!("{}é", "x".repeat(limit.saturating_sub(1)))),
-            },
-        );
-        write_run_started_delegation(&engine, invocation_id, child_run);
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
-        reopened.resume(parent).await.expect("resume parent");
-        reopened.resume(parent).await.expect("repeat resume parent");
-        let results: Vec<_> = reopened
-            .inner
-            .store
-            .get(parent)
-            .expect("parent projection")
-            .log
-            .events()
-            .into_iter()
-            .filter_map(|event| match event.event {
-                Event::ToolCallCompleted {
-                    tool_call_id,
-                    result,
-                } if tool_call_id == call => Some(result),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(results.len(), 1);
-        assert!(results[0].truncated);
-        assert_eq!(results[0].content, "x".repeat(limit.saturating_sub(1)));
-        assert!(results[0].content.len() <= limit);
-    }
-
-    #[tokio::test]
-    async fn reopen_marks_journalless_orphan_interrupted_without_hiding_journaled_child() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let parent = engine
-            .create_session(".", "test")
-            .expect("create parent")
-            .id;
-        let run = RunId::new_v7();
-        let call = ToolCallId::new_v7();
-        let invocation = delegate_invocation(parent, run, call, "journaled child");
-        let policy = child_policy_for(&engine, &invocation);
-        let journaled_child = SessionId::new_v7();
-        write_started_delegation(&engine, &invocation, journaled_child, &policy);
-        persist_delegated_child(&engine, &invocation, journaled_child, policy.clone());
-        let orphan = SessionId::new_v7();
-        let orphan_meta = session_meta(
-            orphan,
-            SessionOrigin::Delegated {
-                root_session_id: parent,
-                parent_session_id: parent,
-                parent_run_id: RunId::new_v7(),
-                parent_tool_call_id: ToolCallId::new_v7(),
-                invocation_id: InvocationId(Uuid::from_u128(42)),
-                depth: 1,
-            },
-            directory.path(),
-            &policy,
-        );
-        engine
-            .inner
-            .store
-            .create(orphan_meta, policy)
-            .expect("persist orphan child");
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
-        reconcile_test_engine(&reopened).await;
-        assert_eq!(
-            reopened
-                .inner
-                .store
-                .get(orphan)
-                .expect("orphan projection")
-                .status,
-            SessionStatus::Interrupted
-        );
-        let children = reopened.children(parent);
-        assert!(children.iter().any(|child| child.id == journaled_child));
-        assert!(!children.iter().any(|child| child.id == orphan));
-        assert_eq!(
-            reopened
-                .inner
-                .store
-                .get(orphan)
-                .expect("orphan projection")
-                .log
-                .events()
-                .into_iter()
-                .filter(|event| matches!(event.event, Event::RunInterrupted { .. }))
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn reopen_does_not_autostart_reserved_child_after_parent_cancellation() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let (parent, parent_run, _call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let child = SessionId::new_v7();
-        let invocation_id = write_started_delegation(&engine, &invocation, child, &policy);
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::RunCancelled { reason: None },
-            )
-            .await
-            .expect("cancel parent");
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
-        reconcile_test_engine(&reopened).await;
-        assert!(
-            reopened.inner.store.get(child).is_err(),
-            "reserved child became a zombie"
-        );
-        assert_eq!(
-            journal_records(&reopened)
-                .iter()
-                .filter(|record| {
-                    matches!(record, journal::JournalRecord::DelegationRunStarted { invocation_id: id, .. } if *id == invocation_id)
-                })
-                .count(),
-            0
-        );
-        reopened
-            .resume(parent)
-            .await
-            .expect("resume cancelled parent");
-        reopened
-            .resume(parent)
-            .await
-            .expect("repeat cancelled resume");
-        let cancelled_results = reopened
-            .inner
-            .store
-            .get(parent)
-            .expect("parent")
-            .log
-            .events()
-            .into_iter()
-            .filter(|event| {
-                matches!(&event.event, Event::ToolCallCompleted { result, .. }
-                if serde_json::from_str::<Value>(&result.content).ok()
-                    .is_some_and(|value| value["status"] == "cancelled"))
-            })
-            .count();
-        assert_eq!(cancelled_results, 1);
-    }
-
-    #[tokio::test]
-    async fn live_redelivery_after_parent_cancellation_never_creates_child() {
-        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
-        let (parent, parent_run, _call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let child = SessionId::new_v7();
-        write_started_delegation(&engine, &invocation, child, &policy);
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::RunCancelled { reason: None },
-            )
-            .await
-            .expect("cancel parent");
-        assert!(engine.delegate_invoke(invocation).await.is_err());
-        assert!(engine.inner.store.get(child).is_err());
-        let parent = engine.inner.store.get(parent).expect("parent");
-        assert!(parent.log.events().into_iter().any(|event| {
-            matches!(&event.event, Event::ToolCallCompleted { result, .. }
-                if serde_json::from_str::<Value>(&result.content).ok()
-                    .is_some_and(|value| value["status"] == "cancelled"))
-        }));
-    }
-
-    #[tokio::test]
-    async fn reopen_cancels_started_child_for_cancelled_parent_once() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let child = SessionId::new_v7();
-        write_started_delegation(&engine, &invocation, child, &policy);
-        persist_delegated_child(&engine, &invocation, child, policy);
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::ToolCallLinked {
-                    tool_call_id: call,
-                    child_session_id: child,
-                },
-            )
-            .await
-            .expect("link child");
-        let child_run = RunId::new_v7();
-        append_child_event(
-            &engine,
-            child,
-            child_run,
-            Event::RunStarted {
-                client_run_id: "delegate:crash-window".into(),
-                input: "child task".into(),
-            },
-        );
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::RunCancelled { reason: None },
-            )
-            .await
-            .expect("cancel parent");
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
-        assert_eq!(
-            reopened.inner.store.get(child).expect("child").status,
-            SessionStatus::Cancelled
-        );
-        reopened.resume(parent).await.expect("resume parent");
-        reopened.resume(parent).await.expect("repeat resume parent");
-        let completed = reopened
-            .inner
-            .store
-            .get(parent)
-            .expect("parent")
-            .log
-            .events()
-            .into_iter()
-            .filter(|event| {
-                matches!(&event.event, Event::ToolCallCompleted { tool_call_id, result }
-                if *tool_call_id == call
-                    && serde_json::from_str::<Value>(&result.content).ok()
-                        .is_some_and(|value| value["status"] == "cancelled"))
-            })
-            .count();
-        assert_eq!(completed, 1);
-    }
-
-    #[tokio::test]
-    async fn reopen_linked_unstarted_child_starts_once_and_commits_delegate_result() {
-        let (directory, engine) = test_engine(Arc::new(ReportProvider));
-        let (parent, _parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let child = SessionId::new_v7();
-        let invocation_id = write_started_delegation(&engine, &invocation, child, &policy);
-        persist_delegated_child(&engine, &invocation, child, policy);
-        engine
-            .append(
-                parent,
-                Some(invocation.parent_run_id),
-                Event::ToolCallLinked {
-                    tool_call_id: call,
-                    child_session_id: child,
-                },
-            )
-            .await
-            .expect("persist parent link");
-        write_linked_delegation(&engine, invocation_id);
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(&directory, Arc::new(ReportProvider)).await;
-        reopened.resume(parent).await.expect("resume parent");
-        let result = wait_for_delegate_completion(&reopened, parent, call).await;
-        assert_eq!(result.content, "child report");
-        assert!(!result.truncated);
-        assert_eq!(child_run_start_count(&reopened, child), 1);
-        assert_eq!(
-            reopened
-                .inner
-                .store
-                .get(parent)
-                .expect("parent")
-                .log
-                .events()
-                .into_iter()
-                .filter(|event| {
-                    matches!(event.event, Event::ToolCallCompleted { tool_call_id, .. } if tool_call_id == call)
-                })
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn reopen_pending_delegate_without_journal_resolves_failure_without_fabricating_state() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let (parent, _parent_run, call, _invocation) = pending_delegate_parent(&engine).await;
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
-        reopened.resume(parent).await.expect("resume parent");
-        let result = wait_for_delegate_completion(&reopened, parent, call).await;
-        assert_eq!(
-            serde_json::from_str::<Value>(&result.content).expect("structured failure")["status"],
-            "failed"
-        );
-        assert!(journal_records(&reopened).is_empty());
-        assert_eq!(reopened.list_sessions().len(), 1);
-    }
-
-    #[test]
-    fn journal_reservation_append_failure_requires_reopen_before_retry() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let missing_parent = directory.path().join("missing");
-        let journal_path = missing_parent.join("delegations.jsonl");
-        let journal = DelegationJournal::open(journal_path.clone()).expect("open journal");
-        let invocation = InvocationId(Uuid::from_u128(7));
-        let parent = SessionId::new_v7();
-        let run = RunId::new_v7();
-        let call = ToolCallId::new_v7();
-        let policy = test_config()
-            .materialize_policy("worker")
-            .expect("worker policy");
-        let request = journal::DelegateRequestPayload {
-            task: "task".into(),
-            ..journal::DelegateRequestPayload::default()
-        };
-
-        let failed = journal.reserve(
-            invocation,
-            parent,
-            run,
-            call,
-            policy.clone(),
-            "fingerprint".into(),
-            request.clone(),
-        );
-        assert!(matches!(
-            failed,
-            Err(JournalError::Event(events::EventLogError::Io { .. }))
-        ));
-        assert!(
-            journal.get(invocation).is_none(),
-            "failed reservation remained live"
-        );
-        assert!(
-            journal.entries().is_empty(),
-            "failed reservation leaked into index"
-        );
-
-        assert!(matches!(
-            journal.reserve(
-                invocation,
-                parent,
-                run,
-                call,
-                policy.clone(),
-                "fingerprint".into(),
-                request.clone(),
-            ),
-            Err(JournalError::Poisoned)
-        ));
-        journal.shutdown();
-        std::fs::create_dir(&missing_parent).expect("create journal parent");
-        let reopened = DelegationJournal::open(journal_path.clone()).expect("reopen journal");
-        let entry = reopened
-            .reserve(
-                invocation,
-                parent,
-                run,
-                call,
-                policy,
-                "fingerprint".into(),
-                request,
-            )
-            .expect("retry reservation");
-        assert_eq!(
-            reopened
-                .get(invocation)
-                .expect("retry reservation indexed")
-                .reservation,
-            entry.reservation
-        );
-        assert_eq!(
-            events::load_jsonl::<journal::JournalRecord>(&journal_path)
-                .expect("read journal")
-                .len(),
-            1
-        );
-        reopened.shutdown();
-    }
-
-    #[tokio::test]
-    async fn reopen_discards_mid_line_delegation_journal_torn_tail() {
-        let (directory, engine) = test_engine(Arc::new(ReportProvider));
-        let (parent, _parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let child = SessionId::new_v7();
-        let invocation_id = write_started_delegation(&engine, &invocation, child, &policy);
-        persist_delegated_child(&engine, &invocation, child, policy);
-        write_linked_delegation(&engine, invocation_id);
-        append_torn_journal_tail(&engine, b"{\"type\":\"delegation_run_started");
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(&directory, Arc::new(ReportProvider)).await;
-        assert_eq!(journal_records(&reopened).len(), 2);
-        assert_eq!(
-            reopened
-                .inner
-                .journal
-                .get(invocation_id)
-                .expect("preserved reservation")
-                .reservation
-                .child_session_id,
-            child
-        );
-        reopened.resume(parent).await.expect("resume parent");
-        assert_eq!(
-            wait_for_delegate_completion(&reopened, parent, call)
-                .await
-                .content,
-            "child report"
-        );
-        assert_eq!(child_run_start_count(&reopened, child), 1);
-    }
-
-    #[tokio::test]
-    async fn reopen_discards_partial_json_tail_after_complete_delegation_records() {
-        let (directory, engine) = test_engine(Arc::new(ReportProvider));
-        let (parent, _parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let child = SessionId::new_v7();
-        let invocation_id = write_started_delegation(&engine, &invocation, child, &policy);
-        persist_delegated_child(&engine, &invocation, child, policy);
-        write_linked_delegation(&engine, invocation_id);
-        append_torn_journal_tail(
-            &engine,
-            b"{\"type\":\"delegation_started\",\"reservation\":{\"invocation_id\":",
-        );
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(&directory, Arc::new(ReportProvider)).await;
-        let records = journal_records(&reopened);
-        assert_eq!(records.len(), 2);
-        assert!(matches!(
-            records[0],
-            journal::JournalRecord::DelegationStarted { ref reservation, .. }
-                if reservation.invocation_id == invocation_id
-        ));
-        assert!(matches!(
-            records[1],
-            journal::JournalRecord::DelegationLinked { invocation_id: id } if id == invocation_id
-        ));
-        reopened.resume(parent).await.expect("resume parent");
-        assert_eq!(
-            wait_for_delegate_completion(&reopened, parent, call)
-                .await
-                .content,
-            "child report"
-        );
-        assert_eq!(child_run_start_count(&reopened, child), 1);
-    }
-
-    #[tokio::test]
-    async fn mark_linked_poison_resolves_parent_once_without_starting_child() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let entry = reserve_live_delegation(&engine, &invocation, policy.clone()).await;
-        let child = entry.reservation.child_session_id;
-        persist_delegated_child(&engine, &invocation, child, policy);
-        engine.spawn_actor(child);
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::ToolCallLinked {
-                    tool_call_id: call,
-                    child_session_id: child,
-                },
-            )
-            .await
-            .expect("persist parent link");
-        let saved = obstruct_journal_appends(&engine);
-        let journal = engine.inner.journal.clone();
-        let link_error = tokio::task::spawn_blocking(move || {
-            journal.mark_linked(entry.reservation.invocation_id)
-        })
-        .await
-        .expect("mark link task");
-        assert!(matches!(
-            link_error,
-            Err(JournalError::Event(events::EventLogError::Io { .. }))
-        ));
-        restore_journal_path(&engine, &saved);
-
-        let invocation_id = entry.reservation.invocation_id;
-        assert!(
-            engine.inner.journal.get(invocation_id).is_some(),
-            "poison hid durable reservation"
-        );
-        assert!(matches!(
-            engine
-                .inner
-                .journal
-                .mark_run_started(invocation_id, RunId::new_v7()),
-            Err(JournalError::Poisoned)
-        ));
-        assert!(matches!(
-            engine.delegate_invoke(invocation).await,
-            Err(EngineError::Journal(JournalError::Poisoned))
-        ));
-        let result = wait_for_delegate_completion(&engine, parent, call).await;
-        assert_eq!(
-            serde_json::from_str::<Value>(&result.content).expect("structured failure")["status"],
-            "failed"
-        );
-        assert_eq!(child_run_start_count(&engine, child), 0);
-        assert_eq!(
-            engine
-                .inner
-                .store
-                .get(parent)
-                .expect("parent")
-                .log
-                .events()
-                .into_iter()
-                .filter(|event| {
-                    matches!(event.event, Event::ToolCallCompleted { tool_call_id, .. } if tool_call_id == call)
-                })
-                .count(),
-            1
-        );
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
-        assert_eq!(journal_link_count(&reopened, invocation_id), 1);
-        assert_eq!(child_run_start_count(&reopened, child), 0);
-    }
-
-    #[tokio::test]
-    async fn first_run_confirmation_failure_resolves_parent_and_cancels_child_once() {
-        let provider = Arc::new(BlockingProvider {
-            calls: AtomicUsize::new(0),
-            release: Notify::new(),
-        });
-        let (directory, engine) = test_engine(provider);
-        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let entry = reserve_live_delegation(&engine, &invocation, policy.clone()).await;
-        let child = entry.reservation.child_session_id;
-        persist_delegated_child(&engine, &invocation, child, policy);
-        engine.spawn_actor(child);
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::ToolCallLinked {
-                    tool_call_id: call,
-                    child_session_id: child,
-                },
-            )
-            .await
-            .expect("persist parent link");
-        engine
-            .inner
-            .journal
-            .mark_linked(entry.reservation.invocation_id)
-            .expect("confirm parent link");
-        let saved = obstruct_journal_appends(&engine);
-        let error = engine.delegate_invoke(invocation).await;
-        restore_journal_path(&engine, &saved);
-        assert!(
-            matches!(
-                error,
-                Err(EngineError::Journal(JournalError::Event(
-                    events::EventLogError::Io { .. }
-                )))
-            ),
-            "unexpected run-confirmation result: {error:?}"
-        );
-        wait_for_session_status(&engine, child, &SessionStatus::Cancelled).await;
-        let result = wait_for_delegate_completion(&engine, parent, call).await;
-        assert_eq!(
-            serde_json::from_str::<Value>(&result.content).expect("structured failure")["status"],
-            "failed"
-        );
-        assert_eq!(
-            engine
-                .inner
-                .store
-                .get(child)
-                .expect("child")
-                .log
-                .events()
-                .into_iter()
-                .filter(|event| matches!(event.event, Event::RunCancelled { .. }))
-                .count(),
-            1
-        );
-        assert!(matches!(
-            engine
-                .inner
-                .journal
-                .mark_run_started(entry.reservation.invocation_id, RunId::new_v7()),
-            Err(JournalError::Poisoned)
-        ));
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(
-            &directory,
-            Arc::new(BlockingProvider {
-                calls: AtomicUsize::new(0),
-                release: Notify::new(),
-            }),
-        )
-        .await;
-        assert_eq!(
-            reopened.inner.store.get(child).expect("child").status,
-            SessionStatus::Cancelled
-        );
-        reopened.resume(parent).await.expect("resume parent");
-        reopened.resume(parent).await.expect("repeat resume parent");
-        assert_eq!(
-            reopened
-                .inner
-                .store
-                .get(parent)
-                .expect("parent")
-                .log
-                .events()
-                .into_iter()
-                .filter(|event| {
-                    matches!(event.event, Event::ToolCallCompleted { tool_call_id, .. } if tool_call_id == call)
-                })
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn poisoned_journal_keeps_reads_available_but_rejects_all_mutations() {
-        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
-        let journal = engine.inner.journal.clone();
-        let invocation = InvocationId(Uuid::from_u128(91));
-        let policy = test_config()
-            .materialize_policy("worker")
-            .expect("worker policy");
-        let entry = journal
-            .reserve(
-                invocation,
-                SessionId::new_v7(),
-                RunId::new_v7(),
-                ToolCallId::new_v7(),
-                policy,
-                "fingerprint".into(),
-                journal::DelegateRequestPayload::default(),
-            )
-            .expect("reserve journal entry");
-        let saved = obstruct_journal_appends(&engine);
-        assert!(matches!(
-            journal.mark_linked(invocation),
-            Err(JournalError::Event(events::EventLogError::Io { .. }))
-        ));
-        restore_journal_path(&engine, &saved);
-
-        assert_eq!(
-            journal
-                .get(invocation)
-                .expect("poisoned journal read")
-                .reservation,
-            entry.reservation
-        );
-        assert_eq!(journal.entries().len(), 1);
-        assert!(matches!(
-            journal.mark_linked(invocation),
-            Err(JournalError::Poisoned)
-        ));
-        assert!(matches!(
-            journal.mark_run_started(invocation, RunId::new_v7()),
-            Err(JournalError::Poisoned)
-        ));
-        engine.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn poison_recovery_stale_delegate_result_advances_run_and_commits_parallel_result() {
-        let mut config = test_config();
-        let profile = config.agents.get_mut("test").expect("test profile");
-        profile.tools = vec!["delegate".into(), "read".into()];
-        profile.permissions.delegate = Some("allow".into());
-        profile.permissions.read = Some("allow".into());
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let provider = Arc::new(TwoTurnBatchProvider {
-            calls: AtomicUsize::new(0),
-        });
-        let tools = Arc::new(BatchToolProvider {
-            release_delegate: Notify::new(),
-        });
-        let engine = Engine::open(EngineOptions {
-            data_dir: directory.path().join("data"),
-            cwd: directory.path().to_owned(),
-            config,
-            providers: HashMap::from([("test".into(), provider.clone() as Arc<dyn Provider>)]),
-            tools: vec![tools.clone() as Arc<dyn ToolProvider>],
-        })
-        .expect("open engine");
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let run = engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "poison-recovery".into(),
-                input: "run tools".into(),
-            })
-            .await
-            .expect("start run")
-            .run_id;
-        let (delegate_call, read_call) = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let events = engine
-                    .inner
-                    .store
-                    .get(session)
-                    .expect("session")
-                    .log
-                    .events();
-                let delegate = events.iter().find_map(|event| match event.event {
-                    Event::ToolCallStarted {
-                        tool_call_id,
-                        ref tool,
-                        ..
-                    } if tool == "delegate" => Some(tool_call_id),
-                    _ => None,
-                });
-                let read = events.iter().find_map(|event| match event.event {
-                    Event::ToolCallStarted {
-                        tool_call_id,
-                        ref tool,
-                        ..
-                    } if tool == "read" => Some(tool_call_id),
-                    _ => None,
-                });
-                if let (Some(delegate), Some(read)) = (delegate, read) {
-                    return (delegate, read);
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("tool calls were not persisted");
-        assert!(
-            engine
-                .resolve_delegate_failure_if_pending(
-                    session,
-                    run,
-                    delegate_call,
-                    delegate_failure_result(None, "delegate journal append failed"),
-                )
-                .await
-                .expect("resolve poison failure")
-        );
-        tools.release_delegate.notify_one();
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while provider.calls.load(Ordering::SeqCst) < 2
-                || engine.inner.store.get(session).expect("session").status
-                    != SessionStatus::Completed
-            {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("run did not advance to next model turn");
-        let events = engine
-            .inner
-            .store
-            .get(session)
-            .expect("session")
-            .log
-            .events();
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| {
-                    matches!(event.event, Event::ToolCallCompleted { tool_call_id, .. } if tool_call_id == delegate_call)
-                })
-                .count(),
-            1
-        );
-        assert!(events.iter().any(|event| {
-            matches!(&event.event, Event::ToolCallCompleted { tool_call_id, result }
-                if *tool_call_id == read_call && result.content == "legitimate read result")
-        }));
-        assert!(events.iter().any(|event| {
-            matches!(&event.event, Event::RunCompleted { final_text }
-                if final_text.as_deref() == Some("advanced"))
-        }));
-        engine.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn conflicting_delegate_fingerprint_leaves_original_call_pending_with_its_child() {
-        let provider = Arc::new(BlockingProvider {
-            calls: AtomicUsize::new(0),
-            release: Notify::new(),
-        });
-        let (_directory, engine) = test_engine(provider.clone());
-        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let handle = engine
-            .delegate_invoke(invocation.clone())
-            .await
-            .expect("start original delegation");
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while provider.calls.load(Ordering::SeqCst) < 1 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("original child did not start");
-        assert!(matches!(
-            engine
-                .delegate_invoke(delegate_invocation(
-                    parent,
-                    parent_run,
-                    call,
-                    "conflicting task"
-                ))
-                .await,
-            Err(EngineError::Journal(JournalError::Corrupt(_)))
-        ));
-        let parent_projection = engine.inner.store.get(parent).expect("parent");
-        assert_eq!(
-            parent_projection
-                .runs
-                .get(&parent_run)
-                .expect("parent run")
-                .pending_calls
-                .get(&call)
-                .map(String::as_str),
-            Some("delegate")
-        );
-        assert_eq!(
-            parent_projection
-                .log
-                .events()
-                .into_iter()
-                .filter(|event| {
-                    matches!(event.event, Event::ToolCallCompleted { tool_call_id, .. } if tool_call_id == call)
-                })
-                .count(),
-            0
-        );
-        assert_eq!(child_run_start_count(&engine, handle.child_session_id), 1);
-        engine.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn always_approval_discloses_all_bash_resources_and_persists_effective_scope() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let resources = vec![
-            cookie_agent_protocol::ApprovalResource {
-                action: cookie_agent_protocol::ActionKind::Bash,
-                resource: "git status --short".into(),
-                suggested_pattern: "git status *".into(),
-            },
-            cookie_agent_protocol::ApprovalResource {
-                action: cookie_agent_protocol::ActionKind::Bash,
-                resource: "git log -1".into(),
-                suggested_pattern: "git log *".into(),
-            },
-        ];
-        engine
-            .append(
-                session,
-                None,
-                approval_request_event("bash-batch", resources.clone(), "aggregate ask"),
-            )
-            .await
-            .expect("persist approval request");
-        let decision = engine
-            .approval_respond(
-                session,
-                "bash-batch".into(),
-                ApprovalDecision::Always,
-                None,
-                None,
-            )
-            .await
-            .expect("approve batch");
-        assert_eq!(decision.decision, ApprovalDecision::Always);
-        let events = engine
-            .inner
-            .store
-            .get(session)
-            .expect("session")
-            .log
-            .events();
-        assert!(events.iter().any(|event| {
-            matches!(&event.event, Event::ApprovalRequested { resources: disclosed, .. }
-                if disclosed == &resources)
-        }));
-        assert!(events.iter().any(|event| {
-            matches!(&event.event, Event::ApprovalResolved { approval_id, decision: ApprovalDecision::Always, approved_scope, .. }
-                if approval_id == "bash-batch" && approved_scope.as_deref() == Some("git status *"))
-        }));
-        assert!(engine.inner.approvals.allows(
-            session,
-            cookie_agent_protocol::ActionKind::Bash,
-            "git status --short"
-        ));
-        assert!(engine.inner.approvals.allows(
-            session,
-            cookie_agent_protocol::ActionKind::Bash,
-            "git log -1"
-        ));
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(&directory, Arc::new(NoopProvider)).await;
-        for resource in ["git status --short", "git log -1"] {
-            assert!(reopened.inner.approvals.allows(
-                session,
-                cookie_agent_protocol::ActionKind::Bash,
-                resource
-            ));
-        }
-    }
-
-    #[tokio::test]
-    async fn external_directory_always_approval_uses_external_action_and_scope() {
-        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let resource = cookie_agent_protocol::ApprovalResource {
-            action: cookie_agent_protocol::ActionKind::ExternalDirectory,
-            resource: "/outside/workspace/file".into(),
-            suggested_pattern: "/outside/workspace/file *".into(),
-        };
-        engine
-            .append(
-                session,
-                None,
-                approval_request_event("external", vec![resource.clone()], "external guard"),
-            )
-            .await
-            .expect("persist external approval");
-        engine
-            .approval_respond(
-                session,
-                "external".into(),
-                ApprovalDecision::Always,
-                None,
-                None,
-            )
-            .await
-            .expect("approve external path");
-        let events = engine
-            .inner
-            .store
-            .get(session)
-            .expect("session")
-            .log
-            .events();
-        assert!(events.iter().any(|event| {
-            matches!(&event.event, Event::ApprovalRequested { action, resources, .. }
-                if *action == cookie_agent_protocol::ActionKind::ExternalDirectory
-                    && resources == &vec![resource.clone()])
-        }));
-        assert!(engine.inner.approvals.allows(
-            session,
-            cookie_agent_protocol::ActionKind::ExternalDirectory,
-            "/outside/workspace/file"
-        ));
-        assert!(!engine.inner.approvals.allows(
-            session,
-            cookie_agent_protocol::ActionKind::Read,
-            "/outside/workspace/file"
-        ));
-        let mut policy = engine.inner.store.get(session).expect("session").policy;
-        policy.permissions.read = cookie_agent_config::PermissionEffect::Allow;
-        assert_eq!(
-            engine
-                .inner
-                .permissions
-                .decide_resources(
-                    &policy,
-                    &engine.inner.approvals,
-                    session,
-                    session,
-                    vec![
-                        (
-                            cookie_agent_protocol::ActionKind::ExternalDirectory,
-                            "/outside/workspace/file".into(),
-                        ),
-                        (
-                            cookie_agent_protocol::ActionKind::Read,
-                            "/outside/workspace/file".into(),
-                        ),
-                    ],
-                )
-                .effect,
-            cookie_agent_protocol::Effect::Allow
-        );
-        engine.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn doom_always_is_rejected_and_non_always_responses_persist_no_scope() {
-        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        let resources = vec![
-            cookie_agent_protocol::ApprovalResource {
-                action: cookie_agent_protocol::ActionKind::Bash,
-                resource: "git status".into(),
-                suggested_pattern: "git status *".into(),
-            },
-            cookie_agent_protocol::ApprovalResource {
-                action: cookie_agent_protocol::ActionKind::Bash,
-                resource: "git log -1".into(),
-                suggested_pattern: "git log *".into(),
-            },
-        ];
-        engine
-            .append(
-                session,
-                None,
-                approval_request_event(
-                    "doom",
-                    resources.clone(),
-                    "doom-loop guard (third identical call)",
-                ),
-            )
-            .await
-            .expect("persist doom approval");
-        let response = engine
-            .approval_respond(session, "doom".into(), ApprovalDecision::Always, None, None)
-            .await
-            .expect("respond to doom approval");
-        assert_eq!(response.decision, ApprovalDecision::Reject);
-        for resource in &resources {
-            assert!(
-                !engine
-                    .inner
-                    .approvals
-                    .allows(session, resource.action, &resource.resource)
-            );
-        }
-        for (approval_id, decision) in [
-            ("once", ApprovalDecision::Once),
-            ("reject", ApprovalDecision::Reject),
-        ] {
-            engine
-                .append(
-                    session,
-                    None,
-                    approval_request_event(approval_id, resources.clone(), "aggregate ask"),
-                )
-                .await
-                .expect("persist approval");
-            engine
-                .approval_respond(
-                    session,
-                    approval_id.into(),
-                    decision,
-                    Some("caller scope".into()),
-                    None,
-                )
-                .await
-                .expect("respond to approval");
-        }
-        let resolved: Vec<_> = engine
-            .inner
-            .store
-            .get(session)
-            .expect("session")
-            .log
-            .events()
-            .into_iter()
-            .filter_map(|event| match event.event {
-                Event::ApprovalResolved {
-                    approval_id,
-                    decision,
-                    approved_scope,
-                    ..
-                } => Some((approval_id, decision, approved_scope)),
-                _ => None,
-            })
-            .collect();
-        assert!(resolved.iter().any(|(id, decision, scope)| {
-            id == "doom" && *decision == ApprovalDecision::Reject && scope.is_none()
-        }));
-        assert!(resolved.iter().any(|(id, decision, scope)| {
-            id == "once" && *decision == ApprovalDecision::Once && scope.is_none()
-        }));
-        assert!(resolved.iter().any(|(id, decision, scope)| {
-            id == "reject" && *decision == ApprovalDecision::Reject && scope.is_none()
-        }));
-        engine.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn abandoned_generation_rejects_its_queued_child_start_without_creating_a_run() {
-        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
-        let child = engine.create_session(".", "test").expect("create child").id;
-        let invocation = InvocationId(Uuid::from_u128(101));
-        let abandoned = AdmissionGuard::begin(engine.inner.clone(), invocation, RunId::new_v7());
-        let generation = abandoned.generation;
-        drop(abandoned);
-
-        assert!(matches!(
-            start_with_admission(
-                &engine,
-                child,
-                invocation,
-                generation,
-                "queued child start".into(),
-            )
-            .await,
-            Err(EngineError::MissingTool(_))
-        ));
-        assert!(
-            engine
-                .inner
-                .store
-                .get(child)
-                .expect("child")
-                .runs
-                .is_empty(),
-            "abandoned admission created an untracked child run"
-        );
-        assert!(
-            engine
-                .inner
-                .active
-                .lock()
-                .expect("active run lock poisoned")
-                .is_empty()
-        );
-        engine.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn superseded_stale_start_noops_while_retry_starts_one_linked_child_run() {
-        let (_directory, engine) = test_engine(Arc::new(NoopProvider));
-        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let entry = reserve_live_delegation(&engine, &invocation, policy.clone()).await;
-        let child = entry.reservation.child_session_id;
-        persist_delegated_child(&engine, &invocation, child, policy);
-        engine.spawn_actor(child);
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::ToolCallLinked {
-                    tool_call_id: call,
-                    child_session_id: child,
-                },
-            )
-            .await
-            .expect("persist parent link");
-        let stale = AdmissionGuard::begin(
-            engine.inner.clone(),
-            entry.reservation.invocation_id,
-            parent_run,
-        );
-        let stale_generation = stale.generation;
-        drop(stale);
-        let mut retry = AdmissionGuard::begin(
-            engine.inner.clone(),
-            entry.reservation.invocation_id,
-            parent_run,
-        );
-
-        assert!(matches!(
-            start_with_admission(
-                &engine,
-                child,
-                entry.reservation.invocation_id,
-                stale_generation,
-                render_delegate_input(&entry.request),
-            )
-            .await,
-            Err(EngineError::MissingTool(_))
-        ));
-        start_with_admission(
-            &engine,
-            child,
-            entry.reservation.invocation_id,
-            retry.generation,
-            render_delegate_input(&entry.request),
-        )
-        .await
-        .expect("retry start");
-        retry.complete();
-        assert_eq!(child_run_start_count(&engine, child), 1);
-        assert_eq!(
-            engine
-                .inner
-                .store
-                .get(parent)
-                .expect("parent")
-                .log
-                .events()
-                .into_iter()
-                .filter(|event| {
-                    matches!(event.event, Event::ToolCallLinked { tool_call_id, child_session_id }
-                        if tool_call_id == call && child_session_id == child)
-                })
-                .count(),
-            1
-        );
-        engine.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn undeliverable_child_start_reply_cancels_durably_across_reopen() {
-        let (directory, engine) = test_engine(Arc::new(BlockingProvider {
-            calls: AtomicUsize::new(0),
-            release: Notify::new(),
-        }));
-        let child = engine.create_session(".", "test").expect("create child").id;
-        let invocation = InvocationId(Uuid::from_u128(102));
-        let mut admission =
-            AdmissionGuard::begin(engine.inner.clone(), invocation, RunId::new_v7());
-        let actor = engine
-            .inner
-            .actors
-            .lock()
-            .expect("actor registry lock poisoned")
-            .get(&child)
-            .cloned()
-            .expect("child actor");
-        let (reply, receiver) = tokio::sync::oneshot::channel();
-        drop(receiver);
-        actor
-            .send(SessionCommand::Start {
-                params: RunStartParams {
-                    session_id: child,
-                    client_run_id: delegate_client_run_id(invocation),
-                    input: "reply abandoned".into(),
-                },
-                admission: Some((invocation, admission.generation)),
-                reply,
-            })
-            .await
-            .expect("queue child start");
-        wait_for_session_status(&engine, child, &SessionStatus::Cancelled).await;
-        admission.complete();
-        assert!(
-            engine
-                .inner
-                .store
-                .get(child)
-                .expect("child")
-                .log
-                .events()
-                .into_iter()
-                .any(|event| matches!(event.event, Event::RunCancelled { .. }))
-        );
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(
-            &directory,
-            Arc::new(BlockingProvider {
-                calls: AtomicUsize::new(0),
-                release: Notify::new(),
-            }),
-        )
-        .await;
-        assert_eq!(
-            reopened.inner.store.get(child).expect("child").status,
-            SessionStatus::Cancelled
-        );
-    }
-
-    #[tokio::test]
-    async fn superseded_retry_completes_child_and_parent_result_once() {
-        let (_directory, engine) = test_engine(Arc::new(ReportProvider));
-        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let entry = reserve_live_delegation(&engine, &invocation, policy.clone()).await;
-        let child = entry.reservation.child_session_id;
-        persist_delegated_child(&engine, &invocation, child, policy);
-        engine.spawn_actor(child);
-        engine
-            .append(
-                parent,
-                Some(parent_run),
-                Event::ToolCallLinked {
-                    tool_call_id: call,
-                    child_session_id: child,
-                },
-            )
-            .await
-            .expect("persist parent link");
-        let stale = AdmissionGuard::begin(
-            engine.inner.clone(),
-            entry.reservation.invocation_id,
-            parent_run,
-        );
-        let stale_generation = stale.generation;
-        drop(stale);
-        assert!(matches!(
-            start_with_admission(
-                &engine,
-                child,
-                entry.reservation.invocation_id,
-                stale_generation,
-                render_delegate_input(&entry.request),
-            )
-            .await,
-            Err(EngineError::MissingTool(_))
-        ));
-
-        let handle = engine
-            .delegate_invoke(invocation)
-            .await
-            .expect("superseding retry");
-        let result = engine.await_delegate(handle).await.expect("child result");
-        assert_eq!(result.content, "child report");
-        engine
-            .submit_tool_result(parent, parent_run, call, Ok(result))
-            .await
-            .expect("commit parent result");
-        assert_eq!(child_run_start_count(&engine, child), 1);
-        assert_eq!(
-            engine
-                .inner
-                .store
-                .get(parent)
-                .expect("parent")
-                .log
-                .events()
-                .into_iter()
-                .filter(|event| {
-                    matches!(event.event, Event::ToolCallCompleted { tool_call_id, .. } if tool_call_id == call)
-                })
-                .count(),
-            1
-        );
-        engine.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn drop_after_start_reply_during_confirmation_cancels_once_and_survives_reopen() {
-        let (directory, engine) = test_engine(Arc::new(BlockingProvider {
-            calls: AtomicUsize::new(0),
-            release: Notify::new(),
-        }));
-        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let invocation_id = invocation_id(parent, parent_run, call);
-        let (reached, mut confirmations) = mpsc::unbounded_channel();
-        let release = Arc::new(Barrier::new(2));
-        *engine
-            .inner
-            .admission_confirmation_hook
-            .lock()
-            .expect("admission confirmation hook lock poisoned") =
-            Some(Arc::new(AdmissionConfirmationHook {
-                reached,
-                release: release.clone(),
-            }));
-        let task = tokio::spawn({
-            let engine = engine.clone();
-            async move { engine.delegate_invoke(invocation).await }
-        });
-        tokio::time::timeout(Duration::from_secs(2), confirmations.recv())
-            .await
-            .expect("child start reply did not reach confirmation")
-            .expect("child start reply reached confirmation");
-        let entry = engine
-            .journal_get(invocation_id)
-            .await
-            .expect("journal lookup")
-            .expect("journal entry");
-        let child = entry.reservation.child_session_id;
-        task.abort();
-        let _ = task.await;
-        wait_for_session_status(&engine, child, &SessionStatus::Cancelled).await;
-        let result = wait_for_delegate_completion(&engine, parent, call).await;
-        assert_eq!(
-            serde_json::from_str::<Value>(&result.content).expect("cancelled result")["status"],
-            "cancelled"
-        );
-        release.wait().await;
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if journal_run_count(&engine, invocation_id, child_run_id(&engine, child)) == 1 {
-                    return;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("actor-owned confirmation did not finish");
-        assert_eq!(run_cancel_count(&engine, child), 1);
-        assert_eq!(parent_delegate_completion_count(&engine, parent, call), 1);
-        tokio::task::yield_now().await;
-        engine.shutdown().await;
-        drop(engine);
-
-        let reopened = reopen_test_engine(
-            &directory,
-            Arc::new(BlockingProvider {
-                calls: AtomicUsize::new(0),
-                release: Notify::new(),
-            }),
-        )
-        .await;
-        assert_eq!(
-            reopened.inner.store.get(child).expect("child").status,
-            SessionStatus::Cancelled
-        );
-        assert_eq!(run_cancel_count(&reopened, child), 1);
-    }
-
-    #[tokio::test]
-    async fn abandoned_concurrent_delegate_observer_does_not_cancel_survivor() {
-        let (_directory, engine) = test_engine(Arc::new(ReportProvider));
-        let (_parent, _parent_run, _call, invocation) = pending_delegate_parent(&engine).await;
-        let (reached, mut confirmations) = mpsc::unbounded_channel();
-        let release = Arc::new(Barrier::new(3));
-        *engine
-            .inner
-            .admission_confirmation_hook
-            .lock()
-            .expect("admission confirmation hook lock poisoned") =
-            Some(Arc::new(AdmissionConfirmationHook {
-                reached,
-                release: release.clone(),
-            }));
-        let abandoned = tokio::spawn({
-            let engine = engine.clone();
-            let invocation = invocation.clone();
-            async move { engine.delegate_invoke(invocation).await }
-        });
-        confirmations.recv().await.expect("first confirmation");
-        let survivor = tokio::spawn({
-            let engine = engine.clone();
-            async move { engine.delegate_invoke(invocation).await }
-        });
-        confirmations.recv().await.expect("second confirmation");
-        abandoned.abort();
-        let _ = abandoned.await;
-        release.wait().await;
-        let handle = survivor
-            .await
-            .expect("survivor task")
-            .expect("surviving delegate admission");
-        let result = engine
-            .await_delegate(handle)
-            .await
-            .expect("surviving child result");
-        assert_eq!(result.content, "child report");
-        assert_eq!(run_cancel_count(&engine, handle.child_session_id), 0);
-    }
-
-    #[tokio::test]
-    async fn retry_after_stale_sweep_snapshot_keeps_its_child_and_parent_pending() {
-        let (_directory, engine) = test_engine(Arc::new(BlockingProvider {
-            calls: AtomicUsize::new(0),
-            release: Notify::new(),
-        }));
-        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let entry = reserve_live_delegation(&engine, &invocation, policy.clone()).await;
-        let child = entry.reservation.child_session_id;
-        persist_delegated_child(&engine, &invocation, child, policy);
-        engine.spawn_actor(child);
-        let run = engine
-            .start_run(RunStartParams {
-                session_id: child,
-                client_run_id: delegate_client_run_id(entry.reservation.invocation_id),
-                input: render_delegate_input(&entry.request),
-            })
-            .await
-            .expect("start child")
-            .run_id;
-        let journal = engine.inner.journal.clone();
-        let invocation_id = entry.reservation.invocation_id;
-        tokio::task::spawn_blocking(move || journal.mark_run_started(invocation_id, run))
-            .await
-            .expect("journal task")
-            .expect("confirm child run");
-
-        let mut stale = AdmissionGuard::begin(engine.inner.clone(), invocation_id, parent_run);
-        stale.set_parent(parent, call);
-        engine
-            .publish_admission_run(invocation_id, stale.generation, child, run)
-            .expect("publish stale run");
-        engine
-            .inner
-            .inflight_delegations
-            .lock()
-            .expect("inflight delegation lock poisoned")
-            .get_mut(&invocation_id)
-            .expect("admission entries")
-            .get_mut(&stale.generation)
-            .expect("stale generation")
-            .cancelled = true;
-        let stale_generation = stale.generation;
-        let (reached, mut sweep_observed) = mpsc::unbounded_channel();
-        let (captured, mut captured_targets) = mpsc::unbounded_channel();
-        let release_sweep = Arc::new(Notify::new());
-        *engine
-            .inner
-            .abandoned_sweep_hook
-            .lock()
-            .expect("abandoned sweep hook lock poisoned") = Some(AbandonedSweepHook {
-            reached,
-            captured,
-            release: release_sweep.clone(),
-        });
-        let sweep = tokio::spawn({
-            let engine = engine.clone();
-            async move {
-                engine
-                    .sweep_abandoned_admission(invocation_id, stale_generation)
-                    .await
-            }
-        });
-        sweep_observed
-            .recv()
-            .await
-            .expect("sweeper did not observe all generations abandoned");
-        assert_eq!(
-            captured_targets
-                .recv()
-                .await
-                .expect("sweeper did not capture its target set"),
-            vec![run]
-        );
-        let mut retry = AdmissionGuard::begin(engine.inner.clone(), invocation_id, parent_run);
-        retry.set_parent(parent, call);
-        assert!(
-            engine
-                .inner
-                .inflight_delegations
-                .lock()
-                .expect("inflight delegation lock poisoned")
-                .get(&invocation_id)
-                .is_some_and(|entries| entries.contains_key(&stale_generation))
-        );
-        release_sweep.notify_one();
-        sweep.await.expect("sweep task").expect("stale sweep");
-        assert!(
-            engine
-                .inner
-                .inflight_delegations
-                .lock()
-                .expect("inflight delegation lock poisoned")
-                .get(&invocation_id)
-                .is_some_and(|entries| {
-                    !entries.contains_key(&stale_generation)
-                        && entries.contains_key(&retry.generation)
-                }),
-            "the sweep did not consume exactly the pre-retry stale generation"
-        );
-        assert_eq!(
-            engine.inner.store.get(child).expect("child").status,
-            SessionStatus::Running
-        );
-        assert_eq!(parent_delegate_completion_count(&engine, parent, call), 0);
-        stale.complete();
-        retry.complete();
-        engine.cancel_run(run).await.expect("cancel child");
-    }
-
-    #[tokio::test]
-    async fn abandoned_confirmed_run_attachment_publishes_run_for_sweep() {
-        let (_directory, engine) = test_engine(Arc::new(BlockingProvider {
-            calls: AtomicUsize::new(0),
-            release: Notify::new(),
-        }));
-        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let entry = reserve_live_delegation(&engine, &invocation, policy.clone()).await;
-        let child = entry.reservation.child_session_id;
-        persist_delegated_child(&engine, &invocation, child, policy);
-        engine.spawn_actor(child);
-        let run = engine
-            .start_run(RunStartParams {
-                session_id: child,
-                client_run_id: delegate_client_run_id(entry.reservation.invocation_id),
-                input: render_delegate_input(&entry.request),
-            })
-            .await
-            .expect("start child")
-            .run_id;
-        let journal = engine.inner.journal.clone();
-        let invocation_id = entry.reservation.invocation_id;
-        tokio::task::spawn_blocking(move || journal.mark_run_started(invocation_id, run))
-            .await
-            .expect("journal task")
-            .expect("confirm child run");
-        let confirmed = engine
-            .journal_get(invocation_id)
-            .await
-            .expect("journal lookup")
-            .expect("confirmed entry");
-
-        let attachment = AdmissionGuard::begin(engine.inner.clone(), invocation_id, parent_run);
-        attachment.set_parent(parent, call);
-        assert_eq!(
-            engine
-                .ensure_delegate_run(&confirmed, Some((invocation_id, attachment.generation)))
-                .await
-                .expect("attach confirmed run"),
-            run
-        );
-        drop(attachment);
-        wait_for_session_status(&engine, child, &SessionStatus::Cancelled).await;
-        let _ = wait_for_delegate_completion(&engine, parent, call).await;
-        assert_eq!(parent_delegate_completion_count(&engine, parent, call), 1);
-    }
-
-    #[tokio::test]
-    async fn durable_cancel_record_prevents_a_duplicate_after_projection_failure_window() {
-        let (_directory, engine) = test_engine(Arc::new(BlockingProvider {
-            calls: AtomicUsize::new(0),
-            release: Notify::new(),
-        }));
-        let session = engine.create_session(".", "test").expect("session").id;
-        let run = engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "cancel-reconcile".into(),
-                input: "input".into(),
-            })
-            .await
-            .expect("start run")
-            .run_id;
-        // Model the window after JSONL append but before cache/projection refresh.
-        append_child_event(&engine, session, run, Event::RunCancelled { reason: None });
-        assert!(
-            !engine
-                .cancel_run_durably(run, Some("retry".into()))
-                .expect("reconcile durable cancel")
-        );
-        assert_eq!(run_cancel_count(&engine, session), 1);
-    }
-
-    #[tokio::test]
-    async fn three_failed_zero_record_cancellations_retain_active_tombstone() {
-        let provider = Arc::new(BlockingProvider {
-            calls: AtomicUsize::new(0),
-            release: Notify::new(),
-        });
-        let (_directory, engine) = test_engine(provider);
-        let session = engine.create_session(".", "test").expect("session").id;
-        let run = engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "zero-record-cancel".into(),
-                input: "input".into(),
-            })
-            .await
-            .expect("start run")
-            .run_id;
-        let log_path = engine
-            .inner
-            .store
-            .get(session)
-            .expect("session")
-            .log
-            .path()
-            .to_owned();
-        let saved = log_path.with_extension("cancel-fail");
-        std::fs::rename(&log_path, &saved).expect("park event log");
-        std::fs::create_dir(&log_path).expect("obstruct event log appends");
-        let error = engine.cancel_run_durably(run, Some("test failure".into()));
-        assert!(matches!(
-            error,
-            Err(EngineError::Event(EventLogError::Io { .. }))
-        ));
-        assert!(
-            engine
-                .inner
-                .active
-                .lock()
-                .expect("active run lock poisoned")
-                .contains_key(&run)
-        );
-        assert_eq!(run_cancel_count(&engine, session), 0);
-        std::fs::remove_dir(&log_path).expect("remove event log obstruction");
-        std::fs::rename(saved, log_path).expect("restore event log");
-        engine.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn shutdown_completes_with_a_pending_admission_task() {
-        let (_directory, engine) = test_engine(Arc::new(BlockingProvider {
-            calls: AtomicUsize::new(0),
-            release: Notify::new(),
-        }));
-        let (_, _, _, invocation) = pending_delegate_parent(&engine).await;
-        let (reached, mut confirmations) = mpsc::unbounded_channel();
-        let release = Arc::new(Barrier::new(2));
-        *engine
-            .inner
-            .admission_confirmation_hook
-            .lock()
-            .expect("admission confirmation hook lock poisoned") =
-            Some(Arc::new(AdmissionConfirmationHook { reached, release }));
-        let admission = tokio::spawn({
-            let engine = engine.clone();
-            async move { engine.delegate_invoke(invocation).await }
-        });
-        confirmations
-            .recv()
-            .await
-            .expect("pending admission confirmation");
-        tokio::time::timeout(Duration::from_secs(1), engine.shutdown())
-            .await
-            .expect("shutdown deadlocked on admission task");
-        assert!(matches!(
-            admission.await.expect("admission join"),
-            Err(EngineError::ActorStopped)
-        ));
-    }
-
-    #[tokio::test]
-    async fn shutdown_waits_for_registered_blocking_admission_mutation() {
-        let (directory, engine) = test_engine(Arc::new(NoopProvider));
-        let marker = directory.path().join("blocking-admission-finished");
-        let (reached, reached_rx) = std_mpsc::channel();
-        let (release_tx, release) = std_mpsc::channel();
-        *engine
-            .inner
-            .admission_blocking_hook
-            .lock()
-            .expect("admission blocking hook lock poisoned") =
-            Some(AdmissionBlockingHook { reached, release });
-        let mutation = tokio::spawn({
-            let engine = engine.clone();
-            let marker = marker.clone();
-            async move {
-                engine
-                    .spawn_admission_blocking(move || {
-                        std::fs::write(&marker, b"complete").map_err(|source| {
-                            EngineError::Event(EventLogError::Io {
-                                path: marker.clone(),
-                                source,
-                            })
-                        })?;
-                        Ok::<_, EngineError>(())
-                    })
-                    .await
-            }
-        });
-        tokio::task::spawn_blocking(move || reached_rx.recv())
-            .await
-            .expect("blocking checkpoint task")
-            .expect("blocking checkpoint sender dropped");
-        let mut shutdown = tokio::spawn({
-            let engine = engine.clone();
-            async move { engine.shutdown().await }
-        });
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
-                .await
-                .is_err(),
-            "shutdown returned before the blocking admission closure finished"
-        );
-        release_tx.send(()).expect("release blocking admission");
-        mutation
-            .await
-            .expect("mutation task")
-            .expect("blocking mutation");
-        shutdown.await.expect("shutdown task");
-        assert_eq!(std::fs::read(marker).expect("read marker"), b"complete");
-    }
-
-    #[tokio::test]
-    async fn poisoned_active_and_actor_locks_do_not_block_abandoned_delegate_terminalization() {
-        let (_directory, engine) = test_engine(Arc::new(BlockingProvider {
-            calls: AtomicUsize::new(0),
-            release: Notify::new(),
-        }));
-        let (parent, parent_run, call, invocation) = pending_delegate_parent(&engine).await;
-        let policy = child_policy_for(&engine, &invocation);
-        let entry = reserve_live_delegation(&engine, &invocation, policy.clone()).await;
-        let child = entry.reservation.child_session_id;
-        persist_delegated_child(&engine, &invocation, child, policy);
-        engine.spawn_actor(child);
-        let admission = AdmissionGuard::begin(
-            engine.inner.clone(),
-            entry.reservation.invocation_id,
-            parent_run,
-        );
-        admission.set_parent(parent, call);
-        let _run = engine
-            .ensure_delegate_run(
-                &entry,
-                Some((entry.reservation.invocation_id, admission.generation)),
-            )
-            .await
-            .expect("start child run");
-
-        assert!(
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _guard = engine
-                    .inner
-                    .active
-                    .lock()
-                    .expect("active lock before poison");
-                panic!("poison active registry");
-            }))
-            .is_err()
-        );
-        assert!(
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _guard = engine
-                    .inner
-                    .actors
-                    .lock()
-                    .expect("actor lock before poison");
-                panic!("poison actor registry");
-            }))
-            .is_err()
-        );
-        let active = engine
-            .inner
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&_run)
-            .cloned()
-            .expect("active child run");
-        assert!(
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _guard = active.stdin.lock().expect("stdin lock before poison");
-                panic!("poison child stdin");
-            }))
-            .is_err()
-        );
-
-        drop(admission);
-        wait_for_session_status(&engine, child, &SessionStatus::Cancelled).await;
-        let result = wait_for_delegate_completion(&engine, parent, call).await;
-        assert_eq!(
-            serde_json::from_str::<Value>(&result.content).expect("cancelled result")["status"],
-            "cancelled"
-        );
-        assert_eq!(run_cancel_count(&engine, child), 1);
-        engine.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn opaque_artifacts_persist_and_replay_after_reopen() {
-        let artifact = serde_json::json!({
-            "items": [{"type": "reasoning", "id": "reasoning_native", "encrypted_content": "ciphertext"}]
-        });
-        let provider = Arc::new(OpaqueRecordingProvider {
-            protocol: ProviderProtocol::OpenAiResponses,
-            artifact: artifact.clone(),
-            fail_after_first: false,
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
-        let (directory, engine) = test_engine(provider.clone());
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "first".into(),
-                input: "first input".into(),
-            })
-            .await
-            .expect("start first run");
-        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
-        assert!(engine
-            .inner
-            .store
-            .get(session)
-            .expect("session")
-            .log
-            .events()
-            .iter()
-            .any(|event| matches!(&event.event, Event::TurnOpaque { state } if state.payload == artifact)));
-        engine.shutdown().await;
-
-        let reopened = reopen_test_engine(&directory, provider.clone()).await;
-        reopened
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "second".into(),
-                input: "second input".into(),
-            })
-            .await
-            .expect("start second run");
-        wait_for_session_status(&reopened, session, &SessionStatus::Completed).await;
-        let requests = provider.requests.lock().expect("requests lock poisoned");
-        let replay = requests.last().expect("second provider request");
-        assert!(replay.persisted_turns.iter().any(|turn| {
-            turn.opaque.as_ref().is_some_and(|opaque| {
-                opaque.provider == ProviderProtocol::OpenAiResponses && opaque.payload == artifact
-            })
-        }));
-    }
-
-    #[tokio::test]
-    async fn fallback_discards_foreign_opaque_without_removing_it_from_the_log() {
-        let artifact = serde_json::json!({"message": {"role": "assistant", "content": "native"}});
-        let primary = Arc::new(OpaqueRecordingProvider {
-            protocol: ProviderProtocol::AnthropicMessages,
-            artifact: artifact.clone(),
-            fail_after_first: true,
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
-        let fallback = Arc::new(OpaqueRecordingProvider {
-            protocol: ProviderProtocol::OpenAiChatCompletions,
-            artifact: serde_json::json!({"message": {"role": "assistant", "content": "fallback"}}),
-            fail_after_first: false,
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let mut config = test_config();
-        config.providers.insert(
-            "fallback".into(),
-            ProviderConfig {
-                kind: ProviderType::OpenAi,
-                api_key_env: None,
-                base_url: None,
-                api: None,
-            },
-        );
-        config
-            .agents
-            .get_mut("test")
-            .expect("test profile")
-            .models
-            .push(ModelConfig {
-                provider: "fallback".into(),
-                model: "fallback-model".into(),
-            });
-        let engine = Engine::open(EngineOptions {
-            data_dir: directory.path().join("data"),
-            cwd: directory.path().to_owned(),
-            config,
-            providers: HashMap::<String, Arc<dyn Provider>>::from([
-                ("test".into(), primary as Arc<dyn Provider>),
-                ("fallback".into(), fallback.clone() as Arc<dyn Provider>),
-            ]),
-            tools: Vec::new(),
-        })
-        .expect("open engine");
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        for (client_run_id, input) in [("first", "first input"), ("second", "second input")] {
-            engine
-                .start_run(RunStartParams {
-                    session_id: session,
-                    client_run_id: client_run_id.into(),
-                    input: input.into(),
-                })
-                .await
-                .expect("start run");
-            wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
-        }
-        let requests = fallback.requests.lock().expect("requests lock poisoned");
-        let request = requests.first().expect("fallback request");
-        assert!(request.persisted_turns.iter().any(|turn| {
-            turn.opaque
-                .as_ref()
-                .is_some_and(|opaque| opaque.provider == ProviderProtocol::AnthropicMessages)
-        }));
-        assert!(
-            cookie_agent_providers::openai::encode_history(
-                &request.persisted_turns,
-                cookie_agent_providers::openai::OpenAiEndpoint::ChatCompletions,
-            )
-            .discarded_opaque
-        );
-        assert!(engine
-            .inner
-            .store
-            .get(session)
-            .expect("session")
-            .log
-            .events()
-            .iter()
-            .any(|event| matches!(&event.event, Event::TurnOpaque { state } if state.payload == artifact)));
-    }
-
-    #[test]
-    fn tool_call_ids_are_native_only_for_matching_protocol_replay() {
-        let session = SessionId::new_v7();
-        let run = RunId::new_v7();
-        let call = ToolCallId::new_v7();
-        let events = vec![
-            EventEnvelope {
-                session_id: session,
-                run_id: Some(run),
-                seq: 1,
-                timestamp: jiff::Timestamp::now(),
-                event: Event::RunStarted {
-                    client_run_id: "run".into(),
-                    input: "input".into(),
-                },
-            },
-            EventEnvelope {
-                session_id: session,
-                run_id: Some(run),
-                seq: 2,
-                timestamp: jiff::Timestamp::now(),
-                event: Event::TurnOpaque {
-                    state: TurnOpaque {
-                        provider: cookie_agent_protocol::ProviderProtocol::OpenAiResponses,
-                        payload: serde_json::json!({"items": [{"type": "function_call", "call_id": "native-call"}]}),
-                    },
-                },
-            },
-            EventEnvelope {
-                session_id: session,
-                run_id: Some(run),
-                seq: 3,
-                timestamp: jiff::Timestamp::now(),
-                event: Event::ToolCallStarted {
-                    tool_call_id: call,
-                    tool: "read".into(),
-                    arguments: serde_json::json!({"path": "file"}),
-                    provider_tool_call_id: Some("native-call".into()),
-                    provider_protocol: Some(
-                        cookie_agent_protocol::ProviderProtocol::OpenAiResponses,
-                    ),
-                },
-            },
-            EventEnvelope {
-                session_id: session,
-                run_id: Some(run),
-                seq: 4,
-                timestamp: jiff::Timestamp::now(),
-                event: Event::ToolCallCompleted {
-                    tool_call_id: call,
-                    result: cookie_agent_protocol::ToolResult {
-                        content: "result".into(),
-                        truncated: false,
-                    },
-                },
-            },
-        ];
-        let same = assemble_persisted_turns(&events, Some(ProviderProtocol::OpenAiResponses));
-        let foreign =
-            assemble_persisted_turns(&events, Some(ProviderProtocol::OpenAiChatCompletions));
-        let tool_id = |turns: &[cookie_agent_providers::PersistedTurn]| match &turns[2].message {
-            ProviderMessage::Tool { result } => result.tool_call_id.clone(),
-            _ => panic!("tool result expected"),
-        };
-        assert_eq!(tool_id(&same), "native-call");
-        assert_eq!(tool_id(&foreign), call.to_string());
-        assert!(matches!(
-            &foreign[1].message,
-            ProviderMessage::Assistant { tool_calls, .. } if tool_calls[0].id == call.to_string()
-        ));
-        let mut unknown_events = events.clone();
-        if let Event::ToolCallStarted {
-            provider_protocol, ..
-        } = &mut unknown_events[2].event
-        {
-            *provider_protocol = None;
-        } else {
-            panic!("tool call expected");
-        }
-        let unknown = assemble_persisted_turns(&unknown_events, None);
-        assert_eq!(tool_id(&unknown), call.to_string());
-        assert!(matches!(
-            &unknown[1].message,
-            ProviderMessage::Assistant { tool_calls, .. } if tool_calls[0].id == call.to_string()
-        ));
-    }
-
-    #[tokio::test]
-    async fn meaningful_stream_failure_advances_without_a_same_entry_retry() {
-        let primary = Arc::new(MeaningfulFailureProvider {
-            calls: AtomicUsize::new(0),
-        });
-        let fallback = Arc::new(OpaqueRecordingProvider {
-            protocol: ProviderProtocol::OpenAiChatCompletions,
-            artifact: serde_json::json!({"message": {"role": "assistant", "content": "fallback"}}),
-            fail_after_first: false,
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let mut config = test_config();
-        config.providers.insert(
-            "fallback".into(),
-            ProviderConfig {
-                kind: ProviderType::OpenAi,
-                api_key_env: None,
-                base_url: None,
-                api: None,
-            },
-        );
-        config
-            .agents
-            .get_mut("test")
-            .expect("test profile")
-            .models
-            .push(ModelConfig {
-                provider: "fallback".into(),
-                model: "fallback-model".into(),
-            });
-        let engine = Engine::open(EngineOptions {
-            data_dir: directory.path().join("data"),
-            cwd: directory.path().to_owned(),
-            config,
-            providers: HashMap::<String, Arc<dyn Provider>>::from([
-                ("test".into(), primary.clone() as Arc<dyn Provider>),
-                ("fallback".into(), fallback.clone() as Arc<dyn Provider>),
-            ]),
-            tools: Vec::new(),
-        })
-        .expect("open engine");
-        let session = engine
-            .create_session(".", "test")
-            .expect("create session")
-            .id;
-        engine
-            .start_run(RunStartParams {
-                session_id: session,
-                client_run_id: "run".into(),
-                input: "input".into(),
-            })
-            .await
-            .expect("start run");
-        wait_for_session_status(&engine, session, &SessionStatus::Completed).await;
-        assert_eq!(primary.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(fallback.calls.load(Ordering::SeqCst), 1);
-        let fallback_request = fallback
-            .requests
-            .lock()
-            .expect("requests lock poisoned")
-            .first()
-            .cloned()
-            .expect("fallback request");
-        assert!(!fallback_request.persisted_turns.iter().any(|turn| {
-            matches!(
-                &turn.message,
-                ProviderMessage::Assistant { content, .. }
-                    if content.iter().any(|part| matches!(part, ContentPart::Text { text } if text == "partial"))
-            )
-        }));
-        assert!(
-            engine
-                .inner
-                .store
-                .get(session)
-                .expect("session")
-                .log
-                .events()
-                .iter()
-                .any(|event| matches!(event.event, Event::AttemptAbandoned))
-        );
     }
 }

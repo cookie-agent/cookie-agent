@@ -1,51 +1,40 @@
-use std::{fs, path::PathBuf};
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use cookie_agent_engine::{
-    SessionToolContext, ToolCall, ToolError, ToolInvocationContext, ToolProvider, ToolSpec,
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
+    ToolPreparationContext, ToolProvider, ToolResult, ToolSpec,
 };
-use ignore::WalkBuilder;
+use cookie_agent_protocol::{
+    ActionKind, ApprovalResourceSource, PreparedBindingLifetime, Sha256Digest,
+};
 use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{canonical_path, result, schema, tool_error, workspace_for, workspace_path};
-
-const MATCH_LIMIT: usize = 1_000;
+use crate::{
+    fs_cap, parse_args, prepared_operation, prepared_path_resources, prepared_resource, schema,
+};
 
 #[derive(Debug)]
 pub struct GrepTool {
     workspace: PathBuf,
 }
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Deserialize, JsonSchema, Serialize)]
 struct GrepArgs {
     pattern: String,
     path: Option<String>,
-    #[schemars(range(min = 0, max = 20))]
-    context_lines: Option<usize>,
-    #[schemars(range(min = 1, max = 10_000))]
-    max_results: Option<usize>,
+    include: Option<String>,
 }
-#[derive(Serialize)]
-struct GrepMatch {
-    path: String,
-    line: usize,
-    text: String,
-    before: Vec<String>,
-    after: Vec<String>,
+struct GrepExecutor {
+    result: ToolResult,
+    bindings: Vec<fs_cap::PreparedExisting>,
 }
-#[derive(Serialize)]
-struct GrepOutput {
-    matches: Vec<GrepMatch>,
-    truncated: bool,
-}
-
 impl GrepTool {
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
-            workspace: workspace_path(workspace),
+            workspace: workspace.into(),
         }
     }
 }
@@ -60,97 +49,283 @@ impl ToolProvider for GrepTool {
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             name: "grep".into(),
-            description: "Search text files with a regular expression while honoring .gitignore."
-                .into(),
+            description: "Search a prepared filesystem snapshot.".into(),
             parameters: schema::<GrepArgs>(),
         }])
     }
-    async fn invoke(
+    async fn prepare(
         &self,
-        ctx: ToolInvocationContext,
+        ctx: ToolPreparationContext,
         call: ToolCall,
-    ) -> Result<cookie_agent_engine::ToolResult, ToolError> {
-        if call.name != "grep" {
-            return Err(tool_error("grep tool received another tool name"));
-        }
-        let args: GrepArgs = serde_json::from_value(call.arguments).map_err(tool_error)?;
-        if args.context_lines.is_some_and(|value| value > 20)
-            || args
-                .max_results
-                .is_some_and(|value| value == 0 || value > 10_000)
-        {
-            return Err(tool_error(
-                "context_lines or max_results is outside its allowed range",
+    ) -> Result<PreparedTool, ToolError> {
+        let args: GrepArgs = parse_args("grep", call.arguments)?;
+        let regex =
+            Regex::new(&args.pattern).map_err(|error| ToolError::execution(error.to_string()))?;
+        let root = args.path.as_ref().map_or_else(
+            || ctx.cwd.clone(),
+            |path| {
+                if Path::new(path).is_absolute() {
+                    PathBuf::from(path)
+                } else {
+                    ctx.cwd.join(path)
+                }
+            },
+        );
+        let mut paths = collect_files(&root)?;
+        if paths.len() > 1024 {
+            return Err(ToolError::resource_limit(
+                "grep snapshot exceeds the 1024-object capability limit",
             ));
         }
-        let expression = Regex::new(&args.pattern).map_err(tool_error)?;
-        let root = match args.path {
-            Some(path) => {
-                canonical_path(workspace_for(&ctx, &self.workspace), &path).map_err(tool_error)?
-            }
-            None => workspace_for(&ctx, &self.workspace).to_owned(),
-        };
-        let context = args.context_lines.unwrap_or(0);
-        let limit = args.max_results.unwrap_or(MATCH_LIMIT).min(MATCH_LIMIT);
+        let include_matcher = args
+            .include
+            .as_ref()
+            .map(|include| {
+                let mut builder = ignore::overrides::OverrideBuilder::new(&root);
+                builder
+                    .add(include)
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                builder
+                    .build()
+                    .map_err(|error| ToolError::execution(error.to_string()))
+            })
+            .transpose()?;
+        paths.sort();
         let mut matches = Vec::new();
-        let mut truncated = false;
-        'files: for entry in WalkBuilder::new(&root).hidden(false).build() {
-            let entry = entry.map_err(tool_error)?;
-            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+        let mut bindings = vec![fs_cap::prepare_existing(Path::new("/"), &root)?];
+        let canonical_root = bindings[0].display_path.clone();
+        for path in paths {
+            let relative = path.strip_prefix(&root).unwrap_or(&path);
+            if include_matcher
+                .as_ref()
+                .is_some_and(|matcher| !matcher.matched(relative, false).is_whitelist())
+            {
                 continue;
             }
-            let bytes = fs::read(entry.path()).map_err(tool_error)?;
-            if bytes.contains(&0) {
-                continue;
-            }
-            let text = String::from_utf8_lossy(&bytes);
-            let lines: Vec<_> = text.lines().collect();
-            for (index, line) in lines.iter().enumerate() {
-                if expression.is_match(line) {
-                    if matches.len() == limit {
-                        truncated = true;
-                        break 'files;
-                    }
-                    matches.push(GrepMatch {
-                        path: entry.path().display().to_string(),
-                        line: index + 1,
-                        text: (*line).to_owned(),
-                        before: lines[index.saturating_sub(context)..index]
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect(),
-                        after: lines[index + 1..(index + 1 + context).min(lines.len())]
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect(),
-                    });
+            let binding = fs_cap::prepare_existing(Path::new("/"), &path)?;
+            let text = String::from_utf8(binding.read_bytes()?)
+                .map_err(|_| ToolError::execution("grep supports UTF-8 files"))?;
+            for (line, value) in text.lines().enumerate() {
+                if regex.is_match(value) {
+                    matches.push(format!("{}:{}:{}", path.display(), line + 1, value));
                 }
             }
+            bindings.push(binding);
         }
-        Ok(result(&GrepOutput { matches, truncated }, truncated))
+        matches.sort();
+        let snapshot = serde_json::to_vec(&matches)
+            .map_err(|error| ToolError::execution(error.to_string()))?;
+        let mut complete_binding = snapshot.clone();
+        for binding in &bindings {
+            complete_binding.extend_from_slice(&binding.manifest_bytes()?);
+        }
+        let (mut resources, mut policy_labels, external) = prepared_path_resources(
+            ActionKind::Grep,
+            "path",
+            &canonical_root,
+            &self.workspace,
+            &complete_binding,
+        )?;
+        resources.push(prepared_resource(
+            ActionKind::Grep,
+            "regex",
+            args.pattern.as_bytes(),
+            &complete_binding,
+            PreparedBindingLifetime::ProcessLocal,
+            ApprovalResourceSource::SecondaryOperation,
+        )?);
+        policy_labels.push(args.pattern.clone());
+        if let Some(include) = &args.include {
+            resources.push(prepared_resource(
+                ActionKind::Grep,
+                "include",
+                include.as_bytes(),
+                &complete_binding,
+                PreparedBindingLifetime::ProcessLocal,
+                ApprovalResourceSource::SecondaryOperation,
+            )?);
+            policy_labels.push(include.clone());
+        }
+        let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
+        let operation = prepared_operation(
+            "grep",
+            &args,
+            if external {
+                vec![
+                    (ActionKind::Grep, "search"),
+                    (ActionKind::ExternalDirectory, "guard"),
+                ]
+            } else {
+                vec![(ActionKind::Grep, "search")]
+            },
+            resources,
+            &context,
+        )?;
+        let result = ToolResult {
+            title: format!("Grep {}", args.pattern),
+            output: matches.join("\n"),
+            metadata: serde_json::json!({"matches":matches.len(),"snapshot_sha256":Sha256Digest::of_bytes(&snapshot)}),
+            truncation: None,
+            attachments: Vec::new(),
+        };
+        PreparedTool::new(operation, None, Box::new(GrepExecutor { result, bindings }))
+            .with_policy_labels(policy_labels)
+    }
+}
+
+fn collect_files(path: &Path) -> Result<Vec<PathBuf>, ToolError> {
+    let mut output = Vec::new();
+    for entry in ignore::WalkBuilder::new(path)
+        .follow_links(false)
+        .require_git(false)
+        .build()
+    {
+        let entry = entry.map_err(|error| ToolError::execution(error.to_string()))?;
+        if entry.file_type().is_some_and(|kind| kind.is_file()) {
+            output.push(entry.into_path());
+        }
+    }
+    Ok(output)
+}
+
+#[async_trait]
+impl PreparedExecutor for GrepExecutor {
+    async fn revalidate(&self) -> Result<(), ToolError> {
+        for binding in &self.bindings {
+            binding.revalidate()?;
+        }
+        Ok(())
+    }
+
+    async fn execute(
+        self: Box<Self>,
+        context: ToolExecutionContext,
+    ) -> Result<ToolResult, ToolError> {
+        if context.cancellation.is_cancelled() {
+            return Err(ToolError::execution("prepared grep cancelled"));
+        }
+        for binding in &self.bindings {
+            binding.revalidate()?;
+        }
+        Ok(self.result)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, os::unix::fs::symlink};
 
-    use ignore::WalkBuilder;
-    use tempfile::tempdir;
+    use cookie_agent_engine::{ToolCall, ToolPreparationContext, ToolProvider};
+    use cookie_agent_protocol::{OperationFingerprint, RunId, SessionId, ToolCallId};
+
+    use super::{GrepTool, collect_files};
+
+    fn context(root: &std::path::Path) -> ToolPreparationContext {
+        ToolPreparationContext {
+            session: SessionId::new_v7(),
+            run: RunId::new_v7(),
+            cwd: root.to_owned(),
+            workspace_root: root.to_owned(),
+        }
+    }
 
     #[test]
-    fn traversal_honors_gitignore() {
-        let directory = tempdir().expect("temporary directory");
-        fs::create_dir(directory.path().join(".git")).expect("git directory");
-        fs::write(directory.path().join(".gitignore"), "hidden.txt\n").expect("gitignore");
-        fs::write(directory.path().join("visible.txt"), "needle").expect("visible");
-        fs::write(directory.path().join("hidden.txt"), "needle").expect("hidden");
-        let paths: Vec<_> = WalkBuilder::new(directory.path())
-            .build()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(paths, vec!["visible.txt"]);
+    fn traversal_respects_gitignore() {
+        let root = tempfile::tempdir().expect("root");
+        fs::write(
+            root.path().join(".gitignore"),
+            "ignored.txt\nignored-dir/\n",
+        )
+        .expect("ignore");
+        fs::write(root.path().join("visible.txt"), "visible").expect("visible");
+        fs::write(root.path().join("ignored.txt"), "ignored").expect("ignored");
+        fs::create_dir(root.path().join("ignored-dir")).expect("ignored directory");
+        fs::write(root.path().join("ignored-dir/value.txt"), "ignored").expect("ignored child");
+        let paths = collect_files(root.path()).expect("walk");
+        assert!(paths.iter().any(|path| path.ends_with("visible.txt")));
+        assert!(!paths.iter().any(|path| path.ends_with("ignored.txt")));
+        assert!(
+            !paths
+                .iter()
+                .any(|path| path.to_string_lossy().contains("ignored-dir"))
+        );
+    }
+
+    #[test]
+    fn traversal_reaches_nested_nonignored_files() {
+        let root = tempfile::tempdir().expect("root");
+        fs::create_dir_all(root.path().join("a/b")).expect("tree");
+        fs::write(root.path().join("a/b/value.rs"), "fn value() {}").expect("file");
+        let paths = collect_files(root.path()).expect("walk");
+        assert!(paths.iter().any(|path| path.ends_with("a/b/value.rs")));
+    }
+
+    #[test]
+    fn traversal_does_not_follow_symlinked_directories() {
+        let root = tempfile::tempdir().expect("root");
+        let external = tempfile::tempdir().expect("external");
+        fs::write(external.path().join("secret.txt"), "secret").expect("secret");
+        symlink(external.path(), root.path().join("linked")).expect("symlink");
+        let paths = collect_files(root.path()).expect("walk");
+        assert!(!paths.iter().any(|path| path.ends_with("secret.txt")));
+    }
+
+    #[tokio::test]
+    async fn prepared_manifest_retains_path_regex_and_every_object_binding() {
+        let root = tempfile::tempdir().expect("root");
+        fs::write(root.path().join("a.txt"), "needle").expect("a");
+        fs::write(root.path().join("b.txt"), "needle").expect("b");
+        let prepared = GrepTool::new(root.path())
+            .prepare(
+                context(root.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "grep".into(),
+                    arguments: serde_json::json!({"pattern":"needle"}),
+                },
+            )
+            .await
+            .expect("prepare");
+        let labels = prepared
+            .policy_labels()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"needle"));
+        assert!(labels.contains(&root.path().to_string_lossy().as_ref()));
+        assert_eq!(prepared.operation().resources().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn distinct_regexes_have_distinct_fingerprints() {
+        let root = tempfile::tempdir().expect("root");
+        fs::write(root.path().join("a.txt"), "alpha beta").expect("file");
+        let tool = GrepTool::new(root.path());
+        let first = tool
+            .prepare(
+                context(root.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "grep".into(),
+                    arguments: serde_json::json!({"pattern":"alpha"}),
+                },
+            )
+            .await
+            .expect("first");
+        let second = tool
+            .prepare(
+                context(root.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "grep".into(),
+                    arguments: serde_json::json!({"pattern":"beta"}),
+                },
+            )
+            .await
+            .expect("second");
+        assert_ne!(
+            OperationFingerprint::from_prepared_operation(first.operation()),
+            OperationFingerprint::from_prepared_operation(second.operation())
+        );
     }
 }

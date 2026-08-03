@@ -1,6 +1,6 @@
 # cookie_code Architecture
 
-**Status:** working draft — the design record we iterate against.
+**Status:** protocol foundation implemented — unified protocol/event schema v6 only.
 **Tagline:** subagent-first coding harness.
 
 cookie_code is a full-stack coding-agent harness written in Rust. A single
@@ -23,14 +23,22 @@ client can observe and interact with the whole tree in real time.
    logs and the delegation journal are the durable sources of truth — logs
    for conversation history, the journal for delegation reservations and
    edges. UI state is a disposable projection.
-4. **Capability-aware providers.** Providers differ materially (tool calls,
-   reasoning, caching, structured output). The engine negotiates capabilities
-   instead of reducing everyone to a lowest common denominator.
+4. **Explicit capability-aware models.** Every runnable alias binds one
+   concrete Oven adapter and an explicit descriptor. Models.dev supplies a
+   discoverable catalog and `/connect`-style credential onboarding, but model
+   IDs and catalog metadata never infer adapter behavior, routing, or request
+   defaults.
 5. **TOML configuration.** Layered, profile-based, snapshotted at session
    creation. Live config edits never mutate in-flight sessions.
 6. **Delegate-only delegation.** The only way a child session comes into
    existence is a model calling the `delegate` tool. There is no declarative
    workflow engine and no client-side fan-out API.
+7. **Binary-only internal distribution.** All Cookie Agent workspace crates are
+   nonpublishable application components. Releases are locked workspace builds
+   of the `cookie` binary; crates.io packages and `target/package` archives are
+   not product artifacts. The root `Cargo.lock` is the sole authoritative
+   dependency graph; vendored libraries do not maintain or execute independent
+   lockfiles or unsupported feature graphs.
 
 Explicit non-goals for the MVP: OS sandboxing, MCP, plugins, remote
 deployment, budget accounting, parallelism caps.
@@ -57,10 +65,10 @@ deployment, budget accounting, parallelism caps.
               │    delegation    │  tool-provider implementing `delegate`;
               │                  │  spawns child sessions via engine API
               ├──────────────────┤
-              │    providers     │  capability-aware provider trait
-              │  ┌─────────────┐ │  ┌ anthropic · openai (completions +
-              │  │  adapters   │ │  │ responses) · openai-compatible
-              │  └─────────────┘ │  └
+               │     models       │  immutable ModelSet of configured
+               │  ┌─────────────┐ │  Oven LanguageModel adapters
+               │  │    Oven     │ │  selected only by config alias
+               │  └─────────────┘ │
               └──────────────────┘
 ```
 
@@ -80,24 +88,31 @@ the sole composition root:
 tui ──────► protocol ◄────── server
                ▲              │
                │              ▼
-providers ◄── engine ◄────── tools        (built-ins + delegate tool)
-               │
-               ▼
-             config
+models ◄──── engine ◄────── tools        (built-ins + delegate tool)
+  ▲            │
+  └── config ◄─┘
 ```
 
 - `server` → `protocol`, `engine`
-- `engine` → `protocol`, `providers`, `config`
+- `engine` → `protocol`, `models`, `config`
 - `tools` → `engine` (implements `ToolProvider`; delegate reaches the engine
   exclusively through its client API — an in-process handle — which is what
   keeps it splittable into a separate binary later)
 - `tui` → `protocol`, `server` (client side only; `server` supplies the
   current `MessageStream` transport adapters for in-process and WebSocket
   connections, never engine APIs)
-- `cookie_agent` → `engine`, `providers`, `tools`, `config`, `server`, `tui`
+- `cookie_agent` → `engine`, `models`, `tools`, `config`, `server`, `tui`
 
 `engine` never imports `tools`; the composition root registers the built-in
-and delegate providers into the engine's tool registry.
+and delegate tool providers into the engine's tool registry.
+`cookie_agent` eagerly constructs one immutable `ModelSet` through
+`Config::build_model_set` and the explicit Oven constructors in `crates/models`,
+passes that exact set into `EngineOptions`, and gives the server a clone solely
+for the safe `model.list` projection. The daemon additionally owns the
+revisioned models.dev catalog/cache and connected-provider credential store;
+catalog entries become runnable only after explicit supported-adapter
+materialization. Daemon, in-process TUI, and WebSocket attachment therefore
+observe the same runnable model revision and safe descriptors.
 
 ---
 
@@ -110,22 +125,22 @@ crates/
                          # + transport layer (§11): stream abstraction,
                          #   websocket (default) · stdio · unix socket · in-process
                          #   (ws behind a feature flag to keep the crate lean)
-  providers/             # Provider trait, capabilities, normalized events
-                         # + adapters as modules:
-                         #   anthropic (reqwest SSE) · openai (Completions +
-                         #   Responses) · openai-compatible (base_url config)
+  models/                # immutable ModelSet/ModelEntry/FrozenModelBinding,
+                         # explicit Oven adapter construction + ScriptedModel
   engine/                # session/run actors, agent loop, event log,
                          # provenance, permissions, compaction, tool runtime,
                          # ToolProvider trait
-  tools/                 # built-in tools: read, write, edit, bash, grep, glob, list
+  tools/                 # built-in tools: read, write, edit, bash, grep, glob
                          # + delegate tool provider (§5) — a tool provider that
                          #   calls the engine only through its client API
   config/                # layered TOML (figment), profiles, policy snapshots
+                         # + explicit [models.<alias>] declarations
   server/                # axum daemon: WS listener, daemon lifecycle,
                          # session/run service behind the protocol
   tui/                   # ratatui client (pure protocol consumer)
+    src/ui/              # layout/hit map, app loop, event helpers, transcript, input, slash palette, pickers
   cookie_agent/            # thin binary (composition root):
-                         #   `cookie_agent` (TUI), `cookie_agent daemon`, ...
+                         #   `cookie` (TUI), `cookie daemon`, ...
 ```
 
 ---
@@ -146,13 +161,13 @@ crates/
   makes the delegation lifecycle deadlock-free: a delegate invocation may call
   back into the engine (child creation, parent-log appends) while the parent
   actor remains responsive. Parallel tool results are committed in
-  deterministic provider tool-call order.
+  deterministic model tool-call order.
 - Concurrent tool execution is *backpressured* by bounded channels — an
   implementation detail, not a policy limit. There are no user-visible
   parallelism caps by design (§1).
 - **Steering**: clients may inject input into a running turn; accepted input is
   persisted as `UserInputSubmitted`. The actor persists `UserInputApplied`
-  before the next safe provider attempt (never mid-tool-execution), including
+  before the next safe model attempt (never mid-tool-execution), including
   retry and fallback attempts. Prompt assembly uses that durable association to
   place input after the active assistant turn and before that attempt.
 - **Cancellation**: every run and tool call carries a `CancellationToken`.
@@ -168,16 +183,22 @@ SessionCreated          RunStarted              UserInputSubmitted | UserInputAp
 RunCompleted | RunFailed | RunCancelled         RunInterrupted
 TextDelta               ReasoningDelta
 ToolCallStarted         ToolCallProgress        ToolCallCompleted
-ToolCallFailed          ApprovalRequested       ApprovalResolved
+ToolCallFailed          ApprovalRequested       ApprovalEvaluated
+ApprovalEscalated       ApprovalUserDecisionRecorded
+ApprovalFinalized       ApprovalCancelled       ApprovalDoomLoopDetected
+TreeApprovalGrantCommitted
 ToolStdinSubmitted      (redacted audit: byte count only, §7.1)
 ToolCallLinked          (delegate call → child session backlink)
-AttemptAbandoned        (failed model-attempt boundary; not prompt history, §6.1)
-TurnOpaque              (provider-native assistant continuation artifact, §6.2)
-ModelFallback           (chain advance: from model, to model, reason, §6.1)
-UsageReported
+AttemptAbandoned        (failed model-attempt boundary; not prompt history, §6.3)
+ModelReplayEvaluated    (ordered scoped replay decisions for an attempt, §6.1)
+ModelTurnCommitted      (model identity + complete PersistedModelTurn, §6.1)
+ModelFallback           (chain advance: from, to, error, attempts, §6.3)
+InternalAgentStarted | Completed | Failed | Cancelled | Interrupted | Fallback
+ContextCheckpointCommitted       SessionTitleCommitted
 ```
 
-Every **persisted** event carries: session ID, run ID (when applicable), a
+Every **persisted** event carries the exact unforgeable
+`EventSchemaVersion(6)`, session ID, run ID (when applicable), a
 per-session monotonic sequence number (authoritative ordering — never
 inferred from IDs or timestamps), and an RFC 3339 timestamp. Cursor replay
 and sequence numbers apply to persisted events only. A bounded persisted-event
@@ -199,6 +220,7 @@ SessionMeta {
     origin: SessionOrigin,
     cwd,
     profile: ProfileSnapshot,
+    title: Option<SessionTitle>,
 }
 
 SessionOrigin =
@@ -229,7 +251,7 @@ When a child is created, the engine also emits `ToolCallLinked` into the
 session ID. Clients can therefore render any delegate tool call as an
 expandable live view.
 
-Tree queries follow `Delegated` edges only. Forks (post-MVP) do not
+Tree queries follow `Delegated` edges only. Deferred forks do not
 participate in the delegation tree; they are linked sideways via
 `Forked.source_session_id`.
 
@@ -250,7 +272,7 @@ same APIs as for the root:
 | Observe live | `events.subscribe(child_session_id)` |
 | Steer mid-run | `run.steer(child_run_id, input)` — persists `UserInputSubmitted`, then a durable `UserInputApplied` boundary before model consumption |
 | Cancel | `run.cancel` / `session.cancel` |
-| Follow up on a completed child | **forks** the child (post-MVP); original stays immutable as the record of what fed the parent. v0.1 children are read-only after completion |
+| Follow up on a completed child | **forks** the child (deferred); original stays immutable as the record of what fed the parent. Current children are read-only after completion |
 
 Directly cancelling a child resolves the parent's pending delegate call: the
 delegation service observes the child's terminal state and returns a
@@ -275,6 +297,71 @@ Two things deliberately live *outside* the snapshot: the tree-shared
 runtime approval store (mutable, event-sourced, §8.5) and engine-derived
 provenance (depth, root ID). Approvals are runtime state, not configured
 policy.
+
+### 4.6 Per-run draft profile switching
+
+The session profile remains the creation-time configured default, but
+`run.start` accepts an optional `profile` override for draft-agent switching.
+The client draft is local UI state: selecting it sends no RPC and mutates no
+session, watch, or cache state until the next `run.start`. The override is
+resolved before the run begins and does not mutate session metadata.
+`RunStarted` freezes both the complete effective `ProfileSnapshot`
+for that run and the selected `ProfileIdentity`; retries, fallback attempts,
+tool exposure, approval policy, and internal work spawned by that run use this
+frozen run profile. Reusing a `client_run_id` with a different input or profile
+is an `idempotency_conflict`.
+
+### 4.7 Internal agents, compaction, and titles
+
+Engine-owned work uses `InternalAgentKind::{Approval, ContextCompaction,
+SessionTitle}` with distinct invocation and internal-run UUIDs. Generic
+lifecycle events record a safe call digest/summary, selected backend, terminal
+safe result or failure, cancellation/interruption, and fallback. Raw prompts,
+provider bodies, native payloads, and credentials are not lifecycle fields.
+For builtin backends, `revision` identifies the exact per-kind prompt/runtime
+semantic contract; it is intentionally independent of the protocol and event
+schema version.
+
+Context compaction is active in v6. A `ContextCheckpointCommitted` contains
+frozen sequence boundaries and budgets plus exactly one checkpoint:
+
+- `provider_native`: an Oven native-context artifact reference with exact
+  adapter and `NativeContextScope`; the private payload is bounded to 32 MiB;
+- `internal_summary`: UTF-8 summary text bounded by both its configured
+  `max_summary_bytes` and the global 2 MiB ceiling. Its declared byte length
+  and canonical SHA-256 must exactly match the text on construction and decode.
+
+Raw events are never deleted. `ModelTurnCommitted.input_through_seq` and the
+checkpoint boundary identify exactly which durable input was consumed. Native
+replay payloads remain independently bounded to 2 MiB.
+
+Session titles are a durable projection in `SessionMeta.title`. `SessionTitle`
+retains exact authored text but rejects blank values, control characters, and
+UTF-8 encodings over 512 bytes.
+
+`SessionTitleCommitted` contains `input_through_seq` plus one strict tagged
+`SessionTitleCommit` payload; loose source/operation/title fields do not exist:
+
+- `user_set { title, client_rename_id }` installs a validated user title;
+- `user_clear { client_rename_id }` deliberately keeps the session untitled;
+- `user_reset { client_rename_id }` removes the user override so automatic
+  title generation may run again;
+- `internal_agent_set { title, invocation_id }` records model/internal title
+  generation;
+- `fallback_set { title }` records deterministic fallback generation.
+
+User variants require a validated non-empty `client_rename_id` (maximum 256
+UTF-8 bytes, no control characters). Internal/fallback variants cannot carry
+that ID; they can only set a valid title and cannot clear/reset. Conversely,
+clear/reset are user-only and cannot carry title or invocation fields. These
+rules are structural in the tagged enum and are also enforced by strict
+deserialization.
+
+On restart, replay extracts a `SessionRenameRecord { client_rename_id, change }`
+from every user title commit and rebuilds the rename idempotency index. Reusing
+an ID with the exact same `Set`/`Clear`/`Reset` payload returns the original
+result; reusing it with any different operation or title is the stable
+`idempotency_conflict`. Internal/fallback commits never enter this index.
 
 ---
 
@@ -366,9 +453,19 @@ Admission requires `allows_delegation()`, defined as `limit != Finite(0)`;
 9.  Engine commits ToolCallCompleted/Failed, parent loop resumes
 ```
 
-Result bounding: profile-level cap (16–32 KiB model-visible) with truncation
-signaling (`truncated: true`, byte count). Full-output artifact storage is a
-post-MVP addition; MVP truncates and says so.
+Delegation preserves session-local diagnostic ownership. A successful parent
+`ToolResult` is constructed identically for live completion and restart
+recovery from only the child's terminal status, final report, truncation state,
+and child-session link. Child `ModelTurnCommitted.warnings` and
+`ModelReplayEvaluated` diagnostics remain solely in the child log; they are
+never copied into the parent's tool output. Parent model warnings likewise
+remain on the parent's own committed turn. Warning text is not filtered or used
+to reinterpret otherwise valid final text as failure.
+
+Result bounding: profile-level cap (16–32 KiB model-visible) with structured
+truncation metadata (original byte/line counts and an opaque retained-artifact
+reference). The engine atomically retains the complete output before exposing
+a preview; retention failure fails the tool call closed.
 
 ### 5.4 Durability, idempotency, and crash windows
 
@@ -409,15 +506,17 @@ run is retained as a cancellation-pending tombstone; no further in-process
 retry is attempted, so reopen is required to reconcile it rather than silently
 leaving a durable `Running` projection.
 
-The same retained-active/reopen-required rule applies if persisting provider
-attempt state (deltas, usage, or `TurnOpaque`) fails: the provider loop surfaces
-the error and attempts its terminal append once; if that append also fails, the
-active entry remains as a tombstone and no in-process recovery is attempted.
+The same retained-active/reopen-required rule applies if persisting model
+attempt state fails, including stream deltas, `ModelReplayEvaluated`, or the
+terminal `ModelTurnCommitted` carrying its `PersistedModelTurn`. The model loop
+surfaces the error and attempts its terminal append once; if that append also
+fails, the active entry remains as a tombstone and no in-process recovery is
+attempted.
 
 `invocation_id` is derived by the engine from
 `(parent_session_id, parent_run_id, parent_tool_call_id)` — all
 engine-generated, so the tuple is globally unique by construction; it never
-depends on provider-supplied tool-call IDs.
+depends on a model `model_call_id` or `provider_item_id`.
 
 **Durable creation protocol** (in order, each step fsynced):
 
@@ -480,7 +579,7 @@ are **post-terminal annotations** on the interrupted run — they are consumed
 by the *next* run's prompt assembly (so the model sees why its tool calls
 failed) and never revive the old loop. Assembly relocates a delayed synthetic
 result beside its originating assistant call, before any later user/model turn,
-so the persisted log's annotation position cannot produce invalid provider
+so the persisted log's annotation position cannot produce invalid model-history
 ordering. Re-resolution **never re-executes**
 pending calls:
 
@@ -515,7 +614,7 @@ the existing reservation, repairs a missing parent link or journal confirmation,
 and attaches rather than duplicating. Parent cancellation propagates through
 the complete journal tree (including in-flight pre-confirmation admissions) →
 delegation cancels every descendant → a late child success is discarded, never
-injected into the cancelled parent. Cancellation can race provider scheduling:
+injected into the cancelled parent. Cancellation can race model scheduling:
 the engine catches it immediately after run start, while child tool execution
 remains permission/cancellation guarded. Abandoning a delegate-result wait
 schedules the same child cancellation when a Tokio runtime handle is available;
@@ -523,125 +622,177 @@ teardown outside any live runtime is best-effort.
 
 ---
 
-## 6. Providers
+## 6. Explicit Oven models
+
+`cookie_agent_models` is the sole model-construction boundary. One immutable
+`ModelSet` maps each configured alias to a `ModelEntry` containing exactly one
+`Arc<dyn oven_sdk::LanguageModel>`, the descriptor returned by that model, and
+immutable `RequestDefaults`. Construction is eager and fail-closed: duplicate
+aliases, invalid declarations, unsupported auth/settings combinations, and
+dishonest capability declarations fail configuration loading.
 
 ```rust
-// dyn-compatible: providers are registered as trait objects selected at runtime
-#[async_trait]
-trait Provider: Send + Sync {
-    fn capabilities(&self, model: &ModelId) -> ProviderCapabilities;
-    async fn stream(&self, request: ProviderRequest)
-        -> Result<BoxStream<'static, Result<NormalizedEvent, ProviderError>>, ProviderError>;
+struct ModelSet { /* immutable alias -> ModelEntry */ }
+
+struct ModelEntry {
+    alias: String,
+    model: Arc<dyn oven_sdk::LanguageModel>,
+    descriptor: oven_sdk::LanguageModelDescriptor,
+    defaults: RequestDefaults,
+    behavior_fingerprint: ConfigurationFingerprint,
+}
+
+struct FrozenModelBinding {
+    alias: String,
+    descriptor: oven_sdk::LanguageModelDescriptor,
+    defaults: RequestDefaults,
+    behavior_fingerprint: ConfigurationFingerprint,
+    configuration_fingerprint: ConfigurationFingerprint,
 }
 ```
 
-`ProviderCapabilities` covers: tool calling, parallel tool calls, streaming
-tool-argument deltas, reasoning deltas (and replayability), image/PDF input,
-structured output, prompt caching, context/output limits, usage reporting,
-cancellation semantics.
+The concrete retained adapters are Anthropic Messages; official OpenAI Chat
+and Responses; caller-identified OpenAI-compatible Chat; Google Gemini;
+Google Vertex Gemini; Amazon Bedrock Converse; Azure OpenAI Chat and Responses;
+Cohere v2 Chat; and standardized Open Responses. MiniMax and Claude Platform
+on AWS are not exposed. Oven versions are exact published pins. There is no
+model-name inference in `cookie_agent_models` or Oven. Models.dev catalog data
+is a separate daemon-owned discovery/onboarding projection; it never constructs
+an adapter or silently changes a configured binding.
+Runtime model composition is registry-free: `compose_models()` at the binary
+composition root calls `Config::build_model_set`, `crates/models` constructs
+the explicitly selected published Oven adapters, and the resulting immutable
+set enters the engine through `EngineOptions::model_set`.
 
-Normalized stream events: `TextDelta`, `ReasoningDelta`, `ToolCallStart`,
-`ToolArgsDelta`, `ToolCallEnd`, `Usage`, `Stop`. Raw provider payloads (or
-stable references) are preserved in the event log for debugging, but behavior
-is driven only by normalized events. No SDK types leak beyond adapter crates.
+Every `[models.<alias>]` entry explicitly declares provider/model identity,
+endpoint, resolved auth, static headers, capabilities, limits, modalities,
+exact media rules, cancellation/replay semantics, structural adapter settings,
+common request defaults, and typed provider options. The selected `adaptor`
+tag chooses only the concrete constructor. The arbitrary `model_id` is sent to
+that already-selected adapter and never changes behavior.
 
-MVP adapters:
+`provider_id` and `adaptor` are intentionally distinct fields. `provider_id`
+is the caller-defined stable serving-provider identity retained in model
+descriptors, native replay/context scopes, and behavior/configuration
+fingerprints. It must remain stable for the same serving identity and need not
+equal an adapter name. `adaptor` is only the concrete Oven adapter/wire
+protocol discriminator. Representative pairs are `anthropic` / `anthropic`,
+`openai` / `openai-responses`, and `quantumcookie.gateway` /
+`openai-compatible`.
 
-| Module | API | Notes |
-|---|---|---|
-| `providers::anthropic` | Anthropic Messages (SSE) | reqwest + eventsource-stream |
-| `providers::openai` | Chat Completions **and** Responses | distinct streaming semantics; selected per model/endpoint config |
-| `providers::openai_compatible` | Chat Completions + custom `base_url` | covers Ollama, LM Studio, OpenRouter, vLLM, … |
+The model-set fingerprint is canonical SHA-256 over sorted aliases and all
+non-secret behavior configuration. Credential values are excluded while the
+non-secret auth shape is retained. Static header names are included but values
+are excluded. A policy snapshot stores `FrozenModelBinding`, not live models,
+auth, headers, or a mutable lookup object; resolving it later requires the exact
+model-set fingerprint, descriptor, defaults, and complete per-entry behavior
+fingerprint.
 
-Credentials: environment variables only, referenced from TOML
-(`api_key_env = "ANTHROPIC_API_KEY"`). No secrets in config files.
+`ModelSetManager` retention is intentionally **daemon-process-local**. During
+one daemon lifetime it retains older model-set fingerprints so an in-memory
+session binding can continue to resolve after compatible provider additions.
+Every credential refresh first constructs the complete current candidate, then
+rebuilds every retained snapshot from candidate entries whose alias,
+descriptor, defaults, and behavior fingerprint all match. This replaces all
+retained concrete adapters with adapters created from the latest credential
+generation. A retained fingerprint with any missing or mismatched entry is
+dropped. Publication and frozen-binding resolution are serialized around the
+atomic current-snapshot swap: an adapter handle acquired before publication may
+finish, but no later resolution returns a stale credential generation.
 
-### 6.2 Round-trip fidelity
+The retained-fingerprint map is never persisted or reconstructed from session
+data. After daemon restart it contains only the current snapshot rebuilt from
+validated current config, the pinned catalog, and latest durable credentials. An
+obsolete persisted `FrozenModelBinding` remains decodable audit/session data,
+but execution fails closed when its exact fingerprint is absent; resolution
+never falls back by alias. A binding whose behavior fingerprint is still
+current, including across a secret-only credential rotation, resolves to the
+current adapter and therefore the current credentials.
 
-Normalized events drive *behavior*; they are **not sufficient to reconstruct
-provider requests**. Several formats carry opaque continuation state that
-must be replayed verbatim in later requests:
+`ScriptedModel` is the deterministic engine-test implementation of Oven's
+`LanguageModel`. Each call consumes one FIFO script, captures the validated
+request, and either returns a delayed pre-stream error or a cancellation-aware
+stream. Stream scripts queue `Result<StreamPart, ModelError>` items plus delays,
+so tests can place failures before meaningful output, after partial output, or
+while blocked. The abort signal is checked before consuming a script, during
+stream creation delay, before each emitted item, and while awaiting a
+mid-stream delay.
 
-- Anthropic: signed `thinking` / `redacted_thinking` blocks, exact block
-  order, `tool_use` IDs, `cache_control` positions
-- OpenAI Responses: `reasoning` items with `encrypted_content`, item IDs,
-  `function_call.call_id` pairing, hosted-tool items
-- OpenAI Completions: `reasoning_content` where the endpoint requires replay,
-  exact `tool_calls` echo with serialized arguments
+### 6.1 Replay and round-trip fidelity
 
-Therefore: adapters emit **opaque provider-state artifacts** alongside
-normalized events (per assistant turn and per block where applicable). The
-engine persists each one as the durable `TurnOpaque` event in the session log
-with its assistant turn, and request assembly
-replays them through the same adapter's history encoder — provider-native
-data takes precedence over normalized reconstruction for every turn it
-exists for; normalized reconstruction is the fallback for synthetic turns
-(steering, future compaction summaries). An adapter that cannot honor an
-opaque artifact (e.g. provider changed across a fallback advance) discards it
-explicitly and degrades to normalized replay.
+Oven normalized history is the behavioral contract, while
+`NativeReplayArtifact` preserves bounded provider-native continuation state
+when an adapter declares replay support. Each artifact is tied to an exact
+adapter ID and `NativeContextScope` containing provider, model, and a safe resource
+identity. The payload is redacted from debug output and bounded by Oven.
 
-The provider-domain representation is
-`NormalizedEvent::TurnOpaque { state: AssistantTurnOpaque }`. An artifact is
-tagged with its exact `ProviderProtocol` and holds an untyped JSON `payload`;
-the payload is intentionally provider-native rather than a lossy common
-schema. The persistence/assembly boundary is:
+The explicit capability declaration states replay policy (`never`, `if_valid`,
+or `always`), capability (`unsupported`, `optional`, or `required`), and whether
+the artifact carries provider-authoritative reasoning state. Request encoding
+persists `ModelReplayEvaluated` with one ordered `ReplayDecision` per assistant
+history turn. Each decision contains the current `ReplayDisposition`: replayed,
+no artifact, discarded foreign adapter, discarded foreign `NativeContextScope`,
+discarded invalid payload, or reconstructed normalized history. Foreign or
+invalid artifacts are never guessed into another adapter.
 
-```rust
-struct PersistedTurn { message: ProviderMessage, opaque: Option<AssistantTurnOpaque> }
-struct EncodedHistory { system: Vec<Value>, messages: Vec<Value>, discarded_opaque: bool }
-```
+Provider-native artifacts preserve details such as Anthropic signed thinking,
+OpenAI Responses encrypted reasoning/items, exact Chat tool-call echoes,
+Gemini/Vertex thought signatures, Bedrock signed reasoning, and provider item
+identities. After a valid Oven finish, `ModelTurnCommitted` stores the exact
+model identity and one complete `PersistedModelTurn`. Its `native_replay` field
+contains the optional `NativeReplayArtifact`, whose adapter ID and
+`NativeContextScope` define where that artifact may be replayed.
 
-`ProviderRequest` carries `persisted_turns: Vec<PersistedTurn>` for request
-assembly. When it is non-empty, the selected adapter invokes its history
-encoder while building the actual HTTP body; `messages` remains the
-normalized-only path for callers that have no persisted transcript.
+### 6.2 Models.dev catalog and provider connection
 
-`TurnOpaque` is an ordinary persisted protocol event (and therefore survives
-JSONL reopen), tagged with its `ProviderProtocol` and untyped native payload.
-`ToolCallStarted` also retains the issuing protocol and provider-native call
-ID beside the engine-generated call ID. On same-protocol replay, prompt
-assembly uses those native IDs verbatim for tool calls and results; on a
-cross-protocol fallback it uses engine IDs while the selected adapter marks
-the foreign artifact discarded and reconstructs that turn normally. Artifacts
-remain in the log after a fallback, so a later run starting at the chain head
-can replay them again.
+The daemon maintains a revisioned safe snapshot of models.dev provider/model
+metadata. `catalog.provider.list` and `catalog.model.list` return that snapshot
+identity plus provider IDs, model IDs, display metadata, declared capabilities,
+limits, modalities, status, and credential **field names**. Catalog metadata is
+advisory discovery data; runnable `ModelRef` entries still require an explicit
+supported Oven adapter and validated local materialization.
 
-The Anthropic and compatible adapters expose
-`encode_history(&[PersistedTurn]) -> EncodedHistory`; OpenAI exposes
-`encode_history(&[PersistedTurn], OpenAiEndpoint) -> EncodedHistory` to select
-Chat versus Responses. A matching artifact contributes its native assistant
-message/items verbatim;
-an artifact tagged for another protocol sets `discarded_opaque` and the
-adapter rebuilds only that turn from `ProviderMessage`. Anthropic artifacts
-contain the ordered assistant content blocks plus stop/usage state; Chat
-artifacts contain the assistant message including exact tool-call echoes and
-reasoning fields; Responses artifacts contain ordered output items including
-encrypted reasoning and hosted-tool items.
+`provider.connect` is the `/connect` protocol equivalent. Its request is the
+only protocol object that can contain credential values. Those values travel
+only in the request transport, have manually redacted `Debug`, and are consumed
+into the daemon credential store. They are forbidden from events, results,
+typed errors, schema examples, logs, persistence records, and TypeScript
+result projections. The result returns only provider identity, credential field
+names, catalog revision, connection timestamp, and the new safe model revision.
+Stable catalog/connect error identifiers are protocol data.
 
-Each adapter is implemented and tested against the conformance checklist in
-`docs/provider-conformance.md` (derived from OpenCode's provider layer).
-MVP scope is the three formats below; Gemini, Bedrock, and Azure adapters
-are post-MVP and target the same checklist. An `openai_compatible` endpoint
-may claim only: chat text, tool-call echo, tool-result pairing, basic
-SSE/429 handling — every advanced feature is capability-probed before use.
+The generic JSON-RPC `Request` and `Notification` envelopes redact raw
+`params: Value` in `Debug`; generic success `result` and error `data` values are
+redacted for the same future-tracing boundary. Serialization of credentials is
+still permitted only for the inbound `provider.connect` request transport.
+Owned CLI/TUI credential-entry buffers and typed credential containers use
+best-effort zeroization/redaction as soon as ownership permits. This is process
+hygiene, not secure memory: serde values, WebSocket/framing buffers, kernel
+socket buffers, allocator copies, and ordinary temporary strings may retain
+copies until their normal lifecycle ends, and the protocol makes no locked,
+non-pageable, or forensic-erasure guarantee.
 
-### 6.1 Fallback chains
+`model.list` returns the current configured/connected runnable model snapshot
+with its own revision, generation timestamp, and optional source catalog
+revision. It is not the catalog endpoint.
 
-Each agent profile configures an **ordered model chain** instead of a single
-model:
+### 6.3 Fallback chains
+
+Each agent profile configures an ordered chain of **model aliases**:
 
 ```toml
 [agents.primary]
 models = [
-  { provider = "anthropic", model = "claude-sonnet-4-6" },
-  { provider = "openai",    model = "gpt-5" },
-  { provider = "local",     model = "qwen3-coder" },
+  "sonnet",
+  "gpt-responses",
+  "local-qwen",
 ]
 ```
 
 Semantics:
 
-- **Error classification** drives behavior. `ProviderError` carries a class:
+- **Error classification** drives behavior. Oven `ModelError.kind`, its
+  retryability hint, and typed diagnostics are the only error inputs:
   - *entry-retryable* — rate limit (429), overloaded, 5xx, network/timeout,
     dropped stream: retry the same entry with exponential backoff (default
     2 retries), then advance to the next chain entry.
@@ -651,12 +802,12 @@ Semantics:
     `model_does_not_exist` (including `model_doesnt_exist` and
     `model_not_exist`) take precedence over HTTP status heuristics, including
     5xx responses.
-  - *run-terminal* — context overflow (MVP), cancellation: fail the run;
-    no fallback. (Post-MVP, overflow triggers compaction instead.)
-- **Request assembly is per-attempt**: each entry's request is built against
-  *that* model's capability set. If the primary supports reasoning or prompt
-  caching and the fallback doesn't, the fallback request simply omits them.
-  Tool schemas are provider-normalized, so they carry across entries.
+  - *run-terminal* — cancellation fails the run. Context pressure invokes the
+    v6 compaction path (§4.7); a compaction failure is surfaced explicitly.
+- **Resolution is immutable**: session policy contains ordered
+  `FrozenModelBinding` values. Each attempt resolves its binding through the
+  exact `ModelSet`, applies that entry's `RequestDefaults`, then validates the
+  request against that entry's explicit Oven capabilities.
 - **Partial output is abandoned on fallback**: if a stream fails midway, the
   partial deltas are discarded client-visibly (marked abandoned), and the
   completion restarts on the next entry against the same committed
@@ -664,7 +815,7 @@ Semantics:
   then appends `AttemptAbandoned`; prompt assembly discards the accumulated
   assistant state for that attempt at this boundary. Earlier committed turns
   and tool results remain in the next request. `ModelFallback` remains the
-  sole provider-chain advance/degradation signal. Committed tool results are
+  sole model-chain advance/degradation signal. Committed tool results are
   never replayed or lost. Prompt assembly maintains an active attempt segment
   and an emitted-call set: `AttemptAbandoned` clears only active calls and
   their native IDs, while calls already emitted in an earlier committed segment
@@ -677,19 +828,18 @@ Semantics:
   that call, before later turns. Pairing keys each occurrence by the
   engine-generated `(tool_call_id, run_id)` tuple; a result without a run
   association, or without an exact emitted occurrence, is omitted rather than
-  guessed. If omitting a call would make an opaque
-  assistant artifact invalid, that turn falls back to normalized replay.
+  guessed. Oven replay outcomes explicitly report whether native state was
+  replayed or normalized history was reconstructed.
 - **Meaningful-output retry guard:** the engine's streaming attempt runner is
-  the single same-entry retry layer and uses the provider executor's rule:
+  the single same-entry retry layer:
   retry only before text, reasoning, or tool-call output has been observed.
   A retryable failure after meaningful output advances directly to the next
   fallback entry, never receives a second same-entry retry.
 - **Per-run stickiness**: once the chain advances, the remainder of the run
   stays on the new entry (no flip-flopping under sustained rate limiting);
   the next run starts again from the chain head.
-- Every advance is persisted as `ModelFallback { from, to, reason, attempts }`,
-  and `UsageReported` always records which model actually served, so cost and
-  behavior stay attributable.
+- Every advance and usage record names the exact configured model identity, so
+  failures, cost, and behavior remain attributable.
 - The resolved chain lives in the session's policy snapshot (§4.5); editing
   TOML mid-run never reorders a live session's chain. Children get their own
   chains from their own profiles — or **inherit the parent's resolved chain**
@@ -703,7 +853,7 @@ Semantics:
 The engine exposes a generic tool-provider interface:
 
 ```rust
-// dyn-compatible for the same reason: a runtime registry of providers
+// dyn-compatible runtime set of tool providers; unrelated to model selection
 #[async_trait]
 trait ToolProvider: Send + Sync {
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>>;
@@ -723,25 +873,105 @@ struct ToolInvocationContext {
 Tool futures are spawned outside the session actor's mailbox (§4.1), so an
 `invoke` implementation may safely call back into the engine client API.
 
-In-process providers for MVP (built-ins + delegation); the same interface
+In-process tool providers for MVP (built-ins + delegation); the same interface
 later covers remote tool servers (MCP).
 
 MVP built-ins (modeled on OpenCode's basic set):
 
-| Tool | Tier | Notes |
+| Tool | Notes |
 |---|---|---|
-| `read` | read | line ranges, size caps |
-| `list` | read | directory listing |
-| `grep` | read | `ignore` + `regex` as libraries; honors .gitignore |
-| `glob` | read | `ignore` traversal |
-| `write` | write | atomic (temp + rename) |
-| `edit` | write | optimistic exact-match editing: verify expected occurrence count, replace, **re-verify the file hash immediately before the atomic rename**; on mismatch, fail with a conflict result. Engine writes are serialized per path. Concurrent *external* writers can still interleave between read and rename — documented limitation, mitigated by the pre-rename hash check. **No fuzzy matching.** `similar` for diff display |
-| `bash` | exec | `process-wrap` process groups, timeout kills the group, output caps |
+| `read` | descriptor-backed UTF-8 files use an 8 KiB fixed-chunk scanner with a 2,000-line/64 KiB content page budget and `(offset, byteOffset)` continuation cursor; directory listings are paginated; approved PNG, JPEG, GIF, WebP, and PDF inputs become durable attachments; unsupported or malformed binary files are rejected |
+| `grep` | `ignore` + `regex` as libraries; honors .gitignore |
+| `glob` | `ignore` traversal |
+| `write` | atomic (temp + rename) |
+| `edit` | optimistic exact-match editing: verify expected occurrence count, replace, **re-verify the file hash immediately before the atomic rename**; on mismatch, fail with a conflict result. The engine serializes write/edit calls by canonical path. Concurrent *external* writers can still interleave between read and rename — documented limitation, mitigated by the pre-rename hash check. **No fuzzy matching.** `similar` for diff display |
+| `bash` | `process-wrap` process groups and timeout group kills |
 
-All tool results returned to the model are size-capped with explicit
-truncation signaling. (Live streamed output is bounded in retention, not in
-total volume — §7.1.) Every tool call passes through the permission pipeline
-before execution.
+Every tool returns one rich `ToolResult` containing a human-facing `title`,
+model-visible textual `output`, structured `metadata`, optional
+engine-authored truncation/retention details, and zero or more durable
+attachment descriptors.
+Every built-in returns its complete textual output; the engine is the sole
+model-facing output-bounding and retention layer. `tool_output.max_lines`
+(default 2,000) and `tool_output.max_bytes` (default 50 KiB) are frozen in each
+session policy. When either limit is exceeded, the engine atomically writes
+the complete text with private permissions to the project artifact store and
+returns a head preview that itself remains inside both limits; structured
+truncation metadata carries the opaque `artifact://sha256/<digest>` reference,
+original byte count, and original line count outside that textual budget. A retention failure fails the
+tool call instead of exposing an incomplete preview. (Live streamed output is
+bounded in retention, not in total volume — §7.1.) Every tool call passes
+through the permission pipeline before execution. Filesystem tools retain
+canonical, symlink-aware containment checks rather than adopting OpenCode's
+lexical-only Unix behavior.
+
+Tool execution uses a strict **prepare once, approve, execute capability**
+flow:
+
+1. The tool validates and normalizes arguments, verifies that the current
+   platform can provide the required descriptor/handle guarantees, resolves
+   every resource once, and acquires the process-local execution capability.
+   Unsupported platforms fail with `unsupported_platform` before any approval
+   event is created.
+2. Preparation creates immutable `PreparedApprovalResource` values. Each has a
+   stable logical `PreparedResourceIdentity`, an exact capability and boundary,
+   a `PreparedBindingLifetime`, and a `PreparedResourceDigest` computed with
+   `cookie-agent.prepared-resource-digest.v6\0`. The digest binds the held
+   descriptor/handle and validated object metadata; its canonical input never
+   contains a raw path, file-descriptor/handle number, or temporary filename.
+   `ApprovalResourceSource` records provenance only.
+3. The engine constructs one `PreparedOperationIdentity` from the digest of
+   normalized arguments (where resource arguments are replaced by logical
+   resource/digest references), the complete sorted capability set, complete
+   sorted prepared resources, the execution-context digest, and the fixed
+   `process_local` capability-lifetime marker. The canonical identity includes
+   each resource's capability, logical identity, and binding digest/lifetime.
+   Approval boundaries are revision-bound consent policy and `source` is audit
+   provenance; neither is execution identity. No raw path, FD/handle number,
+   or temp identifier is permitted in this identity.
+4. `OperationFingerprint` hashes that canonical identity with the explicit
+   `cookie-agent.operation-fingerprint.v6\0` domain and length framing. The
+   immutable identity, fingerprint, evaluations, and constraints are then
+   presented for approval.
+5. Approval authorizes only the already-held prepared capability. Execution
+   consumes that capability directly; it never reopens a pathname, reruns path
+   canonicalization, substitutes a new descriptor, or reconstructs a temp
+   target from durable fields. A changed/replaced resource or lost binding
+   fails closed as `operation_changed` (or `prepared_capability_lost`) rather
+   than preparing or executing a different operation.
+
+Prepared execution capabilities are process-local and non-serializable. On
+daemon restart, every pending/approved-but-unexecuted prepared operation is
+cancelled, recorded as interrupted/capability-lost, and never automatically
+re-executed. A user/model retry creates and evaluates a fresh prepared
+operation with a fresh binding digest and fingerprint. Replay rebuilds audit,
+approval, title, and idempotency projections only; it cannot recreate an OS
+capability.
+
+`read` media attachments use the same engine-owned artifact boundary. The
+engine resolves and opens the exact canonical read object with no-follow
+semantics before any pending approval wait, then carries that held descriptor
+through invocation. A symlink or path replacement while approval is pending
+cannot redirect the eventual read or attachment. Before persistence the
+engine requires a regular file, enforces a 20 MiB media limit, and performs
+format-aware structural validation (PNG chunks/CRC/order plus bounded zlib
+decode with exact scanline/filter validation, JPEG segments/scans, GIF blocks,
+WebP RIFF/chunks, and PDF xref/trailer boundaries). Artifacts are
+content-addressed by SHA-256 and created atomically relative to a held private
+directory descriptor. Store roots, digest objects, and temporary objects must
+be non-symlink objects of the expected type and current-user-owned where the
+platform exposes ownership; existing and new artifacts are forced to mode
+0600 and the root to mode 0700. Open-time cleanup removes only strictly named,
+owned, non-symlink regular crash temps. Artifacts are represented in events
+only by MIME, byte length, digest, and opaque reference. Arbitrary
+binary/base64 is never written to session JSONL.
+Attachments remain durable across daemon restart so Oven history replay
+preserves them without writing arbitrary binary/base64 into JSONL.
+
+Runtime `always` approvals remain durable and scoped to a delegation tree's
+root session, rather than OpenCode's process-wide approval list. A configured
+final wildcard deny hides a non-delegation built-in from the model-facing tool
+definition; `edit` and `write` share the write permission alias.
 
 ### 7.1 Streaming and interactive tools
 
@@ -793,8 +1023,16 @@ actor nor stall process draining). The hub:
   live receiver; it never occupies a subscriber slot until eviction.
 
 **The model still receives exactly one bounded final result** when the call
-completes — providers accept tool results only as complete messages, so
+completes — model adapters accept tool results only as complete messages, so
 mid-call streaming is a human-facing feature, not a model-facing one.
+For `bash`, stdout and stderr are simultaneously spooled to engine-owned
+private temporary artifacts as they pass through the output hub; the tool
+itself never accumulates unbounded vectors. Finalization atomically commits
+the complete per-stream artifacts, adds their safe references and byte counts
+to structured metadata, and constructs only a budget-bounded textual preview.
+Retention/capture failure fails the call closed, while cancellation discards
+live temps and startup removes validated crash leftovers. Stream offsets and
+live subscriber ordering remain owned by the output hub and are unchanged.
 
 **User → process stdin.** `run.tool_stdin { call_id, data?, eof? }`:
 
@@ -811,34 +1049,23 @@ mid-call streaming is a human-facing feature, not a model-facing one.
 
 bash runs with piped stdio in v0.1 (line-buffered programs behave well; some
 programs buffer when not attached to a terminal). A `pty` option for fully
-interactive programs (REPLs, debuggers) is post-MVP.
+interactive programs (REPLs, debuggers) is deferred.
 
 ---
 
 ## 8. Permissions
 
-Adapted from OpenCode's permission model (specifically its newer ordered-rule
-"V2" design), with its documented weaknesses fixed.
+Adapted from OpenCode's ordered-rule permission model.
 
 ### 8.1 Rules
 
 ```toml
 [agents.primary.permissions]
-# tier defaults — fallback when no rule matches
-read = "allow"
-write = "ask"               # covers the `write` and `edit` tools
-exec = "ask"                # covers `bash`
-delegate = "allow"          # spawning is cheap to ask about and annoying to
-                            # gate in a subagent-first harness; child tools
-                            # are governed by the child's own permissions
-
 [[agents.primary.permissions.rules]]
 id = "no-force-push"
 action = "bash"
 resource = "git push --force *"
 effect = "deny"
-hard = true                 # evaluated first; cannot be overridden by later
-                            # rules or runtime approvals
 
 [[agents.primary.permissions.rules]]
 id = "git-readonly"
@@ -848,22 +1075,19 @@ effect = "allow"
 ```
 
 - `action`: a permission capability — `read`, `write`, `bash`, `grep`,
-  `glob`, `list`, `delegate`, `external_directory`, plus future capabilities.
+  `glob`, `delegate`, `external_directory`, plus future capabilities.
   Rules always use **action** names, never tool names.
 - Tool → action mapping: every tool maps to its same-named action, with one
   exception — the `edit` tool maps to the **`write`** action (both
   file-mutation tools share one capability, as in OpenCode's model).
-- Action → tier mapping (for tier-default fallback): `read`, `list`,
-  `grep`, `glob` → read tier; `write` → write tier; `bash` → exec tier;
-  `delegate` and `external_directory` have their own explicit defaults.
 - **No parent → child permission inheritance.** Every session's permissions
   are resolved fresh: global default configuration + the session's own
   profile overrides. Parent-profile rules never flow down. Global rules
-  (including global `hard` denies) apply to every session in the tree. The
-  parent's control over children is exercised through `allowed_profiles` —
-  which profiles may be spawned — not through permission leakage.
-- `hard` denies apply within a session's resolved policy: they cannot be
-  overridden by later rules or runtime approvals.
+  apply to every session in the tree. The
+   parent's control over children is exercised through `allowed_profiles` —
+   which profiles may be spawned — not through permission leakage.
+- Rules are the complete configured policy surface; an action with no matching
+  rule asks by default.
 
 ### 8.2 Pattern language: "simple wildcard"
 
@@ -879,7 +1103,7 @@ Explicitly **not** filesystem globs (OpenCode's naming trap):
 | Action | Resource matched |
 |---|---|
 | `bash` | each parsed sub-command's source (tree-sitter-bash extracts commands from pipelines, `&&`, substitutions); whole string if unparseable |
-| `read`, `write`, `list` | canonical path, workspace-relative; paths outside the workspace are canonicalized (symlink-safe) and matched as absolute, gated by `external_directory` first |
+| `read`, `write` | canonical path, workspace-relative; paths outside the workspace are canonicalized (symlink-safe) and matched as absolute, gated by `external_directory` first |
 | `grep` | the regex string |
 | `glob` | the pattern string |
 | `delegate` | target profile name |
@@ -892,21 +1116,22 @@ happens on the result.
 
 ### 8.4 Evaluation
 
-1. Hard denies → `deny` (checked before runtime approvals, so a saved
-   "always" can never override a configured hard deny).
-2. Doom-loop guard (§8.6): if triggered, `ask` — and **no "always" option is
-   offered**, so saved approvals can never bypass it.
-3. Runtime approval store hit → `allow`.
-4. Ordered rules, **last match wins**. Built-in guard defaults (`.env`,
+1. Runtime approval store hit → `allow`.
+2. Ordered rules, **last match wins**. Built-in guard defaults (`.env`,
    `external_directory`) are the lowest-priority rules; config layers append
    after them in the full configuration order
-   (user < workspace < environment < selected-profile overlay), so deeper
-   layers win. Environment-supplied rules concatenate like any other layer.
-5. Tier default fallback (read/write/exec/delegate per §8.1).
+   (user < workspace < selected-profile overlay), so deeper layers win.
+3. No matching rule → `ask`.
+
+The `write` action is the shared alias for both `write` and `edit` tools.
+External-directory approvals match canonical absolute patterns (normally a
+directory pattern such as `/tmp/project/*`) before the underlying file action
+is evaluated. Tool-local approval waits are asynchronous and cancellation
+aware, so concurrent calls can each await their own decision without blocking
+the session actor.
 
 Multi-resource calls: every resource is normalized once and evaluated once;
-the aggregate is hard-deny/deny, then ask, then allow. Doom-loop accounting is
-one increment for the complete normalized call signature, not each subcommand.
+the aggregate is deny, then ask, then allow.
 
 **Every decision is explainable**: the trace (matched rule id, source layer,
 all candidate matches, normalized resource, precedence reason) is emitted
@@ -915,83 +1140,160 @@ returns only a bare effect; we keep the full derivation.
 
 ### 8.5 Approvals
 
-- Pending approvals are emitted as `ApprovalRequested`; clients answer via
-  `approval.respond` with **once** / **always** / **reject** (+ optional
-  feedback text).
-- "always" writes to a **runtime approval store** (never TOML), owned by the
-  engine and **shared across the whole session tree** — parent, children,
-  grandchildren all resolve `ask` against the same store. It is keyed by
-  `(root_session_id, action, suggested pattern)`. Every grant is recorded as
-  an `ApprovalResolved` event (including the approved scope) in the granting
-  session's event log; at daemon startup the store is rebuilt from the
-  `ApprovalResolved` events of every session in the tree. So approvals
-  survive a daemon restart but expire with the tree: deleting the root
-  session's history ends them. Suggested patterns come from the tool (e.g.
-  bash suggests a command prefix like `git status *`); the client may edit
-   the scope before confirming. Post-MVP: project-persistent approvals with
-   TTL (OpenCode V2's durable model).
-- A default-accepted suggested scope is persisted as that effective scope, not
-  `None`. A caller override applies only to the primary resource; secondary
-  resources retain their own suggestions. Multi-resource `always` approvals persist and rebuild one
-  `(action, resource, scope)` grant per disclosed resource. Doom-loop prompts
-  reject an attempted `always` decision.
-- Reject affects **only** the pending call — OpenCode's surprising
-  reject-fan-out to unrelated pending requests in the session is not copied.
-- The model receives a structured refusal as the tool result, plus feedback
-  text if supplied.
-- Unattended/headless runs treat `ask` as deny unless the profile overrides.
+- Approval v6 is immutable, prepared, and fingerprinted. Every
+  `ApprovalRequest` contains the trigger, one complete
+  `PreparedOperationIdentity`, per-resource evaluations, response constraints,
+  a revision, and the identity's exact `OperationFingerprint`. Prepared wire
+  resources carry immutable logical canonical identities and domain-separated
+  SHA-256 binding digests, not reopenable paths or serialized OS handles.
+  Digests are exactly 64 lowercase hexadecimal characters; malformed,
+  uppercase, empty, or wrong-length values are invalid. The resource `source`
+  field is audit provenance and never changes the fingerprint.
+- Internal policy/approval-agent work records an `ApprovalInternalDecision`.
+  If user consent is needed, `ApprovalRequested` and `ApprovalEscalated` expose
+  the complete immutable request. Clients answer through `approval.respond`
+  with `approve_once`, `approve_tree`, `reject`, or `cancel` plus optional
+  feedback. There is **no scope editor**.
+- `approval.respond` is accepted only for the exact `(session_id, approval_id,
+  request_revision, operation_fingerprint)` and is idempotent by
+  `client_response_id`. Reusing that ID with different parameters is an
+  `idempotency_conflict`; stale revisions, changed fingerprints, and a binding
+  that no longer names the prepared operation have stable typed
+  `operation_changed` failures. Approval never causes argument/path/resource
+  recomputation.
+- `approve_tree` commits a server-authored `TreeApprovalGrant` containing the
+  exact root session, capabilities, canonical resources/boundaries, and
+  operation fingerprint. Grants are rebuilt from
+  `TreeApprovalGrantCommitted` events, shared only by that delegation tree, and
+  never broadened by client text. A process-local prepared resource cannot be
+  constructed or decoded as a durable tree grant. Handle-bound filesystem
+  operations therefore set `allow_tree_grant = false`; filesystem tree grants
+  do not survive or apply across restart. Restart-stable non-filesystem grants
+  are consent records only: a later call still prepares a new capability and
+  must match the grant's complete stable identity before execution.
+- `ApprovalUserDecisionRecorded` preserves the user answer;
+  `ApprovalFinalized` records the final source/status/reason/feedback. Separate
+  escalation, cancellation, operation-change/capability-loss, and doom-loop
+  events make those states observable.
+  Reject/cancel affects only the addressed pending operation. `approval.list`
+  returns strict approval records and active tree grants for one root.
+- Unattended/headless `ask` resolves to a final denial unless configured policy
+  supplies another internal decision. The model receives a structured refusal
+  and user feedback when present.
 
 ### 8.6 Built-in guards
 
 - `.env` / `.env.*` reads default to `ask` (`*.example` allowed)
 - `external_directory` defaults to `ask`
-- Doom-loop guard: third consecutive identical tool call → `ask`
 
 Permissions are consent control, not OS isolation — the harness runs with the
 launching user's privileges (sandboxing is a documented non-goal), and bash in
 particular should be treated as host-authority execution: command parsing
-informs approvals but is not a security boundary.
+informs approvals but is not a security boundary. Descriptor-bound preparation
+is nevertheless a security invariant: unsupported platforms fail before
+approval, approval never authorizes a later path lookup, and a binding mismatch
+fails closed instead of falling back to raw-path recomputation.
 
 ---
 
 ## 9. Configuration
 
-Layered via figment (later layers win):
+Composed via Figment from built-in defaults and TOML only (later layers win):
 
 ```
 built-in defaults
-  < user config        ~/.config/cookie_agent/config.toml
-  < workspace config   <repo>/.cookie_agent/config.toml
-  < environment        COOKIE_AGENT_*
+  < user TOML          ~/.config/cookie_agent/config.toml
+  < workspace TOML     <repo>/.cookie_agent/config.toml
 ```
 
-Sketch:
+Abbreviated sketch (the checked-in `.cookie_agent/config.toml` is the complete
+executable fixture):
 
 ```toml
+schema_version = 5
+
 [server]
 host = "127.0.0.1"
 port = 7419
 
-[providers.anthropic]
-type = "anthropic"
-api_key_env = "ANTHROPIC_API_KEY"
+[models.sonnet]
+provider_id = "anthropic"
+model_id = "claude-sonnet-4-6"
+endpoint = "https://api.anthropic.com/v1"
+adaptor = "anthropic"
 
-[providers.openai]
-type = "openai"
-api_key_env = "OPENAI_API_KEY"
-api = "responses"            # or "completions", per-endpoint override
+[models.sonnet.auth]
+type = "api_key"
+value = "${env:ANTHROPIC_API_KEY}"
 
-[providers.local]
-type = "openai-compatible"
-base_url = "http://localhost:11434/v1"
+[models.sonnet.capabilities]
+features = ["tool_calling", "reasoning", "max_output_tokens", "prompt_caching", "usage"]
+cancellation = "local_only"
+compaction = "unsupported"
+
+[models.sonnet.capabilities.limits]
+context = 200000
+output = 64000
+
+[models.sonnet.capabilities.modalities]
+input = ["text"]
+output = ["text"]
+
+[models.sonnet.capabilities.media]
+input = {}
+
+[models.sonnet.capabilities.replay]
+policy = "if_valid"
+capability = "optional"
+reasoning = true
+
+[models.sonnet.settings]
+thinking = "extended"
+thinking_default_active = false
+thinking_disable_allowed = true
+effort = true
+assistant_prefill = false
+reject_non_default_sampling = false
+
+[internal_agents.approval]
+models = []
+max_input_tokens = 16384
+max_output_tokens = 2048
+timeout_ms = 30000
+
+[internal_agents.context_compaction]
+soft_threshold_percent = 70
+hard_threshold_percent = 85
+target_percent = 50
+max_summary_bytes = 262144
+max_native_context_bytes = 2097152
+persistence = "native_preferred"
+
+[internal_agents.context_compaction.profile]
+models = []
+max_input_tokens = 16384
+max_output_tokens = 2048
+timeout_ms = 30000
+
+[internal_agents.session_title.profile]
+models = []
+max_input_tokens = 4096
+max_output_tokens = 128
+timeout_ms = 10000
+
+[internal_agents.session_title.policy]
+max_chars = 80
+max_input_messages = 4
+generate_on_first_turn = true
+fallback_to_input_excerpt = true
 
 [agents.primary]
 type = "primary"             # primary | subagent | all | internal (default: all) — see below
 models = [
-  { provider = "anthropic", model = "claude-sonnet-4-6" },
-  { provider = "openai",    model = "gpt-5" },   # fallback (§6.1)
+  "sonnet",
+  "gpt",                    # another explicit [models.gpt] declaration
 ]
-tools = ["read", "list", "grep", "glob", "write", "edit", "bash"]
+tools = ["read", "grep", "glob", "write", "edit", "bash"]
 
 [agents.primary.delegation]
 enabled = true
@@ -1001,13 +1303,8 @@ limit = 4                    # depth limit; unset root = Unlimited;
 
 [agents.explorer]
 type = "subagent"            # only spawnable via delegate; not user-invocable
-models = [{ provider = "openai", model = "gpt-5-mini" }]
-tools = ["read", "list", "grep", "glob"]
-
-[agents.compaction]
-type = "internal"            # engine-internal; cannot be disabled (§9)
-# no models — inherits the compacted session's chain (§6.1)
-tools = []
+models = ["gpt-mini"]
+tools = ["read", "grep", "glob"]
 
 [agents.explorer.delegation]
 enabled = false
@@ -1028,29 +1325,66 @@ Notes:
   `internal` profile for a root session, and delegate schema generation
   restricts its `profile` enum to `subagent`/`all` profiles (§5.1).
 - **Model chain inheritance**: a profile with an **empty `models` chain
-  inherits the parent session's resolved chain** (§6.1) — the default for
-  subagent profiles that should ride the parent's provider choice, and for
-  internal agents (the compaction agent compacts with the session's own
-  models). Root sessions cannot use an inheriting profile: `session.create`
+  inherits the parent session's resolved chain** (§6.3) — the default for
+  subagent profiles that should use the parent's frozen model bindings, and for
+  internal agents (compaction, title, and approval agents use the owning
+  session/run's frozen model chain). Root sessions cannot use an inheriting profile: `session.create`
   fails validation when the resolved chain would be empty. `type = "all"`
-  profiles with no chain are legal but fail as roots.
+   profiles with no chain are legal but fail as roots.
+- **Engine-owned internal agents**: approval, context compaction, and session
+  title generation use the bounded `[internal_agents.*]` fields shown above.
+  Their empty model chains inherit the owning run's frozen chain. Generic
+  `[agents.*] type = "internal"` profiles remain non-user/non-delegation
+  profiles, but they do not configure those three engine-owned agents.
+- **Model aliases**: chain entries resolve only through the immutable
+  `ModelSet`. Unknown aliases fail validation. Policy snapshots retain
+  `FrozenModelBinding` values, never auth/header secrets or live model handles.
+- **Environment interpolation**: user/workspace TOML resolves `${env:NAME}`
+  only at `models.<alias>.endpoint`, supported credential fields under
+  `models.<alias>.auth`, and values under `models.<alias>.headers`. Model IDs,
+  capabilities, settings, request defaults, provider options, agent aliases,
+  and built-in defaults are never interpolated.
+  Resolution is single-pass; `$$` escapes a literal dollar. Missing or
+  non-UTF-8 allowed values fail without including resolved secrets in errors.
+  There is no environment configuration layer: arbitrary environment variables
+  never become config keys. They are available only to explicit `${env:...}`
+  interpolation at the approved paths above. The TUI uses `COOKIE_THEME`, plus
+  standard `NO_COLOR`, `TERM`, and `COLORTERM` hints.
 - **Merge semantics**: figment's `merge` *replaces* arrays, which is wrong
   for permission rules (deeper layers must append). The config crate
   implements a custom layered merge: permission-rule arrays are concatenated
   across all layers in the order
-  `built-in < user < workspace < environment < selected-profile overlay`
+  `built-in < user < workspace < selected-profile overlay`
   (each rule tagged with its source layer for decision traces); every other
   array (`tools`, `allowed_profiles`, …) is replaced by the deeper layer as
   usual.
-- **Project trust**: workspace config from a repository is untrusted input.
-  First use prompts for trust before it is applied (it can enable permissive
-  tools in an unsandboxed harness). Trust decisions are stored in
-  `~/.local/share/cookie_agent/trust.json`, keyed by canonical workspace path
-  plus a content hash of the workspace config file — editing the file
-  re-prompts. The `cookie_agent` CLI prompts only when stdin and stdout are
-  TTYs; an untrusted config in a non-TTY invocation (including `daemon`) is
-  refused unless the user explicitly passes `--trust-workspace`, which records
-  trust for the current config contents.
+- **Workspace loading and authority**: local `cookie` and `cookie daemon`
+  startup each load `<cwd>/.cookie_agent/config.toml` unconditionally through
+  the ordinary layered loader exactly once and validate the merged result
+  before runtime composition. `attach` and `connect` do not acquire a current
+  directory or inspect workspace configuration. There is no persisted
+  workspace-acceptance state. A stale
+  `~/.local/share/cookie_agent/trust.json` is inert: startup never locates,
+  opens, parses, writes, migrates, warns about, or deletes it, including when it
+  is malformed, a symlink, or a FIFO.
+- **Threat-model consequence**: workspace configuration is repository-controlled
+  authority input. Because permission arrays append in layer order and the last
+  matching rule wins, a later workspace `allow` can override a matching user
+  `deny`. The workspace layer can also select model endpoints and provide
+  supported auth/header values through `${env:NAME}` interpolation. Users must
+  therefore start a local runtime only in workspaces whose configuration they
+  intend to apply. Configuration does not itself execute an operation:
+  operation authority remains the frozen effective policy, any exact
+  approval/tree grant required by that policy, and the descriptor-bound
+  prepared capability identity checked immediately before execution.
+- **Checked workspace secret policy**: the repository fixture's final rules
+  allow ordinary canonical source-file reads, deny root/nested `.env` and
+  documented credential/token/private-key paths, then deny all grep/glob
+  enumeration. `.env.example` is the explicit non-secret exception. The
+  enumeration deny is intentionally broad because current grep/glob prepared
+  manifests expose root/pattern labels, not a complete per-file authorization
+  surface; a path-specific rule could otherwise be bypassed by searching a
+  broader root.
 - Effective policy is snapshotted at session creation (§4.5).
 
 ---
@@ -1067,11 +1401,25 @@ Notes:
 
 ```
 ~/.local/share/cookie_agent/projects/<cwd-hash>/
+    cwd                  (0600, exact canonical Unix path bytes; informational)
     delegations.jsonl
+    grant-invalidations.jsonl
+    artifacts/<sha256>  (private retained output and attachments)
     sessions/<session-id>/
         events.jsonl
         meta.json        (cache)
 ```
+
+Project selection remains the existing `<cwd-hash>` behavior. The `cwd` file
+does not participate in hashing, selection, collision detection, validation,
+or migration; it exists only so future discovery code can identify candidate
+folders without reversing the hash. On a normal open, a canonicalizable cwd is
+written as its complete Unix `OsStr` byte sequence with no text conversion or
+terminator. A missing, stale, or incorrectly-modeed file is replaced by a
+private 0600 temporary file, fsynced, atomically renamed to `cwd`, and followed
+by a project-directory fsync. An already-correct private file is retained.
+Existing project directories gain the file when next opened, while sessions,
+artifacts, and journals remain in place and project selection is unchanged.
 
 - **In-memory projections** rebuilt from logs (and the journal) at daemon
   startup serve tree queries, listing, resume, and delegation recovery.
@@ -1079,10 +1427,33 @@ Notes:
   truncated to its last complete record before projections are built (§5.4).
   SQLite (`rusqlite`) is a future rebuildable projection if full-text search
   or large-history queries demand it — never the source of truth.
-- Crash recovery: incomplete runs are marked `interrupted` on restart;
-  sessions remain resumable with re-resolution of pending tool calls (§5.4).
-- Compaction: post-MVP. The event model reserves checkpoint event types; raw
-  history is always retained, and only the model-visible prompt is compacted.
+- Every persisted integrity digest uses the single `Sha256Digest` wire type:
+  exactly 64 lowercase hexadecimal characters, validated on construction and
+  decode. Prepared-resource bindings use
+  `cookie-agent.prepared-resource-digest.v6\0`; operation fingerprints use
+  `cookie-agent.operation-fingerprint.v6\0`. Both hashes length-frame their
+  canonical bytes. The prepared-operation canonical bytes contain the
+  normalized-arguments digest, sorted complete capabilities, sorted complete
+  prepared resource identities/binding digests/lifetimes, the execution-context
+  digest, and the process-local lifetime marker. Approval boundaries,
+  provenance, raw paths, OS descriptor/handle numbers, and temporary
+  identifiers are not canonical execution identity. Boundaries remain guarded
+  by the immutable request revision. Content-integrity digests hash exact
+  content bytes.
+- Every stored session-event record carries the exact unforgeable
+  `schema_version = 6`. Construction and decoding reject every other value;
+  there is no old-event decoder.
+- Crash recovery: incomplete runs are marked `interrupted` on restart. Pending
+  delegation calls retain the idempotent journal recovery in §5.4, but pending
+  prepared local tool operations are cancelled as
+  `prepared_capability_lost` and never re-executed: OS capabilities are
+  process-local and cannot be reconstructed from JSONL. Resume may start a new
+  preparation only in response to a fresh model/user tool attempt.
+- Compaction is event-sourced as described in §4.7. Raw history is always
+  retained; only the assembled model-visible prompt uses the latest valid
+  checkpoint. Native replay payloads are capped at exactly 2 MiB, native
+  context payloads at exactly 32 MiB, and internal summaries at the configured
+  limit with an absolute 2 MiB ceiling.
 
 ---
 
@@ -1100,8 +1471,8 @@ Layer 3 — transports      framing adapters, interchangeable per deployment:
                             websocket   message-boundary-preserving (DEFAULT)  [v0.1]
                             in-process  tokio duplex channel (no serialization [v0.1]
                                         required for co-located clients)
-                            stdio       newline-delimited JSON (NDJSON)        [post-MVP]
-                            unix socket NDJSON                                 [post-MVP]
+                            stdio       newline-delimited JSON (NDJSON)        [deferred]
+                            unix socket NDJSON                                 [deferred]
 ```
 
 The engine-facing service behind the protocol speaks Layer 1/2 only: the
@@ -1119,25 +1490,36 @@ Immediate consequences:
   the same binary, and WS when attaching to an already-running daemon — same
   client code either way.
 - **v0.1 ships exactly two transports: in-process and WebSocket.** stdio and
-  Unix sockets are designed for but land post-MVP (stdio then enables editor
+  Unix sockets are designed but deferred (stdio then enables editor
   integrations that prefer child-process models).
 - All network transports are localhost-only for the MVP.
 
 Protocol surface (transport-independent):
 
-- Handshake negotiates `protocol_version`.
+- Every JSON-RPC envelope uses an exact `JsonRpcVersion` that can only emit or
+  accept the string `"2.0"`.
+- Handshake uses an exact `ProtocolVersion` that can only emit or accept the
+  JSON number `6`.
+- Durable events use an exact `EventSchemaVersion` that can only emit or accept
+  the JSON number `6`. Every earlier protocol/event version, including 5, is
+  rejected; no compatibility path exists.
 - Methods (sketch): `session.create`, `session.list`, `session.get`,
   `session.children`, `session.tree`, `session.resume` (re-resolves
   interrupted pending tool calls, §5.4), `run.start`
-  (idempotent via `client_run_id`, durably enforced by the engine; a
+  (optional frozen per-run `profile` override; idempotent via `client_run_id`,
+  durably enforced by the engine; a
   conflicting reuse returns JSON-RPC `-32602` with
   `data.code = "idempotency_conflict"` plus `session_id` and
   `client_run_id`), `run.steer`, `run.cancel`,
   `run.tool_stdin` (ordered base64 writes + `eof` to a running tool call,
   §7.1),
-   `events.subscribe` (cursor-based replay + live tail), `approval.respond`,
-   `provider.list_models`, `agent.list` (user-invocable profiles: types
-   `primary` and `all`, §9). Post-MVP additions: `session.fork`.
+   `events.subscribe` (cursor-based replay + live tail), `session.rename`
+   (`Set`/`Clear`/`Reset`, idempotent through the replay-rebuilt
+   `client_rename_id` index),
+    `approval.respond`, `approval.list`, `catalog.provider.list`,
+    `catalog.model.list`, `provider.connect`, `model.list` (revisioned runnable
+    model snapshot), `agent.list` (user-invocable profiles: types
+   `primary` and `all`, §9). Deferred additions: `session.fork`.
 - Tool providers registered after the engine opens are visible only to a later
   model turn; an in-flight turn retains the tool set assembled when it began.
 - Server → client notifications carry persisted events with per-session
@@ -1149,9 +1531,12 @@ Protocol surface (transport-independent):
   calls. An output snapshot includes its `stdout` or `stderr` stream explicitly
   so an empty snapshot remains unambiguous. `approval.respond` includes the
   owning `session_id`, because approval IDs are resolved by that session's
-  event log.
+  event log. It also carries the exact request revision and operation
+  fingerprint; no scope field exists.
 - `ts-rs` generates TypeScript bindings from `protocol` types; `schemars`
-  generates JSON Schemas (tool parameters, protocol).
+  generates JSON Schemas (tool parameters, protocol). Protocol-owned TS
+  generation maps JSON integers to `number`, never `bigint`, and every
+  `Option` omitted by Serde is an optional property (nullable on input).
 - Wire enum encoding is stable: data-carrying protocol enums use internally
   tagged `snake_case` objects with a `type` discriminator, while unit enums
   are `snake_case` strings; `DepthLimit` uses adjacent `kind`/`value` tags,
@@ -1168,10 +1553,272 @@ Protocol surface (transport-independent):
   attaching to a running one. No privileged access to engine internals.
   Renders the session tree, live child streams, approval prompts, and live
   tool output with stdin interaction (§7.1).
-- `cookie_agent` binary crate: `cookie_agent` (TUI, auto-spawns/connects daemon),
-  `cookie_agent daemon` (WebSocket transport; stdio post-MVP), plus
-  non-interactive conveniences later.
-- Web and VS Code: post-MVP, consuming the generated TS bindings.
+- `cookie_agent` binary crate: `cookie` (TUI, auto-spawns/connects daemon and
+  opens a fresh root session by default), `cookie attach` (TUI attached to an
+  existing daemon without replacing its session selection), `cookie daemon`
+  (WebSocket transport; stdio deferred), plus non-interactive conveniences
+  later.
+- In the ordinary TUI view, Tab and Shift-Tab cycle a **client-local draft
+  profile** across enabled `primary`/`all` profiles; `subagent`, `internal`, and
+  disabled profiles are never user-selectable. Cycling sends no RPC, creates no
+  session, changes no watched-session/cache state, and does not mutate the
+  current session metadata. The draft is merely the optional `profile` field
+  attached to the next `run.start` submitted for the current session. A failed
+  submission leaves the local draft available for retry. Once `run.start` is
+  accepted, `RunStarted` is authoritative and freezes the complete effective
+  profile for that run as specified in §4.6. Further Tab changes affect only a
+  later run; an accepted active run, all of its retries/fallbacks/tools,
+  approvals, and internal work remain on their frozen profile. The new-session
+  profile picker retains its own local Tab navigation while open, independent
+  of this per-run draft.
+- The TUI always stacks full-width regions vertically: a bounded Agents region
+  at the top, the transcript, a status row when space permits, and the input at
+  the terminal bottom. On tiny terminals the Agents region shrinks before it
+  can displace or overlap the input. The input is a grapheme-safe multiline
+  editor with three content rows by default (its border is outside those rows),
+  display-column wrapping at the actual inner width, and a vertically scrolling
+  viewport that keeps the cursor visible after edits and terminal resizes. A
+  buffer ending exactly at the inner width has a trailing empty visual row, so
+  the insertion cursor is at column zero on the following row. Crossterm resize
+  events explicitly autoresize the ratatui terminal, invalidate rendering, and
+  schedule an immediate redraw before later navigation uses the new width.
+- Message and tool-stdin submission keep bare Enter as submit/send. Newlines use
+  OpenCode's practical defaults: Shift-Enter, Ctrl-Enter, Alt-Enter, or Ctrl-J.
+  This was compared against OpenCode commit
+  `32f278b48f1a495611165d8a9f1ace0b512933e2`, specifically
+  `packages/tui/src/config/keybind.ts` (`input_submit = return`,
+  `input_newline = shift+return,ctrl+return,alt+return,ctrl+j`),
+  `packages/tui/src/keymap.tsx` (the managed textarea input layer), and
+  `packages/tui/src/component/prompt/index.tsx` (the multiline textarea and
+  submit path). cookie_code requests crossterm's keyboard-enhancement protocol,
+  so modified Enter works when the terminal/multiplexer reports it; legacy
+  terminals may collapse modified Enter to bare Enter, which is
+  indistinguishable and therefore submits. Ctrl-J remains the portable
+  explicitly reported fallback in crossterm raw mode. The on-screen hint names
+  Ctrl-J plus Shift/Alt-Enter and marks modified Enter as terminal-dependent.
+- The conversation pane reserves its rightmost inner column for a scrollbar
+  whenever its session can overflow. Content layout and block hit regions never
+  extend into that column, so the track is always grabbable. Scrollbar state is
+  the exact top offset plus the total rendered line height, resolved through
+  one shared geometry helper used by rendering, hit testing, and drag math —
+  no ratatui `ScrollbarState` position/content-length folding. Thumb **height**
+  is strictly a function of total content height and viewport height
+  (`ceil(viewport² / content)` clamped to the track), never of scroll offset,
+  position, or follow state: for unchanged content and viewport, dragging
+  top→middle→bottom keeps an identical thumb rect height, and at the maximum
+  offset the thumb sits flush against the track bottom at full size while
+  following re-engages without hiding or shrinking it. Thumb **top** is the
+  only position-dependent value: offset 0 maps to the first track row and the
+  maximum valid top offset `content − viewport` maps flush to the last.
+  Mouse presses on the thumb capture a grab-anchored drag that resolves against
+  the press-time geometry even when the pointer leaves the track; presses on
+  the bare track page to the pressed position; release ends the capture.
+  Resize and content mutation re-resolve geometry every frame from the same
+  cached transcript layout, so the offset is always clamped into the valid
+  range and the thumb height changes only when that geometry truly changes.
+  Mouse wheel over the scrollbar column takes priority over content scrolling,
+  and any scroll landing exactly on the last valid top offset re-engages
+  live-tail following.
+- Bracketed paste is enabled and normalized from CRLF/CR to LF before one
+  atomic editor insertion, so pasted newlines never act as submit keys. A
+  submission containing only whitespace is retained and ignored. Otherwise the
+  exact multiline text is sent to `run.start`, `run.steer`, or tool stdin.
+  Client slash commands are recognized only for single-line input; any input
+  containing a newline is always sent verbatim as a prompt, preventing pasted
+  multiline text beginning with `/` from executing a client command.
+- Completed tool blocks render rich titles, text, structured metadata,
+  truncation references, and attachment MIME/length/digest/reference metadata.
+  They never render attachment bytes or raw base64.
+- Protocol-v6 model projections render the exact safe configured/connected model
+  identity, ordered replay dispositions, committed normalized usage and finish
+  data, structured fallback errors, Oven model/provider tool-call identities,
+  and whether an approval originated in policy or in the model. Native replay
+  payloads and unsafe provider bodies are never rendered.
+- Approval responses are optimistic and view-only: clicking or keying
+  approve/reject/cancel atomically captures the exact
+  (approval id, request revision, operation fingerprint, decision) tuple,
+  dismisses the modal before any await, marks the request as submitting so
+  duplicate actions are ignored, and shows a concise `Approval submitted…`
+  status while `approval.respond` proceeds asynchronously. Nothing executes
+  locally. Approval submission is global single-flight across sessions: while
+  its pending marker exists, every queued approval remains hidden, and switching
+  sessions does not clear that marker. The matching response clears the marker,
+  while durable event/replay/list reconciliation may clear it first when the
+  exact captured approval is no longer pending. Exact approval identity and
+  monotonically assigned local request IDs make delayed callbacks no-ops, so
+  they cannot clear a newer submission, overwrite its status, or restore stale
+  UI. A transport/typed failure restores the modal with its exact captured
+  identity only while the request is still pending or escalated and unexpired —
+  cancellation or expiry in flight never resurrects stale UI, and
+  revision/fingerprint conflicts (`approval_revision_conflict`,
+  `operation_fingerprint_mismatch`, `operation_changed`) trigger an
+  approval-list refresh and are never silently resubmitted. Only after the
+  in-flight submission resolves may the next queued approval become visible.
+- `TextDelta` and `ReasoningDelta` remain unkeyed durable protocol events; the
+  TUI projects their authoritative sequence order into one assistant transcript
+  item per model attempt. Each item owns ordered `Text` and `Thinking` child
+  segments. Consecutive deltas of the same kind merge into one child keyed by
+  the first delta sequence; a kind transition creates a new stable child.
+  `ModelReplayEvaluated` (new attempt), `ModelTurnCommitted`,
+  `AttemptAbandoned`, `ToolCallStarted`, run terminal events, and user-turn
+  boundaries close the open projection. The open assistant is tracked directly,
+  not inferred from the transcript tail, so reasoning-before-text,
+  text/thinking alternation, thinking-only output, and interrupted partial
+  output remain one assistant item for that attempt. Tool items remain separate
+  siblings. Replay continues to build a scratch projection and swaps it only at
+  a validated `ReplayEnd`; an incremental `ReplayStart` closes the cloned open
+  assistant before reducing replayed events so segments never merge backward
+  across the replay boundary. No protocol/event or persistence schema changes
+  are involved.
+- Assistant `Text` children are parsed into a TUI-owned block model from
+  CommonMark/GFM events with `pulldown-cmark` 0.13.4 and rendered directly as
+  ratatui spans. Headings, emphasis, inline code,
+  links (including a visible destination), lists, quotes, task markers,
+  rules, and fenced code have terminal-native layouts. GFM tables render as
+  semantic grids — box borders, a bold (never color-only) header row,
+  per-column left/center/right alignment — computed from display widths with
+  deterministic shrink-widest-first allocation; cells wrap on grapheme
+  boundaries without overflowing, and below the minimum useful width the
+  table degrades to a readable stacked `Header: value` form. Cell inline
+  markup keeps its semantic styles (inline code has no contrasting
+  background), cell text is control-character sanitized, and streamed
+  incomplete tables complete through the ordinary tail reparse. Table rows
+  participate in the owning assistant gutter, layout cache, hit regions, and
+  resize reflow like any other content. Fenced code is
+  highlighted through a TUI-owned `Highlighter` trait backed by `syntect` 5.3.0;
+  unknown languages, unclosed fences, unavailable syntax/theme data, and
+  highlighting errors fall back to plain text rather than dropping content.
+  Inline code never uses a contrasting background: it keeps the surrounding
+  assistant-text background and is distinguished by a semantic foreground plus
+  bold, with the source backticks remaining visible, so the distinction never
+  relies on color alone in mono/no-color or high-contrast themes.
+- Expanded `read` tool output is syntax-highlighted through the same
+  highlighter and theme quantization. The language is inferred
+  deterministically from the extension of the exact `path` argument recorded
+  in the tool call; unknown extensions, failed calls, binary/image/PDF
+  summaries, and trailing engine-authored metadata (truncation retention
+  references, attachment descriptors) always render plain. Highlighting is a
+  render-layer concern only: the tool gutter, wrapping, truncation/artifact
+  references, and the per-item layout cache (keyed by item identity/version,
+  width, theme, and interaction state) are unchanged.
+- Streaming Markdown uses an incrementally committed stable prefix plus a
+  reparsed open tail. An unfinished paragraph/list/fence remains in the open
+  tail until a subsequent block makes the preceding block stable. Stable blocks
+  record reference-link/image dependencies and the effective definition
+  signatures that resolved them. A new or still-streaming definition that
+  changes one of those signatures triggers a bounded full-item reparse, keeping
+  incremental output semantically identical to full CommonMark parsing without
+  penalizing ordinary reference-free streaming.
+- Transcript layout is cached per item by stable item identity, item version,
+  width, expansion state, session generation, and theme. Assistant child
+  layouts are additionally cached by stable child identity/version plus width,
+  theme, expansion, selection, and render-only streaming state. A streamed
+  child delta or tool-output delta therefore invalidates only its owning child
+  or item rather than the complete transcript. The assembled line list and
+  block hit regions come from the same cached layouts, preserving scroll and
+  mouse-hit safety.
+- User, assistant, tool, error, and internal-event items have explicit textual
+  headers and distinct gutter shapes; color is supplemental, never the only
+  role or state signal. An assistant item has exactly one `ASSISTANT` header and
+  continuous outer gutter. A `Thinking` child is an in-place collapsible row
+  (`▸ thinking (N lines hidden)` / `▾ thinking`) whose expanded body is plain,
+  wrapped reasoning-styled text under an inner sub-gutter; it is never parsed as
+  Markdown or syntax highlighted. Only the latest open thinking child adds the
+  render-only streaming `…`, removed at a kind/attempt/run boundary. There is
+  no top-level reasoning item or `REASONING` header. Narrow terminals use one
+  compact `[A]` tag and never an `[R]` tag while the existing always-top Agents,
+  transcript, status, and bottom multiline-input stack remains authoritative.
+- Collapsible thinking/tool blocks are mouse-first: clicking a block's hit
+  region selects and toggles it, and `/block next|previous|toggle|clear`
+  provides the discoverable keyboard-accessible command path. Navigation,
+  reveal order, and mouse hit regions flatten thinking children and tool
+  siblings in actual render order. Expansion is keyed per session and
+  child/tool identity, so it survives streaming, replay swaps, and session
+  switches; selection is stable across scrolling and resize and is cleared when
+  switching sessions or when the selected segment disappears. Every toggle row
+  shows **exactly one chevron** — `▸` collapsed, `▾` expanded; selection,
+  hover, and focus are conveyed only through style (underline emphasis on the
+  role color, distinct in mono/no-color), never through a second triangle or
+  other selection glyph.
+- The Agents tree has a stable hierarchy root independent of the currently
+  viewed session. Clicking or `/watch`-ing a descendant changes only the
+  conversation and the highlight: the root snapshot is retained, every tree
+  refresh keeps querying the original root, and the cursor is retained by
+  `SessionId` across refreshes rather than by row index. The watched session
+  carries a distinct `●` marker; the cursor row is styled separately. Selecting
+  a session in the `/sessions` picker is the intentional reroot action and is
+  the only gesture that replaces the root. Tree rows show the durable session
+  title prominently (profile name as fallback) with only a shortened ID as
+  subdued secondary metadata — never the full session UUID.
+- The `/connect` provider picker and the `/sessions` picker filter
+  responsively while typing. Provider matching covers name, ID, documentation
+  URL, endpoint, and credential field labels (the matched field is annotated);
+  session matching covers title, profile, and full ID. Backspace edits the
+  query, Ctrl-U clears it, an empty result renders a no-results state, and
+  keyboard and mouse selection operate on the filtered rows. Credential
+  masking, buffer zeroization, and request redaction are unchanged by
+  filtering.
+- The TUI loads one strict, independent configuration file —
+  `$XDG_CONFIG_HOME/cookie_agent/tui.toml`, falling back to
+  `~/.config/cookie_agent/tui.toml` — with no workspace layer and no
+  environment-variable override. Schema version 1 has exactly two optional
+  keys: `minimum_event_level` (`debug|info|warning|error`, default
+  `warning`) and `theme` (`default|mono|high-contrast`). Precedence is
+  `tui.toml theme` > `COOKIE_THEME` > terminal detection, with `NO_COLOR` and
+  `TERM=dumb` always forcing monochrome. A missing file yields defaults;
+  unknown keys, wrong types, and invalid values are rejected with an
+  actionable path/key error that never echoes file contents. The file loads
+  identically for the in-process and attached TUI without touching engine
+  config or protocol.
+- Model warnings are projected as dedicated warning-level diagnostic items —
+  never error items. Each warning names its exact owning configured/connected
+  model identity (the model recorded by the owning `ModelTurnCommitted`),
+  renders with the warning (yellow) semantic style, and carries a textual
+  `[W]` header so a child-session warning is never attributable to the parent
+  and mono/no-color output keeps the distinction. Ownership stays durable in
+  the child session's own event projection: warnings are never injected into
+  the parent's transcript, tool results, or model-visible context. Because the
+  TUI subscribes every session in the watched delegation tree, the conversation
+  view additionally aggregates warnings from strict descendants of the viewed
+  session as read-only warning rows attributed with the child session title
+  (profile fallback), the shortened session ID as secondary metadata, and the
+  owning model identity — nested descendants surface all the way to the root
+  view. The viewed session's own warnings render locally inside its transcript,
+  so a warning never appears twice in one view. Replay swaps and tree refreshes
+  reproduce the same attribution because the aggregate is recomputed per frame
+  from the durable per-session projections and the current tree.
+- Diagnostic rows (formerly undifferentiated internal/error notices) are a
+  TUI-only leveled projection: each reduced diagnostic carries an exact
+  `EventLevel { Debug, Info, Warning, Error }` classified centrally at
+  reduction time; durable protocol events are unchanged. DEBUG is low-level
+  replay decisions/details, cache IDs/scopes, and subscription/recovery
+  internals; INFO is routine run/model/internal-agent lifecycle plus
+  successful checkpoints and title commits; WARNING is model warnings, any
+  discarded/foreign/invalid/reconstructed replay or context-cache
+  disposition, compaction fallback, truncation, retries, and abandoned
+  attempts; ERROR is run/tool/internal-agent/approval/protocol/replay
+  failures and unrecoverable storage/transport errors. Context/native replay
+  discard dispositions render as WARNING with the exact model and a concise
+  human-readable reason, never a generic error. Filtering is view-only: it
+  applies only to diagnostic rows — never user/assistant text, thinking,
+  tool results, approvals, or session state — hidden rows remain in the
+  projection and replay, and lowering the threshold reveals them without
+  refetch. The conversation title shows the active filter, and
+  `/events debug|info|warning|error` changes it for the current view without
+  rewriting `tui.toml`. Every row renders a textual badge (`[D] [I] [W] [E]`)
+  with the level's semantic style, so levels are distinguishable in
+  mono/no-color. Root aggregation of child warnings remains attributed by
+  title/profile/model/short session id and uses the viewing TUI's threshold;
+  persistence and model context are never affected.
+- The TUI theme layer provides `default`, `mono`, and `high-contrast` semantic
+  palettes. `COOKIE_THEME=mono`, `NO_COLOR`, or `TERM=dumb` forces
+  monochrome regardless detected terminal capability. High contrast uses a
+  distinct bright ANSI-16 palette (plus explicit modifiers for inline code and
+  selection), rather than default RGB colors with added bold. Default-theme
+  RGB colors are quantized to true-color, ANSI-256, or ANSI-16 capabilities
+  before ratatui rendering. Styling remains readable in monochrome through
+  labels, glyphs, borders, and text modifiers.
+- Web and VS Code are deferred frontends consuming the generated TS bindings.
 
 ---
 
@@ -1182,8 +1829,8 @@ Protocol surface (transport-independent):
 | Runtime | tokio (rt-multi-thread, macros, sync, time, process, signal, fs, io-util, net) |
 | Server | axum 0.8 (ws), tower-http (cors, request-id, trace) |
 | Wire | serde, serde_json; schemars; ts-rs |
-| Providers | reqwest 0.13 (rustls, stream), eventsource-stream, async-openai |
-| Config | figment (toml, env) |
+| Models | exactly pinned Oven SDK and explicit adapter crates |
+| Config | Figment (built-in defaults + TOML composition only; no environment layer) |
 | CLI | clap 4 (derive) |
 | Process exec | process-wrap with the `tokio1` feature (process groups / job objects) |
 | Search | ignore, regex |
@@ -1191,8 +1838,8 @@ Protocol surface (transport-independent):
 | Diff display | similar (rendering only) |
 | IDs / time | uuid v7, jiff (RFC 3339 serialization) |
 | Errors / observability | thiserror, anyhow, async-trait, tracing + tracing-subscriber (env-filter) |
-| TUI (MVP) | ratatui 0.30, crossterm |
-| Testing | scripted fake provider, insta (json + redactions), tempfile, wiremock |
+| TUI (MVP) | ratatui 0.30, crossterm, pulldown-cmark 0.13.4, syntect 5.3.0 (`regex-fancy`) |
+| Testing | `ScriptedModel`, insta (json + redactions), tempfile; published Oven adapter suites |
 
 MSRV: Rust 1.88 (ts-rs floor).
 
@@ -1200,31 +1847,64 @@ MSRV: Rust 1.88 (ts-rs floor).
 
 ## 14. Testing strategy
 
-1. **Scripted fake provider**: deterministic in-memory provider yielding
-   scripted normalized event streams — the primary agent-loop test double.
+1. **`ScriptedModel`**: deterministic in-memory Oven model queuing
+   `Result<StreamPart, ModelError>` items, delays, and cancellation points —
+   the primary agent-loop test double.
 2. **Snapshot tests** (insta) for protocol events, tool transcripts, and
    config snapshots; IDs/timestamps redacted.
-3. **wiremock** for provider HTTP adapters (auth, errors, SSE chunking).
+3. **Published Oven adapter suites** own HTTP auth, error, framing, and stream
+   conformance; this workspace verifies exact adapter pins, explicit
+   construction, capability honesty, and request/replay integration.
 4. **Delegation lifecycle tests**: idempotent re-delivery at every crash
    window in §5.4 (including the linked-but-unstarted child, the
    reservation-without-journal-record window, journal append-failure
    rollback, and journal reservation races); depth-limit arithmetic;
    cancellation propagation; torn-tail truncation.
 5. **Permission evaluation tests**: rule precedence, bash sub-command
-   parsing, path matching, decision traces.
-6. Tool tests on `tempfile` workspaces (edit conflict handling, atomic writes).
-7. **Streaming/interaction tests** (§7.1): delta ordering and stdout/stderr
+   parsing, path matching, decision traces, and the explicit layer consequence
+   that a later workspace allow overrides a matching user deny. Protocol-v6 approval tests cover
+   exact version-6 handshakes/events, strict version-5 rejection, golden
+   operation/resource domain hashes, complete prepared identity, provenance
+   exclusion, invalid/duplicate resource bindings, process-local tree-grant
+   rejection, `operation_changed`, unsupported-platform pre-approval failure,
+   restart cancellation, and proof that replay never executes or reconstructs
+   a prepared capability. JSON Schema and TypeScript snapshots are regenerated
+   from the same strict types.
+6. **CLI/config startup tests**: removed workspace-acceptance CLI input is
+   rejected before and after `daemon`; local noninteractive startup loads and
+   validates workspace TOML directly; logical paths survive diagnostics;
+   attach/connect remain workspace-independent; no acceptance artifact is
+   created; malformed, symlink, and FIFO stale `trust.json` objects remain
+   untouched without blocking startup.
+7. Tool tests on `tempfile` workspaces (edit conflict handling, atomic writes).
+   Media coverage includes approved image/PDF persistence, malformed and
+   oversize rejection, path-scoped permission enforcement, private atomic
+   storage, restart/replay, and absence of binary/secret bytes in JSONL.
+8. **Streaming/interaction tests** (§7.1): delta ordering and stdout/stderr
    separation, ring-buffer truncation, gap markers for lagging subscribers,
    atomic snapshot-to-live handoff (no lost/duplicated bytes), disconnected
    clients, stdin ordering/EOF/rejection-for-non-running calls, cancellation
    discarding pending stdin, final deltas preceding `ToolCallCompleted`, and
    only the bounded final result entering model history.
+9. **TUI rendering tests**: deterministic inline snapshots cover Markdown,
+    syntax-highlighting fallback/aliases, and semantic themes; Unicode wrapping,
+    forward reference links/images, tiny terminals, monochrome operation,
+    merged assistant thinking/text ordering, attempt/tool/terminal boundaries,
+    replay-stable child IDs, streaming indicators, independent thinking/tool
+    navigation and hit regions, keyboard-only operation, and block hit regions
+    are exercised directly. Parse-byte/pass plus per-item and per-child
+    layout-pass counters enforce deterministic streaming budgets without
+    wall-clock assertions.
+
+CI runs protocol formatting, checking, warning-free clippy, tests, snapshot
+verification, and rustdoc on stable Rust and the Rust 1.88 MSRV. Version-5
+goldens are rejection fixtures only; no compatibility decoder is built.
 
 ---
 
-## 15. MVP definition
+## 15. Current implementation and v6 foundation
 
-v0.1 ships when all of these work end-to-end:
+The completed v0.1/Oven integration is defined by these end-to-end properties:
 
 **Daemon and engine**
 - engine + server composed by `cookie_agent`; JSON-RPC over the transport
@@ -1232,26 +1912,32 @@ v0.1 ships when all of these work end-to-end:
 - per-session actors with out-of-mailbox tool execution (§4.1), steering at
   turn boundaries, full cancellation
 
-**Providers and tools**
-- Providers: Anthropic; OpenAI (Completions **and** Responses);
-  OpenAI-compatible (`base_url`); per-agent **fallback chains** with error
-  classification, per-run stickiness, and `ModelFallback` events (§6.1)
-- Tools: read, write, edit (optimistic exact-match), bash (process groups,
-  streamed stdout/stderr, user stdin), grep, glob, list — plus
+**Models and tools**
+- Models: immutable configured `ModelSet` with explicit Oven adapters;
+  alias-only per-agent fallback chains with error classification, per-run
+  stickiness, and `ModelFallback` events (§6.3)
+- revisioned models.dev provider/model catalog, request-only provider
+  credential connection, and revisioned runnable `model.list` projections
+- Tools: read (including directory listings), write, edit (optimistic exact-match), bash (process groups,
+  streamed stdout/stderr, user stdin), grep, glob — plus
   auto-injected `delegate`
 - All tool outputs capped with truncation signaling
 
 **Configuration and permissions**
-- figment-layered TOML (user / workspace / env) with the custom
-  permission-rule concatenation merge (§9)
+- Figment-composed configuration layers (`built-in defaults < user TOML <
+  workspace TOML`) with the custom permission-rule concatenation merge;
+  environment values are available only through restricted explicit
+  `${env:NAME}` interpolation in approved model fields (§9)
 - agent profiles with delegation blocks; policy snapshots at session
   creation (child snapshots contain global rules + their own profile only —
   never parent-profile rules)
 - agent types (`primary` / `subagent` / `all`) enforced at `session.create`
   and in delegate schema generation (§9)
-- workspace trust prompt backed by `trust.json`
-- tiered ask-on-write permissions with rules, hard denies, decision traces,
-  and the tree-shared runtime approval store (§8)
+- unconditional validated workspace loading with no persisted acceptance state;
+  stale `trust.json` objects are ignored untouched
+- ordered permission rules with ask-by-default fallback and decision traces;
+  exact approval-v6 requests, decisions, doom-loop/cancellation events, and
+  server-authored tree grants (§8)
 
 **Sessions and subagents**
 - JSONL event logs + delegation journal (journal actor, torn-tail recovery);
@@ -1261,12 +1947,17 @@ v0.1 ships when all of these work end-to-end:
 - delegate lifecycle: depth-limit arithmetic, journal idempotency, cancellation
   propagation, bounded results
 - clients can observe and steer any session in the tree live
+- durable bounded context checkpoints, generic internal-agent lifecycle,
+  session titles/rename semantics, and frozen per-run profile overrides
 
 **Frontend**
 - ratatui TUI over in-process or WS transport: stream, steer, answer
   approvals, watch live tool output and respond over stdin, browse/expand
-  the live subagent tree
+  the live subagent tree; incrementally render Markdown and highlighted fenced
+  code with semantic no-color-safe message blocks
 
-**Explicitly post-MVP**: `session.fork`, stdio/Unix-socket transports,
-compaction, MCP, web frontend, VS Code extension, SQLite projection, artifact
-store, project-persistent approvals, plugin model.
+**Explicitly deferred beyond the current implementation**: `session.fork`,
+stdio/Unix-socket transports, MCP, web frontend, VS Code extension, SQLite
+projection, project-persistent approvals outside a session tree, and plugin
+models. Compaction, titles, approval v6, draft-profile switching, and the
+models.dev catalog/connect protocol are current v6 design, not deferred work.

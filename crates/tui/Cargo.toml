@@ -1,6 +1,7 @@
 [package]
 name = "cookie_agent_tui"
 version = "0.1.0"
+publish = false
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -12,20 +13,30 @@ workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 base64 = "0.22"
-cookie_agent_protocol = { path = "../protocol" }
-cookie_agent_server = { path = "../server" }
+cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
+cookie_agent_server = { version = "=0.1.0", path = "../server" }
 crossterm.workspace = true
 futures-util.workspace = true
+jiff.workspace = true
+libc.workspace = true
+pulldown-cmark.workspace = true
 ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+syntect.workspace = true
 thiserror.workspace = true
+toml.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+uuid.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
-cookie_agent_config = { path = "../config" }
-cookie_agent_engine = { path = "../engine" }
-cookie_agent_providers = { path = "../providers" }
-jiff.workspace = true
+cookie_agent_config = { version = "=0.1.0", path = "../config" }
+cookie_agent_engine = { version = "=0.1.0", path = "../engine" }
+cookie_agent_models = { version = "=0.1.0", path = "../models" }
+insta.workspace = true
+oven-sdk.workspace = true
 tempfile.workspace = true

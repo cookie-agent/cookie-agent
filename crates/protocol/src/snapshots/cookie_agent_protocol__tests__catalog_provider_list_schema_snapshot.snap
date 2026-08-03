@@ -1,0 +1,92 @@
+---
+source: crates/protocol/src/lib.rs
+expression: schema_for!(CatalogProviderListResult)
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CatalogProviderListResult",
+  "description": "Result for `catalog.provider.list`.",
+  "type": "object",
+  "properties": {
+    "providers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CatalogProvider"
+      }
+    },
+    "snapshot": {
+      "$ref": "#/$defs/CatalogSnapshot"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "snapshot",
+    "providers"
+  ],
+  "$defs": {
+    "CatalogProvider": {
+      "description": "One models.dev provider projection. Environment variable names are safe;\ncredential values are never present.",
+      "type": "object",
+      "properties": {
+        "api": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "documentation_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "npm": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "credential_fields"
+      ]
+    },
+    "CatalogSnapshot": {
+      "description": "Immutable source snapshot identity for models.dev catalog projections.",
+      "type": "object",
+      "properties": {
+        "fetched_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "source",
+        "fetched_at"
+      ]
+    }
+  }
+}

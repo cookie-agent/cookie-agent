@@ -1,0 +1,58 @@
+---
+source: crates/protocol/src/lib.rs
+expression: schema_for!(ProviderConnectResult)
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProviderConnectResult",
+  "description": "Result for `provider.connect`; credential values are never echoed.",
+  "type": "object",
+  "properties": {
+    "client_connect_id": {
+      "type": "string"
+    },
+    "connection": {
+      "$ref": "#/$defs/ProviderConnection"
+    },
+    "model_revision": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "client_connect_id",
+    "connection",
+    "model_revision"
+  ],
+  "$defs": {
+    "ProviderConnection": {
+      "description": "Safe connection projection returned after credentials are stored.",
+      "type": "object",
+      "properties": {
+        "catalog_revision": {
+          "type": "string"
+        },
+        "connected_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "credential_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "provider_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "provider_id",
+        "credential_fields",
+        "connected_at",
+        "catalog_revision"
+      ]
+    }
+  }
+}

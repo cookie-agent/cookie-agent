@@ -1,7 +1,7 @@
 //! Durable session event logs and ephemeral tool-output hubs.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
@@ -11,8 +11,8 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_config::PolicySnapshot;
 use cookie_agent_protocol::{
-    Event, EventEnvelope, OutputDelta, OutputGap, OutputSnapshot, OutputStream, SessionId,
-    ToolCallId,
+    Event, EventEnvelope, EventSchemaVersion, OutputDelta, OutputGap, OutputSnapshot, OutputStream,
+    SessionId, ToolCallId,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -35,17 +35,57 @@ pub enum EventLogError {
     },
     #[error("event log {0} has no SessionCreated record")]
     MissingCreation(PathBuf),
+    #[error("corrupt event log at {path}: {message}")]
+    Corrupt { path: PathBuf, message: String },
+    #[error("event log {path} uses unsupported schema version {found}; expected {expected}")]
+    UnsupportedSchemaVersion {
+        path: PathBuf,
+        found: u32,
+        expected: u32,
+    },
 }
 
 /// The policy extension is deliberately stored only on the creation record.
 /// `EventEnvelope` stays the protocol's event representation; unknown fields
 /// are ignored by protocol-only readers.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct StoredEvent {
     #[serde(flatten)]
     pub envelope: EventEnvelope,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy: Option<PolicySnapshot>,
+}
+
+impl<'de> Deserialize<'de> for StoredEvent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WireStoredEvent {
+            schema_version: EventSchemaVersion,
+            session_id: SessionId,
+            run_id: Option<cookie_agent_protocol::RunId>,
+            seq: u64,
+            timestamp: Timestamp,
+            event: Event,
+            policy: Option<PolicySnapshot>,
+        }
+
+        let wire = WireStoredEvent::deserialize(deserializer)?;
+        Ok(Self {
+            envelope: EventEnvelope {
+                schema_version: wire.schema_version,
+                session_id: wire.session_id,
+                run_id: wire.run_id,
+                seq: wire.seq,
+                timestamp: wire.timestamp,
+                event: wire.event,
+            },
+            policy: wire.policy,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -79,6 +119,7 @@ impl EventLog {
         ) {
             return Err(EventLogError::MissingCreation(path));
         }
+        validate_records(&path, session_id, &records)?;
         Ok(Arc::new(Self {
             path,
             session_id,
@@ -105,6 +146,7 @@ impl EventLog {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let envelope = EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
             session_id: self.session_id,
             run_id,
             seq: events.last().map_or(1, |event| event.envelope.seq + 1),
@@ -143,6 +185,147 @@ impl EventLog {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+fn validate_records(
+    path: &Path,
+    session_id: SessionId,
+    records: &[StoredEvent],
+) -> Result<(), EventLogError> {
+    let mut runs = HashSet::new();
+    let mut approval_owners = HashMap::new();
+    let mut previous_timestamp = None;
+    for (index, record) in records.iter().enumerate() {
+        let envelope = &record.envelope;
+        let expected_seq = index as u64 + 1;
+        if envelope.seq != expected_seq {
+            return corrupt(
+                path,
+                format!(
+                    "event sequence {} is not contiguous; expected {expected_seq}",
+                    envelope.seq
+                ),
+            );
+        }
+        if envelope.session_id != session_id {
+            return corrupt(
+                path,
+                "event envelope session ID does not match its directory",
+            );
+        }
+        if previous_timestamp.is_some_and(|timestamp| envelope.timestamp < timestamp) {
+            return corrupt(path, "event timestamps are not monotonic");
+        }
+        previous_timestamp = Some(envelope.timestamp);
+        if index == 0 {
+            let Event::SessionCreated { meta } = &envelope.event else {
+                return Err(EventLogError::MissingCreation(path.to_owned()));
+            };
+            if envelope.run_id.is_some() || meta.id != session_id || record.policy.is_none() {
+                return corrupt(path, "invalid initial SessionCreated record");
+            }
+            continue;
+        }
+        if record.policy.is_some() || matches!(envelope.event, Event::SessionCreated { .. }) {
+            return corrupt(
+                path,
+                "creation policy or SessionCreated appeared after sequence 1",
+            );
+        }
+        match &envelope.event {
+            Event::RunStarted { .. } => {
+                let Some(run_id) = envelope.run_id else {
+                    return corrupt(path, "RunStarted is missing run_id");
+                };
+                if !runs.insert(run_id) {
+                    return corrupt(path, "run_id has more than one RunStarted event");
+                }
+            }
+            Event::SessionTitleCommitted { commit, .. } => {
+                let user = matches!(
+                    commit,
+                    cookie_agent_protocol::SessionTitleCommit::UserSet { .. }
+                        | cookie_agent_protocol::SessionTitleCommit::UserClear { .. }
+                        | cookie_agent_protocol::SessionTitleCommit::UserReset { .. }
+                );
+                if user != envelope.run_id.is_none() {
+                    return corrupt(path, "SessionTitleCommitted has inconsistent run ownership");
+                }
+                if let Some(run_id) = envelope.run_id
+                    && !runs.contains(&run_id)
+                {
+                    return corrupt(path, "session title references a run before RunStarted");
+                }
+            }
+            Event::ApprovalRequested { request } => {
+                let Some(run_id) = envelope.run_id else {
+                    return corrupt(path, "ApprovalRequested is missing run_id");
+                };
+                if !runs.contains(&run_id) {
+                    return corrupt(path, "approval references a run before RunStarted");
+                }
+                if approval_owners
+                    .insert(request.approval_id(), run_id)
+                    .is_some()
+                {
+                    return corrupt(
+                        path,
+                        "approval_id has more than one ApprovalRequested event",
+                    );
+                }
+            }
+            Event::ApprovalEvaluated { approval_id, .. }
+            | Event::ApprovalEscalated { approval_id, .. }
+            | Event::ApprovalUserDecisionRecorded { approval_id, .. }
+            | Event::ApprovalFinalized { approval_id, .. }
+            | Event::ApprovalCancelled { approval_id, .. }
+            | Event::ApprovalDoomLoopDetected { approval_id, .. } => {
+                validate_approval_owner(path, &approval_owners, *approval_id, envelope.run_id)?;
+            }
+            Event::TreeApprovalGrantCommitted { grant } => {
+                validate_approval_owner(
+                    path,
+                    &approval_owners,
+                    grant.approval_id(),
+                    envelope.run_id,
+                )?;
+            }
+            _ => {
+                let Some(run_id) = envelope.run_id else {
+                    return corrupt(path, "run-owned event is missing run_id");
+                };
+                if !runs.contains(&run_id) {
+                    return corrupt(path, "event references a run before RunStarted");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_approval_owner(
+    path: &Path,
+    owners: &HashMap<cookie_agent_protocol::ApprovalId, cookie_agent_protocol::RunId>,
+    approval_id: cookie_agent_protocol::ApprovalId,
+    event_run_id: Option<cookie_agent_protocol::RunId>,
+) -> Result<(), EventLogError> {
+    let Some(owner) = owners.get(&approval_id) else {
+        return corrupt(
+            path,
+            "approval lifecycle event appeared before ApprovalRequested",
+        );
+    };
+    if event_run_id != Some(*owner) {
+        return corrupt(path, "approval lifecycle event uses a non-owning run_id");
+    }
+    Ok(())
+}
+
+fn corrupt(path: &Path, message: impl Into<String>) -> Result<(), EventLogError> {
+    Err(EventLogError::Corrupt {
+        path: path.to_owned(),
+        message: message.into(),
+    })
 }
 
 /// Reads a JSONL file after removing a crash-torn final record.  A malformed
@@ -423,14 +606,71 @@ const fn stream_index(stream: OutputStream) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::BTreeSet, fs};
 
-    use cookie_agent_protocol::{OutputStream, ToolCallId};
+    use cookie_agent_config::{
+        AgentType, DelegationPolicy, DepthLimit, PolicySnapshot, ProfileSnapshot,
+        ResolvedPermissions, ResultLimits,
+    };
+    use cookie_agent_protocol::{
+        AgentType as WireAgentType, ApprovalReasonCode, ApprovalTrigger, DelegationSnapshot, Event,
+        EventEnvelope, OutputStream, ProfileIdentity, ProfileSnapshot as WireProfileSnapshot,
+        RunId, SessionId, SessionMeta, SessionOrigin, ToolCallId,
+    };
     use serde_json::Value;
     use tempfile::tempdir;
     use uuid::Uuid;
 
-    use super::{OutputHub, OutputMessage, load_jsonl};
+    use super::{EventLog, OutputHub, OutputMessage, StoredEvent, load_jsonl};
+
+    fn stored_event() -> StoredEvent {
+        let session_id = SessionId(Uuid::from_u128(99));
+        StoredEvent {
+            envelope: EventEnvelope {
+                schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+                session_id,
+                run_id: None,
+                seq: 1,
+                timestamp: jiff::Timestamp::now(),
+                event: Event::SessionCreated {
+                    meta: SessionMeta {
+                        id: session_id,
+                        origin: SessionOrigin::Root,
+                        cwd: ".".into(),
+                        profile: WireProfileSnapshot {
+                            name: "test".into(),
+                            agent_type: WireAgentType::Primary,
+                            models: Vec::new(),
+                            tools: Vec::new(),
+                            delegation: DelegationSnapshot {
+                                enabled: false,
+                                allowed_profiles: Vec::new(),
+                                depth_limit: cookie_agent_protocol::DepthLimit::Unlimited,
+                                result_limit_bytes: 1024,
+                            },
+                            permission_rules: Vec::new(),
+                        },
+                        title: None,
+                    },
+                },
+            },
+            policy: Some(PolicySnapshot {
+                profile: ProfileSnapshot {
+                    name: "test".into(),
+                    r#type: AgentType::Primary,
+                },
+                models: Vec::new(),
+                tools: BTreeSet::new(),
+                permissions: ResolvedPermissions { rules: Vec::new() },
+                delegation: DelegationPolicy {
+                    enabled: false,
+                    allowed_profiles: BTreeSet::new(),
+                    depth_limit: DepthLimit::Unlimited,
+                },
+                result_limits: ResultLimits::default(),
+            }),
+        }
+    }
 
     #[test]
     fn load_jsonl_truncates_only_a_torn_tail() {
@@ -443,6 +683,184 @@ mod tests {
             fs::read(&path).expect("read recovered log"),
             b"{\"ok\":true}\n"
         );
+    }
+
+    #[test]
+    fn stored_event_rejects_unknown_fields_and_v3_records() {
+        let mut value = serde_json::to_value(stored_event()).expect("serialize record");
+        value
+            .as_object_mut()
+            .expect("record object")
+            .insert("legacy".into(), Value::Bool(true));
+        assert!(serde_json::from_value::<StoredEvent>(value).is_err());
+
+        let mut value = serde_json::to_value(stored_event()).expect("serialize record");
+        value["schema_version"] = Value::from(3);
+        assert!(serde_json::from_value::<StoredEvent>(value).is_err());
+    }
+
+    #[test]
+    fn event_log_rejects_malformed_creation_identity_and_sequence() {
+        let expected = SessionId(Uuid::from_u128(99));
+        let malformed = [
+            {
+                let mut record = stored_event();
+                record.envelope.seq = 2;
+                record
+            },
+            {
+                let mut record = stored_event();
+                record.envelope.session_id = SessionId(Uuid::from_u128(100));
+                record
+            },
+            {
+                let mut record = stored_event();
+                let Event::SessionCreated { meta } = &mut record.envelope.event else {
+                    unreachable!()
+                };
+                meta.id = SessionId(Uuid::from_u128(100));
+                record
+            },
+            {
+                let mut record = stored_event();
+                record.envelope.run_id = Some(cookie_agent_protocol::RunId(Uuid::from_u128(1)));
+                record
+            },
+            {
+                let mut record = stored_event();
+                record.policy = None;
+                record
+            },
+        ];
+
+        for (index, record) in malformed.into_iter().enumerate() {
+            let directory = tempdir().expect("temporary directory");
+            let path = directory.path().join(format!("events-{index}.jsonl"));
+            let mut bytes = serde_json::to_vec(&record).expect("serialize record");
+            bytes.push(b'\n');
+            fs::write(&path, bytes).expect("write event log");
+            assert!(EventLog::open(path, expected).is_err());
+        }
+    }
+
+    #[test]
+    fn event_log_rejects_cross_run_approval_lifecycle() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        let creation = stored_event();
+        let session = creation.envelope.session_id;
+        let Event::SessionCreated { meta } = &creation.envelope.event else {
+            unreachable!()
+        };
+        let profile = meta.profile.clone();
+        let run_one = RunId(Uuid::from_u128(1));
+        let run_two = RunId(Uuid::from_u128(2));
+        let run_started = |seq, run_id| StoredEvent {
+            envelope: EventEnvelope {
+                schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+                session_id: session,
+                run_id: Some(run_id),
+                seq,
+                timestamp: jiff::Timestamp::now(),
+                event: Event::RunStarted {
+                    client_run_id: format!("run-{seq}"),
+                    input: "input".into(),
+                    profile: profile.clone(),
+                    current_profile: ProfileIdentity {
+                        name: profile.name.clone(),
+                        agent_type: profile.agent_type,
+                    },
+                },
+            },
+            policy: None,
+        };
+        let binding =
+            cookie_agent_protocol::PreparedResourceDigest::from_canonical_binding_bytes(b"binding");
+        let resource = cookie_agent_protocol::PreparedApprovalResource {
+            capability: cookie_agent_protocol::ActionKind::Bash,
+            canonical: cookie_agent_protocol::PreparedResourceIdentity::new("command:test")
+                .expect("identity"),
+            binding_digest: binding.clone(),
+            binding_lifetime: cookie_agent_protocol::PreparedBindingLifetime::RestartStable,
+            boundary: cookie_agent_protocol::ApprovalBoundary::Exact,
+            source: cookie_agent_protocol::ApprovalResourceSource::PrimaryOperation,
+        };
+        let operation = cookie_agent_protocol::PreparedOperationIdentity::new(
+            cookie_agent_protocol::Sha256Digest::of_bytes(b"args"),
+            vec![cookie_agent_protocol::ApprovalCapability {
+                action: cookie_agent_protocol::ActionKind::Bash,
+                operation: cookie_agent_protocol::PreparedCapabilityOperation::new("bash:execute")
+                    .expect("operation"),
+            }],
+            vec![resource],
+            cookie_agent_protocol::Sha256Digest::of_bytes(b"context"),
+        )
+        .expect("prepared operation");
+        let request = cookie_agent_protocol::ApprovalRequest::new(
+            cookie_agent_protocol::ApprovalId::new_v7(),
+            1,
+            ApprovalTrigger::PermissionPolicy,
+            operation,
+            vec![cookie_agent_protocol::ApprovalEvaluation {
+                resource_digest: binding,
+                effect: cookie_agent_protocol::Effect::Ask,
+                trace: cookie_agent_protocol::DecisionTrace {
+                    action: cookie_agent_protocol::ActionKind::Bash,
+                    normalized_resource: "command:test".into(),
+                    candidates: Vec::new(),
+                    effect: cookie_agent_protocol::Effect::Ask,
+                    precedence_reason: "test".into(),
+                },
+            }],
+            cookie_agent_protocol::ApprovalConstraints {
+                allow_once: true,
+                allow_tree_grant: true,
+                cancellable: true,
+                expires_at: None,
+            },
+        )
+        .expect("approval request");
+        let approval_id = request.approval_id();
+        let records = [
+            creation,
+            run_started(2, run_one),
+            run_started(3, run_two),
+            StoredEvent {
+                envelope: EventEnvelope {
+                    schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+                    session_id: session,
+                    run_id: Some(run_one),
+                    seq: 4,
+                    timestamp: jiff::Timestamp::now(),
+                    event: Event::ApprovalRequested { request },
+                },
+                policy: None,
+            },
+            StoredEvent {
+                envelope: EventEnvelope {
+                    schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+                    session_id: session,
+                    run_id: Some(run_two),
+                    seq: 5,
+                    timestamp: jiff::Timestamp::now(),
+                    event: Event::ApprovalEscalated {
+                        approval_id,
+                        reason_code: ApprovalReasonCode::Escalated,
+                    },
+                },
+                policy: None,
+            },
+        ];
+        let bytes = records
+            .iter()
+            .flat_map(|record| {
+                let mut line = serde_json::to_vec(record).expect("serialize record");
+                line.push(b'\n');
+                line
+            })
+            .collect::<Vec<_>>();
+        fs::write(&path, bytes).expect("write event log");
+        assert!(EventLog::open(path, session).is_err());
     }
 
     #[tokio::test]
