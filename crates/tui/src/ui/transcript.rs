@@ -1356,12 +1356,14 @@ mod tests {
     use cookie_agent_protocol::{
         AgentDescriptor, ApprovalBoundary, ApprovalCapability, ApprovalConstraints,
         ApprovalDecisionSource, ApprovalEvaluation, ApprovalFinalDecision, ApprovalFinalOutcome,
-        ApprovalId, ApprovalReasonCode, ApprovalResourceSource, ApprovalRespondErrorCode,
-        ApprovalTrigger, ApprovalUserDecision, CatalogProvider, Event, EventEnvelope,
-        EventSchemaVersion, EventSubscriptionMessage, MatchedPermissionRule, OperationFingerprint,
-        PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
-        PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, SessionId,
-        SessionMeta, SessionTree, Sha256Digest, ToolCallId,
+        ApprovalId, ApprovalInternalDecision, ApprovalInternalDecisionKind, ApprovalListResult,
+        ApprovalReasonCode, ApprovalRecord, ApprovalRequest, ApprovalResourceSource,
+        ApprovalRespondErrorCode, ApprovalStatus, ApprovalTrigger, ApprovalUserDecision,
+        CatalogProvider, Event, EventEnvelope, EventSchemaVersion, EventSubscriptionMessage,
+        MatchedPermissionRule, OperationFingerprint, PreparedApprovalResource,
+        PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
+        PreparedResourceDigest, PreparedResourceIdentity, SessionId, SessionMeta, SessionTree,
+        Sha256Digest, ToolCallFailureCode, ToolCallId, ToolResult,
     };
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -1778,7 +1780,7 @@ mod tests {
         }
     }
 
-    fn approval(session_id: SessionId) -> ApprovalState {
+    fn approval_request() -> ApprovalRequest {
         let resource = PreparedApprovalResource {
             capability: ActionKind::Bash,
             canonical: PreparedResourceIdentity::new("command:git-status")
@@ -1802,18 +1804,12 @@ mod tests {
             Sha256Digest::of_bytes(b"execution context"),
         )
         .expect("prepared operation");
-        ApprovalState {
-            session_id,
-            approval_id: fixed_approval_id(),
-            request_revision: 9,
-            operation_fingerprint: OperationFingerprint::from_prepared_operation(&operation),
-            trigger: ApprovalTrigger::PermissionPolicy,
-            normalized_arguments_digest: operation.normalized_arguments_digest().clone(),
-            execution_context_digest: operation.execution_context_digest().clone(),
-            capability_lifetime: operation.capability_lifetime(),
-            capabilities: operation.capabilities().to_vec(),
-            resources: vec![resource],
-            evaluations: vec![ApprovalEvaluation {
+        ApprovalRequest::new(
+            fixed_approval_id(),
+            9,
+            ApprovalTrigger::PermissionPolicy,
+            operation,
+            vec![ApprovalEvaluation {
                 resource_digest,
                 effect: Effect::Ask,
                 trace: DecisionTrace {
@@ -1828,14 +1824,33 @@ mod tests {
                     precedence_reason: "test".into(),
                 },
             }],
-            constraints: ApprovalConstraints {
+            ApprovalConstraints {
                 allow_once: true,
                 allow_tree_grant: true,
                 cancellable: true,
                 expires_at: None,
             },
-            escalated: false,
+        )
+        .expect("approval request")
+    }
+
+    fn approval_record(session_id: SessionId, status: ApprovalStatus) -> ApprovalRecord {
+        ApprovalRecord {
+            session_id,
+            request: approval_request(),
+            status,
+            internal_decision: None,
+            user_decision: None,
+            final_decision: None,
         }
+    }
+
+    fn approval(session_id: SessionId) -> ApprovalState {
+        crate::state::approval_state_from_record(approval_record(
+            session_id,
+            ApprovalStatus::Escalated,
+        ))
+        .expect("visible approval")
     }
 
     fn filesystem_approval(session_id: SessionId) -> ApprovalState {
@@ -7057,6 +7072,358 @@ mod tests {
         (app, session_id, approval_id)
     }
 
+    fn store_has_visible_approval(store: &StateStore, session_id: SessionId) -> bool {
+        let mut app = test_app();
+        app.store = store.clone();
+        app.selected = Some(session_id);
+        app.current_approval().is_some()
+    }
+
+    #[tokio::test]
+    async fn internal_request_is_hidden_until_escalation_and_cannot_respond() {
+        let session_id = SessionId::new_v7();
+        let request = approval_request();
+        let approval_id = request.approval_id();
+        let (client, sent) = recording_client();
+        let mut app = test_app();
+        app.client = client;
+        app.selected = Some(session_id);
+
+        assert!(app.store.apply_event(projection_event(
+            session_id,
+            1,
+            Event::ApprovalRequested {
+                request: request.clone(),
+            },
+        )));
+        assert_eq!(app.store.sessions[&session_id].approvals.len(), 1);
+        assert!(!app.store.sessions[&session_id].approvals[0].escalated);
+        assert!(
+            app.current_approval().is_none(),
+            "request alone stays hidden"
+        );
+
+        app.answer_approval(ApprovalUserDecision::ApproveOnce).await;
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(app.pending_approval.is_none());
+        assert!(
+            sent.lock()
+                .expect("sent requests lock")
+                .iter()
+                .all(|request| request["method"] != "approval.respond"),
+            "an internal request cannot produce a user response"
+        );
+
+        assert!(app.store.apply_event(projection_event(
+            session_id,
+            2,
+            Event::ApprovalEscalated {
+                approval_id,
+                reason_code: ApprovalReasonCode::Escalated,
+            },
+        )));
+        let visible = app
+            .current_approval()
+            .expect("escalated approval is visible");
+        assert_eq!(visible.approval_id, approval_id);
+        assert_eq!(visible.request_revision, 9);
+        assert_eq!(
+            visible.operation_fingerprint,
+            request.operation_fingerprint().clone()
+        );
+
+        let missing_session = SessionId::new_v7();
+        app.selected = Some(missing_session);
+        assert!(app.store.apply_event(projection_event(
+            missing_session,
+            1,
+            Event::ApprovalEscalated {
+                approval_id: ApprovalId::new_v7(),
+                reason_code: ApprovalReasonCode::Escalated,
+            },
+        )));
+        assert!(
+            app.current_approval().is_none(),
+            "an escalation without its request fails closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn internal_allow_and_deny_never_show_a_modal_and_execution_follows_finalization() {
+        for (decision, approved) in [
+            (ApprovalInternalDecisionKind::Allow, true),
+            (ApprovalInternalDecisionKind::Deny, false),
+        ] {
+            let session_id = SessionId::new_v7();
+            let tool_call_id = ToolCallId::new_v7();
+            let request = approval_request();
+            let approval_id = request.approval_id();
+            let evaluations = request.evaluations().to_vec();
+            let mut app = test_app();
+            app.selected = Some(session_id);
+
+            for (seq, event) in [
+                Event::ToolCallStarted {
+                    tool_call_id,
+                    model_call_id: "approval-test".into(),
+                    provider_item_id: None,
+                    tool: "bash".into(),
+                    arguments: json!({"command":"git status"}),
+                },
+                Event::ApprovalRequested { request },
+                Event::ApprovalEvaluated {
+                    approval_id,
+                    decision: ApprovalInternalDecision {
+                        decision,
+                        source: ApprovalDecisionSource::InternalAgent,
+                        reason_code: if approved {
+                            ApprovalReasonCode::InternalAgentAllowed
+                        } else {
+                            ApprovalReasonCode::InternalAgentDenied
+                        },
+                        evaluations,
+                    },
+                },
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                assert!(
+                    app.store
+                        .apply_event(projection_event(session_id, seq as u64 + 1, event,))
+                );
+                assert!(app.current_approval().is_none());
+            }
+            assert_eq!(
+                app.store.sessions[&session_id].tools[&tool_call_id].status,
+                ToolStatus::Running,
+                "the tool has not completed during internal evaluation"
+            );
+
+            assert!(app.store.apply_event(projection_event(
+                session_id,
+                4,
+                Event::ApprovalFinalized {
+                    approval_id,
+                    decision: ApprovalFinalDecision {
+                        outcome: if approved {
+                            ApprovalFinalOutcome::Approved
+                        } else {
+                            ApprovalFinalOutcome::Rejected
+                        },
+                        source: ApprovalDecisionSource::InternalAgent,
+                        reason_code: if approved {
+                            ApprovalReasonCode::InternalAgentAllowed
+                        } else {
+                            ApprovalReasonCode::InternalAgentDenied
+                        },
+                        feedback: None,
+                        tree_grant_id: None,
+                    },
+                },
+            )));
+            assert!(app.current_approval().is_none());
+            assert_eq!(
+                app.store.sessions[&session_id].tools[&tool_call_id].status,
+                ToolStatus::Running,
+                "finalization precedes the terminal tool event"
+            );
+
+            let terminal = if approved {
+                Event::ToolCallCompleted {
+                    tool_call_id,
+                    result: ToolResult {
+                        title: "git status".into(),
+                        output: "clean".into(),
+                        metadata: json!({}),
+                        truncation: None,
+                        attachments: Vec::new(),
+                    },
+                }
+            } else {
+                Event::ToolCallFailed {
+                    tool_call_id,
+                    code: ToolCallFailureCode::ExecutionFailed,
+                    message: "permission denied by internal approval agent".into(),
+                }
+            };
+            assert!(
+                app.store
+                    .apply_event(projection_event(session_id, 5, terminal))
+            );
+            assert_eq!(
+                app.store.sessions[&session_id].tools[&tool_call_id].status,
+                if approved {
+                    ToolStatus::Completed
+                } else {
+                    ToolStatus::Failed
+                }
+            );
+            assert!(app.current_approval().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn approval_live_and_replay_projection_have_identical_escalation_visibility() {
+        let session_id = SessionId::new_v7();
+        let request = approval_request();
+        let approval_id = request.approval_id();
+        let requested = projection_event(session_id, 1, Event::ApprovalRequested { request });
+        let escalated = projection_event(
+            session_id,
+            2,
+            Event::ApprovalEscalated {
+                approval_id,
+                reason_code: ApprovalReasonCode::Escalated,
+            },
+        );
+
+        let mut live = StateStore::default();
+        live.apply_delivery(ClientDelivery::Live {
+            message: Box::new(EventSubscriptionMessage::Event {
+                event: requested.clone(),
+            }),
+            generation: 0,
+        });
+
+        let mut replay = StateStore::default();
+        replay.apply_delivery(ClientDelivery::ReplayStart {
+            session_id,
+            generation: 0,
+            final_seq: 1,
+            rebuild: true,
+        });
+        replay.apply_delivery(ClientDelivery::ReplayEvent {
+            session_id,
+            generation: 0,
+            final_seq: 1,
+            event: Box::new(requested),
+        });
+        replay.apply_delivery(ClientDelivery::ReplayEnd {
+            session_id,
+            generation: 0,
+            final_seq: 1,
+        });
+        assert!(!store_has_visible_approval(&live, session_id));
+        assert!(!store_has_visible_approval(&replay, session_id));
+
+        live.apply_delivery(ClientDelivery::Live {
+            message: Box::new(EventSubscriptionMessage::Event {
+                event: escalated.clone(),
+            }),
+            generation: 0,
+        });
+        replay.apply_delivery(ClientDelivery::ReplayStart {
+            session_id,
+            generation: 0,
+            final_seq: 2,
+            rebuild: false,
+        });
+        replay.apply_delivery(ClientDelivery::ReplayEvent {
+            session_id,
+            generation: 0,
+            final_seq: 2,
+            event: Box::new(escalated),
+        });
+        replay.apply_delivery(ClientDelivery::ReplayEnd {
+            session_id,
+            generation: 0,
+            final_seq: 2,
+        });
+        assert!(store_has_visible_approval(&live, session_id));
+        assert!(store_has_visible_approval(&replay, session_id));
+    }
+
+    #[tokio::test]
+    async fn approval_list_and_root_child_queues_admit_only_escalated_records() {
+        let root = SessionId::new_v7();
+        let child = SessionId::new_v7();
+        let mut app = test_app();
+        app.tree_root = Some(root);
+        app.tree = Some(SessionTree {
+            session: session_meta(root),
+            children: vec![SessionTree {
+                session: session_meta(child),
+                children: Vec::new(),
+            }],
+        });
+        app.store.sessions.insert(root, SessionState::default());
+        app.store.sessions.insert(child, SessionState::default());
+        let internal_request = approval_request();
+        let internal_approval_id = internal_request.approval_id();
+        assert!(app.store.apply_event(projection_event(
+            root,
+            1,
+            Event::ApprovalRequested {
+                request: internal_request,
+            },
+        )));
+
+        app.apply_approval_list(
+            root,
+            ApprovalListResult {
+                approvals: vec![
+                    approval_record(root, ApprovalStatus::Pending),
+                    approval_record(child, ApprovalStatus::Escalated),
+                ],
+                tree_grants: Vec::new(),
+            },
+        );
+        app.selected = Some(root);
+        assert!(
+            app.current_approval().is_none(),
+            "root pending stays hidden"
+        );
+        assert!(
+            app.store.sessions[&root]
+                .approvals
+                .iter()
+                .any(|approval| approval.approval_id == internal_approval_id && !approval.escalated),
+            "refresh preserves event-projected internal state"
+        );
+        app.selected = Some(child);
+        assert!(
+            app.current_approval().is_some(),
+            "child escalation is visible"
+        );
+        assert!(app.store.apply_event(projection_event(
+            root,
+            2,
+            Event::ApprovalEscalated {
+                approval_id: internal_approval_id,
+                reason_code: ApprovalReasonCode::Escalated,
+            },
+        )));
+        app.selected = Some(root);
+        assert!(
+            app.current_approval().is_some(),
+            "a later escalation still reveals the preserved exact request"
+        );
+
+        app.apply_approval_list(
+            root,
+            ApprovalListResult {
+                approvals: vec![
+                    approval_record(root, ApprovalStatus::Escalated),
+                    approval_record(child, ApprovalStatus::Pending),
+                ],
+                tree_grants: Vec::new(),
+            },
+        );
+        app.selected = Some(child);
+        assert!(
+            app.current_approval().is_none(),
+            "child pending stays hidden"
+        );
+        app.selected = Some(root);
+        assert!(
+            app.current_approval().is_some(),
+            "root escalation is visible"
+        );
+    }
+
     #[tokio::test]
     async fn approval_modal_dismisses_before_the_response_lands_and_ignores_duplicates() {
         let (client, sent, held, _replies) = held_approval_client();
@@ -7230,6 +7597,12 @@ mod tests {
             baseline,
             "a conflict is never silently resubmitted"
         );
+        let requests = sent.lock().expect("sent");
+        let list = requests
+            .iter()
+            .find(|request| request["method"] == "approval.list")
+            .expect("approval list refresh");
+        assert_eq!(list["params"]["status"], "escalated");
     }
 
     #[tokio::test]
@@ -7290,6 +7663,7 @@ mod tests {
             Expired,
             RevisionChanged,
             FingerprintChanged,
+            InternalPending,
             Replayed,
             Refreshed,
         }
@@ -7300,6 +7674,7 @@ mod tests {
             ProjectionChange::Expired,
             ProjectionChange::RevisionChanged,
             ProjectionChange::FingerprintChanged,
+            ProjectionChange::InternalPending,
             ProjectionChange::Replayed,
             ProjectionChange::Refreshed,
         ] {
@@ -7372,6 +7747,14 @@ mod tests {
                         .get_mut(&session_id)
                         .expect("session")
                         .approvals = vec![revised];
+                }
+                ProjectionChange::InternalPending => {
+                    app.store
+                        .sessions
+                        .get_mut(&session_id)
+                        .expect("session")
+                        .approvals[0]
+                        .escalated = false;
                 }
                 ProjectionChange::Replayed => {
                     assert!(app.store.rebuild_session(session_id, 1, Vec::new()));

@@ -1135,8 +1135,9 @@ the aggregate is deny, then ask, then allow.
 
 **Every decision is explainable**: the trace (matched rule id, source layer,
 all candidate matches, normalized resource, precedence reason) is emitted
-with `ApprovalRequested` and rendered by clients. OpenCode's evaluator
-returns only a bare effect; we keep the full derivation.
+with `ApprovalRequested` for durable internal evaluation. Clients render that
+request as a user prompt only after its matching `ApprovalEscalated` event.
+OpenCode's evaluator returns only a bare effect; we keep the full derivation.
 
 ### 8.5 Approvals
 
@@ -1149,11 +1150,14 @@ returns only a bare effect; we keep the full derivation.
   Digests are exactly 64 lowercase hexadecimal characters; malformed,
   uppercase, empty, or wrong-length values are invalid. The resource `source`
   field is audit provenance and never changes the fingerprint.
-- Internal policy/approval-agent work records an `ApprovalInternalDecision`.
-  If user consent is needed, `ApprovalRequested` and `ApprovalEscalated` expose
-  the complete immutable request. Clients answer through `approval.respond`
-  with `approve_once`, `approve_tree`, `reject`, or `cancel` plus optional
-  feedback. There is **no scope editor**.
+- `ApprovalRequested` starts durable internal request/evaluation state and is
+  never itself a user prompt. Internal policy/approval-agent work records an
+  `ApprovalInternalDecision`: allow or deny finalizes without user UI, while
+  ask/escalate emits `ApprovalEscalated` for the already-recorded exact request.
+  Only that escalation makes the pending, unexpired request visible and
+  respondable. Clients answer through `approval.respond` with `approve_once`,
+  `approve_tree`, `reject`, or `cancel` plus optional feedback. There is **no
+  scope editor**.
 - `approval.respond` is accepted only for the exact `(session_id, approval_id,
   request_revision, operation_fingerprint)` and is idempotent by
   `client_response_id`. Reusing that ID with different parameters is an
@@ -1640,7 +1644,10 @@ Protocol surface (transport-independent):
   dismisses the modal before any await, marks the request as submitting so
   duplicate actions are ignored, and shows a concise `Approval submitted…`
   status while `approval.respond` proceeds asynchronously. Nothing executes
-  locally. Approval submission is global single-flight across sessions: while
+  locally. The TUI's root/child queues, replay/live projection, and
+  `approval.list` refresh admit only exact `Escalated`, pending, unexpired
+  records; internal `Pending` requests remain durable but hidden and cannot
+  produce `approval.respond`. Approval submission is global single-flight across sessions: while
   its pending marker exists, every queued approval remains hidden, and switching
   sessions does not clear that marker. The matching response clears the marker,
   while durable event/replay/list reconciliation may clear it first when the
@@ -1648,7 +1655,7 @@ Protocol surface (transport-independent):
   monotonically assigned local request IDs make delayed callbacks no-ops, so
   they cannot clear a newer submission, overwrite its status, or restore stale
   UI. A transport/typed failure restores the modal with its exact captured
-  identity only while the request is still pending or escalated and unexpired —
+  identity only while the request is still escalated and unexpired —
   cancellation or expiry in flight never resurrects stale UI, and
   revision/fingerprint conflicts (`approval_revision_conflict`,
   `operation_fingerprint_mismatch`, `operation_changed`) trigger an

@@ -13,11 +13,11 @@ use anyhow::Context;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
     AgentDescriptor, AgentListParams, AgentType, ApprovalListParams, ApprovalListResult,
-    ApprovalRespondError, ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalUserDecision,
-    CatalogProvider, CatalogProviderListParams, Event, ModelListParams, ProviderConnectParams,
-    ProviderCredentials, RunCancelParams, RunStartParams, RunSteerParams, RunToolStdinParams,
-    SessionCreateParams, SessionId, SessionListParams, SessionMeta, SessionTitle, SessionTree,
-    SessionTreeParams,
+    ApprovalRespondError, ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus,
+    ApprovalUserDecision, CatalogProvider, CatalogProviderListParams, Event, ModelListParams,
+    ProviderConnectParams, ProviderCredentials, RunCancelParams, RunStartParams, RunSteerParams,
+    RunToolStdinParams, SessionCreateParams, SessionId, SessionListParams, SessionMeta,
+    SessionTitle, SessionTree, SessionTreeParams,
 };
 use crossterm::{
     event::{
@@ -2289,7 +2289,7 @@ impl App {
     /// Optimistic approval response: the modal is dismissed immediately and
     /// the exact (id, revision, fingerprint, decision) tuple is sent
     /// asynchronously. Nothing executes locally; failures restore the modal
-    /// only when the request is still pending and unexpired.
+    /// only when the request is still durably escalated and unexpired.
     pub(super) async fn answer_approval(&mut self, decision: ApprovalUserDecision) {
         if self.pending_approval.is_some() {
             return;
@@ -2339,8 +2339,8 @@ impl App {
 
     /// Resolve an in-flight approval response. Success clears the pending
     /// marker; durable resolution arrives through the normal event stream.
-    /// Failure restores the modal only when the request is still pending or
-    /// escalated and unexpired — cancellation/expiry during flight never
+    /// Failure restores the modal only when the request is still escalated and
+    /// unexpired — cancellation/expiry during flight never
     /// resurrects stale UI. Revision/fingerprint conflicts trigger an
     /// approval.list refresh and are never silently resubmitted.
     fn finish_approval_submission(
@@ -2400,7 +2400,7 @@ impl App {
             let result = client
                 .list_approvals(ApprovalListParams {
                     root_session_id,
-                    status: None,
+                    status: Some(ApprovalStatus::Escalated),
                 })
                 .await
                 .map_err(|error| error.to_string());
@@ -2420,12 +2420,10 @@ impl App {
         self.selected
             .and_then(|id| self.store.sessions.get(&id))
             .and_then(|state| {
-                state.approvals.iter().find(|approval| {
-                    approval
-                        .constraints
-                        .expires_at
-                        .is_none_or(|expires_at| expires_at > jiff::Timestamp::now())
-                })
+                state
+                    .approvals
+                    .iter()
+                    .find(|approval| approval.is_visible_user_escalation())
             })
     }
 
@@ -2445,12 +2443,9 @@ impl App {
             .iter()
             .filter(|candidate| candidate.approval_id == approval.approval_id);
         same_id.next().is_some_and(|candidate| {
-            candidate.request_revision == approval.request_revision
+            candidate.is_visible_user_escalation()
+                && candidate.request_revision == approval.request_revision
                 && candidate.operation_fingerprint == approval.operation_fingerprint
-                && candidate
-                    .constraints
-                    .expires_at
-                    .is_none_or(|expires_at| expires_at > jiff::Timestamp::now())
         }) && same_id.next().is_none()
     }
 
@@ -2497,17 +2492,19 @@ impl App {
         session_ids.dedup();
         for session_id in session_ids {
             if let Some(state) = self.store.sessions.get_mut(&session_id) {
-                state.approvals.clear();
+                // The list refresh replaces only the user-visible queue.
+                // Preserve event-projected internal requests so a later,
+                // strictly ordered ApprovalEscalated can still reveal them.
+                state.approvals.retain(|approval| !approval.escalated);
             }
         }
         for record in result.approvals {
             if let Some(approval) = approval_state_from_record(record) {
-                self.store
-                    .sessions
-                    .entry(approval.session_id)
-                    .or_default()
+                let state = self.store.sessions.entry(approval.session_id).or_default();
+                state
                     .approvals
-                    .push(approval);
+                    .retain(|candidate| candidate.approval_id != approval.approval_id);
+                state.approvals.push(approval);
             }
         }
     }

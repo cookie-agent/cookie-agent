@@ -336,14 +336,25 @@ models = ["scripted"]
                 text: "streamed assistant text".into(),
             },
         });
+        let request = approval_request();
+        let approval_id = request.approval_id();
         app.store.apply_event(EventEnvelope {
             schema_version: EventSchemaVersion::current(),
             session_id: session.id,
             run_id: None,
             seq: 3,
             timestamp: Timestamp::now(),
-            event: Event::ApprovalRequested {
-                request: approval_request(),
+            event: Event::ApprovalRequested { request },
+        });
+        app.store.apply_event(EventEnvelope {
+            schema_version: EventSchemaVersion::current(),
+            session_id: session.id,
+            run_id: None,
+            seq: 4,
+            timestamp: Timestamp::now(),
+            event: Event::ApprovalEscalated {
+                approval_id,
+                reason_code: cookie_agent_protocol::ApprovalReasonCode::Escalated,
             },
         });
         for (width, height) in [(40, 12), (80, 24), (160, 50)] {

@@ -36,7 +36,8 @@ pub struct ToolCallState {
     pub detail: String,
 }
 
-/// A pending permission question rendered by the approval modal.
+/// One durable approval request projected for internal evaluation and, only
+/// after escalation, possible user interaction.
 #[derive(Clone, Debug)]
 pub struct ApprovalState {
     pub session_id: SessionId,
@@ -52,6 +53,18 @@ pub struct ApprovalState {
     pub evaluations: Vec<ApprovalEvaluation>,
     pub constraints: ApprovalConstraints,
     pub escalated: bool,
+}
+
+impl ApprovalState {
+    /// User-visible/respondable approvals must have a durable escalation and
+    /// must still be within their response lifetime.
+    pub(crate) fn is_visible_user_escalation(&self) -> bool {
+        self.escalated
+            && self
+                .constraints
+                .expires_at
+                .is_none_or(|expires_at| expires_at > jiff::Timestamp::now())
+    }
 }
 
 /// Leveled diagnostic severity for TUI-only event rows. This is a display
@@ -1225,19 +1238,16 @@ fn approval_request_metadata(
 }
 
 pub(crate) fn approval_state_from_record(record: ApprovalRecord) -> Option<ApprovalState> {
-    let escalated = match record.status {
-        ApprovalStatus::Pending => false,
-        ApprovalStatus::Escalated => true,
-        ApprovalStatus::Approved
+    match record.status {
+        ApprovalStatus::Escalated => {}
+        ApprovalStatus::Pending
+        | ApprovalStatus::Approved
         | ApprovalStatus::Rejected
         | ApprovalStatus::Cancelled
         | ApprovalStatus::Expired => return None,
-    };
-    Some(approval_state_from_request(
-        record.session_id,
-        record.request,
-        escalated,
-    ))
+    }
+    let approval = approval_state_from_request(record.session_id, record.request, true);
+    approval.is_visible_user_escalation().then_some(approval)
 }
 
 fn approval_state_from_request(

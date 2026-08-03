@@ -2,7 +2,7 @@
 source: crates/tui/src/ui/transcript.rs
 expression: "stable_approval_snapshot(&approval, approval_content(&approval))"
 ---
-PERMISSION REQUIRED
+PERMISSION REQUIRED · ESCALATED
 consent target: git status
 approval id: <approval-id>
 request revision: 9
