@@ -86,6 +86,7 @@ auth = {{ type = "credential_store" }}
             .1
             .is_available()
     );
+    assert!(manager.current().model_set().descriptors().is_empty());
     let request = |id: &str, secret: &str| CredentialConnectRequest {
         client_connect_id: id.into(),
         provider_id: ProviderId::new("openai").unwrap(),
@@ -102,6 +103,15 @@ auth = {{ type = "credential_store" }}
             .unwrap()
             .1
             .is_available()
+    );
+    assert_eq!(
+        connected
+            .model_set()
+            .descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.key.to_string())
+            .collect::<Vec<_>>(),
+        ["openai/gpt-5.6-sol"]
     );
     let revision = connected.revision().to_owned();
     let model = connected.model_set().entries().next().unwrap().0.clone();

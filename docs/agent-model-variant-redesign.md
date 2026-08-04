@@ -27,19 +27,19 @@ failure behavior are mandatory.
 5. Variants are request-behavior presets beneath one model, not separate
    models. They can be generated from pinned models.dev reasoning metadata or
    explicitly added, replaced, disabled, and selected as a model default.
-6. The visible assistant header text is exactly `Agent(Model)`. It identifies
-   the frozen producing agent and model; the variant is deliberately omitted
-   from that visible label. The variant remains in structured attribution,
-   picker/message-title state, persistence and replay, diagnostics, and may be
-   shown in explicitly expanded metadata.
-7. The Message panel title remains exactly `Agent(Model-Variant)`. Agent,
-   Model, and Variant are separate hit regions opening their respective
-   selectors. Base is rendered as `base` in the Variant portion.
+6. The visible assistant header text is exactly
+   `Agent(provider/model[variant])`. It identifies the frozen producing agent
+   and exact model selection; base is explicit as `[base]`, and a named variant
+   is preserved exactly, including `[default]`.
+7. The Message panel title uses the same canonical model-selection text. Agent
+   and model selection are separate hit regions, but variant is part of the
+   model selection and has no separate picker.
 
-In those forms, `Agent` is the exact `AgentId` and `Model` is the exact
-`provider/model-id` `ModelKey`; they are placeholders, not literal words. There
-is no additional textual `ASSISTANT` prefix. Rendering never parses identity
-back from the combined string: each portion remains structured data.
+In those forms, `Agent` is the exact `AgentId`; `provider/model` is the exact
+`ModelKey`; and the bracketed value is the exact variant or `base`. They are
+placeholders, not literal words. There is no additional textual `ASSISTANT`
+prefix. Rendering never parses identity back from the combined string: each
+portion remains structured data.
 8. Thinking and tool calls are ordered, collapsible child segments inside
    their owning assistant turn. There are no standalone `REASONING` or `TOOL`
    transcript blocks.
@@ -132,6 +132,10 @@ Thus a generated variant whose ID is `default` remains addressable and is not
 confused with omission. `base` is reserved and cannot be a `VariantId`.
 `ModelKey` is at most 512 bytes, splits at the first `/`, and has valid nonempty
 segments. All wire identities are strict, bounded, schema-generating newtypes.
+Canonical `ModelSelection` formatting is `provider/model[variant]`; `None`
+formats as `[base]`, while a named variant formats with its exact ID. Formatting
+does not alter the structured `{ model, variant }` serialization or protocol
+schema.
 
 `ConfiguredModelDefault` is a separate provider-config type and is always held
 as `Option<ConfiguredModelDefault>`:
@@ -641,11 +645,27 @@ pub struct RunStartParams {
 }
 ```
 
-The selected model must occur exactly once in the resolved agent chain.
-Selecting it chooses the suffix beginning at that model. The selected variant
-replaces only that suffix head's authored/default resolved variant; it must be
-base or an enabled variant of that model. Later suffix entries retain their
-resolved variants. Fallback advances forward and never wraps.
+Root selection uses one coherent model snapshot for catalog publication,
+model/variant validation, authored-entry availability, and plan construction.
+The public root catalog contains every configured, enabled, currently
+executable model in strict `ModelKey` order. Credential-blocked unavailable
+models remain internal resolved entries but are omitted from public model
+descriptors.
+
+The exact selected model/variant may be any public catalog entry. When its
+`ModelKey` occurs in the resolved authored chain, the root plan contains the
+exact requested head followed by the available authored tail after that entry;
+the requested variant never falls back to the authored/default head variant.
+When the selected key is outside the authored chain, the root plan contains a
+synthetic exact head followed by all available authored fallback entries.
+Unavailable authored entries are skipped in both cases. Root eligibility is
+still based on the authored chain being nonempty and containing at least one
+available entry.
+
+Delegated semantics are unchanged: a configured-chain child uses the unique
+authored suffix, replacing only its head with the exact delegated selection and
+preserving its authored tail; fallback advances and never wraps. An empty-chain
+child inherits the parent's active frozen suffix as specified in section 9.
 
 Before `RunStarted`, freeze the complete `AgentSnapshot`: identity, mode,
 description, source/document fingerprint, complete composed prompt and prompt
@@ -897,10 +917,13 @@ pub struct RunSelection {
 
 `AgentSnapshot` contains no auth values, header values, credential-store data,
 or live adapter handles. `AgentDocumentSource` is the unit enum
-`built_in|user|workspace`; raw filesystem paths are not persisted. The full
-`fallback_chain` is the resolved agent chain before a run-selection variant
-override; `RunStarted.selected_suffix` is the authoritative exact suffix after
-that override and is what attempts and child inheritance use.
+`built_in|user|workspace`; raw filesystem paths are not persisted. The wire
+shape is unchanged. For root runs, `fallback_chain` carries the frozen
+exact root plan described in section 6 and `selected_suffix_start` is zero. For
+delegated configured-chain runs it retains the authored-chain semantics;
+empty-chain children carry their inherited exact suffix.
+`RunStarted.selected_suffix` remains the authoritative executable suffix used
+by attempts and child inheritance.
 
 Model/variant and agent descriptor vectors are deterministically sorted by
 their strict IDs. Descriptor projections contain no provider secrets or prompt
@@ -1052,8 +1075,8 @@ or variant name.
 Assistant attribution on live streaming and replay is derived from the frozen
 `RunStarted` plus `ModelAttemptStarted`/`ModelTurnCommitted`, never from the
 current picker, live agent files, current provider config, or an inferred model
-name. The visible header projects `Agent(Model)`; structured metadata retains
-the exact variant.
+name. The visible header projects the exact canonical
+`Agent(provider/model[variant])` selection, including `[base]`.
 
 ## 11. Inline assistant children and selectors
 
@@ -1076,7 +1099,7 @@ pub enum AssistantChild {
 ```
 
 Each attempt/committed model turn has one visible header:
-`<agent-id>(<provider>/<model-id>)`. Text,
+`<agent-id>(<provider>/<model-id>[<variant>])`. Text,
 thinking, and tools remain in model-content order beneath it. Thinking has one
 `▸`/`▾` chevron, plain wrapped text, independent expansion/cache state, and no
 standalone header. Tools are ordered by owning committed model content, not
@@ -1089,11 +1112,18 @@ sanitization, secret redaction, and bounding. Known primary arguments are bash
 command; read/write/edit path; grep/glob pattern; and delegate target plus task
 excerpt.
 
-Message title is `Agent(Model-Variant)` and represents the draft selection.
-Changing it does not mutate an active run. The root Agent selector lists only
-agents with `runnable_as_root = true`; therefore an empty-chain `all` agent is
-not selectable as a root. Model selector lists that draft agent's fallback
-models; Variant selector lists base plus enabled variants for the draft model.
+Message title uses `Agent(provider/model[variant])` and represents the draft
+selection. Changing it does not mutate an active run. The root Agent selector
+lists only agents with `runnable_as_root = true`; therefore an empty-chain `all`
+agent is not selectable as a root. The root model-selection picker uses the
+complete current public model catalog with exactly one row per globally
+available model. Each row shows the model's canonical resolved default as
+`provider/model[base]` or `provider/model[named]` plus its display name, and
+changing to that model initializes that default; reselecting the current model
+retains its current exact variant. Exact variant changes occur only by clicking
+the dedicated `[variant]` region in the Message title, which cycles base then
+named variants lexicographically. There are no variant rows and no Variant
+modal.
 
 The Agents tree has a stable root, rows exactly
 `agent-id:session-title`, immediate monotonic title patching, and text height
@@ -1186,6 +1216,6 @@ TUI render/hit-region snapshots.
 The final stale-claim review must find no accepted text describing
 `.cookie_agent`, schema-v5 config, protocol/event/storage v6 as runnable,
 TOML-agent profiles, model aliases, global permissions, a standalone reasoning
-or tool block, any variant-bearing visible assistant header, inherited
+or tool block, a hidden assistant variant, a separate variant picker, inherited
 parent permissions, inheritance of the parent's original full fallback chain,
 unversioned variant behavior, stale title refresh, or a compatibility decoder.

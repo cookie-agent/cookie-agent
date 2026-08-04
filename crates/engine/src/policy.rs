@@ -39,43 +39,87 @@ impl FrozenRunPolicy {
     }
 }
 
-pub(crate) fn freeze_agent_policy(
+pub(crate) fn freeze_root_agent_policy(
     agent: &ResolvedAgent,
     registry: Arc<AgentRegistry>,
     model_snapshot: Arc<models::ModelSnapshot>,
     selection: &ModelSelection,
-    inherited_suffix: Option<&[models::FrozenModelBinding]>,
-    inherited_depth_ceiling: Option<u32>,
     result_limits: ResultLimits,
 ) -> Result<FrozenRunPolicy, EngineError> {
     let model_set = model_snapshot.model_set();
-    let (fallback_chain, selected_suffix, selected_suffix_start) =
-        if agent.resolved_fallback.is_empty() {
-            let inherited = inherited_suffix
-                .filter(|suffix| !suffix.is_empty())
-                .ok_or_else(|| model_error("empty-chain agent requires a delegated active suffix"))?
-                .to_vec();
-            if inherited[0].resolved.selection != *selection {
-                return Err(model_error(
-                    "delegated inherited selection does not match active suffix",
-                ));
-            }
-            (inherited.clone(), inherited, 0)
-        } else {
-            let index = agent
-                .resolved_fallback
-                .iter()
-                .position(|candidate| candidate.model == selection.model)
-                .ok_or_else(|| model_error("selected model is not in the agent fallback chain"))?;
-            let fallback_chain = agent
-                .resolved_fallback
-                .iter()
-                .map(|candidate| model_set.freeze(candidate).map_err(model_set_error))
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut suffix = fallback_chain[index..].to_vec();
-            suffix[0] = model_set.freeze(selection).map_err(model_set_error)?;
-            (fallback_chain, suffix, index as u32)
-        };
+    let plan = agent
+        .plan_root_selection(selection, model_set)
+        .map_err(config_error)?;
+    let bindings = plan
+        .selections()
+        .iter()
+        .map(|candidate| model_set.freeze(candidate).map_err(model_set_error))
+        .collect::<Result<Vec<_>, _>>()?;
+    freeze_planned_policy(
+        agent,
+        registry,
+        model_snapshot,
+        bindings,
+        selection,
+        None,
+        result_limits,
+    )
+}
+
+pub(crate) fn freeze_delegated_agent_policy(
+    agent: &ResolvedAgent,
+    registry: Arc<AgentRegistry>,
+    model_snapshot: Arc<models::ModelSnapshot>,
+    selection: &ModelSelection,
+    inherited_suffix: &[models::FrozenModelBinding],
+    inherited_depth_ceiling: u32,
+    result_limits: ResultLimits,
+) -> Result<FrozenRunPolicy, EngineError> {
+    let model_set = model_snapshot.model_set();
+    let bindings = if agent.resolved_fallback.is_empty() {
+        let inherited = inherited_suffix
+            .first()
+            .ok_or_else(|| model_error("empty-chain agent requires a delegated active suffix"))?;
+        if inherited.resolved.selection != *selection {
+            return Err(model_error(
+                "delegated inherited selection does not match active suffix",
+            ));
+        }
+        inherited_suffix.to_vec()
+    } else {
+        agent
+            .plan_delegated_selection(selection, model_set)
+            .map_err(config_error)?
+            .selections()
+            .iter()
+            .map(|candidate| model_set.freeze(candidate).map_err(model_set_error))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    freeze_planned_policy(
+        agent,
+        registry,
+        model_snapshot,
+        bindings,
+        selection,
+        Some(inherited_depth_ceiling),
+        result_limits,
+    )
+}
+
+fn freeze_planned_policy(
+    agent: &ResolvedAgent,
+    registry: Arc<AgentRegistry>,
+    model_snapshot: Arc<models::ModelSnapshot>,
+    fallback_chain: Vec<models::FrozenModelBinding>,
+    selection: &ModelSelection,
+    inherited_depth_ceiling: Option<u32>,
+    result_limits: ResultLimits,
+) -> Result<FrozenRunPolicy, EngineError> {
+    if fallback_chain.is_empty() {
+        return Err(model_error("planned model suffix is empty"));
+    }
+    let selected_suffix = fallback_chain.clone();
+    let selected_suffix_start = 0;
 
     let document = &agent.document;
     let delegation = document.frontmatter.delegation.as_ref().map(|delegation| {
@@ -151,7 +195,6 @@ pub(crate) fn policy_for_session_selection(
     tool_output_max_lines: usize,
     tool_output_max_bytes: usize,
 ) -> Result<FrozenRunPolicy, EngineError> {
-    let model_set = model_snapshot.model_set();
     if selection.agent != agent.agent {
         return Err(model_error(
             "run selection does not match the session agent",
@@ -160,14 +203,10 @@ pub(crate) fn policy_for_session_selection(
     let index = agent
         .fallback_chain
         .iter()
-        .position(|binding| binding.resolved.selection.model == selection.model.model)
-        .ok_or_else(|| model_error("selected model is not in the frozen agent fallback chain"))?;
+        .position(|binding| binding.resolved.selection == selection.model)
+        .ok_or_else(|| model_error("selected model/variant is not in the frozen agent suffix"))?;
     agent.selected_suffix_start = index as u32;
-    let mut suffix = agent.fallback_chain[index..].to_vec();
-    let selected = model_set
-        .freeze(&selection.model)
-        .map_err(model_set_error)?;
-    suffix[0] = wire_binding(&selected)?;
+    let suffix = agent.fallback_chain[index..].to_vec();
     agent
         .validate_selected_suffix(selection, &suffix)
         .map_err(|error| model_error(error.to_string()))?;
@@ -424,6 +463,10 @@ fn model_set_error(error: models::ModelSetError) -> EngineError {
     model_error(error.to_string())
 }
 
+fn config_error(error: cookie_agent_config::ConfigError) -> EngineError {
+    EngineError::Config(Box::new(error))
+}
+
 fn model_error(message: impl Into<String>) -> EngineError {
     EngineError::from(ModelError::invalid_request(message.into()))
 }
@@ -448,14 +491,13 @@ mod tests {
     use crate::test_support::{agent_snapshot, model_set, model_snapshot, other_model_selection};
 
     #[test]
-    fn public_selection_uses_the_exact_frozen_chain_suffix_and_variant() {
+    fn delegated_selection_uses_an_exact_frozen_suffix_entry() {
         let models = model_set();
         let mut agent = agent_snapshot("primary", cookie_agent_protocol::AgentMode::Primary);
-        let mut selected = other_model_selection();
+        let selected = other_model_selection();
         agent.fallback_chain.push(
             wire_binding(&models.freeze(&selected).expect("other binding")).expect("wire binding"),
         );
-        selected.variant = Some(VariantId::new("fast").expect("variant"));
         let policy = policy_for_session_selection(
             agent,
             Arc::new(AgentRegistry::resolve(Default::default(), &models).expect("empty registry")),
@@ -474,20 +516,30 @@ mod tests {
     }
 
     #[test]
-    fn public_selection_rejects_configured_models_outside_the_frozen_chain() {
+    fn delegated_selection_rejects_catalog_escape_and_variant_override() {
         let models = model_set();
         let agent = agent_snapshot("primary", cookie_agent_protocol::AgentMode::Primary);
-        let result = policy_for_session_selection(
-            agent,
-            Arc::new(AgentRegistry::resolve(Default::default(), &models).expect("empty registry")),
-            model_snapshot(),
-            &RunSelection {
-                agent: AgentId::new("primary").expect("agent"),
-                model: other_model_selection(),
+        for model in [
+            other_model_selection(),
+            cookie_agent_protocol::ModelSelection {
+                model: crate::test_support::model_selection().model,
+                variant: Some(VariantId::new("fast").expect("variant")),
             },
-            100,
-            1_000,
-        );
-        assert!(result.is_err());
+        ] {
+            let result = policy_for_session_selection(
+                agent.clone(),
+                Arc::new(
+                    AgentRegistry::resolve(Default::default(), &models).expect("empty registry"),
+                ),
+                model_snapshot(),
+                &RunSelection {
+                    agent: AgentId::new("primary").expect("agent"),
+                    model,
+                },
+                100,
+                1_000,
+            );
+            assert!(result.is_err());
+        }
     }
 }

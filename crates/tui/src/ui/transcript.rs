@@ -1498,6 +1498,7 @@ mod tests {
         ApprovalState, AssistantChild, FrozenAssistantAttribution, SessionState, StateStore,
         ToolCallState,
     };
+    use crate::theme::{ColorLevel, ThemeKind};
     use crate::ui::app::*;
     use crate::ui::events::{RenderScheduler, TerminalCleanup, TerminalRestore};
     use crate::ui::input::{CredentialInput, credential_wipe_count};
@@ -2024,6 +2025,44 @@ mod tests {
         }
     }
 
+    fn catalog_model(
+        key: &str,
+        variants: &[&str],
+        default_variant: Option<&str>,
+    ) -> cookie_agent_protocol::AvailableModelDescriptor {
+        let mut descriptor = model_descriptor();
+        descriptor.key = key.parse().expect("model key");
+        descriptor.display_name = format!("Catalog {key}");
+        descriptor.variants = variants
+            .iter()
+            .map(|id| cookie_agent_protocol::AvailableVariantDescriptor {
+                id: cookie_agent_protocol::VariantId::new(*id).expect("variant"),
+                display_name: format!("Variant {id}"),
+                origin: cookie_agent_protocol::VariantOrigin::Explicit,
+                behavior_fingerprint: Sha256Digest::of_bytes(id.as_bytes()),
+            })
+            .collect();
+        descriptor.default_variant = default_variant
+            .map(|id| cookie_agent_protocol::VariantId::new(id).expect("default variant"));
+        descriptor
+    }
+
+    fn frame_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| app.draw_for_test(frame))
+            .expect("app render");
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
     async fn test_app() -> App {
         let (client, _requests) = recording_client();
         App::new(client).await.expect("test app")
@@ -2171,14 +2210,18 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn assistant_header_projects_agent_model_without_variant() {
+    fn assistant_header_projects_exact_agent_model_and_variant() {
         assert_eq!(
             attribution(None).header(),
-            "primary(gateway/arbitrary-model)"
+            "primary(gateway/arbitrary-model[base])"
         );
         assert_eq!(
             attribution(Some("high")).header(),
-            "primary(gateway/arbitrary-model)"
+            "primary(gateway/arbitrary-model[high])"
+        );
+        assert_eq!(
+            attribution(Some("default")).header(),
+            "primary(gateway/arbitrary-model[default])"
         );
         assert_eq!(attribution(Some("high")).variant_label(), "high");
         assert_eq!(attribution(None).variant_label(), "base");
@@ -2225,7 +2268,7 @@ mod tests {
             assert!(!visible.contains("[A]"), "width {width}");
         }
         let rendered = snapshot_lines(&transcript_layout(&state, None, 80).lines);
-        assert!(rendered.contains("╭─ primary(gateway/arbitrary-model)"));
+        assert!(rendered.contains("╭─ primary(gateway/arbitrary-model[base])"));
     }
 
     #[test]
@@ -2251,7 +2294,7 @@ mod tests {
             .join("\n");
         assert_eq!(
             rendered
-                .matches("╭─ primary(gateway/arbitrary-model)")
+                .matches("╭─ primary(gateway/arbitrary-model[base])")
                 .count(),
             1
         );
@@ -2429,7 +2472,10 @@ mod tests {
             panic!("assistant item");
         };
         assert_eq!(*committed_turn_seq, Some(3));
-        assert_eq!(attribution.header(), "primary(gateway/arbitrary-model)");
+        assert_eq!(
+            attribution.header(),
+            "primary(gateway/arbitrary-model[high])"
+        );
         assert_eq!(attribution.variant_label(), "high");
         assert!(children_has_tool(&state.transcript[0], call_id));
     }
@@ -2588,10 +2634,17 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(
-            rendered.matches("primary(gateway/arbitrary-model)").count(),
-            2
+            rendered
+                .matches("primary(gateway/arbitrary-model[base])")
+                .count(),
+            1
         );
-        assert!(!rendered.contains("high)"));
+        assert_eq!(
+            rendered
+                .matches("primary(gateway/arbitrary-model[high])")
+                .count(),
+            1
+        );
     }
 
     // ------------------------------------------------------------------
@@ -2862,7 +2915,7 @@ mod tests {
             },
         });
         let rendered = rendered_frame(&mut app, 100, 30);
-        assert!(rendered.contains("primary(gateway/arbitrary-model-high)"));
+        assert!(rendered.contains("primary(gateway/arbitrary-model[high])"));
         let segments = &app.hit_map.title_segments;
         assert_eq!(segments.len(), 3);
         let agent_rect = segments
@@ -2882,13 +2935,13 @@ mod tests {
             .rect;
         assert_eq!(agent_rect.width, 7);
         assert_eq!(model_rect.width, 23);
-        assert_eq!(variant_rect.width, 4);
+        assert_eq!(variant_rect.width, 6);
         assert_eq!(model_rect.x, agent_rect.x + agent_rect.width + 1);
-        assert_eq!(variant_rect.x, model_rect.x + model_rect.width + 1);
+        assert_eq!(variant_rect.x, model_rect.x + model_rect.width);
     }
 
     #[tokio::test]
-    async fn title_segments_open_their_picker_modals_by_mouse() {
+    async fn title_segments_open_pickers_and_cycle_variant_by_mouse() {
         let mut app = test_app().await;
         app.agents = vec![descriptor("primary", true)];
         app.models = vec![model_descriptor()];
@@ -2919,11 +2972,18 @@ mod tests {
             .expect("variant segment")
             .rect;
         app.handle_click(variant.x + 1, variant.y).await;
-        assert_eq!(app.modal, Modal::Variants);
+        assert_eq!(app.modal, Modal::None);
+        assert_eq!(
+            app.draft
+                .as_ref()
+                .and_then(|draft| draft.model.variant.as_ref())
+                .map(|variant| variant.as_str()),
+            Some("fast")
+        );
     }
 
     #[tokio::test]
-    async fn draft_selection_pickers_offer_chain_models_base_and_variants() {
+    async fn draft_model_picker_uses_global_catalog_and_variant_cycle_is_inline() {
         let mut app = test_app().await;
         app.agents = vec![descriptor("primary", true)];
         app.models = vec![model_descriptor()];
@@ -2934,14 +2994,14 @@ mod tests {
                 variant: None,
             },
         });
-        assert_eq!(app.draft_models().len(), 1);
+        assert_eq!(app.draft_models().len(), app.models.len());
         let variants = app.draft_variants();
         assert_eq!(variants.len(), 3);
         assert!(variants[0].is_none());
         assert_eq!(variants[1].as_ref().map(|v| v.as_str()), Some("fast"));
         assert_eq!(variants[2].as_ref().map(|v| v.as_str()), Some("high"));
 
-        // Choosing a variant changes only the draft; active runs are frozen.
+        // Cycling a variant changes only the draft; active runs are frozen.
         let session = SessionId::new_v7();
         app.selected = Some(session);
         app.store.sessions.entry(session).or_default().active_run = Some(run_id());
@@ -2950,9 +3010,16 @@ mod tests {
             .get_mut(&session)
             .expect("session")
             .run_agent = Some(agent_id());
-        app.set_draft_variant(Some(
-            cookie_agent_protocol::VariantId::new("high").expect("variant"),
-        ));
+        frame_rows(&mut app, 80, 24);
+        let variant_hit = app
+            .hit_map
+            .title_segments
+            .iter()
+            .find(|hit| hit.segment == TitleSegment::Variant)
+            .copied()
+            .expect("variant hit");
+        app.handle_click(variant_hit.rect.x, variant_hit.rect.y)
+            .await;
         assert!(app.status.contains("the active run is unchanged"));
         assert_eq!(
             app.active_run_agent().map(|agent| agent.as_str()),
@@ -2961,9 +3028,234 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn global_out_of_chain_models_render_and_select_at_normal_and_narrow_widths() {
+        let mut app = test_app().await;
+        app.agents = vec![descriptor("primary", true)];
+        let mut outside =
+            catalog_model("other/catalog-model", &["default", "high"], Some("default"));
+        outside.display_name = "Outside".into();
+        let mut base = model_descriptor();
+        base.display_name = "Base".into();
+        app.models = vec![base, outside.clone()];
+        app.draft = app.default_draft_selection();
+        assert_eq!(
+            app.draft_model_labels(),
+            vec![
+                "gateway/arbitrary-model[base] — Base",
+                "other/catalog-model[default] — Outside",
+            ]
+        );
+
+        for (width, theme) in [
+            (100, Theme::new(ThemeKind::Default, ColorLevel::TrueColor)),
+            (48, Theme::new(ThemeKind::Mono, ColorLevel::None)),
+        ] {
+            app.theme = theme;
+            app.modal = Modal::Models;
+            let rows = frame_rows(&mut app, width, 24);
+            if width == 100 {
+                assert!(
+                    rows.iter()
+                        .any(|row| row.contains("other/catalog-model[default] — Outside")),
+                    "width {width}: {rows:?}"
+                );
+                assert!(
+                    rows.iter()
+                        .any(|row| row.contains("gateway/arbitrary-model[base] — Base")),
+                    "width {width}: {rows:?}"
+                );
+            } else {
+                assert!(
+                    rows.iter()
+                        .any(|row| row.contains("other/catalog-model[de"))
+                );
+                assert!(
+                    rows.iter()
+                        .any(|row| row.contains("gateway/arbitrary-mode"))
+                );
+            }
+            assert_eq!(app.hit_map.picker_rows.len(), 2);
+        }
+
+        app.choose_picker_entry(1).await;
+        let draft = app.draft.as_ref().expect("draft");
+        assert_eq!(draft.model.model, outside.key);
+        assert_eq!(
+            draft.model.variant.as_ref().map(|variant| variant.as_str()),
+            Some("default")
+        );
+    }
+
+    #[tokio::test]
+    async fn composer_variant_hit_cycles_lexically_wraps_and_one_entry_is_noop() {
+        let mut app = test_app().await;
+        app.agents = vec![descriptor("primary", true)];
+        app.models = vec![catalog_model(MODEL, &["high", "default", "fast"], None)];
+        app.draft = app.default_draft_selection();
+
+        for expected in [Some("default"), Some("fast"), Some("high"), None] {
+            let rows = frame_rows(&mut app, 48, 24);
+            let hit = app
+                .hit_map
+                .title_segments
+                .iter()
+                .find(|hit| hit.segment == TitleSegment::Variant)
+                .copied()
+                .expect("visible bracketed variant hit");
+            let before = app
+                .draft
+                .as_ref()
+                .and_then(|draft| draft.model.variant.as_ref())
+                .map_or("base", |variant| variant.as_str());
+            assert!(
+                rows.iter().any(|row| row.contains(&format!("[{before}]"))),
+                "{rows:?}"
+            );
+            assert_eq!(hit.rect.width, u16::try_from(before.len() + 2).unwrap());
+            app.handle_click(hit.rect.x, hit.rect.y).await;
+            assert_eq!(
+                app.draft
+                    .as_ref()
+                    .and_then(|draft| draft.model.variant.as_ref())
+                    .map(|variant| variant.as_str()),
+                expected
+            );
+        }
+
+        app.models = vec![catalog_model(MODEL, &[], None)];
+        app.revalidate_draft();
+        let before = app.draft.clone();
+        app.cycle_draft_variant();
+        assert_eq!(app.draft, before);
+    }
+
+    #[tokio::test]
+    async fn model_agent_and_refresh_normalization_preserve_only_valid_draft_parts() {
+        let mut app = test_app().await;
+        let first = model_descriptor();
+        let second = catalog_model("other/catalog-model", &["default", "high"], Some("default"));
+        let mut primary = descriptor("primary", true);
+        primary.resolved_fallback = vec![ModelSelection {
+            model: second.key.clone(),
+            variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
+        }];
+        let reviewer = descriptor("reviewer", true);
+        app.agents = vec![primary, reviewer];
+        app.models = vec![first.clone(), second.clone()];
+        app.draft = Some(RunSelection {
+            agent: agent_id(),
+            model: ModelSelection {
+                model: first.key.clone(),
+                variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
+            },
+        });
+
+        app.set_draft_model(first.key.clone());
+        assert_eq!(
+            app.draft
+                .as_ref()
+                .and_then(|draft| draft.model.variant.as_ref())
+                .map(|variant| variant.as_str()),
+            Some("high"),
+            "reselecting the current model preserves its variant"
+        );
+        app.set_draft_agent(AgentId::new("reviewer").expect("agent"));
+        assert_eq!(app.draft.as_ref().expect("draft").model.model, first.key);
+        assert_eq!(
+            app.draft
+                .as_ref()
+                .and_then(|draft| draft.model.variant.as_ref())
+                .map(|variant| variant.as_str()),
+            Some("high"),
+            "agent changes preserve a valid global model selection"
+        );
+
+        app.set_draft_model(second.key.clone());
+        assert_eq!(
+            app.draft
+                .as_ref()
+                .and_then(|draft| draft.model.variant.as_ref())
+                .map(|variant| variant.as_str()),
+            Some("default"),
+            "model changes select the model default"
+        );
+        app.draft.as_mut().expect("draft").model.variant =
+            Some(cookie_agent_protocol::VariantId::new("removed").expect("variant"));
+        app.revalidate_draft();
+        assert_eq!(
+            app.draft
+                .as_ref()
+                .and_then(|draft| draft.model.variant.as_ref())
+                .map(|variant| variant.as_str()),
+            Some("default"),
+            "a missing variant resets to the model default"
+        );
+
+        app.draft.as_mut().expect("draft").agent = agent_id();
+        app.draft.as_mut().expect("draft").model.model = "missing/model".parse().expect("model");
+        app.revalidate_draft();
+        let draft = app.draft.as_ref().expect("draft");
+        assert_eq!(draft.model.model, second.key);
+        assert_eq!(
+            draft.model.variant.as_ref().map(|variant| variant.as_str()),
+            Some("high"),
+            "missing models prefer the agent's authored available fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn draft_clicks_do_not_mutate_active_or_committed_frozen_attribution() {
+        let mut app = test_app().await;
+        app.agents = vec![descriptor("primary", true)];
+        app.models = vec![model_descriptor()];
+        app.draft = app.default_draft_selection();
+        let session = SessionId::new_v7();
+        app.selected = Some(session);
+        let state = app.store.sessions.entry(session).or_default();
+        state.active_run = Some(run_id());
+        state.run_agent = Some(agent_id());
+        state.transcript = vec![TranscriptItem::Assistant {
+            id: 1,
+            version: 0,
+            attribution: attribution(Some("default")),
+            committed_turn_seq: Some(1),
+            children: vec![AssistantChild::Text {
+                id: 2,
+                version: 0,
+                markdown: MarkdownDocument::new("frozen".into()),
+            }],
+        }];
+
+        frame_rows(&mut app, 80, 24);
+        let variant_hit = app
+            .hit_map
+            .title_segments
+            .iter()
+            .find(|hit| hit.segment == TitleSegment::Variant)
+            .copied()
+            .expect("variant hit");
+        app.handle_click(variant_hit.rect.x, variant_hit.rect.y)
+            .await;
+        let TranscriptItem::Assistant { attribution, .. } =
+            &app.store.sessions[&session].transcript[0]
+        else {
+            panic!("assistant")
+        };
+        assert_eq!(
+            attribution.header(),
+            "primary(gateway/arbitrary-model[default])"
+        );
+        assert_eq!(app.active_run_agent().map(AgentId::as_str), Some("primary"));
+        let rendered = frame_rows(&mut app, 80, 24).join("\n");
+        assert!(rendered.contains("primary(gateway/arbitrary-model[default])"));
+        assert!(rendered.contains("primary(gateway/arbitrary-model[fast])"));
+    }
+
+    #[tokio::test]
     async fn agent_picker_lists_only_root_runnable_agents() {
         let mut app = test_app().await;
         app.agents = vec![descriptor("primary", true), descriptor("worker", false)];
+        app.models = vec![model_descriptor()];
         assert_eq!(app.selectable_agents().len(), 1);
         let draft = app.default_draft_selection().expect("default draft");
         assert_eq!(draft.agent.as_str(), "primary");
@@ -3041,12 +3333,12 @@ mod tests {
             app.active_run_agent().map(|agent| agent.as_str()),
             Some("primary")
         );
-        // Model and variant pickers stay available during the run too.
+        // Model selection and inline variant cycling stay available during the run too.
         app.open_selection_modal(Modal::Models);
         assert_eq!(app.modal, Modal::Models);
         app.modal = Modal::None;
-        app.open_selection_modal(Modal::Variants);
-        assert_eq!(app.modal, Modal::Variants);
+        app.cycle_draft_variant();
+        assert!(app.status.contains("active run is unchanged"));
     }
 
     #[tokio::test]
@@ -3092,18 +3384,19 @@ mod tests {
         app.choose_picker_entry(0).await;
         assert!(app.status.contains("pinned to frozen child agent worker"));
         app.modal = Modal::None;
-        // Model and variant selection stay available for the delegated
-        // session within its frozen agent's fallback chain.
+        // Model selection stays available for the delegated session within
+        // its frozen suffix; inline variant cycling is a fixed no-op.
         app.open_selection_modal(Modal::Models);
         assert_eq!(app.modal, Modal::Models);
         app.choose_picker_entry(0).await;
         assert_eq!(app.modal, Modal::None);
-        app.open_selection_modal(Modal::Variants);
-        assert_eq!(app.modal, Modal::Variants);
-        // Only the persisted exact selections appear: base for this model.
         assert_eq!(app.draft_variants(), vec![None]);
-        app.choose_picker_entry(0).await;
-        assert_eq!(app.modal, Modal::None);
+        app.cycle_draft_variant();
+        assert!(
+            app.draft
+                .as_ref()
+                .is_some_and(|draft| draft.model.variant.is_none())
+        );
         // The Agents modal presents the pinned agent as fixed when rendered.
         app.modal = Modal::Agents;
         let rendered = rendered_frame(&mut app, 140, 30);
@@ -3135,6 +3428,7 @@ mod tests {
         // A root draft pointing at a now-unrunnable agent resets to the
         // default; a delegated session's pin is untouched.
         app.agents = vec![descriptor("reviewer", true)];
+        app.models = vec![model_descriptor()];
         let root = SessionId::new_v7();
         let child = SessionId::new_v7();
         app.tree = Some(SessionTree {
@@ -3413,14 +3707,14 @@ mod tests {
             draft.model.variant.as_ref().map(|variant| variant.as_str()),
             Some("high")
         );
-        // Variant options for the head model are exactly the persisted
-        // selection set, not live descriptor variants.
+        // Variant cycling for the selected head is fixed to its one exact
+        // persisted selection, not live descriptor variants.
         assert_eq!(
-            app.persisted_variants_for(&model_key())
+            app.draft_variants()
                 .iter()
                 .map(|variant| variant.as_ref().map(|id| id.as_str()))
                 .collect::<Vec<_>>(),
-            vec![Some("high"), Some("fast")]
+            vec![Some("high")]
         );
         // A full replay keeps the exact suffix authoritative.
         let mut store = StateStore::default();
@@ -3453,7 +3747,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delegated_variant_selector_is_immune_to_live_provider_refresh() {
+    async fn delegated_variant_cycle_is_immune_to_live_provider_refresh() {
         let mut app = test_app().await;
         app.agents = vec![descriptor("primary", true)];
         app.models = vec![model_descriptor()];
@@ -3490,7 +3784,7 @@ mod tests {
             vec![Some("high")]
         );
         // A provider refresh adds brand-new live variants; the delegated
-        // selector still exposes only the persisted exact selection.
+        // cycle still exposes only the persisted exact selection.
         let mut refreshed = model_descriptor();
         refreshed
             .variants
@@ -3503,9 +3797,8 @@ mod tests {
         app.models = vec![refreshed];
         let after = app.draft_variants();
         assert_eq!(after, before);
-        // Choosing works from the persisted selection only.
-        app.open_selection_modal(Modal::Variants);
-        assert_eq!(app.picker_entry_count(), 1);
+        app.cycle_draft_variant();
+        assert_eq!(app.draft_variants(), before);
     }
 
     #[tokio::test]
@@ -3566,6 +3859,36 @@ mod tests {
         assert_eq!(app.sessions.len(), sessions_before);
         assert!(app.status.contains("incoherent"));
         assert!(app.status.contains("No session was created"));
+    }
+
+    #[tokio::test]
+    async fn invalid_connect_initial_selection_installs_pair_and_reports_fail_closed_status() {
+        let mut app = test_app().await;
+        let revision = revision("77");
+        app.apply_connect_outcome(ConnectOutcome::Connected {
+            provider_id: cookie_agent_protocol::ProviderId::new("acme").expect("provider"),
+            receipt_model_revision: revision.clone(),
+            follow_up: Box::new(ConnectFollowUp::InvalidInitialSelection {
+                models: Box::new(cookie_agent_protocol::ModelListResult {
+                    revision: revision.clone(),
+                    generated_at: jiff::Timestamp::now(),
+                    catalog_revision: cookie_agent_protocol::CatalogRevision::current(),
+                    models: vec![model_descriptor()],
+                }),
+                agents: Box::new(cookie_agent_protocol::AgentListResult {
+                    revision: revision.clone(),
+                    model_revision: revision,
+                    generated_at: jiff::Timestamp::now(),
+                    agents: vec![descriptor("primary", true)],
+                }),
+                agent: agent_id(),
+            }),
+        });
+        assert!(app.status.contains("no authored fallback selection"));
+        assert!(app.status.contains("No session was created"));
+        assert!(app.sessions.is_empty());
+        assert_eq!(app.models.len(), 1);
+        assert_eq!(app.agents.len(), 1);
     }
 
     #[tokio::test]
@@ -4612,7 +4935,7 @@ mod tests {
     fn snapshot_lines(lines: &[Line<'static>]) -> String {
         lines
             .iter()
-            .map(|line| line.to_string())
+            .map(|line| line.to_string().trim_end().to_owned())
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -4735,6 +5058,8 @@ mod tests {
         /// Optional (call-count, revision) flip for delayed-coherent
         /// scenarios.
         flip: Option<(usize, cookie_agent_protocol::SnapshotRevision)>,
+        models: Vec<cookie_agent_protocol::AvailableModelDescriptor>,
+        fallbacks: Vec<ModelSelection>,
         recorded: Arc<Mutex<Vec<Value>>>,
     }
 
@@ -4746,6 +5071,8 @@ mod tests {
             let model_revision = self.model_revision.clone();
             let agent_revision_cell = self.agent_model_revision;
             let flip = self.flip;
+            let models = self.models;
+            let fallbacks = self.fallbacks;
             let mut agent_list_calls = 0usize;
             tokio::spawn(async move {
                 while let Some(frame) = sent_rx.recv().await {
@@ -4773,7 +5100,7 @@ mod tests {
                             "revision": model_revision,
                             "generated_at": jiff::Timestamp::now(),
                             "catalog_revision": cookie_agent_protocol::CatalogRevision::current(),
-                            "models": [],
+                            "models": models,
                         }),
                         "agent.list" => {
                             agent_list_calls += 1;
@@ -4796,7 +5123,7 @@ mod tests {
                                     "mode": "primary",
                                     "enabled": true,
                                     "runnable_as_root": true,
-                                    "resolved_fallback": [{"model": "gateway/arbitrary-model", "variant": null}],
+                                    "resolved_fallback": fallbacks,
                                     "tools": [],
                                     "delegation_targets": []
                                 }],
@@ -4808,10 +5135,7 @@ mod tests {
                                 "session_id": SessionId::new_v7(),
                                 "origin": {"type": "root"},
                                 "cwd_identity": "/workspace",
-                                "creation_selection": {
-                                    "agent": "primary",
-                                    "model": {"model": "gateway/arbitrary-model", "variant": null},
-                                },
+                                "creation_selection": value["params"]["selection"],
                                 "title": null,
                                 "title_updated_seq": 0,
                                 "last_event_seq": 1,
@@ -4857,12 +5181,36 @@ mod tests {
         model_revision: cookie_agent_protocol::SnapshotRevision,
         flip_after: Option<(usize, cookie_agent_protocol::SnapshotRevision)>,
     ) -> (Arc<Mutex<Vec<Value>>>, tokio::task::JoinHandle<()>) {
+        drive_connect_with_catalog(
+            startup_agent_revision,
+            post_startup_agent_revision,
+            model_revision,
+            flip_after,
+            vec![model_descriptor()],
+            vec![ModelSelection {
+                model: model_key(),
+                variant: None,
+            }],
+        )
+        .await
+    }
+
+    async fn drive_connect_with_catalog(
+        startup_agent_revision: cookie_agent_protocol::SnapshotRevision,
+        post_startup_agent_revision: Option<cookie_agent_protocol::SnapshotRevision>,
+        model_revision: cookie_agent_protocol::SnapshotRevision,
+        flip_after: Option<(usize, cookie_agent_protocol::SnapshotRevision)>,
+        models: Vec<cookie_agent_protocol::AvailableModelDescriptor>,
+        fallbacks: Vec<ModelSelection>,
+    ) -> (Arc<Mutex<Vec<Value>>>, tokio::task::JoinHandle<()>) {
         let recorded = Arc::new(Mutex::new(Vec::new()));
         let script_revision = Arc::new(std::sync::Mutex::new(startup_agent_revision));
         let script = ConnectScript {
             model_revision,
             agent_model_revision: script_revision.clone(),
             flip: flip_after,
+            models,
+            fallbacks,
             recorded: recorded.clone(),
         };
         let client = script.client();
@@ -4959,6 +5307,69 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(creations.len(), 1);
         assert_eq!(creations[0]["params"]["selection"]["agent"], "primary");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connect_uses_later_authored_fallback_when_first_is_not_publicly_available() {
+        let later = catalog_model("other/later-model", &["high"], None);
+        let (recorded, handle) = drive_connect_with_catalog(
+            revision("aa"),
+            None,
+            revision("aa"),
+            None,
+            vec![later.clone()],
+            vec![
+                ModelSelection {
+                    model: "missing/unavailable".parse().expect("model"),
+                    variant: None,
+                },
+                ModelSelection {
+                    model: later.key,
+                    variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
+                },
+            ],
+        )
+        .await;
+        handle.await.expect("connect task");
+        let creations = recorded
+            .lock()
+            .expect("recorded")
+            .iter()
+            .filter(|value| value["method"].as_str() == Some("session.create"))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(creations.len(), 1);
+        assert_eq!(
+            creations[0]["params"]["selection"]["model"],
+            serde_json::json!({"model": "other/later-model", "variant": "high"})
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connect_creates_no_session_when_no_authored_fallback_is_catalog_valid() {
+        let only = catalog_model("other/only-model", &["high"], None);
+        let (recorded, handle) = drive_connect_with_catalog(
+            revision("aa"),
+            None,
+            revision("aa"),
+            None,
+            vec![only.clone()],
+            vec![
+                ModelSelection {
+                    model: "missing/unavailable".parse().expect("model"),
+                    variant: None,
+                },
+                ModelSelection {
+                    model: only.key,
+                    variant: Some(
+                        cookie_agent_protocol::VariantId::new("removed").expect("variant"),
+                    ),
+                },
+            ],
+        )
+        .await;
+        handle.await.expect("connect task");
+        assert_eq!(recorded_method_count(&recorded, "session.create"), 0);
     }
 
     // ------------------------------------------------------------------

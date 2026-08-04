@@ -72,6 +72,68 @@ fn direct_keys_variants_and_frozen_bindings_are_exact() {
 }
 
 #[test]
+fn public_descriptors_are_available_enabled_models_in_model_key_order() {
+    let capabilities = || {
+        serde_json::json!({
+            "input": ["text"],
+            "output": ["text"],
+            "context_tokens": 8192,
+            "output_tokens": 2048,
+            "tool_calling": true,
+            "parallel_tool_calls": false,
+            "structured_output": false,
+            "reasoning": false,
+            "temperature": true,
+            "top_p": true,
+            "seed": true,
+            "native_replay": "unsupported",
+            "native_compaction": "unsupported",
+            "cancellation": "local_only",
+            "media": {}
+        })
+    };
+    let provider = |models: serde_json::Value| {
+        serde_json::from_value::<ProviderDefinition>(serde_json::json!({
+            "source": "explicit",
+            "endpoint": "https://example.test/v1",
+            "adaptor": "openai-compatible",
+            "auth": {"type": "none"},
+            "models": models
+        }))
+        .unwrap()
+    };
+    let providers = BTreeMap::from([
+        (
+            ProviderId::new("z-provider").unwrap(),
+            provider(serde_json::json!({
+                "alpha": {"display_name": "Alpha", "capabilities": capabilities()}
+            })),
+        ),
+        (
+            ProviderId::new("a-provider").unwrap(),
+            provider(serde_json::json!({
+                "zeta": {"display_name": "Zeta", "capabilities": capabilities()},
+                "alpha": {"display_name": "Alpha", "capabilities": capabilities()},
+                "disabled": {
+                    "enabled": false,
+                    "display_name": "Disabled",
+                    "capabilities": capabilities()
+                }
+            })),
+        ),
+    ]);
+    let set = build_model_set(&providers, &Catalog::embedded().unwrap(), None).unwrap();
+
+    assert_eq!(
+        set.descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.key.to_string())
+            .collect::<Vec<_>>(),
+        ["a-provider/alpha", "a-provider/zeta", "z-provider/alpha"]
+    );
+}
+
+#[test]
 fn secret_values_do_not_change_behavior_fingerprints() {
     let source = |secret: &str| {
         toml::from_str::<ProviderDefinition>(&format!(

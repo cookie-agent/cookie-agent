@@ -98,8 +98,8 @@ use model_history::{
 use model_policy::{ErrorPolicy, classify as classify_model_error, summary as model_error_summary};
 use permissions::{ApprovalStore, PermissionPipeline};
 use policy::{
-    FrozenRunPolicy, freeze_agent_policy, policy_for_session_selection, policy_from_snapshot,
-    resolve_agent,
+    FrozenRunPolicy, freeze_delegated_agent_policy, freeze_root_agent_policy,
+    policy_for_session_selection, policy_from_snapshot, resolve_agent,
 };
 use session::{SessionError, SessionStore};
 
@@ -1976,13 +1976,11 @@ impl Engine {
         if !agent.runnable_as_root {
             return Err(EngineError::IneligibleAgent(selection.agent));
         }
-        let policy = freeze_agent_policy(
+        let policy = freeze_root_agent_policy(
             &agent,
             agents,
             Arc::clone(&snapshot),
             &selection.model,
-            None,
-            None,
             policy::ResultLimits {
                 tool_output_max_lines: self.inner.config.runtime.tool_output.max_lines,
                 tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
@@ -2001,6 +1999,11 @@ impl Engine {
         };
         let meta = session_meta(id, SessionOrigin::Root, cwd_identity, selection);
         self.inner.store.create(meta.clone(), creation)?;
+        self.inner
+            .session_model_snapshots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id, snapshot);
         self.spawn_actor(id);
         Ok(meta)
     }
@@ -2604,12 +2607,23 @@ impl Engine {
         let inherited = parent_policy.active_suffix(fallback_index);
         let child_selection = child_agent
             .resolved_fallback
-            .first()
+            .iter()
+            .find(|selection| {
+                parent_policy
+                    .model_snapshot
+                    .model_set()
+                    .get(&selection.model)
+                    .is_some_and(cookie_agent_models::ModelEntry::is_available)
+            })
             .cloned()
             .or_else(|| {
-                inherited
-                    .first()
-                    .map(|binding| binding.resolved.selection.clone())
+                if child_agent.resolved_fallback.is_empty() {
+                    inherited
+                        .first()
+                        .map(|binding| binding.resolved.selection.clone())
+                } else {
+                    None
+                }
             })
             .ok_or_else(|| EngineError::MissingTool("delegate child has no model suffix".into()))?;
         let child_policy = freeze_delegated_child_policy(
@@ -4258,13 +4272,11 @@ impl Engine {
                 if !agent.runnable_as_root {
                     return Err(EngineError::IneligibleAgent(params.selection.agent));
                 }
-                freeze_agent_policy(
+                freeze_root_agent_policy(
                     agent,
                     Arc::clone(&agents),
                     model_snapshot,
                     &params.selection.model,
-                    None,
-                    None,
                     result_limits,
                 )?
             }
@@ -7404,13 +7416,13 @@ fn freeze_delegated_child_policy(
     inherited_depth_ceiling: u32,
     result_limits: policy::ResultLimits,
 ) -> Result<FrozenRunPolicy, EngineError> {
-    freeze_agent_policy(
+    freeze_delegated_agent_policy(
         child_agent,
         Arc::clone(&parent_policy.registry),
         Arc::clone(&parent_policy.model_snapshot),
         child_selection,
-        Some(inherited_suffix),
-        Some(inherited_depth_ceiling),
+        inherited_suffix,
+        inherited_depth_ceiling,
         result_limits,
     )
 }

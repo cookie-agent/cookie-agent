@@ -72,7 +72,6 @@ pub(super) enum Modal {
     Sessions,
     Agents,
     Models,
-    Variants,
     ConnectProviders,
     ConnectCredentials,
     ConnectConfirm,
@@ -357,6 +356,11 @@ pub(super) enum ConnectFollowUp {
         models: Box<cookie_agent_protocol::ModelListResult>,
         agents: Box<cookie_agent_protocol::AgentListResult>,
         error: String,
+    },
+    InvalidInitialSelection {
+        models: Box<cookie_agent_protocol::ModelListResult>,
+        agents: Box<cookie_agent_protocol::AgentListResult>,
+        agent: AgentId,
     },
 }
 
@@ -664,7 +668,12 @@ impl App {
             .iter()
             .find(|agent| agent.id.as_str() == "primary")
             .or_else(|| agents.first())?;
-        let model = agent.resolved_fallback.first()?.clone();
+        let model = agent
+            .resolved_fallback
+            .iter()
+            .find(|selection| self.selection_is_live(selection))
+            .cloned()
+            .or_else(|| self.models.first().map(Self::default_model_selection))?;
         Some(RunSelection {
             agent: agent.id.clone(),
             model,
@@ -701,8 +710,8 @@ impl App {
         self.watching_root_session()
     }
 
-    /// Model/variant draft changes are allowed whenever a draft exists —
-    /// for delegated sessions within their frozen agent's fallback chain.
+    /// Model draft changes are allowed whenever a draft exists — for
+    /// delegated sessions within their frozen agent's persisted suffix.
     /// This gate is independent of the active run.
     pub(super) fn model_selection_allowed(&self) -> bool {
         self.draft.is_some()
@@ -723,8 +732,8 @@ impl App {
 
     /// Open a draft selector modal when allowed; otherwise surface the exact
     /// non-color reason it stays disabled. Agent switching is root-only;
-    /// model/variant selection stays available for delegated sessions inside
-    /// their frozen agent's fallback chain. Neither is run-gated: drafts
+    /// model selection stays available for delegated sessions inside their
+    /// frozen agent's fallback chain. Neither is run-gated: drafts
     /// affect the next run only.
     pub(super) fn open_selection_modal(&mut self, modal: Modal) {
         match modal {
@@ -733,7 +742,7 @@ impl App {
                     .delegated_pin_reason()
                     .unwrap_or_else(|| "agent switching requires a root session".into());
             }
-            Modal::Models | Modal::Variants if !self.model_selection_allowed() => {
+            Modal::Models if !self.model_selection_allowed() => {
                 self.status = "no draft model is available for this session".into();
             }
             _ => {
@@ -743,27 +752,37 @@ impl App {
         }
     }
 
-    /// Revalidate the draft against the current coherent descriptor
-    /// revisions: a draft agent/model that disappeared from the newest
-    /// snapshot resets to the default selection. The producing agent of an
-    /// active run is never reinterpreted.
+    /// Revalidate a root draft against the current coherent descriptors while
+    /// retaining every still-valid agent/model/variant choice. The producing
+    /// agent of an active run is never reinterpreted.
     pub(super) fn revalidate_draft(&mut self) {
         if !self.agent_switching_allowed() {
             return;
         }
-        let draft_valid = self.draft.as_ref().is_some_and(|draft| {
-            self.agents.iter().any(|agent| {
-                agent.runnable_as_root
-                    && agent.id == draft.agent
-                    && agent
-                        .resolved_fallback
-                        .iter()
-                        .any(|selection| selection.model == draft.model.model)
-            })
-        });
-        if !draft_valid {
+        let Some(mut draft) = self.draft.clone() else {
             self.draft = self.default_draft_selection();
+            return;
+        };
+        if !self
+            .agents
+            .iter()
+            .any(|agent| agent.runnable_as_root && agent.id == draft.agent)
+        {
+            self.draft = self.default_draft_selection();
+            return;
         }
+        let Some(descriptor) = self.model_descriptor(&draft.model.model) else {
+            draft.model = self
+                .preferred_model_for_agent(&draft.agent)
+                .or_else(|| self.models.first().map(Self::default_model_selection))
+                .unwrap_or(draft.model);
+            self.draft = Some(draft);
+            return;
+        };
+        if !Self::variant_is_valid(descriptor, draft.model.variant.as_ref()) {
+            draft.model.variant = descriptor.default_variant.clone();
+        }
+        self.draft = Some(draft);
     }
 
     fn setup_status(&self) -> String {
@@ -776,20 +795,47 @@ impl App {
         }
     }
 
-    fn draft_model_selection(
-        &self,
-        agent: &AgentDescriptor,
-        model: &ModelKey,
-    ) -> Option<ModelSelection> {
-        agent
-            .resolved_fallback
-            .iter()
-            .find(|selection| &selection.model == model)
-            .cloned()
-    }
-
     fn model_descriptor(&self, key: &ModelKey) -> Option<&AvailableModelDescriptor> {
         self.models.iter().find(|model| &model.key == key)
+    }
+
+    fn default_model_selection(descriptor: &AvailableModelDescriptor) -> ModelSelection {
+        ModelSelection {
+            model: descriptor.key.clone(),
+            variant: descriptor.default_variant.clone(),
+        }
+    }
+
+    fn variant_is_valid(
+        descriptor: &AvailableModelDescriptor,
+        variant: Option<&VariantId>,
+    ) -> bool {
+        variant.is_none_or(|variant| {
+            descriptor
+                .variants
+                .iter()
+                .any(|candidate| candidate.id == *variant)
+        })
+    }
+
+    fn selection_is_live(&self, selection: &ModelSelection) -> bool {
+        self.model_descriptor(&selection.model)
+            .is_some_and(|descriptor| {
+                Self::variant_is_valid(descriptor, selection.variant.as_ref())
+            })
+    }
+
+    fn preferred_model_for_agent(&self, agent: &AgentId) -> Option<ModelSelection> {
+        self.agents
+            .iter()
+            .find(|candidate| candidate.id == *agent)
+            .and_then(|descriptor| {
+                descriptor
+                    .resolved_fallback
+                    .iter()
+                    .find(|selection| self.selection_is_live(selection))
+                    .cloned()
+            })
     }
 
     /// The authoritative exact selections for the watched delegated
@@ -825,24 +871,6 @@ impl App {
         )
     }
 
-    /// The variants a delegated variant selector may expose for one model:
-    /// exactly the variants present as exact persisted selections for that
-    /// model in the authoritative suffix (usually exactly one). Live
-    /// `AvailableModelDescriptor` options are never consulted, so retained
-    /// selections survive provider refresh and new live variants never
-    /// appear.
-    pub(super) fn persisted_variants_for(&self, model: &ModelKey) -> Vec<Option<VariantId>> {
-        let mut variants = self
-            .persisted_chain()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|selection| &selection.model == model)
-            .map(|selection| selection.variant)
-            .collect::<Vec<_>>();
-        variants.dedup();
-        variants
-    }
-
     /// The exact frozen variant selection for a model in the persisted
     /// delegated chain.
     fn persisted_chain_selection(&self, model: &ModelKey) -> Option<ModelSelection> {
@@ -853,41 +881,73 @@ impl App {
         })
     }
 
-    /// Models listed for the draft: live descriptors for root sessions; the
-    /// persisted frozen chain (never live descriptors) for delegated
-    /// sessions.
+    /// Models listed for the draft: every coherent global descriptor for root
+    /// sessions; the persisted frozen suffix for delegated sessions.
     pub(super) fn draft_models(&self) -> Vec<ModelSelection> {
         if !self.watching_root_session() {
             return self.persisted_chain().unwrap_or_default();
         }
-        let Some(draft) = &self.draft else {
-            return Vec::new();
-        };
-        self.agents
+        self.models
             .iter()
-            .find(|agent| agent.id == draft.agent)
-            .map(|agent| agent.resolved_fallback.clone())
-            .unwrap_or_default()
+            .map(|descriptor| {
+                self.draft
+                    .as_ref()
+                    .filter(|draft| draft.model.model == descriptor.key)
+                    .map_or_else(
+                        || Self::default_model_selection(descriptor),
+                        |draft| draft.model.clone(),
+                    )
+            })
+            .collect()
     }
 
-    /// Variants selectable for the draft model: base plus the model's
-    /// enabled live variants for root sessions; exactly the persisted exact
-    /// selections for that model for delegated sessions.
+    pub(super) fn draft_model_labels(&self) -> Vec<String> {
+        if self.watching_root_session() {
+            return self
+                .models
+                .iter()
+                .map(|descriptor| {
+                    canonical_model_row(
+                        &Self::default_model_selection(descriptor),
+                        Some(&descriptor.display_name),
+                    )
+                })
+                .collect();
+        }
+        self.draft_models()
+            .iter()
+            .map(|selection| {
+                canonical_model_row(
+                    selection,
+                    self.model_descriptor(&selection.model)
+                        .map(|descriptor| descriptor.display_name.as_str()),
+                )
+            })
+            .collect()
+    }
+
+    /// Variant cycle for the selected draft model. Root order is exact base,
+    /// then named variants lexicographically. Delegated sessions expose only
+    /// their exact persisted selection, so cycling cannot escape the suffix.
     pub(super) fn draft_variants(&self) -> Vec<Option<VariantId>> {
         let Some(draft) = &self.draft else {
             return Vec::new();
         };
         if !self.watching_root_session() {
-            return self.persisted_variants_for(&draft.model.model);
+            return self
+                .persisted_chain_selection(&draft.model.model)
+                .map(|selection| vec![selection.variant])
+                .unwrap_or_default();
         }
         let mut variants = vec![None];
         if let Some(descriptor) = self.model_descriptor(&draft.model.model) {
-            variants.extend(
-                descriptor
-                    .variants
-                    .iter()
-                    .map(|variant| Some(variant.id.clone())),
-            );
+            let mut named = descriptor
+                .variants
+                .iter()
+                .map(|variant| variant.id.clone())
+                .collect::<Vec<_>>();
+            named.sort();
+            variants.extend(named.into_iter().map(Some));
         }
         variants
     }
@@ -904,14 +964,29 @@ impl App {
     }
 
     pub(super) fn set_draft_agent(&mut self, agent: AgentId) {
-        let Some(descriptor) = self.agents.iter().find(|candidate| candidate.id == agent) else {
+        let Some(descriptor) = self
+            .agents
+            .iter()
+            .find(|candidate| candidate.id == agent && candidate.runnable_as_root)
+        else {
             return;
         };
-        let model = descriptor
-            .resolved_fallback
-            .first()
-            .cloned()
-            .expect("root-runnable agents have a nonempty chain");
+        let model = self
+            .draft
+            .as_ref()
+            .map(|draft| draft.model.clone())
+            .filter(|selection| self.selection_is_live(selection))
+            .or_else(|| {
+                descriptor
+                    .resolved_fallback
+                    .iter()
+                    .find(|selection| self.selection_is_live(selection))
+                    .cloned()
+            })
+            .or_else(|| self.models.first().map(Self::default_model_selection));
+        let Some(model) = model else {
+            return;
+        };
         self.draft = Some(RunSelection { agent, model });
         self.status = self.draft_status("Draft run agent");
     }
@@ -920,21 +995,21 @@ impl App {
         let Some(draft) = self.draft.clone() else {
             return;
         };
+        if draft.model.model == model {
+            self.status = self.draft_status("Draft run model");
+            return;
+        }
         // Delegated sessions resolve only against the persisted frozen
-        // chain; root sessions use live descriptors.
+        // suffix; root sessions use the complete live catalog and select the
+        // chosen model's resolved default variant.
         let selection = if self.watching_root_session() {
-            self.agents
-                .iter()
-                .find(|candidate| candidate.id == draft.agent)
-                .and_then(|descriptor| self.draft_model_selection(descriptor, &model))
+            self.model_descriptor(&model)
+                .map(Self::default_model_selection)
         } else {
             self.persisted_chain_selection(&model)
         };
         let Some(selection) = selection else {
-            self.status = format!(
-                "model {model} is not in agent {}'s fallback chain",
-                draft.agent
-            );
+            self.status = format!("model {model} is not available for agent {}", draft.agent);
             return;
         };
         self.draft = Some(RunSelection {
@@ -956,6 +1031,21 @@ impl App {
             },
         });
         self.status = self.draft_status("Draft run variant");
+    }
+
+    pub(super) fn cycle_draft_variant(&mut self) {
+        let variants = self.draft_variants();
+        if variants.len() <= 1 {
+            return;
+        }
+        let Some(current) = self.draft.as_ref().map(|draft| draft.model.variant.clone()) else {
+            return;
+        };
+        let index = variants
+            .iter()
+            .position(|variant| *variant == current)
+            .unwrap_or(0);
+        self.set_draft_variant(variants[(index + 1) % variants.len()].clone());
     }
 
     /// The coherent descriptor revision label for selector presentation:
@@ -1384,6 +1474,19 @@ impl App {
                         "Connected provider {provider_id}; refreshed {model_count} models at {model_revision}, but initial session.create failed: {error}. No session was created."
                     );
                 }
+                ConnectFollowUp::InvalidInitialSelection {
+                    models,
+                    agents,
+                    agent,
+                } => {
+                    let model_revision = models.revision.clone();
+                    let model_count = models.models.len();
+                    debug_assert_eq!(agents.model_revision, models.revision);
+                    self.install_coherent_pair(*models, *agents);
+                    self.status = format!(
+                        "Connected provider {provider_id}; refreshed {model_count} models at {model_revision}, but root-runnable agent {agent} has no authored fallback selection represented by the coherent public model catalog. No session was created."
+                    );
+                }
             },
         }
     }
@@ -1475,19 +1578,8 @@ impl App {
             }
             cookie_agent_protocol::SessionOrigin::Root => {
                 let creation = meta.creation_selection.clone();
-                let still_valid = self.agents.iter().any(|agent| {
-                    agent.runnable_as_root
-                        && agent.id == creation.agent
-                        && agent
-                            .resolved_fallback
-                            .iter()
-                            .any(|selection| selection == &creation.model)
-                });
-                self.draft = if still_valid {
-                    Some(creation)
-                } else {
-                    self.default_draft_selection()
-                };
+                self.draft = Some(creation);
+                self.revalidate_draft();
             }
         }
     }
@@ -1615,9 +1707,7 @@ impl App {
         }
         match self.modal {
             Modal::Sessions => self.handle_session_picker(key).await,
-            Modal::Agents | Modal::Models | Modal::Variants => {
-                self.handle_selection_picker(key).await
-            }
+            Modal::Agents | Modal::Models => self.handle_selection_picker(key).await,
             Modal::ConnectProviders => self.handle_connect_provider_key(key),
             Modal::ConnectCredentials => self.handle_connect_credentials_key(key),
             Modal::ConnectConfirm => self.handle_connect_confirm_key(key),
@@ -1717,7 +1807,6 @@ impl App {
             Modal::Sessions => self.filtered_sessions().len(),
             Modal::Agents => self.selectable_agents().len(),
             Modal::Models => self.draft_models().len(),
-            Modal::Variants => self.draft_variants().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
             Modal::ConnectCredentials | Modal::ConnectConfirm | Modal::None => 0,
         }
@@ -1891,7 +1980,8 @@ impl App {
             }
             return;
         }
-        // Message title segments open the agent/model/variant selectors.
+        // Agent and model title segments open selectors. The bracketed variant
+        // suffix cycles in place and never opens a separate panel.
         if let Some(hit) = self
             .hit_map
             .title_segments
@@ -1900,11 +1990,11 @@ impl App {
             .copied()
         {
             self.input_focused = false;
-            self.open_selection_modal(match hit.segment {
-                TitleSegment::Agent => Modal::Agents,
-                TitleSegment::Model => Modal::Models,
-                TitleSegment::Variant => Modal::Variants,
-            });
+            match hit.segment {
+                TitleSegment::Agent => self.open_selection_modal(Modal::Agents),
+                TitleSegment::Model => self.open_selection_modal(Modal::Models),
+                TitleSegment::Variant => self.cycle_draft_variant(),
+            }
             return;
         }
         if let Some(hit) = self
@@ -2001,7 +2091,7 @@ impl App {
             {
                 let len = match self.modal {
                     Modal::Sessions => self.filtered_sessions().len(),
-                    Modal::Agents | Modal::Models | Modal::Variants => self.picker_entry_count(),
+                    Modal::Agents | Modal::Models => self.picker_entry_count(),
                     Modal::ConnectProviders => self.filtered_providers().len(),
                     Modal::ConnectCredentials | Modal::ConnectConfirm | Modal::None => 0,
                 };
@@ -2457,32 +2547,38 @@ impl App {
                 .filter(|agent| agent.runnable_as_root)
                 .find(|agent| agent.id.as_str() == "primary")
                 .or_else(|| agents.agents.iter().find(|agent| agent.runnable_as_root))
-                .map(|agent| RunSelection {
-                    agent: agent.id.clone(),
-                    model: agent
-                        .resolved_fallback
-                        .first()
-                        .cloned()
-                        .expect("root-runnable agents have a nonempty chain"),
-                });
+                .cloned();
             // Only a verified coherent pair reaches session creation; the
             // selection comes from that same coherent agent snapshot.
-            let follow_up =
-                match runnable_agent.filter(|_| !agents.agents.is_empty() && create_default) {
-                    Some(selection) => {
-                        match client
-                            .create_session(SessionCreateParams { selection })
-                            .await
-                        {
-                            Ok(result) => ConnectFollowUp::Refreshed {
+            let follow_up = if create_default {
+                match runnable_agent {
+                    Some(agent) => {
+                        match first_available_authored_selection(&agent, &models.models) {
+                            Some(model) => {
+                                let selection = RunSelection {
+                                    agent: agent.id.clone(),
+                                    model,
+                                };
+                                match client
+                                    .create_session(SessionCreateParams { selection })
+                                    .await
+                                {
+                                    Ok(result) => ConnectFollowUp::Refreshed {
+                                        models: Box::new(models),
+                                        agents: Box::new(agents),
+                                        created: Some(Box::new(result.session)),
+                                    },
+                                    Err(error) => ConnectFollowUp::InitialSessionFailed {
+                                        models: Box::new(models),
+                                        agents: Box::new(agents),
+                                        error: error.to_string(),
+                                    },
+                                }
+                            }
+                            None => ConnectFollowUp::InvalidInitialSelection {
                                 models: Box::new(models),
                                 agents: Box::new(agents),
-                                created: Some(Box::new(result.session)),
-                            },
-                            Err(error) => ConnectFollowUp::InitialSessionFailed {
-                                models: Box::new(models),
-                                agents: Box::new(agents),
-                                error: error.to_string(),
+                                agent: agent.id.clone(),
                             },
                         }
                     }
@@ -2491,7 +2587,14 @@ impl App {
                         agents: Box::new(agents),
                         created: None,
                     },
-                };
+                }
+            } else {
+                ConnectFollowUp::Refreshed {
+                    models: Box::new(models),
+                    agents: Box::new(agents),
+                    created: None,
+                }
+            };
             let _ = updates.send(RpcUpdate::ConnectFinished {
                 outcome: ConnectOutcome::Connected {
                     provider_id,
@@ -2563,17 +2666,6 @@ impl App {
                     self.modal = Modal::None;
                 }
             }
-            Modal::Variants => {
-                if !self.model_selection_allowed() {
-                    self.status = "no draft variant is available for this session".into();
-                    return;
-                }
-                let variant = self.draft_variants().get(index).cloned();
-                if let Some(variant) = variant {
-                    self.set_draft_variant(variant);
-                    self.modal = Modal::None;
-                }
-            }
             Modal::ConnectProviders => {
                 self.picker_state.select(Some(index));
                 self.handle_connect_provider_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -2627,7 +2719,7 @@ impl App {
             .and_then(|state| state.active_run);
         let selection = self.draft.clone();
         if active_run.is_none() && selection.is_none() {
-            self.status = "select a draft agent/model/variant before submitting".into();
+            self.status = "select a draft agent/model before submitting".into();
             return;
         }
         self.spawn_rpc(async move {
@@ -3116,21 +3208,23 @@ impl App {
         });
     }
 
-    /// The exact Message panel title `Agent(Model-Variant)` with separate
-    /// styled segments for the agent, model, and variant hit regions.
+    /// The exact Message panel title `Agent(Model[Variant])` with separate
+    /// structured agent, model, and bracketed variant hit regions.
     fn message_title_spans(&self) -> Vec<Span<'static>> {
         match &self.draft {
             Some(draft) => vec![
                 Span::styled(draft.agent.to_string(), self.theme.user()),
                 Span::raw("("),
                 Span::styled(draft.model.model.to_string(), self.theme.assistant()),
-                Span::raw("-"),
                 Span::styled(
-                    draft
-                        .model
-                        .variant
-                        .as_ref()
-                        .map_or_else(|| "base".to_owned(), |variant| variant.to_string()),
+                    format!(
+                        "[{}]",
+                        draft
+                            .model
+                            .variant
+                            .as_ref()
+                            .map_or_else(|| "base".to_owned(), |variant| variant.to_string())
+                    ),
                     self.theme.tool(),
                 ),
                 Span::raw(")"),
@@ -3161,25 +3255,31 @@ impl App {
             &title_text,
             &self.theme,
         );
-        // Agent, Model, and Variant are separate clickable regions inside the
-        // exact `Agent(Model-Variant)` title; each opens its own selector.
+        // Agent, Model, and the complete bracketed Variant suffix are separate
+        // clickable regions inside the canonical title.
         self.hit_map.title_segments = {
             let segments = [
                 Some(TitleSegment::Agent),
                 None,
                 Some(TitleSegment::Model),
-                None,
                 Some(TitleSegment::Variant),
                 None,
             ];
             let mut hits = Vec::new();
             let mut column = layout.input.x.saturating_add(1);
+            let visible_end = layout
+                .input
+                .x
+                .saturating_add(layout.input.width.saturating_sub(1));
             for (span, segment) in title_spans.iter().zip(segments) {
                 let width =
                     UnicodeWidthStr::width(span.content.as_ref()).min(usize::from(u16::MAX)) as u16;
-                if let Some(segment) = segment {
+                let visible_width = visible_end.saturating_sub(column).min(width);
+                if let Some(segment) = segment
+                    && visible_width > 0
+                {
                     hits.push(TitleSegmentHit {
-                        rect: Rect::new(column, layout.input.y, width, 1),
+                        rect: Rect::new(column, layout.input.y, visible_width, 1),
                         segment,
                     });
                 }
@@ -3263,53 +3363,9 @@ impl App {
             Modal::Models => self.render_picker(
                 frame,
                 "Model",
-                self.draft_models()
-                    .iter()
-                    .map(|selection| {
-                        self.model_descriptor(&selection.model).map_or_else(
-                            || selection.model.to_string(),
-                            |descriptor| {
-                                format!("{} — {}", selection.model, descriptor.display_name)
-                            },
-                        )
-                    })
-                    .collect(),
+                self.draft_model_labels(),
                 centered(frame.area(), 56, 44),
             ),
-            Modal::Variants => {
-                let labels = {
-                    // Root sessions label variants from the live coherent
-                    // descriptor; delegated sessions show only the persisted
-                    // exact selections, without consulting live options.
-                    let descriptor = self
-                        .draft
-                        .as_ref()
-                        .filter(|_| self.watching_root_session())
-                        .and_then(|draft| self.model_descriptor(&draft.model.model));
-                    self.draft_variants()
-                        .iter()
-                        .map(|variant| {
-                            variant.as_ref().map_or_else(
-                                || "base".to_owned(),
-                                |variant| {
-                                    descriptor
-                                        .and_then(|descriptor| {
-                                            descriptor
-                                                .variants
-                                                .iter()
-                                                .find(|candidate| &candidate.id == variant)
-                                        })
-                                        .map_or_else(
-                                            || variant.to_string(),
-                                            |found| format!("{variant} — {}", found.display_name),
-                                        )
-                                },
-                            )
-                        })
-                        .collect()
-                };
-                self.render_picker(frame, "Variant", labels, centered(frame.area(), 40, 34));
-            }
             Modal::ConnectProviders => {
                 let title = if self.picker_query.is_empty() {
                     "Connect provider — type to filter · Enter: details".to_owned()
@@ -3828,15 +3884,40 @@ fn is_approval_scroll_key(code: KeyCode) -> bool {
     )
 }
 
-/// The exact `Agent(Model-Variant)` draft-selection title form. Base renders
-/// as `base` in the Variant portion.
+/// The exact `Agent(Model[Variant])` draft-selection title form.
 fn draft_title(draft: &RunSelection) -> String {
     let variant = draft
         .model
         .variant
         .as_ref()
         .map_or_else(|| "base".to_owned(), |variant| variant.to_string());
-    format!("{}({}-{})", draft.agent, draft.model.model, variant)
+    format!("{}({}[{}])", draft.agent, draft.model.model, variant)
+}
+
+fn canonical_model_row(selection: &ModelSelection, display_name: Option<&str>) -> String {
+    let variant = selection.variant.as_ref().map_or("base", VariantId::as_str);
+    let canonical = format!("{}[{variant}]", selection.model);
+    display_name.map_or(canonical.clone(), |display_name| {
+        format!("{canonical} — {display_name}")
+    })
+}
+
+fn first_available_authored_selection(
+    agent: &AgentDescriptor,
+    models: &[AvailableModelDescriptor],
+) -> Option<ModelSelection> {
+    agent.resolved_fallback.iter().find_map(|selection| {
+        let descriptor = models
+            .iter()
+            .find(|descriptor| descriptor.key == selection.model)?;
+        let valid_variant = selection.variant.as_ref().is_none_or(|variant| {
+            descriptor
+                .variants
+                .iter()
+                .any(|candidate| candidate.id == *variant)
+        });
+        valid_variant.then(|| selection.clone())
+    })
 }
 
 /// Extract an immediate title patch from a `SessionTitleCommitted` event:

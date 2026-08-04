@@ -397,6 +397,7 @@ impl ModelSet {
     pub fn descriptors(&self) -> Vec<AvailableModelDescriptor> {
         self.entries
             .values()
+            .filter(|entry| entry.is_available())
             .map(|entry| AvailableModelDescriptor {
                 key: entry.key.clone(),
                 display_name: entry.display_name.clone(),

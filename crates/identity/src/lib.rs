@@ -424,6 +424,17 @@ pub struct ModelSelection {
     pub variant: Option<VariantId>,
 }
 
+impl fmt::Display for ModelSelection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}[", self.model)?;
+        match &self.variant {
+            Some(variant) => variant.fmt(formatter)?,
+            None => formatter.write_str("base")?,
+        }
+        formatter.write_str("]")
+    }
+}
+
 /// Three-state agent fallback authoring after field-presence decoding.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConfiguredVariantRef {
@@ -525,6 +536,34 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ConfiguredVariantRef>("\"default\"").unwrap(),
             ConfiguredVariantRef::Named(VariantId::new("default").unwrap())
+        );
+    }
+
+    #[test]
+    fn model_selection_format_is_exact_and_serialization_is_unchanged() {
+        let base = ModelSelection {
+            model: "openai/gpt-5.6-sol".parse().unwrap(),
+            variant: None,
+        };
+        let named_default = ModelSelection {
+            model: "openai/gpt-5.6-sol".parse().unwrap(),
+            variant: Some(VariantId::new("default").unwrap()),
+        };
+        let high = ModelSelection {
+            model: "anthropic/claude-sonnet-4-6".parse().unwrap(),
+            variant: Some(VariantId::new("high").unwrap()),
+        };
+
+        assert_eq!(base.to_string(), "openai/gpt-5.6-sol[base]");
+        assert_eq!(named_default.to_string(), "openai/gpt-5.6-sol[default]");
+        assert_eq!(high.to_string(), "anthropic/claude-sonnet-4-6[high]");
+        assert_eq!(
+            serde_json::to_value(&base).unwrap(),
+            serde_json::json!({"model": "openai/gpt-5.6-sol", "variant": null})
+        );
+        assert_eq!(
+            serde_json::to_value(&named_default).unwrap(),
+            serde_json::json!({"model": "openai/gpt-5.6-sol", "variant": "default"})
         );
     }
 

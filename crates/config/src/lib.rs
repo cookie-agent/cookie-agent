@@ -343,15 +343,91 @@ pub struct ResolvedAgent {
     pub document: AgentDocument,
     pub resolved_fallback: Vec<ModelSelection>,
     pub runnable_as_root: bool,
+    model_snapshot_fingerprint: Sha256Digest,
+}
+
+/// Exact executable fallback plan for a public root selection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RootModelPlan {
+    selections: Vec<ModelSelection>,
+}
+
+impl RootModelPlan {
+    #[must_use]
+    pub fn selections(&self) -> &[ModelSelection] {
+        &self.selections
+    }
+
+    #[must_use]
+    pub fn into_selections(self) -> Vec<ModelSelection> {
+        self.selections
+    }
+}
+
+/// Existing chain-only suffix plan used for delegated agents with authored fallback.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DelegatedModelPlan {
+    selections: Vec<ModelSelection>,
+}
+
+impl DelegatedModelPlan {
+    #[must_use]
+    pub fn selections(&self) -> &[ModelSelection] {
+        &self.selections
+    }
+
+    #[must_use]
+    pub fn into_selections(self) -> Vec<ModelSelection> {
+        self.selections
+    }
 }
 
 impl ResolvedAgent {
-    /// Selects the unique model-key suffix and replaces only its head variant.
-    pub fn selected_suffix(
+    #[must_use]
+    pub fn model_snapshot_fingerprint(&self) -> &Sha256Digest {
+        &self.model_snapshot_fingerprint
+    }
+
+    /// Builds a root plan from one coherent model snapshot.
+    pub fn plan_root_selection(
         &self,
         selection: &ModelSelection,
         models: &ModelSet,
-    ) -> Result<Vec<ModelSelection>, ConfigError> {
+    ) -> Result<RootModelPlan, ConfigError> {
+        self.validate_model_snapshot(models)?;
+        if !self.runnable_as_root {
+            return Err(ConfigError::IneligibleRootAgent(self.document.id.clone()));
+        }
+        validate_selection(&self.document.id, selection, models)?;
+
+        let authored_start = self
+            .resolved_fallback
+            .iter()
+            .position(|entry| entry.model == selection.model);
+        let authored = authored_start.map_or(self.resolved_fallback.as_slice(), |index| {
+            &self.resolved_fallback[index..]
+        });
+        let mut selections = authored
+            .iter()
+            .filter(|entry| model_is_available(models, &entry.model))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if authored_start.is_some() {
+            selections[0] = selection.clone();
+        } else {
+            selections.insert(0, selection.clone());
+        }
+        Ok(RootModelPlan { selections })
+    }
+
+    /// Selects the unique authored suffix for delegated planning.
+    pub fn plan_delegated_selection(
+        &self,
+        selection: &ModelSelection,
+        models: &ModelSet,
+    ) -> Result<DelegatedModelPlan, ConfigError> {
+        self.validate_model_snapshot(models)?;
         let index = self
             .resolved_fallback
             .iter()
@@ -360,32 +436,49 @@ impl ResolvedAgent {
                 agent: self.document.id.clone(),
                 model: selection.model.clone(),
             })?;
-        let model =
-            models
-                .get(&selection.model)
-                .ok_or_else(|| ConfigError::InvalidRunSelection {
-                    agent: self.document.id.clone(),
-                    model: selection.model.clone(),
-                })?;
-        if !model.is_available() {
-            return Err(ConfigError::InvalidRunSelection {
-                agent: self.document.id.clone(),
-                model: selection.model.clone(),
-            });
-        }
-        if let Some(variant) = &selection.variant
-            && !model.variants().contains_key(variant)
-        {
-            return Err(ConfigError::UnknownVariant {
-                agent: self.document.id.clone(),
-                model: selection.model.clone(),
-                variant: variant.to_string(),
-            });
-        }
+        validate_selection(&self.document.id, selection, models)?;
         let mut suffix = self.resolved_fallback[index..].to_vec();
         suffix[0] = selection.clone();
-        Ok(suffix)
+        Ok(DelegatedModelPlan { selections: suffix })
     }
+
+    fn validate_model_snapshot(&self, models: &ModelSet) -> Result<(), ConfigError> {
+        if self.model_snapshot_fingerprint == *models.fingerprint() {
+            Ok(())
+        } else {
+            Err(ConfigError::ModelSnapshotMismatch(self.document.id.clone()))
+        }
+    }
+}
+
+fn validate_selection(
+    agent: &AgentId,
+    selection: &ModelSelection,
+    models: &ModelSet,
+) -> Result<(), ConfigError> {
+    let model = models
+        .get(&selection.model)
+        .filter(|model| model.is_available())
+        .ok_or_else(|| ConfigError::InvalidRunSelection {
+            agent: agent.clone(),
+            model: selection.model.clone(),
+        })?;
+    if let Some(variant) = &selection.variant
+        && !model.variants().contains_key(variant)
+    {
+        return Err(ConfigError::UnknownVariant {
+            agent: agent.clone(),
+            model: selection.model.clone(),
+            variant: variant.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn model_is_available(models: &ModelSet, key: &ModelKey) -> bool {
+    models
+        .get(key)
+        .is_some_and(cookie_agent_models::ModelEntry::is_available)
 }
 
 #[derive(Clone, Debug)]
@@ -438,11 +531,9 @@ impl AgentRegistry {
                     variant,
                 });
             }
-            let available = resolved.iter().any(|selection| {
-                models
-                    .get(&selection.model)
-                    .is_some_and(cookie_agent_models::ModelEntry::is_available)
-            });
+            let available = resolved
+                .iter()
+                .any(|selection| model_is_available(models, &selection.model));
             let runnable_as_root = document.frontmatter.enabled
                 && matches!(
                     document.frontmatter.mode,
@@ -456,6 +547,7 @@ impl AgentRegistry {
                     document,
                     resolved_fallback: resolved,
                     runnable_as_root,
+                    model_snapshot_fingerprint: models.fingerprint().clone(),
                 },
             );
         }
@@ -1295,7 +1387,11 @@ pub enum ConfigError {
         model: ModelKey,
         variant: String,
     },
-    #[error("agent `{agent}` cannot select model `{model}` outside its resolved chain")]
+    #[error("agent `{0}` is not currently runnable as root")]
+    IneligibleRootAgent(AgentId),
+    #[error("agent `{0}` was resolved against a different model snapshot")]
+    ModelSnapshotMismatch(AgentId),
+    #[error("agent `{agent}` cannot select unavailable or unknown model `{model}`")]
     InvalidRunSelection { agent: AgentId, model: ModelKey },
     #[error("fingerprint encoding failed")]
     Json(#[source] serde_json::Error),

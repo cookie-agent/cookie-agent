@@ -6,26 +6,26 @@ expression: "snapshots.join(\"\\n\")"
 == width 24 ==
 ╭─
 │ primary(gateway/arbitr
-│ ary-model) 
+│ ary-model[base])
 │ launching both
 │ ▸ bash sleep 2 …
 │ ▸ thinking (1 lines
 │ hidden)
 │ ▸ read src/lib.rs
 == width 48 ==
-╭─ primary(gateway/arbitrary-model) 
+╭─ primary(gateway/arbitrary-model[base])
 │ launching both
 │ ▸ bash sleep 2 …
 │ ▸ thinking (1 lines hidden)
 │ ▸ read src/lib.rs
 == width 96 ==
-╭─ primary(gateway/arbitrary-model) 
+╭─ primary(gateway/arbitrary-model[base])
 │ launching both
 │ ▸ bash sleep 2 …
 │ ▸ thinking (1 lines hidden)
 │ ▸ read src/lib.rs
 == mono 48 ==
-╭─ primary(gateway/arbitrary-model) 
+╭─ primary(gateway/arbitrary-model[base])
 │ launching both
 │ ▸ bash sleep 2 …
 │ ▸ thinking (1 lines hidden)

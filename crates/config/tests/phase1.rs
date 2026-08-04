@@ -11,8 +11,8 @@ use cookie_agent_config::{
     AgentRegistry, ConfigError, PermissionAction, PermissionEffect, load_from_roots,
     simple_wildcard_match,
 };
-use cookie_agent_identity::{AgentId, ProviderId};
-use cookie_agent_models::{Catalog, build_model_set};
+use cookie_agent_identity::{AgentId, ModelSelection, ProviderId};
+use cookie_agent_models::{Catalog, MODELS_DEV_ARTIFACT_SHA256, build_model_set};
 use tempfile::TempDir;
 
 fn runtime() -> &'static str {
@@ -53,6 +53,69 @@ defaults = { temperature = 0.4 }
 operation = "add"
 defaults = { temperature = 0.2 }
 "#
+}
+
+fn root_planning_runtime() -> String {
+    format!(
+        r#"{}
+
+[providers.test.models."model-two"]
+display_name = "Model Two"
+
+[providers.test.models."model-two".capabilities]
+input = ["text"]
+output = ["text"]
+context_tokens = 16384
+output_tokens = 4096
+tool_calling = true
+parallel_tool_calls = false
+structured_output = false
+reasoning = false
+temperature = true
+top_p = true
+seed = true
+native_replay = "unsupported"
+native_compaction = "unsupported"
+cancellation = "local_only"
+media = {{}}
+
+[providers.test.models."model-two".variants.default]
+operation = "add"
+defaults = {{ temperature = 0.3 }}
+
+[providers.test.models."model-three"]
+display_name = "Model Three"
+
+[providers.test.models."model-three".capabilities]
+input = ["text"]
+output = ["text"]
+context_tokens = 16384
+output_tokens = 4096
+tool_calling = true
+parallel_tool_calls = false
+structured_output = false
+reasoning = false
+temperature = true
+top_p = true
+seed = true
+native_replay = "unsupported"
+native_compaction = "unsupported"
+cancellation = "local_only"
+media = {{}}
+
+[providers.test.models."model-three".variants.default]
+operation = "add"
+defaults = {{ temperature = 0.1 }}
+
+[providers.openai]
+source = "models_dev"
+catalog_revision = "sha256:{MODELS_DEV_ARTIFACT_SHA256}"
+auth = {{ type = "credential_store" }}
+
+[providers.openai.models."gpt-5.6-sol"]
+"#,
+        runtime()
+    )
 }
 
 fn agent(mode: &str, fallback: &str, delegation: &str, body: &str) -> String {
@@ -398,7 +461,7 @@ fn links_hardlinks_private_modes_yaml_aliases_and_agent_interpolation_fail_close
 }
 
 #[test]
-fn selected_suffix_changes_only_the_head_variant_and_never_wraps() {
+fn delegated_plan_changes_only_the_head_variant_and_never_wraps() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("selection");
     write_layer(
@@ -418,12 +481,156 @@ fn selected_suffix_changes_only_the_head_variant_and_never_wraps() {
     .unwrap();
     let registry = loaded.resolve_agents(&models).unwrap();
     let primary = registry.get(&AgentId::new("primary").unwrap()).unwrap();
-    let selection = cookie_agent_identity::ModelSelection {
+    let selection = ModelSelection {
         model: "test/model-one".parse().unwrap(),
         variant: None,
     };
-    let suffix = primary.selected_suffix(&selection, &models).unwrap();
-    assert_eq!(suffix, [selection]);
+    let plan = primary
+        .plan_delegated_selection(&selection, &models)
+        .unwrap();
+    assert_eq!(plan.selections(), [selection]);
+}
+
+#[test]
+fn root_plans_cover_in_chain_out_of_chain_unavailable_and_exact_variants() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("root-plans");
+    write_layer(
+        &root,
+        &root_planning_runtime(),
+        &[
+            (
+                "primary.md",
+                agent(
+                    "primary",
+                    "[{ model: \"test/model-one\" }, { model: \"openai/gpt-5.6-sol\", variant: high }, { model: \"test/model-two\", variant: base }]",
+                    "",
+                    "Prompt.",
+                ),
+            ),
+            (
+                "blocked.md",
+                agent(
+                    "all",
+                    "[{ model: \"openai/gpt-5.6-sol\", variant: high }]",
+                    "",
+                    "Blocked.",
+                ),
+            ),
+        ],
+    );
+    let loaded = load_from_roots(None, Some(&root)).unwrap();
+    let models = build_model_set(
+        &loaded.runtime.providers,
+        &Catalog::embedded().unwrap(),
+        None,
+    )
+    .unwrap();
+    let registry = loaded.resolve_agents(&models).unwrap();
+    let primary = registry.get(&AgentId::new("primary").unwrap()).unwrap();
+
+    let in_chain = ModelSelection {
+        model: "test/model-one".parse().unwrap(),
+        variant: None,
+    };
+    let plan = primary.plan_root_selection(&in_chain, &models).unwrap();
+    assert_eq!(
+        plan.selections()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["test/model-one[base]", "test/model-two[base]"]
+    );
+
+    let tail = ModelSelection {
+        model: "test/model-two".parse().unwrap(),
+        variant: Some("default".parse().unwrap()),
+    };
+    let plan = primary.plan_root_selection(&tail, &models).unwrap();
+    assert_eq!(
+        plan.selections()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["test/model-two[default]"]
+    );
+
+    let synthetic = ModelSelection {
+        model: "test/model-three".parse().unwrap(),
+        variant: Some("default".parse().unwrap()),
+    };
+    let plan = primary.plan_root_selection(&synthetic, &models).unwrap();
+    assert_eq!(
+        plan.selections()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        [
+            "test/model-three[default]",
+            "test/model-one[high]",
+            "test/model-two[base]"
+        ]
+    );
+
+    let unavailable = ModelSelection {
+        model: "openai/gpt-5.6-sol".parse().unwrap(),
+        variant: Some("high".parse().unwrap()),
+    };
+    assert!(matches!(
+        primary.plan_root_selection(&unavailable, &models),
+        Err(ConfigError::InvalidRunSelection { .. })
+    ));
+    assert!(matches!(
+        primary.plan_root_selection(
+            &ModelSelection {
+                model: "test/model-three".parse().unwrap(),
+                variant: Some("missing".parse().unwrap()),
+            },
+            &models,
+        ),
+        Err(ConfigError::UnknownVariant { .. })
+    ));
+
+    let blocked = registry.get(&AgentId::new("blocked").unwrap()).unwrap();
+    assert!(!blocked.runnable_as_root);
+    assert!(matches!(
+        blocked.plan_root_selection(&synthetic, &models),
+        Err(ConfigError::IneligibleRootAgent(_))
+    ));
+
+    let delegated = primary
+        .plan_delegated_selection(&in_chain, &models)
+        .unwrap();
+    assert_eq!(
+        delegated
+            .selections()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        [
+            "test/model-one[base]",
+            "openai/gpt-5.6-sol[high]",
+            "test/model-two[base]"
+        ]
+    );
+    assert!(matches!(
+        primary.plan_delegated_selection(&synthetic, &models),
+        Err(ConfigError::InvalidRunSelection { .. })
+    ));
+
+    let other_root = temp.path().join("other-snapshot");
+    write_layer(&other_root, runtime(), &[]);
+    let other_loaded = load_from_roots(None, Some(&other_root)).unwrap();
+    let other_models = build_model_set(
+        &other_loaded.runtime.providers,
+        &Catalog::embedded().unwrap(),
+        None,
+    )
+    .unwrap();
+    assert!(matches!(
+        primary.plan_root_selection(&in_chain, &other_models),
+        Err(ConfigError::ModelSnapshotMismatch(_))
+    ));
 }
 
 fn assert_unsafe(root: &Path) {

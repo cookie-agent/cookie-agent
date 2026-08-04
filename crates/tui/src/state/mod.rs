@@ -3,8 +3,7 @@
 //! Assistant attribution is derived only from the frozen `RunStarted` plus
 //! `ModelAttemptStarted`/`ModelTurnCommitted` ownership — never from the
 //! current picker, live agent files, or provider configuration. The visible
-//! assistant header projects `Agent(Model)`; the exact variant is retained in
-//! structured attribution and diagnostics.
+//! assistant header projects the exact canonical `Agent(Model[variant])`.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -123,8 +122,7 @@ impl EventLevel {
 }
 
 /// Frozen producing identity for one assistant attempt/turn, reduced from the
-/// exact v7 attempt and turn ownership events. The variant is retained here
-/// as structured attribution and deliberately omitted from the visible header.
+/// exact v7 attempt and turn ownership events.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrozenAssistantAttribution {
     pub agent: AgentId,
@@ -132,9 +130,14 @@ pub struct FrozenAssistantAttribution {
 }
 
 impl FrozenAssistantAttribution {
-    /// The exact visible header `<agent-id>(<provider>/<model-id>)`.
+    /// The exact visible header `<agent-id>(<provider>/<model-id>[<variant>])`.
     pub fn header(&self) -> String {
-        format!("{}({})", self.agent, self.resolved_model.selection.model)
+        format!(
+            "{}({}[{}])",
+            self.agent,
+            self.resolved_model.selection.model,
+            self.variant_label()
+        )
     }
 
     /// The variant retained in structured attribution, rendered as `base`

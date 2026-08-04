@@ -8,14 +8,16 @@ use cookie_agent_protocol::{
     AgentId, AttemptId, ClientRunId, EventPayload as Event, EventSchemaVersion, InvocationId,
     ModelFinishReason, ModelSelection, PersistedAssistantPart, PersistedModelTurn, ProviderId,
     RunId, RunSelection, RunStartParams, SessionId, SessionOrigin, SessionStatus, StoredEvent,
-    ToolCallId, Usage,
+    ToolCallId, Usage, VariantId,
 };
 use tempfile::TempDir;
 
 use crate::{
     Engine, EngineError, EngineOptions, cwd_identity, freeze_delegated_child_policy,
     model_history::wire_model,
-    policy::{ResultLimits, freeze_agent_policy, resolve_agent},
+    policy::{
+        ResultLimits, freeze_delegated_agent_policy, freeze_root_agent_policy, resolve_agent,
+    },
     protocol_digest, session_meta, title_regeneration_target,
 };
 
@@ -53,6 +55,10 @@ native_compaction = "unsupported"
 cancellation = "local_only"
 media = {{}}
 
+[providers.test.models.alpha.variants.fast]
+operation = "add"
+defaults = {{ temperature = 0.1 }}
+
 [providers.test.models.beta]
 display_name = "Beta"
 [providers.test.models.beta.capabilities]
@@ -72,6 +78,33 @@ native_compaction = "unsupported"
 cancellation = "local_only"
 media = {{}}
 
+[providers.test.models.beta.variants.fast]
+operation = "add"
+defaults = {{ temperature = 0.3 }}
+
+[providers.test.models.external]
+display_name = "External"
+[providers.test.models.external.capabilities]
+input = ["text"]
+output = ["text"]
+context_tokens = 8192
+output_tokens = 2048
+tool_calling = true
+parallel_tool_calls = false
+structured_output = false
+reasoning = false
+temperature = true
+top_p = true
+seed = true
+native_replay = "unsupported"
+native_compaction = "unsupported"
+cancellation = "local_only"
+media = {{}}
+
+[providers.test.models.external.variants.fast]
+operation = "add"
+defaults = {{ temperature = 0.2 }}
+
 [providers.openai]
 source = "models_dev"
 catalog_revision = "sha256:{MODELS_DEV_ARTIFACT_SHA256}"
@@ -89,10 +122,18 @@ fn write_agent(
     fallback: &str,
     delegation: &str,
 ) {
+    let (tools, permissions) = if id == "alpha" {
+        (
+            "[read]",
+            "[{ id: allow-read, action: read, resource: \"*\", effect: allow }]",
+        )
+    } else {
+        ("[]", "[]")
+    };
     fs::write(
         root.join("agents").join(format!("{id}.md")),
         format!(
-            "---\nschema: 1\ndescription: {id} test agent\nmode: {mode}\nenabled: {enabled}\nmodel_fallback: {fallback}\ntools: []\npermissions: []\n{delegation}---\n{id} prompt.\n"
+            "---\nschema: 1\ndescription: {id} test agent\nmode: {mode}\nenabled: {enabled}\nmodel_fallback: {fallback}\ntools: {tools}\npermissions: {permissions}\n{delegation}---\n{id} prompt.\n"
         ),
     )
     .expect("write agent");
@@ -110,8 +151,8 @@ fn fixture() -> Fixture {
         "alpha",
         "primary",
         true,
-        "[{ model: \"test/alpha\" }]",
-        "delegation:\n  agents: [inheritor]\n  max_depth: 2\n",
+        "[{ model: \"openai/gpt-5.6-sol\" }, { model: \"test/alpha\" }, { model: \"test/beta\" }]",
+        "delegation:\n  agents: [child, inheritor]\n  max_depth: 2\n",
     );
     write_agent(&root, "beta", "all", true, "[{ model: \"test/beta\" }]", "");
     write_agent(
@@ -135,7 +176,7 @@ fn fixture() -> Fixture {
         "child",
         "subagent",
         true,
-        "[{ model: \"test/alpha\" }]",
+        "[{ model: \"openai/gpt-5.6-sol\" }, { model: \"test/beta\" }]",
         "",
     );
     write_agent(&root, "inheritor", "subagent", true, "[]", "");
@@ -172,6 +213,12 @@ fn selection(agent: &str, model: &str) -> RunSelection {
             variant: None,
         },
     }
+}
+
+fn variant_selection(agent: &str, model: &str, variant: &str) -> RunSelection {
+    let mut selection = selection(agent, model);
+    selection.model.variant = Some(VariantId::new(variant).expect("variant id"));
+    selection
 }
 
 fn connect_openai(fixture: &Fixture, id: &str, secret: &str) {
@@ -251,6 +298,233 @@ async fn stop(engine: &Engine, run_id: RunId, session_id: SessionId) {
 }
 
 #[tokio::test]
+async fn external_synthetic_head_is_frozen_with_available_authored_fallbacks_and_replays() {
+    let fixture = fixture();
+    let selected = variant_selection("alpha", "test/external", "fast");
+    let session = fixture
+        .engine
+        .create_session(selected.clone())
+        .expect("synthetic-root session");
+    let creation = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("creation projection");
+    let creation_models = creation
+        .creation_agent
+        .fallback_chain
+        .iter()
+        .map(|binding| binding.resolved.selection.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        creation_models,
+        ["test/external[fast]", "test/alpha[base]", "test/beta[base]"]
+    );
+    assert_eq!(creation.creation_agent.selected_suffix_start, 0);
+    assert_eq!(creation.creation_agent.composed_prompt, "alpha prompt.\n");
+    assert_eq!(creation.creation_agent.tools.len(), 1);
+    assert_eq!(creation.creation_agent.permissions.len(), 1);
+    assert_eq!(
+        creation.creation_agent.permissions[0].id.as_str(),
+        "allow-read"
+    );
+    assert_eq!(
+        creation
+            .creation_agent
+            .delegation
+            .as_ref()
+            .expect("delegation")
+            .targets
+            .iter()
+            .map(AgentId::as_str)
+            .collect::<Vec<_>>(),
+        ["child", "inheritor"]
+    );
+
+    let run = fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("external-synthetic-run").expect("client run id"),
+            selection: selected.clone(),
+            input: "exercise frozen attribution".into(),
+        })
+        .await
+        .expect("synthetic root run");
+    for _ in 0..100 {
+        let events = fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("projection")
+            .log
+            .events();
+        if events.iter().any(|event| {
+            matches!(
+                &event.payload,
+                Event::ModelAttemptStarted {
+                    fallback_index: 0,
+                    resolved_model,
+                    ..
+                } if resolved_model.selection == selected.model
+            )
+        }) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let projection = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("run projection");
+    let run_projection = &projection.runs[&run.run_id];
+    assert_eq!(
+        run_projection.agent.fallback_chain,
+        creation.creation_agent.fallback_chain
+    );
+    let run_started_suffix = projection
+        .log
+        .events()
+        .into_iter()
+        .find_map(|event| match event.payload {
+            Event::RunStarted {
+                selected_suffix, ..
+            } if event.run_id == Some(run.run_id) => Some(selected_suffix),
+            _ => None,
+        })
+        .expect("RunStarted suffix");
+    assert_eq!(run_started_suffix, run_projection.agent.fallback_chain);
+    stop(&fixture.engine, run.run_id, session.session_id).await;
+
+    let reopened = crate::events::EventLog::open(
+        fixture
+            .engine
+            .inner
+            .store
+            .session_dir(session.session_id)
+            .join("events.jsonl"),
+        session.session_id,
+    )
+    .expect("event replay");
+    assert_eq!(reopened.events(), projection.log.events());
+    fixture.engine.shutdown().await;
+}
+
+#[test]
+fn root_planning_rejects_a_registry_from_another_model_snapshot() {
+    let fixture = fixture();
+    let retained = fixture.manager.current();
+    let agents = fixture
+        .engine
+        .materialize_agents(retained.model_set())
+        .expect("agents");
+    connect_openai(&fixture, "publish-different-snapshot", "credential");
+    let published = fixture.manager.current();
+    assert_ne!(
+        retained.model_set().fingerprint(),
+        published.model_set().fingerprint()
+    );
+    let agent = resolve_agent(&agents, &AgentId::new("alpha").expect("agent")).expect("alpha");
+    let error = freeze_root_agent_policy(
+        agent,
+        Arc::clone(&agents),
+        published,
+        &selection("alpha", "test/alpha").model,
+        ResultLimits {
+            tool_output_max_lines: 100,
+            tool_output_max_bytes: 10_000,
+        },
+    )
+    .expect_err("mixed model snapshots are rejected");
+    assert!(matches!(error, EngineError::Config(_)));
+}
+
+#[test]
+fn delegated_own_chain_ignores_parent_synthetic_head_and_empty_chain_inherits_active_suffix() {
+    let fixture = fixture();
+    let snapshot = fixture.manager.current();
+    let agents = fixture
+        .engine
+        .materialize_agents(snapshot.model_set())
+        .expect("agents");
+    let parent = resolve_agent(&agents, &AgentId::new("alpha").expect("agent")).expect("alpha");
+    let parent_policy = freeze_root_agent_policy(
+        parent,
+        Arc::clone(&agents),
+        Arc::clone(&snapshot),
+        &variant_selection("alpha", "test/external", "fast").model,
+        ResultLimits {
+            tool_output_max_lines: 100,
+            tool_output_max_bytes: 10_000,
+        },
+    )
+    .expect("parent policy");
+    assert_eq!(
+        parent_policy.selected_suffix[0]
+            .resolved
+            .selection
+            .to_string(),
+        "test/external[fast]"
+    );
+
+    let child = resolve_agent(&agents, &AgentId::new("child").expect("agent")).expect("child");
+    let own = freeze_delegated_child_policy(
+        child,
+        &parent_policy,
+        &selection("child", "test/beta").model,
+        parent_policy.active_suffix(0),
+        2,
+        ResultLimits {
+            tool_output_max_lines: 100,
+            tool_output_max_bytes: 10_000,
+        },
+    )
+    .expect("own-chain child");
+    assert_eq!(own.selected_suffix.len(), 1);
+    assert_eq!(
+        own.selected_suffix[0].resolved.selection.to_string(),
+        "test/beta[base]"
+    );
+
+    let inheritor =
+        resolve_agent(&agents, &AgentId::new("inheritor").expect("agent")).expect("inheritor");
+    for fallback_index in [0, 1] {
+        let inherited = parent_policy.active_suffix(fallback_index);
+        let policy = freeze_delegated_child_policy(
+            inheritor,
+            &parent_policy,
+            &inherited[0].resolved.selection,
+            inherited,
+            2,
+            ResultLimits {
+                tool_output_max_lines: 100,
+                tool_output_max_bytes: 10_000,
+            },
+        )
+        .expect("empty-chain child");
+        assert_eq!(policy.selected_suffix, inherited);
+    }
+    assert_eq!(
+        parent_policy.active_suffix(0)[0]
+            .resolved
+            .selection
+            .to_string(),
+        "test/external[fast]"
+    );
+    assert_eq!(
+        parent_policy.active_suffix(1)[0]
+            .resolved
+            .selection
+            .to_string(),
+        "test/alpha[base]"
+    );
+}
+
+#[tokio::test]
 async fn root_session_switches_runnable_agents_and_preserves_the_first_run_snapshot() {
     let fixture = fixture();
     let session = fixture
@@ -282,17 +556,33 @@ async fn root_session_switches_runnable_agents_and_preserves_the_first_run_snaps
     assert_eq!(projection.runs[&second].agent.agent.as_str(), "beta");
     stop(&fixture.engine, second, session.session_id).await;
 
-    let mismatch = fixture
+    let synthetic = fixture
         .engine
         .start_run(RunStartParams {
             session_id: session.session_id,
-            client_run_id: ClientRunId::new("beta-wrong-model").expect("client run id"),
+            client_run_id: ClientRunId::new("beta-synthetic-model").expect("client run id"),
             selection: selection("beta", "test/alpha"),
-            input: "reject mismatched suffix".into(),
+            input: "accept configured model outside authored fallback".into(),
         })
         .await
-        .expect_err("model outside beta fallback rejected");
-    assert!(matches!(mismatch, EngineError::Model(_)));
+        .expect("globally configured model is accepted");
+    let projection = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection");
+    let synthetic_agent = &projection.runs[&synthetic.run_id].agent;
+    assert_eq!(synthetic_agent.fallback_chain.len(), 2);
+    assert_eq!(
+        synthetic_agent.fallback_chain[0].resolved.selection.model,
+        selection("beta", "test/alpha").model.model
+    );
+    assert_eq!(
+        synthetic_agent.fallback_chain[1].resolved.selection.model,
+        selection("beta", "test/beta").model.model
+    );
+    stop(&fixture.engine, synthetic.run_id, session.session_id).await;
 
     for (agent, model) in [
         ("disabled", "test/alpha"),
@@ -322,6 +612,16 @@ async fn root_title_reset_after_same_fingerprint_credential_rotation_uses_old_ha
         .engine
         .create_session(selection("alpha", "test/alpha"))
         .expect("session");
+    let creation_snapshot = fixture
+        .engine
+        .inner
+        .session_model_snapshots
+        .lock()
+        .expect("session snapshots")
+        .get(&session.session_id)
+        .cloned()
+        .expect("retained creation snapshot");
+    assert!(Arc::ptr_eq(&creation_snapshot, &retained));
     let run = start(&fixture.engine, session.session_id, "alpha", "test/alpha").await;
     stop(&fixture.engine, run, session.session_id).await;
     connect_openai(&fixture, "rotate", "credential-two");
@@ -329,6 +629,17 @@ async fn root_title_reset_after_same_fingerprint_credential_rotation_uses_old_ha
         fixture.manager.current().model_set().fingerprint(),
         retained.model_set().fingerprint()
     );
+    assert!(Arc::ptr_eq(
+        fixture
+            .engine
+            .inner
+            .session_model_snapshots
+            .lock()
+            .expect("session snapshots")
+            .get(&session.session_id)
+            .expect("creation snapshot"),
+        &retained
+    ));
 
     let projection = fixture
         .engine
@@ -434,15 +745,15 @@ async fn delegated_title_reset_uses_exact_delegated_run_snapshot() {
         .engine
         .materialize_agents(retained.model_set())
         .expect("agents");
-    let child_selection = selection("child", "test/alpha");
+    let child_selection = selection("child", "test/beta");
     let child = resolve_agent(&agents, &child_selection.agent).expect("child agent");
-    let policy = freeze_agent_policy(
+    let policy = freeze_delegated_agent_policy(
         child,
         Arc::clone(&agents),
         Arc::clone(&retained),
         &child_selection.model,
-        None,
-        None,
+        &[],
+        2,
         ResultLimits {
             tool_output_max_lines: 100,
             tool_output_max_bytes: 10_000,
@@ -492,7 +803,7 @@ async fn delegated_title_reset_uses_exact_delegated_run_snapshot() {
     fixture.engine.spawn_actor(session_id);
     connect_openai(&fixture, "after-child-admission", "credential");
 
-    let run = start(&fixture.engine, session_id, "child", "test/alpha").await;
+    let run = start(&fixture.engine, session_id, "child", "test/beta").await;
     stop(&fixture.engine, run, session_id).await;
     let projection = fixture
         .engine
@@ -517,13 +828,11 @@ fn repeated_attempt_and_tool_loop_resolution_stays_on_the_run_snapshot_after_pub
         .materialize_agents(retained.model_set())
         .expect("agents");
     let agent = resolve_agent(&agents, &AgentId::new("alpha").expect("agent")).expect("alpha");
-    let policy = freeze_agent_policy(
+    let policy = freeze_root_agent_policy(
         agent,
         Arc::clone(&agents),
         Arc::clone(&retained),
         &selection("alpha", "test/alpha").model,
-        None,
-        None,
         ResultLimits {
             tool_output_max_lines: 100,
             tool_output_max_bytes: 10_000,
@@ -557,13 +866,11 @@ fn child_admission_freezes_from_the_invoking_parent_snapshot_after_provider_publ
         .materialize_agents(retained.model_set())
         .expect("agents");
     let parent = resolve_agent(&agents, &AgentId::new("alpha").expect("agent")).expect("alpha");
-    let parent_policy = freeze_agent_policy(
+    let parent_policy = freeze_root_agent_policy(
         parent,
         Arc::clone(&agents),
         Arc::clone(&retained),
         &selection("alpha", "test/alpha").model,
-        None,
-        None,
         ResultLimits {
             tool_output_max_lines: 100,
             tool_output_max_bytes: 10_000,
@@ -603,15 +910,15 @@ async fn delegated_session_cannot_switch_from_its_frozen_child_agent() {
         .engine
         .materialize_agents(snapshot.model_set())
         .expect("agents");
-    let child_selection = selection("child", "test/alpha");
+    let child_selection = selection("child", "test/beta");
     let child = resolve_agent(&agents, &child_selection.agent).expect("child agent");
-    let policy = freeze_agent_policy(
+    let policy = freeze_delegated_agent_policy(
         child,
         Arc::clone(&agents),
         Arc::clone(&snapshot),
         &child_selection.model,
-        None,
-        None,
+        &[],
+        2,
         ResultLimits {
             tool_output_max_lines: 100,
             tool_output_max_bytes: 10_000,
@@ -653,17 +960,26 @@ async fn delegated_session_cannot_switch_from_its_frozen_child_agent() {
         .expect("delegated session");
     fixture.engine.spawn_actor(session_id);
 
-    let error = fixture
-        .engine
-        .start_run(RunStartParams {
-            session_id,
-            client_run_id: ClientRunId::new("delegated-switch").expect("client run id"),
-            selection: selection("beta", "test/beta"),
-            input: "switch".into(),
-        })
-        .await
-        .expect_err("delegated agent switch rejected");
-    assert!(matches!(error, EngineError::Model(_)));
+    for (client_run_id, rejected) in [
+        ("delegated-switch", selection("beta", "test/beta")),
+        ("delegated-escape", selection("child", "test/external")),
+        (
+            "delegated-variant-override",
+            variant_selection("child", "test/beta", "fast"),
+        ),
+    ] {
+        let error = fixture
+            .engine
+            .start_run(RunStartParams {
+                session_id,
+                client_run_id: ClientRunId::new(client_run_id).expect("client run id"),
+                selection: rejected,
+                input: "reject delegated escape".into(),
+            })
+            .await
+            .expect_err("delegated frozen suffix restriction");
+        assert!(matches!(error, EngineError::Model(_)));
+    }
     assert!(
         fixture
             .engine
@@ -674,5 +990,7 @@ async fn delegated_session_cannot_switch_from_its_frozen_child_agent() {
             .runs
             .is_empty()
     );
+    let accepted = start(&fixture.engine, session_id, "child", "test/beta").await;
+    stop(&fixture.engine, accepted, session_id).await;
     fixture.engine.shutdown().await;
 }

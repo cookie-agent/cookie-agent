@@ -48,8 +48,9 @@ own frozen run policy and event log.
    approved against immutable resources, then executed through the held
    capability. Permissions are consent control, not an OS sandbox.
 10. **Stable UI attribution.** Draft selection and frozen producer attribution
-    are separate. Visible assistant headers come from persisted attempt data,
-    not current picker state.
+    are separate. Exact selections use canonical
+    `provider/model[variant]` text, including `[base]`, and visible assistant
+    headers come from persisted attempt data rather than current picker state.
 11. **Locked internal distribution.** Workspace crates are nonpublishable. The
     root `Cargo.lock` is the sole dependency graph and releases are locked
     workspace builds of the `cookie` binary.
@@ -183,11 +184,20 @@ provider connection cannot advertise an agent that session creation still sees
 as unavailable. Published model snapshots referenced by existing sessions and
 runs remain retained for the daemon lifetime.
 
+The public root model catalog is the complete set of configured, enabled, and
+currently executable models in strict `ModelKey` order. Credential-blocked
+entries remain in the immutable internal snapshot for agent resolution but are
+not emitted as public `AvailableModelDescriptor` values until a coherent
+credential refresh makes them executable.
+
 ### 4.1 Variants
 
 A `ModelSelection` contains a direct `ModelKey` plus `Option<VariantId>`; `None`
 means exact base behavior. Variants are named behavior presets under one model,
-not separate model IDs.
+not separate model IDs. Its canonical display is
+`provider/model[variant]`: base is always explicit as `[base]`, and named IDs
+are preserved exactly, including a literal `[default]`. This display rule does
+not change the structured serialized shape.
 
 Agent fallback authoring stores `Option<ConfiguredVariantRef>` with three
 distinct states:
@@ -203,10 +213,9 @@ retaining the provider source default, `Some(Base)` for explicit exact base, and
 `Some(Named)` for a named variant. Both provider defaults and agent fallback
 entries resolve to exact `ModelSelection` before freezing.
 
-Every entry resolves to exact `ModelSelection` before freezing. A fallback
-chain may not repeat a `ModelKey`, so selecting a model always identifies one
-suffix. Selecting a variant changes only that suffix head; later entries retain
-their resolved variants. Fallback advances forward and does not wrap.
+Every authored entry resolves to exact `ModelSelection` before freezing. A
+fallback chain may not repeat a `ModelKey`, so delegated chain selection remains
+unambiguous and does not wrap.
 
 The only models.dev reasoning option forms are `effort`, `toggle`, and
 `budget_tokens`. Effort supports `none`, `minimal`, `low`, `medium`, `high`,
@@ -248,8 +257,8 @@ nonempty chain and at least one available selection. Root creation and the root
 selector use only `runnable_as_root = true` descriptors.
 
 `SessionCreateParams` and `RunStartParams` use exact `RunSelection { agent,
-model }`. The selected model/variant must be valid for the selected agent's
-resolved chain. Before `RunStarted`, the engine freezes:
+model }`. Root model/variant validation and plan construction use one current
+model snapshot. Before `RunStarted`, the engine freezes:
 
 - complete prompt text and fingerprint;
 - identity, mode, description, and document fingerprint;
@@ -261,13 +270,20 @@ resolved chain. Before `RunStarted`, the engine freezes:
 
 For a root session, each public `run.start` may select any agent that is
 currently `runnable_as_root` after the authored documents are materialized
-against one current model snapshot. Its exact model key must occur in that
-agent's resolved fallback chain; the unique index selects the suffix, and the
-requested base or named variant must exist in the same current snapshot. The
-accepted run freezes that complete policy, so later root-agent selections or
-provider refreshes do not alter it. A delegated session instead remains bound
-to its admitted child `AgentSnapshot` and retained model snapshot: its exact
-model suffix may be selected, but its agent cannot be changed.
+against one current model snapshot. Its exact model and requested base or named
+variant may be any entry in the public root model catalog. If the model occurs
+in the authored chain, the root plan is that exact selected head plus the
+available authored tail after it. If it is outside the chain, the root plan is
+a synthetic exact head plus every available authored fallback entry.
+Unavailable authored entries are skipped in either plan. Root eligibility still
+requires the agent's own authored chain to be nonempty and to contain at least
+one available entry; an arbitrary catalog selection does not make an otherwise
+ineligible agent runnable. The accepted run freezes the resulting exact plan,
+so later selections or provider refreshes do not alter it.
+
+Delegated planning is unchanged. A delegated agent with an authored chain uses
+the selected exact authored suffix, preserving its later authored entries; an
+empty-chain child inherits the invoking parent's active frozen suffix.
 
 Retries, fallback attempts, tool-loop passes, compaction, title generation,
 approval work, and replay use that frozen run policy rather than live config.
@@ -393,15 +409,20 @@ final result plus safe artifact metadata.
 
 ## 9. TUI transcript and selectors
 
-The Message title is exactly `Agent(Model-Variant)` and represents client-local
-draft selection. Agent, Model, and Variant are separate clickable regions.
-Draft changes do not alter an active run.
+The Message title represents client-local draft selection as
+`Agent(provider/model[variant])`. Agent and canonical model-selection text are
+the selection regions; there is no separate variant picker. Base is rendered
+explicitly as `[base]`. The global model picker has one row per available model,
+showing its canonical resolved default selection and display name; it never
+expands variants into rows. Changing models selects that default, while
+reselecting the current model retains its exact variant. Clicking the Message
+title's `[variant]` region cycles exact variants directly. Draft changes do not
+alter an active run.
 
 The visible header of every assistant item has the exact form
-`<agent-id>(<provider>/<model-id>)`, represented as `Agent(Model)`, from frozen
-attempt attribution. It has no textual `ASSISTANT` prefix. Variant is omitted from that visible label but
-retained in structured attribution, persistence/replay, diagnostics,
-picker/message-title state, and optional expanded metadata.
+`<agent-id>(<provider>/<model-id>[<variant>])` from frozen attempt attribution,
+with `[base]` for base behavior. It has no textual `ASSISTANT` prefix and never
+hides or infers the exact variant.
 
 One assistant item owns ordered child segments:
 
@@ -480,8 +501,9 @@ filesystem/security adversarial tests, restart/replay/delegation E2E, and TUI
 render/hit-region tests.
 
 Final stale-claim checks must reject old workspace paths, old agent/profile
-configuration, model aliases, protocol/event/storage v6, visible assistant
-variants, standalone reasoning/tool blocks, inherited parent permissions,
+configuration, model aliases, protocol/event/storage v6, hidden assistant
+variants, separate variant pickers, standalone reasoning/tool blocks, inherited
+parent permissions,
 original-full-chain child inheritance, stale title replacement, and
 compatibility decoders.
 

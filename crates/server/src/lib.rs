@@ -1632,6 +1632,7 @@ mod tests {
         engine: Engine,
         server: Arc<Server>,
         selection: RunSelection,
+        external_selection: Option<RunSelection>,
     }
 
     fn write_agent(root: &Path, model: &str) {
@@ -1660,7 +1661,7 @@ mod tests {
             )
         } else {
             (
-                "schema_version = 6\n[providers.test]\nsource = \"explicit\"\nendpoint = \"https://example.test/v1\"\nadaptor = \"openai-compatible\"\nauth = { type = \"none\" }\n[providers.test.models.model]\ndisplay_name = \"Model\"\ndefault_variant = \"fast\"\n[providers.test.models.model.capabilities]\ninput = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 8192\noutput_tokens = 2048\ntool_calling = true\nparallel_tool_calls = false\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = true\nnative_replay = \"unsupported\"\nnative_compaction = \"unsupported\"\ncancellation = \"local_only\"\nmedia = {}\n[providers.test.models.model.variants.fast]\noperation = \"add\"\ndefaults = { temperature = 0.1 }\n".into(),
+                "schema_version = 6\n[providers.test]\nsource = \"explicit\"\nendpoint = \"http://127.0.0.1:9/v1\"\nadaptor = \"openai-compatible\"\nauth = { type = \"none\" }\n[providers.test.models.model]\ndisplay_name = \"Model\"\ndefault_variant = \"fast\"\n[providers.test.models.model.capabilities]\ninput = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 8192\noutput_tokens = 2048\ntool_calling = true\nparallel_tool_calls = false\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = true\nnative_replay = \"unsupported\"\nnative_compaction = \"unsupported\"\ncancellation = \"local_only\"\nmedia = {}\n[providers.test.models.model.variants.fast]\noperation = \"add\"\ndefaults = { temperature = 0.1 }\n[providers.test.models.external]\ndisplay_name = \"External\"\n[providers.test.models.external.capabilities]\ninput = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 8192\noutput_tokens = 2048\ntool_calling = true\nparallel_tool_calls = false\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = true\nnative_replay = \"unsupported\"\nnative_compaction = \"unsupported\"\ncancellation = \"local_only\"\nmedia = {}\n".into(),
                 "test/model",
             )
         };
@@ -1688,6 +1689,13 @@ mod tests {
             agent: AgentId::new("primary").expect("agent"),
             model: ModelSelection { model, variant },
         };
+        let external_selection = (!credential_store).then(|| RunSelection {
+            agent: AgentId::new("primary").expect("agent"),
+            model: ModelSelection {
+                model: "test/external".parse().expect("external model key"),
+                variant: None,
+            },
+        });
         let loaded = Arc::new(loaded);
         let engine = Engine::open(EngineOptions {
             data_dir: directory.path().join("data"),
@@ -1706,6 +1714,7 @@ mod tests {
             engine,
             server,
             selection,
+            external_selection,
         }
     }
 
@@ -1762,14 +1771,38 @@ mod tests {
         handshake(&mut client).await;
 
         let models = request(&mut client, 2, "model.list", json!({})).await["result"].clone();
-        assert_eq!(models["models"][0]["key"], "test/model");
-        assert_eq!(models["models"][0]["default_variant"], "fast");
-        assert_eq!(models["models"][0]["variants"][0]["id"], "fast");
+        assert_eq!(models["models"].as_array().expect("models").len(), 2);
+        let authored = models["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .find(|model| model["key"] == "test/model")
+            .expect("authored model");
+        assert_eq!(authored["default_variant"], "fast");
+        assert_eq!(authored["variants"][0]["id"], "fast");
+        assert!(
+            models["models"]
+                .as_array()
+                .expect("models")
+                .iter()
+                .any(|model| model["key"] == "test/external")
+        );
         assert!(models["revision"].as_str().unwrap().starts_with("sha256:"));
 
         let agents = request(&mut client, 3, "agent.list", json!({})).await["result"].clone();
         assert_eq!(agents["model_revision"], models["revision"]);
         assert_eq!(agents["agents"][0]["id"], "primary");
+        assert_eq!(
+            agents["agents"][0]["resolved_fallback"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            agents["agents"][0]["resolved_fallback"][0]["model"],
+            "test/model"
+        );
         assert_eq!(
             agents["agents"][0]["resolved_fallback"][0]["variant"],
             "fast"
@@ -1810,15 +1843,46 @@ mod tests {
             6,
             "session.create",
             serde_json::to_value(SessionCreateParams {
-                selection: harness.selection.clone(),
+                selection: harness
+                    .external_selection
+                    .clone()
+                    .expect("external selection"),
             })
             .unwrap(),
         )
         .await["result"]["session"]
             .clone();
         assert_eq!(created["creation_selection"]["agent"], "primary");
+        assert_eq!(
+            created["creation_selection"]["model"]["model"],
+            "test/external"
+        );
         assert_eq!(created["title_updated_seq"], 0);
         assert_eq!(created["last_event_seq"], 1);
+
+        let session_id: SessionId =
+            serde_json::from_value(created["session_id"].clone()).expect("session id");
+        let started = request(
+            &mut client,
+            7,
+            "run.start",
+            serde_json::to_value(RunStartParams {
+                session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("external-root-run")
+                    .expect("client run id"),
+                selection: harness
+                    .external_selection
+                    .clone()
+                    .expect("external selection"),
+                input: "run external configured model".into(),
+            })
+            .expect("run params"),
+        )
+        .await;
+        assert!(started["result"]["run_id"].is_string());
+        let run_id: cookie_agent_protocol::RunId =
+            serde_json::from_value(started["result"]["run_id"].clone()).expect("run id");
+        let _ = harness.engine.cancel_run(run_id).await;
 
         drop(client);
         task.await.expect("join").expect("serve");
@@ -1925,14 +1989,21 @@ mod tests {
         let (mut client, server_stream) = in_process_pair(16);
         let task = tokio::spawn(harness.server.clone().serve_stream(server_stream));
         handshake(&mut client).await;
+        let unavailable = request(&mut client, 2, "model.list", json!({})).await;
+        assert!(
+            unavailable["result"]["models"]
+                .as_array()
+                .expect("models")
+                .is_empty()
+        );
         let params = json!({
             "client_connect_id": "connect-1",
             "provider_id": "openai",
             "catalog_revision": CatalogRevision::current(),
             "credentials": { "values": { "OPENAI_API_KEY": "sentinel-secret" } }
         });
-        let first = request(&mut client, 2, "provider.connect", params.clone()).await;
-        let replay = request(&mut client, 3, "provider.connect", params).await;
+        let first = request(&mut client, 3, "provider.connect", params.clone()).await;
+        let replay = request(&mut client, 4, "provider.connect", params).await;
         assert_eq!(first["result"], replay["result"]);
         assert_eq!(first["result"]["connection"]["provider_id"], "openai");
         assert!(!first.to_string().contains("sentinel-secret"));

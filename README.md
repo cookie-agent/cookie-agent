@@ -77,11 +77,25 @@ default, explicit `base` selects base, and any other value selects a named
 variant. Both resolve to exact model selections before freezing. Duplicate
 model keys within one chain are invalid.
 
+The public root catalog lists every configured, enabled, currently executable
+model in deterministic `ModelKey` order. Credential-blocked models stay in the
+internal snapshot for authored-agent resolution but are omitted from public
+model descriptors until connected. Exact selections format canonically as
+`provider/model[variant]`: base is `[base]`, and named IDs are preserved exactly,
+including `[default]`; serialization remains the structured model/variant pair.
+
 Every `primary` agent requires a nonempty chain. `subagent` and `all` agents may
 have an empty chain for delegated inheritance, but every empty-chain agent has
 `runnable_as_root = false`. A subagent is never root-selectable; an `all` agent
 is root-selectable only when enabled with its own nonempty chain and at least
 one available selection.
+
+A runnable root agent may select any exact entry from the public root catalog.
+Selecting an authored model produces that exact head plus the available authored
+tail. Selecting a model outside the authored chain produces a synthetic exact
+head plus all available authored fallback entries. Unavailable authored entries
+are skipped. Delegated configured-chain and empty-chain inheritance semantics
+are unchanged.
 
 Delegation is disabled when an agent has no delegation block. Only the
 `delegate` tool creates children, and targets must be listed enabled
@@ -95,11 +109,15 @@ resources, and `write` permission governs both write and edit.
 
 ## TUI behavior
 
-The Message panel title is `Agent(Model-Variant)` with separate Agent, Model,
-and Variant selectors. A visible assistant header is `Agent(Model)`—that is,
-`<agent-id>(<provider>/<model-id>)`, with no `ASSISTANT` prefix; its
-variant is retained in structured attribution, replay/persistence, diagnostics,
-and optional expanded metadata rather than the visible label.
+The Message panel title uses `Agent(provider/model[variant])` with Agent and the
+canonical exact model selection as its selector regions; there is no separate
+variant picker. Visible assistant headers use the same exact selection from
+frozen attribution, including `[base]`, with no `ASSISTANT` prefix.
+The global model picker renders one row per available model using its resolved
+default (`[base]` or a named variant) plus display name. Variants are changed
+only by clicking `[variant]` in the Message title; variants are never picker
+rows. Changing models selects the shown default, while reselecting the current
+model preserves its exact variant.
 
 Thinking and tool calls render as collapsible children of their owning
 assistant turn, never as standalone `REASONING` or `TOOL` blocks. Compact tool
