@@ -1,33 +1,33 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     io::{Cursor, Write},
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use async_trait::async_trait;
-use cookie_agent_config::{
-    AgentType as ConfigAgentType, DelegationPolicy, DepthLimit, PolicySnapshot, ProfileSnapshot,
-    ResolvedPermissions, ResultLimits,
-};
-use cookie_agent_models::{Catalog, CredentialStore, ModelSetManager};
 use cookie_agent_protocol::{
-    ActionKind, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalDecisionSource,
+    AgentMode, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalDecisionSource,
     ApprovalEvaluation, ApprovalId, ApprovalInternalDecision, ApprovalInternalDecisionKind,
     ApprovalReasonCode, ApprovalRequest, ApprovalResourceSource, ApprovalRespondErrorCode,
-    ApprovalRespondParams, ApprovalStatus, ApprovalTrigger, ApprovalUserDecision, DecisionTrace,
-    Effect, Event, OperationFingerprint, PreparedApprovalResource, PreparedBindingLifetime,
-    PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
-    PreparedResourceIdentity, ProfileIdentity, RunId, SessionId, SessionOrigin, Sha256Digest,
-    ToolCallFailureCode, ToolCallId,
+    ApprovalRespondParams, ApprovalStatus, ApprovalTrigger, ApprovalUserDecision,
+    AssistantToolCallRef, AttemptId, ClientResponseId, ClientRunId, DecisionTrace,
+    EventPayload as Event, ModelCallId, ModelFinishReason, OperationFingerprint, PermissionAction,
+    PermissionEffect, PersistedAssistantPart, PersistedModelTurn, PreparedApprovalResource,
+    PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
+    PreparedResourceDigest, PreparedResourceIdentity, RunId, SafeCode, SafeDisplayText, SessionId,
+    SessionOrigin, Sha256Digest, ToolCallId, ToolCallPresentation, ToolCallStart,
+    ToolTerminationOutcome, Usage,
 };
 
 use crate::{
-    ApprovalOutcome, ArtifactStore, Engine, EngineError, EngineOptions, PendingApproval,
-    PreparedExecutor, PreparedTool, ToolError, ToolExecutionContext, ToolResult, approval_records,
-    approved_media_type, restart_approval_decision, restart_tool_failure, session_meta,
-    validate_attachment, wire_profile,
+    ApprovalOutcome, ArtifactStore, Engine, EngineError, PendingApproval, PreparedExecutor,
+    PreparedTool, ToolCallFailureCode, ToolError, ToolExecutionContext, ToolResult,
+    approval_records, approved_media_type, cwd_identity,
+    model_history::wire_model,
+    restart_approval_decision, restart_tool_failure, session_meta,
+    test_support::{agent_snapshot, engine as test_engine, model_binding, run_selection},
+    validate_attachment,
 };
 
 fn png() -> Vec<u8> {
@@ -360,7 +360,7 @@ fn attachment_limit_is_twenty_mib_and_fails_before_retention() {
     let error = validate_attachment("image/png", Path::new("a.png"), &bytes)
         .expect_err("oversize attachment");
     assert!(matches!(error, ToolError::ResourceLimit(_)));
-    assert_eq!(error.code(), ToolCallFailureCode::ExecutionFailed);
+    assert!(matches!(error.code(), ToolCallFailureCode::ExecutionFailed));
 }
 
 #[test]
@@ -383,7 +383,10 @@ fn retained_attachment_survives_store_reopen() {
 #[test]
 fn answered_approval_without_execution_loses_process_local_capability_on_restart() {
     let failure = restart_tool_failure();
-    assert_eq!(failure.code, ToolCallFailureCode::PreparedCapabilityLost);
+    assert!(matches!(
+        failure.code,
+        ToolCallFailureCode::PreparedCapabilityLost
+    ));
 }
 
 #[test]
@@ -418,22 +421,8 @@ impl PreparedExecutor for FileIdentityExecutor {
     }
 }
 
-fn approval_policy() -> PolicySnapshot {
-    PolicySnapshot {
-        profile: ProfileSnapshot {
-            name: "test".into(),
-            r#type: ConfigAgentType::Primary,
-        },
-        models: Vec::new(),
-        tools: BTreeSet::new(),
-        permissions: ResolvedPermissions { rules: Vec::new() },
-        delegation: DelegationPolicy {
-            enabled: false,
-            allowed_profiles: BTreeSet::new(),
-            depth_limit: DepthLimit::Finite(0),
-        },
-        result_limits: ResultLimits::default(),
-    }
+fn approval_policy() -> cookie_agent_protocol::AgentSnapshot {
+    agent_snapshot("test", AgentMode::Primary)
 }
 
 fn approval_operation(binding: &[u8]) -> PreparedOperationIdentity {
@@ -445,9 +434,13 @@ fn approval_operation_with_lifetime(
     lifetime: PreparedBindingLifetime,
 ) -> PreparedOperationIdentity {
     let (action, operation, resource) = if lifetime == PreparedBindingLifetime::RestartStable {
-        (ActionKind::Bash, "bash:execute", "command:approval-fixture")
+        (
+            PermissionAction::Bash,
+            "bash:execute",
+            "command:approval-fixture",
+        )
     } else {
-        (ActionKind::Read, "read:read", "file:approval-fixture")
+        (PermissionAction::Read, "read:read", "file:approval-fixture")
     };
     PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"read fixture"),
@@ -468,6 +461,122 @@ fn approval_operation_with_lifetime(
     .expect("prepared operation")
 }
 
+fn install_approval_session(
+    engine: &Engine,
+    root: &Path,
+    session: SessionId,
+    run: RunId,
+    tool_call: Option<ToolCallId>,
+) {
+    let policy = approval_policy();
+    let prompt_fingerprint = policy.prompt_fingerprint.clone();
+    let cwd = cwd_identity(root).expect("cwd identity");
+    let selection = run_selection("test");
+    engine
+        .inner
+        .store
+        .create(
+            session_meta(session, SessionOrigin::Root, cwd.clone(), selection.clone()),
+            Event::SessionCreated {
+                origin: SessionOrigin::Root,
+                cwd_identity: cwd,
+                creation_selection: selection.clone(),
+                creation_agent: Box::new(policy.clone()),
+                model_snapshot_fingerprint: Sha256Digest::of_bytes(b"test models"),
+            },
+        )
+        .expect("session");
+    engine.spawn_actor(session);
+    engine
+        .append_direct(
+            session,
+            Some(run),
+            Event::RunStarted {
+                client_run_id: ClientRunId::new("approval-fixture").expect("client run id"),
+                selection,
+                selected_suffix: policy.fallback_chain.clone(),
+                agent: Box::new(policy),
+                input_through_seq: 1,
+            },
+        )
+        .expect("run started");
+    let Some(tool_call) = tool_call else {
+        return;
+    };
+    let attempt = AttemptId::new_v7();
+    let resolved = wire_model(&model_binding());
+    engine
+        .append_direct(
+            session,
+            Some(run),
+            Event::ModelAttemptStarted {
+                attempt_id: attempt,
+                attempt_ordinal: 1,
+                fallback_index: 0,
+                retry_ordinal: 0,
+                resolved_model: resolved.clone(),
+                prompt_fingerprint,
+            },
+        )
+        .expect("model attempt");
+    let model_call_id = ModelCallId::new("model-call").expect("model call id");
+    engine
+        .append_direct(
+            session,
+            Some(run),
+            Event::ModelTurnCommitted {
+                attempt_id: attempt,
+                model_turn_seq: 1,
+                resolved_model: resolved,
+                input_through_seq: 1,
+                turn: PersistedModelTurn {
+                    content: vec![PersistedAssistantPart::ToolCall {
+                        id: model_call_id.clone(),
+                        provider_item_id: None,
+                        name: SafeCode::new("write").expect("tool name"),
+                        input: serde_json::json!({"filePath":"target","content":"must-not-run"}),
+                        raw_input: None,
+                        metadata: None,
+                    }],
+                    provider_options: BTreeMap::new(),
+                    finish_reason: ModelFinishReason::ToolCalls,
+                    usage: Usage::default(),
+                    response_metadata: BTreeMap::new(),
+                    provider_metadata: BTreeMap::new(),
+                    native_replay: None,
+                },
+                warnings: Vec::new(),
+            },
+        )
+        .expect("model turn");
+    engine
+        .append_direct(
+            session,
+            Some(run),
+            Event::ToolCallStarted {
+                start: ToolCallStart {
+                    tool_call_id: tool_call,
+                    owner: AssistantToolCallRef {
+                        model_turn_seq: 1,
+                        content_index: 0,
+                        model_call_id,
+                        provider_item_id: None,
+                    },
+                    presentation: ToolCallPresentation {
+                        title: SafeDisplayText::new("Write target").expect("title"),
+                        primary_argument: Some(
+                            SafeDisplayText::new("target").expect("primary argument"),
+                        ),
+                    },
+                    operation_fingerprint: OperationFingerprint::from_prepared_operation(
+                        &approval_operation(b"tool start"),
+                    ),
+                },
+            },
+        )
+        .expect("tool started");
+}
+
 async fn persisted_reopen_case(
     root: &Path,
     user_decision: Option<ApprovalUserDecision>,
@@ -477,44 +586,7 @@ async fn persisted_reopen_case(
     let session = SessionId::new_v7();
     let run = RunId::new_v7();
     let tool_call = ToolCallId::new_v7();
-    let policy = approval_policy();
-    engine
-        .inner
-        .store
-        .create(
-            session_meta(session, SessionOrigin::Root, root, &policy),
-            policy.clone(),
-        )
-        .expect("session");
-    engine.spawn_actor(session);
-    engine
-        .append_direct(
-            session,
-            Some(run),
-            Event::RunStarted {
-                client_run_id: "reopen-fixture".into(),
-                input: "fixture".into(),
-                profile: wire_profile(&policy),
-                current_profile: ProfileIdentity {
-                    name: policy.profile.name.clone(),
-                    agent_type: cookie_agent_protocol::AgentType::Primary,
-                },
-            },
-        )
-        .expect("run started");
-    engine
-        .append_direct(
-            session,
-            Some(run),
-            Event::ToolCallStarted {
-                tool_call_id: tool_call,
-                model_call_id: "model-call".into(),
-                provider_item_id: None,
-                tool: "write".into(),
-                arguments: serde_json::json!({"filePath":"target","content":"must-not-run"}),
-            },
-        )
-        .expect("tool started");
+    install_approval_session(&engine, root, session, run, Some(tool_call));
     let lifetime = if allow_tree_grant {
         PreparedBindingLifetime::RestartStable
     } else {
@@ -523,12 +595,12 @@ async fn persisted_reopen_case(
     let operation = approval_operation_with_lifetime(b"persisted binding", lifetime);
     let evaluation = ApprovalEvaluation {
         resource_digest: operation.resources()[0].binding_digest.clone(),
-        effect: Effect::Ask,
+        effect: PermissionEffect::Ask,
         trace: DecisionTrace {
             action: operation.resources()[0].capability,
             normalized_resource: "fixture".into(),
             candidates: Vec::new(),
-            effect: Effect::Ask,
+            effect: PermissionEffect::Ask,
             precedence_reason: "fixture".into(),
         },
     };
@@ -554,7 +626,7 @@ async fn persisted_reopen_case(
         Event::ApprovalEvaluated {
             approval_id,
             decision: ApprovalInternalDecision {
-                decision: ApprovalInternalDecisionKind::Ask,
+                decision: ApprovalInternalDecisionKind::Escalate,
                 source: ApprovalDecisionSource::InternalAgent,
                 reason_code: ApprovalReasonCode::Escalated,
                 evaluations: vec![evaluation],
@@ -576,7 +648,8 @@ async fn persisted_reopen_case(
                 Some(run),
                 Event::ApprovalUserDecisionRecorded {
                     approval_id,
-                    client_response_id: "persisted-response".into(),
+                    client_response_id: ClientResponseId::new("persisted-response")
+                        .expect("client response id"),
                     decision,
                     feedback: None,
                 },
@@ -604,16 +677,22 @@ fn assert_reopen_capability_lost(
         .events();
     assert!(events.iter().any(|event| {
         matches!(
-            event.event,
-            Event::ToolCallFailed {
-                tool_call_id: found,
-                code: ToolCallFailureCode::PreparedCapabilityLost,
-                ..
-            } if found == tool_call
+            &event.payload,
+            Event::ToolCallTerminated { termination }
+                if termination.tool_call_id == tool_call
+                    && termination.outcome == ToolTerminationOutcome::Interrupted
+                    && termination.error.as_ref().is_some_and(|error| {
+                        error.code.as_str() == "prepared_capability_lost"
+                    })
         )
     }));
     assert!(!events.iter().any(|event| {
-        matches!(event.event, Event::ToolCallCompleted { tool_call_id: found, .. } if found == tool_call)
+        matches!(
+            &event.payload,
+            Event::ToolCallTerminated { termination }
+                if termination.tool_call_id == tool_call
+                    && termination.outcome == ToolTerminationOutcome::Completed
+        )
     }));
     let record = approval_records(session, &events)
         .remove(&approval_id)
@@ -629,7 +708,7 @@ fn assert_reopen_capability_lost(
     assert!(
         !events
             .iter()
-            .any(|event| { matches!(event.event, Event::TreeApprovalGrantCommitted { .. }) })
+            .any(|event| matches!(event.payload, Event::TreeApprovalGrantCommitted { .. }))
     );
     assert!(engine.list_approvals(session, None).tree_grants.is_empty());
 }
@@ -662,25 +741,7 @@ async fn reopen_discards_tree_scope_decision_without_creating_grant() {
 }
 
 fn approval_test_engine(root: &Path) -> Engine {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).expect("private fixture root");
-    }
-    let manager = ModelSetManager::new(
-        BTreeMap::new(),
-        Arc::new(Catalog::embedded().expect("catalog")),
-        CredentialStore::new(root.join("credentials")),
-    )
-    .expect("model manager");
-    Engine::open(EngineOptions {
-        data_dir: root.join("data"),
-        cwd: root.to_owned(),
-        config: cookie_agent_config::Config::default(),
-        model_manager: Arc::new(manager),
-        tools: Vec::new(),
-    })
-    .expect("engine")
+    test_engine(root)
 }
 
 fn install_escalated_approval(
@@ -694,40 +755,16 @@ fn install_escalated_approval(
 ) {
     let session = SessionId::new_v7();
     let run = RunId::new_v7();
-    let policy = approval_policy();
-    engine
-        .inner
-        .store
-        .create(
-            session_meta(session, SessionOrigin::Root, root, &policy),
-            policy.clone(),
-        )
-        .expect("session");
-    engine.spawn_actor(session);
-    engine
-        .append_direct(
-            session,
-            Some(run),
-            Event::RunStarted {
-                client_run_id: "approval-fixture".into(),
-                input: "fixture".into(),
-                profile: wire_profile(&policy),
-                current_profile: ProfileIdentity {
-                    name: policy.profile.name.clone(),
-                    agent_type: cookie_agent_protocol::AgentType::Primary,
-                },
-            },
-        )
-        .expect("run started");
+    install_approval_session(engine, root, session, run, None);
     let operation = approval_operation(b"filesystem binding");
     let evaluation = ApprovalEvaluation {
         resource_digest: operation.resources()[0].binding_digest.clone(),
-        effect: Effect::Ask,
+        effect: PermissionEffect::Ask,
         trace: DecisionTrace {
-            action: ActionKind::Read,
+            action: PermissionAction::Read,
             normalized_resource: root.join("target.txt").display().to_string(),
             candidates: Vec::new(),
-            effect: Effect::Ask,
+            effect: PermissionEffect::Ask,
             precedence_reason: "fixture".into(),
         },
     };
@@ -762,7 +799,7 @@ fn install_escalated_approval(
             Event::ApprovalEvaluated {
                 approval_id,
                 decision: ApprovalInternalDecision {
-                    decision: ApprovalInternalDecisionKind::Ask,
+                    decision: ApprovalInternalDecisionKind::Escalate,
                     source: ApprovalDecisionSource::InternalAgent,
                     reason_code: ApprovalReasonCode::Escalated,
                     evaluations: vec![evaluation],
@@ -802,7 +839,8 @@ fn install_escalated_approval(
             operation_fingerprint: OperationFingerprint::from_prepared_operation(
                 request.operation(),
             ),
-            client_response_id: "response-fixture".into(),
+            client_response_id: ClientResponseId::new("response-fixture")
+                .expect("client response id"),
             decision: ApprovalUserDecision::ApproveOnce,
             feedback: None,
         },
@@ -858,7 +896,7 @@ async fn approval_respond_revalidates_filesystem_binding_before_recording_user_d
     assert!(
         !events
             .iter()
-            .any(|event| matches!(event.event, Event::ApprovalUserDecisionRecorded { .. }))
+            .any(|event| matches!(event.payload, Event::ApprovalUserDecisionRecorded { .. }))
     );
     engine.shutdown().await;
 }

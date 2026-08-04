@@ -26,3 +26,10 @@ network access.
 
 The vendored artifact is distributed under the upstream MIT license in
 `LICENSE.models.dev`.
+
+The runtime compiler accepts only the pinned `reasoning_options` forms
+`effort`, `toggle`, and `budget_tokens`. Effort values, JSON `null`, budget
+bounds, duplicate values, unknown fields, deterministic union ordering, and
+collision precedence are validated before any configured provider snapshot is
+published. The updater preserves the exact upstream bytes; it does not invent
+or rewrite variant metadata.

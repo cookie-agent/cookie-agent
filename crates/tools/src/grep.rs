@@ -3,18 +3,14 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use cookie_agent_engine::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProvider, ToolResult, ToolSpec,
+    ToolPreparationContext, ToolProvider, ToolSpec,
 };
-use cookie_agent_protocol::{
-    ActionKind, ApprovalResourceSource, PreparedBindingLifetime, Sha256Digest,
-};
+use cookie_agent_protocol::{PermissionAction, PersistedToolResult as ToolResult, Sha256Digest};
 use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    fs_cap, parse_args, prepared_operation, prepared_path_resources, prepared_resource, schema,
-};
+use crate::{fs_cap, parse_args, prepared_operation, prepared_pattern_resources, schema};
 
 #[derive(Debug)]
 pub struct GrepTool {
@@ -119,50 +115,31 @@ impl ToolProvider for GrepTool {
         for binding in &bindings {
             complete_binding.extend_from_slice(&binding.manifest_bytes()?);
         }
-        let (mut resources, mut policy_labels, external) = prepared_path_resources(
-            ActionKind::Grep,
-            "path",
+        let (resources, policy_labels, external) = prepared_pattern_resources(
+            PermissionAction::Grep,
+            "regex",
+            &args.pattern,
             &canonical_root,
             &self.workspace,
             &complete_binding,
         )?;
-        resources.push(prepared_resource(
-            ActionKind::Grep,
-            "regex",
-            args.pattern.as_bytes(),
-            &complete_binding,
-            PreparedBindingLifetime::ProcessLocal,
-            ApprovalResourceSource::SecondaryOperation,
-        )?);
-        policy_labels.push(args.pattern.clone());
-        if let Some(include) = &args.include {
-            resources.push(prepared_resource(
-                ActionKind::Grep,
-                "include",
-                include.as_bytes(),
-                &complete_binding,
-                PreparedBindingLifetime::ProcessLocal,
-                ApprovalResourceSource::SecondaryOperation,
-            )?);
-            policy_labels.push(include.clone());
-        }
         let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
         let operation = prepared_operation(
             "grep",
             &args,
             if external {
                 vec![
-                    (ActionKind::Grep, "search"),
-                    (ActionKind::ExternalDirectory, "guard"),
+                    (PermissionAction::Grep, "search"),
+                    (PermissionAction::ExternalDirectory, "guard"),
                 ]
             } else {
-                vec![(ActionKind::Grep, "search")]
+                vec![(PermissionAction::Grep, "search")]
             },
             resources,
             &context,
         )?;
         let result = ToolResult {
-            title: format!("Grep {}", args.pattern),
+            title: crate::safe_title(format!("Grep {}", args.pattern)),
             output: matches.join("\n"),
             metadata: serde_json::json!({"matches":matches.len(),"snapshot_sha256":Sha256Digest::of_bytes(&snapshot)}),
             truncation: None,
@@ -271,7 +248,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepared_manifest_retains_path_regex_and_every_object_binding() {
+    async fn prepared_manifest_exposes_only_regex_permission_resource() {
         let root = tempfile::tempdir().expect("root");
         fs::write(root.path().join("a.txt"), "needle").expect("a");
         fs::write(root.path().join("b.txt"), "needle").expect("b");
@@ -291,9 +268,41 @@ mod tests {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        assert!(labels.contains(&"needle"));
-        assert!(labels.contains(&root.path().to_string_lossy().as_ref()));
-        assert_eq!(prepared.operation().resources().len(), 2);
+        assert_eq!(labels, ["needle"]);
+        assert_eq!(prepared.operation().resources().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn external_traversal_is_guarded_separately_from_regex() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let external = tempfile::tempdir().expect("external");
+        fs::write(external.path().join("value.txt"), "needle").expect("fixture");
+        let prepared = GrepTool::new(workspace.path())
+            .prepare(
+                context(workspace.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "grep".into(),
+                    arguments: serde_json::json!({
+                        "pattern":"needle",
+                        "path":external.path()
+                    }),
+                },
+            )
+            .await
+            .expect("prepare");
+        assert_eq!(
+            prepared.policy_labels(),
+            [format!("{}/*", external.path().display()), "needle".into()]
+        );
+        assert_eq!(
+            prepared.operation().resources()[0].capability,
+            cookie_agent_protocol::PermissionAction::ExternalDirectory
+        );
+        assert_eq!(
+            prepared.operation().resources()[1].capability,
+            cookie_agent_protocol::PermissionAction::Grep
+        );
     }
 
     #[tokio::test]

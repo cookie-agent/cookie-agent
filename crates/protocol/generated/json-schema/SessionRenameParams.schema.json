@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionRenameParams",
+  "type": "object",
+  "properties": {
+    "change": {
+      "$ref": "#/$defs/SessionRenameChange"
+    },
+    "client_rename_id": {
+      "description": "Bounded title mutation idempotency key.",
+      "type": "string",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "client_rename_id",
+    "change"
+  ],
+  "$defs": {
+    "SessionRenameChange": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "title": {
+              "description": "Nonblank control-free UTF-8 session title.",
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "set"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "title"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "clear"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "reset"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    }
+  }
+}

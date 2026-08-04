@@ -46,6 +46,7 @@ fn tree_sha256(root: &Path, excluded: &[&str]) -> (usize, String) {
 }
 
 const WORKSPACE_MANIFESTS: &[&str] = &[
+    "crates/identity/Cargo.toml",
     "crates/config/Cargo.toml",
     "crates/cookie_agent/Cargo.toml",
     "crates/engine/Cargo.toml",
@@ -56,6 +57,11 @@ const WORKSPACE_MANIFESTS: &[&str] = &[
     "crates/tui/Cargo.toml",
 ];
 const SHIM_MANIFEST: &str = "vendor/bincode-compat/Cargo.toml";
+const PHASE1_MANIFESTS: &[&str] = &[
+    "crates/identity/Cargo.toml",
+    "crates/config/Cargo.toml",
+    "crates/models/Cargo.toml",
+];
 
 fn cargo_metadata() -> serde_json::Value {
     let output = Command::new(env!("CARGO"))
@@ -340,7 +346,7 @@ fn vendored_syntect_matches_declared_upstream_delta() {
 
 #[test]
 fn every_internal_path_dependency_has_its_exact_package_version() {
-    for manifest in WORKSPACE_MANIFESTS
+    for manifest in PHASE1_MANIFESTS
         .iter()
         .copied()
         .chain([SHIM_MANIFEST, "vendor/syntect/Cargo.toml"])

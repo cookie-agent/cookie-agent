@@ -1748,7 +1748,7 @@ bold and italic, `code`, link <https://example.test>.
     }
 
     #[test]
-    fn table_cells_keep_inline_markup_styles_without_inline_code_backgrounds() {
+    fn table_cells_keep_inline_markup_styles_with_inline_code_backgrounds() {
         let document = MarkdownDocument::new(
             "| fn | note |\n|----|------|\n| `render()` | **fast** [docs](https://x.test) |".into(),
         );
@@ -1759,7 +1759,7 @@ bold and italic, `code`, link <https://example.test>.
             .flat_map(|line| line.spans.iter())
             .find(|span| span.content.contains("render()"))
             .expect("inline code span");
-        assert_eq!(code_span.style.bg, None);
+        assert!(code_span.style.bg.is_some());
         assert!(!code_span.style.add_modifier.contains(Modifier::REVERSED));
         assert!(
             lines
@@ -1880,17 +1880,23 @@ bold and italic, `code`, link <https://example.test>.
     }
 
     #[test]
-    fn inline_code_keeps_the_surrounding_background_in_every_theme() {
+    fn inline_code_has_a_background_in_color_themes() {
         let document = MarkdownDocument::new("before `let x = 1;` after".into());
-        for theme in [
-            Theme::default(),
-            Theme::new(
-                crate::theme::ThemeKind::HighContrast,
-                crate::theme::ColorLevel::Ansi16,
+        for (theme, has_background) in [
+            (Theme::default(), true),
+            (
+                Theme::new(
+                    crate::theme::ThemeKind::HighContrast,
+                    crate::theme::ColorLevel::Ansi16,
+                ),
+                true,
             ),
-            Theme::new(
-                crate::theme::ThemeKind::Mono,
-                crate::theme::ColorLevel::None,
+            (
+                Theme::new(
+                    crate::theme::ThemeKind::Mono,
+                    crate::theme::ColorLevel::None,
+                ),
+                false,
             ),
         ] {
             let lines = render_markdown(&document, &theme, &PlainHighlighter);
@@ -1899,7 +1905,12 @@ bold and italic, `code`, link <https://example.test>.
                 .flat_map(|line| line.spans.iter())
                 .find(|span| span.content.contains("let x = 1;"))
                 .expect("inline code span");
-            assert_eq!(code_span.style.bg, None, "{:?}", theme.key());
+            assert_eq!(
+                code_span.style.bg.is_some(),
+                has_background,
+                "{:?}",
+                theme.key()
+            );
             assert!(!code_span.style.add_modifier.contains(Modifier::REVERSED));
             // The backticks stay visible and bold carries the distinction in
             // mono terminals, so inline code never depends on color alone.

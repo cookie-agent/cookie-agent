@@ -1,0 +1,4577 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EventsSubscribeResult",
+  "type": "object",
+  "properties": {
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/StoredEvent"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "events"
+  ],
+  "$defs": {
+    "AdaptorId": {
+      "type": "string",
+      "enum": [
+        "anthropic",
+        "openai-chat",
+        "openai-responses",
+        "openai-compatible",
+        "google-gemini",
+        "google-vertex-gemini",
+        "aws-bedrock-converse",
+        "azure-openai-chat",
+        "azure-openai-responses",
+        "cohere-v2-chat",
+        "open-responses"
+      ]
+    },
+    "AgentDocumentSource": {
+      "type": "string",
+      "enum": [
+        "built_in",
+        "user",
+        "workspace"
+      ]
+    },
+    "AgentMode": {
+      "type": "string",
+      "enum": [
+        "primary",
+        "subagent",
+        "all"
+      ]
+    },
+    "AgentSnapshot": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+        },
+        "composed_prompt": {
+          "type": "string",
+          "maxLength": 131072,
+          "minLength": 1,
+          "pattern": "(?s)^(?=.*\\S).+$"
+        },
+        "delegation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FrozenDelegationPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^(?=.*\\S)[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "document_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "document_source": {
+          "$ref": "#/$defs/AgentDocumentSource"
+        },
+        "fallback_chain": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FrozenModelBinding"
+          },
+          "maxItems": 256,
+          "minItems": 1
+        },
+        "mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PermissionRule"
+          },
+          "maxItems": 256
+        },
+        "prompt_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schema": {
+          "type": "integer",
+          "const": 1
+        },
+        "selected_suffix_start": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolName"
+          },
+          "maxItems": 256
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "agent",
+        "schema",
+        "mode",
+        "description",
+        "document_source",
+        "document_fingerprint",
+        "composed_prompt",
+        "prompt_fingerprint",
+        "tools",
+        "permissions",
+        "delegation",
+        "fallback_chain",
+        "selected_suffix_start"
+      ]
+    },
+    "ApprovalBoundary": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "exact"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "prefix": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "command_prefix"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "prefix"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "root_session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "delegation_tree"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "root_session_id"
+          ]
+        }
+      ]
+    },
+    "ApprovalCapability": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/PermissionAction"
+        },
+        "operation": {
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._:-]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "operation"
+      ]
+    },
+    "ApprovalConstraints": {
+      "type": "object",
+      "properties": {
+        "allow_once": {
+          "type": "boolean"
+        },
+        "allow_tree_grant": {
+          "type": "boolean"
+        },
+        "cancellable": {
+          "type": "boolean"
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "allow_once",
+        "allow_tree_grant",
+        "cancellable",
+        "expires_at"
+      ]
+    },
+    "ApprovalDecisionSource": {
+      "type": "string",
+      "enum": [
+        "policy",
+        "model",
+        "internal_agent",
+        "tree_grant",
+        "user",
+        "doom_loop_guard",
+        "system"
+      ]
+    },
+    "ApprovalEvaluation": {
+      "type": "object",
+      "properties": {
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "resource_digest": {
+          "$ref": "#/$defs/PreparedResourceDigest"
+        },
+        "trace": {
+          "$ref": "#/$defs/DecisionTrace"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "resource_digest",
+        "effect",
+        "trace"
+      ]
+    },
+    "ApprovalFeedback": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "description": "Control-free bounded safe error text.",
+          "type": "string",
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "message"
+      ]
+    },
+    "ApprovalFinalDecision": {
+      "type": "object",
+      "properties": {
+        "feedback": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalFeedback"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/ApprovalFinalOutcome"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/ApprovalReasonCode"
+        },
+        "source": {
+          "$ref": "#/$defs/ApprovalDecisionSource"
+        },
+        "tree_grant_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "source",
+        "reason_code",
+        "feedback",
+        "tree_grant_id"
+      ]
+    },
+    "ApprovalFinalOutcome": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "rejected",
+        "cancelled",
+        "expired"
+      ]
+    },
+    "ApprovalInternalDecision": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "$ref": "#/$defs/ApprovalInternalDecisionKind"
+        },
+        "evaluations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalEvaluation"
+          },
+          "maxItems": 256
+        },
+        "reason_code": {
+          "$ref": "#/$defs/ApprovalReasonCode"
+        },
+        "source": {
+          "$ref": "#/$defs/ApprovalDecisionSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "source",
+        "reason_code",
+        "evaluations"
+      ]
+    },
+    "ApprovalInternalDecisionKind": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "deny",
+        "ask",
+        "escalate"
+      ]
+    },
+    "ApprovalReasonCode": {
+      "type": "string",
+      "enum": [
+        "policy_allowed",
+        "policy_denied",
+        "policy_requires_approval",
+        "model_requested",
+        "internal_agent_allowed",
+        "internal_agent_denied",
+        "tree_grant_matched",
+        "user_approved_once",
+        "user_approved_tree",
+        "user_rejected",
+        "user_cancelled",
+        "request_cancelled",
+        "doom_loop_detected",
+        "constraint_violation",
+        "operation_changed",
+        "prepared_capability_lost",
+        "unsupported_platform",
+        "approval_expired",
+        "escalated",
+        "unattended",
+        "system_error"
+      ]
+    },
+    "ApprovalRequest": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "constraints": {
+          "$ref": "#/$defs/ApprovalConstraints"
+        },
+        "evaluations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalEvaluation"
+          },
+          "maxItems": 256
+        },
+        "operation": {
+          "$ref": "#/$defs/PreparedOperationIdentity"
+        },
+        "operation_fingerprint": {
+          "$ref": "#/$defs/OperationFingerprint"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "trigger": {
+          "$ref": "#/$defs/ApprovalTrigger"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "approval_id",
+        "revision",
+        "trigger",
+        "operation_fingerprint",
+        "operation",
+        "evaluations",
+        "constraints"
+      ]
+    },
+    "ApprovalResourceSource": {
+      "type": "string",
+      "enum": [
+        "primary_operation",
+        "secondary_operation",
+        "external_directory_guard",
+        "model_request",
+        "doom_loop_guard"
+      ]
+    },
+    "ApprovalTrigger": {
+      "type": "string",
+      "enum": [
+        "permission_policy",
+        "model_tool_approval",
+        "internal_agent",
+        "doom_loop"
+      ]
+    },
+    "ApprovalUserDecision": {
+      "type": "string",
+      "enum": [
+        "approve_once",
+        "approve_tree",
+        "reject",
+        "cancel"
+      ]
+    },
+    "ArtifactReference": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "uri"
+      ]
+    },
+    "AssistantToolCallRef": {
+      "type": "object",
+      "properties": {
+        "content_index": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "model_call_id": {
+          "description": "Bounded semantic model tool-call identity.",
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "model_turn_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "provider_item_id": {
+          "description": "Bounded provider item identity.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "model_turn_seq",
+        "content_index",
+        "model_call_id",
+        "provider_item_id"
+      ]
+    },
+    "CompiledReasoningBehavior": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "effort"
+            },
+            "value": {
+              "$ref": "#/$defs/ReasoningEffort"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "toggle"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "enabled"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "budget_tokens"
+            },
+            "value": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": -1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ]
+        }
+      ]
+    },
+    "ContextCheckpoint": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "model": {
+              "$ref": "#/$defs/ResolvedModelRef"
+            },
+            "native_context": {
+              "$ref": "#/$defs/NativeContextArtifact"
+            },
+            "type": {
+              "type": "string",
+              "const": "provider_native"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "model",
+            "native_context"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "byte_length": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "sha256": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_summary"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "summary",
+            "byte_length",
+            "sha256",
+            "invocation_id",
+            "internal_run_id"
+          ]
+        }
+      ]
+    },
+    "ContextCheckpointBoundaries": {
+      "type": "object",
+      "properties": {
+        "input_through_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "prior_checkpoint_seq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "source_from_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "source_through_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "source_from_seq",
+        "source_through_seq",
+        "input_through_seq",
+        "prior_checkpoint_seq"
+      ]
+    },
+    "ContextCheckpointBudgets": {
+      "type": "object",
+      "properties": {
+        "context_limit_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "input_tokens_after": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens_before": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "max_summary_bytes": {
+          "type": "integer",
+          "maximum": 2097152,
+          "minimum": 0
+        },
+        "target_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "trigger_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "context_limit_tokens",
+        "trigger_tokens",
+        "target_tokens",
+        "input_tokens_before",
+        "input_tokens_after",
+        "max_summary_bytes"
+      ]
+    },
+    "DecisionTrace": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/PermissionAction"
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MatchedPermissionRule"
+          }
+        },
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "normalized_resource": {
+          "type": "string"
+        },
+        "precedence_reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "normalized_resource",
+        "candidates",
+        "effect",
+        "precedence_reason"
+      ]
+    },
+    "EventPayload": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "creation_agent": {
+              "$ref": "#/$defs/AgentSnapshot"
+            },
+            "creation_selection": {
+              "$ref": "#/$defs/RunSelection"
+            },
+            "cwd_identity": {
+              "description": "Opaque canonical workspace identity.",
+              "type": "string",
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "model_snapshot_fingerprint": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "origin": {
+              "$ref": "#/$defs/SessionOrigin"
+            },
+            "type": {
+              "type": "string",
+              "const": "session_created"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "origin",
+            "cwd_identity",
+            "creation_selection",
+            "creation_agent",
+            "model_snapshot_fingerprint"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentSnapshot"
+            },
+            "client_run_id": {
+              "description": "Bounded run idempotency key.",
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "input_through_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "selected_suffix": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/FrozenModelBinding"
+              },
+              "maxItems": 256,
+              "minItems": 1
+            },
+            "selection": {
+              "$ref": "#/$defs/RunSelection"
+            },
+            "type": {
+              "type": "string",
+              "const": "run_started"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "client_run_id",
+            "selection",
+            "agent",
+            "selected_suffix",
+            "input_through_seq"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "user_input_submitted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "input"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "user_input_applied"
+            },
+            "user_input_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "user_input_seq"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "final_text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "run_completed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "final_text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "error": {
+              "description": "Control-free bounded safe error text.",
+              "type": "string",
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "run_failed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "error"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "description": "Control-free bounded safe error text.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "run_cancelled"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "description": "Control-free bounded safe error text.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "run_interrupted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "attempt_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "attempt_ordinal": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 1
+            },
+            "fallback_index": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "prompt_fingerprint": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "resolved_model": {
+              "$ref": "#/$defs/ResolvedModelRef"
+            },
+            "retry_ordinal": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "model_attempt_started"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "attempt_id",
+            "attempt_ordinal",
+            "fallback_index",
+            "retry_ordinal",
+            "resolved_model",
+            "prompt_fingerprint"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "attempt_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text_delta"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "attempt_id",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "attempt_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "reasoning_delta"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "attempt_id",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "attempt_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "attempt_abandoned"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "attempt_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "attempt_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "ordered_decisions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ReplayDecision"
+              },
+              "maxItems": 4096
+            },
+            "resolved_model": {
+              "$ref": "#/$defs/ResolvedModelRef"
+            },
+            "type": {
+              "type": "string",
+              "const": "model_replay_evaluated"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "attempt_id",
+            "resolved_model",
+            "ordered_decisions"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "attempt_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "input_through_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "model_turn_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 1
+            },
+            "resolved_model": {
+              "$ref": "#/$defs/ResolvedModelRef"
+            },
+            "turn": {
+              "$ref": "#/$defs/PersistedModelTurn"
+            },
+            "type": {
+              "type": "string",
+              "const": "model_turn_committed"
+            },
+            "warnings": {
+              "type": "array",
+              "items": {
+                "description": "Control-free bounded safe error text.",
+                "type": "string",
+                "maxLength": 4096,
+                "minLength": 1,
+                "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+              },
+              "maxItems": 256
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "attempt_id",
+            "model_turn_seq",
+            "resolved_model",
+            "input_through_seq",
+            "turn",
+            "warnings"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "attempts_on_from": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 1
+            },
+            "error": {
+              "$ref": "#/$defs/ModelErrorSummary"
+            },
+            "from": {
+              "$ref": "#/$defs/ResolvedModelRef"
+            },
+            "from_fallback_index": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "to": {
+              "$ref": "#/$defs/ResolvedModelRef"
+            },
+            "to_fallback_index": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "model_fallback"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "from",
+            "to",
+            "from_fallback_index",
+            "to_fallback_index",
+            "attempts_on_from",
+            "error"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation_fingerprint": {
+              "$ref": "#/$defs/OperationFingerprint"
+            },
+            "owner": {
+              "$ref": "#/$defs/AssistantToolCallRef"
+            },
+            "presentation": {
+              "$ref": "#/$defs/ToolCallPresentation"
+            },
+            "tool_call_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_call_started"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "tool_call_id",
+            "owner",
+            "presentation",
+            "operation_fingerprint"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "message": {
+              "description": "Control-free bounded presentation text.",
+              "type": "string",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "tool_call_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_call_progress"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "tool_call_id",
+            "message"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SafeToolError"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "outcome": {
+              "$ref": "#/$defs/ToolTerminationOutcome"
+            },
+            "owner": {
+              "$ref": "#/$defs/AssistantToolCallRef"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PersistedToolResult"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tool_call_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_call_terminated"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "tool_call_id",
+            "owner",
+            "outcome",
+            "result",
+            "error"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "byte_count": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "tool_call_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_stdin_submitted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "tool_call_id",
+            "byte_count"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "child_session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "tool_call_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_call_linked"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "tool_call_id",
+            "child_session_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/ApprovalRequest"
+            },
+            "type": {
+              "type": "string",
+              "const": "approval_requested"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "approval_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "decision": {
+              "$ref": "#/$defs/ApprovalInternalDecision"
+            },
+            "type": {
+              "type": "string",
+              "const": "approval_evaluated"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "approval_id",
+            "decision"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "approval_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "reason_code": {
+              "$ref": "#/$defs/ApprovalReasonCode"
+            },
+            "type": {
+              "type": "string",
+              "const": "approval_escalated"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "approval_id",
+            "reason_code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "approval_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "client_response_id": {
+              "description": "Bounded approval response idempotency key.",
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "decision": {
+              "$ref": "#/$defs/ApprovalUserDecision"
+            },
+            "feedback": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ApprovalFeedback"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "approval_user_decision_recorded"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "approval_id",
+            "client_response_id",
+            "decision",
+            "feedback"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "approval_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "decision": {
+              "$ref": "#/$defs/ApprovalFinalDecision"
+            },
+            "type": {
+              "type": "string",
+              "const": "approval_finalized"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "approval_id",
+            "decision"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "approval_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "reason_code": {
+              "$ref": "#/$defs/ApprovalReasonCode"
+            },
+            "type": {
+              "type": "string",
+              "const": "approval_cancelled"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "approval_id",
+            "reason_code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "approval_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "operation_fingerprint": {
+              "$ref": "#/$defs/OperationFingerprint"
+            },
+            "repetitions": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 4
+            },
+            "type": {
+              "type": "string",
+              "const": "approval_doom_loop_detected"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "approval_id",
+            "operation_fingerprint",
+            "repetitions"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "grant": {
+              "$ref": "#/$defs/TreeApprovalGrant"
+            },
+            "type": {
+              "type": "string",
+              "const": "tree_approval_grant_committed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "grant"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "backend": {
+              "$ref": "#/$defs/InternalAgentBackend"
+            },
+            "call": {
+              "$ref": "#/$defs/SafeInternalAgentCall"
+            },
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/$defs/InternalAgentKind"
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_started"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id",
+            "internal_run_id",
+            "kind",
+            "backend",
+            "call"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/$defs/InternalAgentKind"
+            },
+            "result": {
+              "$ref": "#/$defs/SafeInternalAgentResult"
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_completed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id",
+            "internal_run_id",
+            "kind",
+            "result"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "failure": {
+              "$ref": "#/$defs/InternalAgentFailure"
+            },
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/$defs/InternalAgentKind"
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_failed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id",
+            "internal_run_id",
+            "kind",
+            "failure"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/$defs/InternalAgentKind"
+            },
+            "reason": {
+              "description": "Control-free bounded safe error text.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_cancelled"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id",
+            "internal_run_id",
+            "kind",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/$defs/InternalAgentKind"
+            },
+            "reason": {
+              "description": "Control-free bounded safe error text.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_interrupted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id",
+            "internal_run_id",
+            "kind",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 1
+            },
+            "failure": {
+              "$ref": "#/$defs/InternalAgentFailure"
+            },
+            "from": {
+              "$ref": "#/$defs/InternalAgentBackend"
+            },
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/$defs/InternalAgentKind"
+            },
+            "to": {
+              "$ref": "#/$defs/InternalAgentBackend"
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_fallback"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id",
+            "internal_run_id",
+            "kind",
+            "from",
+            "to",
+            "failure",
+            "attempts"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "boundaries": {
+              "$ref": "#/$defs/ContextCheckpointBoundaries"
+            },
+            "budgets": {
+              "$ref": "#/$defs/ContextCheckpointBudgets"
+            },
+            "checkpoint": {
+              "$ref": "#/$defs/ContextCheckpoint"
+            },
+            "type": {
+              "type": "string",
+              "const": "context_checkpoint_committed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "checkpoint",
+            "boundaries",
+            "budgets"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "change": {
+              "$ref": "#/$defs/SessionTitleChange"
+            },
+            "input_through_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "session_title_committed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "change",
+            "input_through_seq"
+          ]
+        }
+      ]
+    },
+    "FrozenDelegationPolicy": {
+      "type": "object",
+      "properties": {
+        "effective_depth_ceiling": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_depth": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+          },
+          "maxItems": 256,
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "targets",
+        "max_depth",
+        "effective_depth_ceiling"
+      ]
+    },
+    "FrozenModelBinding": {
+      "type": "object",
+      "properties": {
+        "behavior_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "defaults": {
+          "$ref": "#/$defs/ResolvedRequestDefaults"
+        },
+        "descriptor": {
+          "type": "object",
+          "properties": {
+            "adapter_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "capabilities": {
+              "type": "object",
+              "properties": {
+                "cancellation": {
+                  "type": "string",
+                  "enum": [
+                    "local_only",
+                    "remote_best_effort",
+                    "unsupported"
+                  ]
+                },
+                "compaction": {
+                  "type": "string",
+                  "enum": [
+                    "native",
+                    "unsupported"
+                  ]
+                },
+                "features": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "tool_calling",
+                      "parallel_tools",
+                      "tool_input_deltas",
+                      "reasoning",
+                      "structured_output",
+                      "temperature",
+                      "top_p",
+                      "max_output_tokens",
+                      "prompt_caching",
+                      "usage",
+                      "provider_tools",
+                      "sources"
+                    ]
+                  },
+                  "uniqueItems": true
+                },
+                "limits": {
+                  "type": "object",
+                  "properties": {
+                    "context": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "input": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "output": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "context",
+                    "input",
+                    "output"
+                  ]
+                },
+                "media": {
+                  "type": "object",
+                  "properties": {
+                    "input": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "media_types": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 3
+                            },
+                            "minItems": 1
+                          },
+                          "sources": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "inline_bytes",
+                                "inline_text",
+                                "url",
+                                "provider_reference"
+                              ]
+                            },
+                            "minItems": 1,
+                            "uniqueItems": true
+                          }
+                        },
+                        "additionalProperties": false,
+                        "required": [
+                          "media_types",
+                          "sources"
+                        ]
+                      }
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "input"
+                  ]
+                },
+                "modalities": {
+                  "type": "object",
+                  "properties": {
+                    "input": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1,
+                      "uniqueItems": true
+                    },
+                    "output": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1,
+                      "uniqueItems": true
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "input",
+                    "output"
+                  ]
+                },
+                "replay": {
+                  "type": "object",
+                  "properties": {
+                    "capability": {
+                      "type": "string",
+                      "enum": [
+                        "required",
+                        "optional",
+                        "unsupported"
+                      ]
+                    },
+                    "policy": {
+                      "type": "string",
+                      "enum": [
+                        "never",
+                        "if_valid",
+                        "always"
+                      ]
+                    },
+                    "reasoning": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "policy",
+                    "capability",
+                    "reasoning"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "features",
+                "limits",
+                "modalities",
+                "media",
+                "cancellation",
+                "compaction",
+                "replay"
+              ]
+            },
+            "identity": {
+              "type": "object",
+              "properties": {
+                "model_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "provider_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "provider_id",
+                "model_id"
+              ]
+            },
+            "provider_metadata": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "identity",
+            "adapter_id",
+            "capabilities",
+            "provider_metadata"
+          ]
+        },
+        "provider_options": {
+          "$ref": "#/$defs/ProviderOptions"
+        },
+        "resolved": {
+          "$ref": "#/$defs/ResolvedModelRef"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "resolved",
+        "descriptor",
+        "defaults",
+        "provider_options",
+        "behavior_fingerprint"
+      ]
+    },
+    "InternalAgentBackend": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "resolved_model": {
+              "$ref": "#/$defs/ResolvedModelRef"
+            },
+            "type": {
+              "type": "string",
+              "const": "model"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "resolved_model"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "resolved_model": {
+              "$ref": "#/$defs/ResolvedModelRef"
+            },
+            "type": {
+              "type": "string",
+              "const": "provider_native"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "resolved_model"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "description": "Stable lowercase machine-readable code.",
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9._-]*$"
+            },
+            "revision": {
+              "description": "Control-free bounded presentation text.",
+              "type": "string",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "builtin"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "name",
+            "revision"
+          ]
+        }
+      ]
+    },
+    "InternalAgentFailure": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "message": {
+          "description": "Control-free bounded safe error text.",
+          "type": "string",
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "model_error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelErrorSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "retryable",
+        "model_error"
+      ]
+    },
+    "InternalAgentKind": {
+      "type": "string",
+      "enum": [
+        "approval",
+        "context_compaction",
+        "session_title"
+      ]
+    },
+    "MatchedPermissionRule": {
+      "type": "object",
+      "properties": {
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "rule_id": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "source_layer": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "rule_id",
+        "source_layer",
+        "effect"
+      ]
+    },
+    "ModelErrorKind": {
+      "type": "string",
+      "enum": [
+        "transport",
+        "timeout",
+        "rate_limited",
+        "auth",
+        "permission_denied",
+        "invalid_request",
+        "model_not_found",
+        "context_length",
+        "quota",
+        "overload",
+        "unsupported",
+        "unexpected_eof",
+        "invalid_response",
+        "invalid_tool_input",
+        "content_filter",
+        "replay",
+        "native_context",
+        "provider",
+        "abort",
+        "unknown"
+      ]
+    },
+    "ModelErrorStage": {
+      "type": "string",
+      "enum": [
+        "unknown",
+        "request_validation",
+        "request_encoding",
+        "connect",
+        "response_headers",
+        "response_body",
+        "stream_read",
+        "stream_decode",
+        "stream_event",
+        "stream_finalize",
+        "replay_encode",
+        "replay_decode",
+        "native_context_encode",
+        "native_context_decode",
+        "middleware"
+      ]
+    },
+    "ModelErrorSummary": {
+      "type": "object",
+      "properties": {
+        "bytes_received": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "http_status": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "kind": {
+          "$ref": "#/$defs/ModelErrorKind"
+        },
+        "message": {
+          "description": "Control-free bounded safe error text.",
+          "type": "string",
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "request_id": {
+          "description": "Control-free bounded presentation text.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "retry_after_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "stage": {
+          "$ref": "#/$defs/ModelErrorStage"
+        },
+        "vendor_code": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "message",
+        "retryable",
+        "stage",
+        "http_status",
+        "bytes_received",
+        "vendor_code",
+        "request_id",
+        "retry_after_ms"
+      ]
+    },
+    "ModelFinishReason": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "stop",
+            "tool_calls",
+            "length",
+            "content_filter",
+            "cancelled",
+            "error",
+            "aborted",
+            "timeout",
+            "refused",
+            "unknown"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "other": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "other"
+          ]
+        }
+      ]
+    },
+    "NativeContextArtifact": {
+      "type": "object",
+      "properties": {
+        "adapter_id": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "byte_length": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "reference": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "scope": {
+          "$ref": "#/$defs/NativeContextScope"
+        },
+        "selection_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "sha256": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "adapter_id",
+        "selection_fingerprint",
+        "scope",
+        "byte_length",
+        "sha256",
+        "reference"
+      ]
+    },
+    "NativeContextScope": {
+      "type": "object",
+      "properties": {
+        "model_id": {
+          "type": "string",
+          "maxLength": 384,
+          "minLength": 1,
+          "pattern": "^[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+        },
+        "provider_id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9._-]+$"
+        },
+        "resource_id": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "provider_id",
+        "model_id",
+        "resource_id"
+      ]
+    },
+    "NativeReplayArtifact": {
+      "type": "object",
+      "properties": {
+        "adapter_id": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "payload": {
+          "x-max-serialized-bytes": 2097152
+        },
+        "scope": {
+          "$ref": "#/$defs/NativeContextScope"
+        },
+        "selection_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "adapter_id",
+        "selection_fingerprint",
+        "scope",
+        "payload"
+      ]
+    },
+    "OpenResponsesMode": {
+      "type": "string",
+      "enum": [
+        "standard",
+        "compact"
+      ]
+    },
+    "OperationFingerprint": {
+      "type": "object",
+      "properties": {
+        "digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "digest"
+      ]
+    },
+    "PermissionAction": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "bash",
+        "grep",
+        "glob",
+        "delegate",
+        "external_directory"
+      ]
+    },
+    "PermissionEffect": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "ask",
+        "deny"
+      ]
+    },
+    "PermissionRule": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/PermissionAction"
+        },
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "id": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "resource": {
+          "description": "Current wildcard grammar: '*' matches any characters, '?' matches one character, and controls, globstar, escapes, classes, and braces are forbidden. Runtime deserialization additionally enforces a maximum of 4096 UTF-8 bytes; x-cookie-agent-maxUtf8Bytes records that byte limit because JSON Schema maxLength counts Unicode code points.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!.*\\*\\*)[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}]+$",
+          "x-cookie-agent-maxUtf8Bytes": 4096
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "action",
+        "resource",
+        "effect"
+      ]
+    },
+    "PersistedAssistantPart": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text",
+            "metadata"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "reasoning"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text",
+            "metadata"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Bounded semantic model tool-call identity.",
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "input": true,
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "name": {
+              "description": "Stable lowercase machine-readable code.",
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9._-]*$"
+            },
+            "provider_item_id": {
+              "description": "Bounded provider item identity.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "raw_input": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_call"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "provider_item_id",
+            "name",
+            "input",
+            "raw_input",
+            "metadata"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "content": {
+              "$ref": "#/$defs/PersistedToolContent"
+            },
+            "is_error": {
+              "type": "boolean"
+            },
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "tool_call_id": {
+              "description": "Bounded semantic model tool-call identity.",
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_result"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "tool_call_id",
+            "content",
+            "is_error",
+            "metadata"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/PersistedFilePart"
+            },
+            "type": {
+              "type": "string",
+              "const": "file"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "excerpt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "media_type": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "source"
+            },
+            "url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "url",
+            "title",
+            "media_type",
+            "excerpt",
+            "metadata"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "tool_call_id": {
+              "description": "Bounded semantic model tool-call identity.",
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_approval"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "tool_call_id",
+            "message",
+            "metadata"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "data": true,
+            "kind": {
+              "description": "Stable lowercase machine-readable code.",
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9._-]*$"
+            },
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "type": {
+              "type": "string",
+              "const": "custom"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "kind",
+            "data",
+            "metadata"
+          ]
+        }
+      ]
+    },
+    "PersistedContentValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/PersistedFilePart"
+            },
+            "type": {
+              "type": "string",
+              "const": "file"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "json"
+            },
+            "value": true
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ]
+        }
+      ]
+    },
+    "PersistedFilePart": {
+      "type": "object",
+      "properties": {
+        "filename": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_type": {
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 3,
+          "pattern": "^[^/\\s]+/[^/\\s]+$"
+        },
+        "metadata": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "source": {
+          "$ref": "#/$defs/PersistedFileSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "media_type",
+        "filename",
+        "source",
+        "metadata"
+      ]
+    },
+    "PersistedFileSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "byte_length": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "reference": {
+              "$ref": "#/$defs/ArtifactReference"
+            },
+            "sha256": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "type": {
+              "type": "string",
+              "const": "artifact"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "byte_length",
+            "sha256",
+            "reference"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "url"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "url"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Control-free bounded presentation text.",
+              "type": "string",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "provider_id": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[a-z0-9._-]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "provider_reference"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "provider_id",
+            "id"
+          ]
+        }
+      ]
+    },
+    "PersistedModelTurn": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PersistedAssistantPart"
+          },
+          "maxItems": 4096
+        },
+        "finish_reason": {
+          "$ref": "#/$defs/ModelFinishReason"
+        },
+        "native_replay": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeReplayArtifact"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider_metadata": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "provider_options": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "response_metadata": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "content",
+        "provider_options",
+        "finish_reason",
+        "usage",
+        "response_metadata",
+        "provider_metadata",
+        "native_replay"
+      ]
+    },
+    "PersistedToolContent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "json"
+            },
+            "value": true
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "mixed"
+            },
+            "values": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/PersistedContentValue"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "values"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "denied"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "PersistedToolResult": {
+      "type": "object",
+      "properties": {
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolAttachment"
+          },
+          "maxItems": 256
+        },
+        "metadata": true,
+        "output": {
+          "type": "string"
+        },
+        "title": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "truncation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolOutputTruncation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "output",
+        "metadata",
+        "truncation",
+        "attachments"
+      ]
+    },
+    "PreparedApprovalResource": {
+      "type": "object",
+      "properties": {
+        "binding_digest": {
+          "$ref": "#/$defs/PreparedResourceDigest"
+        },
+        "binding_lifetime": {
+          "$ref": "#/$defs/PreparedBindingLifetime"
+        },
+        "boundary": {
+          "$ref": "#/$defs/ApprovalBoundary"
+        },
+        "canonical": {
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._:-]*$"
+        },
+        "capability": {
+          "$ref": "#/$defs/PermissionAction"
+        },
+        "source": {
+          "$ref": "#/$defs/ApprovalResourceSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "capability",
+        "canonical",
+        "binding_digest",
+        "binding_lifetime",
+        "boundary",
+        "source"
+      ]
+    },
+    "PreparedBindingLifetime": {
+      "type": "string",
+      "enum": [
+        "process_local",
+        "restart_stable"
+      ]
+    },
+    "PreparedCapabilityLifetime": {
+      "type": "string",
+      "enum": [
+        "process_local"
+      ]
+    },
+    "PreparedOperationIdentity": {
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalCapability"
+          },
+          "maxItems": 256,
+          "minItems": 1
+        },
+        "capability_lifetime": {
+          "$ref": "#/$defs/PreparedCapabilityLifetime"
+        },
+        "execution_context_digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "normalized_arguments_digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PreparedApprovalResource"
+          },
+          "maxItems": 256
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "normalized_arguments_digest",
+        "capabilities",
+        "resources",
+        "execution_context_digest",
+        "capability_lifetime"
+      ]
+    },
+    "PreparedResourceDigest": {
+      "type": "object",
+      "properties": {
+        "digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "digest"
+      ]
+    },
+    "ProviderOptions": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "api_version": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "beta": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+              },
+              "maxItems": 32,
+              "uniqueItems": true
+            },
+            "type": {
+              "type": "string",
+              "const": "anthropic"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "api_version",
+            "beta"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "organization": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "project": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "openai-chat"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "organization",
+            "project"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "organization": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "project": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "store": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "openai-responses"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "organization",
+            "project",
+            "store"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "api_path": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^/[^?#]*$"
+            },
+            "type": {
+              "type": "string",
+              "const": "openai-compatible"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "api_path"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "api_version": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "google-gemini"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "api_version"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "project": {
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "google-vertex-gemini"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "project",
+            "location"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "region": {
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "aws-bedrock-converse"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "region"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "api_version": {
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "deployment": {
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "azure-openai-chat"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "deployment",
+            "api_version"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "api_version": {
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "deployment": {
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "azure-openai-responses"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "deployment",
+            "api_version"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "api_version": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "cohere-v2-chat"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "api_version"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "protocol_mode": {
+              "$ref": "#/$defs/OpenResponsesMode"
+            },
+            "type": {
+              "type": "string",
+              "const": "open-responses"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "protocol_mode"
+          ]
+        }
+      ]
+    },
+    "ReasoningEffort": {
+      "type": "string",
+      "enum": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "default"
+      ]
+    },
+    "ReplayDecision": {
+      "type": "object",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/ReplayDisposition"
+        },
+        "history_index": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "history_index",
+        "disposition"
+      ]
+    },
+    "ReplayDisposition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "replayed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "no_artifact"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "expected": {
+              "description": "Stable lowercase machine-readable code.",
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9._-]*$"
+            },
+            "found": {
+              "description": "Stable lowercase machine-readable code.",
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9._-]*$"
+            },
+            "type": {
+              "type": "string",
+              "const": "discarded_foreign_adapter"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "found",
+            "expected"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "expected": {
+              "description": "One exact base or named-variant model selection.",
+              "type": "object",
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "maxLength": 512,
+                  "minLength": 3,
+                  "pattern": "^[a-z0-9._-]{1,128}/[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+                },
+                "variant": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "pattern": "^(?!base$)[a-z0-9._-]+$"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "variant"
+              ]
+            },
+            "found": {
+              "description": "One exact base or named-variant model selection.",
+              "type": "object",
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "maxLength": 512,
+                  "minLength": 3,
+                  "pattern": "^[a-z0-9._-]{1,128}/[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+                },
+                "variant": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "pattern": "^(?!base$)[a-z0-9._-]+$"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "variant"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "discarded_foreign_model_selection"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "found",
+            "expected"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "expected": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^(?!base$)[a-z0-9._-]+$"
+            },
+            "found": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^(?!base$)[a-z0-9._-]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "discarded_foreign_variant"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "found",
+            "expected"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "description": "Control-free bounded safe error text.",
+              "type": "string",
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "discarded_invalid_payload"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "reconstructed_normalized_history"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "RequestDefaults": {
+      "type": "object",
+      "properties": {
+        "max_output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "stop": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1
+          },
+          "maxItems": 8
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number",
+              "maximum": 2.0,
+              "minimum": 0.0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool_choice": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolChoice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number",
+              "maximum": 1.0,
+              "minimum": 0.0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "temperature",
+        "top_p",
+        "max_output_tokens",
+        "stop",
+        "seed",
+        "tool_choice"
+      ]
+    },
+    "ResolvedModelRef": {
+      "type": "object",
+      "properties": {
+        "adapter_id": {
+          "$ref": "#/$defs/AdaptorId"
+        },
+        "model_id": {
+          "type": "string",
+          "maxLength": 384,
+          "minLength": 1,
+          "pattern": "^[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+        },
+        "provider_id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9._-]+$"
+        },
+        "selection": {
+          "description": "One exact base or named-variant model selection.",
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 3,
+              "pattern": "^[a-z0-9._-]{1,128}/[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+            },
+            "variant": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^(?!base$)[a-z0-9._-]+$"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "variant"
+          ]
+        },
+        "selection_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "selection",
+        "provider_id",
+        "model_id",
+        "adapter_id",
+        "selection_fingerprint"
+      ]
+    },
+    "ResolvedRequestDefaults": {
+      "type": "object",
+      "properties": {
+        "reasoning": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompiledReasoningBehavior"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "request": {
+          "$ref": "#/$defs/RequestDefaults"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request",
+        "reasoning"
+      ]
+    },
+    "RunSelection": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+        },
+        "model": {
+          "description": "One exact base or named-variant model selection.",
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 3,
+              "pattern": "^[a-z0-9._-]{1,128}/[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+            },
+            "variant": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^(?!base$)[a-z0-9._-]+$"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "variant"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "agent",
+        "model"
+      ]
+    },
+    "SafeInternalAgentCall": {
+      "type": "object",
+      "properties": {
+        "input_digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "input_summary": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "name": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "input_summary",
+        "input_digest"
+      ]
+    },
+    "SafeInternalAgentResult": {
+      "type": "object",
+      "properties": {
+        "output_digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "output_summary": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "output_summary",
+        "output_digest"
+      ]
+    },
+    "SafeToolError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "message": {
+          "description": "Control-free bounded safe error text.",
+          "type": "string",
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "SessionOrigin": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "root"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "depth": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "parent_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "parent_session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "parent_tool_call_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "root_session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "delegated"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "root_session_id",
+            "parent_session_id",
+            "parent_run_id",
+            "parent_tool_call_id",
+            "invocation_id",
+            "depth"
+          ]
+        }
+      ]
+    },
+    "SessionTitleChange": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "client_rename_id": {
+              "description": "Bounded title mutation idempotency key.",
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "title": {
+              "description": "Nonblank control-free UTF-8 session title.",
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "user_set"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "title",
+            "client_rename_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "client_rename_id": {
+              "description": "Bounded title mutation idempotency key.",
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "user_clear"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "client_rename_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "client_rename_id": {
+              "description": "Bounded title mutation idempotency key.",
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "user_reset"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "client_rename_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "title": {
+              "description": "Nonblank control-free UTF-8 session title.",
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_set"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "title",
+            "invocation_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "title": {
+              "description": "Nonblank control-free UTF-8 session title.",
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "fallback_set"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "title"
+          ]
+        }
+      ]
+    },
+    "StoredEvent": {
+      "type": "object",
+      "properties": {
+        "event_schema_version": {
+          "type": "integer",
+          "const": 7
+        },
+        "payload": {
+          "$ref": "#/$defs/EventPayload"
+        },
+        "run_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "event_schema_version",
+        "session_id",
+        "run_id",
+        "seq",
+        "timestamp",
+        "payload"
+      ]
+    },
+    "ToolAttachment": {
+      "type": "object",
+      "properties": {
+        "byte_length": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "filename": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mime_type": {
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 3,
+          "pattern": "^[^/\\s]+/[^/\\s]+$"
+        },
+        "reference": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "sha256": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mime_type",
+        "filename",
+        "byte_length",
+        "sha256",
+        "reference"
+      ]
+    },
+    "ToolCallPresentation": {
+      "type": "object",
+      "properties": {
+        "primary_argument": {
+          "description": "Control-free bounded presentation text.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "title": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "primary_argument"
+      ]
+    },
+    "ToolChoice": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "auto",
+            "none",
+            "required"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "named": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "named"
+          ]
+        }
+      ]
+    },
+    "ToolName": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "edit",
+        "bash",
+        "grep",
+        "glob"
+      ]
+    },
+    "ToolOutputTruncation": {
+      "type": "object",
+      "properties": {
+        "original_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "original_lines": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "retained": {
+          "$ref": "#/$defs/ArtifactReference"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "original_bytes",
+        "original_lines",
+        "retained"
+      ]
+    },
+    "ToolTerminationOutcome": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ]
+    },
+    "TreeApprovalGrant": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalCapability"
+          },
+          "maxItems": 256,
+          "minItems": 1
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "grant_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "operation_fingerprint": {
+          "$ref": "#/$defs/OperationFingerprint"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PreparedApprovalResource"
+          },
+          "maxItems": 256
+        },
+        "root_session_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "grant_id",
+        "root_session_id",
+        "approval_id",
+        "operation_fingerprint",
+        "capabilities",
+        "resources",
+        "created_at"
+      ]
+    },
+    "Usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens_cache_read": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens_cache_write": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens_no_cache": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens_reasoning": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens_text": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "input_tokens",
+        "input_tokens_no_cache",
+        "input_tokens_cache_read",
+        "input_tokens_cache_write",
+        "output_tokens",
+        "output_tokens_text",
+        "output_tokens_reasoning"
+      ]
+    }
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Response",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/SuccessResponse"
+    },
+    {
+      "$ref": "#/$defs/ErrorResponse"
+    }
+  ],
+  "$defs": {
+    "ErrorResponse": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/JsonRpcError"
+        },
+        "id": {
+          "$ref": "#/$defs/JsonRpcId"
+        },
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "id",
+        "error"
+      ]
+    },
+    "JsonRpcError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "data": true,
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "JsonRpcId": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "SuccessResponse": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/JsonRpcId"
+        },
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "result": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ]
+    }
+  }
+}

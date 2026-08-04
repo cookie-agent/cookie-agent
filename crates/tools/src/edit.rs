@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use cookie_agent_engine::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, SessionToolContext, ToolCall,
-    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolResult, ToolSpec,
+    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
-use cookie_agent_protocol::{ActionKind, Sha256Digest};
+use cookie_agent_protocol::{PermissionAction, PersistedToolResult as ToolResult, Sha256Digest};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -107,11 +107,12 @@ impl ToolProvider for EditTool {
         binding.extend_from_slice(Sha256Digest::of_bytes(&new_bytes).as_str().as_bytes());
         binding.extend_from_slice(&target.manifest_bytes()?);
         let (resources, policy_labels, external) = prepared_path_resources(
-            ActionKind::Write,
+            PermissionAction::Write,
             "file",
             &target.display_path,
             &self.workspace,
             &binding,
+            false,
         )?;
         let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
         let operation = prepared_operation(
@@ -119,11 +120,11 @@ impl ToolProvider for EditTool {
             &args,
             if external {
                 vec![
-                    (ActionKind::Write, "edit"),
-                    (ActionKind::ExternalDirectory, "guard"),
+                    (PermissionAction::Write, "edit"),
+                    (PermissionAction::ExternalDirectory, "guard"),
                 ]
             } else {
-                vec![(ActionKind::Write, "edit")]
+                vec![(PermissionAction::Write, "edit")]
             },
             resources,
             &context,
@@ -156,7 +157,7 @@ impl PreparedExecutor for EditExecutor {
         }
         let outcome = self.target.replace_atomically(&self.new_bytes)?;
         Ok(ToolResult {
-            title: format!("Edited {}", self.target.display_path.display()),
+            title: crate::safe_title(format!("Edited {}", self.target.display_path.display())),
             output: "Edit applied atomically".into(),
             metadata: serde_json::json!({"new_sha256":Sha256Digest::of_bytes(&self.new_bytes),"cleanup_warning":outcome.cleanup_warning}),
             truncation: None,

@@ -1,149 +1,95 @@
 use std::collections::BTreeMap;
 
+use cookie_agent_identity::ProviderId;
 use cookie_agent_models::{
-    Catalog, CatalogModelStatus, CatalogRecipe, MODELS_DEV_ARTIFACT_BYTES,
-    MODELS_DEV_ARTIFACT_SHA256, MODELS_DEV_COMMIT, UnsupportedReason,
+    Catalog, CatalogReasoningOption, MODELS_DEV_ARTIFACT_BYTES, MODELS_DEV_ARTIFACT_SHA256,
+    ModelsDevProvider, ProviderDefinition, build_model_set,
 };
-use oven_sdk::{CancellationCapability, Capability, CompactionCapability, ReplayCapability};
 use sha2::{Digest as _, Sha256};
 
 #[test]
-fn embedded_catalog_matches_exact_provenance_and_retains_every_record() {
+fn embedded_catalog_has_exact_provenance_and_strict_reasoning_metadata() {
     let bytes = include_bytes!("../catalog/models-dev.json");
     assert_eq!(bytes.len(), MODELS_DEV_ARTIFACT_BYTES);
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
         MODELS_DEV_ARTIFACT_SHA256
     );
-    assert_eq!(MODELS_DEV_COMMIT.len(), 40);
-    assert_ne!(bytes.last(), Some(&b'\n'));
-
     let catalog = Catalog::embedded().unwrap();
-    assert_eq!(catalog.providers().len(), 177);
-    assert_eq!(catalog.models().len(), 5_935);
-    assert!(catalog.revision().starts_with("sha256:"));
-    assert_eq!(catalog.revision().len(), 71);
-    assert!(catalog.is_known_provider("anthropic"));
-    assert!(!catalog.is_known_provider("not-upstream"));
-    assert!(catalog.is_supported_provider("anthropic"));
-    assert!(!catalog.is_supported_provider("amazon-bedrock"));
-
-    let sorted = catalog.models().windows(2).all(|pair| {
-        (&pair[0].provider_id, &pair[0].model_id) <= (&pair[1].provider_id, &pair[1].model_id)
-    });
-    assert!(sorted);
-}
-
-#[test]
-fn canonical_mapping_is_exact_only_and_dates_and_limits_are_strict() {
-    let catalog = Catalog::embedded().unwrap();
-    let first_party = catalog.model("anthropic", "claude-opus-4-6").unwrap();
-    assert_eq!(
-        first_party.canonical_model_id.as_deref(),
-        Some("anthropic/claude-opus-4-6")
-    );
-    let routed = catalog
-        .model("openrouter", "anthropic/claude-opus-4.6")
-        .unwrap();
-    assert_eq!(routed.canonical_model_id, None);
-
-    let mut invalid: serde_json::Value =
-        serde_json::from_slice(include_bytes!("../catalog/models-dev.json")).unwrap();
-    invalid["providers"]["anthropic"]["models"]["claude-opus-4-6"]["release_date"] =
-        serde_json::json!("2025-02-30");
-    assert!(Catalog::parse(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    invalid["providers"]["anthropic"]["models"]["claude-opus-4-6"]["release_date"] =
-        serde_json::json!("2025-05-22");
-    invalid["providers"]["anthropic"]["models"]["claude-opus-4-6"]["limit"]["output"] =
-        serde_json::json!(-1);
-    assert!(Catalog::parse(&serde_json::to_vec(&invalid).unwrap()).is_err());
-}
-
-#[test]
-fn recipes_are_explicit_and_unsupported_packages_stay_known() {
-    let catalog = Catalog::embedded().unwrap();
-    assert_eq!(
-        catalog.recipe(catalog.model("anthropic", "claude-opus-4-6").unwrap()),
-        Ok(CatalogRecipe::Anthropic)
-    );
-    assert_eq!(
-        catalog.recipe(catalog.model("openai", "gpt-5.4").unwrap()),
-        Ok(CatalogRecipe::OpenAiResponses)
-    );
-    assert_eq!(
-        catalog.recipe(catalog.model("openai", "gpt-4o").unwrap()),
-        Ok(CatalogRecipe::OpenAiChat)
-    );
-    let bedrock = catalog
-        .models()
-        .iter()
-        .find(|model| model.provider_id.contains("bedrock"))
-        .unwrap();
+    let model = catalog.model("openai", "gpt-5.6-sol").unwrap();
     assert!(matches!(
-        catalog.recipe(bedrock),
-        Err(UnsupportedReason::ExplicitlyUnsupported | UnsupportedReason::UnreviewedPackage)
+        model.reasoning_options.as_slice(),
+        [CatalogReasoningOption::Effort { .. }]
     ));
-    let deprecated = catalog
-        .models()
-        .iter()
-        .find(|model| model.status == CatalogModelStatus::Deprecated)
-        .unwrap();
-    assert_eq!(
-        catalog.recipe(deprecated),
-        Err(UnsupportedReason::DeprecatedModel)
-    );
 }
 
 #[test]
-fn generated_models_are_text_only_conservative_and_secret_free_in_debug() {
+fn included_models_dev_model_generates_only_declared_effort_variants() {
+    let provider: ModelsDevProvider = toml::from_str(&format!(
+        r#"
+catalog_revision = "sha256:{MODELS_DEV_ARTIFACT_SHA256}"
+auth = {{ type = "credential_store" }}
+[models."gpt-5.6-sol"]
+default_variant = "high"
+"#
+    ))
+    .unwrap();
+    let providers = BTreeMap::from([(
+        ProviderId::new("openai").unwrap(),
+        ProviderDefinition::ModelsDev(provider),
+    )]);
+    let set = build_model_set(&providers, &Catalog::embedded().unwrap(), None).unwrap();
+    let entry = set.entries().next().unwrap().1;
+    assert!(!entry.is_available());
+    assert_eq!(
+        entry
+            .variants()
+            .keys()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        ["high", "low", "max", "medium", "none", "xhigh"]
+    );
+    assert_eq!(entry.default_variant().unwrap().as_str(), "high");
+}
+
+#[test]
+fn budget_toggle_and_google_effort_options_generate_deterministic_unions() {
     let catalog = Catalog::embedded().unwrap();
-    for (provider_id, model_id) in [
-        ("anthropic", "claude-opus-4-6"),
-        ("openai", "gpt-5.4"),
-        ("google", "gemini-2.5-flash"),
-        ("cohere", "command-a-03-2025"),
-        ("openrouter", "anthropic/claude-opus-4.6"),
+    for (model, expected) in [
+        (
+            "gemini-2.5-flash",
+            vec!["budget-max", "budget-min", "off", "on"],
+        ),
+        ("gemini-2.5-pro", vec!["budget-max", "budget-min"]),
+        (
+            "gemini-3-flash-preview",
+            vec!["high", "low", "medium", "minimal"],
+        ),
     ] {
-        let provider = &catalog.providers()[provider_id];
-        let credential = provider.credential_fields[0].clone();
-        let model = catalog.model(provider_id, model_id).unwrap();
-        if catalog.recipe(model).is_err() {
-            continue;
-        }
-        let entry = catalog
-            .build_generated(
-                model,
-                &BTreeMap::from([(credential, "catalog-super-secret".into())]),
-            )
-            .unwrap();
-        let capabilities = &entry.descriptor().capabilities;
+        let provider: ModelsDevProvider = toml::from_str(&format!(
+            r#"
+catalog_revision = "sha256:{MODELS_DEV_ARTIFACT_SHA256}"
+auth = {{ type = "credential_store" }}
+[models."{model}"]
+"#
+        ))
+        .unwrap();
+        let providers = BTreeMap::from([(
+            ProviderId::new("google").unwrap(),
+            ProviderDefinition::ModelsDev(provider),
+        )]);
+        let set = build_model_set(&providers, &catalog, None)
+            .unwrap_or_else(|error| panic!("{model}: {error}"));
         assert_eq!(
-            capabilities
-                .modalities
-                .input
-                .iter()
-                .map(|value| value.as_str())
+            set.entries()
+                .next()
+                .unwrap()
+                .1
+                .variants()
+                .keys()
+                .map(|id| id.as_str())
                 .collect::<Vec<_>>(),
-            ["text"]
+            expected
         );
-        assert_eq!(capabilities.cancellation, CancellationCapability::LocalOnly);
-        assert_eq!(capabilities.compaction, CompactionCapability::Unsupported);
-        assert_eq!(
-            capabilities.replay.capability,
-            ReplayCapability::Unsupported
-        );
-        assert!(!capabilities.features.contains(Capability::REASONING));
-        assert!(!capabilities.features.contains(Capability::PARALLEL_TOOLS));
-        assert!(
-            !capabilities
-                .features
-                .contains(Capability::TOOL_INPUT_DELTAS)
-        );
-        assert_eq!(
-            entry.defaults().max_output_tokens,
-            Some(model.limits.output.min(16_384))
-        );
-        assert_eq!(entry.defaults().top_p, None);
-        assert!(!format!("{entry:?}").contains("catalog-super-secret"));
     }
 }

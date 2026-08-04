@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use cookie_agent_engine::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, SessionToolContext, ToolCall,
-    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolResult, ToolSpec,
+    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
-use cookie_agent_protocol::ActionKind;
+use cookie_agent_protocol::{PermissionAction, PersistedToolResult as ToolResult};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -85,11 +85,12 @@ impl ToolProvider for WriteTool {
             fs_cap::PreparedTarget::Absent(target) => &target.display_path,
         };
         let (resources, policy_labels, external) = prepared_path_resources(
-            ActionKind::Write,
+            PermissionAction::Write,
             "file",
             display_path,
             &self.workspace,
             &binding,
+            false,
         )?;
         let serialization_key = target.serialization_bytes()?;
         let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
@@ -98,11 +99,11 @@ impl ToolProvider for WriteTool {
             &args,
             if external {
                 vec![
-                    (ActionKind::Write, "replace"),
-                    (ActionKind::ExternalDirectory, "guard"),
+                    (PermissionAction::Write, "replace"),
+                    (PermissionAction::ExternalDirectory, "guard"),
                 ]
             } else {
-                vec![(ActionKind::Write, "replace")]
+                vec![(PermissionAction::Write, "replace")]
             },
             resources,
             &context,
@@ -145,7 +146,7 @@ impl PreparedExecutor for WriteExecutor {
             }
         };
         Ok(ToolResult {
-            title: format!("Wrote {}", path.display()),
+            title: crate::safe_title(format!("Wrote {}", path.display())),
             output: format!("Wrote {} bytes to {}", self.bytes.len(), path.display()),
             metadata: serde_json::json!({"bytes":self.bytes.len(),"cleanup_warning":outcome.cleanup_warning}),
             truncation: None,

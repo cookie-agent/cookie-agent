@@ -1,18 +1,22 @@
 use std::collections::BTreeMap;
 
+use cookie_agent_models::{Catalog, ProviderDefinition, build_model_set};
+use cookie_agent_protocol::{ModelKey, ModelSelection, ProviderId};
 use oven_sdk::{AbortSignal, HistoryTurn, InputPart, Request, TextPart, UserMessage};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn completion_stream() -> String {
     concat!(
-        "data: {\"type\":\"response.created\",\"response\":{}}\n\n",
-        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg_fixture\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"pinned completion\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":4}}}\n\n"
+        "data: {\"id\":\"chat_fixture\",\"model\":\"fixture-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"pinned completion\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n",
+        "data: [DONE]\n\n"
     )
     .into()
 }
 
 #[tokio::test]
-async fn responses_fixture_captures_exact_request_and_pinned_completion() {
+async fn compatible_chat_fixture_captures_exact_request_and_pinned_completion() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind fixture server");
@@ -58,32 +62,53 @@ async fn responses_fixture_captures_exact_request_and_pinned_completion() {
             .expect("write response");
     });
 
-    let configured: cookie_agent_models::ConfiguredModel =
-        serde_json::from_value(serde_json::json!({
-            "provider_id":"openai",
-            "model_id":"fixture/model",
-            "endpoint":format!("http://{address}/v1"),
-            "auth":{"type":"openai","api_key":"fixture-secret"},
-            "capabilities":{
-                "features":[],
-                "limits":{},
-                "modalities":{"input":["text"],"output":["text"]},
-                "media":{"input":{}},
-                "cancellation":"local_only",
-                "compaction":"unsupported",
-                "replay":{"policy":"never","capability":"unsupported","reasoning":false}
-            },
-            "adaptor":"openai-responses",
-            "settings":{}
-        }))
-        .expect("configured model");
-    let model = configured.build("fixture").expect("model");
+    let provider: ProviderDefinition = serde_json::from_value(serde_json::json!({
+        "source":"explicit",
+        "endpoint":format!("http://{address}/v1"),
+        "auth":{"type":"bearer","token":"fixture-secret"},
+        "adaptor":"openai-compatible",
+        "models": {
+            "fixture-model": {
+                "display_name":"Fixture Model",
+                "capabilities":{
+                    "input":["text"],
+                    "output":["text"],
+                    "context_tokens":8192,
+                    "output_tokens":2048,
+                    "tool_calling":true,
+                    "parallel_tool_calls":true,
+                    "structured_output":false,
+                    "reasoning":false,
+                    "temperature":true,
+                    "top_p":true,
+                    "seed":true,
+                    "native_replay":"unsupported",
+                    "native_compaction":"unsupported",
+                    "cancellation":"local_only",
+                    "media":{}
+                }
+            }
+        }
+    }))
+    .expect("provider");
+    let providers = BTreeMap::from([(ProviderId::new("openai").expect("provider id"), provider)]);
+    let set = build_model_set(&providers, &Catalog::embedded().expect("catalog"), None)
+        .expect("model set");
+    let binding = set
+        .freeze(&ModelSelection {
+            model: "openai/fixture-model"
+                .parse::<ModelKey>()
+                .expect("model key"),
+            variant: None,
+        })
+        .expect("binding");
+    let model = set.resolve(&binding).expect("model");
     let completion = model
         .model()
         .complete(
-            Request::new(vec![HistoryTurn::user(UserMessage::new(vec![
-                InputPart::Text(TextPart::new("fixture prompt")),
-            ]))]),
+            model.prepare_request(Request::new(vec![HistoryTurn::user(UserMessage::new(
+                vec![InputPart::Text(TextPart::new("fixture prompt"))],
+            ))])),
             AbortSignal::default(),
         )
         .await
@@ -97,7 +122,7 @@ async fn responses_fixture_captures_exact_request_and_pinned_completion() {
         + 4;
     let headers = String::from_utf8(request[..header_end].to_vec()).expect("headers");
     let mut lines = headers.lines();
-    assert_eq!(lines.next(), Some("POST /v1/responses HTTP/1.1"));
+    assert_eq!(lines.next(), Some("POST /v1/chat/completions? HTTP/1.1"));
     let headers = lines
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned()))
@@ -114,14 +139,8 @@ async fn responses_fixture_captures_exact_request_and_pinned_completion() {
     assert_eq!(
         body,
         serde_json::json!({
-            "include":["reasoning.encrypted_content"],
-            "input":[{
-                "content":[{"text":"fixture prompt","type":"input_text"}],
-                "role":"user",
-                "type":"message"
-            }],
-            "model":"fixture/model",
-            "store":false,
+            "messages":[{"content":"fixture prompt","role":"user"}],
+            "model":"fixture-model",
             "stream":true,
             "tool_choice":"auto"
         })

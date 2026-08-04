@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use cookie_agent_protocol::{
     AgentListParams, AgentListResult, ApprovalListParams, ApprovalListResult,
     ApprovalRespondParams, ApprovalRespondResult, CatalogModelListParams, CatalogModelListResult,
-    CatalogProviderListParams, CatalogProviderListResult, ClientHello, Event, EventEnvelope,
+    CatalogProviderListParams, CatalogProviderListResult, ClientHello, EventPayload,
     EventSubscriptionMessage, EventsSubscribeParams, EventsSubscribeResult, JsonRpcError,
     JsonRpcId, ModelListParams, ModelListResult, Notification, OutputDelta, OutputGap,
     OutputSnapshotEnvelope, OutputStream, ProtocolVersion, ProviderConnectParams,
@@ -24,7 +24,7 @@ use cookie_agent_protocol::{
     RunStartResult, RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
     ServerHello, SessionCreateParams, SessionCreateResult, SessionId, SessionListParams,
     SessionListResult, SessionRenameParams, SessionRenameResult, SessionTreeParams,
-    SessionTreeResult, ToolCallId,
+    SessionTreeResult, StoredEvent, ToolCallId,
 };
 use cookie_agent_server::{MessageFrame, MessageStream, Server, TransportError, in_process_pair};
 use futures_util::{SinkExt, StreamExt};
@@ -60,7 +60,7 @@ pub enum ClientDelivery {
         session_id: SessionId,
         generation: u64,
         final_seq: u64,
-        event: Box<EventEnvelope>,
+        event: Box<StoredEvent>,
     },
     ReplayEnd {
         session_id: SessionId,
@@ -1098,7 +1098,7 @@ async fn handle_frame(
 
 async fn begin_replay(
     replay: ReplayRequest,
-    events: Vec<EventEnvelope>,
+    events: Vec<StoredEvent>,
     subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
     deliveries: &mpsc::UnboundedSender<ClientDelivery>,
     recovery: &Arc<RecoveryQueue>,
@@ -1139,8 +1139,8 @@ async fn begin_replay(
         rebuild: replay.rebuild,
     });
     for event in events {
-        if let Event::ToolCallStarted { tool_call_id, .. } = &event.event {
-            tool_sessions.insert(*tool_call_id, event.session_id);
+        if let EventPayload::ToolCallStarted { start } = &event.payload {
+            tool_sessions.insert(start.tool_call_id, event.session_id);
         }
         let _ = deliveries.send(ClientDelivery::ReplayEvent {
             session_id: replay.session_id,
@@ -1159,16 +1159,15 @@ async fn begin_replay(
     .await;
 }
 
-fn active_tools(events: &[EventEnvelope]) -> HashSet<ToolCallId> {
+fn active_tools(events: &[StoredEvent]) -> HashSet<ToolCallId> {
     let mut tools = HashSet::new();
     for event in events {
-        match &event.event {
-            Event::ToolCallStarted { tool_call_id, .. } => {
-                tools.insert(*tool_call_id);
+        match &event.payload {
+            EventPayload::ToolCallStarted { start } => {
+                tools.insert(start.tool_call_id);
             }
-            Event::ToolCallCompleted { tool_call_id, .. }
-            | Event::ToolCallFailed { tool_call_id, .. } => {
-                tools.remove(tool_call_id);
+            EventPayload::ToolCallTerminated { termination } => {
+                tools.remove(&termination.tool_call_id);
             }
             _ => {}
         }
@@ -1185,8 +1184,8 @@ async fn route_live(
 ) {
     let session_id = match &message {
         EventSubscriptionMessage::Event { event } => {
-            if let Event::ToolCallStarted { tool_call_id, .. } = &event.event {
-                tool_sessions.insert(*tool_call_id, event.session_id);
+            if let EventPayload::ToolCallStarted { start } = &event.payload {
+                tool_sessions.insert(start.tool_call_id, event.session_id);
             }
             event.session_id
         }
@@ -1339,8 +1338,8 @@ async fn finish_ready_replay(
             if event.seq <= final_seq {
                 continue;
             }
-            if let Event::ToolCallStarted { tool_call_id, .. } = &event.event {
-                tool_sessions.insert(*tool_call_id, event.session_id);
+            if let EventPayload::ToolCallStarted { start } = &event.payload {
+                tool_sessions.insert(start.tool_call_id, event.session_id);
             }
         }
         let _ = deliveries.send(delivery);
@@ -1473,14 +1472,15 @@ mod tests {
         assert!(authenticated_request("ws://127.0.0.1:7419/ws", "sentinel-secret").is_err());
     }
 
-    fn event(session_id: SessionId, seq: u64) -> EventEnvelope {
-        EventEnvelope {
-            schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+    fn event(session_id: SessionId, seq: u64) -> StoredEvent {
+        StoredEvent {
+            event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
             session_id,
-            run_id: None,
+            run_id: Some(cookie_agent_protocol::RunId::new_v7()),
             seq,
             timestamp: Timestamp::now(),
-            event: Event::TextDelta {
+            payload: EventPayload::TextDelta {
+                attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
                 text: seq.to_string(),
             },
         }
@@ -1528,7 +1528,7 @@ mod tests {
 
         route_live(
             EventSubscriptionMessage::Event {
-                event: event(session_id, 2),
+                event: Box::new(event(session_id, 2)),
             },
             &deliveries,
             &subscriptions,
@@ -1562,7 +1562,7 @@ mod tests {
         );
         route_live(
             EventSubscriptionMessage::Event {
-                event: event(session_id, 3),
+                event: Box::new(event(session_id, 3)),
             },
             &deliveries,
             &subscriptions,
@@ -1687,8 +1687,16 @@ mod tests {
                     tokio::time::timeout(
                         Duration::from_millis(5),
                         client.create_session(SessionCreateParams {
-                            cwd: "/workspace".into(),
-                            profile: "primary".into(),
+                            selection: cookie_agent_protocol::RunSelection {
+                                agent: cookie_agent_protocol::AgentId::new("primary")
+                                    .expect("agent id"),
+                                model: cookie_agent_protocol::ModelSelection {
+                                    model: "gateway/arbitrary-model"
+                                        .parse::<cookie_agent_protocol::ModelKey>()
+                                        .expect("model key"),
+                                    variant: None,
+                                },
+                            },
                         }),
                     )
                     .await
@@ -1743,7 +1751,16 @@ mod tests {
             .send(MessageFrame::Value(serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": request["id"],
-                "result": { "agents": [] },
+                "result": {
+                    "revision": cookie_agent_protocol::SnapshotRevision::new(
+                        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    ).expect("snapshot revision"),
+                    "model_revision": cookie_agent_protocol::SnapshotRevision::new(
+                        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    ).expect("snapshot revision"),
+                    "generated_at": jiff::Timestamp::now(),
+                    "agents": []
+                },
             })))
             .expect("agent.list response");
         assert!(
@@ -1778,12 +1795,17 @@ mod tests {
             async move {
                 client
                     .connect_provider(ProviderConnectParams {
-                        client_connect_id: "connect-test".into(),
-                        provider_id: "test".into(),
-                        catalog_revision: "catalog-test".into(),
+                        client_connect_id: cookie_agent_protocol::ClientConnectId::new(
+                            "connect-test",
+                        )
+                        .expect("client connect id"),
+                        provider_id: cookie_agent_protocol::ProviderId::new("test")
+                            .expect("provider id"),
+                        catalog_revision: cookie_agent_protocol::CatalogRevision::current(),
                         credentials: cookie_agent_protocol::ProviderCredentials {
                             values: std::collections::BTreeMap::from([(
-                                "API_KEY".into(),
+                                cookie_agent_protocol::CredentialFieldName::new("API_KEY")
+                                    .expect("credential field"),
                                 "sentinel-secret".into(),
                             )]),
                         },
@@ -1847,12 +1869,14 @@ mod tests {
         let source_before = PROVIDER_CONNECT_WIPE_COUNT.load(Ordering::Relaxed);
         let client = Client::connect_stream(ClosingStream);
         let connect = client.connect_provider(ProviderConnectParams {
-            client_connect_id: "unpolled".into(),
-            provider_id: "test".into(),
-            catalog_revision: "catalog-test".into(),
+            client_connect_id: cookie_agent_protocol::ClientConnectId::new("unpolled")
+                .expect("client connect id"),
+            provider_id: cookie_agent_protocol::ProviderId::new("test").expect("provider id"),
+            catalog_revision: cookie_agent_protocol::CatalogRevision::current(),
             credentials: cookie_agent_protocol::ProviderCredentials {
                 values: std::collections::BTreeMap::from([(
-                    "API_KEY".into(),
+                    cookie_agent_protocol::CredentialFieldName::new("API_KEY")
+                        .expect("credential field"),
                     "sentinel-secret".into(),
                 )]),
             },
@@ -1874,7 +1898,7 @@ mod tests {
         for seq in [11, 13] {
             route_live(
                 EventSubscriptionMessage::Event {
-                    event: event(session_id, seq),
+                    event: Box::new(event(session_id, seq)),
                 },
                 &deliveries,
                 &subscriptions,
@@ -1995,18 +2019,45 @@ mod tests {
         let (deliveries, mut receiver) = delivery_channel();
         let (recovery, _recovery_receiver) = recovery();
         let mut tools = HashMap::new();
-        let started = EventEnvelope {
-            schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+        let started = StoredEvent {
+            event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
             session_id,
-            run_id: None,
+            run_id: Some(cookie_agent_protocol::RunId::new_v7()),
             seq: 1,
             timestamp: Timestamp::now(),
-            event: Event::ToolCallStarted {
-                tool_call_id: call_id,
-                model_call_id: "model-call".into(),
-                provider_item_id: None,
-                tool: "bash".into(),
-                arguments: serde_json::json!({}),
+            payload: EventPayload::ToolCallStarted {
+                start: cookie_agent_protocol::ToolCallStart {
+                    tool_call_id: call_id,
+                    owner: cookie_agent_protocol::AssistantToolCallRef {
+                        model_turn_seq: 1,
+                        content_index: 0,
+                        model_call_id: cookie_agent_protocol::ModelCallId::new("model-call")
+                            .expect("model call id"),
+                        provider_item_id: None,
+                    },
+                    presentation: cookie_agent_protocol::ToolCallPresentation {
+                        title: cookie_agent_protocol::SafeDisplayText::new("bash")
+                            .expect("presentation title"),
+                        primary_argument: None,
+                    },
+                    operation_fingerprint:
+                        cookie_agent_protocol::OperationFingerprint::from_prepared_operation(
+                            &cookie_agent_protocol::PreparedOperationIdentity::new(
+                                cookie_agent_protocol::Sha256Digest::of_bytes(b"arguments"),
+                                vec![cookie_agent_protocol::ApprovalCapability {
+                                    action: cookie_agent_protocol::PermissionAction::Bash,
+                                    operation:
+                                        cookie_agent_protocol::PreparedCapabilityOperation::new(
+                                            "execute",
+                                        )
+                                        .expect("capability operation"),
+                                }],
+                                Vec::new(),
+                                cookie_agent_protocol::Sha256Digest::of_bytes(b"context"),
+                            )
+                            .expect("prepared operation"),
+                        ),
+                },
             },
         };
         begin_replay(
@@ -2067,7 +2118,7 @@ mod tests {
         let (recovery, mut receiver) = recovery();
         route_live(
             EventSubscriptionMessage::Event {
-                event: event(session_id, 2),
+                event: Box::new(event(session_id, 2)),
             },
             &deliveries,
             &subscriptions,

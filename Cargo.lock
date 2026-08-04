@@ -499,9 +499,14 @@ dependencies = [
  "cookie_agent_server",
  "cookie_agent_tools",
  "cookie_agent_tui",
+ "futures-util",
  "libc",
+ "serde",
+ "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tracing-subscriber",
+ "url",
  "uuid",
  "zeroize",
 ]
@@ -510,12 +515,17 @@ dependencies = [
 name = "cookie_agent_config"
 version = "0.1.0"
 dependencies = [
+ "cookie_agent_identity",
  "cookie_agent_models",
- "figment",
+ "cookie_agent_protocol",
  "insta",
+ "libc",
  "oven-sdk",
+ "rustix",
  "serde",
  "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.19",
  "toml",
@@ -553,10 +563,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cookie_agent_identity"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "ts-rs",
+]
+
+[[package]]
 name = "cookie_agent_models"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "cookie_agent_identity",
  "futures-util",
  "http",
  "jiff",
@@ -579,18 +601,23 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "toml",
+ "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
 name = "cookie_agent_protocol"
 version = "0.1.0"
 dependencies = [
+ "cookie_agent_identity",
  "insta",
  "jiff",
+ "oven-sdk",
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "ts-rs",
  "uuid",
 ]
@@ -629,7 +656,6 @@ name = "cookie_agent_tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "cookie_agent_config",
  "cookie_agent_engine",
  "cookie_agent_models",
  "cookie_agent_protocol",
@@ -645,6 +671,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tree-sitter",
  "tree-sitter-bash",
 ]
 
@@ -1051,19 +1078,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
 dependencies = [
  "simd-adler32",
-]
-
-[[package]]
-name = "figment"
-version = "0.10.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8cb01cd46b0cf372153850f4c6c272d9cbea2da513e07538405148f95bd789f3"
-dependencies = [
- "atomic",
- "serde",
- "toml",
- "uncased",
- "version_check",
 ]
 
 [[package]]
@@ -3100,6 +3114,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_yaml"
+version = "0.9.34+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3889,15 +3916,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2896d95c02a80c6d6a5d6e953d479f5ddf2dfdb6a244441010e373ac0fb88971"
 
 [[package]]
-name = "uncased"
-version = "0.9.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1b88fcfe09e89d3866a5c11019378088af2d24c3fbd4f0543f96b479ec90697"
-dependencies = [
- "version_check",
-]
-
-[[package]]
 name = "unicase"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3952,6 +3970,12 @@ name = "unicode-width"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

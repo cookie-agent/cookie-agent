@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionChildrenParams",
+  "type": "object",
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id"
+  ]
+}

@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use cookie_agent_engine::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProvider, ToolResult, ToolSpec, approved_media_type,
+    ToolPreparationContext, ToolProvider, ToolSpec, approved_media_type,
 };
-use cookie_agent_protocol::ActionKind;
+use cookie_agent_protocol::{PermissionAction, PersistedToolResult as ToolResult};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -81,7 +81,7 @@ impl ToolProvider for ReadTool {
         let target = fs_cap::prepare_existing(&ctx.cwd, std::path::Path::new(&args.file_path))?;
         let binding = target.manifest_bytes()?;
         let (resources, policy_labels, external) = prepared_path_resources(
-            ActionKind::Read,
+            PermissionAction::Read,
             if target.directory {
                 "directory"
             } else {
@@ -90,6 +90,7 @@ impl ToolProvider for ReadTool {
             &target.display_path,
             &self.workspace,
             &binding,
+            target.directory,
         )?;
         let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
         let operation = prepared_operation(
@@ -97,11 +98,11 @@ impl ToolProvider for ReadTool {
             &args,
             if external {
                 vec![
-                    (ActionKind::Read, "read"),
-                    (ActionKind::ExternalDirectory, "guard"),
+                    (PermissionAction::Read, "read"),
+                    (PermissionAction::ExternalDirectory, "guard"),
                 ]
             } else {
-                vec![(ActionKind::Read, "read")]
+                vec![(PermissionAction::Read, "read")]
             },
             resources,
             &context,
@@ -171,7 +172,10 @@ impl PreparedExecutor for ReadExecutor {
             }
             output.push_str("</entries>");
             return Ok(ToolResult {
-                title: format!("Read directory {}", self.target.display_path.display()),
+                title: crate::safe_title(format!(
+                    "Read directory {}",
+                    self.target.display_path.display()
+                )),
                 output,
                 metadata: serde_json::json!({"kind":"directory","shown":page.len(),"total_entries":entries.len()}),
                 truncation: None,
@@ -189,7 +193,10 @@ impl PreparedExecutor for ReadExecutor {
                 &bytes,
             )?;
             return Ok(ToolResult {
-                title: format!("Read attachment {}", self.target.display_path.display()),
+                title: crate::safe_title(format!(
+                    "Read attachment {}",
+                    self.target.display_path.display()
+                )),
                 output: format!("Attached {mime} ({} bytes).", bytes.len()),
                 metadata: serde_json::json!({"kind":"attachment","mime_type":mime,"sha256":attachment.sha256}),
                 truncation: None,
@@ -219,7 +226,7 @@ impl PreparedExecutor for ReadExecutor {
         }
         output.push_str("</content>");
         Ok(ToolResult {
-            title: format!("Read file {}", self.target.display_path.display()),
+            title: crate::safe_title(format!("Read file {}", self.target.display_path.display())),
             output,
             metadata: serde_json::json!({"kind":"text","offset":self.offset,"limit":self.limit,"total_lines":lines.len()}),
             truncation: None,
@@ -234,7 +241,8 @@ mod tests {
 
     use cookie_agent_engine::{ToolCall, ToolPreparationContext, ToolProvider};
     use cookie_agent_protocol::{
-        ActionKind, ApprovalResourceSource, OperationFingerprint, RunId, SessionId, ToolCallId,
+        ApprovalResourceSource, OperationFingerprint, PermissionAction, RunId, SessionId,
+        ToolCallId,
     };
 
     use super::ReadTool;
@@ -292,12 +300,30 @@ mod tests {
                 .operation()
                 .capabilities()
                 .iter()
-                .any(|capability| capability.action == ActionKind::ExternalDirectory)
+                .any(|capability| capability.action == PermissionAction::ExternalDirectory)
         );
         assert!(prepared.operation().resources().iter().any(|resource| {
-            resource.capability == ActionKind::ExternalDirectory
+            resource.capability == PermissionAction::ExternalDirectory
                 && resource.source == ApprovalResourceSource::ExternalDirectoryGuard
         }));
+        let boundary = format!(
+            "{}/*",
+            external.path().parent().expect("external parent").display()
+        );
+        assert_eq!(prepared.policy_labels()[0], boundary);
+        assert_eq!(
+            prepared.policy_labels()[1],
+            external.path().display().to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_read_label_is_canonical_workspace_relative() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        fs::create_dir(workspace.path().join("nested")).expect("nested");
+        fs::write(workspace.path().join("nested/value.txt"), "value").expect("fixture");
+        let prepared = prepared(workspace.path(), "nested/value.txt").await;
+        assert_eq!(prepared.policy_labels(), ["nested/value.txt"]);
     }
 
     #[cfg(unix)]

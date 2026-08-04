@@ -1,0 +1,23 @@
+---
+source: crates/protocol/src/tests.rs
+expression: value
+---
+{
+  "snapshot": {
+    "revision": "sha256:d65af0b058204954f6b08af537fa13e91f251c618d69d8c20a2d5915731d482a",
+    "source": "https://github.com/anomalyco/models.dev@c3057690bbb8bd41cafdefadcd2a7b958e2a4642",
+    "fetched_at": "2026-08-01T17:34:27Z"
+  },
+  "providers": [
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "credential_fields": [
+        "OPENAI_API_KEY"
+      ],
+      "npm": "@ai-sdk/openai",
+      "api": "https://api.openai.com/v1",
+      "documentation_url": "https://platform.openai.com/docs"
+    }
+  ]
+}

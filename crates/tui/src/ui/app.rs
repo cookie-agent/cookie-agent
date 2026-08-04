@@ -4,7 +4,6 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt::Write as _,
     io,
-    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -12,12 +11,14 @@ use std::{
 use anyhow::Context;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
-    AgentDescriptor, AgentListParams, AgentType, ApprovalListParams, ApprovalListResult,
+    AgentDescriptor, AgentId, AgentListParams, ApprovalListParams, ApprovalListResult,
     ApprovalRespondError, ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus,
-    ApprovalUserDecision, CatalogProvider, CatalogProviderListParams, Event, ModelListParams,
-    ProviderConnectParams, ProviderCredentials, RunCancelParams, RunStartParams, RunSteerParams,
-    RunToolStdinParams, SessionCreateParams, SessionId, SessionListParams, SessionMeta,
-    SessionTitle, SessionTree, SessionTreeParams,
+    ApprovalUserDecision, AvailableModelDescriptor, CatalogProvider, CatalogProviderListParams,
+    ClientConnectId, ClientResponseId, ClientRunId, CredentialFieldName, EventPayload, ModelKey,
+    ModelListParams, ModelSelection, ProviderConnectParams, ProviderCredentials, RunCancelParams,
+    RunSelection, RunStartParams, RunSteerParams, RunToolStdinParams, SessionCreateParams,
+    SessionId, SessionListParams, SessionMeta, SessionTitle, SessionTitleChange, SessionTree,
+    SessionTreeParams, VariantId,
 };
 use crossterm::{
     event::{
@@ -36,6 +37,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListState, Paragraph, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -60,7 +62,6 @@ use super::slash::{
     CommandSpec, InputMode, ScrollCommand, SlashCommand, Submission, command_allowed_in_mode,
     command_help, command_mode_name, command_name, move_selection, parse_submission,
 };
-use super::terminal_layout;
 use super::transcript::{
     BlockHit, BlockId, ConversationScroll, LayoutCache, ScrollbarGeometry, wrapped_line,
 };
@@ -69,7 +70,9 @@ use super::transcript::{
 pub(super) enum Modal {
     None,
     Sessions,
-    Profiles,
+    Agents,
+    Models,
+    Variants,
     ConnectProviders,
     ConnectCredentials,
     ConnectConfirm,
@@ -106,6 +109,20 @@ pub(super) struct PaletteRowHit {
     pub(super) index: usize,
 }
 
+/// A clickable agent/model/variant segment inside the Message title.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TitleSegmentHit {
+    pub(super) rect: Rect,
+    pub(super) segment: TitleSegment,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TitleSegment {
+    Agent,
+    Model,
+    Variant,
+}
+
 /// A captured scrollbar thumb drag. The row offset where the press grabbed
 /// the thumb is kept so dragging stays anchored even outside the track.
 #[derive(Clone, Copy, Debug)]
@@ -130,6 +147,7 @@ pub(super) struct UiHitMap {
     pub(super) palette_rows: Vec<PaletteRowHit>,
     pub(super) approval_actions: Vec<ApprovalHit>,
     pub(super) approval: Option<Rect>,
+    pub(super) title_segments: Vec<TitleSegmentHit>,
 }
 
 fn is_printable_key(key: KeyEvent) -> bool {
@@ -160,11 +178,18 @@ pub struct App {
     pub store: StateStore,
     pub(super) sessions: Vec<SessionMeta>,
     pub(super) agents: Vec<AgentDescriptor>,
+    /// Revision of the current agent descriptor snapshot; refreshed
+    /// coherently with the model revision.
+    pub(super) agent_revision: Option<cookie_agent_protocol::SnapshotRevision>,
+    pub(super) models: Vec<AvailableModelDescriptor>,
+    /// Revision of the current model descriptor snapshot.
+    pub(super) model_revision: Option<cookie_agent_protocol::SnapshotRevision>,
     pub(super) providers: Vec<CatalogProvider>,
-    pub(super) catalog_revision: Option<String>,
-    pub(super) draft_agent_profile: Option<String>,
+    pub(super) catalog_revision: Option<cookie_agent_protocol::CatalogRevision>,
+    /// Client-local draft selection; never alters an active run.
+    pub(super) draft: Option<RunSelection>,
     pub(super) connect_provider: Option<CatalogProvider>,
-    pub(super) connect_fields: Vec<(String, CredentialInput)>,
+    pub(super) connect_fields: Vec<(CredentialFieldName, CredentialInput)>,
     pub(super) connect_field_index: usize,
     pub(super) connect_task: Option<tokio::task::JoinHandle<()>>,
     pub(super) tree: Option<SessionTree>,
@@ -212,6 +237,10 @@ pub struct App {
     pub(super) stdin_target: Option<cookie_agent_protocol::ToolCallId>,
     pub(super) status: String,
     pub(super) should_quit: bool,
+    /// Latest authoritative title sequence per session: patches apply only a
+    /// strictly newer sequence, so stale tree/list responses cannot
+    /// overwrite a newer title event.
+    pub(super) title_sequences: HashMap<SessionId, u64>,
 }
 
 pub(super) enum RpcUpdate {
@@ -296,8 +325,8 @@ pub(super) enum ConnectOutcome {
         error: String,
     },
     Connected {
-        provider_id: String,
-        receipt_model_revision: String,
+        provider_id: cookie_agent_protocol::ProviderId,
+        receipt_model_revision: cookie_agent_protocol::SnapshotRevision,
         follow_up: Box<ConnectFollowUp>,
     },
 }
@@ -306,30 +335,27 @@ pub(super) enum ConnectFollowUp {
     ModelRefreshFailed {
         error: String,
     },
+    /// The refreshed pair failed the revision comparison after a bounded
+    /// retry; the prior coherent pair is retained and no session is created.
+    Incoherent {
+        model_revision: cookie_agent_protocol::SnapshotRevision,
+        agent_model_revision: cookie_agent_protocol::SnapshotRevision,
+    },
     AgentRefreshFailed {
-        model_revision: String,
+        model_revision: cookie_agent_protocol::SnapshotRevision,
         model_count: usize,
         error: String,
     },
-    NoProfiles {
-        model_revision: String,
-        model_count: usize,
-    },
-    NoRunnableProfiles {
-        agents: Vec<AgentDescriptor>,
-        model_revision: String,
-        model_count: usize,
-    },
-    Ready {
-        agents: Vec<AgentDescriptor>,
-        model_revision: String,
-        model_count: usize,
+    /// The complete refreshed pair, retained whole for the atomic
+    /// coherent-pair install and revision comparison.
+    Refreshed {
+        models: Box<cookie_agent_protocol::ModelListResult>,
+        agents: Box<cookie_agent_protocol::AgentListResult>,
         created: Option<Box<SessionMeta>>,
     },
     InitialSessionFailed {
-        agents: Vec<AgentDescriptor>,
-        model_revision: String,
-        model_count: usize,
+        models: Box<cookie_agent_protocol::ModelListResult>,
+        agents: Box<cookie_agent_protocol::AgentListResult>,
         error: String,
     },
 }
@@ -376,9 +402,12 @@ impl App {
             store: StateStore::default(),
             sessions: Vec::new(),
             agents: Vec::new(),
+            agent_revision: None,
+            models: Vec::new(),
+            model_revision: None,
             providers: Vec::new(),
             catalog_revision: None,
-            draft_agent_profile: None,
+            draft: None,
             connect_provider: None,
             connect_fields: Vec::new(),
             connect_field_index: 0,
@@ -426,18 +455,19 @@ impl App {
             stdin_target: None,
             status: "Connected. Type /help for commands.".into(),
             should_quit: false,
+            title_sequences: HashMap::new(),
         };
         app.refresh_lists().await;
         if create_new_session {
             app.create_startup_session().await;
-        } else if let Some(session_id) = app.sessions.first().map(|session| session.id) {
+        } else if let Some(session_id) = app.sessions.first().map(|session| session.session_id) {
             app.open_session(session_id).await;
         }
-        if app.draft_agent_profile.is_none() {
-            app.draft_agent_profile = app.default_agent_profile();
+        if app.draft.is_none() {
+            app.draft = app.default_draft_selection();
         }
         if app.selectable_agents().is_empty() {
-            app.draft_agent_profile = None;
+            app.draft = None;
             app.status = app.setup_status();
         }
         Ok(app)
@@ -450,28 +480,60 @@ impl App {
     }
 
     async fn create_startup_session(&mut self) {
-        let Some(profile) = self.default_agent_profile() else {
+        let Some(selection) = self.default_draft_selection() else {
             self.status = self.setup_status();
             return;
         };
+        let agent = selection.agent.clone();
         match self
             .client
-            .create_session(SessionCreateParams {
-                cwd: current_dir(),
-                profile: profile.clone(),
-            })
+            .create_session(SessionCreateParams { selection })
             .await
         {
             Ok(result) => {
-                let session_id = result.session.id;
+                let session_id = result.session.session_id;
+                self.note_title_sequence(&result.session);
                 self.sessions.push(result.session);
                 self.open_session(session_id).await;
-                self.status = format!(
-                    "New root session opened with agent {profile}. Type /help for commands."
-                );
+                self.status =
+                    format!("New root session opened with agent {agent}. Type /help for commands.");
             }
             Err(error) => self.status = error.to_string(),
         }
+    }
+
+    /// Record the authoritative title sequence from a session meta patch.
+    pub(super) fn note_title_sequence(&mut self, session: &SessionMeta) {
+        let known = self.title_sequences.entry(session.session_id).or_insert(0);
+        *known = (*known).max(session.title_updated_seq);
+    }
+
+    /// Merge one session meta patch: strictly newer title sequences win; a
+    /// stale patch retains the newer known title and never overwrites it.
+    pub(super) fn merge_session_meta(&mut self, session: SessionMeta) -> SessionMeta {
+        let known = self
+            .title_sequences
+            .get(&session.session_id)
+            .copied()
+            .unwrap_or(0);
+        let mut session = session;
+        if session.title_updated_seq < known
+            && let Some(current) = self
+                .sessions
+                .iter()
+                .find(|existing| existing.session_id == session.session_id)
+                .or_else(|| {
+                    self.tree
+                        .as_ref()
+                        .and_then(|tree| find_session(tree, session.session_id))
+                })
+                .cloned()
+        {
+            session.title = current.title;
+            session.title_updated_seq = known;
+        }
+        self.note_title_sequence(&session);
+        session
     }
 
     pub(super) fn take_deliveries(
@@ -527,13 +589,17 @@ impl App {
             .list_sessions(SessionListParams::default())
             .await
         {
-            Ok(result) => self.sessions = result.sessions,
+            Ok(result) => {
+                self.sessions = result
+                    .sessions
+                    .into_iter()
+                    .map(|session| self.merge_session_meta(session))
+                    .collect();
+            }
             Err(error) => self.status = error.to_string(),
         }
-        match self.client.list_agents(AgentListParams::default()).await {
-            Ok(result) => self.agents = result.agents,
-            Err(error) => self.status = error.to_string(),
-        }
+        self.refresh_coherent_lists().await;
+        self.revalidate_draft();
         match self
             .client
             .list_catalog_providers(CatalogProviderListParams {})
@@ -547,106 +613,407 @@ impl App {
         }
     }
 
-    fn selectable_agents(&self) -> Vec<&AgentDescriptor> {
-        self.user_agents()
-            .into_iter()
-            .filter(|agent| agent.enabled)
-            .collect()
-    }
-
-    fn user_agents(&self) -> Vec<&AgentDescriptor> {
-        self.agents
-            .iter()
-            .filter(|agent| matches!(agent.agent_type, AgentType::Primary | AgentType::All))
-            .collect()
-    }
-
-    fn default_agent_profile(&self) -> Option<String> {
-        let agents = self.selectable_agents();
-        agents
-            .iter()
-            .find(|agent| agent.name == "primary")
-            .or_else(|| agents.first())
-            .map(|agent| agent.name.clone())
-    }
-
-    fn setup_status(&self) -> String {
-        if self.user_agents().is_empty() {
-            "No user-selectable agent profiles are configured; no session was created. Configure a primary/all profile, then restart or connect a provider."
-                .into()
-        } else {
-            "No runnable agent profile is available; no session was created. Connect a provider for unresolved models or enable a configured primary/all profile."
-                .into()
+    /// Refresh model and agent descriptors as one coherent snapshot: models
+    /// (and their variants) are applied first, then agents, atomically, and
+    /// only when `agent.list`'s model revision equals `model.list`'s
+    /// revision. A mismatched pair is retried once against the current
+    /// snapshot; a still-mismatched pair is discarded whole, leaving the
+    /// previous coherent descriptors intact.
+    pub(super) async fn refresh_coherent_lists(&mut self) {
+        for attempt in 0..2 {
+            let models = match self.client.list_models(ModelListParams {}).await {
+                Ok(result) => result,
+                Err(error) => {
+                    self.status = error.to_string();
+                    return;
+                }
+            };
+            let agents = match self.client.list_agents(AgentListParams::default()).await {
+                Ok(result) => result,
+                Err(error) => {
+                    self.status = error.to_string();
+                    return;
+                }
+            };
+            if agents.model_revision == models.revision {
+                self.install_coherent_pair(models, agents);
+                return;
+            }
+            if attempt == 0 {
+                continue;
+            }
+            self.status = format!(
+                "discarded an incoherent descriptor pair (agents resolved against {} but models are at {}); keeping the previous coherent snapshot",
+                agents.model_revision, models.revision
+            );
         }
     }
 
-    pub(super) fn selected_session_profile(&self) -> Option<&str> {
+    /// Root-selectable agents: exactly the descriptors with
+    /// `runnable_as_root = true`.
+    pub(super) fn selectable_agents(&self) -> Vec<&AgentDescriptor> {
+        self.agents
+            .iter()
+            .filter(|agent| agent.runnable_as_root)
+            .collect()
+    }
+
+    pub(super) fn default_draft_selection(&self) -> Option<RunSelection> {
+        let agents = self.selectable_agents();
+        let agent = agents
+            .iter()
+            .find(|agent| agent.id.as_str() == "primary")
+            .or_else(|| agents.first())?;
+        let model = agent.resolved_fallback.first()?.clone();
+        Some(RunSelection {
+            agent: agent.id.clone(),
+            model,
+        })
+    }
+
+    /// The metadata of the currently watched session, from the session list
+    /// or the delegation tree.
+    pub(super) fn selected_session_meta(&self) -> Option<&SessionMeta> {
         let session_id = self.selected?;
         self.sessions
             .iter()
-            .find(|session| session.id == session_id)
+            .find(|session| session.session_id == session_id)
             .or_else(|| {
                 self.tree
                     .as_ref()
                     .and_then(|tree| find_session(tree, session_id))
             })
-            .map(|session| session.profile.name.as_str())
     }
 
-    fn draft_profile(&self) -> Option<&str> {
-        self.draft_agent_profile
-            .as_deref()
-            .or_else(|| self.selected_session_profile())
+    /// True while the watched session is a delegation root. Root sessions may
+    /// draft/select any currently root-runnable primary/all agent between
+    /// runs; delegated sessions are pinned to their frozen child agent.
+    pub(super) fn watching_root_session(&self) -> bool {
+        self.selected_session_meta()
+            .is_none_or(|meta| matches!(meta.origin, cookie_agent_protocol::SessionOrigin::Root))
     }
 
-    fn accepted_run_profile(&self) -> Option<&str> {
+    /// Agent switching is allowed only for root sessions; delegated
+    /// sessions are pinned to their frozen child agent. This gate is
+    /// independent of the active run: draft changes affect the next run
+    /// only, and active-run attribution stays frozen.
+    pub(super) fn agent_switching_allowed(&self) -> bool {
+        self.watching_root_session()
+    }
+
+    /// Model/variant draft changes are allowed whenever a draft exists —
+    /// for delegated sessions within their frozen agent's fallback chain.
+    /// This gate is independent of the active run.
+    pub(super) fn model_selection_allowed(&self) -> bool {
+        self.draft.is_some()
+    }
+
+    /// The frozen child agent a delegated session is pinned to, and the
+    /// non-color reason the selector stays disabled.
+    pub(super) fn delegated_pin_reason(&self) -> Option<String> {
+        let meta = self.selected_session_meta()?;
+        if matches!(meta.origin, cookie_agent_protocol::SessionOrigin::Root) {
+            return None;
+        }
+        Some(format!(
+            "delegated session pinned to frozen child agent {}",
+            meta.creation_selection.agent
+        ))
+    }
+
+    /// Open a draft selector modal when allowed; otherwise surface the exact
+    /// non-color reason it stays disabled. Agent switching is root-only;
+    /// model/variant selection stays available for delegated sessions inside
+    /// their frozen agent's fallback chain. Neither is run-gated: drafts
+    /// affect the next run only.
+    pub(super) fn open_selection_modal(&mut self, modal: Modal) {
+        match modal {
+            Modal::Agents if !self.agent_switching_allowed() => {
+                self.status = self
+                    .delegated_pin_reason()
+                    .unwrap_or_else(|| "agent switching requires a root session".into());
+            }
+            Modal::Models | Modal::Variants if !self.model_selection_allowed() => {
+                self.status = "no draft model is available for this session".into();
+            }
+            _ => {
+                self.picker_state.select(Some(0));
+                self.modal = modal;
+            }
+        }
+    }
+
+    /// Revalidate the draft against the current coherent descriptor
+    /// revisions: a draft agent/model that disappeared from the newest
+    /// snapshot resets to the default selection. The producing agent of an
+    /// active run is never reinterpreted.
+    pub(super) fn revalidate_draft(&mut self) {
+        if !self.agent_switching_allowed() {
+            return;
+        }
+        let draft_valid = self.draft.as_ref().is_some_and(|draft| {
+            self.agents.iter().any(|agent| {
+                agent.runnable_as_root
+                    && agent.id == draft.agent
+                    && agent
+                        .resolved_fallback
+                        .iter()
+                        .any(|selection| selection.model == draft.model.model)
+            })
+        });
+        if !draft_valid {
+            self.draft = self.default_draft_selection();
+        }
+    }
+
+    fn setup_status(&self) -> String {
+        if self.agents.is_empty() {
+            "No agents are configured; no session was created. Add an agent document, then restart or connect a provider."
+                .into()
+        } else {
+            "No root-runnable agent is available; no session was created. Connect a provider for unresolved models or enable an agent with its own fallback chain."
+                .into()
+        }
+    }
+
+    fn draft_model_selection(
+        &self,
+        agent: &AgentDescriptor,
+        model: &ModelKey,
+    ) -> Option<ModelSelection> {
+        agent
+            .resolved_fallback
+            .iter()
+            .find(|selection| &selection.model == model)
+            .cloned()
+    }
+
+    fn model_descriptor(&self, key: &ModelKey) -> Option<&AvailableModelDescriptor> {
+        self.models.iter().find(|model| &model.key == key)
+    }
+
+    /// The authoritative exact selections for the watched delegated
+    /// session: the retained `RunStarted.selected_suffix` directly (after
+    /// any run-selection head-variant override), falling back to the
+    /// creation snapshot's resolved suffix only before any run. Empty-chain
+    /// inherited children carry the inherited exact suffix frozen at
+    /// delegation admission. Live descriptors are never consulted.
+    fn persisted_chain(&self) -> Option<Vec<ModelSelection>> {
+        if self.watching_root_session() {
+            return None;
+        }
+        let session_id = self.selected?;
+        let state = self.store.sessions.get(&session_id)?;
+        if let Some(suffix) = &state.run_selected_suffix {
+            return Some(
+                suffix
+                    .iter()
+                    .map(|binding| binding.resolved.selection.clone())
+                    .collect(),
+            );
+        }
+        let snapshot = state.creation_agent.as_ref()?;
+        let start = snapshot.selected_suffix_start as usize;
+        Some(
+            snapshot
+                .fallback_chain
+                .get(start..)
+                .unwrap_or(&snapshot.fallback_chain)
+                .iter()
+                .map(|binding| binding.resolved.selection.clone())
+                .collect(),
+        )
+    }
+
+    /// The variants a delegated variant selector may expose for one model:
+    /// exactly the variants present as exact persisted selections for that
+    /// model in the authoritative suffix (usually exactly one). Live
+    /// `AvailableModelDescriptor` options are never consulted, so retained
+    /// selections survive provider refresh and new live variants never
+    /// appear.
+    pub(super) fn persisted_variants_for(&self, model: &ModelKey) -> Vec<Option<VariantId>> {
+        let mut variants = self
+            .persisted_chain()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|selection| &selection.model == model)
+            .map(|selection| selection.variant)
+            .collect::<Vec<_>>();
+        variants.dedup();
+        variants
+    }
+
+    /// The exact frozen variant selection for a model in the persisted
+    /// delegated chain.
+    fn persisted_chain_selection(&self, model: &ModelKey) -> Option<ModelSelection> {
+        self.persisted_chain().and_then(|chain| {
+            chain
+                .into_iter()
+                .find(|selection| &selection.model == model)
+        })
+    }
+
+    /// Models listed for the draft: live descriptors for root sessions; the
+    /// persisted frozen chain (never live descriptors) for delegated
+    /// sessions.
+    pub(super) fn draft_models(&self) -> Vec<ModelSelection> {
+        if !self.watching_root_session() {
+            return self.persisted_chain().unwrap_or_default();
+        }
+        let Some(draft) = &self.draft else {
+            return Vec::new();
+        };
+        self.agents
+            .iter()
+            .find(|agent| agent.id == draft.agent)
+            .map(|agent| agent.resolved_fallback.clone())
+            .unwrap_or_default()
+    }
+
+    /// Variants selectable for the draft model: base plus the model's
+    /// enabled live variants for root sessions; exactly the persisted exact
+    /// selections for that model for delegated sessions.
+    pub(super) fn draft_variants(&self) -> Vec<Option<VariantId>> {
+        let Some(draft) = &self.draft else {
+            return Vec::new();
+        };
+        if !self.watching_root_session() {
+            return self.persisted_variants_for(&draft.model.model);
+        }
+        let mut variants = vec![None];
+        if let Some(descriptor) = self.model_descriptor(&draft.model.model) {
+            variants.extend(
+                descriptor
+                    .variants
+                    .iter()
+                    .map(|variant| Some(variant.id.clone())),
+            );
+        }
+        variants
+    }
+
+    /// The producing agent of the active run, frozen by the accepted
+    /// `RunStarted` event. Draft changes never alter it.
+    pub(super) fn active_run_agent(&self) -> Option<&AgentId> {
         let session_id = self.selected?;
         self.store
             .sessions
             .get(&session_id)
             .filter(|state| state.active_run.is_some())
-            .and_then(|state| state.run_profile.as_ref())
-            .map(|profile| profile.name.as_str())
+            .and_then(|state| state.run_agent.as_ref())
     }
 
-    fn cycle_agent(&mut self, backward: bool) {
+    pub(super) fn set_draft_agent(&mut self, agent: AgentId) {
+        let Some(descriptor) = self.agents.iter().find(|candidate| candidate.id == agent) else {
+            return;
+        };
+        let model = descriptor
+            .resolved_fallback
+            .first()
+            .cloned()
+            .expect("root-runnable agents have a nonempty chain");
+        self.draft = Some(RunSelection { agent, model });
+        self.status = self.draft_status("Draft run agent");
+    }
+
+    pub(super) fn set_draft_model(&mut self, model: ModelKey) {
+        let Some(draft) = self.draft.clone() else {
+            return;
+        };
+        // Delegated sessions resolve only against the persisted frozen
+        // chain; root sessions use live descriptors.
+        let selection = if self.watching_root_session() {
+            self.agents
+                .iter()
+                .find(|candidate| candidate.id == draft.agent)
+                .and_then(|descriptor| self.draft_model_selection(descriptor, &model))
+        } else {
+            self.persisted_chain_selection(&model)
+        };
+        let Some(selection) = selection else {
+            self.status = format!(
+                "model {model} is not in agent {}'s fallback chain",
+                draft.agent
+            );
+            return;
+        };
+        self.draft = Some(RunSelection {
+            agent: draft.agent,
+            model: selection,
+        });
+        self.status = self.draft_status("Draft run model");
+    }
+
+    pub(super) fn set_draft_variant(&mut self, variant: Option<VariantId>) {
+        let Some(draft) = self.draft.clone() else {
+            return;
+        };
+        self.draft = Some(RunSelection {
+            agent: draft.agent,
+            model: ModelSelection {
+                model: draft.model.model,
+                variant,
+            },
+        });
+        self.status = self.draft_status("Draft run variant");
+    }
+
+    /// The coherent descriptor revision label for selector presentation:
+    /// agent and model snapshots travel together (agent.list carries the
+    /// model revision it was resolved against).
+    pub(super) fn descriptor_revisions_label(&self) -> String {
+        match (&self.agent_revision, &self.model_revision) {
+            (Some(agents), Some(models)) => {
+                format!("agent revision {agents} · model revision {models}")
+            }
+            _ => "revisions unavailable".into(),
+        }
+    }
+
+    fn draft_status(&self, action: &str) -> String {
+        let Some(draft) = &self.draft else {
+            return "no draft selection".into();
+        };
+        if self.active_run_agent().is_some() {
+            format!(
+                "{action}: {}; applies to the next run — the active run is unchanged",
+                draft_title(draft)
+            )
+        } else {
+            format!("{action}: {}", draft_title(draft))
+        }
+    }
+
+    pub(super) fn cycle_agent(&mut self, backward: bool) {
+        if !self.agent_switching_allowed() {
+            self.status = self
+                .delegated_pin_reason()
+                .unwrap_or_else(|| "agent switching requires a root session".into());
+            return;
+        }
         let selectable = self
             .selectable_agents()
             .into_iter()
-            .map(|agent| agent.name.clone())
+            .map(|agent| agent.id.clone())
             .collect::<Vec<_>>();
         if selectable.is_empty() {
-            self.status = "no user-selectable agent profile is available".into();
+            self.status = "no root-runnable agent is available".into();
             return;
         }
-        let current = self
-            .draft_agent_profile
-            .as_deref()
-            .or_else(|| self.selected_session_profile());
-        let index = current.and_then(|name| selectable.iter().position(|agent| agent == name));
+        let current = self.draft.as_ref().map(|draft| draft.agent.clone());
+        let index = current.and_then(|id| selectable.iter().position(|agent| *agent == id));
         let next = match (index, backward) {
             (Some(index), true) => (index + selectable.len() - 1) % selectable.len(),
             (Some(index), false) => (index + 1) % selectable.len(),
             (None, true) => selectable.len() - 1,
             (None, false) => 0,
         };
-        let profile = selectable[next].clone();
-        self.draft_agent_profile = Some(profile.clone());
-        self.status = if self.accepted_run_profile().is_some() {
-            format!("Next run agent: {profile}; active run profile is unchanged")
-        } else {
-            format!("Draft run agent: {profile}")
-        };
+        self.set_draft_agent(selectable[next].clone());
     }
 
     /// Warning rows from strict descendants of the viewed session, attributed
     /// to their owning session. Ownership stays durable in the child's own
-    /// projection (its `Warning` transcript items); this is a read-only
-    /// aggregate for the current view, so the viewed session's own warnings
-    /// stay local and are never duplicated, and nested descendants surface all
-    /// the way to the root view. Each row carries the child session
-    /// title/profile, a short session ID as secondary metadata, and the model
-    /// identity already embedded in the reduced warning text.
+    /// projection; this is a read-only aggregate for the current view.
     pub(super) fn descendant_warnings(&self, viewed: SessionId) -> Vec<String> {
         let Some(tree) = &self.tree else {
             return Vec::new();
@@ -657,15 +1024,15 @@ impl App {
         let mut members = Vec::new();
         collect_subtree_sessions(node, &mut members);
         let mut warnings = Vec::new();
-        for meta in members.into_iter().filter(|meta| meta.id != viewed) {
-            let Some(state) = self.store.sessions.get(&meta.id) else {
+        for meta in members.into_iter().filter(|meta| meta.session_id != viewed) {
+            let Some(state) = self.store.sessions.get(&meta.session_id) else {
                 continue;
             };
             let source = meta
                 .title
                 .as_ref()
                 .map(SessionTitle::to_string)
-                .unwrap_or_else(|| meta.profile.name.clone());
+                .unwrap_or_else(|| meta.creation_selection.agent.to_string());
             for item in &state.transcript {
                 if let TranscriptItem::Event {
                     level: crate::state::EventLevel::Warning,
@@ -673,7 +1040,10 @@ impl App {
                     ..
                 } = item
                 {
-                    warnings.push(format!("from {source} ({}): {text}", short_id(meta.id)));
+                    warnings.push(format!(
+                        "from {source} ({}): {text}",
+                        short_id(meta.session_id)
+                    ));
                 }
             }
         }
@@ -715,10 +1085,7 @@ impl App {
             return;
         }
         self.set_selected_session(session_id);
-        self.selection_generation = self.selection_generation.wrapping_add(1);
         self.tree_cursor = Some(session_id);
-        // A session already observed through the tree keeps its live
-        // subscription; only newly watched sessions need one.
         let needs_subscription = self.tree_subscription_sessions.insert(session_id);
         let cursor = self
             .store
@@ -728,7 +1095,6 @@ impl App {
         if needs_subscription {
             self.subscribe_session_background(session_id, cursor);
         }
-        self.refresh_tree_background();
     }
 
     /// Intentionally reroot the delegation tree at a separate session.
@@ -756,8 +1122,7 @@ impl App {
     fn subscribe_session_background(&self, session_id: SessionId, cursor: Option<u64>) {
         // Re-subscribing is safe: the lane lock serializes it with any prior
         // subscription for the same session, and the client reconciles
-        // cursors. This also upgrades a tree-observed session to an actively
-        // watched one.
+        // cursors.
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         let lanes = self.subscription_lanes.clone();
@@ -853,8 +1218,10 @@ impl App {
             } if self.tree_refresh_in_flight == Some((generation, request_id)) => {
                 self.tree_refresh_in_flight = None;
                 if self.tree_root == Some(session_id) && self.selection_generation == generation {
+                    let mut tree = *tree;
+                    self.patch_tree_titles(&mut tree);
                     self.subscribe_tree_sessions(&tree);
-                    self.tree = Some(*tree);
+                    self.tree = Some(tree);
                     self.clamp_tree_view();
                 }
                 self.refresh_pending_tree();
@@ -910,6 +1277,20 @@ impl App {
         }
     }
 
+    /// Apply title-sequence staleness rules to a fresh tree response: any
+    /// node carrying a title sequence older than the latest title event keeps
+    /// the newer known title instead.
+    pub(super) fn patch_tree_titles(&mut self, tree: &mut SessionTree) {
+        let mut known_titles = HashMap::new();
+        collect_known_titles(
+            self.tree.as_ref(),
+            &self.sessions,
+            &self.title_sequences,
+            &mut known_titles,
+        );
+        patch_tree_node_titles(tree, &self.title_sequences, &known_titles);
+    }
+
     pub(super) fn apply_connect_outcome(&mut self, outcome: ConnectOutcome) {
         match outcome {
             ConnectOutcome::Failed { error } => {
@@ -931,60 +1312,74 @@ impl App {
                     model_revision,
                     model_count,
                     error,
+                    ..
                 } => {
+                    // Models are never installed alone: the previous
+                    // coherent descriptor pair stays authoritative.
                     self.status = format!(
-                        "Connected provider {provider_id}; model.list refreshed to {model_revision} ({model_count} models), but agent.list refresh failed: {error}"
+                        "Connected provider {provider_id}; model.list reported {model_revision} ({model_count} models), but agent.list refresh failed: {error}. The previous coherent descriptor pair is unchanged."
                     );
                 }
-                ConnectFollowUp::NoProfiles {
+                ConnectFollowUp::Incoherent {
                     model_revision,
-                    model_count,
+                    agent_model_revision,
                 } => {
-                    self.agents.clear();
-                    self.draft_agent_profile = None;
                     self.status = format!(
-                        "Connected provider {provider_id}; model.list refreshed to {model_revision} ({model_count} models), but no user-selectable profiles are configured. No session was created."
+                        "discarded an incoherent connect refresh (agents resolved against {agent_model_revision} but models are at {model_revision}); keeping the previous coherent snapshot. No session was created."
                     );
                 }
-                ConnectFollowUp::NoRunnableProfiles {
+                ConnectFollowUp::Refreshed {
+                    models,
                     agents,
-                    model_revision,
-                    model_count,
-                } => {
-                    self.replace_agents(agents);
-                    self.status = format!(
-                        "Connected provider {provider_id}; model.list refreshed to {model_revision} ({model_count} models), but no primary/all profile is runnable. Explicitly disabled profiles remain disabled; unresolved enabled profiles require a matching model. No session was created."
-                    );
-                }
-                ConnectFollowUp::Ready {
-                    agents,
-                    model_revision,
-                    model_count,
                     created,
                 } => {
-                    self.replace_agents(agents);
+                    let model_revision = models.revision.clone();
+                    let model_count = models.models.len();
+                    let agent_count = agents.agents.len();
+                    // The pair was verified coherent before any side effect;
+                    // install atomically through the coherent-pair path.
+                    debug_assert_eq!(agents.model_revision, models.revision);
+                    self.install_coherent_pair(*models, *agents);
+                    if agent_count == 0 {
+                        self.draft = None;
+                        self.status = format!(
+                            "Connected provider {provider_id}; model.list refreshed to {model_revision} ({model_count} models), but no agents are configured. No session was created."
+                        );
+                        return;
+                    }
+                    if self.selectable_agents().is_empty() {
+                        self.status = format!(
+                            "Connected provider {provider_id}; model.list refreshed to {model_revision} ({model_count} models), but no agent is root-runnable. Disabled agents remain disabled; unresolved agents require an available model. No session was created."
+                        );
+                        return;
+                    }
                     if let Some(session) = created {
-                        let session = *session;
-                        let profile = session.profile.name.clone();
-                        let session_id = session.id;
+                        let session = self.merge_session_meta(*session);
+                        let agent = session.creation_selection.agent.clone();
+                        let session_id = session.session_id;
                         self.sessions.push(session);
                         self.watch_session(session_id);
                         self.status = format!(
-                            "Connected provider {provider_id}; refreshed {model_count} models at {model_revision}; created the initial session with profile {profile}."
+                            "Connected provider {provider_id}; refreshed {model_count} models at {model_revision}; created the initial session with agent {agent}."
                         );
                     } else {
                         self.status = format!(
-                            "Connected provider {provider_id}; refreshed {model_count} models at {model_revision}; agent profiles are ready."
+                            "Connected provider {provider_id}; refreshed {model_count} models at {model_revision}; agents are ready."
                         );
                     }
                 }
                 ConnectFollowUp::InitialSessionFailed {
+                    models,
                     agents,
-                    model_revision,
-                    model_count,
                     error,
                 } => {
-                    self.replace_agents(agents);
+                    let model_revision = models.revision.clone();
+                    let model_count = models.models.len();
+                    // The pair was verified coherent before session.create
+                    // was attempted; install atomically and report only the
+                    // creation failure.
+                    debug_assert_eq!(agents.model_revision, models.revision);
+                    self.install_coherent_pair(*models, *agents);
                     self.status = format!(
                         "Connected provider {provider_id}; refreshed {model_count} models at {model_revision}, but initial session.create failed: {error}. No session was created."
                     );
@@ -993,18 +1388,22 @@ impl App {
         }
     }
 
-    fn replace_agents(&mut self, agents: Vec<AgentDescriptor>) {
-        self.agents = agents;
-        if self.draft_agent_profile.as_ref().is_none_or(|draft| {
-            !self
-                .agents
-                .iter()
-                .any(|agent| agent.enabled && &agent.name == draft)
-        }) {
-            self.draft_agent_profile = self.default_agent_profile();
-        }
-        if self.selectable_agents().is_empty() {
-            self.draft_agent_profile = None;
+    /// Apply one coherent snapshot atomically: models (and variants), then
+    /// agents, then both revision labels. The pair is installed only after
+    /// `agent.list`'s model revision equals `model.list`'s revision.
+    pub(super) fn install_coherent_pair(
+        &mut self,
+        models: cookie_agent_protocol::ModelListResult,
+        agents: cookie_agent_protocol::AgentListResult,
+    ) {
+        debug_assert_eq!(agents.model_revision, models.revision);
+        self.model_revision = Some(models.revision);
+        self.models = models.models;
+        self.agent_revision = Some(agents.revision);
+        self.agents = agents.agents;
+        self.revalidate_draft();
+        if self.selectable_agents().is_empty() && self.watching_root_session() {
+            self.draft = None;
         }
     }
 
@@ -1040,6 +1439,57 @@ impl App {
             self.reveal_selected_block = false;
         }
         self.selected = Some(session_id);
+        self.rebind_draft_to_selected_session();
+    }
+
+    /// Rebind the draft to the newly watched session. A root session drafts
+    /// its own current creation selection when still valid against the
+    /// coherent descriptors, otherwise the root default; a delegated session
+    /// is pinned to its frozen child agent with the valid chain model/variant
+    /// — a previous root draft is never carried into a child.
+    fn rebind_draft_to_selected_session(&mut self) {
+        let Some(meta) = self.selected_session_meta().cloned() else {
+            return;
+        };
+        match &meta.origin {
+            cookie_agent_protocol::SessionOrigin::Delegated { .. } => {
+                // The pinned child draft derives only from the persisted
+                // frozen chain: the exact creation selection when it is a
+                // chain member, otherwise the chain head (the inherited
+                // frozen suffix head for empty-chain children).
+                let creation = meta.creation_selection.clone();
+                if let Some(chain) = self.persisted_chain() {
+                    let model = chain
+                        .iter()
+                        .find(|selection| **selection == creation.model)
+                        .cloned()
+                        .or_else(|| chain.first().cloned())
+                        .unwrap_or(creation.model);
+                    self.draft = Some(RunSelection {
+                        agent: creation.agent,
+                        model,
+                    });
+                } else {
+                    self.draft = Some(creation);
+                }
+            }
+            cookie_agent_protocol::SessionOrigin::Root => {
+                let creation = meta.creation_selection.clone();
+                let still_valid = self.agents.iter().any(|agent| {
+                    agent.runnable_as_root
+                        && agent.id == creation.agent
+                        && agent
+                            .resolved_fallback
+                            .iter()
+                            .any(|selection| selection == &creation.model)
+                });
+                self.draft = if still_valid {
+                    Some(creation)
+                } else {
+                    self.default_draft_selection()
+                };
+            }
+        }
     }
 
     pub(super) async fn refresh_tree(&mut self) {
@@ -1055,8 +1505,10 @@ impl App {
                 Ok(Ok(result))
                     if self.tree_root == Some(root) && self.selection_generation == generation =>
                 {
-                    self.subscribe_tree_sessions(&result.tree);
-                    self.tree = Some(result.tree);
+                    let mut tree = result.tree;
+                    self.patch_tree_titles(&mut tree);
+                    self.subscribe_tree_sessions(&tree);
+                    self.tree = Some(tree);
                     self.clamp_tree_view();
                 }
                 Ok(Err(error)) => self.status = error.to_string(),
@@ -1077,18 +1529,27 @@ impl App {
         let linked = match &delivery {
             ClientDelivery::Live { message, .. } => matches!(
                 message.as_ref(),
-                cookie_agent_protocol::EventSubscriptionMessage::Event {
-                    event: cookie_agent_protocol::EventEnvelope {
-                        event: Event::ToolCallLinked { .. },
-                        ..
-                    }
-                }
+                cookie_agent_protocol::EventSubscriptionMessage::Event { event }
+                    if matches!(event.payload, EventPayload::ToolCallLinked { .. })
             ),
             ClientDelivery::ReplayEvent { event, .. } => {
-                matches!(event.event, Event::ToolCallLinked { .. })
+                matches!(event.payload, EventPayload::ToolCallLinked { .. })
             }
             _ => false,
         };
+        let title_change = match &delivery {
+            ClientDelivery::Live { message, .. } => match message.as_ref() {
+                cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
+                    title_change_from_event(event)
+                }
+                cookie_agent_protocol::EventSubscriptionMessage::Gap { .. } => None,
+            },
+            ClientDelivery::ReplayEvent { event, .. } => title_change_from_event(event),
+            _ => None,
+        };
+        if let Some((session_id, title, seq)) = title_change {
+            self.apply_title_patch(session_id, title, seq);
+        }
         let replay_finished = matches!(
             &delivery,
             ClientDelivery::ReplayEnd { session_id, .. } if Some(*session_id) == self.selected
@@ -1109,6 +1570,37 @@ impl App {
         }
     }
 
+    /// Apply a strictly-newer title event patch immediately: the Agents
+    /// panel rows and session list update without waiting for a tree
+    /// refresh, and older tree/list responses cannot undo it.
+    pub(super) fn apply_title_patch(
+        &mut self,
+        session_id: SessionId,
+        title: Option<SessionTitle>,
+        seq: u64,
+    ) {
+        let known = self.title_sequences.entry(session_id).or_insert(0);
+        if seq < *known {
+            return;
+        }
+        *known = seq;
+        if let Some(session) = self
+            .sessions
+            .iter_mut()
+            .find(|session| session.session_id == session_id)
+        {
+            session.title = title.clone();
+            session.title_updated_seq = seq;
+        }
+        if let Some(tree) = &mut self.tree
+            && let Some(node) = find_node_mut(tree, session_id)
+            && seq >= node.session.title_updated_seq
+        {
+            node.session.title = title;
+            node.session.title_updated_seq = seq;
+        }
+    }
+
     pub(super) fn recover_timed_out_replays(&mut self) {
         for session_id in self.store.abandon_timed_out_replays() {
             self.status = "replay timed out; retrying recovery".into();
@@ -1123,7 +1615,9 @@ impl App {
         }
         match self.modal {
             Modal::Sessions => self.handle_session_picker(key).await,
-            Modal::Profiles => self.handle_profile_picker(key).await,
+            Modal::Agents | Modal::Models | Modal::Variants => {
+                self.handle_selection_picker(key).await
+            }
             Modal::ConnectProviders => self.handle_connect_provider_key(key),
             Modal::ConnectCredentials => self.handle_connect_credentials_key(key),
             Modal::ConnectConfirm => self.handle_connect_confirm_key(key),
@@ -1218,10 +1712,12 @@ impl App {
             .collect()
     }
 
-    fn picker_entry_count(&self) -> usize {
+    pub(super) fn picker_entry_count(&self) -> usize {
         match self.modal {
             Modal::Sessions => self.filtered_sessions().len(),
-            Modal::Profiles => self.user_agents().len(),
+            Modal::Agents => self.selectable_agents().len(),
+            Modal::Models => self.draft_models().len(),
+            Modal::Variants => self.draft_variants().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
             Modal::ConnectCredentials | Modal::ConnectConfirm | Modal::None => 0,
         }
@@ -1395,6 +1891,22 @@ impl App {
             }
             return;
         }
+        // Message title segments open the agent/model/variant selectors.
+        if let Some(hit) = self
+            .hit_map
+            .title_segments
+            .iter()
+            .find(|hit| contains(hit.rect, column, row))
+            .copied()
+        {
+            self.input_focused = false;
+            self.open_selection_modal(match hit.segment {
+                TitleSegment::Agent => Modal::Agents,
+                TitleSegment::Model => Modal::Models,
+                TitleSegment::Variant => Modal::Variants,
+            });
+            return;
+        }
         if let Some(hit) = self
             .hit_map
             .input
@@ -1489,7 +2001,7 @@ impl App {
             {
                 let len = match self.modal {
                     Modal::Sessions => self.filtered_sessions().len(),
-                    Modal::Profiles => self.user_agents().len(),
+                    Modal::Agents | Modal::Models | Modal::Variants => self.picker_entry_count(),
                     Modal::ConnectProviders => self.filtered_providers().len(),
                     Modal::ConnectCredentials | Modal::ConnectConfirm | Modal::None => 0,
                 };
@@ -1703,38 +2215,18 @@ impl App {
         }
     }
 
-    pub(super) async fn handle_profile_picker(&mut self, key: KeyEvent) {
-        let agent_count = self.user_agents().len();
+    pub(super) async fn handle_selection_picker(&mut self, key: KeyEvent) {
+        let count = self.picker_entry_count();
         match key.code {
             KeyCode::Esc => self.modal = Modal::None,
-            KeyCode::Up => move_picker_selection(&mut self.picker_state, agent_count, true),
-            KeyCode::Down => move_picker_selection(&mut self.picker_state, agent_count, false),
+            KeyCode::Up => move_picker_selection(&mut self.picker_state, count, true),
+            KeyCode::Down => move_picker_selection(&mut self.picker_state, count, false),
             KeyCode::Tab | KeyCode::BackTab => {
                 cycle_selection(
                     &mut self.picker_state,
-                    agent_count,
+                    count,
                     agent_cycle_backward(key).unwrap_or(false),
                 );
-                let agent = self
-                    .user_agents()
-                    .get(self.picker_state.selected().unwrap_or(0))
-                    .map(|agent| (agent.name.clone(), agent.enabled));
-                if let Some((agent_name, enabled)) = agent {
-                    if !enabled {
-                        self.status =
-                            format!("Profile {agent_name} is disabled or has unresolved models");
-                        return;
-                    }
-                    self.status = if self
-                        .selected
-                        .and_then(|session_id| self.store.sessions.get(&session_id))
-                        .is_some_and(|state| state.active_run.is_some())
-                    {
-                        format!("Next run agent: {agent_name}; current active run unchanged")
-                    } else {
-                        format!("Draft run agent: {agent_name} (Enter: select)")
-                    };
-                }
             }
             KeyCode::Enter => {
                 self.choose_picker_entry(self.picker_state.selected().unwrap_or(0))
@@ -1846,7 +2338,7 @@ impl App {
         }
     }
 
-    fn dispatch_provider_connect(&mut self) {
+    pub(super) fn dispatch_provider_connect(&mut self) {
         let Some(provider) = self.connect_provider.clone() else {
             self.clear_connect_secrets();
             self.modal = Modal::None;
@@ -1878,8 +2370,10 @@ impl App {
         let task = tokio::spawn(async move {
             let connect = match client
                 .connect_provider(ProviderConnectParams {
-                    client_connect_id: Uuid::now_v7().to_string(),
-                    provider_id: provider.id,
+                    client_connect_id: ClientConnectId::new(Uuid::now_v7().to_string())
+                        .expect("uuid-derived client connect id"),
+                    provider_id: cookie_agent_protocol::ProviderId::new(provider.id.as_str())
+                        .expect("catalog provider ids are valid provider ids"),
                     catalog_revision,
                     credentials: ProviderCredentials { values },
                 })
@@ -1912,83 +2406,92 @@ impl App {
                     return;
                 }
             };
-            let model_revision = models.revision;
+            // Coherence gate before any side effect: fetch the descriptor
+            // pair, require `agent.list`'s model revision to equal
+            // `model.list`'s revision, and retry the pair once on mismatch.
+            // `session.create` runs only for a verified coherent pair, so an
+            // incoherent refresh never creates an orphan session.
+            let model_revision = models.revision.clone();
             let model_count = models.models.len();
-            let agents = match client.list_agents(AgentListParams::default()).await {
-                Ok(agents) => agents.agents,
-                Err(error) => {
+            let mut pair = None;
+            for attempt in 0..2 {
+                let agents = match client.list_agents(AgentListParams::default()).await {
+                    Ok(agents) => agents,
+                    Err(error) => {
+                        let _ = updates.send(RpcUpdate::ConnectFinished {
+                            outcome: ConnectOutcome::Connected {
+                                provider_id,
+                                receipt_model_revision,
+                                follow_up: Box::new(ConnectFollowUp::AgentRefreshFailed {
+                                    model_revision,
+                                    model_count,
+                                    error: error.to_string(),
+                                }),
+                            },
+                        });
+                        return;
+                    }
+                };
+                if agents.model_revision == models.revision {
+                    pair = Some(agents);
+                    break;
+                }
+                if attempt == 1 {
                     let _ = updates.send(RpcUpdate::ConnectFinished {
                         outcome: ConnectOutcome::Connected {
                             provider_id,
                             receipt_model_revision,
-                            follow_up: Box::new(ConnectFollowUp::AgentRefreshFailed {
-                                model_revision,
-                                model_count,
-                                error: error.to_string(),
+                            follow_up: Box::new(ConnectFollowUp::Incoherent {
+                                model_revision: models.revision.clone(),
+                                agent_model_revision: agents.model_revision.clone(),
                             }),
                         },
                     });
                     return;
                 }
-            };
-            let runnable_profile = agents
+            }
+            let Some(agents) = pair else { return };
+            let runnable_agent = agents
+                .agents
                 .iter()
-                .filter(|agent| {
-                    agent.enabled && matches!(agent.agent_type, AgentType::Primary | AgentType::All)
-                })
-                .find(|agent| agent.name == "primary")
-                .or_else(|| {
-                    agents.iter().find(|agent| {
-                        agent.enabled
-                            && matches!(agent.agent_type, AgentType::Primary | AgentType::All)
-                    })
-                })
-                .map(|agent| agent.name.clone());
-            let user_profile_count = agents
-                .iter()
-                .filter(|agent| matches!(agent.agent_type, AgentType::Primary | AgentType::All))
-                .count();
-            let follow_up = if user_profile_count == 0 {
-                ConnectFollowUp::NoProfiles {
-                    model_revision,
-                    model_count,
-                }
-            } else if runnable_profile.is_none() {
-                ConnectFollowUp::NoRunnableProfiles {
-                    agents,
-                    model_revision,
-                    model_count,
-                }
-            } else if create_default {
-                let profile = runnable_profile.expect("runnable profile checked");
-                match client
-                    .create_session(SessionCreateParams {
-                        cwd: current_dir(),
-                        profile,
-                    })
-                    .await
-                {
-                    Ok(result) => ConnectFollowUp::Ready {
-                        agents,
-                        model_revision,
-                        model_count,
-                        created: Some(Box::new(result.session)),
+                .filter(|agent| agent.runnable_as_root)
+                .find(|agent| agent.id.as_str() == "primary")
+                .or_else(|| agents.agents.iter().find(|agent| agent.runnable_as_root))
+                .map(|agent| RunSelection {
+                    agent: agent.id.clone(),
+                    model: agent
+                        .resolved_fallback
+                        .first()
+                        .cloned()
+                        .expect("root-runnable agents have a nonempty chain"),
+                });
+            // Only a verified coherent pair reaches session creation; the
+            // selection comes from that same coherent agent snapshot.
+            let follow_up =
+                match runnable_agent.filter(|_| !agents.agents.is_empty() && create_default) {
+                    Some(selection) => {
+                        match client
+                            .create_session(SessionCreateParams { selection })
+                            .await
+                        {
+                            Ok(result) => ConnectFollowUp::Refreshed {
+                                models: Box::new(models),
+                                agents: Box::new(agents),
+                                created: Some(Box::new(result.session)),
+                            },
+                            Err(error) => ConnectFollowUp::InitialSessionFailed {
+                                models: Box::new(models),
+                                agents: Box::new(agents),
+                                error: error.to_string(),
+                            },
+                        }
+                    }
+                    None => ConnectFollowUp::Refreshed {
+                        models: Box::new(models),
+                        agents: Box::new(agents),
+                        created: None,
                     },
-                    Err(error) => ConnectFollowUp::InitialSessionFailed {
-                        agents,
-                        model_revision,
-                        model_count,
-                        error: error.to_string(),
-                    },
-                }
-            } else {
-                ConnectFollowUp::Ready {
-                    agents,
-                    model_revision,
-                    model_count,
-                    created: None,
-                }
-            };
+                };
             let _ = updates.send(RpcUpdate::ConnectFinished {
                 outcome: ConnectOutcome::Connected {
                     provider_id,
@@ -2002,7 +2505,7 @@ impl App {
         }
     }
 
-    fn clear_connect_secrets(&mut self) {
+    pub(super) fn clear_connect_secrets(&mut self) {
         for (_, input) in &mut self.connect_fields {
             input.wipe();
         }
@@ -2020,26 +2523,55 @@ impl App {
     pub(super) async fn choose_picker_entry(&mut self, index: usize) {
         match self.modal {
             Modal::Sessions => {
-                if let Some(session_id) = self.filtered_sessions().get(index).map(|s| s.id) {
+                if let Some(session_id) = self
+                    .filtered_sessions()
+                    .get(index)
+                    .map(|session| session.session_id)
+                {
                     self.modal = Modal::None;
                     self.picker_query.clear();
                     self.reroot_tree(session_id);
                 }
             }
-            Modal::Profiles => {
-                if let Some((name, enabled)) = self
-                    .user_agents()
+            Modal::Agents => {
+                if !self.agent_switching_allowed() {
+                    self.status = self
+                        .delegated_pin_reason()
+                        .unwrap_or_else(|| "agent switching requires a root session".into());
+                    return;
+                }
+                let agent = self
+                    .selectable_agents()
                     .get(index)
-                    .map(|agent| (agent.name.clone(), agent.enabled))
-                {
-                    if enabled {
-                        self.draft_agent_profile = Some(name.clone());
-                        self.status = format!("Draft run agent: {name}");
-                        self.modal = Modal::None;
-                    } else {
-                        self.status =
-                            format!("Profile {name} is disabled or has unresolved models");
-                    }
+                    .map(|agent| agent.id.clone());
+                if let Some(agent) = agent {
+                    self.set_draft_agent(agent);
+                    self.modal = Modal::None;
+                }
+            }
+            Modal::Models => {
+                if !self.model_selection_allowed() {
+                    self.status = "no draft model is available for this session".into();
+                    return;
+                }
+                let model = self
+                    .draft_models()
+                    .get(index)
+                    .map(|selection| selection.model.clone());
+                if let Some(model) = model {
+                    self.set_draft_model(model);
+                    self.modal = Modal::None;
+                }
+            }
+            Modal::Variants => {
+                if !self.model_selection_allowed() {
+                    self.status = "no draft variant is available for this session".into();
+                    return;
+                }
+                let variant = self.draft_variants().get(index).cloned();
+                if let Some(variant) = variant {
+                    self.set_draft_variant(variant);
+                    self.modal = Modal::None;
                 }
             }
             Modal::ConnectProviders => {
@@ -2093,9 +2625,9 @@ impl App {
             .sessions
             .get(&session_id)
             .and_then(|state| state.active_run);
-        let profile = self.draft_profile().map(str::to_owned);
-        if active_run.is_none() && profile.is_none() {
-            self.status = "select an enabled draft profile before submitting".into();
+        let selection = self.draft.clone();
+        if active_run.is_none() && selection.is_none() {
+            self.status = "select a draft agent/model/variant before submitting".into();
             return;
         }
         self.spawn_rpc(async move {
@@ -2109,8 +2641,8 @@ impl App {
                     .start_run(RunStartParams {
                         session_id,
                         client_run_id: client_run_id(),
+                        selection: selection.expect("draft selection checked"),
                         input,
-                        profile,
                     })
                     .await
                     .map(|_| ())
@@ -2176,9 +2708,10 @@ impl App {
         match command {
             SlashCommand::Quit => self.should_quit = true,
             SlashCommand::New => {
-                self.modal = Modal::Profiles;
-                self.picker_state.select(Some(0));
-                self.status = "Select the draft profile for the next run.".into();
+                self.open_selection_modal(Modal::Agents);
+                if self.modal == Modal::Agents {
+                    self.status = "Select the draft agent for the next run.".into();
+                }
             }
             SlashCommand::Connect => {
                 if self.providers.is_empty() {
@@ -2297,8 +2830,6 @@ impl App {
         let Some(approval) = self.current_approval().cloned() else {
             return;
         };
-        // Atomically capture the exact request identity and dismiss the
-        // visible modal before any await, so the UI never appears frozen.
         self.next_approval_request_id = self.next_approval_request_id.wrapping_add(1);
         let request_id = self.next_approval_request_id;
         let decision_label = match decision {
@@ -2322,7 +2853,7 @@ impl App {
                     approval_id: approval.approval_id,
                     request_revision: approval.request_revision,
                     operation_fingerprint: approval.operation_fingerprint,
-                    client_response_id: Uuid::now_v7().to_string(),
+                    client_response_id: client_response_id(),
                     decision,
                     feedback: None,
                 })
@@ -2339,10 +2870,9 @@ impl App {
 
     /// Resolve an in-flight approval response. Success clears the pending
     /// marker; durable resolution arrives through the normal event stream.
-    /// Failure restores the modal only when the request is still escalated and
-    /// unexpired — cancellation/expiry during flight never
-    /// resurrects stale UI. Revision/fingerprint conflicts trigger an
-    /// approval.list refresh and are never silently resubmitted.
+    /// Failure restores the modal only when the request is still escalated
+    /// and unexpired. Revision/fingerprint conflicts trigger an approval.list
+    /// refresh and are never silently resubmitted.
     fn finish_approval_submission(
         &mut self,
         request_id: u64,
@@ -2586,30 +3116,77 @@ impl App {
         });
     }
 
+    /// The exact Message panel title `Agent(Model-Variant)` with separate
+    /// styled segments for the agent, model, and variant hit regions.
+    fn message_title_spans(&self) -> Vec<Span<'static>> {
+        match &self.draft {
+            Some(draft) => vec![
+                Span::styled(draft.agent.to_string(), self.theme.user()),
+                Span::raw("("),
+                Span::styled(draft.model.model.to_string(), self.theme.assistant()),
+                Span::raw("-"),
+                Span::styled(
+                    draft
+                        .model
+                        .variant
+                        .as_ref()
+                        .map_or_else(|| "base".to_owned(), |variant| variant.to_string()),
+                    self.theme.tool(),
+                ),
+                Span::raw(")"),
+            ],
+            None => vec![Span::styled(
+                "Message — setup required".to_owned(),
+                self.theme.muted(),
+            )],
+        }
+    }
+
     pub(super) fn draw(&mut self, frame: &mut ratatui::Frame) {
         self.hit_map = UiHitMap::default();
         self.hit_map.modal_open = self.modal != Modal::None;
-        let layout = terminal_layout(frame.area());
+        let layout = super::terminal_layout_with_tree_rows(frame.area(), self.tree_entries().len());
         self.render_tree(frame, layout.agent);
         self.render_conversation(frame, layout.conversation);
-        let title = match (self.input_mode, self.input_focused) {
-            (InputMode::ToolStdin, true) => {
-                "Tool stdin (Enter send · newline: Ctrl-J, Shift/Alt-Enter*)"
-            }
-            (InputMode::Message, true) => {
-                "Message (Enter send · newline: Ctrl-J, Shift/Alt-Enter* · Tab/Shift-Tab: agent · click blocks to expand)"
-            }
-            (InputMode::ToolStdin, false) => "Tool stdin (click to focus)",
-            (InputMode::Message, false) => "Message (click to focus)",
-        };
+        let title_spans = self.message_title_spans();
+        let title_text: String = title_spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
         let text_rect = super::input::render(
             frame,
             layout.input,
             &mut self.input,
             self.input_focused && self.modal == Modal::None,
-            title,
+            &title_text,
             &self.theme,
         );
+        // Agent, Model, and Variant are separate clickable regions inside the
+        // exact `Agent(Model-Variant)` title; each opens its own selector.
+        self.hit_map.title_segments = {
+            let segments = [
+                Some(TitleSegment::Agent),
+                None,
+                Some(TitleSegment::Model),
+                None,
+                Some(TitleSegment::Variant),
+                None,
+            ];
+            let mut hits = Vec::new();
+            let mut column = layout.input.x.saturating_add(1);
+            for (span, segment) in title_spans.iter().zip(segments) {
+                let width =
+                    UnicodeWidthStr::width(span.content.as_ref()).min(usize::from(u16::MAX)) as u16;
+                if let Some(segment) = segment {
+                    hits.push(TitleSegmentHit {
+                        rect: Rect::new(column, layout.input.y, width, 1),
+                        segment,
+                    });
+                }
+                column = column.saturating_add(width);
+            }
+            hits
+        };
         self.hit_map.input = Some(InputHit {
             rect: layout.input,
             text_rect,
@@ -2636,7 +3213,7 @@ impl App {
         match self.modal {
             Modal::Sessions => self.render_picker(
                 frame,
-                "Sessions — type to filter · Ctrl-U: clear · Enter: reroot tree",
+                "Sessions",
                 self.filtered_sessions()
                     .iter()
                     .map(|session| {
@@ -2644,27 +3221,95 @@ impl App {
                             .title
                             .as_ref()
                             .map(SessionTitle::to_string)
-                            .unwrap_or_else(|| format!("{} · untitled", session.profile.name));
-                        format!("{title}  ({})", short_id(session.id))
+                            .unwrap_or_else(|| {
+                                format!("{} · untitled", session.creation_selection.agent)
+                            });
+                        format!("{title}  ({})", short_id(session.session_id))
                     })
                     .collect(),
                 centered(frame.area(), 68, 50),
             ),
-            Modal::Profiles => self.render_picker(
+            Modal::Agents => {
+                // Root sessions may draft any currently root-runnable
+                // primary/all agent between runs; delegated sessions are
+                // pinned to their frozen child agent, shown as a fixed row
+                // with a clear non-color reason.
+                let (entries, title) = if let Some(pin) = self.delegated_pin_reason() {
+                    let agent = self
+                        .selected_session_meta()
+                        .map(|meta| meta.creation_selection.agent.to_string())
+                        .unwrap_or_default();
+                    let description = self
+                        .agents
+                        .iter()
+                        .find(|candidate| candidate.id.as_str() == agent)
+                        .map(|candidate| candidate.description.clone())
+                        .unwrap_or_else(|| "frozen child agent".into());
+                    (
+                        vec![format!("{agent} — {description}"), pin.clone()],
+                        "Agent — fixed (delegated session)".to_owned(),
+                    )
+                } else {
+                    (
+                        self.selectable_agents()
+                            .iter()
+                            .map(|agent| format!("{} — {}", agent.id, agent.description))
+                            .collect(),
+                        format!("Agent — {}", self.descriptor_revisions_label()),
+                    )
+                };
+                self.render_picker(frame, &title, entries, centered(frame.area(), 56, 44));
+            }
+            Modal::Models => self.render_picker(
                 frame,
-                "Draft run profile (Enter: select)",
-                self.user_agents()
+                "Model",
+                self.draft_models()
                     .iter()
-                    .map(|agent| {
-                        if agent.enabled {
-                            agent.name.clone()
-                        } else {
-                            format!("{} — unavailable (disabled or unresolved)", agent.name)
-                        }
+                    .map(|selection| {
+                        self.model_descriptor(&selection.model).map_or_else(
+                            || selection.model.to_string(),
+                            |descriptor| {
+                                format!("{} — {}", selection.model, descriptor.display_name)
+                            },
+                        )
                     })
                     .collect(),
-                centered(frame.area(), 50, 40),
+                centered(frame.area(), 56, 44),
             ),
+            Modal::Variants => {
+                let labels = {
+                    // Root sessions label variants from the live coherent
+                    // descriptor; delegated sessions show only the persisted
+                    // exact selections, without consulting live options.
+                    let descriptor = self
+                        .draft
+                        .as_ref()
+                        .filter(|_| self.watching_root_session())
+                        .and_then(|draft| self.model_descriptor(&draft.model.model));
+                    self.draft_variants()
+                        .iter()
+                        .map(|variant| {
+                            variant.as_ref().map_or_else(
+                                || "base".to_owned(),
+                                |variant| {
+                                    descriptor
+                                        .and_then(|descriptor| {
+                                            descriptor
+                                                .variants
+                                                .iter()
+                                                .find(|candidate| &candidate.id == variant)
+                                        })
+                                        .map_or_else(
+                                            || variant.to_string(),
+                                            |found| format!("{variant} — {}", found.display_name),
+                                        )
+                                },
+                            )
+                        })
+                        .collect()
+                };
+                self.render_picker(frame, "Variant", labels, centered(frame.area(), 40, 34));
+            }
             Modal::ConnectProviders => {
                 let title = if self.picker_query.is_empty() {
                     "Connect provider — type to filter · Enter: details".to_owned()
@@ -2705,16 +3350,13 @@ impl App {
     }
 
     pub(super) fn render_tree(&mut self, frame: &mut ratatui::Frame, area: Rect) {
-        let title = match (self.accepted_run_profile(), self.draft_profile()) {
-            (Some(accepted), Some(draft)) if accepted != draft => {
-                format!("Agents — run: {accepted} · next: {draft}")
-            }
-            (Some(accepted), _) => format!("Agents — run: {accepted}"),
-            (None, Some(draft)) => format!("Agents — draft: {draft} (Tab: next)"),
-            (None, None) => "Agents — setup required (/connect)".into(),
-        };
+        // The Agents panel has exactly clamp(visible row count, 1, 3) text
+        // rows, with its borders outside that count.
+        let text_rows = self.tree_entries().len().clamp(1, 3) as u16;
+        let panel_height = text_rows.saturating_add(2).min(area.height);
+        let panel = Rect::new(area.x, area.y, area.width, panel_height);
         let entries = self.tree_entries();
-        let inner = inner_rect(area);
+        let inner = inner_rect(panel);
         self.tree_viewport_height = usize::from(inner.height);
         if self.tree_cursor.is_none() {
             self.tree_cursor = self
@@ -2724,7 +3366,6 @@ impl App {
         }
         self.clamp_tree_view();
         let cursor_index = self.tree_cursor_index(&entries);
-        let marker_column = |entry: &str| entry.chars().take_while(|c| *c == ' ').count();
         self.hit_map.tree = Some(inner);
         self.hit_map.tree_rows = entries
             .iter()
@@ -2732,22 +3373,27 @@ impl App {
             .skip(self.tree_offset)
             .take(usize::from(inner.height))
             .enumerate()
-            .map(|(row, (index, (session_id, _, _)))| {
-                let label = self.tree_row_label(&entries[index], cursor_index == Some(index));
-
-                let offset = marker_column(&label);
-                let expand_rect = label
-                    .chars()
-                    .nth(offset)
-                    .filter(|marker| matches!(marker, '+' | '-'))
-                    .map(|_| {
-                        Rect::new(
-                            inner.x + 2 + u16::try_from(offset).unwrap_or(u16::MAX),
-                            inner.y + u16::try_from(row).unwrap_or(u16::MAX),
-                            1,
-                            1,
-                        )
-                    });
+            .map(|(row, (_, (session_id, _, depth)))| {
+                // Expand geometry is projected from immutable hierarchy data,
+                // never from cursor/watch prefixes that change with focus.
+                let expand_rect = (*depth > 0
+                    && self
+                        .tree
+                        .as_ref()
+                        .and_then(|tree| find_node(tree, *session_id))
+                        .is_some_and(|node| !node.children.is_empty()))
+                .then(|| {
+                    let indent_column = 2usize.saturating_mul(depth.saturating_sub(1));
+                    Rect::new(
+                        inner
+                            .x
+                            .saturating_add(2)
+                            .saturating_add(u16::try_from(indent_column).unwrap_or(u16::MAX)),
+                        inner.y + u16::try_from(row).unwrap_or(u16::MAX),
+                        1,
+                        1,
+                    )
+                });
                 TreeRowHit {
                     rect: Rect::new(
                         inner.x,
@@ -2767,15 +3413,9 @@ impl App {
             .take(usize::from(inner.height))
             .map(|(index, entry)| {
                 let label = self.tree_row_label(entry, cursor_index == Some(index));
-                // Session titles render in the semantic user color so they
-                // are the prominent identity; the shortened ID stays plain.
-                let id_start = label.rfind('(').unwrap_or(label.len());
-                let (title, secondary) = label.split_at(id_start);
-                let mut spans = vec![Span::styled(title.to_owned(), self.theme.user())];
-                if !secondary.is_empty() {
-                    spans.push(Span::styled(secondary.to_owned(), self.theme.muted()));
-                }
-                let mut line = Line::from(spans);
+                // The whole row renders in the semantic user color so the
+                // `agent-id:session-title` text is the prominent identity.
+                let mut line = Line::from(Span::styled(label, self.theme.user()));
                 if self.selected == Some(entry.0) {
                     line = line.style(self.theme.user());
                 } else if cursor_index == Some(index) {
@@ -2785,25 +3425,24 @@ impl App {
             })
             .collect::<Vec<_>>();
         if entries.is_empty() {
-            // There are no selectable nodes until a session has been loaded.
             frame.render_widget(
                 List::new(vec!["No session selected"])
-                    .block(Block::default().borders(Borders::ALL).title(title)),
-                area,
+                    .block(Block::default().borders(Borders::ALL).title("Agents")),
+                panel,
             );
             return;
         }
         frame.render_widget(
-            List::new(rows).block(Block::default().borders(Borders::ALL).title(title)),
-            area,
+            List::new(rows).block(Block::default().borders(Borders::ALL).title("Agents")),
+            panel,
         );
     }
 
-    /// One tree row: the session title (or profile fallback) is prominent;
-    /// the watched session gets a `●` marker, the cursor a `>` marker, and
-    /// the shortened ID stays subdued secondary metadata. The expand marker
-    /// sits at the row's indent depth so its hit region is stable.
-    fn tree_row_label(
+    /// One tree row: exactly `agent-id:session-title` with the shortened ID
+    /// as subdued secondary metadata. The watched session gets a `●` marker
+    /// and the cursor a `>` marker; the expand marker sits at the row's
+    /// indent depth so its hit region is stable.
+    pub(super) fn tree_row_label(
         &self,
         (session_id, session, depth): &(SessionId, SessionMeta, usize),
         cursor: bool,
@@ -2828,17 +3467,23 @@ impl App {
         let watched = if self.selected == Some(*session_id) {
             "● "
         } else {
-            ""
+            // Keep the watch-marker column reserved on every row. Without
+            // this padding, selecting the root removes two leading cells from
+            // every unselected descendant and visually cancels one depth.
+            "  "
         };
         let cursor = if cursor { "> " } else { "  " };
         let title = session
             .title
             .as_ref()
             .map(SessionTitle::to_string)
-            .unwrap_or_else(|| session.profile.name.clone());
+            .unwrap_or_else(|| "untitled".to_owned());
+        // Primary text is exactly `agent-id:session-title`; hierarchy,
+        // cursor, and watch markers live in prefix cells only, and the row
+        // shows no session ID.
         format!(
-            "{cursor}{indent}{watched}{title} ({})",
-            short_id(*session_id)
+            "{cursor}{indent}{watched}{agent}:{title}",
+            agent = session.creation_selection.agent,
         )
     }
 
@@ -2941,12 +3586,15 @@ impl App {
             .title(format!("Connect {} ({})", provider.name, provider.id));
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        let endpoint = provider.api.as_deref().unwrap_or("catalog default");
-        let docs = provider
-            .documentation_url
-            .as_deref()
-            .unwrap_or("not advertised");
-        let revision = self.catalog_revision.as_deref().unwrap_or("unavailable");
+        let endpoint = provider
+            .api
+            .as_ref()
+            .map_or("catalog default", |api| api.as_str());
+        let docs = provider.documentation_url.as_str();
+        let revision = self
+            .catalog_revision
+            .as_ref()
+            .map_or("unavailable", |revision| revision.as_str());
         let mut lines = vec![
             format!("Endpoint: {endpoint}"),
             format!("Documentation: {docs}"),
@@ -2984,12 +3632,14 @@ impl App {
             "Provider ID: {}\nName: {}\nEndpoint: {}\nDocumentation: {}\nCatalog revision: {}\nCredential fields supplied: {}\n\nPress Enter/Y to connect, BackTab to edit, or Esc/N to cancel and clear.",
             provider.id,
             provider.name,
-            provider.api.as_deref().unwrap_or("catalog default"),
             provider
-                .documentation_url
-                .as_deref()
-                .unwrap_or("not advertised"),
-            self.catalog_revision.as_deref().unwrap_or("unavailable"),
+                .api
+                .as_ref()
+                .map_or("catalog default", |api| api.as_str()),
+            provider.documentation_url.as_str(),
+            self.catalog_revision
+                .as_ref()
+                .map_or("unavailable", |revision| revision.as_str()),
             if populated.is_empty() {
                 "none"
             } else {
@@ -3152,11 +3802,6 @@ pub(super) fn handle_terminal_resize<B: Backend>(
     Ok(())
 }
 
-/// Build width-resolved lines and block regions together. `regions` covers
-/// every rendered row/body line for a thinking child or tool block; unblocked
-/// transcript lines have no region. The caller retains this layout so a mouse
-/// y position can be translated with the active scroll offset without a
-/// second layout pass.
 fn contains(rect: Rect, column: u16, row: u16) -> bool {
     rect.contains(Position::new(column, row))
 }
@@ -3181,6 +3826,92 @@ fn is_approval_scroll_key(code: KeyCode) -> bool {
             | KeyCode::Home
             | KeyCode::End
     )
+}
+
+/// The exact `Agent(Model-Variant)` draft-selection title form. Base renders
+/// as `base` in the Variant portion.
+fn draft_title(draft: &RunSelection) -> String {
+    let variant = draft
+        .model
+        .variant
+        .as_ref()
+        .map_or_else(|| "base".to_owned(), |variant| variant.to_string());
+    format!("{}({}-{})", draft.agent, draft.model.model, variant)
+}
+
+/// Extract an immediate title patch from a `SessionTitleCommitted` event:
+/// (session, new title, authoritative sequence).
+fn title_change_from_event(
+    event: &cookie_agent_protocol::StoredEvent,
+) -> Option<(SessionId, Option<SessionTitle>, u64)> {
+    let EventPayload::SessionTitleCommitted { change, .. } = &event.payload else {
+        return None;
+    };
+    let title = match change {
+        SessionTitleChange::UserSet { title, .. }
+        | SessionTitleChange::InternalAgentSet { title, .. }
+        | SessionTitleChange::FallbackSet { title } => Some(title.clone()),
+        SessionTitleChange::UserClear { .. } | SessionTitleChange::UserReset { .. } => None,
+    };
+    Some((event.session_id, title, event.seq))
+}
+
+/// Collect the newest known title for each session from the live tree and
+/// session list, so stale patches can be repaired with the newer value.
+fn collect_known_titles(
+    tree: Option<&SessionTree>,
+    sessions: &[SessionMeta],
+    sequences: &HashMap<SessionId, u64>,
+    titles: &mut HashMap<SessionId, (u64, Option<SessionTitle>)>,
+) {
+    fn walk(node: &SessionTree, titles: &mut HashMap<SessionId, (u64, Option<SessionTitle>)>) {
+        titles.insert(
+            node.session.session_id,
+            (node.session.title_updated_seq, node.session.title.clone()),
+        );
+        for child in &node.children {
+            walk(child, titles);
+        }
+    }
+    if let Some(tree) = tree {
+        walk(tree, titles);
+    }
+    for session in sessions {
+        titles
+            .entry(session.session_id)
+            .and_modify(|entry| {
+                if session.title_updated_seq > entry.0 {
+                    *entry = (session.title_updated_seq, session.title.clone());
+                }
+            })
+            .or_insert((session.title_updated_seq, session.title.clone()));
+    }
+    // Any session with a newer sequence but no meta patch yet keeps its
+    // recorded sequence so stale tree values cannot regress it.
+    for (session_id, seq) in sequences {
+        titles
+            .entry(*session_id)
+            .and_modify(|entry| entry.0 = entry.0.max(*seq))
+            .or_insert((*seq, None));
+    }
+}
+
+fn patch_tree_node_titles(
+    tree: &mut SessionTree,
+    sequences: &HashMap<SessionId, u64>,
+    known: &HashMap<SessionId, (u64, Option<SessionTitle>)>,
+) {
+    let session_id = tree.session.session_id;
+    let known_seq = sequences.get(&session_id).copied().unwrap_or(0);
+    if tree.session.title_updated_seq < known_seq {
+        // The tree response is older than a title event already applied;
+        // restore the newest known title and sequence.
+        tree.session.title = known.get(&session_id).and_then(|(_, title)| title.clone());
+        tree.session.title_updated_seq = known_seq;
+    }
+    for child in &mut tree.children {
+        patch_tree_node_titles(child, sequences, known);
+    }
 }
 
 pub(super) fn approval_content(approval: &ApprovalState) -> String {
@@ -3245,7 +3976,7 @@ pub(super) fn approval_content(approval: &ApprovalState) -> String {
             "{}. action: {:?}\n   operation: {}\n   lifetime: {:?}",
             index + 1,
             capability.action,
-            capability.operation,
+            capability.operation.as_str(),
             approval.capability_lifetime
         )
         .expect("writing to a String cannot fail");
@@ -3267,7 +3998,7 @@ pub(super) fn approval_content(approval: &ApprovalState) -> String {
             index + 1,
             resource.capability,
             normalized,
-            resource.canonical,
+            resource.canonical.as_str(),
             resource.binding_digest.digest(),
             approval_boundary(&resource.boundary),
             resource.binding_lifetime,
@@ -3300,7 +4031,10 @@ pub(super) fn approval_content(approval: &ApprovalState) -> String {
                     content,
                     "      {}. rule id: {} · source layer: {} · effect: {:?}",
                     candidate_index + 1,
-                    candidate.rule_id.as_deref().unwrap_or("<none>"),
+                    candidate
+                        .rule_id
+                        .as_ref()
+                        .map_or("<none>", |id| id.as_str()),
                     candidate.source_layer,
                     candidate.effect
                 )
@@ -3432,23 +4166,20 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         .split(vertical[1])[1]
 }
 
-fn current_dir() -> String {
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .display()
-        .to_string()
-}
-
-fn client_run_id() -> String {
+fn client_run_id() -> ClientRunId {
     let ticks = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("tui-{ticks}")
+    ClientRunId::new(format!("tui-{ticks}")).expect("bounded client run id")
+}
+
+fn client_response_id() -> ClientResponseId {
+    ClientResponseId::new(Uuid::now_v7().to_string()).expect("uuid-derived client response id")
 }
 
 fn collect_tree_session_ids(tree: &SessionTree, session_ids: &mut Vec<SessionId>) {
-    session_ids.push(tree.session.id);
+    session_ids.push(tree.session.session_id);
     for child in &tree.children {
         collect_tree_session_ids(child, session_ids);
     }
@@ -3468,10 +4199,19 @@ fn find_session(tree: &SessionTree, session_id: SessionId) -> Option<&SessionMet
 }
 
 fn find_node(tree: &SessionTree, session_id: SessionId) -> Option<&SessionTree> {
-    if tree.session.id == session_id {
+    if tree.session.session_id == session_id {
         return Some(tree);
     }
     tree.children
         .iter()
         .find_map(|child| find_node(child, session_id))
+}
+
+fn find_node_mut(tree: &mut SessionTree, session_id: SessionId) -> Option<&mut SessionTree> {
+    if tree.session.session_id == session_id {
+        return Some(tree);
+    }
+    tree.children
+        .iter_mut()
+        .find_map(|child| find_node_mut(child, session_id))
 }

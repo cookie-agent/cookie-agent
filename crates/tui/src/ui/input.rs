@@ -324,13 +324,6 @@ impl InputState {
         self.reanchor_cursor();
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_cursor_from_display_column(&mut self, column: u16) {
-        self.layout_width = u16::MAX;
-        self.layout_height = 1;
-        self.set_cursor_from_display_position(0, column);
-    }
-
     fn move_vertical(&mut self, up: bool) {
         self.move_visual_rows(up, 1);
     }

@@ -1,0 +1,621 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApprovalRespondResult",
+  "type": "object",
+  "properties": {
+    "approval": {
+      "$ref": "#/$defs/ApprovalRecord"
+    },
+    "client_response_id": {
+      "description": "Bounded approval response idempotency key.",
+      "type": "string",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "client_response_id",
+    "approval"
+  ],
+  "$defs": {
+    "ApprovalBoundary": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "exact"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "prefix": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "command_prefix"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "prefix"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "root_session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "delegation_tree"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "root_session_id"
+          ]
+        }
+      ]
+    },
+    "ApprovalCapability": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/PermissionAction"
+        },
+        "operation": {
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._:-]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "operation"
+      ]
+    },
+    "ApprovalConstraints": {
+      "type": "object",
+      "properties": {
+        "allow_once": {
+          "type": "boolean"
+        },
+        "allow_tree_grant": {
+          "type": "boolean"
+        },
+        "cancellable": {
+          "type": "boolean"
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "allow_once",
+        "allow_tree_grant",
+        "cancellable",
+        "expires_at"
+      ]
+    },
+    "ApprovalDecisionSource": {
+      "type": "string",
+      "enum": [
+        "policy",
+        "model",
+        "internal_agent",
+        "tree_grant",
+        "user",
+        "doom_loop_guard",
+        "system"
+      ]
+    },
+    "ApprovalEvaluation": {
+      "type": "object",
+      "properties": {
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "resource_digest": {
+          "$ref": "#/$defs/PreparedResourceDigest"
+        },
+        "trace": {
+          "$ref": "#/$defs/DecisionTrace"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "resource_digest",
+        "effect",
+        "trace"
+      ]
+    },
+    "ApprovalFeedback": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "description": "Control-free bounded safe error text.",
+          "type": "string",
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "message"
+      ]
+    },
+    "ApprovalFinalDecision": {
+      "type": "object",
+      "properties": {
+        "feedback": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalFeedback"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/ApprovalFinalOutcome"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/ApprovalReasonCode"
+        },
+        "source": {
+          "$ref": "#/$defs/ApprovalDecisionSource"
+        },
+        "tree_grant_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "source",
+        "reason_code",
+        "feedback",
+        "tree_grant_id"
+      ]
+    },
+    "ApprovalFinalOutcome": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "rejected",
+        "cancelled",
+        "expired"
+      ]
+    },
+    "ApprovalInternalDecision": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "$ref": "#/$defs/ApprovalInternalDecisionKind"
+        },
+        "evaluations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalEvaluation"
+          },
+          "maxItems": 256
+        },
+        "reason_code": {
+          "$ref": "#/$defs/ApprovalReasonCode"
+        },
+        "source": {
+          "$ref": "#/$defs/ApprovalDecisionSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "source",
+        "reason_code",
+        "evaluations"
+      ]
+    },
+    "ApprovalInternalDecisionKind": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "deny",
+        "ask",
+        "escalate"
+      ]
+    },
+    "ApprovalReasonCode": {
+      "type": "string",
+      "enum": [
+        "policy_allowed",
+        "policy_denied",
+        "policy_requires_approval",
+        "model_requested",
+        "internal_agent_allowed",
+        "internal_agent_denied",
+        "tree_grant_matched",
+        "user_approved_once",
+        "user_approved_tree",
+        "user_rejected",
+        "user_cancelled",
+        "request_cancelled",
+        "doom_loop_detected",
+        "constraint_violation",
+        "operation_changed",
+        "prepared_capability_lost",
+        "unsupported_platform",
+        "approval_expired",
+        "escalated",
+        "unattended",
+        "system_error"
+      ]
+    },
+    "ApprovalRecord": {
+      "type": "object",
+      "properties": {
+        "final_decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalFinalDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "internal_decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalInternalDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "request": {
+          "$ref": "#/$defs/ApprovalRequest"
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "status": {
+          "$ref": "#/$defs/ApprovalStatus"
+        },
+        "user_decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalUserDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "request",
+        "status",
+        "internal_decision",
+        "user_decision",
+        "final_decision"
+      ]
+    },
+    "ApprovalRequest": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "constraints": {
+          "$ref": "#/$defs/ApprovalConstraints"
+        },
+        "evaluations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalEvaluation"
+          },
+          "maxItems": 256
+        },
+        "operation": {
+          "$ref": "#/$defs/PreparedOperationIdentity"
+        },
+        "operation_fingerprint": {
+          "$ref": "#/$defs/OperationFingerprint"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "trigger": {
+          "$ref": "#/$defs/ApprovalTrigger"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "approval_id",
+        "revision",
+        "trigger",
+        "operation_fingerprint",
+        "operation",
+        "evaluations",
+        "constraints"
+      ]
+    },
+    "ApprovalResourceSource": {
+      "type": "string",
+      "enum": [
+        "primary_operation",
+        "secondary_operation",
+        "external_directory_guard",
+        "model_request",
+        "doom_loop_guard"
+      ]
+    },
+    "ApprovalStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "escalated",
+        "approved",
+        "rejected",
+        "cancelled",
+        "expired"
+      ]
+    },
+    "ApprovalTrigger": {
+      "type": "string",
+      "enum": [
+        "permission_policy",
+        "model_tool_approval",
+        "internal_agent",
+        "doom_loop"
+      ]
+    },
+    "ApprovalUserDecision": {
+      "type": "string",
+      "enum": [
+        "approve_once",
+        "approve_tree",
+        "reject",
+        "cancel"
+      ]
+    },
+    "DecisionTrace": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/PermissionAction"
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MatchedPermissionRule"
+          }
+        },
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "normalized_resource": {
+          "type": "string"
+        },
+        "precedence_reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "normalized_resource",
+        "candidates",
+        "effect",
+        "precedence_reason"
+      ]
+    },
+    "MatchedPermissionRule": {
+      "type": "object",
+      "properties": {
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "rule_id": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "source_layer": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "rule_id",
+        "source_layer",
+        "effect"
+      ]
+    },
+    "OperationFingerprint": {
+      "type": "object",
+      "properties": {
+        "digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "digest"
+      ]
+    },
+    "PermissionAction": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "bash",
+        "grep",
+        "glob",
+        "delegate",
+        "external_directory"
+      ]
+    },
+    "PermissionEffect": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "ask",
+        "deny"
+      ]
+    },
+    "PreparedApprovalResource": {
+      "type": "object",
+      "properties": {
+        "binding_digest": {
+          "$ref": "#/$defs/PreparedResourceDigest"
+        },
+        "binding_lifetime": {
+          "$ref": "#/$defs/PreparedBindingLifetime"
+        },
+        "boundary": {
+          "$ref": "#/$defs/ApprovalBoundary"
+        },
+        "canonical": {
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._:-]*$"
+        },
+        "capability": {
+          "$ref": "#/$defs/PermissionAction"
+        },
+        "source": {
+          "$ref": "#/$defs/ApprovalResourceSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "capability",
+        "canonical",
+        "binding_digest",
+        "binding_lifetime",
+        "boundary",
+        "source"
+      ]
+    },
+    "PreparedBindingLifetime": {
+      "type": "string",
+      "enum": [
+        "process_local",
+        "restart_stable"
+      ]
+    },
+    "PreparedCapabilityLifetime": {
+      "type": "string",
+      "enum": [
+        "process_local"
+      ]
+    },
+    "PreparedOperationIdentity": {
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalCapability"
+          },
+          "maxItems": 256,
+          "minItems": 1
+        },
+        "capability_lifetime": {
+          "$ref": "#/$defs/PreparedCapabilityLifetime"
+        },
+        "execution_context_digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "normalized_arguments_digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PreparedApprovalResource"
+          },
+          "maxItems": 256
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "normalized_arguments_digest",
+        "capabilities",
+        "resources",
+        "execution_context_digest",
+        "capability_lifetime"
+      ]
+    },
+    "PreparedResourceDigest": {
+      "type": "object",
+      "properties": {
+        "digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "digest"
+      ]
+    }
+  }
+}

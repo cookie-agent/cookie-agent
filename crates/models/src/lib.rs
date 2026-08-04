@@ -1,8 +1,9 @@
-//! Immutable configured model bindings and explicit Oven adapter construction.
+//! Provider-centric model configuration, immutable variants, and Oven adapters.
 
 mod catalog;
 mod credentials;
 mod manager;
+mod provider;
 mod schema;
 
 use std::{
@@ -12,170 +13,332 @@ use std::{
     time::Duration,
 };
 
+use cookie_agent_identity::{ModelKey, ModelSelection, ProviderId, ProviderModelId, VariantId};
 use oven_sdk::{
     AbortSignal, BoxFuture, CompactionRequest, CompactionResult, LanguageModel,
-    LanguageModelDescriptor, ModelError, ProviderOptions, Request, StreamPart, StreamResponse,
+    LanguageModelDescriptor, ModelError, Request, StreamPart, StreamResponse,
 };
 use serde::{Deserialize, Serialize};
-use sha2::Digest as _;
+use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 pub use catalog::{
-    Catalog, CatalogBuildError, CatalogError, CatalogModel, CatalogModelCapabilities,
-    CatalogModelLimits, CatalogModelModalities, CatalogModelStatus, CatalogProvider, CatalogRecipe,
-    CatalogSnapshot, MODELS_DEV_ARTIFACT_BYTES, MODELS_DEV_ARTIFACT_SHA256, MODELS_DEV_COMMIT,
-    MODELS_DEV_FETCHED_AT, MODELS_DEV_SOURCE, UnsupportedReason,
+    Catalog, CatalogError, CatalogModel, CatalogModelCapabilities, CatalogModelLimits,
+    CatalogModelModalities, CatalogModelStatus, CatalogProvider, CatalogReasoningOption,
+    CatalogRecipe, CatalogSnapshot, MODELS_DEV_ARTIFACT_BYTES, MODELS_DEV_ARTIFACT_SHA256,
+    MODELS_DEV_COMMIT, MODELS_DEV_FETCHED_AT, MODELS_DEV_SOURCE, UnsupportedReason,
 };
 pub use credentials::{
     CredentialConnectOutcome, CredentialConnectReceipt, CredentialConnectRequest,
-    CredentialSnapshot, CredentialStore, CredentialStoreError, StoredConnection,
+    CredentialSnapshot, CredentialStore, CredentialStoreError,
 };
 pub use manager::{ModelSetManager, ModelSetManagerError, ModelSnapshot};
-pub use schema::{ConfiguredModel, ModelBuildError, build_model_set, configuration_fingerprint};
+pub use provider::{
+    AdaptorId, AuthDefinition, AuthFieldName, CancellationCapability, CompactionCapability,
+    ExplicitModelConfig, ExplicitProvider, FiniteF32, HeaderName, MediaCapability, MediaKind,
+    MimeType, Modality, ModelBuildError, ModelCapabilities, ModelsDevModelConfig,
+    ModelsDevProvider, OpenResponsesMode, ProviderDefinition, ProviderOptions, ReasoningBehavior,
+    ReasoningEffort, ReplayCapability, RequestDefaults, ResolvedRequestDefaults, SecretString,
+    ToolChoice, VariantDirective, build_model_set,
+};
 
-/// Safe SHA-256 identity of behavior-affecting model configuration.
+/// Validated lowercase SHA-256 digest.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
-pub struct ConfigurationFingerprint(String);
+pub struct Sha256Digest(String);
 
-impl ConfigurationFingerprint {
-    /// Creates a validated lowercase SHA-256 fingerprint.
+impl Sha256Digest {
     pub fn new(value: impl Into<String>) -> Result<Self, ModelSetError> {
         let value = value.into();
-        if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(ModelSetError::InvalidFingerprint);
+        if value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            Ok(Self(value))
+        } else {
+            Err(ModelSetError::InvalidFingerprint)
         }
-        Ok(Self(value.to_ascii_lowercase()))
     }
 
-    /// Returns the lowercase hexadecimal digest.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
-}
 
-/// Immutable defaults applied before a configured model validates a request.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RequestDefaults {
-    /// Default maximum output tokens.
-    pub max_output_tokens: Option<u64>,
-    /// Default temperature.
-    pub temperature: Option<f64>,
-    /// Default top-p value.
-    pub top_p: Option<f64>,
-    /// Default provider-neutral reasoning effort.
-    pub reasoning_effort: Option<String>,
-    /// Default raw-event inclusion.
-    #[serde(default)]
-    pub include_raw: bool,
-    /// Exact typed provider options serialized into Oven namespaces.
-    #[serde(default)]
-    pub provider_options: ProviderOptions,
-}
-
-impl RequestDefaults {
-    /// Fills unset normalized fields and absent provider namespaces.
-    #[must_use]
-    pub fn apply(&self, mut request: Request) -> Request {
-        request.inference.max_output_tokens = request
-            .inference
-            .max_output_tokens
-            .or(self.max_output_tokens);
-        request.inference.temperature = request.inference.temperature.or(self.temperature);
-        request.inference.top_p = request.inference.top_p.or(self.top_p);
-        request.inference.reasoning_effort = request
-            .inference
-            .reasoning_effort
-            .clone()
-            .or_else(|| self.reasoning_effort.clone());
-        request.stream_options.include_raw |= self.include_raw;
-        for (namespace, value) in &self.provider_options {
-            request
-                .provider_options
-                .entry(namespace.clone())
-                .or_insert_with(|| value.clone());
-        }
-        request
+    pub(crate) fn hash(domain: &str, value: &impl Serialize) -> Result<Self, serde_json::Error> {
+        let mut hasher = Sha256::new();
+        hasher.update(domain.as_bytes());
+        hasher.update([0]);
+        hasher.update(serde_json::to_vec(value)?);
+        Ok(Self(format!("{:x}", hasher.finalize())))
     }
 }
 
-/// One exact configured Oven model and its immutable defaults.
+pub(crate) struct ConstructedAdapter {
+    pub model: Arc<dyn LanguageModel>,
+}
+
+/// Origin of one enabled named variant.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VariantOrigin {
+    ModelsDevEffort,
+    ModelsDevToggle,
+    ModelsDevBudgetTokens,
+    Explicit,
+}
+
+/// One fully compiled named behavior preset.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelVariant {
+    pub id: VariantId,
+    pub display_name: String,
+    pub origin: VariantOrigin,
+    pub defaults: ResolvedRequestDefaults,
+    pub provider_options: ProviderOptions,
+    pub behavior_fingerprint: Sha256Digest,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AvailableVariantDescriptor {
+    pub id: VariantId,
+    pub display_name: String,
+    pub origin: VariantOrigin,
+    pub behavior_fingerprint: Sha256Digest,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AvailableModelDescriptor {
+    pub key: ModelKey,
+    pub display_name: String,
+    pub capabilities: ModelCapabilities,
+    pub variants: Vec<AvailableVariantDescriptor>,
+    pub default_variant: Option<VariantId>,
+    pub behavior_fingerprint: Sha256Digest,
+}
+
+/// Safe exact selection identity retained in frozen state.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedModelRef {
+    pub selection: ModelSelection,
+    pub provider_id: ProviderId,
+    pub model_id: ProviderModelId,
+    pub adapter_id: AdaptorId,
+    pub selection_fingerprint: Sha256Digest,
+}
+
+/// Serializable exact model/variant behavior frozen into a run.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrozenModelBinding {
+    pub resolved: ResolvedModelRef,
+    pub descriptor: LanguageModelDescriptor,
+    pub defaults: ResolvedRequestDefaults,
+    pub provider_options: ProviderOptions,
+    pub behavior_fingerprint: Sha256Digest,
+}
+
 #[derive(Clone)]
-pub struct ModelEntry {
-    alias: String,
+struct ExecutableBehavior {
+    model: Option<Arc<dyn LanguageModel>>,
+    descriptor: LanguageModelDescriptor,
+    defaults: ResolvedRequestDefaults,
+    provider_options: ProviderOptions,
+    behavior_fingerprint: Sha256Digest,
+}
+
+/// Exact executable model selected by a base or named-variant binding.
+#[derive(Clone)]
+pub struct ResolvedModel {
+    selection: ModelSelection,
     model: Arc<dyn LanguageModel>,
     descriptor: LanguageModelDescriptor,
-    defaults: RequestDefaults,
-    behavior_fingerprint: ConfigurationFingerprint,
+    defaults: ResolvedRequestDefaults,
+    provider_options: ProviderOptions,
+    behavior_fingerprint: Sha256Digest,
 }
 
-impl ModelEntry {
-    /// Creates an entry and snapshots its descriptor.
-    pub fn new(
-        alias: impl Into<String>,
-        model: Arc<dyn LanguageModel>,
-        defaults: RequestDefaults,
-    ) -> Result<Self, ModelSetError> {
-        let descriptor = model.descriptor();
-        let behavior_fingerprint = entry_behavior_fingerprint(&descriptor, &defaults);
-        Self::new_with_behavior_fingerprint(alias, model, defaults, behavior_fingerprint)
-    }
-
-    /// Creates an entry with a complete caller-computed secret-free behavior fingerprint.
-    pub fn new_with_behavior_fingerprint(
-        alias: impl Into<String>,
-        model: Arc<dyn LanguageModel>,
-        defaults: RequestDefaults,
-        behavior_fingerprint: ConfigurationFingerprint,
-    ) -> Result<Self, ModelSetError> {
-        let alias = alias.into();
-        validate_alias(&alias)?;
-        let descriptor = model.descriptor();
-        Ok(Self {
-            alias,
-            model,
-            descriptor,
-            defaults,
-            behavior_fingerprint,
-        })
-    }
-
-    /// Returns the configuration alias.
+impl ResolvedModel {
     #[must_use]
-    pub fn alias(&self) -> &str {
-        &self.alias
+    pub fn selection(&self) -> &ModelSelection {
+        &self.selection
     }
 
-    /// Returns the configured Oven model.
     #[must_use]
     pub fn model(&self) -> &Arc<dyn LanguageModel> {
         &self.model
     }
 
-    /// Returns the frozen descriptor.
     #[must_use]
     pub fn descriptor(&self) -> &LanguageModelDescriptor {
         &self.descriptor
     }
 
-    /// Returns immutable request defaults.
     #[must_use]
-    pub fn defaults(&self) -> &RequestDefaults {
-        &self.defaults
-    }
-
-    /// Returns the complete secret-free identity of behavior-affecting configuration.
-    #[must_use]
-    pub fn behavior_fingerprint(&self) -> &ConfigurationFingerprint {
+    pub fn behavior_fingerprint(&self) -> &Sha256Digest {
         &self.behavior_fingerprint
     }
 
-    /// Applies defaults to a request.
     #[must_use]
     pub fn prepare_request(&self, request: Request) -> Request {
-        self.defaults.apply(request)
+        self.defaults.apply(&self.provider_options, request)
+    }
+}
+
+impl fmt::Debug for ResolvedModel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResolvedModel")
+            .field("selection", &self.selection)
+            .field("descriptor", &self.descriptor)
+            .field("behavior_fingerprint", &self.behavior_fingerprint)
+            .finish_non_exhaustive()
+    }
+}
+
+/// One configured direct model key with base behavior and named variants.
+#[derive(Clone)]
+pub struct ModelEntry {
+    key: ModelKey,
+    display_name: String,
+    adapter_id: AdaptorId,
+    base: ExecutableBehavior,
+    capabilities: ModelCapabilities,
+    variants: BTreeMap<VariantId, ModelVariant>,
+    variant_behaviors: BTreeMap<VariantId, ExecutableBehavior>,
+    default_variant: Option<VariantId>,
+    behavior_fingerprint: Sha256Digest,
+    available: bool,
+}
+
+impl ModelEntry {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        key: ModelKey,
+        display_name: String,
+        adapter_id: AdaptorId,
+        model: Option<Arc<dyn LanguageModel>>,
+        descriptor: LanguageModelDescriptor,
+        capabilities: ModelCapabilities,
+        defaults: ResolvedRequestDefaults,
+        provider_options: ProviderOptions,
+        variants: BTreeMap<VariantId, ModelVariant>,
+        variant_models: BTreeMap<VariantId, Option<Arc<dyn LanguageModel>>>,
+        variant_descriptors: BTreeMap<VariantId, LanguageModelDescriptor>,
+        default_variant: Option<VariantId>,
+        behavior_fingerprint: Sha256Digest,
+        available: bool,
+    ) -> Self {
+        Self {
+            key,
+            display_name,
+            adapter_id,
+            base: ExecutableBehavior {
+                model,
+                descriptor,
+                defaults,
+                provider_options,
+                behavior_fingerprint: behavior_fingerprint.clone(),
+            },
+            capabilities,
+            variant_behaviors: variants
+                .iter()
+                .map(|(id, variant)| {
+                    (
+                        id.clone(),
+                        ExecutableBehavior {
+                            model: variant_models
+                                .get(id)
+                                .cloned()
+                                .expect("compiled variant model"),
+                            descriptor: variant_descriptors
+                                .get(id)
+                                .cloned()
+                                .expect("compiled variant descriptor"),
+                            defaults: variant.defaults.clone(),
+                            provider_options: variant.provider_options.clone(),
+                            behavior_fingerprint: variant.behavior_fingerprint.clone(),
+                        },
+                    )
+                })
+                .collect(),
+            variants,
+            default_variant,
+            behavior_fingerprint,
+            available,
+        }
+    }
+
+    #[must_use]
+    pub fn key(&self) -> &ModelKey {
+        &self.key
+    }
+
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    #[must_use]
+    pub const fn adapter_id(&self) -> AdaptorId {
+        self.adapter_id
+    }
+
+    #[must_use]
+    pub fn descriptor(&self) -> &LanguageModelDescriptor {
+        &self.base.descriptor
+    }
+
+    #[must_use]
+    pub fn capabilities(&self) -> &ModelCapabilities {
+        &self.capabilities
+    }
+
+    #[must_use]
+    pub fn variants(&self) -> &BTreeMap<VariantId, ModelVariant> {
+        &self.variants
+    }
+
+    #[must_use]
+    pub fn default_variant(&self) -> Option<&VariantId> {
+        self.default_variant.as_ref()
+    }
+
+    #[must_use]
+    pub fn default_selection(&self) -> ModelSelection {
+        ModelSelection {
+            model: self.key.clone(),
+            variant: self.default_variant.clone(),
+        }
+    }
+
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
+        self.available
+    }
+
+    #[must_use]
+    pub fn behavior_fingerprint(&self) -> &Sha256Digest {
+        &self.behavior_fingerprint
+    }
+
+    fn behavior(&self, variant: Option<&VariantId>) -> Result<&ExecutableBehavior, ModelSetError> {
+        match variant {
+            None => Ok(&self.base),
+            Some(id) => {
+                self.variant_behaviors
+                    .get(id)
+                    .ok_or_else(|| ModelSetError::UnknownVariant {
+                        model: self.key.clone(),
+                        variant: id.clone(),
+                    })
+            }
+        }
     }
 }
 
@@ -183,54 +346,37 @@ impl fmt::Debug for ModelEntry {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ModelEntry")
-            .field("alias", &self.alias)
-            .field("descriptor", &self.descriptor)
-            .field("defaults", &self.defaults)
+            .field("key", &self.key)
+            .field("display_name", &self.display_name)
+            .field("adapter_id", &self.adapter_id)
+            .field("descriptor", &self.base.descriptor)
+            .field("variants", &self.variants.keys().collect::<Vec<_>>())
+            .field("default_variant", &self.default_variant)
             .field("behavior_fingerprint", &self.behavior_fingerprint)
+            .field("available", &self.available)
             .finish_non_exhaustive()
     }
 }
 
-/// Serializable model binding frozen into session policy.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct FrozenModelBinding {
-    /// Configuration alias used by the agent chain.
-    pub alias: String,
-    /// Exact descriptor observed when configuration was materialized.
-    pub descriptor: LanguageModelDescriptor,
-    /// Immutable request defaults.
-    pub defaults: RequestDefaults,
-    /// Complete secret-free behavior identity for the exact configured entry.
-    pub behavior_fingerprint: ConfigurationFingerprint,
-    /// Safe model-set configuration fingerprint.
-    pub configuration_fingerprint: ConfigurationFingerprint,
-}
-
-/// Immutable alias-indexed configured models.
+/// Immutable direct-key model set.
 #[derive(Clone)]
 pub struct ModelSet {
-    entries: Arc<BTreeMap<String, ModelEntry>>,
-    fingerprint: ConfigurationFingerprint,
+    entries: Arc<BTreeMap<ModelKey, ModelEntry>>,
+    fingerprint: Sha256Digest,
 }
 
 impl ModelSet {
-    /// Creates a set once; duplicate aliases and alias/entry mismatches fail closed.
     pub fn new(
-        entries: impl IntoIterator<Item = (String, ModelEntry)>,
-        fingerprint: ConfigurationFingerprint,
+        entries: impl IntoIterator<Item = (ModelKey, ModelEntry)>,
+        fingerprint: Sha256Digest,
     ) -> Result<Self, ModelSetError> {
         let mut built = BTreeMap::new();
-        for (alias, entry) in entries {
-            validate_alias(&alias)?;
-            if alias != entry.alias {
-                return Err(ModelSetError::AliasMismatch {
-                    key: alias,
-                    entry: entry.alias,
-                });
+        for (key, entry) in entries {
+            if key != entry.key {
+                return Err(ModelSetError::KeyMismatch);
             }
-            if built.insert(alias.clone(), entry).is_some() {
-                return Err(ModelSetError::DuplicateAlias(alias));
+            if built.insert(key.clone(), entry).is_some() {
+                return Err(ModelSetError::DuplicateKey(key));
             }
         }
         Ok(Self {
@@ -239,59 +385,106 @@ impl ModelSet {
         })
     }
 
-    /// Returns one exact entry.
     #[must_use]
-    pub fn get(&self, alias: &str) -> Option<&ModelEntry> {
-        self.entries.get(alias)
+    pub fn get(&self, key: &ModelKey) -> Option<&ModelEntry> {
+        self.entries.get(key)
     }
 
-    /// Iterates aliases in stable order.
-    pub fn aliases(&self) -> impl ExactSizeIterator<Item = &str> {
-        self.entries.keys().map(String::as_str)
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = (&ModelKey, &ModelEntry)> {
+        self.entries.iter()
     }
 
-    /// Iterates exact aliases and entries in stable order.
-    pub fn entries(&self) -> impl ExactSizeIterator<Item = (&str, &ModelEntry)> {
+    pub fn descriptors(&self) -> Vec<AvailableModelDescriptor> {
         self.entries
-            .iter()
-            .map(|(alias, entry)| (alias.as_str(), entry))
+            .values()
+            .map(|entry| AvailableModelDescriptor {
+                key: entry.key.clone(),
+                display_name: entry.display_name.clone(),
+                capabilities: entry.capabilities.clone(),
+                variants: entry
+                    .variants
+                    .values()
+                    .map(|variant| AvailableVariantDescriptor {
+                        id: variant.id.clone(),
+                        display_name: variant.display_name.clone(),
+                        origin: variant.origin,
+                        behavior_fingerprint: variant.behavior_fingerprint.clone(),
+                    })
+                    .collect(),
+                default_variant: entry.default_variant.clone(),
+                behavior_fingerprint: entry.behavior_fingerprint.clone(),
+            })
+            .collect()
     }
 
-    /// Returns the safe model-set fingerprint.
     #[must_use]
-    pub fn fingerprint(&self) -> &ConfigurationFingerprint {
+    pub fn fingerprint(&self) -> &Sha256Digest {
         &self.fingerprint
     }
 
-    /// Freezes one alias for a session policy snapshot.
-    pub fn freeze(&self, alias: &str) -> Result<FrozenModelBinding, ModelSetError> {
+    pub fn freeze(&self, selection: &ModelSelection) -> Result<FrozenModelBinding, ModelSetError> {
         let entry = self
-            .get(alias)
-            .ok_or_else(|| ModelSetError::UnknownAlias(alias.to_owned()))?;
+            .get(&selection.model)
+            .ok_or_else(|| ModelSetError::UnknownModel(selection.model.clone()))?;
+        if !entry.is_available() {
+            return Err(ModelSetError::ModelUnavailable(selection.model.clone()));
+        }
+        let behavior = entry.behavior(selection.variant.as_ref())?;
+        let selection_fingerprint = Sha256Digest::hash(
+            "cookie-agent/model-selection/v1",
+            &(
+                selection,
+                entry.adapter_id,
+                &behavior.descriptor,
+                &behavior.behavior_fingerprint,
+            ),
+        )
+        .map_err(ModelSetError::FingerprintEncoding)?;
         Ok(FrozenModelBinding {
-            alias: alias.to_owned(),
-            descriptor: entry.descriptor.clone(),
-            defaults: entry.defaults.clone(),
-            behavior_fingerprint: entry.behavior_fingerprint.clone(),
-            configuration_fingerprint: self.fingerprint.clone(),
+            resolved: ResolvedModelRef {
+                selection: selection.clone(),
+                provider_id: selection.model.provider_id(),
+                model_id: selection.model.model_id(),
+                adapter_id: entry.adapter_id,
+                selection_fingerprint,
+            },
+            descriptor: behavior.descriptor.clone(),
+            defaults: behavior.defaults.clone(),
+            provider_options: behavior.provider_options.clone(),
+            behavior_fingerprint: behavior.behavior_fingerprint.clone(),
         })
     }
 
-    /// Resolves a frozen binding only against the exact immutable model set.
-    pub fn resolve(&self, binding: &FrozenModelBinding) -> Result<&ModelEntry, ModelSetError> {
-        if binding.configuration_fingerprint != self.fingerprint {
-            return Err(ModelSetError::FingerprintMismatch);
-        }
+    pub fn resolve_selection(
+        &self,
+        selection: &ModelSelection,
+    ) -> Result<ResolvedModel, ModelSetError> {
         let entry = self
-            .get(&binding.alias)
-            .ok_or_else(|| ModelSetError::UnknownAlias(binding.alias.clone()))?;
-        if entry.descriptor != binding.descriptor
-            || entry.defaults != binding.defaults
-            || entry.behavior_fingerprint != binding.behavior_fingerprint
-        {
-            return Err(ModelSetError::BindingMismatch(binding.alias.clone()));
+            .get(&selection.model)
+            .ok_or_else(|| ModelSetError::UnknownModel(selection.model.clone()))?;
+        if !entry.is_available() {
+            return Err(ModelSetError::ModelUnavailable(selection.model.clone()));
         }
-        Ok(entry)
+        let behavior = entry.behavior(selection.variant.as_ref())?;
+        Ok(ResolvedModel {
+            selection: selection.clone(),
+            model: behavior
+                .model
+                .clone()
+                .ok_or_else(|| ModelSetError::ModelUnavailable(selection.model.clone()))?,
+            descriptor: behavior.descriptor.clone(),
+            defaults: behavior.defaults.clone(),
+            provider_options: behavior.provider_options.clone(),
+            behavior_fingerprint: behavior.behavior_fingerprint.clone(),
+        })
+    }
+
+    pub fn resolve(&self, binding: &FrozenModelBinding) -> Result<ResolvedModel, ModelSetError> {
+        let current = self.freeze(&binding.resolved.selection)?;
+        if current != *binding {
+            return Err(ModelSetError::BindingMismatch);
+        }
+        self.resolve_selection(&binding.resolved.selection)
     }
 }
 
@@ -299,125 +492,46 @@ impl fmt::Debug for ModelSet {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ModelSet")
-            .field("aliases", &self.entries.keys().collect::<Vec<_>>())
+            .field("keys", &self.entries.keys().collect::<Vec<_>>())
             .field("fingerprint", &self.fingerprint)
             .finish()
     }
 }
 
-/// Immutable model-set construction or binding error.
-#[derive(Clone, Debug, Error, Eq, PartialEq)]
+#[derive(Debug, Error)]
 pub enum ModelSetError {
-    /// Alias is empty or contains control characters.
-    #[error("model alias must be non-empty and contain no control characters")]
-    InvalidAlias,
-    /// Fingerprint is not a SHA-256 hexadecimal digest.
-    #[error("configuration fingerprint must be a 64-character SHA-256 digest")]
+    #[error("fingerprint must be lowercase SHA-256 hexadecimal")]
     InvalidFingerprint,
-    /// Alias occurred more than once.
-    #[error("duplicate model alias `{0}`")]
-    DuplicateAlias(String),
-    /// Map key and entry alias differ.
-    #[error("model entry alias `{entry}` does not match key `{key}`")]
-    AliasMismatch { key: String, entry: String },
-    /// Alias was not configured.
-    #[error("unknown model alias `{0}`")]
-    UnknownAlias(String),
-    /// Binding belongs to another configuration.
-    #[error("frozen model binding configuration fingerprint does not match")]
-    FingerprintMismatch,
-    /// Binding descriptor/defaults do not match the entry.
-    #[error("frozen model binding does not match configured alias `{0}`")]
-    BindingMismatch(String),
-}
-
-fn validate_alias(alias: &str) -> Result<(), ModelSetError> {
-    if alias.trim().is_empty() || alias.chars().any(char::is_control) {
-        Err(ModelSetError::InvalidAlias)
-    } else {
-        Ok(())
-    }
-}
-
-fn entry_behavior_fingerprint(
-    descriptor: &LanguageModelDescriptor,
-    defaults: &RequestDefaults,
-) -> ConfigurationFingerprint {
-    let encoded = serde_json::to_vec(&(descriptor, defaults))
-        .expect("model descriptor and defaults always serialize");
-    ConfigurationFingerprint::new(format!("{:x}", sha2::Sha256::digest(encoded)))
-        .expect("SHA-256 is a valid configuration fingerprint")
+    #[error("duplicate model key `{0}`")]
+    DuplicateKey(ModelKey),
+    #[error("model map key does not match entry key")]
+    KeyMismatch,
+    #[error("unknown model `{0}`")]
+    UnknownModel(ModelKey),
+    #[error("model `{0}` is configured but unavailable")]
+    ModelUnavailable(ModelKey),
+    #[error("unknown variant `{variant}` for model `{model}`")]
+    UnknownVariant { model: ModelKey, variant: VariantId },
+    #[error("frozen model binding no longer matches retained behavior")]
+    BindingMismatch,
+    #[error("model fingerprint canonicalization failed")]
+    FingerprintEncoding(#[source] serde_json::Error),
 }
 
 /// One scripted call consumed by [`ScriptedModel`].
 #[derive(Clone, Debug)]
 pub enum ScriptedStep {
-    /// Create a stream after an optional delay.
     Stream {
-        /// Delay before returning [`StreamResponse`].
         creation_delay: Duration,
-        /// Ordered stream items and delays.
         items: Vec<ScriptedStreamItem>,
     },
-    /// Fail before returning a stream, after an optional delay.
     Error {
-        /// Delay before returning the error.
         delay: Duration,
-        /// Planned call error.
         error: ModelError,
     },
-}
-
-/// One deterministic native-compaction call consumed by [`ScriptedModel`].
-#[derive(Clone, Debug)]
-pub enum ScriptedCompactionStep {
-    /// Return a native-context result after an optional delay.
-    Result {
-        /// Delay before returning the result.
-        delay: Duration,
-        /// Planned compaction result.
-        result: Box<CompactionResult>,
-    },
-    /// Return a compaction error after an optional delay.
-    Error {
-        /// Delay before returning the error.
-        delay: Duration,
-        /// Planned compaction error.
-        error: ModelError,
-    },
-}
-
-impl ScriptedCompactionStep {
-    /// Creates an immediate successful compaction result.
-    #[must_use]
-    pub fn result(result: CompactionResult) -> Self {
-        Self::Result {
-            delay: Duration::ZERO,
-            result: Box::new(result),
-        }
-    }
-
-    /// Creates a delayed successful compaction result.
-    #[must_use]
-    pub fn delayed_result(delay: Duration, result: CompactionResult) -> Self {
-        Self::Result {
-            delay,
-            result: Box::new(result),
-        }
-    }
-
-    /// Creates an immediate compaction error.
-    #[must_use]
-    pub fn error(error: ModelError) -> Self {
-        Self::Error {
-            delay: Duration::ZERO,
-            error,
-        }
-    }
 }
 
 impl ScriptedStep {
-    /// Creates an immediate stream from queued item results.
     pub fn stream(items: impl IntoIterator<Item = Result<StreamPart, ModelError>>) -> Self {
         Self::Stream {
             creation_delay: Duration::ZERO,
@@ -425,7 +539,6 @@ impl ScriptedStep {
         }
     }
 
-    /// Creates a stream after `creation_delay`.
     #[must_use]
     pub fn delayed_stream(creation_delay: Duration, items: Vec<ScriptedStreamItem>) -> Self {
         Self::Stream {
@@ -434,7 +547,6 @@ impl ScriptedStep {
         }
     }
 
-    /// Creates an immediate call error.
     #[must_use]
     pub fn error(error: ModelError) -> Self {
         Self::Error {
@@ -443,37 +555,47 @@ impl ScriptedStep {
         }
     }
 
-    /// Creates a delayed call error.
     #[must_use]
     pub fn delayed_error(delay: Duration, error: ModelError) -> Self {
         Self::Error { delay, error }
     }
 }
 
-/// One action in a scripted response stream.
 #[derive(Clone, Debug)]
 pub enum ScriptedStreamItem {
-    /// Emit a successful part or a mid-stream model error.
     Item(Box<Result<StreamPart, ModelError>>),
-    /// Wait while remaining cancellation-aware.
     Delay(Duration),
 }
 
 impl ScriptedStreamItem {
-    /// Queues one stream item result.
     #[must_use]
     pub fn item(item: Result<StreamPart, ModelError>) -> Self {
         Self::Item(Box::new(item))
     }
 }
 
-impl From<Result<StreamPart, ModelError>> for ScriptedStreamItem {
-    fn from(item: Result<StreamPart, ModelError>) -> Self {
-        Self::item(item)
+#[derive(Clone, Debug)]
+pub enum ScriptedCompactionStep {
+    Result {
+        delay: Duration,
+        result: Box<CompactionResult>,
+    },
+    Error {
+        delay: Duration,
+        error: ModelError,
+    },
+}
+
+impl ScriptedCompactionStep {
+    #[must_use]
+    pub fn result(result: CompactionResult) -> Self {
+        Self::Result {
+            delay: Duration::ZERO,
+            result: Box::new(result),
+        }
     }
 }
 
-/// Deterministic, thread-safe Oven model for package and harness tests.
 #[derive(Clone)]
 pub struct ScriptedModel {
     descriptor: LanguageModelDescriptor,
@@ -484,7 +606,6 @@ pub struct ScriptedModel {
 }
 
 impl ScriptedModel {
-    /// Creates a scripted model with an immutable descriptor and FIFO steps.
     #[must_use]
     pub fn new(
         descriptor: LanguageModelDescriptor,
@@ -499,7 +620,6 @@ impl ScriptedModel {
         }
     }
 
-    /// Installs deterministic FIFO native-compaction steps.
     #[must_use]
     pub fn with_compactions(
         mut self,
@@ -509,7 +629,6 @@ impl ScriptedModel {
         self
     }
 
-    /// Returns captured requests in call order.
     #[must_use]
     pub fn requests(&self) -> Vec<Request> {
         self.requests
@@ -518,7 +637,6 @@ impl ScriptedModel {
             .clone()
     }
 
-    /// Returns captured native-compaction requests in call order.
     #[must_use]
     pub fn compaction_requests(&self) -> Vec<CompactionRequest> {
         self.compaction_requests
@@ -527,7 +645,6 @@ impl ScriptedModel {
             .clone()
     }
 
-    /// Returns the number of unconsumed steps.
     #[must_use]
     pub fn remaining(&self) -> usize {
         self.steps
@@ -571,55 +688,45 @@ impl LanguageModel for ScriptedModel {
                 .pop_front()
                 .ok_or_else(|| ModelError::invalid_response("scripted model exhausted"))?;
             match step {
+                ScriptedStep::Error { delay, error } => {
+                    wait_or_abort(delay, &abort).await?;
+                    Err(error)
+                }
                 ScriptedStep::Stream {
                     creation_delay,
                     items,
                 } => {
-                    wait_or_abort(creation_delay, &abort, "before scripted stream creation")
-                        .await?;
-                    let state = ScriptedStreamState {
-                        items: items.into(),
-                        abort,
-                        finished: false,
-                    };
-                    let stream = futures_util::stream::unfold(state, |mut state| async move {
-                        loop {
-                            if state.finished {
+                    wait_or_abort(creation_delay, &abort).await?;
+                    let stream = futures_util::stream::unfold(
+                        (VecDeque::from(items), abort, false),
+                        |(mut items, abort, finished)| async move {
+                            if finished {
                                 return None;
                             }
-                            if state.abort.is_aborted() {
-                                state.finished = true;
-                                return Some((Err(scripted_abort("after stream creation")), state));
-                            }
-                            match state.items.pop_front() {
-                                Some(ScriptedStreamItem::Delay(delay)) => {
-                                    if let Err(error) = wait_or_abort(
-                                        delay,
-                                        &state.abort,
-                                        "during scripted stream delay",
-                                    )
-                                    .await
-                                    {
-                                        state.finished = true;
-                                        return Some((Err(error), state));
+                            loop {
+                                if abort.is_aborted() {
+                                    return Some((
+                                        Err(ModelError::abort("scripted stream aborted")),
+                                        (items, abort, true),
+                                    ));
+                                }
+                                match items.pop_front() {
+                                    Some(ScriptedStreamItem::Delay(delay)) => {
+                                        if let Err(error) = wait_or_abort(delay, &abort).await {
+                                            return Some((Err(error), (items, abort, true)));
+                                        }
                                     }
-                                }
-                                Some(ScriptedStreamItem::Item(item)) => {
-                                    let item = *item;
-                                    state.finished = item.is_err();
-                                    return Some((item, state));
-                                }
-                                None => {
-                                    return None;
+                                    Some(ScriptedStreamItem::Item(item)) => {
+                                        let item = *item;
+                                        let finished = item.is_err();
+                                        return Some((item, (items, abort, finished)));
+                                    }
+                                    None => return None,
                                 }
                             }
-                        }
-                    });
+                        },
+                    );
                     Ok(StreamResponse::new(Box::pin(stream)))
-                }
-                ScriptedStep::Error { delay, error } => {
-                    wait_or_abort(delay, &abort, "before scripted call error").await?;
-                    Err(error)
                 }
             }
         })
@@ -632,11 +739,6 @@ impl LanguageModel for ScriptedModel {
     ) -> BoxFuture<'a, Result<CompactionResult, ModelError>> {
         Box::pin(async move {
             self.validate_compaction(&request)?;
-            if abort.is_aborted() {
-                return Err(ModelError::abort(
-                    "scripted native compaction was aborted before dispatch",
-                ));
-            }
             self.compaction_requests
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
@@ -649,11 +751,11 @@ impl LanguageModel for ScriptedModel {
                 .ok_or_else(|| ModelError::invalid_response("scripted compaction exhausted"))?;
             match step {
                 ScriptedCompactionStep::Result { delay, result } => {
-                    wait_or_abort(delay, &abort, "during scripted native compaction").await?;
+                    wait_or_abort(delay, &abort).await?;
                     Ok(*result)
                 }
                 ScriptedCompactionStep::Error { delay, error } => {
-                    wait_or_abort(delay, &abort, "before scripted native compaction error").await?;
+                    wait_or_abort(delay, &abort).await?;
                     Err(error)
                 }
             }
@@ -661,29 +763,15 @@ impl LanguageModel for ScriptedModel {
     }
 }
 
-struct ScriptedStreamState {
-    items: VecDeque<ScriptedStreamItem>,
-    abort: AbortSignal,
-    finished: bool,
-}
-
-async fn wait_or_abort(
-    delay: Duration,
-    abort: &AbortSignal,
-    phase: &'static str,
-) -> Result<(), ModelError> {
+async fn wait_or_abort(delay: Duration, abort: &AbortSignal) -> Result<(), ModelError> {
     if abort.is_aborted() {
-        return Err(scripted_abort(phase));
+        return Err(ModelError::abort("scripted operation aborted"));
     }
     if delay.is_zero() {
         return Ok(());
     }
     tokio::select! {
         () = tokio::time::sleep(delay) => Ok(()),
-        () = abort.aborted() => Err(scripted_abort(phase)),
+        () = abort.aborted() => Err(ModelError::abort("scripted operation aborted")),
     }
-}
-
-fn scripted_abort(phase: &str) -> ModelError {
-    ModelError::abort(format!("scripted model request was aborted {phase}"))
 }

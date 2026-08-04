@@ -4,6 +4,21 @@ expression: history
 ---
 [
   {
+    "type": "system",
+    "value": {
+      "content": [
+        {
+          "type": "text",
+          "value": {
+            "text": "System prompt.",
+            "metadata": null
+          }
+        }
+      ],
+      "provider_options": {}
+    }
+  },
+  {
     "type": "user",
     "value": {
       "content": [

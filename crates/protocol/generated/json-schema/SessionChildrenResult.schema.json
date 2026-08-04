@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionChildrenResult",
+  "type": "object",
+  "properties": {
+    "children": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ChildSummary"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "children"
+  ],
+  "$defs": {
+    "ChildSummary": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        },
+        "title": {
+          "description": "Nonblank control-free UTF-8 session title.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512,
+          "minLength": 1
+        },
+        "title_updated_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "agent",
+        "title",
+        "title_updated_seq",
+        "status",
+        "usage"
+      ]
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ]
+    },
+    "Usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens_cache_read": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens_cache_write": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens_no_cache": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens_reasoning": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens_text": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "input_tokens",
+        "input_tokens_no_cache",
+        "input_tokens_cache_read",
+        "input_tokens_cache_write",
+        "output_tokens",
+        "output_tokens_text",
+        "output_tokens_reasoning"
+      ]
+    }
+  }
+}

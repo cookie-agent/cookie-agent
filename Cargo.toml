@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/identity",
     "crates/protocol",
     "crates/engine",
     "crates/tools",
@@ -44,6 +45,7 @@ rustix = { version = "1.1.2", features = ["fs", "process"] }
 schemars = { version = "1.2.2", features = ["derive", "uuid1", "jiff02"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+serde_yaml = "0.9.34"
 sha2 = "0.10.9"
 similar = "3.1.1"
 syntect = { version = "=5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
@@ -62,6 +64,7 @@ zeroize = "1.8"
 insta = { version = "1.48.0", features = ["json", "redactions"] }
 tempfile = "3.27.0"
 http = "1.4.0"
+url = "2.5.7"
 oven-sdk = "=0.4.0"
 oven-sdk-anthropic = "=0.5.0"
 oven-sdk-openai = "=0.4.0"

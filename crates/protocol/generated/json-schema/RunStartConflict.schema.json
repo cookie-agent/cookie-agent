@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunStartConflict",
+  "type": "object",
+  "properties": {
+    "client_run_id": {
+      "description": "Bounded run idempotency key.",
+      "type": "string",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+    },
+    "code": {
+      "$ref": "#/$defs/RunStartConflictCode"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "code",
+    "session_id",
+    "client_run_id"
+  ],
+  "$defs": {
+    "RunStartConflictCode": {
+      "type": "string",
+      "enum": [
+        "idempotency_conflict"
+      ]
+    }
+  }
+}

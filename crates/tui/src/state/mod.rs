@@ -1,4 +1,10 @@
-//! Disposable UI projections reduced from protocol events.
+//! Disposable UI projections reduced from protocol v7 stored events.
+//!
+//! Assistant attribution is derived only from the frozen `RunStarted` plus
+//! `ModelAttemptStarted`/`ModelTurnCommitted` ownership — never from the
+//! current picker, live agent files, or provider configuration. The visible
+//! assistant header projects `Agent(Model)`; the exact variant is retained in
+//! structured attribution and diagnostics.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -7,33 +13,52 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
-    ApprovalCapability, ApprovalConstraints, ApprovalEvaluation, ApprovalFinalOutcome, ApprovalId,
-    ApprovalRecord, ApprovalRequest, ApprovalStatus, ApprovalTrigger, ContextCheckpoint, Event,
-    EventEnvelope, EventSubscriptionMessage, ModelErrorSummary, ModelRef, OperationFingerprint,
-    OutputDelta, OutputGap, OutputSnapshotEnvelope, OutputStream, PreparedApprovalResource,
-    PreparedCapabilityLifetime, ProfileSnapshot, ReplayDecision, ReplayDisposition, RunId,
-    SessionId, SessionTitleCommit, Sha256Digest, ToolCallId, ToolResult, Usage,
+    AgentId, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation, ApprovalFinalOutcome,
+    ApprovalId, ApprovalRecord, ApprovalRequest, ApprovalStatus, ApprovalTrigger,
+    AssistantToolCallRef, AttemptId, EventPayload, EventSubscriptionMessage, ModelErrorSummary,
+    OperationFingerprint, OutputDelta, OutputGap, OutputSnapshotEnvelope, OutputStream,
+    PersistedModelTurn, PreparedApprovalResource, PreparedCapabilityLifetime, ReplayDecision,
+    ReplayDisposition, ResolvedModelRef, RunId, SessionId, SessionTitleChange, Sha256Digest,
+    StoredEvent, ToolAttachment, ToolCallId, ToolTerminationOutcome, Usage,
 };
 use serde::Serialize;
 
 use crate::{client::ClientDelivery, markdown::MarkdownDocument};
 
-/// The visible state of a tool invocation.
+/// The visible state of a tool invocation, reduced from the exact v7
+/// termination outcome. Failed, cancelled, and interrupted stay distinct.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToolStatus {
     Running,
     Completed,
     Failed,
+    Cancelled,
+    Interrupted,
 }
 
-/// A tool block displayed in the conversation transcript.
+/// A tool invocation displayed inside its owning assistant item. The compact
+/// title uses only the persisted, sanitized `ToolCallPresentation`; raw
+/// arguments appear only in the expanded detail.
 #[derive(Clone, Debug)]
 pub struct ToolCallState {
     pub id: ToolCallId,
-    pub tool: String,
+    pub owner: AssistantToolCallRef,
+    pub presentation: cookie_agent_protocol::ToolCallPresentation,
+    /// Durable tool input from the owning committed turn, shown expanded.
     pub arguments: String,
     pub status: ToolStatus,
     pub detail: String,
+}
+
+impl ToolCallState {
+    /// The exact compact title: the persisted sanitized tool title plus its
+    /// persisted sanitized primary argument, never reparsed from raw input.
+    pub fn compact_title(&self) -> String {
+        match &self.presentation.primary_argument {
+            Some(argument) => format!("{} {argument}", self.presentation.title),
+            None => self.presentation.title.to_string(),
+        }
+    }
 }
 
 /// One durable approval request projected for internal evaluation and, only
@@ -97,6 +122,32 @@ impl EventLevel {
     }
 }
 
+/// Frozen producing identity for one assistant attempt/turn, reduced from the
+/// exact v7 attempt and turn ownership events. The variant is retained here
+/// as structured attribution and deliberately omitted from the visible header.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrozenAssistantAttribution {
+    pub agent: AgentId,
+    pub resolved_model: ResolvedModelRef,
+}
+
+impl FrozenAssistantAttribution {
+    /// The exact visible header `<agent-id>(<provider>/<model-id>)`.
+    pub fn header(&self) -> String {
+        format!("{}({})", self.agent, self.resolved_model.selection.model)
+    }
+
+    /// The variant retained in structured attribution, rendered as `base`
+    /// when the frozen selection is exact base behavior.
+    pub fn variant_label(&self) -> String {
+        self.resolved_model
+            .selection
+            .variant
+            .as_ref()
+            .map_or_else(|| "base".to_owned(), |variant| variant.to_string())
+    }
+}
+
 /// One rendered conversation item.
 #[derive(Clone, Debug)]
 pub enum TranscriptItem {
@@ -108,12 +159,9 @@ pub enum TranscriptItem {
     Assistant {
         id: u64,
         version: u64,
-        parts: Vec<AssistantPart>,
-    },
-    Tool {
-        id: u64,
-        version: u64,
-        call_id: ToolCallId,
+        attribution: FrozenAssistantAttribution,
+        committed_turn_seq: Option<u64>,
+        children: Vec<AssistantChild>,
     },
     /// A leveled diagnostic row (lifecycle notices, model warnings,
     /// failures). Never user/assistant/tool content; filtering these rows by
@@ -126,9 +174,10 @@ pub enum TranscriptItem {
     },
 }
 
-/// One ordered child segment inside an assistant model-attempt transcript item.
+/// One ordered child segment inside an assistant item, owned by the committed
+/// turn/tool ownership events. There are no top-level reasoning or tool items.
 #[derive(Clone, Debug)]
-pub enum AssistantPart {
+pub enum AssistantChild {
     Text {
         /// Sequence number of the first delta in this consecutive segment.
         id: u64,
@@ -141,18 +190,30 @@ pub enum AssistantPart {
         version: u64,
         text: String,
     },
+    Tool {
+        call_id: ToolCallId,
+    },
+    /// A durable tool placeholder from committed turn content, carrying the
+    /// exact content index. A started tool replaces its placeholder through
+    /// `owner.content_index`; an unstarted placeholder renders its committed
+    /// call.
+    CommittedTool {
+        content_index: u32,
+    },
 }
 
-impl AssistantPart {
+impl AssistantChild {
     pub fn id(&self) -> u64 {
         match self {
             Self::Text { id, .. } | Self::Thinking { id, .. } => *id,
+            Self::Tool { .. } | Self::CommittedTool { .. } => 0,
         }
     }
 
     pub fn version(&self) -> u64 {
         match self {
             Self::Text { version, .. } | Self::Thinking { version, .. } => *version,
+            Self::Tool { .. } | Self::CommittedTool { .. } => 0,
         }
     }
 }
@@ -173,10 +234,7 @@ pub(crate) struct OpenAssistantProjection {
 impl TranscriptItem {
     pub fn id(&self) -> u64 {
         match self {
-            Self::User { id, .. }
-            | Self::Assistant { id, .. }
-            | Self::Tool { id, .. }
-            | Self::Event { id, .. } => *id,
+            Self::User { id, .. } | Self::Assistant { id, .. } | Self::Event { id, .. } => *id,
         }
     }
 
@@ -184,7 +242,6 @@ impl TranscriptItem {
         match self {
             Self::User { version, .. }
             | Self::Assistant { version, .. }
-            | Self::Tool { version, .. }
             | Self::Event { version, .. } => *version,
         }
     }
@@ -199,37 +256,6 @@ impl TranscriptItem {
     }
 
     #[cfg(test)]
-    pub fn assistant(text: impl Into<String>) -> Self {
-        Self::Assistant {
-            id: 1,
-            version: 0,
-            parts: vec![AssistantPart::Text {
-                id: 1,
-                version: 0,
-                markdown: MarkdownDocument::new(text.into()),
-            }],
-        }
-    }
-
-    #[cfg(test)]
-    pub fn assistant_parts(parts: Vec<AssistantPart>) -> Self {
-        Self::Assistant {
-            id: 1,
-            version: 0,
-            parts,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn tool(id: u64, call_id: ToolCallId) -> Self {
-        Self::Tool {
-            id,
-            version: 0,
-            call_id,
-        }
-    }
-
-    #[cfg(test)]
     pub fn internal(text: impl Into<String>) -> Self {
         Self::Event {
             id: 1,
@@ -240,6 +266,21 @@ impl TranscriptItem {
     }
 }
 
+/// One live streaming attempt, owning one assistant item.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AttemptProjection {
+    item_id: u64,
+}
+
+/// A tool start buffered until its committed placeholder exists, linked by
+/// the owning turn's exact content index.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PendingToolRow {
+    turn_seq: u64,
+    content_index: u32,
+    call_id: ToolCallId,
+}
+
 /// Per-session projection of persisted events and live output.
 #[derive(Clone, Debug, Default)]
 pub struct SessionState {
@@ -248,12 +289,32 @@ pub struct SessionState {
     pub generation: u64,
     pub last_seq: u64,
     pub active_run: Option<RunId>,
-    /// Exact profile snapshot accepted by the latest `RunStarted` event.
-    pub run_profile: Option<ProfileSnapshot>,
+    /// Frozen producing agent of the latest accepted `RunStarted`.
+    pub run_agent: Option<AgentId>,
+    /// The complete frozen creation snapshot from `SessionCreated`,
+    /// including the exact frozen fallback chain. Delegated draft
+    /// projections derive only from this, never from live descriptors.
+    pub creation_agent: Option<Box<cookie_agent_protocol::AgentSnapshot>>,
+    /// The complete frozen snapshot of the latest accepted `RunStarted`.
+    pub run_snapshot: Option<Box<cookie_agent_protocol::AgentSnapshot>>,
+    /// The authoritative exact suffix from the latest accepted `RunStarted`:
+    /// after any run-selection variant override, this vector — never a
+    /// reconstruction from the agent fallback chain — is what attempts and
+    /// delegated pickers use.
+    pub run_selected_suffix: Option<Vec<cookie_agent_protocol::FrozenModelBinding>>,
     pub transcript: Vec<TranscriptItem>,
     pub(crate) next_transcript_id: u64,
     pub(crate) open_assistant: Option<OpenAssistantProjection>,
+    pub(crate) attempts: HashMap<AttemptId, AttemptProjection>,
     pub tools: HashMap<ToolCallId, ToolCallState>,
+    /// Buffered tool rows awaiting their committed placeholder, keyed by
+    /// the owning turn's content index so starts/completions cannot reorder.
+    pub(crate) pending_tool_rows: Vec<PendingToolRow>,
+    /// Durable tool input indexed from committed turn content:
+    /// (model_turn_seq, model_call_id) → arguments JSON, for expanded rows.
+    pub(crate) turn_tool_index: HashMap<(u64, String), String>,
+    /// The assistant item owning each committed model-turn sequence.
+    pub(crate) turn_items: HashMap<u64, u64>,
     pub approvals: Vec<ApprovalState>,
     pub output: HashMap<(ToolCallId, bool), OrderedOutput>,
 }
@@ -323,7 +384,7 @@ impl StateStore {
             } => match *message {
                 EventSubscriptionMessage::Event { event } => {
                     let session_id = event.session_id;
-                    if self.apply_event_for_generation(event, generation) {
+                    if self.apply_event_for_generation(*event, generation) {
                         DeliveryOutcome::Applied
                     } else {
                         let cursor = self
@@ -378,8 +439,9 @@ impl StateStore {
                 final_seq,
                 event,
             } => {
-                let started_call = match &event.event {
-                    Event::ToolCallStarted { tool_call_id, .. } => Some(*tool_call_id),
+                let event = *event;
+                let started_call = match &event.payload {
+                    EventPayload::ToolCallStarted { start } => Some(start.tool_call_id),
                     _ => None,
                 };
                 if let Some(call_id) = started_call {
@@ -401,7 +463,7 @@ impl StateStore {
                         event.session_id,
                         event.run_id,
                         event.seq,
-                        event.event,
+                        event.payload,
                     );
                     replay.scratch.version = replay.scratch.version.wrapping_add(1);
                     true
@@ -536,38 +598,38 @@ impl StateStore {
     }
 
     /// Apply a persisted event. Replayed duplicates are ignored by sequence.
-    pub fn apply_event(&mut self, envelope: EventEnvelope) -> bool {
-        self.apply_event_for_generation(envelope, 0)
+    pub fn apply_event(&mut self, event: StoredEvent) -> bool {
+        self.apply_event_for_generation(event, 0)
     }
 
-    pub fn apply_event_for_generation(&mut self, envelope: EventEnvelope, generation: u64) -> bool {
-        let started_call = match &envelope.event {
-            Event::ToolCallStarted { tool_call_id, .. } => Some(*tool_call_id),
+    pub fn apply_event_for_generation(&mut self, event: StoredEvent, generation: u64) -> bool {
+        let started_call = match &event.payload {
+            EventPayload::ToolCallStarted { start } => Some(start.tool_call_id),
             _ => None,
         };
         if let Some(call_id) = started_call {
-            self.tool_sessions.insert(call_id, envelope.session_id);
+            self.tool_sessions.insert(call_id, event.session_id);
         }
-        if self.quarantined_sessions.contains(&envelope.session_id) {
+        if self.quarantined_sessions.contains(&event.session_id) {
             return false;
         }
-        let state = self.sessions.entry(envelope.session_id).or_default();
+        let state = self.sessions.entry(event.session_id).or_default();
         if state.generation != generation {
             return false;
         }
-        if envelope.seq <= state.last_seq {
+        if event.seq <= state.last_seq {
             return true;
         }
-        if envelope.seq != state.last_seq + 1 {
+        if event.seq != state.last_seq + 1 {
             return false;
         }
-        state.last_seq = envelope.seq;
+        state.last_seq = event.seq;
         reduce_event(
             state,
-            envelope.session_id,
-            envelope.run_id,
-            envelope.seq,
-            envelope.event,
+            event.session_id,
+            event.run_id,
+            event.seq,
+            event.payload,
         );
         state.version = state.version.wrapping_add(1);
         if let Some(call_id) = started_call {
@@ -593,7 +655,7 @@ impl StateStore {
                     .sessions
                     .get(&event.session_id)
                     .map_or(0, |state| state.last_seq);
-                self.apply_event_for_generation(event, generation)
+                self.apply_event_for_generation(*event, generation)
                     .then_some(())
                     .map_or(Some(cursor), |_| None)
             }
@@ -629,7 +691,7 @@ impl StateStore {
         &mut self,
         session_id: SessionId,
         generation: u64,
-        events: Vec<EventEnvelope>,
+        events: Vec<StoredEvent>,
     ) -> bool {
         for (expected, event) in (1..).zip(&events) {
             if event.session_id != session_id || event.seq != expected {
@@ -862,92 +924,235 @@ fn reduce_event(
     session_id: SessionId,
     run_id: Option<RunId>,
     sequence: u64,
-    event: Event,
+    payload: EventPayload,
 ) {
-    match event {
-        Event::RunStarted { input, profile, .. } => {
-            close_open_assistant(state);
-            state.active_run = run_id;
-            state.run_profile = Some(profile);
-            push_item(state, |id| TranscriptItem::User {
-                id,
-                version: 0,
-                text: input,
-            });
-        }
-        Event::UserInputSubmitted { input } => {
-            close_open_assistant(state);
-            push_item(state, |id| TranscriptItem::User {
-                id,
-                version: 0,
-                text: input,
-            });
-        }
-        Event::TextDelta { text } => {
-            append_assistant_delta(state, sequence, text, AssistantPartKind::Text);
-        }
-        Event::ReasoningDelta { text } => {
-            append_assistant_delta(state, sequence, text, AssistantPartKind::Thinking);
-        }
-        Event::ToolCallStarted {
-            tool_call_id,
-            model_call_id,
-            provider_item_id,
-            tool,
-            arguments,
+    match payload {
+        EventPayload::RunStarted {
+            agent,
+            selected_suffix,
+            ..
         } => {
             close_open_assistant(state);
-            let mut identities = format!("model call: {model_call_id}");
-            if let Some(provider_item_id) = provider_item_id {
+            state.active_run = run_id;
+            state.run_agent = Some(agent.agent.clone());
+            state.run_snapshot = Some(agent);
+            state.run_selected_suffix = Some(selected_suffix);
+        }
+        EventPayload::UserInputSubmitted { input } => {
+            close_open_assistant(state);
+            push_item(state, |id| TranscriptItem::User {
+                id,
+                version: 0,
+                text: input,
+            });
+        }
+        EventPayload::ModelAttemptStarted {
+            attempt_id,
+            resolved_model,
+            ..
+        } => {
+            close_open_assistant(state);
+            // Attempt attribution is frozen: the producing agent comes from
+            // the owning `RunStarted`, the exact resolved model from this
+            // event — never from the current picker or live configuration.
+            let agent = state
+                .run_agent
+                .clone()
+                .unwrap_or_else(|| AgentId::new("unknown").expect("static agent id"));
+            let item_id = open_assistant_item(
+                state,
+                FrozenAssistantAttribution {
+                    agent,
+                    resolved_model,
+                },
+            );
+            state
+                .attempts
+                .insert(attempt_id, AttemptProjection { item_id });
+        }
+        EventPayload::TextDelta { attempt_id, text } => {
+            let Some(item_id) = state
+                .attempts
+                .get(&attempt_id)
+                .map(|attempt| attempt.item_id)
+            else {
+                return;
+            };
+            append_assistant_delta(state, item_id, sequence, text, AssistantPartKind::Text);
+        }
+        EventPayload::ReasoningDelta { attempt_id, text } => {
+            let Some(item_id) = state
+                .attempts
+                .get(&attempt_id)
+                .map(|attempt| attempt.item_id)
+            else {
+                return;
+            };
+            append_assistant_delta(state, item_id, sequence, text, AssistantPartKind::Thinking);
+        }
+        EventPayload::AttemptAbandoned { attempt_id } => {
+            close_open_assistant(state);
+            state.attempts.remove(&attempt_id);
+            push_event(state, EventLevel::Warning, "model attempt abandoned".into());
+        }
+        EventPayload::ModelTurnCommitted {
+            attempt_id,
+            model_turn_seq,
+            resolved_model,
+            turn,
+            warnings,
+            ..
+        } => {
+            close_open_assistant(state);
+            // The committed turn is the canonical boundary: every
+            // text/thinking/tool child is rebuilt in exact
+            // `PersistedModelTurn.content` order, preserving multiple
+            // segments and content indices. Tool parts become committed
+            // placeholders linked by `owner.content_index` when their start
+            // event arrives.
+            if let Some(projection) = state.attempts.get(&attempt_id) {
+                let item_id = projection.item_id;
+                mark_committed(state, item_id, model_turn_seq, &resolved_model);
+                index_turn_tool_content(state, model_turn_seq, &turn);
+                rebuild_committed_children(state, item_id, sequence, &turn);
+            } else {
+                index_turn_tool_content(state, model_turn_seq, &turn);
+            }
+            place_tool_rows(state);
+            push_event(
+                state,
+                EventLevel::Info,
+                format!(
+                    "model {} committed · finish {:?} · usage {}",
+                    render_model(&resolved_model),
+                    turn.finish_reason,
+                    render_usage(&turn.usage)
+                ),
+            );
+            for warning in warnings {
+                push_event(
+                    state,
+                    EventLevel::Warning,
+                    format!(
+                        "model warning from {}: {warning}",
+                        render_model(&resolved_model)
+                    ),
+                );
+            }
+        }
+        EventPayload::ModelReplayEvaluated {
+            resolved_model,
+            ordered_decisions,
+            ..
+        } => {
+            close_open_assistant(state);
+            // Replay/cache discard and reconstruction dispositions are
+            // WARNING rows with the exact model and a concise reason; routine
+            // replay detail stays at DEBUG.
+            for (level, decision) in render_replay(&ordered_decisions) {
+                push_event(
+                    state,
+                    level,
+                    format!(
+                        "model {} replay · {decision}",
+                        render_model(&resolved_model)
+                    ),
+                );
+            }
+        }
+        EventPayload::ModelFallback {
+            from,
+            to,
+            attempts_on_from,
+            error,
+            ..
+        } => {
+            close_open_assistant(state);
+            push_event(
+                state,
+                EventLevel::Warning,
+                format!(
+                    "model fallback {} → {} after {attempts_on_from} attempt(s) · {}",
+                    render_model(&from),
+                    render_model(&to),
+                    render_model_error(&error)
+                ),
+            );
+        }
+        EventPayload::ToolCallStarted { start } => {
+            close_open_assistant(state);
+            let mut identities = format!("model call: {}", start.owner.model_call_id);
+            if let Some(provider_item_id) = &start.owner.provider_item_id {
                 identities.push_str(&format!(" · provider item: {provider_item_id}"));
             }
+            let arguments = find_tool_call_content(
+                state,
+                start.owner.model_turn_seq,
+                &start.owner.model_call_id,
+            )
+            .unwrap_or_else(|| "{}".into());
+            state.pending_tool_rows.push(PendingToolRow {
+                turn_seq: start.owner.model_turn_seq,
+                content_index: start.owner.content_index,
+                call_id: start.tool_call_id,
+            });
             state.tools.insert(
-                tool_call_id,
+                start.tool_call_id,
                 ToolCallState {
-                    id: tool_call_id,
-                    tool,
-                    arguments: arguments.to_string(),
+                    id: start.tool_call_id,
+                    owner: start.owner.clone(),
+                    presentation: start.presentation.clone(),
+                    arguments,
                     status: ToolStatus::Running,
                     detail: identities,
                 },
             );
-            push_item(state, |id| TranscriptItem::Tool {
-                id,
-                version: 0,
-                call_id: tool_call_id,
-            });
+            place_tool_rows(state);
         }
-        Event::ToolCallProgress {
+        EventPayload::ToolCallProgress {
             tool_call_id,
             message,
         } => {
             if let Some(tool) = state.tools.get_mut(&tool_call_id) {
-                tool.detail = message;
+                tool.detail = message.to_string();
             }
             bump_tool_item(state, tool_call_id);
         }
-        Event::ToolCallCompleted {
-            tool_call_id,
-            result,
-        } => {
+        EventPayload::ToolCallTerminated { termination } => {
+            let tool_call_id = termination.tool_call_id;
+            let status = match termination.outcome {
+                ToolTerminationOutcome::Completed => ToolStatus::Completed,
+                ToolTerminationOutcome::Failed => ToolStatus::Failed,
+                ToolTerminationOutcome::Cancelled => ToolStatus::Cancelled,
+                ToolTerminationOutcome::Interrupted => ToolStatus::Interrupted,
+            };
+            let failed = !matches!(termination.outcome, ToolTerminationOutcome::Completed);
+            let detail = match (termination.result, termination.error) {
+                (Some(result), _) if !failed => render_tool_result(
+                    result.title.as_str(),
+                    &result.output,
+                    &result.metadata,
+                    result.truncation.as_ref().map(|truncation| {
+                        (
+                            truncation.retained.uri.as_str(),
+                            truncation.original_bytes,
+                            truncation.original_lines,
+                        )
+                    }),
+                    &result.attachments,
+                ),
+                (_, Some(error)) => error.message.to_string(),
+                _ => String::new(),
+            };
             if let Some(tool) = state.tools.get_mut(&tool_call_id) {
-                tool.status = ToolStatus::Completed;
-                tool.detail = render_tool_result(&result);
+                tool.status = status;
+                if !detail.is_empty() {
+                    tool.detail = detail;
+                }
             }
             bump_tool_item(state, tool_call_id);
         }
-        Event::ToolCallFailed {
-            tool_call_id,
-            message,
-            ..
-        } => {
-            if let Some(tool) = state.tools.get_mut(&tool_call_id) {
-                tool.status = ToolStatus::Failed;
-                tool.detail = message;
-            }
-            bump_tool_item(state, tool_call_id);
-        }
-        Event::ApprovalRequested { request } => {
+        EventPayload::ApprovalRequested { request } => {
             state
                 .approvals
                 .retain(|approval| approval.approval_id != request.approval_id());
@@ -955,7 +1160,7 @@ fn reduce_event(
                 .approvals
                 .push(approval_state_from_request(session_id, request, false));
         }
-        Event::ApprovalEvaluated {
+        EventPayload::ApprovalEvaluated {
             approval_id,
             decision,
         } => push_event(
@@ -967,7 +1172,7 @@ fn reduce_event(
             )
             .to_lowercase(),
         ),
-        Event::ApprovalEscalated {
+        EventPayload::ApprovalEscalated {
             approval_id,
             reason_code,
         } => {
@@ -984,7 +1189,7 @@ fn reduce_event(
                 format!("approval {approval_id} escalated: {reason_code:?}").to_lowercase(),
             );
         }
-        Event::ApprovalUserDecisionRecorded {
+        EventPayload::ApprovalUserDecisionRecorded {
             approval_id,
             decision,
             ..
@@ -993,7 +1198,7 @@ fn reduce_event(
             EventLevel::Info,
             format!("approval {approval_id} response recorded: {decision:?}").to_lowercase(),
         ),
-        Event::ApprovalFinalized {
+        EventPayload::ApprovalFinalized {
             approval_id,
             decision,
         } => {
@@ -1011,7 +1216,7 @@ fn reduce_event(
                 .to_lowercase(),
             );
         }
-        Event::ApprovalCancelled {
+        EventPayload::ApprovalCancelled {
             approval_id,
             reason_code,
         } => {
@@ -1024,7 +1229,7 @@ fn reduce_event(
                 format!("approval {approval_id} cancelled: {reason_code:?}").to_lowercase(),
             );
         }
-        Event::ApprovalDoomLoopDetected {
+        EventPayload::ApprovalDoomLoopDetected {
             approval_id,
             operation_fingerprint,
             repetitions,
@@ -1036,30 +1241,36 @@ fn reduce_event(
                 operation_fingerprint.digest()
             ),
         ),
-        Event::TreeApprovalGrantCommitted { grant } => push_event(
+        EventPayload::TreeApprovalGrantCommitted { grant } => push_event(
             state,
             EventLevel::Debug,
             format!(
                 "tree approval grant {} committed for {}",
-                grant.grant_id(),
-                grant.operation_fingerprint().digest()
+                grant.grant_id,
+                grant.operation_fingerprint.digest()
             ),
         ),
-        Event::RunCompleted { .. } => {
+        EventPayload::RunCompleted { .. } => {
             close_open_assistant(state);
             state.active_run = None;
+            state.attempts.clear();
+            state.pending_tool_rows.clear();
             state.approvals.clear();
             push_event(state, EventLevel::Info, "run completed".into());
         }
-        Event::RunFailed { message } => {
+        EventPayload::RunFailed { error } => {
             close_open_assistant(state);
             state.active_run = None;
+            state.attempts.clear();
+            state.pending_tool_rows.clear();
             state.approvals.clear();
-            push_event(state, EventLevel::Error, format!("run failed: {message}"));
+            push_event(state, EventLevel::Error, format!("run failed: {error}"));
         }
-        Event::RunCancelled { reason } => {
+        EventPayload::RunCancelled { reason } => {
             close_open_assistant(state);
             state.active_run = None;
+            state.attempts.clear();
+            state.pending_tool_rows.clear();
             state.approvals.clear();
             push_event(
                 state,
@@ -1070,9 +1281,11 @@ fn reduce_event(
                 ),
             );
         }
-        Event::RunInterrupted { reason } => {
+        EventPayload::RunInterrupted { reason } => {
             close_open_assistant(state);
             state.active_run = None;
+            state.attempts.clear();
+            state.pending_tool_rows.clear();
             state.approvals.clear();
             push_event(
                 state,
@@ -1083,62 +1296,7 @@ fn reduce_event(
                 ),
             );
         }
-        Event::ModelTurnCommitted { model, turn, .. } => {
-            close_open_assistant(state);
-            push_event(
-                state,
-                EventLevel::Info,
-                format!(
-                    "model {} committed · finish {:?} · usage {}",
-                    render_model(&model),
-                    turn.finish_reason,
-                    render_usage(&turn.usage)
-                ),
-            );
-            for warning in turn.warnings {
-                push_event(
-                    state,
-                    EventLevel::Warning,
-                    format!("model warning from {}: {warning}", render_model(&model)),
-                );
-            }
-        }
-        Event::ModelReplayEvaluated { model, decisions } => {
-            close_open_assistant(state);
-            // Replay/cache discard and reconstruction dispositions are
-            // WARNING rows with the exact model and a concise reason; routine
-            // replay detail stays at DEBUG.
-            for (level, decision) in render_replay(&decisions) {
-                push_event(
-                    state,
-                    level,
-                    format!("model {} replay · {decision}", render_model(&model)),
-                );
-            }
-        }
-        Event::ModelFallback {
-            from,
-            to,
-            error,
-            attempts,
-        } => {
-            close_open_assistant(state);
-            push_event(
-                state,
-                EventLevel::Warning,
-                format!(
-                    "model fallback {} → {} after {attempts} attempt(s) · {}",
-                    render_model(&from),
-                    render_model(&to),
-                    render_model_error(&error)
-                ),
-            );
-        }
-        Event::AttemptAbandoned => {
-            close_open_assistant(state);
-            push_event(state, EventLevel::Warning, "model attempt abandoned".into());
-        }
-        Event::InternalAgentStarted {
+        EventPayload::InternalAgentStarted {
             kind,
             backend,
             call,
@@ -1153,7 +1311,7 @@ fn reduce_event(
             )
             .to_lowercase(),
         ),
-        Event::InternalAgentCompleted { kind, result, .. } => push_event(
+        EventPayload::InternalAgentCompleted { kind, result, .. } => push_event(
             state,
             EventLevel::Info,
             format!(
@@ -1162,12 +1320,12 @@ fn reduce_event(
             )
             .to_lowercase(),
         ),
-        Event::InternalAgentFailed { kind, failure, .. } => push_event(
+        EventPayload::InternalAgentFailed { kind, failure, .. } => push_event(
             state,
             EventLevel::Error,
             format!("internal agent {kind:?} failed: {}", failure.message).to_lowercase(),
         ),
-        Event::InternalAgentCancelled { kind, reason, .. } => push_event(
+        EventPayload::InternalAgentCancelled { kind, reason, .. } => push_event(
             state,
             EventLevel::Info,
             reason.map_or_else(
@@ -1175,7 +1333,7 @@ fn reduce_event(
                 |reason| format!("internal agent {kind:?} cancelled: {reason}").to_lowercase(),
             ),
         ),
-        Event::InternalAgentInterrupted { kind, reason, .. } => push_event(
+        EventPayload::InternalAgentInterrupted { kind, reason, .. } => push_event(
             state,
             EventLevel::Error,
             reason.map_or_else(
@@ -1183,7 +1341,7 @@ fn reduce_event(
                 |reason| format!("internal agent {kind:?} interrupted: {reason}").to_lowercase(),
             ),
         ),
-        Event::InternalAgentFallback {
+        EventPayload::InternalAgentFallback {
             kind,
             from,
             to,
@@ -1201,210 +1359,192 @@ fn reduce_event(
             )
             .to_lowercase(),
         ),
-        Event::ContextCheckpointCommitted { commit } => {
-            let kind = match commit.checkpoint() {
-                ContextCheckpoint::ProviderNative { .. } => "provider-native",
-                ContextCheckpoint::InternalSummary { .. } => "internal summary",
+        EventPayload::ContextCheckpointCommitted { commit } => {
+            let kind = match &commit.checkpoint {
+                cookie_agent_protocol::ContextCheckpoint::ProviderNative { .. } => {
+                    "provider-native"
+                }
+                cookie_agent_protocol::ContextCheckpoint::InternalSummary { .. } => {
+                    "internal summary"
+                }
             };
             push_event(
                 state,
                 EventLevel::Info,
                 format!(
                     "context checkpoint committed ({kind}, input through sequence {})",
-                    commit.boundaries().input_through_seq
+                    commit.boundaries.input_through_seq
                 ),
             );
         }
-        Event::SessionTitleCommitted { commit, .. } => {
-            push_event(state, EventLevel::Info, render_title_commit(&commit));
+        EventPayload::SessionTitleCommitted { change, .. } => {
+            push_event(state, EventLevel::Info, render_title_commit(&change));
         }
-        Event::UserInputApplied { .. } => close_open_assistant(state),
-        Event::SessionCreated { .. }
-        | Event::ToolStdinSubmitted { .. }
-        | Event::ToolCallLinked { .. } => {}
+        EventPayload::UserInputApplied { .. } => close_open_assistant(state),
+        EventPayload::SessionCreated { creation_agent, .. } => {
+            // Before any run starts, attempts (for example title generation)
+            // attribute to the creation agent's frozen identity.
+            if state.run_agent.is_none() {
+                state.run_agent = Some(creation_agent.agent.clone());
+            }
+            state.creation_agent = Some(creation_agent);
+        }
+        EventPayload::ToolStdinSubmitted { .. } | EventPayload::ToolCallLinked { .. } => {}
     }
 }
 
-fn approval_request_metadata(
-    request: &cookie_agent_protocol::ApprovalRequest,
-) -> (u64, ApprovalTrigger) {
-    let wire = serde_json::to_value(request).expect("protocol approval request serializes");
-    let revision = wire["revision"]
-        .as_u64()
-        .expect("protocol approval revision is an integer");
-    let trigger = serde_json::from_value(wire["trigger"].clone())
-        .expect("protocol approval trigger deserializes");
-    (revision, trigger)
+/// Open a fresh assistant item for a streaming attempt. Attempt boundaries
+/// are closed before this runs, so each attempt owns one item with ordered
+/// text/thinking/tool children beneath one visible header.
+fn open_assistant_item(state: &mut SessionState, attribution: FrozenAssistantAttribution) -> u64 {
+    state.open_assistant = None;
+    push_item(state, |id| TranscriptItem::Assistant {
+        id,
+        version: 0,
+        attribution,
+        committed_turn_seq: None,
+        children: Vec::new(),
+    });
+    state
+        .transcript
+        .last()
+        .expect("assistant item was just pushed")
+        .id()
 }
 
-pub(crate) fn approval_state_from_record(record: ApprovalRecord) -> Option<ApprovalState> {
-    match record.status {
-        ApprovalStatus::Escalated => {}
-        ApprovalStatus::Pending
-        | ApprovalStatus::Approved
-        | ApprovalStatus::Rejected
-        | ApprovalStatus::Cancelled
-        | ApprovalStatus::Expired => return None,
+fn mark_committed(
+    state: &mut SessionState,
+    item_id: u64,
+    model_turn_seq: u64,
+    resolved_model: &ResolvedModelRef,
+) {
+    if let Some(TranscriptItem::Assistant {
+        version,
+        attribution,
+        committed_turn_seq,
+        ..
+    }) = state
+        .transcript
+        .iter_mut()
+        .find(|item| item.id() == item_id)
+    {
+        // The committed turn's exact resolved model is authoritative for the
+        // visible header; streaming attempt attribution is replaced on commit.
+        attribution.resolved_model = resolved_model.clone();
+        *committed_turn_seq = Some(model_turn_seq);
+        *version = version.wrapping_add(1);
     }
-    let approval = approval_state_from_request(record.session_id, record.request, true);
-    approval.is_visible_user_escalation().then_some(approval)
+    state.turn_items.insert(model_turn_seq, item_id);
 }
 
-fn approval_state_from_request(
-    session_id: SessionId,
-    request: ApprovalRequest,
-    escalated: bool,
-) -> ApprovalState {
-    let (request_revision, trigger) = approval_request_metadata(&request);
-    ApprovalState {
-        session_id,
-        approval_id: request.approval_id(),
-        request_revision,
-        operation_fingerprint: request.operation_fingerprint().clone(),
-        trigger,
-        normalized_arguments_digest: request.operation().normalized_arguments_digest().clone(),
-        execution_context_digest: request.operation().execution_context_digest().clone(),
-        capability_lifetime: request.operation().capability_lifetime(),
-        capabilities: request.operation().capabilities().to_vec(),
-        resources: request.operation().resources().to_vec(),
-        evaluations: request.evaluations().to_vec(),
-        constraints: request.constraints().clone(),
-        escalated,
+/// Index durable tool input from committed turn content so an ownership
+/// event's expanded row can show exact arguments without the start event
+/// duplicating them.
+fn index_turn_tool_content(
+    state: &mut SessionState,
+    model_turn_seq: u64,
+    turn: &PersistedModelTurn,
+) {
+    for part in &turn.content {
+        if let cookie_agent_protocol::PersistedAssistantPart::ToolCall { id, input, .. } = part {
+            state
+                .turn_tool_index
+                .insert((model_turn_seq, id.as_str().to_owned()), input.to_string());
+        }
     }
 }
 
-fn render_model(model: &ModelRef) -> String {
-    format!(
-        "{} ({}/{}, {})",
-        model.name, model.provider_id, model.model_id, model.adapter_id
-    )
-}
-
-fn render_usage(usage: &Usage) -> String {
-    let value = |value: Option<u64>| value.map_or_else(|| "?".into(), |value| value.to_string());
-    format!(
-        "in {} [direct {}, cache read {}, cache write {}], out {} [text {}, thinking {}]",
-        value(usage.input_tokens),
-        value(usage.input_tokens_no_cache),
-        value(usage.input_tokens_cache_read),
-        value(usage.input_tokens_cache_write),
-        value(usage.output_tokens),
-        value(usage.output_tokens_text),
-        value(usage.output_tokens_reasoning)
-    )
-}
-
-fn render_replay(decisions: &[ReplayDecision]) -> Vec<(EventLevel, String)> {
-    if decisions.is_empty() {
-        return vec![(EventLevel::Info, "no history entries".into())];
+/// Rebuild every text/thinking/tool child in exact
+/// `PersistedModelTurn.content` order. Each content part becomes one child:
+/// text and thinking parts preserve multiple segments; tool calls become
+/// placeholders that started tools link by their exact `content_index`.
+/// Deltas that streamed ahead of the commit are superseded by the durable
+/// turn, which is the sole canonical content.
+fn rebuild_committed_children(
+    state: &mut SessionState,
+    item_id: u64,
+    sequence: u64,
+    turn: &PersistedModelTurn,
+) {
+    state.open_assistant = None;
+    let mut children = Vec::with_capacity(turn.content.len());
+    for (index, part) in turn.content.iter().enumerate() {
+        let index = u32::try_from(index).unwrap_or(u32::MAX);
+        match part {
+            cookie_agent_protocol::PersistedAssistantPart::Text { text, .. }
+                if !text.is_empty() =>
+            {
+                children.push(AssistantChild::Text {
+                    id: sequence,
+                    version: 0,
+                    markdown: MarkdownDocument::new(text.clone()),
+                });
+            }
+            cookie_agent_protocol::PersistedAssistantPart::Reasoning { text, .. }
+                if !text.is_empty() =>
+            {
+                children.push(AssistantChild::Thinking {
+                    id: sequence,
+                    version: 0,
+                    text: text.clone(),
+                });
+            }
+            cookie_agent_protocol::PersistedAssistantPart::ToolCall { .. } => {
+                children.push(AssistantChild::CommittedTool {
+                    content_index: index,
+                });
+            }
+            _ => {}
+        }
     }
-    decisions
-        .iter()
-        .map(|decision| {
-            let (level, disposition) = match &decision.disposition {
-                ReplayDisposition::Replayed => (EventLevel::Debug, "replayed".into()),
-                ReplayDisposition::NoArtifact => (EventLevel::Debug, "no artifact".into()),
-                ReplayDisposition::DiscardedForeignAdapter { found, expected } => (
-                    EventLevel::Warning,
-                    format!("discarded foreign adapter {found} (expected {expected})"),
-                ),
-                ReplayDisposition::DiscardedForeignScope { found, expected } => (
-                    EventLevel::Warning,
-                    format!(
-                        "discarded foreign scope {}/{}/{} (expected {}/{}/{})",
-                        found.provider_id,
-                        found.model_id,
-                        found.resource_id,
-                        expected.provider_id,
-                        expected.model_id,
-                        expected.resource_id
-                    ),
-                ),
-                ReplayDisposition::DiscardedInvalidPayload { reason } => (
-                    EventLevel::Warning,
-                    format!("discarded invalid payload: {reason}"),
-                ),
-                ReplayDisposition::ReconstructedNormalized => (
-                    EventLevel::Warning,
-                    "reconstructed normalized history".into(),
-                ),
-            };
-            (level, format!("#{} {disposition}", decision.history_index))
-        })
-        .collect()
-}
-
-fn render_model_error(error: &ModelErrorSummary) -> String {
-    let mut details = vec![
-        wire_enum_label(error.kind),
-        error.message.clone(),
-        format!("stage {}", wire_enum_label(error.stage)),
-        format!("retryable {}", error.retryable),
-        format!("{} bytes received", error.bytes_received),
-    ];
-    if let Some(status) = error.http_status {
-        details.push(format!("HTTP {status}"));
+    // Bump the sequence-derived child id so distinct segments never share
+    // one id across consecutive parts of the same kind.
+    for (offset, child) in children.iter_mut().enumerate() {
+        let id = sequence.wrapping_add(offset as u64).max(1);
+        match child {
+            AssistantChild::Text { id: existing, .. }
+            | AssistantChild::Thinking { id: existing, .. } => {
+                *existing = id;
+            }
+            AssistantChild::CommittedTool { .. } | AssistantChild::Tool { .. } => {}
+        }
     }
-    if let Some(code) = &error.vendor_code {
-        details.push(format!("code {code}"));
+    if let Some(TranscriptItem::Assistant {
+        version,
+        children: existing,
+        ..
+    }) = state
+        .transcript
+        .iter_mut()
+        .find(|item| item.id() == item_id)
+    {
+        *existing = children;
+        *version = version.wrapping_add(1);
     }
-    if let Some(request_id) = &error.request_id {
-        details.push(format!("request {request_id}"));
-    }
-    if let Some(retry_after_ms) = error.retry_after_ms {
-        details.push(format!("retry after {retry_after_ms}ms"));
-    }
-    details.join(" · ")
-}
-
-fn wire_enum_label(value: impl Serialize) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".into())
-}
-
-fn render_tool_result(result: &ToolResult) -> String {
-    let mut lines = vec![result.title.clone(), result.output.clone()];
-    if !result.metadata.is_null() {
-        lines.push(format!("metadata: {}", result.metadata));
-    }
-    if let Some(truncation) = &result.truncation {
-        lines.push(format!(
-            "retained output: {} ({} bytes, {} lines)",
-            truncation.retained.uri, truncation.original_bytes, truncation.original_lines
-        ));
-    }
-    for attachment in &result.attachments {
-        lines.push(format!(
-            "attachment: {} · {} bytes · sha256:{} · {}",
-            attachment.mime_type,
-            attachment.byte_length,
-            attachment.sha256,
-            attachment.reference.uri
-        ));
-    }
-    lines.join("\n")
 }
 
 fn append_assistant_delta(
     state: &mut SessionState,
+    item_id: u64,
     sequence: u64,
     text: String,
     kind: AssistantPartKind,
 ) {
     if let Some(open) = state.open_assistant
-        && let Some(TranscriptItem::Assistant { version, parts, .. }) = state
+        && open.item_id == item_id
+        && let Some(TranscriptItem::Assistant {
+            version, children, ..
+        }) = state
             .transcript
             .iter_mut()
             .find(|item| item.id() == open.item_id)
     {
         if open.kind == kind
-            && let Some(part) = parts.iter_mut().find(|part| part.id() == open.part_id)
+            && let Some(part) = children.iter_mut().find(|part| part.id() == open.part_id)
         {
             match (part, kind) {
                 (
-                    AssistantPart::Text {
+                    AssistantChild::Text {
                         version, markdown, ..
                     },
                     AssistantPartKind::Text,
@@ -1413,7 +1553,7 @@ fn append_assistant_delta(
                     *version = version.wrapping_add(1);
                 }
                 (
-                    AssistantPart::Thinking {
+                    AssistantChild::Thinking {
                         version,
                         text: existing,
                         ..
@@ -1429,47 +1569,107 @@ fn append_assistant_delta(
             return;
         }
 
-        parts.push(new_assistant_part(sequence, text, kind));
+        children.push(new_assistant_part(sequence, text, kind));
         *version = version.wrapping_add(1);
         state.open_assistant = Some(OpenAssistantProjection {
-            item_id: open.item_id,
+            item_id,
             part_id: sequence,
             kind,
         });
         return;
     }
-
-    state.open_assistant = None;
-    push_item(state, |id| TranscriptItem::Assistant {
-        id,
-        version: 0,
-        parts: vec![new_assistant_part(sequence, text, kind)],
-    });
-    let item_id = state
+    if let Some(TranscriptItem::Assistant {
+        version, children, ..
+    }) = state
         .transcript
-        .last()
-        .expect("assistant item was just pushed")
-        .id();
-    state.open_assistant = Some(OpenAssistantProjection {
-        item_id,
-        part_id: sequence,
-        kind,
-    });
+        .iter_mut()
+        .find(|item| item.id() == item_id)
+    {
+        children.push(new_assistant_part(sequence, text, kind));
+        *version = version.wrapping_add(1);
+        state.open_assistant = Some(OpenAssistantProjection {
+            item_id,
+            part_id: sequence,
+            kind,
+        });
+    }
 }
 
-fn new_assistant_part(sequence: u64, text: String, kind: AssistantPartKind) -> AssistantPart {
+fn new_assistant_part(sequence: u64, text: String, kind: AssistantPartKind) -> AssistantChild {
     match kind {
-        AssistantPartKind::Text => AssistantPart::Text {
+        AssistantPartKind::Text => AssistantChild::Text {
             id: sequence,
             version: 0,
             markdown: MarkdownDocument::new(text),
         },
-        AssistantPartKind::Thinking => AssistantPart::Thinking {
+        AssistantPartKind::Thinking => AssistantChild::Thinking {
             id: sequence,
             version: 0,
             text,
         },
     }
+}
+
+/// Link started tools into their owning assistant item at the committed
+/// placeholder with the exact same content index. A tool begins only after
+/// its owning turn is durable; rows whose owning item or placeholder is not
+/// yet known stay buffered, so out-of-order starts/completions can never
+/// reorder children.
+fn place_tool_rows(state: &mut SessionState) {
+    if state.pending_tool_rows.is_empty() {
+        return;
+    }
+    let pending = std::mem::take(&mut state.pending_tool_rows);
+    let mut deferred = Vec::new();
+    for row in pending {
+        let linked = state
+            .turn_items
+            .get(&row.turn_seq)
+            .copied()
+            .is_some_and(|item_id| link_tool_child(state, item_id, row.content_index, row.call_id));
+        if !linked {
+            deferred.push(row);
+        }
+    }
+    state.pending_tool_rows = deferred;
+}
+
+/// Replace the committed placeholder at `content_index` with the started
+/// tool. Returns false when the owning item or placeholder is not durable
+/// yet (or the index does not name a tool part).
+fn link_tool_child(
+    state: &mut SessionState,
+    item_id: u64,
+    content_index: u32,
+    call_id: ToolCallId,
+) -> bool {
+    let Some(TranscriptItem::Assistant {
+        version, children, ..
+    }) = state
+        .transcript
+        .iter_mut()
+        .find(|item| item.id() == item_id)
+    else {
+        return false;
+    };
+    let already = children.iter().any(
+        |child| matches!(child, AssistantChild::Tool { call_id: existing } if *existing == call_id),
+    );
+    if already {
+        return true;
+    }
+    for child in children.iter_mut() {
+        if let AssistantChild::CommittedTool {
+            content_index: placeholder,
+        } = child
+            && *placeholder == content_index
+        {
+            *child = AssistantChild::Tool { call_id };
+            *version = version.wrapping_add(1);
+            return true;
+        }
+    }
+    false
 }
 
 fn close_open_assistant(state: &mut SessionState) {
@@ -1500,9 +1700,15 @@ fn push_event(state: &mut SessionState, level: EventLevel, text: String) {
 }
 
 fn bump_tool_item(state: &mut SessionState, tool_call_id: ToolCallId) {
-    if let Some(TranscriptItem::Tool { version, .. }) = state.transcript.iter_mut().find(
-        |item| matches!(item, TranscriptItem::Tool { call_id, .. } if *call_id == tool_call_id),
-    ) {
+    if let Some(TranscriptItem::Assistant { version, children, .. }) = state
+        .transcript
+        .iter_mut()
+        .find(|item| {
+            matches!(item, TranscriptItem::Assistant { children, .. } if children.iter().any(
+                |child| matches!(child, AssistantChild::Tool { call_id } if *call_id == tool_call_id)))
+        })
+    {
+        let _ = children;
         *version = version.wrapping_add(1);
     }
 }
@@ -1516,11 +1722,248 @@ fn approval_outcome_label(outcome: ApprovalFinalOutcome) -> &'static str {
     }
 }
 
+pub(crate) fn approval_state_from_record(record: ApprovalRecord) -> Option<ApprovalState> {
+    match record.status {
+        ApprovalStatus::Escalated => {}
+        ApprovalStatus::Pending
+        | ApprovalStatus::Approved
+        | ApprovalStatus::Rejected
+        | ApprovalStatus::Cancelled
+        | ApprovalStatus::Expired => return None,
+    }
+    let approval = approval_state_from_request(record.session_id, record.request, true);
+    approval.is_visible_user_escalation().then_some(approval)
+}
+
+fn approval_request_metadata(
+    request: &cookie_agent_protocol::ApprovalRequest,
+) -> (u64, ApprovalTrigger) {
+    let wire = serde_json::to_value(request).expect("protocol approval request serializes");
+    let revision = wire["revision"]
+        .as_u64()
+        .expect("protocol approval revision is an integer");
+    let trigger = serde_json::from_value(wire["trigger"].clone())
+        .expect("protocol approval trigger deserializes");
+    (revision, trigger)
+}
+
+/// Serialized views over private approval identity fields. The wire form is
+/// the exact durable protocol shape, so display projection stays honest
+/// without new accessors.
+fn approval_operation_parts(
+    operation: &cookie_agent_protocol::PreparedOperationIdentity,
+) -> (Sha256Digest, Sha256Digest, PreparedCapabilityLifetime) {
+    let wire = serde_json::to_value(operation).expect("protocol operation serializes");
+    let arguments = serde_json::from_value(wire["normalized_arguments_digest"].clone())
+        .expect("arguments digest deserializes");
+    let context = serde_json::from_value(wire["execution_context_digest"].clone())
+        .expect("context digest deserializes");
+    let lifetime = serde_json::from_value(wire["capability_lifetime"].clone())
+        .expect("capability lifetime deserializes");
+    (arguments, context, lifetime)
+}
+
+fn approval_request_parts(
+    request: &ApprovalRequest,
+) -> (Vec<ApprovalEvaluation>, ApprovalConstraints) {
+    let wire = serde_json::to_value(request).expect("protocol approval request serializes");
+    let evaluations =
+        serde_json::from_value(wire["evaluations"].clone()).expect("evaluations deserialize");
+    let constraints =
+        serde_json::from_value(wire["constraints"].clone()).expect("constraints deserialize");
+    (evaluations, constraints)
+}
+
+fn approval_state_from_request(
+    session_id: SessionId,
+    request: ApprovalRequest,
+    escalated: bool,
+) -> ApprovalState {
+    let (request_revision, trigger) = approval_request_metadata(&request);
+    let operation = request.operation();
+    let (normalized_arguments_digest, execution_context_digest, capability_lifetime) =
+        approval_operation_parts(operation);
+    let (evaluations, constraints) = approval_request_parts(&request);
+    ApprovalState {
+        session_id,
+        approval_id: request.approval_id(),
+        request_revision,
+        operation_fingerprint: request.operation_fingerprint().clone(),
+        trigger,
+        normalized_arguments_digest,
+        execution_context_digest,
+        capability_lifetime,
+        capabilities: operation.capabilities().to_vec(),
+        resources: operation.resources().to_vec(),
+        evaluations,
+        constraints,
+        escalated,
+    }
+}
+
+fn render_model(model: &ResolvedModelRef) -> String {
+    let variant = model
+        .selection
+        .variant
+        .as_ref()
+        .map_or_else(|| "base".to_owned(), |variant| variant.to_string());
+    format!(
+        "{}/{} ({variant}, {})",
+        model.provider_id,
+        model.model_id,
+        model.adapter_id.as_str()
+    )
+}
+
+fn render_usage(usage: &Usage) -> String {
+    let value = |value: Option<u64>| value.map_or_else(|| "?".into(), |value| value.to_string());
+    format!(
+        "in {} [direct {}, cache read {}, cache write {}], out {} [text {}, thinking {}]",
+        value(usage.input_tokens),
+        value(usage.input_tokens_no_cache),
+        value(usage.input_tokens_cache_read),
+        value(usage.input_tokens_cache_write),
+        value(usage.output_tokens),
+        value(usage.output_tokens_text),
+        value(usage.output_tokens_reasoning)
+    )
+}
+
+fn render_replay(decisions: &[ReplayDecision]) -> Vec<(EventLevel, String)> {
+    if decisions.is_empty() {
+        return vec![(EventLevel::Info, "no history entries".into())];
+    }
+    decisions
+        .iter()
+        .map(|decision| {
+            let (level, disposition) = match &decision.disposition {
+                ReplayDisposition::Replayed => (EventLevel::Debug, "replayed".into()),
+                ReplayDisposition::NoArtifact => (EventLevel::Debug, "no artifact".into()),
+                ReplayDisposition::DiscardedForeignAdapter { found, expected } => (
+                    EventLevel::Warning,
+                    format!(
+                        "discarded foreign adapter {found} (expected {})",
+                        expected.as_str()
+                    ),
+                ),
+                ReplayDisposition::DiscardedForeignModelSelection { found, expected } => (
+                    EventLevel::Warning,
+                    format!(
+                        "discarded foreign model selection {}/{} (expected {}/{})",
+                        found.model,
+                        found
+                            .variant
+                            .as_ref()
+                            .map_or("base".into(), |variant| variant.to_string()),
+                        expected.model,
+                        expected
+                            .variant
+                            .as_ref()
+                            .map_or("base".into(), |variant| variant.to_string())
+                    ),
+                ),
+                ReplayDisposition::DiscardedForeignVariant { found, expected } => (
+                    EventLevel::Warning,
+                    format!(
+                        "discarded foreign variant {} (expected {})",
+                        found
+                            .as_ref()
+                            .map_or("base".into(), |variant| variant.to_string()),
+                        expected
+                            .as_ref()
+                            .map_or("base".into(), |variant| variant.to_string())
+                    ),
+                ),
+                ReplayDisposition::DiscardedInvalidPayload { reason } => (
+                    EventLevel::Warning,
+                    format!("discarded invalid payload: {reason}"),
+                ),
+                ReplayDisposition::ReconstructedNormalizedHistory => (
+                    EventLevel::Warning,
+                    "reconstructed normalized history".into(),
+                ),
+            };
+            (level, format!("#{} {disposition}", decision.history_index))
+        })
+        .collect()
+}
+
+fn render_model_error(error: &ModelErrorSummary) -> String {
+    let mut details = vec![
+        wire_enum_label(error.kind),
+        error.message.to_string(),
+        format!("stage {}", wire_enum_label(error.stage)),
+        format!("retryable {}", error.retryable),
+        format!("{} bytes received", error.bytes_received),
+    ];
+    if let Some(status) = error.http_status {
+        details.push(format!("HTTP {status}"));
+    }
+    if let Some(code) = &error.vendor_code {
+        details.push(format!("code {code}"));
+    }
+    if let Some(request_id) = &error.request_id {
+        details.push(format!("request {request_id}"));
+    }
+    if let Some(retry_after_ms) = error.retry_after_ms {
+        details.push(format!("retry after {retry_after_ms}ms"));
+    }
+    details.join(" · ")
+}
+
+fn wire_enum_label(value: impl Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn render_tool_result(
+    title: &str,
+    output: &str,
+    metadata: &serde_json::Value,
+    truncation: Option<(&str, u64, u64)>,
+    attachments: &[ToolAttachment],
+) -> String {
+    let mut lines = vec![title.to_owned(), output.to_owned()];
+    if !metadata.is_null() {
+        lines.push(format!("metadata: {metadata}"));
+    }
+    if let Some((uri, original_bytes, original_lines)) = truncation {
+        lines.push(format!(
+            "retained output: {uri} ({original_bytes} bytes, {original_lines} lines)"
+        ));
+    }
+    for attachment in attachments {
+        lines.push(format!(
+            "attachment: {} · {} bytes · sha256:{} · {}",
+            attachment.mime_type,
+            attachment.byte_length,
+            attachment.sha256,
+            attachment.reference.uri
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Locate the durable tool input for an ownership reference from the
+/// referenced committed turn's content; used only for the expanded row.
+fn find_tool_call_content(
+    state: &SessionState,
+    model_turn_seq: u64,
+    model_call_id: &cookie_agent_protocol::ModelCallId,
+) -> Option<String> {
+    state
+        .turn_tool_index
+        .get(&(model_turn_seq, model_call_id.as_str().to_owned()))
+        .cloned()
+}
+
 fn render_internal_backend(backend: &cookie_agent_protocol::InternalAgentBackend) -> String {
     match backend {
-        cookie_agent_protocol::InternalAgentBackend::Model { model, .. }
-        | cookie_agent_protocol::InternalAgentBackend::ProviderNative { model } => {
-            render_model(model)
+        cookie_agent_protocol::InternalAgentBackend::Model { resolved_model }
+        | cookie_agent_protocol::InternalAgentBackend::ProviderNative { resolved_model } => {
+            render_model(resolved_model)
         }
         cookie_agent_protocol::InternalAgentBackend::Builtin { name, revision } => {
             format!("builtin {name}@{revision}")
@@ -1528,15 +1971,15 @@ fn render_internal_backend(backend: &cookie_agent_protocol::InternalAgentBackend
     }
 }
 
-fn render_title_commit(commit: &SessionTitleCommit) -> String {
-    match commit {
-        SessionTitleCommit::UserSet { title, .. } => format!("session renamed to {title}"),
-        SessionTitleCommit::UserClear { .. } => "session title cleared".into(),
-        SessionTitleCommit::UserReset { .. } => "session title reset".into(),
-        SessionTitleCommit::InternalAgentSet { title, .. } => {
+fn render_title_commit(change: &SessionTitleChange) -> String {
+    match change {
+        SessionTitleChange::UserSet { title, .. } => format!("session renamed to {title}"),
+        SessionTitleChange::UserClear { .. } => "session title cleared".into(),
+        SessionTitleChange::UserReset { .. } => "session title reset".into(),
+        SessionTitleChange::InternalAgentSet { title, .. } => {
             format!("session title set to {title}")
         }
-        SessionTitleCommit::FallbackSet { title } => format!("session title set to {title}"),
+        SessionTitleChange::FallbackSet { title } => format!("session title set to {title}"),
     }
 }
 
@@ -1603,813 +2046,5 @@ impl OrderedOutput {
             self.next_offset += bytes.len() as u64;
             self.data.extend_from_slice(&bytes);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
-    use cookie_agent_protocol::{
-        ActionKind, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
-        ApprovalId, ApprovalRequest, ApprovalResourceSource, ApprovalTrigger, ArtifactReference,
-        ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
-        ContextCheckpointCommit, DecisionTrace, Effect, Event, EventEnvelope, EventSchemaVersion,
-        InternalAgentBackend, InternalAgentInvocationId, InternalAgentKind, InternalAgentRunId,
-        InternalSummaryCheckpoint, ModelErrorKind, ModelErrorStage, ModelErrorSummary,
-        ModelFinishReason, ModelRef, OutputDelta, OutputGap, OutputSnapshot,
-        OutputSnapshotEnvelope, PersistedModelTurn, PreparedApprovalResource,
-        PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
-        PreparedResourceDigest, PreparedResourceIdentity, ReplayDecision, ReplayDisposition,
-        SafeInternalAgentCall, SafeInternalAgentResult, SessionId, SessionTitle,
-        SessionTitleCommit, Sha256Digest, SummaryByteLimit, ToolAttachment, ToolOutputTruncation,
-        ToolResult, Usage,
-    };
-    use jiff::Timestamp;
-
-    use super::{
-        AssistantPart, StateStore, ToolCallState, ToolStatus, TranscriptItem, render_tool_result,
-    };
-    use crate::client::ClientDelivery;
-
-    fn reasoning_event(session_id: SessionId, sequence: u64, text: &str) -> EventEnvelope {
-        EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id,
-            run_id: None,
-            seq: sequence,
-            timestamp: Timestamp::now(),
-            event: Event::ReasoningDelta { text: text.into() },
-        }
-    }
-
-    fn event(session_id: SessionId, sequence: u64, event: Event) -> EventEnvelope {
-        EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id,
-            run_id: None,
-            seq: sequence,
-            timestamp: Timestamp::now(),
-            event,
-        }
-    }
-
-    fn approval_request(trigger: ApprovalTrigger) -> ApprovalRequest {
-        let resource = PreparedApprovalResource {
-            capability: ActionKind::Bash,
-            canonical: PreparedResourceIdentity::new("command:git-status")
-                .expect("prepared resource identity"),
-            binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"git status"),
-            binding_lifetime: PreparedBindingLifetime::ProcessLocal,
-            boundary: ApprovalBoundary::CommandPrefix {
-                prefix: "git status".into(),
-            },
-            source: ApprovalResourceSource::ModelRequest,
-        };
-        let resource_digest = resource.binding_digest.clone();
-        let operation = PreparedOperationIdentity::new(
-            Sha256Digest::of_bytes(b"normalized arguments"),
-            vec![ApprovalCapability {
-                action: ActionKind::Bash,
-                operation: PreparedCapabilityOperation::new("execute")
-                    .expect("prepared capability operation"),
-            }],
-            vec![resource],
-            Sha256Digest::of_bytes(b"execution context"),
-        )
-        .expect("prepared operation");
-        ApprovalRequest::new(
-            ApprovalId::new_v7(),
-            3,
-            trigger,
-            operation,
-            vec![ApprovalEvaluation {
-                resource_digest,
-                effect: Effect::Ask,
-                trace: DecisionTrace {
-                    action: ActionKind::Bash,
-                    normalized_resource: "git status".into(),
-                    candidates: Vec::new(),
-                    effect: Effect::Ask,
-                    precedence_reason: "model requested approval".into(),
-                },
-            }],
-            ApprovalConstraints {
-                allow_once: true,
-                allow_tree_grant: false,
-                cancellable: true,
-                expires_at: None,
-            },
-        )
-        .expect("approval request")
-    }
-
-    #[test]
-    fn rich_tool_results_render_only_safe_attachment_metadata() {
-        let digest = Sha256Digest::of_bytes(b"attachment");
-        let reference = ArtifactReference {
-            uri: format!("artifact://sha256/{digest}"),
-        };
-        let rendered = render_tool_result(&ToolResult {
-            title: "Read attachment".into(),
-            output: "PDF attached".into(),
-            metadata: serde_json::json!({"kind": "attachment"}),
-            truncation: Some(ToolOutputTruncation {
-                original_bytes: 42,
-                original_lines: 3,
-                retained: reference.clone(),
-            }),
-            attachments: vec![ToolAttachment {
-                mime_type: "application/pdf".into(),
-                filename: None,
-                byte_length: 42,
-                sha256: digest,
-                reference,
-            }],
-        });
-        assert!(rendered.contains("Read attachment"));
-        assert!(rendered.contains("application/pdf · 42 bytes"));
-        assert!(rendered.contains("artifact://sha256/"));
-        assert!(!rendered.contains("base64"));
-    }
-
-    #[test]
-    fn thinking_child_id_is_stable_when_deltas_merge_and_replay_swaps() {
-        let session_id = SessionId::new_v7();
-        let first = reasoning_event(session_id, 1, "first ");
-        let second = reasoning_event(session_id, 2, "second");
-        let replay_first = reasoning_event(session_id, 1, "replacement ");
-        let replay_second = reasoning_event(session_id, 2, "content");
-        let mut store = StateStore::default();
-        assert!(store.apply_event(first.clone()));
-        assert!(store.apply_event(second.clone()));
-        assert_eq!(store.sessions[&session_id].version, 2);
-        assert!(matches!(
-            store.sessions[&session_id].transcript.as_slice(),
-            [TranscriptItem::Assistant { parts, .. }]
-                if matches!(parts.as_slice(), [AssistantPart::Thinking { id: 1, text, .. }] if text == "first second")
-        ));
-
-        store.apply_delivery(ClientDelivery::ReplayStart {
-            session_id,
-            generation: 1,
-            final_seq: 2,
-            rebuild: true,
-        });
-        for event in [replay_first, replay_second] {
-            store.apply_delivery(ClientDelivery::ReplayEvent {
-                session_id,
-                generation: 1,
-                final_seq: 2,
-                event: Box::new(event),
-            });
-        }
-        store.apply_delivery(ClientDelivery::ReplayEnd {
-            session_id,
-            generation: 1,
-            final_seq: 2,
-        });
-        assert!(matches!(
-            store.sessions[&session_id].transcript.as_slice(),
-            [TranscriptItem::Assistant { parts, .. }]
-                if matches!(parts.as_slice(), [AssistantPart::Thinking { id: 1, text, .. }] if text == "replacement content")
-        ));
-        assert_eq!(store.sessions[&session_id].version, 3);
-    }
-
-    #[test]
-    fn incremental_replay_closes_the_pre_replay_assistant_projection() {
-        let session_id = SessionId::new_v7();
-        let mut store = StateStore::default();
-        assert!(store.apply_event(reasoning_event(session_id, 1, "before replay")));
-        assert_eq!(store.sessions[&session_id].transcript.len(), 1);
-
-        assert_eq!(
-            store.apply_delivery(ClientDelivery::ReplayStart {
-                session_id,
-                generation: 0,
-                final_seq: 2,
-                rebuild: false,
-            }),
-            super::DeliveryOutcome::Applied
-        );
-        assert_eq!(
-            store.apply_delivery(ClientDelivery::ReplayEvent {
-                session_id,
-                generation: 0,
-                final_seq: 2,
-                event: Box::new(reasoning_event(session_id, 2, "after replay")),
-            }),
-            super::DeliveryOutcome::Applied
-        );
-        assert_eq!(
-            store.apply_delivery(ClientDelivery::ReplayEnd {
-                session_id,
-                generation: 0,
-                final_seq: 2,
-            }),
-            super::DeliveryOutcome::Applied
-        );
-        assert!(matches!(
-            store.sessions[&session_id].transcript.as_slice(),
-            [
-                TranscriptItem::Assistant { parts: first, .. },
-                TranscriptItem::Assistant { parts: second, .. },
-            ] if matches!(first.as_slice(), [AssistantPart::Thinking { id: 1, .. }])
-                && matches!(second.as_slice(), [AssistantPart::Thinking { id: 2, .. }])
-        ));
-    }
-
-    #[test]
-    fn assistant_attempt_groups_ordered_thinking_and_text_children_until_boundaries() {
-        let session_id = SessionId::new_v7();
-        let tool_call_id = cookie_agent_protocol::ToolCallId::new_v7();
-        let mut store = StateStore::default();
-        let events = [
-            Event::ReasoningDelta { text: "r1".into() },
-            Event::ReasoningDelta { text: "+r2".into() },
-            Event::TextDelta { text: "t1".into() },
-            Event::ReasoningDelta { text: "r3".into() },
-            Event::TextDelta { text: "t2".into() },
-            Event::AttemptAbandoned,
-            Event::ReasoningDelta {
-                text: "partial".into(),
-            },
-            Event::ToolCallStarted {
-                tool_call_id,
-                model_call_id: "call-1".into(),
-                provider_item_id: None,
-                tool: "bash".into(),
-                arguments: serde_json::json!({"command": "true"}),
-            },
-            Event::TextDelta {
-                text: "after tool".into(),
-            },
-            Event::RunInterrupted {
-                reason: Some("connection lost".into()),
-            },
-        ];
-        for (index, next) in events.into_iter().enumerate() {
-            assert!(store.apply_event(event(session_id, index as u64 + 1, next)));
-        }
-
-        let transcript = &store.sessions[&session_id].transcript;
-        let TranscriptItem::Assistant { parts, .. } = &transcript[0] else {
-            panic!("first assistant attempt");
-        };
-        assert!(matches!(
-            parts.as_slice(),
-            [
-                AssistantPart::Thinking { id: 1, text, .. },
-                AssistantPart::Text { id: 3, markdown, .. },
-                AssistantPart::Thinking { id: 4, text: second, .. },
-                AssistantPart::Text { id: 5, markdown: final_text, .. },
-            ] if text == "r1+r2"
-                && markdown.as_str() == "t1"
-                && second == "r3"
-                && final_text.as_str() == "t2"
-        ));
-        assert!(matches!(transcript[1], TranscriptItem::Event { .. }));
-        assert!(matches!(
-            &transcript[2],
-            TranscriptItem::Assistant { parts, .. }
-                if matches!(parts.as_slice(), [AssistantPart::Thinking { id: 7, text, .. }] if text == "partial")
-        ));
-        assert!(matches!(transcript[3], TranscriptItem::Tool { .. }));
-        assert!(matches!(
-            &transcript[4],
-            TranscriptItem::Assistant { parts, .. }
-                if matches!(parts.as_slice(), [AssistantPart::Text { id: 9, markdown, .. }] if markdown.as_str() == "after tool")
-        ));
-        assert!(matches!(
-            transcript[5],
-            TranscriptItem::Event {
-                level: super::EventLevel::Error,
-                ..
-            }
-        ));
-        assert!(store.sessions[&session_id].open_assistant.is_none());
-    }
-
-    #[test]
-    fn model_replay_and_user_turn_boundaries_start_new_assistant_items() {
-        let session_id = SessionId::new_v7();
-        let model = ModelRef {
-            name: "primary".into(),
-            provider_id: "provider".into(),
-            model_id: "model".into(),
-            adapter_id: "adapter".into(),
-        };
-        let mut store = StateStore::default();
-        for (sequence, next) in [
-            Event::ReasoningDelta {
-                text: "attempt one".into(),
-            },
-            Event::ModelReplayEvaluated {
-                model,
-                decisions: Vec::new(),
-            },
-            Event::TextDelta {
-                text: "attempt two".into(),
-            },
-            Event::UserInputSubmitted {
-                input: "steer".into(),
-            },
-            Event::ReasoningDelta {
-                text: "attempt three".into(),
-            },
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            assert!(store.apply_event(event(session_id, sequence as u64 + 1, next)));
-        }
-        assert!(matches!(
-            store.sessions[&session_id].transcript.as_slice(),
-            [
-                TranscriptItem::Assistant { .. },
-                TranscriptItem::Event { .. },
-                TranscriptItem::Assistant { .. },
-                TranscriptItem::User { .. },
-                TranscriptItem::Assistant { .. },
-            ]
-        ));
-    }
-
-    #[test]
-    fn open_thinking_indicator_state_ends_on_kind_and_attempt_boundaries() {
-        let session_id = SessionId::new_v7();
-        let mut store = StateStore::default();
-        assert!(store.apply_event(reasoning_event(session_id, 1, "thinking")));
-        let state = &store.sessions[&session_id];
-        let TranscriptItem::Assistant { id, parts, .. } = &state.transcript[0] else {
-            panic!("assistant item");
-        };
-        assert!(state.is_open_thinking(*id, parts[0].id()));
-
-        assert!(store.apply_event(event(
-            session_id,
-            2,
-            Event::TextDelta {
-                text: "answer".into(),
-            },
-        )));
-        let state = &store.sessions[&session_id];
-        let TranscriptItem::Assistant { id, parts, .. } = &state.transcript[0] else {
-            panic!("assistant item");
-        };
-        assert!(!state.is_open_thinking(*id, parts[0].id()));
-
-        assert!(store.apply_event(event(
-            session_id,
-            3,
-            Event::ReasoningDelta {
-                text: "more".into(),
-            },
-        )));
-        assert!(store.apply_event(event(session_id, 4, Event::AttemptAbandoned)));
-        assert!(store.sessions[&session_id].open_assistant.is_none());
-    }
-
-    #[test]
-    fn assistant_streaming_advances_only_the_open_markdown_tail() {
-        let session_id = SessionId::new_v7();
-        let mut store = StateStore::default();
-        for (sequence, text) in [
-            (1, "stable paragraph\n\nopen"),
-            (2, " tail"),
-            (3, " continues"),
-        ] {
-            assert!(store.apply_event(EventEnvelope {
-                schema_version: EventSchemaVersion::current(),
-                session_id,
-                run_id: None,
-                seq: sequence,
-                timestamp: Timestamp::now(),
-                event: Event::TextDelta { text: text.into() },
-            }));
-        }
-        let TranscriptItem::Assistant { parts, version, .. } =
-            &store.sessions[&session_id].transcript[0]
-        else {
-            panic!("assistant item");
-        };
-        let [AssistantPart::Text { markdown, .. }] = parts.as_slice() else {
-            panic!("assistant text child");
-        };
-        assert_eq!(*version, 2);
-        assert_eq!(markdown.parse_passes(), 3);
-        assert!(markdown.stable_prefix_len() >= "stable paragraph\n\n".len());
-        assert!(markdown.parsed_bytes() < 3 * markdown.as_str().len() as u64);
-    }
-
-    #[test]
-    fn protocol_v6_model_replay_error_usage_and_approval_request_are_rendered() {
-        let session_id = SessionId::new_v7();
-        let model = ModelRef {
-            name: "primary".into(),
-            provider_id: "provider".into(),
-            model_id: "model".into(),
-            adapter_id: "adapter".into(),
-        };
-        let usage = Usage {
-            input_tokens: Some(10),
-            input_tokens_no_cache: Some(8),
-            input_tokens_cache_read: Some(2),
-            input_tokens_cache_write: Some(0),
-            output_tokens: Some(4),
-            output_tokens_text: Some(3),
-            output_tokens_reasoning: Some(1),
-        };
-        let mut store = StateStore::default();
-        for (seq, event) in [
-            Event::ModelReplayEvaluated {
-                model: model.clone(),
-                decisions: vec![ReplayDecision {
-                    history_index: 0,
-                    disposition: ReplayDisposition::ReconstructedNormalized,
-                }],
-            },
-            Event::ModelTurnCommitted {
-                model: model.clone(),
-                input_through_seq: 0,
-                turn: PersistedModelTurn {
-                    content: Vec::new(),
-                    provider_options: Default::default(),
-                    finish_reason: ModelFinishReason::Stop,
-                    usage,
-                    response_metadata: Default::default(),
-                    provider_metadata: Default::default(),
-                    warnings: vec!["safe warning".into()],
-                    native_replay: None,
-                },
-            },
-            Event::ModelFallback {
-                from: model.clone(),
-                to: ModelRef {
-                    name: "fallback".into(),
-                    ..model.clone()
-                },
-                error: ModelErrorSummary {
-                    kind: ModelErrorKind::RateLimited,
-                    message: "slow down".into(),
-                    retryable: true,
-                    stage: ModelErrorStage::ResponseHeaders,
-                    http_status: Some(429),
-                    bytes_received: 0,
-                    vendor_code: Some("rate_limit".into()),
-                    request_id: Some("request-id".into()),
-                    retry_after_ms: Some(100),
-                },
-                attempts: 2,
-            },
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            assert!(store.apply_event(EventEnvelope {
-                schema_version: EventSchemaVersion::current(),
-                session_id,
-                run_id: None,
-                seq: seq as u64 + 1,
-                timestamp: Timestamp::now(),
-                event,
-            }));
-        }
-        let rendered = store.sessions[&session_id]
-            .transcript
-            .iter()
-            .filter_map(|item| match item {
-                TranscriptItem::Event { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(rendered.contains("normalized history"));
-        assert!(rendered.contains("usage in 10"));
-        assert!(rendered.contains("safe warning"));
-        assert!(rendered.contains("rate_limited"));
-        assert!(rendered.contains("HTTP 429"));
-
-        assert!(store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id,
-            run_id: None,
-            seq: 4,
-            timestamp: Timestamp::now(),
-            event: Event::ApprovalRequested {
-                request: approval_request(ApprovalTrigger::ModelToolApproval),
-            },
-        }));
-        assert_eq!(
-            store.sessions[&session_id].approvals[0].trigger,
-            ApprovalTrigger::ModelToolApproval
-        );
-    }
-
-    #[test]
-    fn v6_internal_title_and_checkpoint_events_render_only_safe_metadata() {
-        let session_id = SessionId::new_v7();
-        let invocation_id = InternalAgentInvocationId::new_v7();
-        let internal_run_id = InternalAgentRunId::new_v7();
-        let limit = SummaryByteLimit::new(1024).expect("summary limit");
-        let checkpoint = InternalSummaryCheckpoint::new(
-            "sentinel-hidden-summary".into(),
-            invocation_id,
-            internal_run_id,
-            limit,
-        )
-        .expect("checkpoint");
-        let commit = ContextCheckpointCommit::new(
-            ContextCheckpoint::InternalSummary { checkpoint },
-            ContextCheckpointBoundaries {
-                source_from_seq: 1,
-                source_through_seq: 2,
-                input_through_seq: 2,
-                prior_checkpoint_seq: None,
-            },
-            ContextCheckpointBudgets {
-                context_limit_tokens: 4096,
-                trigger_tokens: 3000,
-                target_tokens: 1500,
-                input_tokens_before: 3200,
-                input_tokens_after: 1400,
-                max_summary_bytes: limit,
-            },
-        )
-        .expect("checkpoint commit");
-        let events = [
-            Event::InternalAgentStarted {
-                invocation_id,
-                internal_run_id,
-                kind: InternalAgentKind::ContextCompaction,
-                backend: InternalAgentBackend::Builtin {
-                    name: "safe-compactor".into(),
-                    revision: "v1".into(),
-                },
-                call: SafeInternalAgentCall {
-                    name: "compact".into(),
-                    input_summary: "safe bounded input".into(),
-                    input_digest: Sha256Digest::of_bytes(b"private prompt bytes"),
-                },
-            },
-            Event::InternalAgentCompleted {
-                invocation_id,
-                internal_run_id,
-                kind: InternalAgentKind::ContextCompaction,
-                result: SafeInternalAgentResult {
-                    output_summary: "safe bounded output".into(),
-                    output_digest: Sha256Digest::of_bytes(b"private result bytes"),
-                },
-            },
-            Event::ContextCheckpointCommitted { commit },
-            Event::SessionTitleCommitted {
-                input_through_seq: 2,
-                commit: SessionTitleCommit::FallbackSet {
-                    title: SessionTitle::new("Safe title").expect("title"),
-                },
-            },
-        ];
-        let mut store = StateStore::default();
-        for (index, event) in events.into_iter().enumerate() {
-            assert!(store.apply_event(EventEnvelope {
-                schema_version: EventSchemaVersion::current(),
-                session_id,
-                run_id: None,
-                seq: index as u64 + 1,
-                timestamp: Timestamp::now(),
-                event,
-            }));
-        }
-        let rendered = store.sessions[&session_id]
-            .transcript
-            .iter()
-            .filter_map(|item| match item {
-                TranscriptItem::Event { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(rendered.contains("safe bounded input"));
-        assert!(rendered.contains("safe bounded output"));
-        assert!(rendered.contains("context checkpoint committed"));
-        assert!(rendered.contains("Safe title"));
-        assert!(!rendered.contains("sentinel-hidden-summary"));
-        assert!(!rendered.contains("private prompt bytes"));
-        assert!(!rendered.contains("private result bytes"));
-    }
-
-    #[test]
-    fn model_warnings_are_distinct_items_that_identify_the_owning_model() {
-        let session_id = SessionId::new_v7();
-        let model = ModelRef {
-            name: "primary".into(),
-            provider_id: "provider".into(),
-            model_id: "model".into(),
-            adapter_id: "adapter".into(),
-        };
-        let mut store = StateStore::default();
-        assert!(store.apply_event(event(
-            session_id,
-            1,
-            Event::ModelTurnCommitted {
-                model,
-                input_through_seq: 0,
-                turn: PersistedModelTurn {
-                    content: Vec::new(),
-                    provider_options: Default::default(),
-                    finish_reason: ModelFinishReason::Stop,
-                    usage: Usage {
-                        input_tokens: None,
-                        input_tokens_no_cache: None,
-                        input_tokens_cache_read: None,
-                        input_tokens_cache_write: None,
-                        output_tokens: None,
-                        output_tokens_text: None,
-                        output_tokens_reasoning: None,
-                    },
-                    response_metadata: Default::default(),
-                    provider_metadata: Default::default(),
-                    warnings: vec!["context near limit".into()],
-                    native_replay: None,
-                },
-            },
-        )));
-        let transcript = &store.sessions[&session_id].transcript;
-        assert!(matches!(transcript[0], TranscriptItem::Event { .. }));
-        let TranscriptItem::Event {
-            level: super::EventLevel::Warning,
-            text,
-            ..
-        } = &transcript[1]
-        else {
-            panic!("model warning renders as a warning-level event row");
-        };
-        assert!(text.contains("context near limit"));
-        assert!(text.contains("primary (provider/model, adapter)"));
-    }
-
-    #[test]
-    fn diagnostic_classification_is_exact_for_every_reduced_event_kind() {
-        let session_id = SessionId::new_v7();
-        let model = ModelRef {
-            name: "primary".into(),
-            provider_id: "provider".into(),
-            model_id: "model".into(),
-            adapter_id: "adapter".into(),
-        };
-        let usage = Usage {
-            input_tokens: None,
-            input_tokens_no_cache: None,
-            input_tokens_cache_read: None,
-            input_tokens_cache_write: None,
-            output_tokens: None,
-            output_tokens_text: None,
-            output_tokens_reasoning: None,
-        };
-        let turn = |warnings: Vec<String>| PersistedModelTurn {
-            content: Vec::new(),
-            provider_options: Default::default(),
-            finish_reason: ModelFinishReason::Stop,
-            usage: usage.clone(),
-            response_metadata: Default::default(),
-            provider_metadata: Default::default(),
-            warnings,
-            native_replay: None,
-        };
-        let cases: Vec<(Event, Vec<super::EventLevel>)> = vec![
-            (
-                Event::ModelReplayEvaluated {
-                    model: model.clone(),
-                    decisions: vec![
-                        ReplayDecision {
-                            history_index: 0,
-                            disposition: ReplayDisposition::Replayed,
-                        },
-                        ReplayDecision {
-                            history_index: 1,
-                            disposition: ReplayDisposition::DiscardedInvalidPayload {
-                                reason: "truncated".into(),
-                            },
-                        },
-                        ReplayDecision {
-                            history_index: 2,
-                            disposition: ReplayDisposition::ReconstructedNormalized,
-                        },
-                    ],
-                },
-                vec![
-                    super::EventLevel::Debug,
-                    super::EventLevel::Warning,
-                    super::EventLevel::Warning,
-                ],
-            ),
-            (
-                Event::ModelTurnCommitted {
-                    model: model.clone(),
-                    input_through_seq: 0,
-                    turn: turn(vec!["careful".into()]),
-                },
-                vec![super::EventLevel::Info, super::EventLevel::Warning],
-            ),
-            (
-                Event::ModelFallback {
-                    from: model.clone(),
-                    to: model.clone(),
-                    error: ModelErrorSummary {
-                        kind: ModelErrorKind::RateLimited,
-                        message: "slow".into(),
-                        retryable: true,
-                        stage: ModelErrorStage::Connect,
-                        http_status: None,
-                        bytes_received: 0,
-                        vendor_code: None,
-                        request_id: None,
-                        retry_after_ms: None,
-                    },
-                    attempts: 1,
-                },
-                vec![super::EventLevel::Warning],
-            ),
-            (Event::AttemptAbandoned, vec![super::EventLevel::Warning]),
-            (
-                Event::RunFailed {
-                    message: "boom".into(),
-                },
-                vec![super::EventLevel::Error],
-            ),
-            (
-                Event::RunCancelled { reason: None },
-                vec![super::EventLevel::Info],
-            ),
-            (
-                Event::RunInterrupted { reason: None },
-                vec![super::EventLevel::Error],
-            ),
-        ];
-        for (case, expected) in cases {
-            let mut store = StateStore::default();
-            assert!(
-                store.apply_event(event(session_id, 1, case)),
-                "{expected:?}"
-            );
-            let levels = store.sessions[&session_id]
-                .transcript
-                .iter()
-                .filter_map(|item| match item {
-                    TranscriptItem::Event { level, .. } => Some(*level),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(levels, expected);
-        }
-    }
-
-    #[test]
-    fn gap_snapshot_and_live_delta_preserve_the_snapshot_cursor() {
-        let session_id = cookie_agent_protocol::SessionId::new_v7();
-        let call_id = cookie_agent_protocol::ToolCallId::new_v7();
-        let mut store = StateStore::default();
-        store.sessions.entry(session_id).or_default().tools.insert(
-            call_id,
-            ToolCallState {
-                id: call_id,
-                tool: "bash".into(),
-                arguments: String::new(),
-                status: ToolStatus::Running,
-                detail: String::new(),
-            },
-        );
-
-        store.apply_output_gap(OutputGap {
-            call_id,
-            stream: cookie_agent_protocol::OutputStream::Stdout,
-            next_offset: 3,
-        });
-        store.apply_snapshot(OutputSnapshotEnvelope {
-            stream: cookie_agent_protocol::OutputStream::Stdout,
-            snapshot: OutputSnapshot {
-                call_id,
-                start_offset: 3,
-                end_offset: 6,
-                chunks: vec![OutputDelta {
-                    call_id,
-                    stream: cookie_agent_protocol::OutputStream::Stdout,
-                    byte_offset: 3,
-                    data: STANDARD.encode(b"two"),
-                }],
-            },
-        });
-        store.apply_output_delta(OutputDelta {
-            call_id,
-            stream: cookie_agent_protocol::OutputStream::Stdout,
-            byte_offset: 6,
-            data: STANDARD.encode(b"!"),
-        });
-        assert_eq!(store.sessions[&session_id].version, 3);
-
-        let output = &store.sessions[&session_id].output[&(call_id, false)];
-        assert!(output.has_gap);
-        assert_eq!(output.text(), "two!");
-        assert_eq!(output.next_offset, 7);
     }
 }

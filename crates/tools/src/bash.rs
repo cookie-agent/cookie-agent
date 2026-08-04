@@ -10,10 +10,11 @@ use std::{
 use async_trait::async_trait;
 use cookie_agent_engine::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProvider, ToolResult, ToolSpec,
+    ToolPreparationContext, ToolProvider, ToolSpec,
 };
+use cookie_agent_protocol::PersistedToolResult as ToolResult;
 use cookie_agent_protocol::{
-    ActionKind, ApprovalResourceSource, OutputStream, PreparedBindingLifetime,
+    ApprovalResourceSource, OutputStream, PermissionAction, PreparedBindingLifetime,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -136,14 +137,6 @@ impl ToolProvider for BashTool {
                 "prepared bash executable is not an executable regular file",
             ));
         }
-        let command_resource = prepared_resource(
-            ActionKind::Bash,
-            "command",
-            args.command.as_bytes(),
-            args.command.as_bytes(),
-            PreparedBindingLifetime::RestartStable,
-            ApprovalResourceSource::PrimaryOperation,
-        )?;
         let cwd = fs_cap::prepare_existing(std::path::Path::new("/"), &ctx.cwd)?;
         if !cwd.directory {
             return Err(ToolError::unsupported_security(
@@ -152,24 +145,32 @@ impl ToolProvider for BashTool {
         }
         let mut executable_binding = executable.manifest_bytes()?;
         executable_binding.extend_from_slice(executable_path.as_os_str().as_encoded_bytes());
-        let executable_resource = prepared_resource(
-            ActionKind::Bash,
-            "executable",
-            args.command.as_bytes(),
-            &executable_binding,
-            PreparedBindingLifetime::ProcessLocal,
-            ApprovalResourceSource::SecondaryOperation,
-        )?;
+        let subcommands = parsed_subcommands(&args.command);
+        let mut resources = Vec::with_capacity(subcommands.len());
+        let mut policy_labels = Vec::with_capacity(subcommands.len());
+        for (index, subcommand) in subcommands.into_iter().enumerate() {
+            let mut binding = args.command.as_bytes().to_vec();
+            binding.extend_from_slice(&executable_binding);
+            binding.extend_from_slice(&(index as u64).to_be_bytes());
+            resources.push(prepared_resource(
+                PermissionAction::Bash,
+                "command",
+                subcommand.as_bytes(),
+                &binding,
+                PreparedBindingLifetime::ProcessLocal,
+                ApprovalResourceSource::PrimaryOperation,
+            )?);
+            policy_labels.push(subcommand);
+        }
         let mut context = cwd.manifest_bytes()?;
         context.extend_from_slice(&executable_binding);
         let operation = prepared_operation(
             "bash",
             &args,
-            vec![(ActionKind::Bash, "execute")],
-            vec![command_resource, executable_resource],
+            vec![(PermissionAction::Bash, "execute")],
+            resources,
             &context,
         )?;
-        let policy_labels = vec![args.command.clone(), args.command.clone()];
         PreparedTool::new(
             operation,
             None,
@@ -180,6 +181,43 @@ impl ToolProvider for BashTool {
             }),
         )
         .with_policy_labels(policy_labels)
+    }
+}
+
+fn parsed_subcommands(command: &str) -> Vec<String> {
+    let fallback = || vec![command.trim().to_owned()];
+    let mut parser = tree_sitter::Parser::new();
+    if parser
+        .set_language(&tree_sitter_bash::LANGUAGE.into())
+        .is_err()
+    {
+        return fallback();
+    }
+    let Some(tree) = parser.parse(command, None) else {
+        return fallback();
+    };
+    if tree.root_node().has_error() {
+        return fallback();
+    }
+    let mut nodes = vec![tree.root_node()];
+    let mut commands = Vec::new();
+    while let Some(node) = nodes.pop() {
+        if node.kind() == "command"
+            && let Ok(value) = node.utf8_text(command.as_bytes())
+        {
+            let value = value.trim();
+            if !value.is_empty() {
+                commands.push((node.start_byte(), value.to_owned()));
+            }
+        }
+        let mut cursor = node.walk();
+        nodes.extend(node.children(&mut cursor));
+    }
+    commands.sort_by_key(|(offset, _)| *offset);
+    if commands.is_empty() {
+        fallback()
+    } else {
+        commands.into_iter().map(|(_, value)| value).collect()
     }
 }
 
@@ -295,7 +333,7 @@ impl PreparedExecutor for BashExecutor {
         let stdout = String::from_utf8_lossy(&stdout);
         let stderr = String::from_utf8_lossy(&stderr);
         Ok(ToolResult {
-            title: "Bash".into(),
+            title: crate::safe_title("Bash"),
             output: format!("{stdout}{stderr}"),
             metadata: serde_json::json!({"status":status.code(),"success":status.success()}),
             truncation: None,
@@ -332,10 +370,54 @@ fn resolve_executable_in_path(name: &str, path: &std::ffi::OsStr) -> Result<Path
 mod tests {
     use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
-    use cookie_agent_engine::{ToolError, ToolProvider};
+    use cookie_agent_engine::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
     use cookie_agent_protocol::{RunId, SessionId, ToolCallId};
 
-    use super::{BashTool, resolve_executable_in_path};
+    use super::{BashTool, parsed_subcommands, resolve_executable_in_path};
+
+    #[test]
+    fn parsed_subcommands_are_evaluated_once_in_source_order() {
+        assert_eq!(
+            parsed_subcommands("git status && printf '%s' ok; cargo check"),
+            ["git status", "printf '%s' ok", "cargo check"]
+        );
+        assert_eq!(parsed_subcommands("echo $(pwd)"), ["echo $(pwd)", "pwd"]);
+    }
+
+    #[test]
+    fn unsafe_parse_falls_back_to_whole_command() {
+        assert_eq!(
+            parsed_subcommands("echo 'unterminated"),
+            ["echo 'unterminated"]
+        );
+    }
+
+    #[tokio::test]
+    async fn prepared_bash_has_one_permission_resource_per_subcommand() {
+        let root = tempfile::tempdir().expect("root");
+        let prepared = BashTool::new(root.path())
+            .prepare(
+                ToolPreparationContext {
+                    session: SessionId::new_v7(),
+                    run: RunId::new_v7(),
+                    cwd: root.path().to_owned(),
+                    workspace_root: root.path().to_owned(),
+                },
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command":"echo one; echo one"}),
+                },
+            )
+            .await
+            .expect("prepare");
+        assert_eq!(prepared.policy_labels(), ["echo one", "echo one"]);
+        assert_eq!(prepared.operation().resources().len(), 2);
+        assert_ne!(
+            prepared.operation().resources()[0].binding_digest,
+            prepared.operation().resources()[1].binding_digest
+        );
+    }
 
     #[test]
     fn fake_path_swap_cannot_change_prepared_executable() {

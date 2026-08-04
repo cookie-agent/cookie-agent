@@ -1,0 +1,32 @@
+---
+source: crates/tui/src/ui/transcript.rs
+assertion_line: 4121
+expression: "snapshots.join(\"\\n\")"
+---
+== width 24 ==
+╭─
+│ primary(gateway/arbitr
+│ ary-model) 
+│ launching both
+│ ▸ bash sleep 2 …
+│ ▸ thinking (1 lines
+│ hidden)
+│ ▸ read src/lib.rs
+== width 48 ==
+╭─ primary(gateway/arbitrary-model) 
+│ launching both
+│ ▸ bash sleep 2 …
+│ ▸ thinking (1 lines hidden)
+│ ▸ read src/lib.rs
+== width 96 ==
+╭─ primary(gateway/arbitrary-model) 
+│ launching both
+│ ▸ bash sleep 2 …
+│ ▸ thinking (1 lines hidden)
+│ ▸ read src/lib.rs
+== mono 48 ==
+╭─ primary(gateway/arbitrary-model) 
+│ launching both
+│ ▸ bash sleep 2 …
+│ ▸ thinking (1 lines hidden)
+│ ▸ read src/lib.rs

@@ -1,14 +1,10 @@
-use crate::{
-    fs_cap, parse_args, prepared_operation, prepared_path_resources, prepared_resource, schema,
-};
+use crate::{fs_cap, parse_args, prepared_operation, prepared_pattern_resources, schema};
 use async_trait::async_trait;
 use cookie_agent_engine::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProvider, ToolResult, ToolSpec,
+    ToolPreparationContext, ToolProvider, ToolSpec,
 };
-use cookie_agent_protocol::{
-    ActionKind, ApprovalResourceSource, PreparedBindingLifetime, Sha256Digest,
-};
+use cookie_agent_protocol::{PermissionAction, PersistedToolResult as ToolResult, Sha256Digest};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -86,39 +82,31 @@ impl ToolProvider for GlobTool {
         for binding in &bindings {
             complete_binding.extend_from_slice(&binding.manifest_bytes()?);
         }
-        let (mut resources, mut policy_labels, external) = prepared_path_resources(
-            ActionKind::Glob,
-            "path",
+        let (resources, policy_labels, external) = prepared_pattern_resources(
+            PermissionAction::Glob,
+            "glob",
+            &args.pattern,
             &canonical_root,
             &self.workspace,
             &complete_binding,
         )?;
-        resources.push(prepared_resource(
-            ActionKind::Glob,
-            "glob",
-            args.pattern.as_bytes(),
-            &complete_binding,
-            PreparedBindingLifetime::ProcessLocal,
-            ApprovalResourceSource::SecondaryOperation,
-        )?);
-        policy_labels.push(args.pattern.clone());
         let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
         let operation = prepared_operation(
             "glob",
             &args,
             if external {
                 vec![
-                    (ActionKind::Glob, "list"),
-                    (ActionKind::ExternalDirectory, "guard"),
+                    (PermissionAction::Glob, "list"),
+                    (PermissionAction::ExternalDirectory, "guard"),
                 ]
             } else {
-                vec![(ActionKind::Glob, "list")]
+                vec![(PermissionAction::Glob, "list")]
             },
             resources,
             &context,
         )?;
         let result = ToolResult {
-            title: format!("Glob {}", args.pattern),
+            title: crate::safe_title(format!("Glob {}", args.pattern)),
             output: paths.join("\n"),
             metadata: serde_json::json!({"matches":paths.len(),"snapshot_sha256":Sha256Digest::of_bytes(&snapshot)}),
             truncation: None,
@@ -224,7 +212,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepared_manifest_retains_path_and_glob_labels() {
+    async fn prepared_manifest_exposes_only_glob_permission_resource() {
         let root = tempfile::tempdir().expect("root");
         fs::write(root.path().join("value.rs"), "value").expect("file");
         let prepared = GlobTool::new(root.path())
@@ -243,11 +231,40 @@ mod tests {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        assert!(labels.contains(&"*.rs"));
-        assert!(
-            labels
-                .iter()
-                .any(|label| *label == root.path().to_string_lossy())
+        assert_eq!(labels, ["*.rs"]);
+        assert_eq!(prepared.operation().resources().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn external_traversal_is_guarded_separately_from_glob_pattern() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let external = tempfile::tempdir().expect("external");
+        fs::write(external.path().join("value.rs"), "value").expect("fixture");
+        let prepared = GlobTool::new(workspace.path())
+            .prepare(
+                context(workspace.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "glob".into(),
+                    arguments: serde_json::json!({
+                        "pattern":"*.rs",
+                        "path":external.path()
+                    }),
+                },
+            )
+            .await
+            .expect("prepare");
+        assert_eq!(
+            prepared.policy_labels(),
+            [format!("{}/*", external.path().display()), "*.rs".into()]
+        );
+        assert_eq!(
+            prepared.operation().resources()[0].capability,
+            cookie_agent_protocol::PermissionAction::ExternalDirectory
+        );
+        assert_eq!(
+            prepared.operation().resources()[1].capability,
+            cookie_agent_protocol::PermissionAction::Glob
         );
     }
 

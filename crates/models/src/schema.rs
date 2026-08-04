@@ -55,14 +55,13 @@ use oven_sdk_openai::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
-use crate::{ConfigurationFingerprint, ModelEntry, ModelSet, ModelSetError, RequestDefaults};
+use crate::ConstructedAdapter;
 
-/// One registry-free model declaration from `[models.<alias>]`.
+/// Internal fully concrete declaration consumed by one reviewed Oven constructor.
 #[derive(Clone, Serialize)]
-pub struct ConfiguredModel {
+pub(crate) struct ConcreteModel {
     /// Explicit serving-provider identity.
     pub provider_id: String,
     /// Exact model, deployment, or resource identifier.
@@ -85,128 +84,10 @@ pub struct ConfiguredModel {
     pub adapter: AdapterConfig,
 }
 
-#[derive(Deserialize)]
-struct ConfiguredModelWire {
-    provider_id: String,
-    model_id: String,
-    endpoint: String,
-    auth: AuthConfig,
-    #[serde(default)]
-    headers: BTreeMap<String, String>,
-    capabilities: ModelCapabilities,
-    #[serde(default)]
-    defaults: CommonDefaults,
-    #[serde(flatten)]
-    adapter: AdapterConfig,
-}
-
-impl<'de> Deserialize<'de> for ConfiguredModel {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = Value::deserialize(deserializer)?;
-        let object = value
-            .as_object()
-            .ok_or_else(|| serde::de::Error::custom("configured model must be a table"))?;
-        const ALLOWED: &[&str] = &[
-            "provider_id",
-            "model_id",
-            "endpoint",
-            "auth",
-            "headers",
-            "capabilities",
-            "defaults",
-            "adaptor",
-            "settings",
-            "options",
-        ];
-        if let Some(unknown) = object.keys().find(|key| !ALLOWED.contains(&key.as_str())) {
-            return Err(serde::de::Error::custom(format!(
-                "unknown configured model field `{unknown}`"
-            )));
-        }
-        reject_unknown_capability_fields(object).map_err(serde::de::Error::custom)?;
-        let wire: ConfiguredModelWire =
-            serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-        Ok(Self {
-            provider_id: wire.provider_id,
-            model_id: wire.model_id,
-            endpoint: wire.endpoint,
-            auth: wire.auth,
-            headers: wire.headers,
-            capabilities: wire.capabilities,
-            defaults: wire.defaults,
-            adapter: wire.adapter,
-        })
-    }
-}
-
-fn reject_unknown_capability_fields(root: &Map<String, Value>) -> Result<(), String> {
-    let capabilities = root
-        .get("capabilities")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "configured model capabilities must be a table".to_owned())?;
-    reject_keys(
-        capabilities,
-        &[
-            "features",
-            "limits",
-            "modalities",
-            "media",
-            "cancellation",
-            "compaction",
-            "replay",
-        ],
-        "capabilities",
-    )?;
-    reject_nested(capabilities, "limits", &["context", "input", "output"])?;
-    reject_nested(capabilities, "modalities", &["input", "output"])?;
-    reject_nested(
-        capabilities,
-        "replay",
-        &["policy", "capability", "reasoning"],
-    )?;
-    let media = capabilities
-        .get("media")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "capabilities.media must be a table".to_owned())?;
-    reject_keys(media, &["input"], "capabilities.media")?;
-    if let Some(inputs) = media.get("input").and_then(Value::as_object) {
-        for (modality, support) in inputs {
-            let support = support
-                .as_object()
-                .ok_or_else(|| format!("capabilities.media.input.{modality} must be a table"))?;
-            reject_keys(
-                support,
-                &["media_types", "sources"],
-                &format!("capabilities.media.input.{modality}"),
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn reject_nested(parent: &Map<String, Value>, field: &str, allowed: &[&str]) -> Result<(), String> {
-    let value = parent
-        .get(field)
-        .and_then(Value::as_object)
-        .ok_or_else(|| format!("capabilities.{field} must be a table"))?;
-    reject_keys(value, allowed, &format!("capabilities.{field}"))
-}
-
-fn reject_keys(object: &Map<String, Value>, allowed: &[&str], path: &str) -> Result<(), String> {
-    if let Some(unknown) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
-        Err(format!("unknown field `{unknown}` at `{path}`"))
-    } else {
-        Ok(())
-    }
-}
-
-impl std::fmt::Debug for ConfiguredModel {
+impl std::fmt::Debug for ConcreteModel {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("ConfiguredModel")
+            .debug_struct("ConcreteModel")
             .field("provider_id", &self.provider_id)
             .field("model_id", &self.model_id)
             .field("endpoint", &"<redacted>")
@@ -219,9 +100,9 @@ impl std::fmt::Debug for ConfiguredModel {
     }
 }
 
-impl ConfiguredModel {
+impl ConcreteModel {
     /// Constructs one exact concrete Oven model and immutable request defaults.
-    pub fn build(&self, alias: &str) -> Result<ModelEntry, ModelBuildError> {
+    pub(crate) fn build(&self) -> Result<ConstructedAdapter, ModelBuildError> {
         let provider = self.provider()?;
         let declaration = ModelDeclaration::new(
             ModelId::new(self.model_id.clone()),
@@ -327,17 +208,8 @@ impl ConfiguredModel {
                     namespace("open_responses", options.to_oven())?,
                 ),
             };
-        let defaults = RequestDefaults {
-            max_output_tokens: self.defaults.max_output_tokens,
-            temperature: self.defaults.temperature,
-            top_p: self.defaults.top_p,
-            reasoning_effort: self.defaults.reasoning_effort.clone(),
-            include_raw: self.defaults.include_raw,
-            provider_options,
-        };
-        let behavior_fingerprint = self.behavior_fingerprint()?;
-        ModelEntry::new_with_behavior_fingerprint(alias, model, defaults, behavior_fingerprint)
-            .map_err(ModelBuildError::ModelSet)
+        let _ = provider_options;
+        Ok(ConstructedAdapter { model })
     }
 
     fn provider(&self) -> Result<CommonProvider, ModelBuildError> {
@@ -428,64 +300,6 @@ impl ConfiguredModel {
             _ => Err(wrong_auth("Open Responses", "bearer")),
         }
     }
-
-    fn safe_value(&self) -> Value {
-        let mut value = serde_json::to_value(self).expect("configured model serializes");
-        if let Value::Object(root) = &mut value {
-            if let Some(Value::Object(auth)) = root.get_mut("auth") {
-                for field in [
-                    "value",
-                    "token",
-                    "api_key",
-                    "access_key_id",
-                    "secret_access_key",
-                    "session_token",
-                ] {
-                    if auth.contains_key(field) {
-                        auth.insert(field.into(), Value::String("<excluded>".into()));
-                    }
-                }
-            }
-            if let Some(Value::Object(headers)) = root.get_mut("headers") {
-                for value in headers.values_mut() {
-                    *value = Value::String("<excluded>".into());
-                }
-            }
-        }
-        value
-    }
-
-    fn behavior_fingerprint(&self) -> Result<ConfigurationFingerprint, ModelBuildError> {
-        let encoded =
-            serde_json::to_vec(&self.safe_value()).map_err(ModelBuildError::FingerprintEncoding)?;
-        ConfigurationFingerprint::new(format!("{:x}", Sha256::digest(encoded)))
-            .map_err(ModelBuildError::ModelSet)
-    }
-}
-
-/// Builds an immutable model set and safe fingerprint from explicit aliases.
-pub fn build_model_set(
-    models: &BTreeMap<String, ConfiguredModel>,
-) -> Result<ModelSet, ModelBuildError> {
-    let fingerprint = configuration_fingerprint(models)?;
-    let entries = models
-        .iter()
-        .map(|(alias, configured)| configured.build(alias).map(|entry| (alias.clone(), entry)))
-        .collect::<Result<Vec<_>, _>>()?;
-    ModelSet::new(entries, fingerprint).map_err(ModelBuildError::ModelSet)
-}
-
-/// Computes stable SHA-256 over sorted non-secret model configuration.
-pub fn configuration_fingerprint(
-    models: &BTreeMap<String, ConfiguredModel>,
-) -> Result<ConfigurationFingerprint, ModelBuildError> {
-    let safe = models
-        .iter()
-        .map(|(alias, model)| (alias.clone(), model.safe_value()))
-        .collect::<BTreeMap<_, _>>();
-    let encoded = serde_json::to_vec(&safe).map_err(ModelBuildError::FingerprintEncoding)?;
-    let digest = Sha256::digest(encoded);
-    ConfigurationFingerprint::new(format!("{digest:x}")).map_err(ModelBuildError::ModelSet)
 }
 
 #[derive(Clone)]
@@ -615,8 +429,6 @@ pub enum AdapterConfig {
 pub enum ModelBuildError {
     #[error("invalid model configuration: {0}")]
     Oven(#[source] Box<ModelError>),
-    #[error(transparent)]
-    ModelSet(#[from] ModelSetError),
     #[error("invalid HTTP header name `{0}`")]
     HeaderName(String),
     #[error("invalid HTTP header value for `{0}`")]
@@ -626,8 +438,6 @@ pub enum ModelBuildError {
         adapter: &'static str,
         expected: &'static str,
     },
-    #[error("could not encode safe configuration fingerprint")]
-    FingerprintEncoding(#[source] serde_json::Error),
     #[error("could not encode provider request defaults")]
     ProviderOptions(#[source] serde_json::Error),
 }

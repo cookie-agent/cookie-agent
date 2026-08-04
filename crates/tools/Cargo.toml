@@ -12,7 +12,6 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 cookie_agent_engine = { version = "=0.1.0", path = "../engine" }
-cookie_agent_config = { version = "=0.1.0", path = "../config" }
 cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
 ignore.workspace = true
 process-wrap.workspace = true
@@ -26,6 +25,7 @@ similar.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+tree-sitter = "0.25.10"
 tree-sitter-bash.workspace = true
 
 [dev-dependencies]

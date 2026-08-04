@@ -41,11 +41,12 @@ impl Drop for TestHome {
     }
 }
 
-fn run_cookie(extra_environment: &[(&str, &str)]) -> Output {
+fn run_cookie(arguments: &[&str], extra_environment: &[(&str, &str)]) -> Output {
     let home = TestHome::new();
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut command = Command::new(env!("CARGO_BIN_EXE_cookie"));
     command
+        .args(arguments)
         .current_dir(workspace)
         .env_clear()
         .env("HOME", home.path())
@@ -56,52 +57,65 @@ fn run_cookie(extra_environment: &[(&str, &str)]) -> Output {
     command.output().expect("run cookie process")
 }
 
-fn assert_reached_tui(output: Output, secrets: &[&str]) {
-    assert!(!output.status.success(), "non-TTY startup must fail");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let report = format!("{stdout}\n{stderr}");
+#[test]
+fn checked_schema6_fixture_composes_without_ambient_config_overrides() {
+    let output = run_cookie(
+        &[],
+        &[
+            ("COOKIE_AGENT_THEME", "ignored-theme"),
+            ("COOKIE_AGENT_CONFIG__SERVER__PORT", "ignored-port"),
+            ("COOKIE_AGENT_FOO", "ignored-runtime-value"),
+        ],
+    );
+    assert!(!output.status.success(), "non-TTY TUI startup must fail");
+    let report = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(report.contains("enable terminal raw mode"), "{report}");
-    assert!(!report.contains("load workspace configuration"), "{report}");
-    assert!(!report.contains("extraction failed"), "{report}");
-    for secret in secrets {
-        assert!(!report.contains(secret), "secret leaked in process error");
+    assert!(!report.contains("built without TUI support"), "{report}");
+    assert!(
+        !report.contains("load schema-6 workspace configuration"),
+        "{report}"
+    );
+    for secret in [
+        "expected-process-credential",
+        "ignored-theme",
+        "ignored-port",
+        "ignored-runtime-value",
+    ] {
+        assert!(
+            !report.contains(secret),
+            "secret or ambient value leaked: {report}"
+        );
     }
 }
 
 #[test]
-fn startup_with_expected_credential_and_cookie_agent_theme_reaches_tui() {
-    let output = run_cookie(&[
-        ("COOKIE_AGENT_THEME", "legacy-theme-value"),
-        ("COOKIE_AGENT_FOO", "arbitrary-runtime-value"),
-    ]);
-    assert_reached_tui(
-        output,
-        &[
-            "expected-process-credential",
-            "legacy-theme-value",
-            "arbitrary-runtime-value",
-        ],
+fn attach_uses_the_tui_entry_point_without_a_workspace() {
+    let output = run_cookie(&["attach"], &[]);
+    assert!(!output.status.success());
+    let report = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
+    assert!(report.contains("connect to daemon WebSocket"), "{report}");
+    assert!(!report.contains("workspace configuration"), "{report}");
+    assert!(!report.contains("built without TUI support"), "{report}");
 }
 
 #[test]
-fn startup_with_expected_and_cookie_agent_provider_credentials_reaches_tui() {
-    let output = run_cookie(&[
-        ("COOKIE_AGENT_TEST_API_KEY", "provider-process-secret"),
-        ("COOKIE_AGENT_FOO", "arbitrary-provider-value"),
-        (
-            "COOKIE_AGENT_CONFIG__SERVER__PORT",
-            "must-not-be-a-config-override",
-        ),
-    ]);
-    assert_reached_tui(
-        output,
-        &[
-            "expected-process-credential",
-            "provider-process-secret",
-            "arbitrary-provider-value",
-            "must-not-be-a-config-override",
-        ],
+fn connect_is_cwd_independent_and_rejects_non_tty_before_credentials() {
+    let output = run_cookie(&["connect", "openai"], &[]);
+    assert!(!output.status.success());
+    let report = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
+    assert!(report.contains("interactive TTY"), "{report}");
+    assert!(!report.contains("workspace configuration"), "{report}");
+    assert!(!report.contains("expected-process-credential"), "{report}");
 }

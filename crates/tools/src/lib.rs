@@ -1,4 +1,4 @@
-//! Protocol-v6 prepared built-in tools.
+//! Protocol-v7 prepared built-in tools.
 
 use std::path::{Path, PathBuf};
 
@@ -8,7 +8,7 @@ use cookie_agent_engine::{
     ToolSpec,
 };
 use cookie_agent_protocol::{
-    ActionKind, ApprovalBoundary, ApprovalCapability, ApprovalResourceSource,
+    ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, PermissionAction,
     PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
     PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, Sha256Digest,
 };
@@ -32,6 +32,27 @@ pub(crate) fn tool_error(error: impl std::fmt::Display) -> ToolError {
     ToolError::execution(error.to_string())
 }
 
+pub(crate) fn safe_title(value: impl AsRef<str>) -> cookie_agent_protocol::SafeDisplayText {
+    let mut safe = String::new();
+    for character in value.as_ref().chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if safe.len() + character.len_utf8() > cookie_agent_protocol::SafeDisplayText::MAX_BYTES {
+            break;
+        }
+        safe.push(character);
+    }
+    cookie_agent_protocol::SafeDisplayText::new(if safe.is_empty() {
+        "Tool result".to_owned()
+    } else {
+        safe
+    })
+    .expect("sanitized tool title")
+}
+
 pub(crate) fn parse_args<T: DeserializeOwned>(
     tool: &str,
     value: serde_json::Value,
@@ -46,7 +67,7 @@ pub(crate) fn parse_args<T: DeserializeOwned>(
 pub(crate) fn prepared_operation<T: Serialize>(
     tool: &str,
     normalized_arguments: &T,
-    capabilities: Vec<(ActionKind, &str)>,
+    capabilities: Vec<(PermissionAction, &str)>,
     resources: Vec<PreparedApprovalResource>,
     execution_context_bytes: &[u8],
 ) -> Result<PreparedOperationIdentity, ToolError> {
@@ -71,7 +92,7 @@ pub(crate) fn prepared_operation<T: Serialize>(
 }
 
 pub(crate) fn prepared_resource(
-    action: ActionKind,
+    action: PermissionAction,
     logical_kind: &str,
     stable_label_bytes: &[u8],
     binding_bytes: &[u8],
@@ -91,7 +112,7 @@ pub(crate) fn prepared_resource(
             .map_err(tool_error)?,
         binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(&complete_binding),
         binding_lifetime: lifetime,
-        boundary: if action == ActionKind::Bash {
+        boundary: if action == PermissionAction::Bash {
             ApprovalBoundary::CommandPrefix {
                 prefix: String::from_utf8_lossy(stable_label_bytes).into_owned(),
             }
@@ -103,35 +124,107 @@ pub(crate) fn prepared_resource(
 }
 
 pub(crate) fn prepared_path_resources(
-    action: ActionKind,
+    action: PermissionAction,
     logical_kind: &str,
     canonical_path: &Path,
     workspace: &Path,
     binding_bytes: &[u8],
+    is_directory: bool,
 ) -> Result<(Vec<PreparedApprovalResource>, Vec<String>, bool), ToolError> {
-    let label = canonical_path.to_string_lossy();
-    let mut resources = vec![prepared_resource(
+    let workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_owned());
+    let external = !canonical_path.starts_with(&workspace);
+    let label = if external {
+        normalized_path(canonical_path)
+    } else {
+        canonical_path
+            .strip_prefix(&workspace)
+            .map(normalized_path)
+            .unwrap_or_else(|_| normalized_path(canonical_path))
+    };
+    let primary = prepared_resource(
         action,
         logical_kind,
         label.as_bytes(),
         binding_bytes,
         PreparedBindingLifetime::ProcessLocal,
         ApprovalResourceSource::PrimaryOperation,
-    )?];
-    let mut labels = vec![label.to_string()];
-    let external = !canonical_path.starts_with(workspace);
+    )?;
+    let mut resources = Vec::with_capacity(if external { 2 } else { 1 });
+    let mut labels = Vec::with_capacity(resources.capacity());
     if external {
+        let directory = if is_directory {
+            canonical_path
+        } else {
+            canonical_path.parent().unwrap_or(Path::new("/"))
+        };
+        let boundary = external_directory_boundary(directory);
         resources.push(prepared_resource(
-            ActionKind::ExternalDirectory,
+            PermissionAction::ExternalDirectory,
             "external-directory",
-            label.as_bytes(),
+            boundary.as_bytes(),
             binding_bytes,
             PreparedBindingLifetime::ProcessLocal,
             ApprovalResourceSource::ExternalDirectoryGuard,
         )?);
-        labels.push(label.to_string());
+        labels.push(boundary);
     }
+    resources.push(primary);
+    labels.push(label);
     Ok((resources, labels, external))
+}
+
+pub(crate) fn prepared_pattern_resources(
+    action: PermissionAction,
+    logical_kind: &str,
+    pattern: &str,
+    traversal_root: &Path,
+    workspace: &Path,
+    binding_bytes: &[u8],
+) -> Result<(Vec<PreparedApprovalResource>, Vec<String>, bool), ToolError> {
+    let workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_owned());
+    let external = !traversal_root.starts_with(&workspace);
+    let mut resources = Vec::with_capacity(if external { 2 } else { 1 });
+    let mut labels = Vec::with_capacity(resources.capacity());
+    if external {
+        let boundary = external_directory_boundary(traversal_root);
+        resources.push(prepared_resource(
+            PermissionAction::ExternalDirectory,
+            "external-directory",
+            boundary.as_bytes(),
+            binding_bytes,
+            PreparedBindingLifetime::ProcessLocal,
+            ApprovalResourceSource::ExternalDirectoryGuard,
+        )?);
+        labels.push(boundary);
+    }
+    resources.push(prepared_resource(
+        action,
+        logical_kind,
+        pattern.as_bytes(),
+        binding_bytes,
+        PreparedBindingLifetime::ProcessLocal,
+        ApprovalResourceSource::PrimaryOperation,
+    )?);
+    labels.push(pattern.to_owned());
+    Ok((resources, labels, external))
+}
+
+fn normalized_path(path: &Path) -> String {
+    let value = path.to_string_lossy().replace('\\', "/");
+    if value.is_empty() { ".".into() } else { value }
+}
+
+fn external_directory_boundary(directory: &Path) -> String {
+    let directory = normalized_path(directory);
+    if directory == "/" {
+        "/*".into()
+    } else {
+        format!("{}/*", directory.trim_end_matches('/'))
+    }
 }
 
 #[derive(Debug)]
@@ -198,22 +291,22 @@ impl ToolProvider for BuiltinTools {
 #[cfg(test)]
 mod tests {
     use cookie_agent_protocol::{
-        ActionKind, ApprovalBoundary, ApprovalCapability, ApprovalResourceSource,
-        OperationFingerprint, PreparedApprovalResource, PreparedBindingLifetime,
+        ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, OperationFingerprint,
+        PermissionAction, PreparedApprovalResource, PreparedBindingLifetime,
         PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
         PreparedResourceIdentity, Sha256Digest,
     };
 
     #[test]
-    fn fixed_identity_v6_fingerprint_is_golden_and_deterministic() {
+    fn fixed_identity_v7_fingerprint_is_golden_and_deterministic() {
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(b"normalized arguments without raw paths"),
             vec![ApprovalCapability {
-                action: ActionKind::Bash,
+                action: PermissionAction::Bash,
                 operation: PreparedCapabilityOperation::new("execute").expect("operation"),
             }],
             vec![PreparedApprovalResource {
-                capability: ActionKind::Bash,
+                capability: PermissionAction::Bash,
                 canonical: PreparedResourceIdentity::new("command:git-status").expect("identity"),
                 binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
                     b"executable-content-and-open-directory-binding",
@@ -230,7 +323,7 @@ mod tests {
         let fingerprint = OperationFingerprint::from_prepared_operation(&operation);
         assert_eq!(
             fingerprint.digest().as_str(),
-            "87a4bc54435b2aa6d305ec0f423cb41f261d517b39918bcfe8a485e2508c81c5"
+            "80b953e606ab07a7d25bde074c9d2086012b3b86a62ead3b3751e7cc5f5cbffd"
         );
         assert_eq!(
             fingerprint,
@@ -239,15 +332,15 @@ mod tests {
     }
 
     #[test]
-    fn absent_write_v6_fingerprint_is_golden() {
+    fn absent_write_v7_fingerprint_is_golden() {
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(b"write arguments with content digest"),
             vec![ApprovalCapability {
-                action: ActionKind::Write,
+                action: PermissionAction::Write,
                 operation: PreparedCapabilityOperation::new("write:replace").expect("operation"),
             }],
             vec![PreparedApprovalResource {
-                capability: ActionKind::Write,
+                capability: PermissionAction::Write,
                 canonical: PreparedResourceIdentity::new("file:expected-absent").expect("identity"),
                 binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
                     b"anchor-identity\0parent-identity\0basename\0expected-absent\0new-content",
@@ -263,7 +356,7 @@ mod tests {
             OperationFingerprint::from_prepared_operation(&operation)
                 .digest()
                 .as_str(),
-            "55e549ae8fe7646873db06b523032b14883c06e52a5c1e6ccbd4302031b465f7"
+            "7c3f201fb116f919296a492d3f64b8516bf70adf9cd7202d744d83173a4f4c11"
         );
     }
 }

@@ -1,0 +1,44 @@
+---
+source: crates/tui/src/ui/transcript.rs
+assertion_line: 3523
+expression: "stable_approval_snapshot(&approval, approval_content(&approval))"
+---
+PERMISSION REQUIRED · ESCALATED
+consent target: git status
+approval id: <approval-id>
+request revision: 3
+trigger: ModelToolApproval
+operation fingerprint: <operation-fingerprint>
+normalized-arguments digest: <normalized-arguments-digest>
+execution-context digest: <execution-context-digest>
+prepared capability lifetime: ProcessLocal
+
+CAPABILITIES (1)
+1. action: Bash
+   operation: execute
+   lifetime: ProcessLocal
+
+RESOURCES (1)
+1. action: Bash
+   normalized identity: git status
+   canonical identity: command:git-status
+   binding digest: <resource-1-binding-digest>
+   boundary: command prefix: git status
+   binding lifetime: ProcessLocal
+   source: ModelRequest
+
+EVALUATIONS (1)
+1. resource binding digest: <resource-1-binding-digest>
+   result effect: Ask
+   trace action: Bash
+   trace normalized resource: git status
+   trace effect: Ask
+   precedence reason: model requested approval
+   candidate rules (0):
+      (none)
+
+RESPONSE CONSTRAINTS
+allow approve once: true
+allow delegation-tree grant: false
+allow cancel: true
+expires at: never

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApprovalRespondError",
+  "type": "object",
+  "properties": {
+    "approval_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "client_response_id": {
+      "description": "Bounded approval response idempotency key.",
+      "type": "string",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+    },
+    "code": {
+      "$ref": "#/$defs/ApprovalRespondErrorCode"
+    },
+    "expected_revision": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "found_revision": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "code",
+    "session_id",
+    "approval_id",
+    "client_response_id"
+  ],
+  "$defs": {
+    "ApprovalRespondErrorCode": {
+      "type": "string",
+      "enum": [
+        "approval_not_found",
+        "approval_not_pending",
+        "approval_revision_conflict",
+        "decision_not_allowed",
+        "operation_fingerprint_mismatch",
+        "operation_changed",
+        "idempotency_conflict"
+      ]
+    }
+  }
+}

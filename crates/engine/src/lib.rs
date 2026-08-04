@@ -18,28 +18,27 @@ use std::sync::mpsc as std_mpsc;
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use cookie_agent_config::{
-    AgentType as ConfigAgentType, CompactionPersistencePolicy, Config,
-    DepthLimit as ConfigDepthLimit, InternalModelAgentConfig, PolicySnapshot,
-};
+use cookie_agent_config::{AgentRegistry, LoadedConfiguration};
 use cookie_agent_models::ModelSetManager;
 use cookie_agent_protocol::{
-    AgentDescriptor, AgentListResult, AgentType, ApprovalConstraints, ApprovalDecisionSource,
-    ApprovalEvaluation, ApprovalFinalDecision, ApprovalFinalOutcome, ApprovalId,
-    ApprovalInternalDecision, ApprovalInternalDecisionKind, ApprovalListResult, ApprovalReasonCode,
-    ApprovalRecord, ApprovalRequest, ApprovalRespondErrorCode, ApprovalRespondParams,
-    ApprovalRespondResult, ApprovalStatus, ApprovalTrigger, ApprovalUserDecision,
-    ArtifactReference, ChildSummary, ContextCheckpoint, ContextCheckpointBoundaries,
-    ContextCheckpointBudgets, ContextCheckpointCommit, Event, EventEnvelope,
-    EventSubscriptionMessage, EventsSubscribeResult, InternalAgentBackend, InternalAgentFailure,
-    InternalAgentInvocationId, InternalAgentKind, InternalAgentRunId, InternalSummaryCheckpoint,
-    InvocationId, ModelRef, NativeContextArtifact, OperationFingerprint, OutputStream,
-    PersistedAssistantPart, PersistedModelTurn, PreparedOperationIdentity, ProfileIdentity,
-    RunCancelResult, RunId, RunStartParams, RunStartResult, RunSteerResult, RunToolStdinParams,
-    RunToolStdinResult, SafeInternalAgentCall, SafeInternalAgentResult, SessionId, SessionMeta,
-    SessionOrigin, SessionRenameChange, SessionRenameParams, SessionRenameResult, SessionStatus,
-    SessionTitle, SessionTitleCommit, Sha256Digest, SummaryByteLimit, ToolAttachment,
-    ToolCallFailureCode, ToolCallId, ToolOutputTruncation, TreeApprovalGrant,
+    AgentDescriptor, AgentId, AgentListResult, AgentMode, ApprovalConstraints,
+    ApprovalDecisionSource, ApprovalEvaluation, ApprovalFinalDecision, ApprovalFinalOutcome,
+    ApprovalId, ApprovalInternalDecision, ApprovalInternalDecisionKind, ApprovalListResult,
+    ApprovalReasonCode, ApprovalRecord, ApprovalRequest, ApprovalRespondErrorCode,
+    ApprovalRespondParams, ApprovalRespondResult, ApprovalStatus, ApprovalTrigger,
+    ApprovalUserDecision, ArtifactReference, ChildSummary, ContextCheckpoint,
+    ContextCheckpointBoundaries, ContextCheckpointBudgets, ContextCheckpointCommit,
+    EventPayload as Event, EventSubscriptionMessage, EventsSubscribeResult, InternalAgentBackend,
+    InternalAgentFailure, InternalAgentInvocationId, InternalAgentKind, InternalAgentRunId,
+    InternalSummaryCheckpoint, InvocationId, NativeContextArtifact, OperationFingerprint,
+    OutputStream, PersistedAssistantPart, PersistedModelTurn, PersistedToolResult as ToolResult,
+    PreparedOperationIdentity, RunCancelResult, RunId, RunSelection, RunStartParams,
+    RunStartResult, RunSteerResult, RunToolStdinParams, RunToolStdinResult, SafeCode,
+    SafeDisplayText, SafeErrorMessage, SafeInternalAgentCall, SafeInternalAgentResult,
+    SafeToolError, SessionId, SessionMeta, SessionOrigin, SessionRenameChange, SessionRenameParams,
+    SessionRenameResult, SessionStatus, SessionTitle, SessionTitleChange, Sha256Digest,
+    StoredEvent, SummaryByteLimit, ToolAttachment, ToolCallId, ToolCallPresentation, ToolCallStart,
+    ToolCallTermination, ToolOutputTruncation, ToolTerminationOutcome, TreeApprovalGrant,
 };
 use futures_util::StreamExt;
 use oven_sdk::{
@@ -71,14 +70,21 @@ mod model_bridge;
 mod model_history;
 mod model_policy;
 pub mod permissions;
+mod policy;
 #[cfg(test)]
 mod prepared_tests;
 #[cfg(test)]
 mod responses_fixture_tests;
 pub mod run;
 #[cfg(test)]
+mod run_selection_tests;
+#[cfg(test)]
 mod security_tests;
 pub mod session;
+#[cfg(test)]
+mod test_support;
+
+pub use cookie_agent_protocol::PersistedToolResult;
 
 use actor::SessionActor;
 use events::{EventLogError, OutputHub};
@@ -86,9 +92,15 @@ use grant_journal::{GrantInvalidationJournal, GrantJournalError};
 use journal::{DelegationJournal, JournalError};
 pub use media::approved_media_type;
 use model_bridge::{AbortBridge, TurnAccumulator};
-use model_history::{assemble_model_context, persist_turn, replay_decisions, wire_model};
+use model_history::{
+    assemble_model_context, persist_turn, replay_decisions_with_preflight, wire_model,
+};
 use model_policy::{ErrorPolicy, classify as classify_model_error, summary as model_error_summary};
 use permissions::{ApprovalStore, PermissionPipeline};
+use policy::{
+    FrozenRunPolicy, freeze_agent_policy, policy_for_session_selection, policy_from_snapshot,
+    resolve_agent,
+};
 use session::{SessionError, SessionStore};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -107,7 +119,6 @@ pub struct ToolCall {
     pub name: String,
     pub arguments: Value,
 }
-pub use cookie_agent_protocol::ToolResult;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolProgress {
     pub tool_call_id: ToolCallId,
@@ -120,7 +131,7 @@ pub struct DelegateInvocation {
     pub parent_session_id: SessionId,
     pub parent_run_id: RunId,
     pub parent_tool_call_id: ToolCallId,
-    pub profile: String,
+    pub agent: AgentId,
     pub task: String,
     pub context: Vec<Value>,
     pub success_criteria: Vec<String>,
@@ -283,7 +294,8 @@ impl ToolExecutionContext {
             .retain(bytes)
             .map_err(|error| ToolError::execution(error.to_string()))?;
         Ok(ToolAttachment {
-            mime_type,
+            mime_type: cookie_agent_protocol::MimeType::new(mime_type)
+                .map_err(|error| ToolError::execution(error.to_string()))?,
             filename,
             byte_length: bytes.len() as u64,
             sha256: Sha256Digest::new(sha256)
@@ -335,10 +347,9 @@ impl ToolError {
     }
 
     #[must_use]
-    pub const fn code(&self) -> ToolCallFailureCode {
+    pub(crate) const fn code(&self) -> ToolCallFailureCode {
         match self {
-            Self::ProgressSinkClosed => ToolCallFailureCode::ExecutionFailed,
-            Self::Failed(_) => ToolCallFailureCode::ExecutionFailed,
+            Self::ProgressSinkClosed | Self::Failed(_) => ToolCallFailureCode::ExecutionFailed,
             Self::OperationChanged(_) => ToolCallFailureCode::OperationChanged,
             Self::UnsupportedSecurity(_) | Self::ResourceLimit(_) => {
                 ToolCallFailureCode::ExecutionFailed
@@ -446,6 +457,9 @@ impl PreparedTool {
 #[async_trait]
 pub trait ToolProvider: Send + Sync {
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError>;
+    fn presentation(&self, call: &ToolCall) -> ToolCallPresentation {
+        safe_tool_presentation(call)
+    }
     async fn prepare(
         &self,
         ctx: ToolPreparationContext,
@@ -457,7 +471,7 @@ pub trait ToolProvider: Send + Sync {
 pub struct EngineOptions {
     pub data_dir: PathBuf,
     pub cwd: PathBuf,
-    pub config: Config,
+    pub config: LoadedConfiguration,
     pub model_manager: Arc<ModelSetManager>,
     pub tools: Vec<Arc<dyn ToolProvider>>,
 }
@@ -476,10 +490,10 @@ pub enum EngineError {
     ToolOutput(#[from] std::io::Error),
     #[error("configuration error: {0}")]
     Config(#[source] Box<cookie_agent_config::ConfigError>),
-    #[error("profile `{0}` is subagent-only")]
-    SubagentOnly(String),
-    #[error("profile `{0}` is disabled")]
-    DisabledProfile(String),
+    #[error("agent `{0}` is not eligible in this session origin")]
+    IneligibleAgent(AgentId),
+    #[error("agent `{0}` is disabled")]
+    DisabledAgent(AgentId),
     #[error("run {0} not found")]
     MissingRun(RunId),
     #[error("session {0} is already running")]
@@ -535,17 +549,18 @@ impl From<ModelError> for EngineError {
 #[derive(Debug)]
 struct ActiveRun {
     session: SessionId,
-    policy: Arc<PolicySnapshot>,
-    internal_agents: AcceptedInternalAgents,
+    policy: Arc<FrozenRunPolicy>,
     cancellation: CancellationToken,
     cancelled_committed: Mutex<bool>,
     stdin: Mutex<HashMap<ToolCallId, mpsc::Sender<StdinWrite>>>,
     /// Last persisted event included in the current provider request.
     prompt_seq: AtomicU64,
+    fallback_index: AtomicU64,
 }
 
 struct AttemptTurn {
     turn: PersistedModelTurn,
+    model_turn_seq: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -578,6 +593,7 @@ enum ApprovalEvaluationTransition {
 
 struct PreparedToolCall {
     call: ToolCall,
+    presentation: ToolCallPresentation,
     prepared: Result<PreparedTool, ToolFailure>,
 }
 
@@ -585,6 +601,25 @@ struct PreparedToolCall {
 struct ToolFailure {
     code: ToolCallFailureCode,
     message: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ToolCallFailureCode {
+    ExecutionFailed,
+    OperationChanged,
+    PreparedCapabilityLost,
+    UnsupportedPlatform,
+}
+
+impl ToolCallFailureCode {
+    fn safe_code(self) -> SafeCode {
+        safe_code(match self {
+            Self::ExecutionFailed => "execution_failed",
+            Self::OperationChanged => "operation_changed",
+            Self::PreparedCapabilityLost => "prepared_capability_lost",
+            Self::UnsupportedPlatform => "unsupported_platform",
+        })
+    }
 }
 
 impl From<ToolError> for ToolFailure {
@@ -597,64 +632,48 @@ impl From<ToolError> for ToolFailure {
 }
 
 #[derive(Clone, Debug)]
-struct FrozenInternalAgentProfile {
-    snapshot: cookie_agent_protocol::ProfileSnapshot,
+struct FrozenInternalAgentPolicy {
+    agent: cookie_agent_protocol::AgentSnapshot,
     models: Vec<cookie_agent_models::FrozenModelBinding>,
-    limits: InternalModelAgentConfig,
+    model_snapshot: Option<Arc<cookie_agent_models::ModelSnapshot>>,
+    limits: InternalAgentLimits,
 }
 
 struct InternalAgentRuntime {
-    approval: FrozenInternalAgentProfile,
-    context_compaction: FrozenInternalAgentProfile,
-    session_title: FrozenInternalAgentProfile,
-}
-
-#[derive(Clone, Debug)]
-struct AcceptedInternalAgents {
-    approval: FrozenInternalAgentProfile,
-    context_compaction: FrozenInternalAgentProfile,
-    session_title: FrozenInternalAgentProfile,
-}
-
-impl AcceptedInternalAgents {
-    fn profile(&self, kind: InternalAgentKind) -> &FrozenInternalAgentProfile {
-        match kind {
-            InternalAgentKind::Approval => &self.approval,
-            InternalAgentKind::ContextCompaction => &self.context_compaction,
-            InternalAgentKind::SessionTitle => &self.session_title,
-        }
-    }
+    approval: FrozenInternalAgentPolicy,
+    context_compaction: FrozenInternalAgentPolicy,
+    session_title: FrozenInternalAgentPolicy,
 }
 
 impl InternalAgentRuntime {
-    fn freeze(config: &Config, manager: &ModelSetManager) -> Result<Self, EngineError> {
-        let snapshot = manager.current();
-        Ok(Self {
-            approval: freeze_internal_profile(
-                "approval",
-                &config.internal_agents.approval,
-                snapshot.model_set(),
-            )?,
-            context_compaction: freeze_internal_profile(
-                "context_compaction",
-                &config.internal_agents.context_compaction.profile,
-                snapshot.model_set(),
-            )?,
-            session_title: freeze_internal_profile(
-                "session_title",
-                &config.internal_agents.session_title.profile,
-                snapshot.model_set(),
-            )?,
-        })
-    }
-
-    fn accept(&self, owner: &PolicySnapshot) -> AcceptedInternalAgents {
-        AcceptedInternalAgents {
-            approval: inherit_internal_profile(&self.approval, owner),
-            context_compaction: inherit_internal_profile(&self.context_compaction, owner),
-            session_title: inherit_internal_profile(&self.session_title, owner),
+    fn freeze() -> Self {
+        Self {
+            approval: unavailable_internal_policy(30_000, 16_384, 2_048),
+            context_compaction: unavailable_internal_policy(30_000, 16_384, 2_048),
+            session_title: unavailable_internal_policy(10_000, 4_096, 128),
         }
     }
+
+    fn policy(
+        &self,
+        kind: InternalAgentKind,
+        owner: &FrozenRunPolicy,
+        active_suffix: &[cookie_agent_models::FrozenModelBinding],
+    ) -> FrozenInternalAgentPolicy {
+        let configured = match kind {
+            InternalAgentKind::Approval => &self.approval,
+            InternalAgentKind::ContextCompaction => &self.context_compaction,
+            InternalAgentKind::SessionTitle => &self.session_title,
+        };
+        inherit_internal_policy(configured, owner, active_suffix)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct InternalAgentLimits {
+    max_input_tokens: u64,
+    max_output_tokens: u64,
+    timeout_ms: u64,
 }
 
 struct InternalAgentTextResult {
@@ -664,7 +683,7 @@ struct InternalAgentTextResult {
 }
 
 enum PendingTool {
-    Prepared(PreparedToolCall),
+    Prepared(Box<PreparedToolCall>),
     ImmediateFailure(ToolFailure),
 }
 
@@ -822,18 +841,20 @@ enum SessionCommand {
     },
     PromptSnapshot {
         run: RunId,
-        reply: oneshot::Sender<Result<Vec<EventEnvelope>, EngineError>>,
+        reply: oneshot::Sender<Result<Vec<StoredEvent>, EngineError>>,
     },
 }
 
 struct Inner {
-    config: Config,
+    config: LoadedConfiguration,
     artifacts: Arc<ArtifactStore>,
     mutation_locks: Mutex<HashMap<PreparedSerializationKey, Arc<tokio::sync::Mutex<()>>>>,
     store: Arc<SessionStore>,
     journal: Arc<DelegationJournal>,
     grant_journal: Arc<GrantInvalidationJournal>,
     model_manager: Arc<ModelSetManager>,
+    session_model_snapshots: Mutex<HashMap<SessionId, Arc<cookie_agent_models::ModelSnapshot>>>,
+    run_model_snapshots: Mutex<HashMap<RunId, Arc<cookie_agent_models::ModelSnapshot>>>,
     internal_agents: InternalAgentRuntime,
     tools: Mutex<Vec<Arc<dyn ToolProvider>>>,
     approvals: ApprovalStore,
@@ -851,8 +872,6 @@ struct Inner {
     admission_blocking_tasks: Mutex<Vec<JoinHandle<()>>>,
     admission_tasks_closing: AtomicBool,
     recovery_waiters: Mutex<HashSet<(SessionId, RunId, ToolCallId)>>,
-    #[cfg(test)]
-    test_model_set: Mutex<Option<cookie_agent_models::ModelSet>>,
     #[cfg(test)]
     prompt_snapshot_hook: Mutex<Option<Arc<PromptSnapshotHook>>>,
     #[cfg(test)]
@@ -1672,35 +1691,90 @@ pub struct Engine {
 pub type EngineClient = Engine;
 
 impl Engine {
-    fn resolve_model(
+    fn materialize_agents(
         &self,
-        binding: &cookie_agent_models::FrozenModelBinding,
-    ) -> Result<cookie_agent_models::ModelEntry, EngineError> {
-        #[cfg(test)]
-        if let Some(model_set) = self
-            .inner
-            .test_model_set
-            .lock()
-            .expect("test model set lock poisoned")
-            .as_ref()
-            && model_set.fingerprint() == &binding.configuration_fingerprint
-        {
-            return model_set.get(&binding.alias).cloned().ok_or_else(|| {
-                EngineError::from(ModelError::invalid_request(
-                    "test model alias is unavailable",
-                ))
-            });
-        }
+        model_set: &cookie_agent_models::ModelSet,
+    ) -> Result<Arc<AgentRegistry>, EngineError> {
         self.inner
+            .config
+            .resolve_agents(model_set)
+            .map(Arc::new)
+            .map_err(|error| EngineError::Config(Box::new(error)))
+    }
+
+    fn session_model_snapshot(
+        &self,
+        session: &session::SessionProjection,
+    ) -> Result<Arc<cookie_agent_models::ModelSnapshot>, EngineError> {
+        if let Some(snapshot) = self
+            .inner
+            .session_model_snapshots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session.meta.session_id)
+            .cloned()
+        {
+            return Ok(snapshot);
+        }
+        let fingerprint =
+            cookie_agent_models::Sha256Digest::new(session.model_snapshot_fingerprint.as_str())
+                .map_err(|error| {
+                    EngineError::from(ModelError::invalid_request(error.to_string()))
+                })?;
+        let snapshot = self
+            .inner
             .model_manager
-            .resolve_frozen(binding)
-            .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))
+            .snapshot(&fingerprint)
+            .ok_or_else(|| {
+                EngineError::from(ModelError::invalid_request("obsolete_model_fingerprint"))
+            })?;
+        self.inner
+            .session_model_snapshots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(session.meta.session_id, Arc::clone(&snapshot));
+        Ok(snapshot)
+    }
+
+    fn historical_run_model_snapshot(
+        &self,
+        run: RunId,
+    ) -> Result<Arc<cookie_agent_models::ModelSnapshot>, EngineError> {
+        self.inner
+            .run_model_snapshots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&run)
+            .cloned()
+            .ok_or_else(|| {
+                EngineError::from(ModelError::invalid_request(
+                    "historical_run_model_snapshot_unavailable",
+                ))
+            })
+    }
+
+    fn historical_title_policy(
+        &self,
+        events: &[StoredEvent],
+        run: RunId,
+    ) -> Result<FrozenRunPolicy, EngineError> {
+        let (agent, suffix) = latest_run_policy(events, run)?;
+        let model_snapshot = self.historical_run_model_snapshot(run)?;
+        let agents = self.materialize_agents(model_snapshot.model_set())?;
+        policy_from_snapshot(
+            agent,
+            suffix,
+            agents,
+            model_snapshot,
+            self.inner.config.runtime.tool_output.max_lines,
+            self.inner.config.runtime.tool_output.max_bytes,
+        )
     }
 
     pub fn open(options: EngineOptions) -> Result<Self, EngineError> {
         options
             .config
-            .validate()
+            .resolve_agents(options.model_manager.current().model_set())
             .map_err(|error| EngineError::Config(Box::new(error)))?;
         let store = SessionStore::open(&options.data_dir, &options.cwd)?;
         let artifacts = ArtifactStore::open(store.project_dir_path().join("artifacts"))?;
@@ -1708,8 +1782,7 @@ impl Engine {
         let grant_journal = GrantInvalidationJournal::open(
             store.project_dir_path().join("grant-invalidations.jsonl"),
         )?;
-        let internal_agents =
-            InternalAgentRuntime::freeze(&options.config, &options.model_manager)?;
+        let internal_agents = InternalAgentRuntime::freeze();
         let engine = Self {
             inner: Arc::new(Inner {
                 config: options.config,
@@ -1719,6 +1792,8 @@ impl Engine {
                 journal,
                 grant_journal,
                 model_manager: options.model_manager,
+                session_model_snapshots: Mutex::new(HashMap::new()),
+                run_model_snapshots: Mutex::new(HashMap::new()),
                 internal_agents,
                 tools: Mutex::new(options.tools),
                 approvals: ApprovalStore::default(),
@@ -1737,8 +1812,6 @@ impl Engine {
                 admission_tasks_closing: AtomicBool::new(false),
                 recovery_waiters: Mutex::new(HashSet::new()),
                 #[cfg(test)]
-                test_model_set: Mutex::new(None),
-                #[cfg(test)]
                 prompt_snapshot_hook: Mutex::new(None),
                 #[cfg(test)]
                 approval_evaluation_hook: Mutex::new(None),
@@ -1753,7 +1826,7 @@ impl Engine {
             }),
         };
         for session in engine.inner.store.all() {
-            engine.spawn_actor(session.meta.id);
+            engine.spawn_actor(session.meta.session_id);
         }
         engine.rebuild_approvals();
         // Reconciliation uses the synchronous actor facade. When open is
@@ -1896,27 +1969,38 @@ impl Engine {
         self.inner.journal.shutdown();
     }
 
-    pub fn create_session(
-        &self,
-        cwd: impl AsRef<Path>,
-        profile: &str,
-    ) -> Result<SessionMeta, EngineError> {
-        self.require_enabled_profile(profile)?;
+    pub fn create_session(&self, selection: RunSelection) -> Result<SessionMeta, EngineError> {
         let snapshot = self.inner.model_manager.current();
-        let policy = self
-            .inner
-            .config
-            .materialize_policy(snapshot.model_set(), profile)
-            .map_err(|error| EngineError::Config(Box::new(error)))?;
-        if matches!(
-            policy.profile.r#type,
-            ConfigAgentType::Subagent | ConfigAgentType::Internal
-        ) {
-            return Err(EngineError::SubagentOnly(profile.into()));
+        let agents = self.materialize_agents(snapshot.model_set())?;
+        let agent = resolve_agent(&agents, &selection.agent)?.clone();
+        if !agent.runnable_as_root {
+            return Err(EngineError::IneligibleAgent(selection.agent));
         }
+        let policy = freeze_agent_policy(
+            &agent,
+            agents,
+            Arc::clone(&snapshot),
+            &selection.model,
+            None,
+            None,
+            policy::ResultLimits {
+                tool_output_max_lines: self.inner.config.runtime.tool_output.max_lines,
+                tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
+            },
+        )?;
         let id = SessionId::new_v7();
-        let meta = session_meta(id, SessionOrigin::Root, cwd.as_ref(), &policy);
-        self.inner.store.create(meta.clone(), policy)?;
+        let cwd_identity = cwd_identity(self.inner.store.cwd())?;
+        let creation = Event::SessionCreated {
+            origin: SessionOrigin::Root,
+            cwd_identity: cwd_identity.clone(),
+            creation_selection: selection.clone(),
+            creation_agent: Box::new(policy.agent.clone()),
+            model_snapshot_fingerprint: protocol_digest(
+                policy.model_snapshot.model_set().fingerprint(),
+            )?,
+        };
+        let meta = session_meta(id, SessionOrigin::Root, cwd_identity, selection);
+        self.inner.store.create(meta.clone(), creation)?;
         self.spawn_actor(id);
         Ok(meta)
     }
@@ -1931,12 +2015,13 @@ impl Engine {
         parent_session_id: SessionId,
         parent_run_id: RunId,
         parent_tool_call_id: ToolCallId,
-        profile: &str,
-        child_policy: PolicySnapshot,
+        agent: &AgentId,
+        child_policy: FrozenRunPolicy,
         request_fingerprint: String,
         request: journal::DelegateRequestPayload,
         admission: Option<(InvocationId, u64)>,
     ) -> Result<SessionMeta, EngineError> {
+        let child_model_snapshot = Arc::clone(&child_policy.model_snapshot);
         let parent = self.inner.store.get(parent_session_id)?;
         if parent
             .runs
@@ -1963,17 +2048,20 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&parent_run_id)
             .map(|active| active.policy.clone())
-            .unwrap_or_else(|| Arc::new(parent.policy.clone()));
-        let parent_limit = parent_policy.delegation.depth_limit;
-        if !parent_policy.delegation.enabled
-            || !parent_limit.allows_delegation()
-            || !parent_policy.delegation.allowed_profiles.contains(profile)
+            .ok_or_else(|| EngineError::MissingTool("delegate parent run is not active".into()))?;
+        let Some(parent_delegation) = &parent_policy.agent.delegation else {
+            return Err(EngineError::MissingTool("delegate admission denied".into()));
+        };
+        let depth = session_depth(&parent.meta.origin);
+        if depth >= parent_delegation.effective_depth_ceiling
+            || !parent_delegation.targets.contains(agent)
         {
             return Err(EngineError::MissingTool("delegate admission denied".into()));
         }
         let invocation_id = invocation_id(parent_session_id, parent_run_id, parent_tool_call_id);
         let journal = self.inner.journal.clone();
-        let journal_policy = child_policy.clone();
+        let journal_agent = child_policy.agent.clone();
+        let journal_suffix = child_policy.selected_suffix_wire.clone();
         let entry = self
             .spawn_admission_blocking(move || {
                 journal.reserve(
@@ -1981,7 +2069,8 @@ impl Engine {
                     parent_session_id,
                     parent_run_id,
                     parent_tool_call_id,
-                    journal_policy,
+                    journal_agent,
+                    journal_suffix,
                     request_fingerprint,
                     request,
                 )
@@ -2005,11 +2094,17 @@ impl Engine {
             ));
         }
         if let Ok(existing) = self.inner.store.get(entry.reservation.child_session_id) {
+            self.inner
+                .session_model_snapshots
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entry(existing.meta.session_id)
+                .or_insert_with(|| Arc::clone(&child_model_snapshot));
             self.ensure_parent_link(
                 parent_session_id,
                 parent_run_id,
                 parent_tool_call_id,
-                existing.meta.id,
+                existing.meta.session_id,
             )
             .await?;
             let journal = self.inner.journal.clone();
@@ -2033,19 +2128,35 @@ impl Engine {
             invocation_id,
             depth,
         };
+        let selection = RunSelection {
+            agent: agent.clone(),
+            model: child_policy.selected_suffix[0].resolved.selection.clone(),
+        };
         let meta = session_meta(
             entry.reservation.child_session_id,
-            origin,
-            Path::new(&parent.meta.cwd),
-            &child_policy,
+            origin.clone(),
+            parent.meta.cwd_identity.clone(),
+            selection.clone(),
         );
+        let creation = Event::SessionCreated {
+            origin,
+            cwd_identity: parent.meta.cwd_identity.clone(),
+            creation_selection: selection,
+            creation_agent: Box::new(child_policy.agent.clone()),
+            model_snapshot_fingerprint: protocol_digest(
+                child_policy.model_snapshot.model_set().fingerprint(),
+            )?,
+        };
         let store = self.inner.store.clone();
         let creation_meta = meta.clone();
-        self.spawn_admission_blocking(move || {
-            store.create_with_status(creation_meta, child_policy)
-        })
-        .await?;
-        self.spawn_actor(meta.id);
+        self.spawn_admission_blocking(move || store.create_with_status(creation_meta, creation))
+            .await?;
+        self.inner
+            .session_model_snapshots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(meta.session_id, child_model_snapshot);
+        self.spawn_actor(meta.session_id);
         if admission.is_some_and(|(invocation_id, generation)| {
             !self.admission_generation_live(invocation_id, generation)
         }) {
@@ -2057,7 +2168,7 @@ impl Engine {
             parent_session_id,
             parent_run_id,
             parent_tool_call_id,
-            meta.id,
+            meta.session_id,
         )
         .await?;
         let journal = self.inner.journal.clone();
@@ -2381,9 +2492,21 @@ impl Engine {
             self.append(
                 parent_session_id,
                 Some(parent_run_id),
-                Event::ToolCallCompleted {
-                    tool_call_id: parent_tool_call_id,
-                    result,
+                Event::ToolCallTerminated {
+                    termination: ToolCallTermination {
+                        tool_call_id: parent_tool_call_id,
+                        owner: self.tool_call_owner(
+                            parent_session_id,
+                            parent_run_id,
+                            parent_tool_call_id,
+                        )?,
+                        outcome: ToolTerminationOutcome::Cancelled,
+                        result: Some(result),
+                        error: Some(SafeToolError {
+                            code: safe_code("parent_terminal"),
+                            message: safe_error("parent run was already terminal"),
+                        }),
+                    },
                 },
             )
             .await?;
@@ -2447,28 +2570,67 @@ impl Engine {
                 "delegate parent run is interrupted; use recovery".into(),
             ));
         }
-        let parent_policy = self
+        let active_parent = self
             .inner
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&invocation.parent_run_id)
-            .map(|active| active.policy.clone())
-            .unwrap_or_else(|| Arc::new(parent.policy.clone()));
-        self.require_enabled_profile(&invocation.profile)?;
-        let snapshot = self.inner.model_manager.current();
-        let child_policy = self
-            .inner
-            .config
-            .materialize_child_policy(snapshot.model_set(), &invocation.profile, &*parent_policy)
-            .map_err(|error| EngineError::Config(Box::new(error)))?;
+            .cloned()
+            .ok_or_else(|| EngineError::MissingTool("delegate parent run is not active".into()))?;
+        let parent_policy = Arc::clone(&active_parent.policy);
+        let parent_delegation = parent_policy
+            .agent
+            .delegation
+            .as_ref()
+            .ok_or_else(|| EngineError::MissingTool("delegation is disabled".into()))?;
+        if !parent_delegation.targets.contains(&invocation.agent)
+            || session_depth(&parent.meta.origin) >= parent_delegation.effective_depth_ceiling
+        {
+            return Err(EngineError::MissingTool(
+                "delegate target or depth is not allowed".into(),
+            ));
+        }
+        let child_agent = resolve_agent(&parent_policy.registry, &invocation.agent)?;
+        if !child_agent.document.frontmatter.enabled
+            || !matches!(
+                child_agent.document.frontmatter.mode,
+                cookie_agent_config::AgentMode::Subagent | cookie_agent_config::AgentMode::All
+            )
+        {
+            return Err(EngineError::DisabledAgent(invocation.agent));
+        }
+        let fallback_index = active_parent.fallback_index.load(Ordering::Acquire) as usize;
+        let inherited = parent_policy.active_suffix(fallback_index);
+        let child_selection = child_agent
+            .resolved_fallback
+            .first()
+            .cloned()
+            .or_else(|| {
+                inherited
+                    .first()
+                    .map(|binding| binding.resolved.selection.clone())
+            })
+            .ok_or_else(|| EngineError::MissingTool("delegate child has no model suffix".into()))?;
+        let child_policy = freeze_delegated_child_policy(
+            child_agent,
+            &parent_policy,
+            &child_selection,
+            inherited,
+            parent_delegation.effective_depth_ceiling,
+            policy::ResultLimits {
+                tool_output_max_lines: self.inner.config.runtime.tool_output.max_lines,
+                tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
+            },
+        )?;
         let fingerprint = serde_json::to_string(&(
-            &invocation.profile,
+            &invocation.agent,
             &invocation.task,
             &invocation.context,
             &invocation.success_criteria,
             &invocation.expected_output,
-            &child_policy,
+            &child_policy.agent,
+            &child_policy.selected_suffix_wire,
         ))
         .expect("delegate invocation fingerprint serializes");
         let request = journal::DelegateRequestPayload {
@@ -2482,7 +2644,7 @@ impl Engine {
                 invocation.parent_session_id,
                 invocation.parent_run_id,
                 invocation.parent_tool_call_id,
-                &invocation.profile,
+                &invocation.agent,
                 child_policy,
                 fingerprint,
                 request,
@@ -2505,7 +2667,7 @@ impl Engine {
                 return Err(error);
             }
         };
-        self.publish_admission_child(invocation_id, generation, child.id)?;
+        self.publish_admission_child(invocation_id, generation, child.session_id)?;
         let entry = self
             .journal_get(invocation_id)
             .await?
@@ -2534,7 +2696,7 @@ impl Engine {
         };
         Ok(DelegateHandle {
             invocation_id,
-            child_session_id: child.id,
+            child_session_id: child.session_id,
             child_run_id,
         })
     }
@@ -2695,9 +2857,17 @@ impl Engine {
         self.append_direct(
             session_id,
             Some(run_id),
-            Event::ToolCallCompleted {
-                tool_call_id,
-                result,
+            Event::ToolCallTerminated {
+                termination: ToolCallTermination {
+                    tool_call_id,
+                    owner: self.tool_call_owner(session_id, run_id, tool_call_id)?,
+                    outcome: ToolTerminationOutcome::Failed,
+                    result: Some(result),
+                    error: Some(SafeToolError {
+                        code: safe_code("delegate_failed"),
+                        message: safe_error("delegated run failed"),
+                    }),
+                },
             },
         )?;
         Ok(true)
@@ -2785,9 +2955,9 @@ impl Engine {
                     SessionCommand::Start {
                         params: RunStartParams {
                             session_id: entry.reservation.child_session_id,
-                            client_run_id,
+                            client_run_id: client_run_id.clone(),
+                            selection: child.meta.creation_selection.clone(),
                             input: render_delegate_input(&entry.request),
-                            profile: None,
                         },
                         admission,
                         reply,
@@ -3038,7 +3208,7 @@ impl Engine {
                 .ok_or(EngineError::MissingRun(run_id))?;
             let mut committed = false;
             return self.commit_run_cancelled_with_retry(
-                session.meta.id,
+                session.meta.session_id,
                 run_id,
                 reason,
                 &mut committed,
@@ -3113,7 +3283,13 @@ impl Engine {
         {
             return Ok(false);
         }
-        match self.append_direct(session, Some(run_id), Event::RunCancelled { reason }) {
+        match self.append_direct(
+            session,
+            Some(run_id),
+            Event::RunCancelled {
+                reason: reason.as_deref().map(safe_error),
+            },
+        ) {
             Ok(()) => {
                 *committed = true;
                 Ok(true)
@@ -3142,7 +3318,7 @@ impl Engine {
             .events()
             .iter()
             .any(|event| {
-                event.run_id == Some(run_id) && matches!(event.event, Event::RunCancelled { .. })
+                event.run_id == Some(run_id) && matches!(event.payload, Event::RunCancelled { .. })
             }))
     }
 
@@ -3230,6 +3406,42 @@ impl Engine {
     pub fn get_session(&self, id: SessionId) -> Result<SessionMeta, EngineError> {
         Ok(self.inner.store.get(id)?.meta)
     }
+    pub fn delegate_targets(&self, id: SessionId) -> Result<Vec<AgentId>, EngineError> {
+        let session = self.inner.store.get(id)?;
+        let active = self
+            .inner
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .find(|active| active.session == id)
+            .cloned();
+        let Some(active) = active else {
+            return Ok(Vec::new());
+        };
+        let depth = session_depth(&session.meta.origin);
+        let Some(delegation) = &active.policy.agent.delegation else {
+            return Ok(Vec::new());
+        };
+        if depth >= delegation.effective_depth_ceiling {
+            return Ok(Vec::new());
+        }
+        Ok(delegation
+            .targets
+            .iter()
+            .filter(|target| {
+                active.policy.registry.get(target).is_some_and(|agent| {
+                    agent.document.frontmatter.enabled
+                        && matches!(
+                            agent.document.frontmatter.mode,
+                            cookie_agent_config::AgentMode::Subagent
+                                | cookie_agent_config::AgentMode::All
+                        )
+                })
+            })
+            .cloned()
+            .collect())
+    }
     #[must_use]
     pub fn children(&self, id: SessionId) -> Vec<cookie_agent_protocol::ChildSummary> {
         let known: HashSet<_> = self
@@ -3255,16 +3467,17 @@ impl Engine {
                     invocation_id,
                     ..
                 } if parent_session_id == id
-                    && known.contains(&(invocation_id, parent_session_id, child.meta.id)) =>
+                    && known.contains(&(
+                        invocation_id,
+                        parent_session_id,
+                        child.meta.session_id,
+                    )) =>
                 {
                     Some(ChildSummary {
-                        id: child.meta.id,
-                        profile: child.meta.profile.name.clone(),
-                        task_excerpt: child
-                            .runs
-                            .values()
-                            .min_by_key(|run| run.id.to_string())
-                            .map(|run| run.input.chars().take(160).collect()),
+                        session_id: child.meta.session_id,
+                        agent: child.meta.creation_selection.agent.clone(),
+                        title: child.meta.title.clone(),
+                        title_updated_seq: child.meta.title_updated_seq,
                         status: child.status,
                         usage: child.usage,
                     })
@@ -3279,7 +3492,7 @@ impl Engine {
             children: self
                 .children(id)
                 .into_iter()
-                .map(|child| self.tree(child.id))
+                .map(|child| self.tree(child.session_id))
                 .collect::<Result<Vec<_>, _>>()?,
         })
     }
@@ -3305,45 +3518,30 @@ impl Engine {
     #[must_use]
     pub fn list_agents(&self) -> AgentListResult {
         let snapshot = self.inner.model_manager.current();
+        let agents = self
+            .materialize_agents(snapshot.model_set())
+            .expect("current model snapshot resolves authored agents")
+            .descriptors()
+            .into_iter()
+            .map(wire_agent_descriptor)
+            .collect::<Vec<_>>();
+        let revision = cookie_agent_protocol::SnapshotRevision::new(format!(
+            "sha256:{}",
+            Sha256Digest::of_bytes(
+                &serde_json::to_vec(&agents).expect("agent descriptors serialize")
+            )
+            .as_str()
+        ))
+        .expect("valid agent revision");
         AgentListResult {
-            agents: self
-                .inner
-                .config
-                .agents
-                .iter()
-                .filter(|(_, profile)| {
-                    matches!(
-                        profile.r#type,
-                        ConfigAgentType::Primary | ConfigAgentType::All
-                    )
-                })
-                .map(|(name, profile)| AgentDescriptor {
-                    name: name.clone(),
-                    agent_type: agent_type(profile.r#type),
-                    enabled: profile.enabled
-                        && !profile.models.is_empty()
-                        && profile
-                            .models
-                            .iter()
-                            .all(|alias| snapshot.model_set().get(alias).is_some()),
-                    models: profile
-                        .models
-                        .iter()
-                        .filter_map(|alias| snapshot.model_set().get(alias))
-                        .map(|entry| ModelRef {
-                            name: entry.alias().to_owned(),
-                            provider_id: entry
-                                .descriptor()
-                                .identity
-                                .provider_id
-                                .as_str()
-                                .to_owned(),
-                            model_id: entry.descriptor().identity.model_id.as_str().to_owned(),
-                            adapter_id: entry.descriptor().adapter_id.as_str().to_owned(),
-                        })
-                        .collect(),
-                })
-                .collect(),
+            revision,
+            model_revision: cookie_agent_protocol::SnapshotRevision::new(snapshot.revision())
+                .expect("model manager revision is validated"),
+            generated_at: snapshot
+                .generated_at()
+                .parse()
+                .expect("model snapshot timestamp is valid"),
+            agents,
         }
     }
 
@@ -3439,7 +3637,7 @@ impl Engine {
                     }
                 } else {
                     EventSubscriptionMessage::Event {
-                        event: envelope.clone(),
+                        event: Box::new(envelope.clone()),
                     }
                 };
                 match subscriber.sender.try_send(message) {
@@ -3490,7 +3688,7 @@ impl Engine {
         &self,
         session: SessionId,
         run: RunId,
-    ) -> Result<Vec<EventEnvelope>, EngineError> {
+    ) -> Result<Vec<StoredEvent>, EngineError> {
         let events = self
             .request(session, |reply| SessionCommand::PromptSnapshot {
                 run,
@@ -3582,7 +3780,7 @@ impl Engine {
                         .events()
                         .iter()
                         .any(|event| {
-                            matches!(event.event, Event::ToolCallLinked { tool_call_id: linked_call, child_session_id: linked_child }
+                            matches!(event.payload, Event::ToolCallLinked { tool_call_id: linked_call, child_session_id: linked_child }
                                 if linked_call == tool_call_id && linked_child == child_session_id)
                         });
                     if !linked {
@@ -3790,14 +3988,14 @@ impl Engine {
                         });
                     }
                     let commit = match params.change {
-                        SessionRenameChange::Set { title } => SessionTitleCommit::UserSet {
+                        SessionRenameChange::Set { title } => SessionTitleChange::UserSet {
                             title,
                             client_rename_id: params.client_rename_id.clone(),
                         },
-                        SessionRenameChange::Clear => SessionTitleCommit::UserClear {
+                        SessionRenameChange::Clear => SessionTitleChange::UserClear {
                             client_rename_id: params.client_rename_id.clone(),
                         },
-                        SessionRenameChange::Reset => SessionTitleCommit::UserReset {
+                        SessionRenameChange::Reset => SessionTitleChange::UserReset {
                             client_rename_id: params.client_rename_id.clone(),
                         },
                     };
@@ -3808,7 +4006,7 @@ impl Engine {
                         None,
                         Event::SessionTitleCommitted {
                             input_through_seq,
-                            commit,
+                            change: commit,
                         },
                     )?;
                     Ok(SessionRenameResult {
@@ -3865,18 +4063,34 @@ impl Engine {
                 let response = if !pending {
                     Ok(false)
                 } else {
-                    let event = match result {
-                        Ok(result) => Event::ToolCallCompleted {
-                            tool_call_id,
-                            result,
-                        },
-                        Err(failure) => Event::ToolCallFailed {
-                            tool_call_id,
-                            code: failure.code,
-                            message: failure.message,
-                        },
-                    };
-                    self.append_direct(session, Some(run), event).map(|()| true)
+                    (|| {
+                        let owner = self.tool_call_owner(session, run, tool_call_id)?;
+                        let event = match result {
+                            Ok(result) => Event::ToolCallTerminated {
+                                termination: ToolCallTermination {
+                                    tool_call_id,
+                                    owner,
+                                    outcome: ToolTerminationOutcome::Completed,
+                                    result: Some(result),
+                                    error: None,
+                                },
+                            },
+                            Err(failure) => Event::ToolCallTerminated {
+                                termination: ToolCallTermination {
+                                    tool_call_id,
+                                    owner,
+                                    outcome: ToolTerminationOutcome::Failed,
+                                    result: None,
+                                    error: Some(SafeToolError {
+                                        code: failure.code.safe_code(),
+                                        message: safe_error(&failure.message),
+                                    }),
+                                },
+                            },
+                        };
+                        self.append_direct(session, Some(run), event)?;
+                        Ok(true)
+                    })()
                 };
                 let _ = reply.send(response);
             }
@@ -3938,7 +4152,7 @@ impl Engine {
                             .any(|event| {
                                 event.seq > prompt_seq
                                     && event.run_id == Some(run)
-                                    && matches!(event.event, Event::UserInputSubmitted { .. })
+                                    && matches!(event.payload, Event::UserInputSubmitted { .. })
                             });
                         if !has_unseen_steering {
                             self.append_direct(
@@ -3967,7 +4181,7 @@ impl Engine {
                         let events = self.inner.store.get(session)?.log.events();
                         let applied: HashSet<u64> = events
                             .iter()
-                            .filter_map(|event| match &event.event {
+                            .filter_map(|event| match &event.payload {
                                 Event::UserInputApplied { user_input_seq }
                                     if event.run_id == Some(run) =>
                                 {
@@ -3976,14 +4190,17 @@ impl Engine {
                                 _ => None,
                             })
                             .collect();
-                        for user_input_seq in events.iter().filter_map(|event| match &event.event {
-                            Event::UserInputSubmitted { .. }
-                                if event.run_id == Some(run) && !applied.contains(&event.seq) =>
-                            {
-                                Some(event.seq)
-                            }
-                            _ => None,
-                        }) {
+                        for user_input_seq in
+                            events.iter().filter_map(|event| match &event.payload {
+                                Event::UserInputSubmitted { .. }
+                                    if event.run_id == Some(run)
+                                        && !applied.contains(&event.seq) =>
+                                {
+                                    Some(event.seq)
+                                }
+                                _ => None,
+                            })
+                        {
                             self.append_direct(
                                 session,
                                 Some(run),
@@ -4015,17 +4232,12 @@ impl Engine {
             ));
         }
         let session = self.inner.store.get(params.session_id)?;
-        let selected_profile = params
-            .profile
-            .as_deref()
-            .unwrap_or(&session.policy.profile.name)
-            .to_owned();
         if let Some(run) = session
             .runs
             .values()
             .find(|run| run.client_run_id == params.client_run_id)
         {
-            if run.input != params.input || run.current_profile.name != selected_profile {
+            if run.input != params.input || run.selection != params.selection {
                 return Err(EngineError::RunIdempotencyConflict);
             }
             return Ok(RunStartResult { run_id: run.id });
@@ -4034,55 +4246,74 @@ impl Engine {
             return Err(EngineError::SessionRunning(params.session_id));
         }
         self.resolve_interrupted_direct(params.session_id).await?;
-        if params.profile.is_some() {
-            self.require_enabled_profile(&selected_profile)?;
-        }
-        let run_policy = if selected_profile == session.policy.profile.name {
-            session.policy.clone()
-        } else {
-            let snapshot = self.inner.model_manager.current();
-            self.inner
-                .config
-                .materialize_policy(snapshot.model_set(), &selected_profile)
-                .map_err(|error| EngineError::Config(Box::new(error)))?
+        let result_limits = policy::ResultLimits {
+            tool_output_max_lines: self.inner.config.runtime.tool_output.max_lines,
+            tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
         };
-        match (&session.meta.origin, run_policy.profile.r#type) {
-            (
-                SessionOrigin::Root | SessionOrigin::Forked { .. },
-                ConfigAgentType::Subagent | ConfigAgentType::Internal,
-            )
-            | (
-                SessionOrigin::Delegated { .. },
-                ConfigAgentType::Primary | ConfigAgentType::Internal,
-            ) => {
-                return Err(EngineError::SubagentOnly(selected_profile));
+        let run_policy = match &session.meta.origin {
+            SessionOrigin::Root => {
+                let model_snapshot = self.inner.model_manager.current();
+                let agents = self.materialize_agents(model_snapshot.model_set())?;
+                let agent = resolve_agent(&agents, &params.selection.agent)?;
+                if !agent.runnable_as_root {
+                    return Err(EngineError::IneligibleAgent(params.selection.agent));
+                }
+                freeze_agent_policy(
+                    agent,
+                    Arc::clone(&agents),
+                    model_snapshot,
+                    &params.selection.model,
+                    None,
+                    None,
+                    result_limits,
+                )?
             }
-            _ => {}
-        }
-        let profile = wire_profile(&run_policy);
-        let current_profile = ProfileIdentity {
-            name: run_policy.profile.name.clone(),
-            agent_type: agent_type(run_policy.profile.r#type),
+            SessionOrigin::Delegated { .. } => {
+                let model_snapshot = self.session_model_snapshot(&session)?;
+                let agents = self.materialize_agents(model_snapshot.model_set())?;
+                policy_for_session_selection(
+                    session.creation_agent.clone(),
+                    agents,
+                    model_snapshot,
+                    &params.selection,
+                    result_limits.tool_output_max_lines,
+                    result_limits.tool_output_max_bytes,
+                )?
+            }
         };
         let run_id = RunId::new_v7();
+        let input_through_seq = session.meta.last_event_seq;
         self.append_direct(
             params.session_id,
             Some(run_id),
             Event::RunStarted {
-                client_run_id: params.client_run_id,
-                input: params.input,
-                profile,
-                current_profile,
+                client_run_id: params.client_run_id.clone(),
+                selection: params.selection.clone(),
+                agent: Box::new(run_policy.agent.clone()),
+                selected_suffix: run_policy.selected_suffix_wire.clone(),
+                input_through_seq,
             },
         )?;
+        self.append_direct(
+            params.session_id,
+            Some(run_id),
+            Event::UserInputSubmitted {
+                input: params.input,
+            },
+        )?;
+        self.inner
+            .run_model_snapshots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(run_id, Arc::clone(&run_policy.model_snapshot));
         let active = Arc::new(ActiveRun {
             session: params.session_id,
-            internal_agents: self.inner.internal_agents.accept(&run_policy),
             policy: Arc::new(run_policy),
             cancellation: CancellationToken::new(),
             cancelled_committed: Mutex::new(false),
             stdin: Mutex::new(HashMap::new()),
             prompt_seq: AtomicU64::new(0),
+            fallback_index: AtomicU64::new(0),
         });
         // A sweeper may have terminalized this durable run before active-run
         // registration. Never resurrect a cancelled run with a live loop.
@@ -4130,19 +4361,6 @@ impl Engine {
         Ok(RunStartResult { run_id })
     }
 
-    fn require_enabled_profile(&self, profile_name: &str) -> Result<(), EngineError> {
-        if self
-            .inner
-            .config
-            .agents
-            .get(profile_name)
-            .is_some_and(|profile| !profile.enabled)
-        {
-            return Err(EngineError::DisabledProfile(profile_name.to_owned()));
-        }
-        Ok(())
-    }
-
     async fn run_loop(&self, run_id: RunId, active: Arc<ActiveRun>) -> Result<(), EngineError> {
         // Sticky chain position belongs to this run, not one agent-loop pass.
         let mut fallback_entry = 0_usize;
@@ -4158,8 +4376,7 @@ impl Engine {
                     active.session,
                     run_id,
                     &active.cancellation,
-                    &active.policy.models,
-                    &active.internal_agents,
+                    &active.policy,
                     &mut fallback_entry,
                     prompt_events,
                     tools,
@@ -4176,7 +4393,7 @@ impl Engine {
                         active.session,
                         Some(run_id),
                         Event::RunFailed {
-                            message: error.to_string(),
+                            error: safe_error(&error.to_string()),
                         },
                     )
                     .await?;
@@ -4227,7 +4444,8 @@ impl Engine {
                 .turn
                 .content
                 .iter()
-                .filter_map(|part| match part {
+                .enumerate()
+                .filter_map(|(content_index, part)| match part {
                     PersistedAssistantPart::ToolCall {
                         id,
                         provider_item_id,
@@ -4236,6 +4454,7 @@ impl Engine {
                         ..
                     } if !in_stream_results.contains(id.as_str()) => Some((
                         ToolCallId::new_v7(),
+                        content_index as u32,
                         id.clone(),
                         provider_item_id.clone(),
                         name.clone(),
@@ -4272,35 +4491,46 @@ impl Engine {
                 .into());
             }
             let mut prepared = Vec::new();
-            for (id, model_call_id, provider_item_id, tool, arguments, approval) in &calls {
+            for (id, content_index, model_call_id, provider_item_id, tool, arguments, approval) in
+                &calls
+            {
                 self.inner
                     .output_hubs
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .entry(*id)
                     .or_insert_with(|| OutputHub::new(*id, 64 * 1024));
+                let call = ToolCall {
+                    id: *id,
+                    name: tool.to_string(),
+                    arguments: arguments.clone(),
+                };
+                let prepared_call = self
+                    .prepare_tool_call(active.session, run_id, call, &active.policy)
+                    .await;
+                let operation_fingerprint = prepared_call.prepared.as_ref().map_or_else(
+                    |_| fallback_operation_fingerprint(&prepared_call.call),
+                    |prepared| OperationFingerprint::from_prepared_operation(prepared.operation()),
+                );
                 self.append(
                     active.session,
                     Some(run_id),
                     Event::ToolCallStarted {
-                        tool_call_id: *id,
-                        model_call_id: model_call_id.clone(),
-                        provider_item_id: provider_item_id.clone(),
-                        tool: tool.clone(),
-                        arguments: arguments.clone(),
+                        start: ToolCallStart {
+                            tool_call_id: *id,
+                            owner: cookie_agent_protocol::AssistantToolCallRef {
+                                model_turn_seq: attempt.model_turn_seq,
+                                content_index: *content_index,
+                                model_call_id: model_call_id.clone(),
+                                provider_item_id: provider_item_id.clone(),
+                            },
+                            presentation: prepared_call.presentation.clone(),
+                            operation_fingerprint,
+                        },
                     },
                 )
                 .await?;
-                let call = ToolCall {
-                    id: *id,
-                    name: tool.clone(),
-                    arguments: arguments.clone(),
-                };
-                prepared.push((
-                    self.prepare_tool_call(active.session, run_id, call, &active.policy)
-                        .await,
-                    approval.clone(),
-                ));
+                prepared.push((prepared_call, approval.clone()));
             }
             let mut tasks = Vec::new();
             for (prepared, approval) in prepared {
@@ -4336,7 +4566,7 @@ impl Engine {
                         )
                         .await?;
                     if outcome.approved {
-                        tasks.push(PendingTool::Prepared(prepared));
+                        tasks.push(PendingTool::Prepared(Box::new(prepared)));
                     } else {
                         tasks.push(PendingTool::ImmediateFailure(ToolFailure {
                             code: ToolCallFailureCode::ExecutionFailed,
@@ -4348,7 +4578,7 @@ impl Engine {
                         }));
                     }
                 } else {
-                    tasks.push(PendingTool::Prepared(prepared));
+                    tasks.push(PendingTool::Prepared(Box::new(prepared)));
                 }
             }
             // Awaiting task handles is outside any session actor. Results are
@@ -4362,7 +4592,7 @@ impl Engine {
                 } else {
                     match task {
                         PendingTool::Prepared(prepared) => {
-                            self.execute_tool(active.clone(), run_id, prepared).await
+                            self.execute_tool(active.clone(), run_id, *prepared).await
                         }
                         PendingTool::ImmediateFailure(failure) => Err(failure),
                     }
@@ -4385,22 +4615,53 @@ impl Engine {
         session: SessionId,
         run: RunId,
         cancellation: &CancellationToken,
-        chain: &[cookie_agent_models::FrozenModelBinding],
-        internal_agents: &AcceptedInternalAgents,
+        policy: &FrozenRunPolicy,
         sticky_entry: &mut usize,
-        prompt_events: Vec<EventEnvelope>,
+        prompt_events: Vec<StoredEvent>,
         tools: Vec<ToolDefinition>,
     ) -> Result<AttemptTurn, EngineError> {
+        let chain = &policy.selected_suffix;
+        let composed_prompt = &policy.agent.composed_prompt;
+        let prompt_fingerprint = &policy.agent.prompt_fingerprint;
         let mut entry = *sticky_entry;
         let mut last_error = ModelError::invalid_request("model fallback chain is empty");
         let mut first_request = true;
         while entry < chain.len() {
             let binding = &chain[entry];
-            let model = self.resolve_model(binding)?;
+            let model = policy.model_snapshot.resolve(binding).map_err(|error| {
+                EngineError::from(ModelError::invalid_request(error.to_string()))
+            })?;
             let mut attempts = 0_u32;
             let mut context_recovery_attempted = false;
             loop {
                 attempts += 1;
+                let attempt_id = cookie_agent_protocol::AttemptId::new_v7();
+                let attempt_ordinal = self
+                    .inner
+                    .store
+                    .get(session)?
+                    .log
+                    .events()
+                    .iter()
+                    .filter(|event| {
+                        event.run_id == Some(run)
+                            && matches!(event.payload, Event::ModelAttemptStarted { .. })
+                    })
+                    .count() as u32
+                    + 1;
+                self.append(
+                    session,
+                    Some(run),
+                    Event::ModelAttemptStarted {
+                        attempt_id,
+                        attempt_ordinal,
+                        fallback_index: entry as u32,
+                        retry_ordinal: attempts - 1,
+                        resolved_model: wire_model(binding),
+                        prompt_fingerprint: prompt_fingerprint.clone(),
+                    },
+                )
+                .await?;
                 let request_events = if first_request {
                     first_request = false;
                     prompt_events.clone()
@@ -4414,14 +4675,23 @@ impl Engine {
                         cancellation,
                         binding,
                         &model,
-                        internal_agents.profile(InternalAgentKind::ContextCompaction),
+                        &self.inner.internal_agents.policy(
+                            InternalAgentKind::ContextCompaction,
+                            policy,
+                            &chain[entry..],
+                        ),
                         request_events,
                         false,
                     )
                     .await?;
                 let input_through_seq = request_events.last().map_or(0, |event| event.seq);
-                let context =
-                    assemble_model_context(&request_events, &self.inner.artifacts, binding)?;
+                let context = assemble_model_context(
+                    &request_events,
+                    &self.inner.artifacts,
+                    binding,
+                    composed_prompt,
+                )?;
+                let replay_preflight = context.replay_decisions;
                 let mut request = ModelRequest::new(context.history).with_tools(tools.clone());
                 if let Some(native_context) = context.native_context {
                     request = request.with_native_context(native_context);
@@ -4446,8 +4716,13 @@ impl Engine {
                             session,
                             Some(run),
                             Event::ModelReplayEvaluated {
-                                model: wire_model(binding),
-                                decisions: replay_decisions(&request.replay.decisions),
+                                attempt_id,
+                                resolved_model: wire_model(binding),
+                                ordered_decisions: replay_decisions_with_preflight(
+                                    &request.replay.decisions,
+                                    binding,
+                                    &replay_preflight,
+                                ),
                             },
                         )
                         .await?;
@@ -4472,7 +4747,7 @@ impl Engine {
                                             self.append(
                                                 session,
                                                 Some(run),
-                                                Event::TextDelta { text },
+                                                Event::TextDelta { attempt_id, text },
                                             )
                                             .await?;
                                         }
@@ -4480,7 +4755,7 @@ impl Engine {
                                             self.append(
                                                 session,
                                                 Some(run),
-                                                Event::ReasoningDelta { text },
+                                                Event::ReasoningDelta { attempt_id, text },
                                             )
                                             .await?;
                                         }
@@ -4531,15 +4806,19 @@ impl Engine {
                 };
                 match result {
                     Ok(turn) => {
-                        let turn = persist_turn(turn, &self.inner.artifacts)?;
-                        let model = wire_model(binding);
+                        let (turn, warnings) = persist_turn(turn, &self.inner.artifacts, binding)?;
+                        let resolved_model = wire_model(binding);
+                        let model_turn_seq = self.next_model_turn_seq(session)?;
                         self.append(
                             session,
                             Some(run),
                             Event::ModelTurnCommitted {
-                                model: model.clone(),
+                                attempt_id,
+                                model_turn_seq,
+                                resolved_model,
                                 input_through_seq,
                                 turn: turn.clone(),
+                                warnings,
                             },
                         )
                         .await?;
@@ -4549,17 +4828,24 @@ impl Engine {
                             input_through_seq,
                             &turn,
                             cancellation,
-                            internal_agents.profile(InternalAgentKind::SessionTitle),
+                            &self.inner.internal_agents.policy(
+                                InternalAgentKind::SessionTitle,
+                                policy,
+                                &chain[entry..],
+                            ),
                         )
                         .await?;
-                        return Ok(AttemptTurn { turn });
+                        return Ok(AttemptTurn {
+                            turn,
+                            model_turn_seq,
+                        });
                     }
                     Err(error)
                         if error.kind == oven_sdk::ModelErrorKind::ContextLength
                             && !meaningful_output
                             && !context_recovery_attempted =>
                     {
-                        self.append(session, Some(run), Event::AttemptAbandoned)
+                        self.append(session, Some(run), Event::AttemptAbandoned { attempt_id })
                             .await?;
                         context_recovery_attempted = true;
                         let before = self
@@ -4571,7 +4857,7 @@ impl Engine {
                             .iter()
                             .rev()
                             .find_map(|event| {
-                                matches!(event.event, Event::ContextCheckpointCommitted { .. })
+                                matches!(event.payload, Event::ContextCheckpointCommitted { .. })
                                     .then_some(event.seq)
                             })
                             .unwrap_or(0);
@@ -4583,7 +4869,11 @@ impl Engine {
                                 cancellation,
                                 binding,
                                 &model,
-                                internal_agents.profile(InternalAgentKind::ContextCompaction),
+                                &self.inner.internal_agents.policy(
+                                    InternalAgentKind::ContextCompaction,
+                                    policy,
+                                    &chain[entry..],
+                                ),
                                 recovery_events,
                                 true,
                             )
@@ -4592,7 +4882,7 @@ impl Engine {
                             .iter()
                             .rev()
                             .find_map(|event| {
-                                matches!(event.event, Event::ContextCheckpointCommitted { .. })
+                                matches!(event.payload, Event::ContextCheckpointCommitted { .. })
                                     .then_some(event.seq)
                             })
                             .unwrap_or(0);
@@ -4602,7 +4892,7 @@ impl Engine {
                         return Err(EngineError::Model(error));
                     }
                     Err(error) if classify_model_error(&error) == ErrorPolicy::FailRun => {
-                        self.append(session, Some(run), Event::AttemptAbandoned)
+                        self.append(session, Some(run), Event::AttemptAbandoned { attempt_id })
                             .await?;
                         return Err(EngineError::Model(error));
                     }
@@ -4611,7 +4901,7 @@ impl Engine {
                             && attempts <= 2
                             && !meaningful_output =>
                     {
-                        self.append(session, Some(run), Event::AttemptAbandoned)
+                        self.append(session, Some(run), Event::AttemptAbandoned { attempt_id })
                             .await?;
                         tokio::select! {
                             _ = tokio::time::sleep(std::time::Duration::from_millis(100_u64 << (attempts - 1))) => {}
@@ -4619,7 +4909,7 @@ impl Engine {
                         }
                     }
                     Err(error) => {
-                        self.append(session, Some(run), Event::AttemptAbandoned)
+                        self.append(session, Some(run), Event::AttemptAbandoned { attempt_id })
                             .await?;
                         last_error = *error;
                         break;
@@ -4635,13 +4925,20 @@ impl Engine {
                 Event::ModelFallback {
                     from: wire_model(binding),
                     to: wire_model(next),
+                    from_fallback_index: entry as u32,
+                    to_fallback_index: entry as u32 + 1,
                     error: model_error_summary(&last_error),
-                    attempts,
+                    attempts_on_from: attempts,
                 },
             )
             .await?;
             entry += 1;
             *sticky_entry = entry;
+            if let Ok(active_runs) = self.inner.active.lock()
+                && let Some(active) = active_runs.get(&run)
+            {
+                active.fallback_index.store(entry as u64, Ordering::Release);
+            }
         }
         Err(last_error.into())
     }
@@ -4653,16 +4950,18 @@ impl Engine {
         run: RunId,
         cancellation: &CancellationToken,
         binding: &cookie_agent_models::FrozenModelBinding,
-        model: &cookie_agent_models::ModelEntry,
-        internal_profile: &FrozenInternalAgentProfile,
-        events: Vec<EventEnvelope>,
+        model: &cookie_agent_models::ResolvedModel,
+        internal_policy: &FrozenInternalAgentPolicy,
+        events: Vec<StoredEvent>,
         force: bool,
-    ) -> Result<Vec<EventEnvelope>, EngineError> {
+    ) -> Result<Vec<StoredEvent>, EngineError> {
         let Some(context_limit) = binding.descriptor.capabilities.limits.context else {
             return Ok(events);
         };
-        let config = &self.inner.config.internal_agents.context_compaction;
-        let context = assemble_model_context(&events, &self.inner.artifacts, binding)?;
+        let config = &self.inner.config.runtime.context_compaction;
+        let composed_prompt = self.run_agent_prompt(session, run)?;
+        let context =
+            assemble_model_context(&events, &self.inner.artifacts, binding, &composed_prompt)?;
         let serialized = serde_json::to_vec(&context.history)
             .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
         let input_tokens_before = (serialized.len() as u64).div_ceil(4);
@@ -4674,16 +4973,16 @@ impl Engine {
         let input_through_seq = events.last().map_or(0, |event| event.seq);
         if events.iter().rev().any(|event| {
             matches!(
-                &event.event,
+                &event.payload,
                 Event::ContextCheckpointCommitted { commit }
-                    if commit.boundaries().input_through_seq >= input_through_seq
+                    if commit.boundaries.input_through_seq >= input_through_seq
             )
         }) {
             return Ok(events);
         }
         let hard = input_tokens_before >= hard_tokens;
         let target_tokens = context_limit.saturating_mul(config.target_percent as u64) / 100;
-        let previous = events.iter().rev().find_map(|event| match &event.event {
+        let previous = events.iter().rev().find_map(|event| match &event.payload {
             Event::ContextCheckpointCommitted { .. } => Some(event.seq),
             _ => None,
         });
@@ -4698,28 +4997,14 @@ impl Engine {
             .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
 
         let native_input_within_budget =
-            input_tokens_before <= internal_profile.limits.max_input_tokens;
-        if config.persistence == CompactionPersistencePolicy::NativeOnly
-            && binding.descriptor.capabilities.compaction == CompactionCapability::Native
-            && !native_input_within_budget
-        {
-            if hard {
-                return Err(ModelError::new(
-                    oven_sdk::ModelErrorKind::ContextLength,
-                    "hard context limit reached and native compaction input exceeded its budget",
-                )
-                .into());
-            }
-            return Ok(events);
-        }
-        if config.persistence != CompactionPersistencePolicy::SummaryOnly
-            && binding.descriptor.capabilities.compaction == CompactionCapability::Native
+            input_tokens_before <= internal_policy.limits.max_input_tokens;
+        if binding.descriptor.capabilities.compaction == CompactionCapability::Native
             && native_input_within_budget
         {
             let invocation_id = InternalAgentInvocationId::new_v7();
             let internal_run_id = InternalAgentRunId::new_v7();
             let backend = InternalAgentBackend::ProviderNative {
-                model: wire_model(binding),
+                resolved_model: wire_model(binding),
             };
             let digest = Sha256Digest::of_bytes(&serialized);
             self.append(
@@ -4731,8 +5016,8 @@ impl Engine {
                     kind: InternalAgentKind::ContextCompaction,
                     backend: backend.clone(),
                     call: SafeInternalAgentCall {
-                        name: "provider_native_compaction".into(),
-                        input_summary: format!("bounded native compaction input ({input_tokens_before} estimated tokens)"),
+                        name: safe_code("provider_native_compaction"),
+                        input_summary: safe_display(&format!("bounded native compaction input ({input_tokens_before} estimated tokens)")),
                         input_digest: digest,
                     },
                 },
@@ -4749,7 +5034,7 @@ impl Engine {
                 .compact(CompactionRequest::new(request), abort.signal());
             let compact = tokio::select! {
                 result = tokio::time::timeout(
-                    std::time::Duration::from_millis(internal_profile.limits.timeout_ms),
+                    std::time::Duration::from_millis(internal_policy.limits.timeout_ms),
                     compact_future,
                 ) => match result {
                     Ok(result) => result,
@@ -4767,7 +5052,7 @@ impl Engine {
                             invocation_id,
                             internal_run_id,
                             kind: InternalAgentKind::ContextCompaction,
-                            reason: Some("parent run cancelled".into()),
+                            reason: Some(safe_error("parent run cancelled")),
                         },
                     ).await?;
                     return Err(ModelError::abort("context compaction was cancelled").into());
@@ -4781,10 +5066,10 @@ impl Engine {
                         && result.native_context.scope().model_id
                             == binding.descriptor.identity.model_id
                         && result.usage.input_tokens.is_none_or(|tokens| {
-                            tokens <= internal_profile.limits.max_input_tokens
+                            tokens <= internal_policy.limits.max_input_tokens
                         })
                         && result.usage.output_tokens.is_none_or(|tokens| {
-                            tokens <= internal_profile.limits.max_output_tokens
+                            tokens <= internal_policy.limits.max_output_tokens
                         }) =>
                 {
                     let payload = serde_json::to_vec(&result.native_context).map_err(|error| {
@@ -4794,34 +5079,22 @@ impl Engine {
                         let (reference, digest) = self.inner.artifacts.retain(&payload)?;
                         let checkpoint = ContextCheckpoint::ProviderNative {
                             model: wire_model(binding),
-                            native_context: NativeContextArtifact {
-                                adapter_id: result.native_context.adapter_id().as_str().to_owned(),
+                            native_context: Box::new(NativeContextArtifact {
+                                adapter_id: safe_code(result.native_context.adapter_id().as_str()),
+                                selection_fingerprint: wire_model(binding).selection_fingerprint,
                                 scope: cookie_agent_protocol::NativeContextScope {
-                                    provider_id: result
-                                        .native_context
-                                        .scope()
-                                        .provider_id
-                                        .as_str()
-                                        .to_owned(),
-                                    model_id: result
-                                        .native_context
-                                        .scope()
-                                        .model_id
-                                        .as_str()
-                                        .to_owned(),
-                                    resource_id: result
-                                        .native_context
-                                        .scope()
-                                        .resource_id
-                                        .as_str()
-                                        .to_owned(),
+                                    provider_id: binding.resolved.provider_id.clone(),
+                                    model_id: binding.resolved.model_id.clone(),
+                                    resource_id: safe_display(
+                                        result.native_context.scope().resource_id.as_str(),
+                                    ),
                                 },
                                 byte_length: payload.len() as u64,
                                 sha256: Sha256Digest::new(digest).map_err(|error| {
                                     EngineError::from(ModelError::native_context(error.to_string()))
                                 })?,
                                 reference,
-                            },
+                            }),
                         };
                         self.append(
                             session,
@@ -4831,10 +5104,10 @@ impl Engine {
                                 internal_run_id,
                                 kind: InternalAgentKind::ContextCompaction,
                                 result: SafeInternalAgentResult {
-                                    output_summary: format!(
+                                    output_summary: safe_display(&format!(
                                         "validated native context ({} bytes)",
                                         payload.len()
-                                    ),
+                                    )),
                                     output_digest: Sha256Digest::of_bytes(&payload),
                                 },
                             },
@@ -4848,10 +5121,14 @@ impl Engine {
                             input_tokens_after: target_tokens,
                             max_summary_bytes: summary_limit,
                         };
-                        let commit = ContextCheckpointCommit::new(checkpoint, boundaries, budgets)
-                            .map_err(|error| {
-                                EngineError::from(ModelError::native_context(error.to_string()))
-                            })?;
+                        let commit = ContextCheckpointCommit {
+                            checkpoint,
+                            boundaries,
+                            budgets,
+                        };
+                        commit.validate().map_err(|error| {
+                            EngineError::from(ModelError::native_context(error.to_string()))
+                        })?;
                         self.append(
                             session,
                             Some(run),
@@ -4868,8 +5145,8 @@ impl Engine {
                             internal_run_id,
                             kind: InternalAgentKind::ContextCompaction,
                             failure: InternalAgentFailure {
-                                code: "native_context_too_large".into(),
-                                message: "provider-native context exceeded the configured persistence bound".into(),
+                                code: safe_code("native_context_too_large"),
+                                message: safe_error("provider-native context exceeded the configured persistence bound"),
                                 retryable: false,
                                 model_error: None,
                             },
@@ -4885,8 +5162,8 @@ impl Engine {
                             internal_run_id,
                             kind: InternalAgentKind::ContextCompaction,
                             failure: InternalAgentFailure {
-                                code: "native_context_scope_mismatch".into(),
-                                message: "provider-native context did not match the exact configured model scope".into(),
+                                code: safe_code("native_context_scope_mismatch"),
+                                message: safe_error("provider-native context did not match the exact configured model scope"),
                                 retryable: false,
                                 model_error: None,
                             },
@@ -4902,8 +5179,8 @@ impl Engine {
                             internal_run_id,
                             kind: InternalAgentKind::ContextCompaction,
                             failure: InternalAgentFailure {
-                                code: "native_compaction_failed".into(),
-                                message: error.message.clone(),
+                                code: safe_code("native_compaction_failed"),
+                                message: safe_error(&error.message),
                                 retryable: error.retryable,
                                 model_error: Some(model_error_summary(&error)),
                             },
@@ -4912,15 +5189,14 @@ impl Engine {
                     .await?;
                 }
             }
-            if config.persistence != CompactionPersistencePolicy::NativeOnly {
-                let fallback_backend = internal_profile.models.first().map_or_else(
+            {
+                let fallback_backend = internal_policy.models.first().map_or_else(
                     || InternalAgentBackend::Builtin {
-                        name: "bounded_summary".into(),
-                        revision: BOUNDED_SUMMARY_BUILTIN_REVISION.into(),
+                        name: safe_code("bounded_summary"),
+                        revision: safe_display(BOUNDED_SUMMARY_BUILTIN_REVISION),
                     },
                     |binding| InternalAgentBackend::Model {
-                        profile: Box::new(internal_profile.snapshot.clone()),
-                        model: wire_model(binding),
+                        resolved_model: wire_model(binding),
                     },
                 );
                 self.append(
@@ -4933,10 +5209,10 @@ impl Engine {
                         from: backend,
                         to: fallback_backend,
                         failure: InternalAgentFailure {
-                            code: "native_compaction_unusable".into(),
-                            message:
-                                "provider-native compaction did not produce a valid checkpoint"
-                                    .into(),
+                            code: safe_code("native_compaction_unusable"),
+                            message: safe_error(
+                                "provider-native compaction did not produce a valid checkpoint",
+                            ),
                             retryable: false,
                             model_error: None,
                         },
@@ -4944,16 +5220,6 @@ impl Engine {
                     },
                 )
                 .await?;
-            }
-            if config.persistence == CompactionPersistencePolicy::NativeOnly {
-                if hard {
-                    return Err(ModelError::new(
-                        oven_sdk::ModelErrorKind::ContextLength,
-                        "hard context limit reached and provider-native compaction failed",
-                    )
-                    .into());
-                }
-                return Ok(events);
             }
         }
 
@@ -4964,7 +5230,7 @@ impl Engine {
                 session,
                 Some(run),
                 InternalAgentKind::ContextCompaction,
-                internal_profile,
+                internal_policy,
                 format!(
                     "Summarize the durable conversation below without omitting system policy, approval boundaries, attachments, or complete tool call/result pairs. Return summary text only.\n{durable}"
                 ),
@@ -4991,12 +5257,12 @@ impl Engine {
                     input_tokens_after,
                     max_summary_bytes: summary_limit,
                 };
-                let commit = ContextCheckpointCommit::new(
-                    ContextCheckpoint::InternalSummary { checkpoint },
+                let commit = ContextCheckpointCommit {
+                    checkpoint: ContextCheckpoint::InternalSummary { checkpoint },
                     boundaries,
                     budgets,
-                )
-                .map_err(|error| {
+                };
+                commit.validate().map_err(|error| {
                     EngineError::from(ModelError::invalid_response(error.to_string()))
                 })?;
                 self.append(
@@ -5023,9 +5289,9 @@ impl Engine {
         input_through_seq: u64,
         turn: &PersistedModelTurn,
         cancellation: &CancellationToken,
-        internal_profile: &FrozenInternalAgentProfile,
+        internal_policy: &FrozenInternalAgentPolicy,
     ) -> Result<(), EngineError> {
-        let policy = &self.inner.config.internal_agents.session_title.policy;
+        let policy = &self.inner.config.runtime.session_title;
         if !policy.generate_on_first_turn {
             return Ok(());
         }
@@ -5035,8 +5301,10 @@ impl Engine {
         }
         let input = events
             .iter()
-            .find_map(|event| match &event.event {
-                Event::RunStarted { input, .. } if event.run_id == Some(run) => Some(input.clone()),
+            .find_map(|event| match &event.payload {
+                Event::UserInputSubmitted { input } if event.run_id == Some(run) => {
+                    Some(input.clone())
+                }
                 _ => None,
             })
             .unwrap_or_default();
@@ -5058,14 +5326,14 @@ impl Engine {
                 session,
                 Some(run),
                 InternalAgentKind::SessionTitle,
-                internal_profile,
+                internal_policy,
                 prompt,
                 cancellation,
             )
             .await;
         let commit = match generated {
             Ok(result) => validate_generated_title(&result.text, policy.max_chars)
-                .map(|title| SessionTitleCommit::InternalAgentSet {
+                .map(|title| SessionTitleChange::InternalAgentSet {
                     title,
                     invocation_id: result.invocation_id,
                 })
@@ -5074,13 +5342,13 @@ impl Engine {
                         .fallback_to_input_excerpt
                         .then(|| fallback_title(&input, policy.max_chars))
                         .flatten()
-                        .map(|title| SessionTitleCommit::FallbackSet { title })
+                        .map(|title| SessionTitleChange::FallbackSet { title })
                 }),
             Err(_) => policy
                 .fallback_to_input_excerpt
                 .then(|| fallback_title(&input, policy.max_chars))
                 .flatten()
-                .map(|title| SessionTitleCommit::FallbackSet { title }),
+                .map(|title| SessionTitleChange::FallbackSet { title }),
         };
         if let Some(commit) = commit {
             self.append(
@@ -5088,7 +5356,7 @@ impl Engine {
                 Some(run),
                 Event::SessionTitleCommitted {
                     input_through_seq,
-                    commit,
+                    change: commit,
                 },
             )
             .await?;
@@ -5102,28 +5370,23 @@ impl Engine {
         if !automatic_title_eligible(&events) {
             return Ok(());
         }
-        let Some((run, input_through_seq, turn)) =
-            events.iter().rev().find_map(|event| match &event.event {
-                Event::ModelTurnCommitted {
-                    input_through_seq,
-                    turn,
-                    ..
-                } => event
-                    .run_id
-                    .map(|run| (run, *input_through_seq, turn.clone())),
-                _ => None,
-            })
-        else {
+        let Some((run, input_through_seq, turn)) = title_regeneration_target(&events) else {
             return Ok(());
         };
-        let internal = self.inner.internal_agents.accept(&projection.policy);
+        let frozen = self.historical_title_policy(&events, run)?;
+        let active_index = active_fallback_index(&events, run);
+        let internal = self.inner.internal_agents.policy(
+            InternalAgentKind::SessionTitle,
+            &frozen,
+            frozen.active_suffix(active_index),
+        );
         self.maybe_generate_session_title(
             session,
             run,
             input_through_seq,
             &turn,
             &CancellationToken::new(),
-            internal.profile(InternalAgentKind::SessionTitle),
+            &internal,
         )
         .await
     }
@@ -5133,13 +5396,15 @@ impl Engine {
         session_id: SessionId,
         run: RunId,
         call: ToolCall,
-        policy: &PolicySnapshot,
+        policy: &FrozenRunPolicy,
     ) -> PreparedToolCall {
+        let fallback_presentation = safe_tool_presentation(&call);
         let session = match self.inner.store.get(session_id) {
             Ok(session) => session,
             Err(error) => {
                 return PreparedToolCall {
                     call,
+                    presentation: fallback_presentation,
                     prepared: Err(ToolFailure {
                         code: ToolCallFailureCode::ExecutionFailed,
                         message: error.to_string(),
@@ -5147,13 +5412,25 @@ impl Engine {
                 };
             }
         };
-        let delegate_enabled = policy.delegation.enabled
-            && policy.delegation.depth_limit.allows_delegation()
-            && !policy.delegation.allowed_profiles.is_empty();
+        let depth = session_depth(&session.meta.origin);
+        let delegate_enabled = policy.agent.delegation.as_ref().is_some_and(|delegation| {
+            depth < delegation.effective_depth_ceiling
+                && delegation.targets.iter().any(|target| {
+                    policy.registry.get(target).is_some_and(|agent| {
+                        agent.document.frontmatter.enabled
+                            && matches!(
+                                agent.document.frontmatter.mode,
+                                cookie_agent_config::AgentMode::Subagent
+                                    | cookie_agent_config::AgentMode::All
+                            )
+                    })
+                })
+        });
+        let enabled_tools = policy.tools();
         if (call.name == "delegate" && !delegate_enabled)
             || (call.name != "delegate"
-                && (!policy.tools.contains(&call.name)
-                    || !PermissionPipeline::tool_visible(policy, &call.name)))
+                && (!enabled_tools.contains(&call.name)
+                    || !PermissionPipeline::tool_visible(&policy.agent, &call.name)))
         {
             return PreparedToolCall {
                 prepared: Err(ToolFailure {
@@ -5161,6 +5438,7 @@ impl Engine {
                     message: format!("tool `{}` is not enabled for this session", call.name),
                 }),
                 call,
+                presentation: fallback_presentation,
             };
         }
         let providers = self
@@ -5184,19 +5462,25 @@ impl Engine {
                     message: format!("tool `{}` is unavailable", call.name),
                 }),
                 call,
+                presentation: fallback_presentation,
             };
         };
+        let presentation = provider.presentation(&call);
         let context = ToolPreparationContext {
             session: session_id,
             run,
-            cwd: resolved_session_cwd(&session.meta.cwd),
-            workspace_root: resolved_session_cwd(&session.meta.cwd),
+            cwd: self.inner.store.cwd().to_owned(),
+            workspace_root: self.inner.store.cwd().to_owned(),
         };
         let prepared = provider
             .prepare(context, call.clone())
             .await
             .map_err(Into::into);
-        PreparedToolCall { call, prepared }
+        PreparedToolCall {
+            call,
+            presentation,
+            prepared,
+        }
     }
 
     async fn run_internal_text_agent(
@@ -5204,7 +5488,7 @@ impl Engine {
         session: SessionId,
         parent_run: Option<RunId>,
         kind: InternalAgentKind,
-        profile: &FrozenInternalAgentProfile,
+        policy: &FrozenInternalAgentPolicy,
         input: String,
         cancellation: &CancellationToken,
     ) -> Result<InternalAgentTextResult, EngineError> {
@@ -5213,29 +5497,28 @@ impl Engine {
             InternalAgentKind::ContextCompaction => "context_compaction",
             InternalAgentKind::SessionTitle => "session_title",
         };
-        let profile = profile.clone();
-        let max_input_bytes = usize::try_from(profile.limits.max_input_tokens)
+        let policy = policy.clone();
+        let max_input_bytes = usize::try_from(policy.limits.max_input_tokens)
             .unwrap_or(usize::MAX)
             .saturating_mul(4);
         let input = truncate_utf8(&input, max_input_bytes);
         let invocation_id = InternalAgentInvocationId::new_v7();
         let internal_run_id = InternalAgentRunId::new_v7();
         let call = SafeInternalAgentCall {
-            name: name.to_owned(),
-            input_summary: format!("bounded {name} input ({} bytes)", input.len()),
+            name: safe_code(name),
+            input_summary: safe_display(&format!("bounded {name} input ({} bytes)", input.len())),
             input_digest: Sha256Digest::of_bytes(input.as_bytes()),
         };
         let mut previous_backend = None;
         let mut last_failure = InternalAgentFailure {
-            code: "profile_unavailable".into(),
-            message: "no configured internal model is available".into(),
+            code: safe_code("agent_unavailable"),
+            message: safe_error("no frozen internal model is available"),
             retryable: false,
             model_error: None,
         };
-        for (index, binding) in profile.models.iter().enumerate() {
+        for (index, binding) in policy.models.iter().enumerate() {
             let backend = InternalAgentBackend::Model {
-                profile: Box::new(profile.snapshot.clone()),
-                model: wire_model(binding),
+                resolved_model: wire_model(binding),
             };
             if index == 0 {
                 self.append(
@@ -5266,12 +5549,17 @@ impl Engine {
                 )
                 .await?;
             }
-            let model = match self.resolve_model(binding) {
+            let model = match policy
+                .model_snapshot
+                .as_ref()
+                .expect("internal model policy retains its executable snapshot")
+                .resolve(binding)
+            {
                 Ok(model) => model,
                 Err(error) => {
                     last_failure = InternalAgentFailure {
-                        code: "model_unavailable".into(),
-                        message: error.to_string(),
+                        code: safe_code("model_unavailable"),
+                        message: safe_error(&error.to_string()),
                         retryable: false,
                         model_error: None,
                     };
@@ -5279,19 +5567,24 @@ impl Engine {
                     continue;
                 }
             };
-            let history = vec![oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(
-                vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
-                    input.clone(),
-                ))],
-            ))];
+            let history = vec![
+                oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
+                    oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(
+                        policy.agent.composed_prompt.clone(),
+                    )),
+                ])),
+                oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(vec![
+                    oven_sdk::InputPart::Text(oven_sdk::TextPart::new(input.clone())),
+                ])),
+            ];
             let mut request = ModelRequest::new(history);
-            request.inference.max_output_tokens = Some(profile.limits.max_output_tokens);
+            request.inference.max_output_tokens = Some(policy.limits.max_output_tokens);
             let request = model.prepare_request(request);
             let abort = AbortBridge::new(cancellation.child_token());
             let call_future = model.model().complete(request, abort.signal());
             let result = tokio::select! {
                 result = tokio::time::timeout(
-                    std::time::Duration::from_millis(profile.limits.timeout_ms),
+                    std::time::Duration::from_millis(policy.limits.timeout_ms),
                     call_future,
                 ) => match result {
                     Ok(result) => result,
@@ -5309,7 +5602,7 @@ impl Engine {
                             invocation_id,
                             internal_run_id,
                             kind,
-                            reason: Some("parent run cancelled".into()),
+                            reason: Some(safe_error("parent run cancelled")),
                         },
                     ).await?;
                     return Err(ModelError::abort("internal agent was cancelled").into());
@@ -5327,13 +5620,13 @@ impl Engine {
                             _ => None,
                         })
                         .collect::<String>();
-                    let max_output_bytes = usize::try_from(profile.limits.max_output_tokens)
+                    let max_output_bytes = usize::try_from(policy.limits.max_output_tokens)
                         .unwrap_or(usize::MAX)
                         .saturating_mul(4);
                     if output.len() > max_output_bytes {
                         last_failure = InternalAgentFailure {
-                            code: "output_too_large".into(),
-                            message: "internal agent output exceeded its hard bound".into(),
+                            code: safe_code("output_too_large"),
+                            message: safe_error("internal agent output exceeded its hard bound"),
                             retryable: false,
                             model_error: None,
                         };
@@ -5348,10 +5641,10 @@ impl Engine {
                             internal_run_id,
                             kind,
                             result: SafeInternalAgentResult {
-                                output_summary: format!(
+                                output_summary: safe_display(&format!(
                                     "validated {name} output ({} bytes)",
                                     output.len()
-                                ),
+                                )),
                                 output_digest: Sha256Digest::of_bytes(output.as_bytes()),
                             },
                         },
@@ -5365,8 +5658,8 @@ impl Engine {
                 }
                 Err(error) => {
                     last_failure = InternalAgentFailure {
-                        code: "model_failure".into(),
-                        message: error.message.clone(),
+                        code: safe_code("model_failure"),
+                        message: safe_error(&error.message),
                         retryable: error.retryable,
                         model_error: Some(model_error_summary(&error)),
                     };
@@ -5374,7 +5667,7 @@ impl Engine {
                 }
             }
         }
-        if profile.models.is_empty() {
+        if policy.models.is_empty() {
             self.append(
                 session,
                 parent_run,
@@ -5383,8 +5676,8 @@ impl Engine {
                     internal_run_id,
                     kind,
                     backend: InternalAgentBackend::Builtin {
-                        name: "unavailable".into(),
-                        revision: UNAVAILABLE_BUILTIN_REVISION.into(),
+                        name: safe_code("unavailable"),
+                        revision: safe_display(UNAVAILABLE_BUILTIN_REVISION),
                     },
                     call,
                 },
@@ -5405,6 +5698,19 @@ impl Engine {
         Err(ModelError::invalid_response("internal agent failed safely").into())
     }
 
+    fn active_internal_policy(
+        &self,
+        active: &ActiveRun,
+        kind: InternalAgentKind,
+    ) -> FrozenInternalAgentPolicy {
+        let fallback_index = active.fallback_index.load(Ordering::Acquire) as usize;
+        self.inner.internal_agents.policy(
+            kind,
+            &active.policy,
+            active.policy.active_suffix(fallback_index),
+        )
+    }
+
     async fn request_model_approval(
         &self,
         active: &ActiveRun,
@@ -5414,6 +5720,7 @@ impl Engine {
         executor: PreparedExecutorCell,
         message: Option<String>,
     ) -> Result<ApprovalOutcome, EngineError> {
+        let approval_policy = self.active_internal_policy(active, InternalAgentKind::Approval);
         let request = approval_request_for_operation(
             ApprovalTrigger::ModelToolApproval,
             operation.clone(),
@@ -5425,20 +5732,14 @@ impl Engine {
                     action: resource.capability,
                     normalized_resource: label.clone(),
                     candidates: Vec::new(),
-                    effect: cookie_agent_protocol::Effect::Ask,
+                    effect: cookie_agent_protocol::PermissionEffect::Ask,
                     precedence_reason: message
                         .clone()
                         .unwrap_or_else(|| "model requested tool approval".into()),
                 })
                 .collect(),
             false,
-            approval_expiry(
-                active
-                    .internal_agents
-                    .profile(InternalAgentKind::Approval)
-                    .limits
-                    .timeout_ms,
-            ),
+            approval_expiry(approval_policy.limits.timeout_ms),
         );
         self.await_user_approval(active, run, request, executor, false)
             .await
@@ -5455,53 +5756,6 @@ impl Engine {
         let approval_id = request.approval_id();
         let session = self.inner.store.get(active.session)?;
         let root = root_id(&session.meta.origin, active.session);
-        if allow_prior_grant
-            && let Some(grant) = self.inner.approvals.matching(root, request.operation())
-        {
-            let decision = ApprovalInternalDecision {
-                decision: ApprovalInternalDecisionKind::Allow,
-                source: ApprovalDecisionSource::TreeGrant,
-                reason_code: ApprovalReasonCode::TreeGrantMatched,
-                evaluations: request.evaluations().to_vec(),
-            };
-            self.append(
-                active.session,
-                Some(run),
-                Event::ApprovalRequested {
-                    request: request.clone(),
-                },
-            )
-            .await?;
-            self.append(
-                active.session,
-                Some(run),
-                Event::ApprovalEvaluated {
-                    approval_id,
-                    decision,
-                },
-            )
-            .await?;
-            self.append(
-                active.session,
-                Some(run),
-                Event::ApprovalFinalized {
-                    approval_id,
-                    decision: ApprovalFinalDecision {
-                        outcome: ApprovalFinalOutcome::Approved,
-                        source: ApprovalDecisionSource::TreeGrant,
-                        reason_code: ApprovalReasonCode::TreeGrantMatched,
-                        feedback: None,
-                        tree_grant_id: Some(grant.grant_id()),
-                    },
-                },
-            )
-            .await?;
-            return Ok(ApprovalOutcome {
-                approved: true,
-                feedback: None,
-            });
-        }
-
         self.append(
             active.session,
             Some(run),
@@ -5511,22 +5765,12 @@ impl Engine {
         )
         .await?;
 
-        let repetitions = self
-            .inner
-            .store
-            .get(active.session)?
-            .log
-            .events()
-            .iter()
-            .filter(|event| {
-                matches!(
-                    &event.event,
-                    Event::ApprovalRequested { request: prior }
-                        if prior.operation_fingerprint() == request.operation_fingerprint()
-                )
-            })
-            .count() as u32;
-        if repetitions >= 3 {
+        let repetitions = doom_loop_repetitions(
+            &self.inner.store.get(active.session)?.log.events(),
+            run,
+            request.operation_fingerprint(),
+        );
+        if repetitions >= 4 {
             self.append(
                 active.session,
                 Some(run),
@@ -5558,16 +5802,54 @@ impl Engine {
             });
         }
 
-        if request
-            .evaluations()
+        if allow_prior_grant
+            && let Some(grant) = self.inner.approvals.matching(root, request.operation())
+        {
+            let decision = ApprovalInternalDecision {
+                decision: ApprovalInternalDecisionKind::Allow,
+                source: ApprovalDecisionSource::TreeGrant,
+                reason_code: ApprovalReasonCode::TreeGrantMatched,
+                evaluations: approval_evaluations(&request),
+            };
+            self.append(
+                active.session,
+                Some(run),
+                Event::ApprovalEvaluated {
+                    approval_id,
+                    decision,
+                },
+            )
+            .await?;
+            self.append(
+                active.session,
+                Some(run),
+                Event::ApprovalFinalized {
+                    approval_id,
+                    decision: ApprovalFinalDecision {
+                        outcome: ApprovalFinalOutcome::Approved,
+                        source: ApprovalDecisionSource::TreeGrant,
+                        reason_code: ApprovalReasonCode::TreeGrantMatched,
+                        feedback: None,
+                        tree_grant_id: Some(grant.grant_id),
+                    },
+                },
+            )
+            .await?;
+            return Ok(ApprovalOutcome {
+                approved: true,
+                feedback: None,
+            });
+        }
+
+        if approval_evaluations(&request)
             .iter()
-            .any(|evaluation| evaluation.effect == cookie_agent_protocol::Effect::Deny)
+            .any(|evaluation| evaluation.effect == cookie_agent_protocol::PermissionEffect::Deny)
         {
             let decision = ApprovalInternalDecision {
                 decision: ApprovalInternalDecisionKind::Deny,
                 source: ApprovalDecisionSource::Policy,
                 reason_code: ApprovalReasonCode::PolicyDenied,
-                evaluations: request.evaluations().to_vec(),
+                evaluations: approval_evaluations(&request),
             };
             self.append(
                 active.session,
@@ -5599,10 +5881,9 @@ impl Engine {
             });
         }
 
-        let safe_resources = request
-            .evaluations()
+        let safe_resources = approval_evaluations(&request)
             .iter()
-            .map(|evaluation| evaluation.trace.normalized_resource.as_str())
+            .map(|evaluation| evaluation.trace.normalized_resource.clone())
             .collect::<Vec<_>>();
         let safe_operations = request
             .operation()
@@ -5612,7 +5893,7 @@ impl Engine {
             .collect::<Vec<_>>();
         let prompt = serde_json::to_string(&serde_json::json!({
             "instruction": "Return strict JSON only: {\"decision\":\"allow\"|\"deny\"|\"ask\"}.",
-            "cwd": session.meta.cwd,
+            "cwd_identity": session.meta.cwd_identity,
             "operations": safe_operations,
             "resource_labels": safe_resources,
         }))
@@ -5637,12 +5918,13 @@ impl Engine {
             }
             hook.release.notified().await;
         }
+        let approval_policy = self.active_internal_policy(active, InternalAgentKind::Approval);
         let internal_kind = match self
             .run_internal_text_agent(
                 active.session,
                 Some(run),
                 InternalAgentKind::Approval,
-                active.internal_agents.profile(InternalAgentKind::Approval),
+                &approval_policy,
                 prompt,
                 &active.cancellation,
             )
@@ -5669,7 +5951,7 @@ impl Engine {
             ApprovalEvaluationTransition::Resolved(outcome) => return Ok(outcome),
             ApprovalEvaluationTransition::Escalated(receiver) => receiver,
         };
-        let expiry_wait = approval_expiry_wait(request.constraints().expires_at);
+        let expiry_wait = approval_expiry_wait(approval_constraints(&request).expires_at);
         tokio::select! {
             decision = &mut receiver => decision.map_err(|_| EngineError::ActorStopped),
             _ = active.cancellation.cancelled() => {
@@ -5719,7 +6001,7 @@ impl Engine {
     ) -> Result<ToolResult, ToolFailure> {
         let engine = self.clone();
         {
-            let PreparedToolCall { call, prepared } = prepared;
+            let PreparedToolCall { call, prepared, .. } = prepared;
             let prepared = prepared?;
             let operation = prepared.operation.clone();
             let policy_labels = prepared.policy_labels.clone();
@@ -5729,24 +6011,26 @@ impl Engine {
                 None
             };
             let permission = engine.inner.permissions.decide_operation(
-                &active.policy,
+                &active.policy.agent,
                 &operation,
                 &policy_labels,
             );
-            if permission.effect != cookie_agent_protocol::Effect::Allow {
-                if permission.effect == cookie_agent_protocol::Effect::Ask {
+            if permission.effect != cookie_agent_protocol::PermissionEffect::Allow {
+                if permission.effect == cookie_agent_protocol::PermissionEffect::Ask {
                     let allow_tree_grant = operation.resources().iter().all(|resource| {
                         resource.binding_lifetime
                             == cookie_agent_protocol::PreparedBindingLifetime::RestartStable
                             && !matches!(
                                 resource.capability,
-                                cookie_agent_protocol::ActionKind::Read
-                                    | cookie_agent_protocol::ActionKind::Write
-                                    | cookie_agent_protocol::ActionKind::Grep
-                                    | cookie_agent_protocol::ActionKind::Glob
-                                    | cookie_agent_protocol::ActionKind::ExternalDirectory
+                                cookie_agent_protocol::PermissionAction::Read
+                                    | cookie_agent_protocol::PermissionAction::Write
+                                    | cookie_agent_protocol::PermissionAction::Grep
+                                    | cookie_agent_protocol::PermissionAction::Glob
+                                    | cookie_agent_protocol::PermissionAction::ExternalDirectory
                             )
                     });
+                    let approval_policy =
+                        engine.active_internal_policy(&active, InternalAgentKind::Approval);
                     let request = ApprovalRequest::new(
                         ApprovalId::new_v7(),
                         1,
@@ -5757,13 +6041,7 @@ impl Engine {
                             allow_once: true,
                             allow_tree_grant,
                             cancellable: true,
-                            expires_at: approval_expiry(
-                                active
-                                    .internal_agents
-                                    .profile(InternalAgentKind::Approval)
-                                    .limits
-                                    .timeout_ms,
-                            ),
+                            expires_at: approval_expiry(approval_policy.limits.timeout_ms),
                         },
                     )
                     .map_err(|error| ToolFailure {
@@ -5901,7 +6179,7 @@ impl Engine {
                         };
                     }
                     Some(progress) = progress_rx.recv() => {
-                        let _ = engine.append(active.session, Some(run), Event::ToolCallProgress { tool_call_id: progress.tool_call_id, message: progress.message }).await;
+                        let _ = engine.append(active.session, Some(run), Event::ToolCallProgress { tool_call_id: progress.tool_call_id, message: safe_display(&progress.message) }).await;
                     }
                     _ = active.cancellation.cancelled() => {
                         active
@@ -6002,7 +6280,7 @@ impl Engine {
                 feedback: Some("cancelled".into()),
             }));
         }
-        if approval_deadline_exhausted(request.constraints().expires_at) {
+        if approval_deadline_exhausted(approval_constraints(&request).expires_at) {
             self.approval_terminal_direct(session, run, approval_id, ApprovalTerminal::Expired)?;
             return Ok(ApprovalEvaluationTransition::Resolved(ApprovalOutcome {
                 approved: false,
@@ -6027,7 +6305,7 @@ impl Engine {
                     decision,
                     source,
                     reason_code,
-                    evaluations: request.evaluations().to_vec(),
+                    evaluations: approval_evaluations(&request),
                 },
             },
         )?;
@@ -6088,7 +6366,7 @@ impl Engine {
         let projection = self.inner.store.get(params.session_id)?;
         let events = projection.log.events();
         if let Some((recorded_approval_id, recorded_decision, recorded_feedback)) =
-            events.iter().find_map(|event| match &event.event {
+            events.iter().find_map(|event| match &event.payload {
                 Event::ApprovalUserDecisionRecorded {
                     approval_id,
                     client_response_id,
@@ -6147,7 +6425,7 @@ impl Engine {
         }
         let run_id =
             approval_run_id(&events, params.approval_id).ok_or(EngineError::ApprovalConflict)?;
-        if approval_deadline_exhausted(record.request.constraints().expires_at) {
+        if approval_deadline_exhausted(approval_constraints(&record.request).expires_at) {
             self.approval_terminal_direct(
                 params.session_id,
                 run_id,
@@ -6187,10 +6465,12 @@ impl Engine {
             ));
         }
         let allowed = match params.decision {
-            ApprovalUserDecision::ApproveOnce => record.request.constraints().allow_once,
-            ApprovalUserDecision::ApproveTree => record.request.constraints().allow_tree_grant,
+            ApprovalUserDecision::ApproveOnce => approval_constraints(&record.request).allow_once,
+            ApprovalUserDecision::ApproveTree => {
+                approval_constraints(&record.request).allow_tree_grant
+            }
             ApprovalUserDecision::Reject => true,
-            ApprovalUserDecision::Cancel => record.request.constraints().cancellable,
+            ApprovalUserDecision::Cancel => approval_constraints(&record.request).cancellable,
         };
         if !allowed {
             return Err(approval_response_failure(
@@ -6211,18 +6491,19 @@ impl Engine {
         )?;
         let root = root_id(&projection.meta.origin, params.session_id);
         let grant = if params.decision == ApprovalUserDecision::ApproveTree {
-            Some(
-                TreeApprovalGrant::new(
-                    cookie_agent_protocol::TreeApprovalGrantId::new_v7(),
-                    root,
-                    params.approval_id,
-                    record.request.operation_fingerprint().clone(),
-                    record.request.operation().capabilities().to_vec(),
-                    record.request.operation().resources().to_vec(),
-                    jiff::Timestamp::now(),
-                )
-                .map_err(|_| EngineError::ApprovalConflict)?,
-            )
+            let grant = TreeApprovalGrant {
+                grant_id: cookie_agent_protocol::TreeApprovalGrantId::new_v7(),
+                root_session_id: root,
+                approval_id: params.approval_id,
+                operation_fingerprint: record.request.operation_fingerprint().clone(),
+                capabilities: record.request.operation().capabilities().to_vec(),
+                resources: record.request.operation().resources().to_vec(),
+                created_at: jiff::Timestamp::now(),
+            };
+            grant
+                .validate()
+                .map_err(|_| EngineError::ApprovalConflict)?;
+            Some(grant)
         } else {
             None
         };
@@ -6268,7 +6549,7 @@ impl Engine {
                     source: ApprovalDecisionSource::User,
                     reason_code,
                     feedback: params.feedback.clone(),
-                    tree_grant_id: grant.as_ref().map(|grant| grant.grant_id()),
+                    tree_grant_id: grant.as_ref().map(|grant| grant.grant_id),
                 },
             },
         )?;
@@ -6284,7 +6565,7 @@ impl Engine {
                 feedback: params
                     .feedback
                     .as_ref()
-                    .map(|feedback| feedback.message.clone()),
+                    .map(|feedback| feedback.message.to_string()),
             });
         }
         let events = self.inner.store.get(params.session_id)?.log.events();
@@ -6306,7 +6587,7 @@ impl Engine {
         let events = projection.log.events();
         if events.iter().any(|event| {
             matches!(
-                &event.event,
+                &event.payload,
                 Event::ApprovalUserDecisionRecorded { client_response_id, .. }
                     if client_response_id == &params.client_response_id
             )
@@ -6430,7 +6711,7 @@ impl Engine {
             ApprovalTerminal::Expired => (
                 ApprovalReasonCode::ApprovalExpired,
                 ApprovalFinalOutcome::Expired,
-                ApprovalReasonCode::Unattended,
+                ApprovalReasonCode::ApprovalExpired,
             ),
         };
         self.append_direct(
@@ -6484,9 +6765,11 @@ impl Engine {
             .store
             .all()
             .into_iter()
-            .filter(|session| root_id(&session.meta.origin, session.meta.id) == root_session_id)
+            .filter(|session| {
+                root_id(&session.meta.origin, session.meta.session_id) == root_session_id
+            })
             .flat_map(|session| {
-                approval_records(session.meta.id, &session.log.events()).into_values()
+                approval_records(session.meta.session_id, &session.log.events()).into_values()
             })
             .filter(|record| status.is_none_or(|status| record.status == status))
             .collect();
@@ -6499,11 +6782,23 @@ impl Engine {
     fn tool_definitions(
         &self,
         session: SessionId,
-        policy: &PolicySnapshot,
+        policy: &FrozenRunPolicy,
     ) -> Result<Vec<ToolDefinition>, EngineError> {
-        let delegate_enabled = policy.delegation.enabled
-            && policy.delegation.depth_limit.allows_delegation()
-            && !policy.delegation.allowed_profiles.is_empty();
+        let depth = session_depth(&self.inner.store.get(session)?.meta.origin);
+        let delegate_enabled = policy.agent.delegation.as_ref().is_some_and(|delegation| {
+            depth < delegation.effective_depth_ceiling
+                && delegation.targets.iter().any(|target| {
+                    policy.registry.get(target).is_some_and(|agent| {
+                        agent.document.frontmatter.enabled
+                            && matches!(
+                                agent.document.frontmatter.mode,
+                                cookie_agent_config::AgentMode::Subagent
+                                    | cookie_agent_config::AgentMode::All
+                            )
+                    })
+                })
+        });
+        let enabled_tools = policy.tools();
         let mut names = HashSet::new();
         let mut output = Vec::new();
         let providers = self
@@ -6518,8 +6813,8 @@ impl Engine {
                 .map_err(|error| EngineError::MissingTool(error.to_string()))?
             {
                 if ((tool.name != "delegate"
-                    && policy.tools.contains(&tool.name)
-                    && PermissionPipeline::tool_visible(policy, &tool.name))
+                    && enabled_tools.contains(&tool.name)
+                    && PermissionPipeline::tool_visible(&policy.agent, &tool.name))
                     || (tool.name == "delegate" && delegate_enabled))
                     && names.insert(tool.name.clone())
                 {
@@ -6542,7 +6837,7 @@ impl Engine {
         for session in self.inner.store.all() {
             let mut internal = HashMap::new();
             for event in session.log.events() {
-                match event.event {
+                match event.payload {
                     Event::InternalAgentStarted {
                         invocation_id,
                         internal_run_id,
@@ -6578,13 +6873,13 @@ impl Engine {
             }
             for ((invocation_id, internal_run_id), (kind, parent_run)) in internal {
                 self.append_blocking(
-                    session.meta.id,
+                    session.meta.session_id,
                     parent_run,
                     Event::InternalAgentInterrupted {
                         invocation_id,
                         internal_run_id,
                         kind,
-                        reason: Some("daemon restart".into()),
+                        reason: Some(safe_error("daemon restart")),
                     },
                 )?;
             }
@@ -6594,10 +6889,10 @@ impl Engine {
                 .filter(|run| run.status == SessionStatus::Running)
             {
                 self.append_blocking(
-                    session.meta.id,
+                    session.meta.session_id,
                     Some(run.id),
                     Event::RunInterrupted {
-                        reason: Some("daemon restart".into()),
+                        reason: Some(safe_error("daemon restart")),
                     },
                 )?;
             }
@@ -6608,17 +6903,28 @@ impl Engine {
                     }
                     let failure = restart_tool_failure();
                     self.append_blocking(
-                        session.meta.id,
+                        session.meta.session_id,
                         Some(run.id),
-                        Event::ToolCallFailed {
-                            tool_call_id: *tool_call_id,
-                            code: failure.code,
-                            message: failure.message,
+                        Event::ToolCallTerminated {
+                            termination: ToolCallTermination {
+                                tool_call_id: *tool_call_id,
+                                owner: self.tool_call_owner(
+                                    session.meta.session_id,
+                                    run.id,
+                                    *tool_call_id,
+                                )?,
+                                outcome: ToolTerminationOutcome::Interrupted,
+                                result: None,
+                                error: Some(SafeToolError {
+                                    code: failure.code.safe_code(),
+                                    message: safe_error(&failure.message),
+                                }),
+                            },
                         },
                     )?;
                 }
             }
-            for record in approval_records(session.meta.id, &session.log.events())
+            for record in approval_records(session.meta.session_id, &session.log.events())
                 .into_values()
                 .filter(|record| {
                     matches!(
@@ -6631,7 +6937,7 @@ impl Engine {
                     approval_run_id(&session.log.events(), record.request.approval_id())
                         .ok_or(EngineError::ApprovalConflict)?;
                 self.append_blocking(
-                    session.meta.id,
+                    session.meta.session_id,
                     Some(approval_run),
                     Event::ApprovalCancelled {
                         approval_id: record.request.approval_id(),
@@ -6639,7 +6945,7 @@ impl Engine {
                     },
                 )?;
                 self.append_blocking(
-                    session.meta.id,
+                    session.meta.session_id,
                     Some(approval_run),
                     Event::ApprovalFinalized {
                         approval_id: record.request.approval_id(),
@@ -6679,7 +6985,7 @@ impl Engine {
                             entry.reservation.child_session_id,
                             Some(run.id),
                             Event::RunCancelled {
-                                reason: Some("parent delegate run was cancelled".into()),
+                                reason: Some(safe_error("parent delegate run was cancelled")),
                             },
                         )?;
                     }
@@ -6707,43 +7013,19 @@ impl Engine {
             {
                 // A valid delegated directory without a durable reservation is
                 // foreign/orphaned. Preserve it for inspection but never attach it.
-                if session.runs.is_empty() {
-                    let orphan_run = RunId::new_v7();
-                    self.append_blocking(
-                        session.meta.id,
-                        Some(orphan_run),
-                        Event::RunStarted {
-                            client_run_id: format!("orphan:{invocation_id}"),
-                            input: "orphaned delegated session".into(),
-                            profile: wire_profile(&session.policy),
-                            current_profile: ProfileIdentity {
-                                name: session.policy.profile.name.clone(),
-                                agent_type: agent_type(session.policy.profile.r#type),
-                            },
-                        },
-                    )?;
-                    self.append_blocking(
-                        session.meta.id,
-                        Some(orphan_run),
-                        Event::RunInterrupted {
-                            reason: Some(
-                                "orphaned delegated session without journal reservation".into(),
-                            ),
-                        },
-                    )?;
-                } else {
+                if !session.runs.is_empty() {
                     for run in session
                         .runs
                         .values()
                         .filter(|run| run.status != SessionStatus::Interrupted)
                     {
                         self.append_blocking(
-                            session.meta.id,
+                            session.meta.session_id,
                             Some(run.id),
                             Event::RunInterrupted {
-                                reason: Some(
-                                    "orphaned delegated session without journal reservation".into(),
-                                ),
+                                reason: Some(safe_error(
+                                    "orphaned delegated session without journal reservation",
+                                )),
                             },
                         )?;
                     }
@@ -6804,16 +7086,21 @@ impl Engine {
                     }
                     let invocation = invocation_id(session_id, run.id, *call);
                     let Some(entry) = self.journal_get(invocation).await? else {
-                        self.append_direct(
+                        self.terminate_tool_direct(
                             session_id,
-                            Some(run.id),
-                            Event::ToolCallCompleted {
-                                tool_call_id: *call,
-                                result: delegate_failure_result(
-                                    None,
-                                    "delegate interrupted by daemon restart: no durable reservation",
+                            run.id,
+                            *call,
+                            ToolTerminationOutcome::Interrupted,
+                            Some(delegate_failure_result(
+                                None,
+                                "delegate interrupted by daemon restart: no durable reservation",
+                            )),
+                            Some(SafeToolError {
+                                code: safe_code("restart_interrupted"),
+                                message: safe_error(
+                                    "delegate reservation is missing after restart",
                                 ),
-                            },
+                            }),
                         )?;
                         continue;
                     };
@@ -6823,29 +7110,35 @@ impl Engine {
                             Some(child_id),
                             "parent delegate run was cancelled",
                         );
-                        self.append_direct(
+                        self.terminate_tool_direct(
                             session_id,
-                            Some(run.id),
-                            Event::ToolCallCompleted {
-                                tool_call_id: *call,
-                                result,
-                            },
+                            run.id,
+                            *call,
+                            ToolTerminationOutcome::Cancelled,
+                            Some(result),
+                            Some(SafeToolError {
+                                code: safe_code("parent_cancelled"),
+                                message: safe_error("parent delegate run was cancelled"),
+                            }),
                         )?;
                         continue;
                     }
                     let child = match self.inner.store.get(child_id) {
                         Ok(child) => child,
                         Err(_) => {
-                            self.append_direct(
+                            self.terminate_tool_direct(
                                 session_id,
-                                Some(run.id),
-                                Event::ToolCallCompleted {
-                                    tool_call_id: *call,
-                                    result: delegate_failure_result(
-                                        Some(child_id),
-                                        "delegate child session is missing",
-                                    ),
-                                },
+                                run.id,
+                                *call,
+                                ToolTerminationOutcome::Failed,
+                                Some(delegate_failure_result(
+                                    Some(child_id),
+                                    "delegate child session is missing",
+                                )),
+                                Some(SafeToolError {
+                                    code: safe_code("child_missing"),
+                                    message: safe_error("delegate child session is missing"),
+                                }),
                             )?;
                             continue;
                         }
@@ -6856,23 +7149,26 @@ impl Engine {
                             entry.child_run_id,
                             &self.inner.artifacts,
                         )?;
-                        self.append_direct(
+                        self.terminate_tool_direct(
                             session_id,
-                            Some(run.id),
-                            Event::ToolCallCompleted {
-                                tool_call_id: *call,
-                                result,
-                            },
+                            run.id,
+                            *call,
+                            ToolTerminationOutcome::Completed,
+                            Some(result),
+                            None,
                         )?;
                     } else if child.status == SessionStatus::Cancelled {
                         let result = cancelled_delegate_result(child_id, None);
-                        self.append_direct(
+                        self.terminate_tool_direct(
                             session_id,
-                            Some(run.id),
-                            Event::ToolCallCompleted {
-                                tool_call_id: *call,
-                                result,
-                            },
+                            run.id,
+                            *call,
+                            ToolTerminationOutcome::Cancelled,
+                            Some(result),
+                            Some(SafeToolError {
+                                code: safe_code("child_cancelled"),
+                                message: safe_error("delegate child was cancelled"),
+                            }),
                         )?;
                     } else if entry.child_run_id.is_none() {
                         self.inner
@@ -6931,28 +7227,33 @@ impl Engine {
                                 .remove(&(session_id, parent_run_id, tool_call_id));
                         });
                     } else {
-                        self.append_direct(
+                        self.terminate_tool_direct(
                             session_id,
-                            Some(run.id),
-                            Event::ToolCallCompleted {
-                                tool_call_id: *call,
-                                result: delegate_failure_result(
-                                    Some(child_id),
-                                    "delegate child interrupted by daemon restart",
-                                ),
-                            },
+                            run.id,
+                            *call,
+                            ToolTerminationOutcome::Interrupted,
+                            Some(delegate_failure_result(
+                                Some(child_id),
+                                "delegate child interrupted by daemon restart",
+                            )),
+                            Some(SafeToolError {
+                                code: safe_code("child_interrupted"),
+                                message: safe_error("delegate child interrupted by daemon restart"),
+                            }),
                         )?;
                     }
                 } else {
                     let failure = restart_tool_failure();
-                    self.append_direct(
+                    self.terminate_tool_direct(
                         session_id,
-                        Some(run.id),
-                        Event::ToolCallFailed {
-                            tool_call_id: *call,
-                            code: failure.code,
-                            message: failure.message,
-                        },
+                        run.id,
+                        *call,
+                        ToolTerminationOutcome::Interrupted,
+                        None,
+                        Some(SafeToolError {
+                            code: failure.code.safe_code(),
+                            message: safe_error(&failure.message),
+                        }),
                     )?;
                 }
             }
@@ -6960,11 +7261,91 @@ impl Engine {
         Ok(())
     }
 
+    fn tool_call_owner(
+        &self,
+        session_id: SessionId,
+        run_id: RunId,
+        tool_call_id: ToolCallId,
+    ) -> Result<cookie_agent_protocol::AssistantToolCallRef, EngineError> {
+        self.inner
+            .store
+            .get(session_id)?
+            .log
+            .events()
+            .into_iter()
+            .find_map(|event| match event.payload {
+                Event::ToolCallStarted { start }
+                    if event.run_id == Some(run_id) && start.tool_call_id == tool_call_id =>
+                {
+                    Some(start.owner)
+                }
+                _ => None,
+            })
+            .ok_or_else(|| EngineError::MissingTool("tool ownership is missing".into()))
+    }
+
+    fn terminate_tool_direct(
+        &self,
+        session_id: SessionId,
+        run_id: RunId,
+        tool_call_id: ToolCallId,
+        outcome: ToolTerminationOutcome,
+        result: Option<ToolResult>,
+        error: Option<SafeToolError>,
+    ) -> Result<(), EngineError> {
+        self.append_direct(
+            session_id,
+            Some(run_id),
+            Event::ToolCallTerminated {
+                termination: ToolCallTermination {
+                    tool_call_id,
+                    owner: self.tool_call_owner(session_id, run_id, tool_call_id)?,
+                    outcome,
+                    result,
+                    error,
+                },
+            },
+        )
+    }
+
+    fn next_model_turn_seq(&self, session_id: SessionId) -> Result<u64, EngineError> {
+        Ok(self
+            .inner
+            .store
+            .get(session_id)?
+            .log
+            .events()
+            .iter()
+            .filter(|event| matches!(event.payload, Event::ModelTurnCommitted { .. }))
+            .count() as u64
+            + 1)
+    }
+
+    fn run_agent_prompt(
+        &self,
+        session_id: SessionId,
+        run_id: RunId,
+    ) -> Result<String, EngineError> {
+        self.inner
+            .store
+            .get(session_id)?
+            .log
+            .events()
+            .into_iter()
+            .find_map(|event| match event.payload {
+                Event::RunStarted { agent, .. } if event.run_id == Some(run_id) => {
+                    Some(agent.composed_prompt)
+                }
+                _ => None,
+            })
+            .ok_or(EngineError::MissingRun(run_id))
+    }
+
     fn rebuild_approvals(&self) {
         for session in self.inner.store.all() {
             for envelope in session.log.events() {
-                if let Event::TreeApprovalGrantCommitted { grant } = envelope.event
-                    && grant.resources().iter().all(|resource| {
+                if let Event::TreeApprovalGrantCommitted { grant } = envelope.payload
+                    && grant.resources.iter().all(|resource| {
                         resource.binding_lifetime
                             == cookie_agent_protocol::PreparedBindingLifetime::RestartStable
                     })
@@ -6999,113 +7380,119 @@ fn restart_tool_failure() -> ToolFailure {
 fn session_meta(
     id: SessionId,
     origin: SessionOrigin,
-    cwd: &Path,
-    policy: &PolicySnapshot,
+    cwd_identity: cookie_agent_protocol::CwdIdentity,
+    creation_selection: RunSelection,
 ) -> SessionMeta {
-    let profile = wire_profile(policy);
     SessionMeta {
-        id,
+        meta_schema_version: cookie_agent_protocol::SessionMetaSchemaVersion::current(),
+        session_id: id,
         origin,
-        cwd: cwd.to_string_lossy().into_owned(),
-        profile,
+        cwd_identity,
+        creation_selection,
         title: None,
+        title_updated_seq: 0,
+        last_event_seq: 1,
+        status: SessionStatus::Idle,
     }
 }
 
-fn freeze_internal_profile(
-    name: &str,
-    config: &InternalModelAgentConfig,
-    model_set: &cookie_agent_models::ModelSet,
-) -> Result<FrozenInternalAgentProfile, EngineError> {
-    let models = config
-        .models
-        .iter()
-        .map(|alias| {
-            model_set
-                .freeze(alias)
-                .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(FrozenInternalAgentProfile {
-        snapshot: cookie_agent_protocol::ProfileSnapshot {
-            name: name.to_owned(),
-            agent_type: AgentType::Internal,
-            models: models.iter().map(wire_model).collect(),
+fn freeze_delegated_child_policy(
+    child_agent: &cookie_agent_config::ResolvedAgent,
+    parent_policy: &FrozenRunPolicy,
+    child_selection: &cookie_agent_protocol::ModelSelection,
+    inherited_suffix: &[cookie_agent_models::FrozenModelBinding],
+    inherited_depth_ceiling: u32,
+    result_limits: policy::ResultLimits,
+) -> Result<FrozenRunPolicy, EngineError> {
+    freeze_agent_policy(
+        child_agent,
+        Arc::clone(&parent_policy.registry),
+        Arc::clone(&parent_policy.model_snapshot),
+        child_selection,
+        Some(inherited_suffix),
+        Some(inherited_depth_ceiling),
+        result_limits,
+    )
+}
+
+fn unavailable_internal_policy(
+    timeout_ms: u64,
+    max_input_tokens: u64,
+    max_output_tokens: u64,
+) -> FrozenInternalAgentPolicy {
+    FrozenInternalAgentPolicy {
+        agent: cookie_agent_protocol::AgentSnapshot {
+            agent: AgentId::new("internal").expect("static agent id"),
+            schema: cookie_agent_protocol::AgentSchemaVersion::current(),
+            mode: AgentMode::All,
+            description: "Internal engine work".into(),
+            document_source: cookie_agent_protocol::AgentDocumentSource::BuiltIn,
+            document_fingerprint: Sha256Digest::of_bytes(b"internal"),
+            composed_prompt: "Perform the requested internal engine task safely.\n".into(),
+            prompt_fingerprint: Sha256Digest::of_bytes(
+                b"Perform the requested internal engine task safely.\n",
+            ),
             tools: Vec::new(),
-            delegation: cookie_agent_protocol::DelegationSnapshot {
-                enabled: false,
-                allowed_profiles: Vec::new(),
-                depth_limit: cookie_agent_protocol::DepthLimit::Finite(0),
-                result_limit_bytes: 0,
-            },
-            permission_rules: Vec::new(),
+            permissions: Vec::new(),
+            delegation: None,
+            fallback_chain: Vec::new(),
+            selected_suffix_start: 0,
         },
-        models,
-        limits: config.clone(),
-    })
+        models: Vec::new(),
+        model_snapshot: None,
+        limits: InternalAgentLimits {
+            max_input_tokens,
+            max_output_tokens,
+            timeout_ms,
+        },
+    }
 }
 
-fn inherit_internal_profile(
-    configured: &FrozenInternalAgentProfile,
-    owner: &PolicySnapshot,
-) -> FrozenInternalAgentProfile {
-    if !configured.models.is_empty() {
-        return configured.clone();
-    }
-    FrozenInternalAgentProfile {
-        snapshot: wire_profile(owner),
-        models: owner.models.clone(),
+fn inherit_internal_policy(
+    configured: &FrozenInternalAgentPolicy,
+    owner: &FrozenRunPolicy,
+    active_suffix: &[cookie_agent_models::FrozenModelBinding],
+) -> FrozenInternalAgentPolicy {
+    FrozenInternalAgentPolicy {
+        agent: owner.agent.clone(),
+        models: if configured.models.is_empty() {
+            active_suffix.to_vec()
+        } else {
+            configured.models.clone()
+        },
+        model_snapshot: Some(Arc::clone(&owner.model_snapshot)),
         limits: configured.limits.clone(),
     }
 }
 
-fn wire_profile(policy: &PolicySnapshot) -> cookie_agent_protocol::ProfileSnapshot {
-    cookie_agent_protocol::ProfileSnapshot {
-        name: policy.profile.name.clone(),
-        agent_type: agent_type(policy.profile.r#type),
-        models: policy.models.iter().map(wire_model).collect(),
-        tools: policy.tools.iter().cloned().collect(),
-        delegation: cookie_agent_protocol::DelegationSnapshot {
-            enabled: policy.delegation.enabled,
-            allowed_profiles: policy.delegation.allowed_profiles.iter().cloned().collect(),
-            depth_limit: depth(policy.delegation.depth_limit),
-            result_limit_bytes: policy.result_limits.delegate_result_bytes as u64,
+fn wire_agent_descriptor(value: cookie_agent_config::AgentDescriptor) -> AgentDescriptor {
+    AgentDescriptor {
+        id: value.id,
+        description: value.description,
+        mode: match value.mode {
+            cookie_agent_config::AgentMode::Primary => AgentMode::Primary,
+            cookie_agent_config::AgentMode::Subagent => AgentMode::Subagent,
+            cookie_agent_config::AgentMode::All => AgentMode::All,
         },
-        permission_rules: policy
-            .permissions
-            .rules
-            .iter()
-            .filter_map(|rule| {
-                PermissionPipeline::action_for_tool(&rule.action)
-                    .ok()
-                    .map(|action| cookie_agent_protocol::PermissionRule {
-                        id: rule.id.clone(),
-                        action,
-                        resource: rule.resource.clone(),
-                        effect: match rule.effect.as_str() {
-                            "allow" => cookie_agent_protocol::Effect::Allow,
-                            "deny" => cookie_agent_protocol::Effect::Deny,
-                            _ => cookie_agent_protocol::Effect::Ask,
-                        },
-                    })
+        enabled: value.enabled,
+        runnable_as_root: value.runnable_as_root,
+        resolved_fallback: value.resolved_fallback,
+        tools: value
+            .tools
+            .into_iter()
+            .map(|tool| match tool {
+                cookie_agent_config::ToolName::Read => cookie_agent_protocol::ToolName::Read,
+                cookie_agent_config::ToolName::Write => cookie_agent_protocol::ToolName::Write,
+                cookie_agent_config::ToolName::Edit => cookie_agent_protocol::ToolName::Edit,
+                cookie_agent_config::ToolName::Bash => cookie_agent_protocol::ToolName::Bash,
+                cookie_agent_config::ToolName::Grep => cookie_agent_protocol::ToolName::Grep,
+                cookie_agent_config::ToolName::Glob => cookie_agent_protocol::ToolName::Glob,
             })
             .collect(),
+        delegation_targets: value.delegation_targets,
     }
 }
-fn agent_type(value: ConfigAgentType) -> AgentType {
-    match value {
-        ConfigAgentType::All => AgentType::All,
-        ConfigAgentType::Primary => AgentType::Primary,
-        ConfigAgentType::Subagent => AgentType::SubAgent,
-        ConfigAgentType::Internal => AgentType::Internal,
-    }
-}
-fn depth(value: ConfigDepthLimit) -> cookie_agent_protocol::DepthLimit {
-    match value {
-        ConfigDepthLimit::Finite(value) => cookie_agent_protocol::DepthLimit::Finite(value),
-        ConfigDepthLimit::Unlimited => cookie_agent_protocol::DepthLimit::Unlimited,
-    }
-}
+
 fn root_id(origin: &SessionOrigin, session: SessionId) -> SessionId {
     match origin {
         SessionOrigin::Delegated {
@@ -7115,9 +7502,25 @@ fn root_id(origin: &SessionOrigin, session: SessionId) -> SessionId {
     }
 }
 
-fn resolved_session_cwd(cwd: &str) -> PathBuf {
-    let cwd = PathBuf::from(cwd);
-    cwd.canonicalize().unwrap_or(cwd)
+fn session_depth(origin: &SessionOrigin) -> u32 {
+    match origin {
+        SessionOrigin::Root => 0,
+        SessionOrigin::Delegated { depth, .. } => *depth,
+    }
+}
+
+fn cwd_identity(path: &Path) -> Result<cookie_agent_protocol::CwdIdentity, EngineError> {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    cookie_agent_protocol::CwdIdentity::new(canonical.to_string_lossy()).map_err(|error| {
+        EngineError::from(ModelError::invalid_request(format!(
+            "invalid cwd identity: {error}"
+        )))
+    })
+}
+
+fn protocol_digest(value: &cookie_agent_models::Sha256Digest) -> Result<Sha256Digest, EngineError> {
+    Sha256Digest::new(value.as_str())
+        .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))
 }
 
 fn invocation_id(session: SessionId, run: RunId, call: ToolCallId) -> InvocationId {
@@ -7136,6 +7539,196 @@ fn hash_parts(parts: &[&str]) -> u128 {
     "cookie_agent".hash(&mut second);
     parts.hash(&mut second);
     (high << 64) | second.finish() as u128
+}
+
+fn safe_code(value: &str) -> SafeCode {
+    SafeCode::new(value).expect("static safe code")
+}
+
+fn safe_display(value: &str) -> SafeDisplayText {
+    SafeDisplayText::new(sanitize_safe_text(value, SafeDisplayText::MAX_BYTES))
+        .expect("sanitized display text")
+}
+
+fn safe_error(value: &str) -> SafeErrorMessage {
+    SafeErrorMessage::new(sanitize_safe_text(value, SafeErrorMessage::MAX_BYTES))
+        .expect("sanitized safe error")
+}
+
+fn sanitize_safe_text(value: &str, maximum: usize) -> String {
+    let mut output = String::new();
+    for character in value.chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if output.len() + character.len_utf8() > maximum {
+            break;
+        }
+        output.push(character);
+    }
+    if output.is_empty() {
+        "unavailable".into()
+    } else {
+        output
+    }
+}
+
+fn approval_evaluations(request: &ApprovalRequest) -> Vec<ApprovalEvaluation> {
+    serde_json::to_value(request)
+        .ok()
+        .and_then(|value| value.get("evaluations").cloned())
+        .and_then(|value| serde_json::from_value(value).ok())
+        .expect("protocol approval request serializes evaluations")
+}
+
+fn approval_constraints(request: &ApprovalRequest) -> ApprovalConstraints {
+    serde_json::to_value(request)
+        .ok()
+        .and_then(|value| value.get("constraints").cloned())
+        .and_then(|value| serde_json::from_value(value).ok())
+        .expect("protocol approval request serializes constraints")
+}
+
+fn latest_run_policy(
+    events: &[StoredEvent],
+    run_id: RunId,
+) -> Result<
+    (
+        cookie_agent_protocol::AgentSnapshot,
+        Vec<cookie_agent_protocol::FrozenModelBinding>,
+    ),
+    EngineError,
+> {
+    events
+        .iter()
+        .find_map(|event| match &event.payload {
+            Event::RunStarted {
+                agent,
+                selected_suffix,
+                ..
+            } if event.run_id == Some(run_id) => {
+                Some((agent.as_ref().clone(), selected_suffix.clone()))
+            }
+            _ => None,
+        })
+        .ok_or(EngineError::MissingRun(run_id))
+}
+
+fn title_regeneration_target(events: &[StoredEvent]) -> Option<(RunId, u64, PersistedModelTurn)> {
+    events.iter().rev().find_map(|event| match &event.payload {
+        Event::ModelTurnCommitted {
+            input_through_seq,
+            turn,
+            ..
+        } => event
+            .run_id
+            .map(|run| (run, *input_through_seq, turn.clone())),
+        _ => None,
+    })
+}
+
+fn active_fallback_index(events: &[StoredEvent], run_id: RunId) -> usize {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| {
+            if event.run_id != Some(run_id) {
+                return None;
+            }
+            match &event.payload {
+                Event::ModelAttemptStarted { fallback_index, .. } => Some(*fallback_index as usize),
+                Event::ModelFallback {
+                    to_fallback_index, ..
+                } => Some(*to_fallback_index as usize),
+                _ => None,
+            }
+        })
+        .unwrap_or(0)
+}
+
+fn fallback_operation_fingerprint(call: &ToolCall) -> OperationFingerprint {
+    let action = PermissionPipeline::action_for_tool(&call.name)
+        .unwrap_or(cookie_agent_protocol::PermissionAction::Read);
+    let operation = PreparedOperationIdentity::new(
+        Sha256Digest::of_bytes(
+            &serde_json::to_vec(&call.arguments).expect("tool arguments serialize"),
+        ),
+        vec![cookie_agent_protocol::ApprovalCapability {
+            action,
+            operation: cookie_agent_protocol::PreparedCapabilityOperation::new(format!(
+                "{}:prepare",
+                call.name
+                    .replace(|character: char| !character.is_ascii_alphanumeric(), "_")
+            ))
+            .unwrap_or_else(|_| {
+                cookie_agent_protocol::PreparedCapabilityOperation::new("tool:prepare")
+                    .expect("static operation")
+            }),
+        }],
+        Vec::new(),
+        Sha256Digest::of_bytes(b"prepare-failed"),
+    )
+    .expect("fallback prepared identity");
+    OperationFingerprint::from_prepared_operation(&operation)
+}
+
+fn safe_tool_presentation(call: &ToolCall) -> ToolCallPresentation {
+    let primary = match call.name.as_str() {
+        "bash" => call.arguments.get("command").and_then(Value::as_str),
+        "read" | "write" | "edit" => call
+            .arguments
+            .get("filePath")
+            .or_else(|| call.arguments.get("file_path"))
+            .or_else(|| call.arguments.get("path"))
+            .and_then(Value::as_str),
+        "grep" => call.arguments.get("pattern").and_then(Value::as_str),
+        "glob" => call.arguments.get("pattern").and_then(Value::as_str),
+        "delegate" => {
+            let agent = call.arguments.get("agent").and_then(Value::as_str);
+            let task = call.arguments.get("task").and_then(Value::as_str);
+            return ToolCallPresentation {
+                title: safe_display(&call.name),
+                primary_argument: agent.map(|agent| {
+                    let agent = redact_presentation(agent);
+                    let task = task
+                        .map(|task| redact_presentation(&truncate_utf8(task, 160)))
+                        .filter(|task| !task.is_empty());
+                    safe_display(&sanitize_safe_text(
+                        &task.map_or(agent.clone(), |task| format!("{agent}: {task}")),
+                        SafeDisplayText::MAX_BYTES,
+                    ))
+                }),
+            };
+        }
+        _ => None,
+    }
+    .map(redact_presentation);
+    ToolCallPresentation {
+        title: safe_display(&call.name),
+        primary_argument: primary.as_deref().map(safe_display),
+    }
+}
+
+fn redact_presentation(value: &str) -> String {
+    const SECRET_MARKERS: [&str; 6] = [
+        "token",
+        "secret",
+        "password",
+        "api_key",
+        "apikey",
+        "authorization",
+    ];
+    let mut sanitized = sanitize_safe_text(value, 512);
+    let lowercase = sanitized.to_ascii_lowercase();
+    if SECRET_MARKERS
+        .iter()
+        .any(|marker| lowercase.contains(marker))
+    {
+        sanitized = "<redacted>".into();
+    }
+    sanitized
 }
 fn approval_request_for_operation(
     trigger: ApprovalTrigger,
@@ -7185,10 +7778,11 @@ fn approval_response_failure(
         code,
         session_id: params.session_id,
         approval_id: params.approval_id,
-        client_response_id: params.client_response_id.clone(),
+        client_response_id: params.client_response_id.to_string(),
         current_status: current.map(|record| record.status),
         current_revision: current.map(|record| approval_request_revision(&record.request)),
-        current_expires_at: current.and_then(|record| record.request.constraints().expires_at),
+        current_expires_at: current
+            .and_then(|record| approval_constraints(&record.request).expires_at),
         current_operation_fingerprint: current
             .map(|record| record.request.operation_fingerprint().clone()),
     }))
@@ -7243,18 +7837,18 @@ fn validate_generated_title(value: &str, max_chars: usize) -> Option<SessionTitl
     SessionTitle::new(bounded).ok()
 }
 
-fn automatic_title_eligible(events: &[EventEnvelope]) -> bool {
+fn automatic_title_eligible(events: &[StoredEvent]) -> bool {
     let mut latest_automatic = None;
     let mut latest_user = None;
     for event in events {
-        if let Event::SessionTitleCommitted { commit, .. } = &event.event {
-            match commit {
-                SessionTitleCommit::InternalAgentSet { .. }
-                | SessionTitleCommit::FallbackSet { .. } => latest_automatic = Some(event.seq),
-                SessionTitleCommit::UserSet { .. } | SessionTitleCommit::UserClear { .. } => {
+        if let Event::SessionTitleCommitted { change, .. } = &event.payload {
+            match change {
+                SessionTitleChange::InternalAgentSet { .. }
+                | SessionTitleChange::FallbackSet { .. } => latest_automatic = Some(event.seq),
+                SessionTitleChange::UserSet { .. } | SessionTitleChange::UserClear { .. } => {
                     latest_user = Some((event.seq, false));
                 }
-                SessionTitleCommit::UserReset { .. } => latest_user = Some((event.seq, true)),
+                SessionTitleChange::UserReset { .. } => latest_user = Some((event.seq, true)),
             }
         }
     }
@@ -7291,11 +7885,11 @@ fn fallback_title(input: &str, max_chars: usize) -> Option<SessionTitle> {
 
 fn approval_records(
     session_id: SessionId,
-    events: &[EventEnvelope],
+    events: &[StoredEvent],
 ) -> HashMap<ApprovalId, ApprovalRecord> {
     let mut records = HashMap::<ApprovalId, ApprovalRecord>::new();
     for envelope in events {
-        match &envelope.event {
+        match &envelope.payload {
             Event::ApprovalRequested { request } => {
                 records.insert(
                     request.approval_id(),
@@ -7356,13 +7950,47 @@ fn approval_records(
     records
 }
 
-fn approval_run_id(events: &[EventEnvelope], approval_id: ApprovalId) -> Option<RunId> {
-    events.iter().find_map(|event| match &event.event {
+fn approval_run_id(events: &[StoredEvent], approval_id: ApprovalId) -> Option<RunId> {
+    events.iter().find_map(|event| match &event.payload {
         Event::ApprovalRequested { request } if request.approval_id() == approval_id => {
             event.run_id
         }
         _ => None,
     })
+}
+
+fn doom_loop_repetitions(
+    events: &[StoredEvent],
+    run_id: RunId,
+    fingerprint: &OperationFingerprint,
+) -> u32 {
+    let mut starts = HashMap::<ToolCallId, OperationFingerprint>::new();
+    let mut repetitions = 0_u32;
+    for event in events.iter().filter(|event| event.run_id == Some(run_id)) {
+        match &event.payload {
+            Event::UserInputSubmitted { .. } | Event::UserInputApplied { .. } => {
+                repetitions = 0;
+            }
+            Event::ApprovalRequested { request }
+                if request.operation_fingerprint() == fingerprint =>
+            {
+                repetitions = repetitions.saturating_add(1);
+            }
+            Event::ToolCallStarted { start } => {
+                starts.insert(start.tool_call_id, start.operation_fingerprint.clone());
+            }
+            Event::ToolCallTerminated { termination }
+                if termination.outcome == ToolTerminationOutcome::Completed
+                    && starts
+                        .get(&termination.tool_call_id)
+                        .is_some_and(|completed| completed != fingerprint) =>
+            {
+                repetitions = 0;
+            }
+            _ => {}
+        }
+    }
+    repetitions
 }
 
 #[derive(Deserialize, Serialize)]
@@ -7493,8 +8121,9 @@ fn validate_attachment(mime_type: &str, path: &Path, bytes: &[u8]) -> Result<(),
     Ok(())
 }
 
-fn delegate_client_run_id(invocation_id: InvocationId) -> String {
-    format!("delegate:{invocation_id}")
+fn delegate_client_run_id(invocation_id: InvocationId) -> cookie_agent_protocol::ClientRunId {
+    cookie_agent_protocol::ClientRunId::new(format!("delegate:{invocation_id}"))
+        .expect("bounded delegate client run id")
 }
 
 fn render_delegate_input(request: &journal::DelegateRequestPayload) -> String {
@@ -7520,11 +8149,11 @@ fn completed_delegate_result(
         .unwrap_or_else(|| "child completed without a final report".into());
     bound_tool_result(
         ToolResult {
-            title: "Delegate report".into(),
+            title: safe_display("Delegate report"),
             output,
             metadata: serde_json::json!({
                 "status": "completed",
-                "child_session_id": child.meta.id,
+                "child_session_id": child.meta.session_id,
             }),
             truncation: None,
             attachments: Vec::new(),
@@ -7533,13 +8162,13 @@ fn completed_delegate_result(
         ToolCallId::new_v7(),
         artifacts,
         usize::MAX,
-        child.policy.result_limits.delegate_result_bytes,
+        32 * 1024,
     )
 }
 
 fn structured_delegate_result(title: &str, metadata: Value) -> ToolResult {
     ToolResult {
-        title: title.into(),
+        title: safe_display(title),
         output: metadata.to_string(),
         metadata,
         truncation: None,
@@ -7597,7 +8226,31 @@ fn is_journal_append_failure(error: &EngineError) -> bool {
 
 #[cfg(test)]
 mod builtin_revision_tests {
-    use super::{BOUNDED_SUMMARY_BUILTIN_REVISION, UNAVAILABLE_BUILTIN_REVISION};
+    use std::{collections::BTreeMap, sync::Arc};
+
+    use cookie_agent_config::AgentRegistry;
+    use cookie_agent_protocol::{
+        AgentMode, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
+        ApprovalId, ApprovalResourceSource, ApprovalTrigger, AssistantToolCallRef, DecisionTrace,
+        EventPayload, EventSchemaVersion, ModelCallId, PermissionAction, PermissionEffect,
+        PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
+        PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, RunId,
+        SessionId, Sha256Digest, StoredEvent, ToolCallId, ToolCallPresentation, ToolCallStart,
+        ToolCallTermination, ToolTerminationOutcome,
+    };
+
+    use super::{
+        BOUNDED_SUMMARY_BUILTIN_REVISION, FrozenRunPolicy, InternalAgentKind, InternalAgentRuntime,
+        UNAVAILABLE_BUILTIN_REVISION, active_fallback_index, doom_loop_repetitions,
+        safe_tool_presentation,
+    };
+    use crate::{
+        ToolCall,
+        policy::{ResultLimits, wire_binding},
+        test_support::{
+            agent_snapshot, model_binding, model_set, model_snapshot, variant_model_binding,
+        },
+    };
 
     #[test]
     fn builtin_revisions_describe_semantic_contracts_not_protocol_versions() {
@@ -7617,5 +8270,239 @@ mod builtin_revision_tests {
             assert!(!revision.contains("protocol"));
             assert!(!revision.contains("event-schema"));
         }
+    }
+
+    #[test]
+    fn tool_presentations_accept_camel_and_snake_file_paths_and_delegate_excerpt() {
+        for arguments in [
+            serde_json::json!({"filePath":"nested/value.txt"}),
+            serde_json::json!({"file_path":"nested/value.txt"}),
+        ] {
+            let presentation = safe_tool_presentation(&ToolCall {
+                id: ToolCallId::new_v7(),
+                name: "read".into(),
+                arguments,
+            });
+            assert_eq!(
+                presentation.primary_argument.expect("path").as_str(),
+                "nested/value.txt"
+            );
+        }
+        let presentation = safe_tool_presentation(&ToolCall {
+            id: ToolCallId::new_v7(),
+            name: "delegate".into(),
+            arguments: serde_json::json!({
+                "agent":"worker\nagent",
+                "task":format!("inspect token safely {}", "x".repeat(600))
+            }),
+        });
+        let primary = presentation
+            .primary_argument
+            .expect("delegate presentation");
+        assert!(primary.as_str().starts_with("worker agent: <redacted>"));
+        assert!(primary.as_str().len() <= cookie_agent_protocol::SafeDisplayText::MAX_BYTES);
+    }
+
+    #[test]
+    fn every_internal_agent_kind_inherits_only_the_active_variant_suffix_and_prompt() {
+        let set = model_set();
+        let registry =
+            Arc::new(AgentRegistry::resolve(BTreeMap::new(), &set).expect("empty registry"));
+        let base = model_binding();
+        let variant = variant_model_binding();
+        let mut agent = agent_snapshot("owner", AgentMode::Primary);
+        agent.composed_prompt = "Frozen owner prompt.\n".into();
+        agent.prompt_fingerprint = Sha256Digest::of_bytes(agent.composed_prompt.as_bytes());
+        let owner = FrozenRunPolicy {
+            agent: agent.clone(),
+            selected_suffix: vec![base, variant.clone()],
+            selected_suffix_wire: vec![wire_binding(&variant).expect("wire binding")],
+            model_snapshot: model_snapshot(),
+            registry,
+            result_limits: ResultLimits {
+                tool_output_max_lines: 1,
+                tool_output_max_bytes: 1,
+            },
+        };
+        let runtime = InternalAgentRuntime::freeze();
+        for kind in [
+            InternalAgentKind::Approval,
+            InternalAgentKind::ContextCompaction,
+            InternalAgentKind::SessionTitle,
+        ] {
+            let inherited = runtime.policy(kind, &owner, &owner.selected_suffix[1..]);
+            assert_eq!(inherited.models.as_slice(), std::slice::from_ref(&variant));
+            assert_eq!(inherited.agent.composed_prompt, agent.composed_prompt);
+            assert_eq!(
+                inherited.models[0].resolved.selection.variant,
+                variant.resolved.selection.variant
+            );
+        }
+    }
+
+    fn operation(label: &str) -> PreparedOperationIdentity {
+        let digest = PreparedResourceDigest::from_canonical_binding_bytes(label.as_bytes());
+        PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(label.as_bytes()),
+            vec![ApprovalCapability {
+                action: PermissionAction::Read,
+                operation: PreparedCapabilityOperation::new("read:read").expect("operation"),
+            }],
+            vec![PreparedApprovalResource {
+                capability: PermissionAction::Read,
+                canonical: PreparedResourceIdentity::new(format!(
+                    "file:{}",
+                    Sha256Digest::of_bytes(label.as_bytes()).as_str()
+                ))
+                .expect("identity"),
+                binding_digest: digest.clone(),
+                binding_lifetime: PreparedBindingLifetime::ProcessLocal,
+                boundary: ApprovalBoundary::Exact,
+                source: ApprovalResourceSource::PrimaryOperation,
+            }],
+            Sha256Digest::of_bytes(b"context"),
+        )
+        .expect("operation")
+    }
+
+    fn approval(label: &str) -> cookie_agent_protocol::ApprovalRequest {
+        let operation = operation(label);
+        cookie_agent_protocol::ApprovalRequest::new(
+            ApprovalId::new_v7(),
+            1,
+            ApprovalTrigger::PermissionPolicy,
+            operation.clone(),
+            vec![ApprovalEvaluation {
+                resource_digest: operation.resources()[0].binding_digest.clone(),
+                effect: PermissionEffect::Ask,
+                trace: DecisionTrace {
+                    action: PermissionAction::Read,
+                    normalized_resource: label.into(),
+                    candidates: Vec::new(),
+                    effect: PermissionEffect::Ask,
+                    precedence_reason: "test".into(),
+                },
+            }],
+            ApprovalConstraints {
+                allow_once: true,
+                allow_tree_grant: false,
+                cancellable: true,
+                expires_at: None,
+            },
+        )
+        .expect("approval")
+    }
+
+    fn stored(run: RunId, seq: u64, payload: EventPayload) -> StoredEvent {
+        StoredEvent {
+            event_schema_version: EventSchemaVersion::current(),
+            session_id: SessionId::new_v7(),
+            run_id: Some(run),
+            seq,
+            timestamp: jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+            payload,
+        }
+    }
+
+    #[test]
+    fn doom_loop_fires_on_four_and_resets_on_input_or_different_success() {
+        let run = RunId::new_v7();
+        let request = approval("same");
+        let fingerprint = request.operation_fingerprint().clone();
+        let mut events = (1..=4)
+            .map(|seq| {
+                stored(
+                    run,
+                    seq,
+                    EventPayload::ApprovalRequested {
+                        request: request.clone(),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(doom_loop_repetitions(&events[..3], run, &fingerprint), 3);
+        assert_eq!(doom_loop_repetitions(&events, run, &fingerprint), 4);
+
+        events.push(stored(
+            run,
+            5,
+            EventPayload::UserInputSubmitted {
+                input: "continue".into(),
+            },
+        ));
+        events.push(stored(
+            run,
+            6,
+            EventPayload::ApprovalRequested {
+                request: request.clone(),
+            },
+        ));
+        assert_eq!(doom_loop_repetitions(&events, run, &fingerprint), 1);
+
+        let other = operation("different");
+        let call = ToolCallId::new_v7();
+        let owner = AssistantToolCallRef {
+            model_turn_seq: 1,
+            content_index: 0,
+            model_call_id: ModelCallId::new("different-call").expect("model call"),
+            provider_item_id: None,
+        };
+        events.push(stored(
+            run,
+            7,
+            EventPayload::ToolCallStarted {
+                start: ToolCallStart {
+                    tool_call_id: call,
+                    owner: owner.clone(),
+                    presentation: ToolCallPresentation {
+                        title: cookie_agent_protocol::SafeDisplayText::new("Read other")
+                            .expect("title"),
+                        primary_argument: None,
+                    },
+                    operation_fingerprint: cookie_agent_protocol::OperationFingerprint::from_prepared_operation(&other),
+                },
+            },
+        ));
+        events.push(stored(
+            run,
+            8,
+            EventPayload::ToolCallTerminated {
+                termination: ToolCallTermination {
+                    tool_call_id: call,
+                    owner,
+                    outcome: ToolTerminationOutcome::Completed,
+                    result: Some(cookie_agent_protocol::PersistedToolResult {
+                        title: cookie_agent_protocol::SafeDisplayText::new("Read other")
+                            .expect("title"),
+                        output: String::new(),
+                        metadata: serde_json::Value::Null,
+                        truncation: None,
+                        attachments: Vec::new(),
+                    }),
+                    error: None,
+                },
+            },
+        ));
+        events.push(stored(run, 9, EventPayload::ApprovalRequested { request }));
+        assert_eq!(doom_loop_repetitions(&events, run, &fingerprint), 1);
+    }
+
+    #[test]
+    fn direct_title_policy_uses_latest_attempt_suffix() {
+        let run = RunId::new_v7();
+        let binding = variant_model_binding();
+        let events = vec![stored(
+            run,
+            1,
+            EventPayload::ModelAttemptStarted {
+                attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
+                attempt_ordinal: 1,
+                fallback_index: 1,
+                retry_ordinal: 0,
+                resolved_model: crate::model_history::wire_model(&binding),
+                prompt_fingerprint: Sha256Digest::of_bytes(b"prompt"),
+            },
+        )];
+        assert_eq!(active_fallback_index(&events, run), 1);
     }
 }

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import pathlib
 import shutil
 import subprocess
@@ -105,6 +106,43 @@ def verify_payload(payload: bytes) -> None:
         raise SystemExit(f"generated SHA256 is {digest}; expected {EXPECTED_SHA256}")
     if payload.endswith(b"\n"):
         raise SystemExit("generated payload unexpectedly has a trailing newline")
+    verify_reasoning_options(payload)
+
+
+def verify_reasoning_options(payload: bytes) -> None:
+    catalog = json.loads(payload)
+    efforts = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "default"}
+    for provider_id, provider in catalog["providers"].items():
+        for model_id, model in provider["models"].items():
+            for option in model.get("reasoning_options", []):
+                option_type = option.get("type")
+                path = f"{provider_id}/{model_id}.reasoning_options"
+                if option_type == "effort":
+                    if set(option) != {"type", "values"} or not isinstance(option["values"], list):
+                        raise SystemExit(f"invalid effort option at {path}")
+                    normalized = []
+                    for value in option["values"]:
+                        if value is not None and value not in efforts:
+                            raise SystemExit(f"invalid effort value at {path}")
+                        normalized.append(value)
+                    if len(normalized) != len({json.dumps(value) for value in normalized}):
+                        raise SystemExit(f"duplicate effort value at {path}")
+                elif option_type == "toggle":
+                    if set(option) != {"type"}:
+                        raise SystemExit(f"invalid toggle option at {path}")
+                elif option_type == "budget_tokens":
+                    if not set(option).issubset({"type", "min", "max"}):
+                        raise SystemExit(f"invalid budget_tokens option at {path}")
+                    minimum = option.get("min")
+                    maximum = option.get("max")
+                    if minimum is not None and (isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < -1):
+                        raise SystemExit(f"invalid budget_tokens min at {path}")
+                    if maximum is not None and (isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 0):
+                        raise SystemExit(f"invalid budget_tokens max at {path}")
+                    if minimum is not None and maximum is not None and minimum >= 0 and minimum > maximum:
+                        raise SystemExit(f"inverted budget_tokens bounds at {path}")
+                else:
+                    raise SystemExit(f"unknown reasoning option at {path}")
 
 
 def self_test() -> None:
@@ -139,6 +177,33 @@ def self_test() -> None:
             bun_path="bun",
         )
         assert commands == [("bun", "install", "--frozen-lockfile")]
+        verify_reasoning_options(
+            json.dumps(
+                {
+                    "providers": {
+                        "test": {
+                            "models": {
+                                "model": {
+                                    "reasoning_options": [
+                                        {"type": "effort", "values": ["low", None]},
+                                        {"type": "toggle"},
+                                        {"type": "budget_tokens", "min": -1, "max": 1024},
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            ).encode()
+        )
+        try:
+            verify_reasoning_options(
+                b'{"providers":{"test":{"models":{"model":{"reasoning_options":[{"type":"budget_tokens","min":2,"max":1}]}}}}}'
+            )
+        except SystemExit as error:
+            assert "inverted budget_tokens bounds" in str(error)
+        else:
+            raise AssertionError("invalid reasoning metadata unexpectedly passed")
         print("self-test ok: offline mode executes no install/network command")
 
 

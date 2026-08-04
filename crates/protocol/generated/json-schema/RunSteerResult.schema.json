@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunSteerResult",
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "accepted"
+  ]
+}

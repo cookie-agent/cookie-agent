@@ -1,25 +1,21 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    path::Path,
-    sync::Arc,
-};
+use std::collections::BTreeMap;
 
-use cookie_agent_config::{
-    AgentType as ConfigAgentType, DelegationPolicy, DepthLimit as ConfigDepthLimit, PolicySnapshot,
-    ProfileSnapshot as ConfigProfileSnapshot, ResolvedPermissions, ResultLimits,
-};
-use cookie_agent_models::{Catalog, CredentialStore, ModelSetManager};
 use cookie_agent_protocol::{
-    AgentType, Event, InvocationId, ModelFinishReason, ModelRef, PersistedAssistantPart,
-    PersistedModelTurn, ProfileIdentity, ReplayDecision, ReplayDisposition, RunId, SessionId,
-    SessionOrigin, SessionStatus, ToolCallId, ToolResult, Usage,
+    AgentMode, AssistantToolCallRef, AttemptId, ClientRunId, EventPayload as Event, InvocationId,
+    ModelCallId, ModelFinishReason, OperationFingerprint, PermissionAction, PersistedAssistantPart,
+    PersistedModelTurn, PersistedToolResult as ToolResult, PreparedApprovalResource,
+    PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
+    PreparedResourceDigest, PreparedResourceIdentity, ReplayDecision, ReplayDisposition, RunId,
+    SafeCode, SafeDisplayText, SafeErrorMessage, SessionId, SessionOrigin, SessionStatus,
+    Sha256Digest, ToolCallId, ToolCallPresentation, ToolCallStart, ToolTerminationOutcome, Usage,
 };
 use uuid::Uuid;
 
 use crate::{
-    DelegateHandle, Engine, EngineOptions, completed_delegate_result, invocation_id, session_meta,
-    wire_profile,
+    DelegateHandle, Engine, completed_delegate_result, cwd_identity, invocation_id,
+    model_history::wire_model,
+    session_meta,
+    test_support::{agent_snapshot, engine as test_engine, model_binding, run_selection},
 };
 
 const FINAL_REPORT: &str = "valid child final report";
@@ -58,42 +54,27 @@ fn tool_call_id(value: u128) -> ToolCallId {
     ToolCallId(Uuid::from_u128(value))
 }
 
-fn policy(name: &str, agent_type: ConfigAgentType, delegates: bool) -> PolicySnapshot {
-    PolicySnapshot {
-        profile: ConfigProfileSnapshot {
-            name: name.into(),
-            r#type: agent_type,
-        },
-        models: Vec::new(),
-        tools: BTreeSet::new(),
-        permissions: ResolvedPermissions { rules: Vec::new() },
-        delegation: DelegationPolicy {
-            enabled: delegates,
-            allowed_profiles: if delegates {
-                BTreeSet::from(["worker".into()])
-            } else {
-                BTreeSet::new()
-            },
-            depth_limit: if delegates {
-                ConfigDepthLimit::Finite(1)
-            } else {
-                ConfigDepthLimit::Finite(0)
-            },
-        },
-        result_limits: ResultLimits::default(),
-    }
+fn operation() -> PreparedOperationIdentity {
+    PreparedOperationIdentity::new(
+        Sha256Digest::of_bytes(b"delegate args"),
+        vec![cookie_agent_protocol::ApprovalCapability {
+            action: PermissionAction::Delegate,
+            operation: PreparedCapabilityOperation::new("delegate:spawn").expect("operation"),
+        }],
+        vec![PreparedApprovalResource {
+            capability: PermissionAction::Delegate,
+            canonical: PreparedResourceIdentity::new("agent:worker").expect("identity"),
+            binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"worker"),
+            binding_lifetime: PreparedBindingLifetime::ProcessLocal,
+            boundary: cookie_agent_protocol::ApprovalBoundary::Exact,
+            source: cookie_agent_protocol::ApprovalResourceSource::PrimaryOperation,
+        }],
+        Sha256Digest::of_bytes(b"workspace"),
+    )
+    .expect("prepared operation")
 }
 
-fn model(name: &str) -> ModelRef {
-    ModelRef {
-        name: name.into(),
-        provider_id: format!("{name}.provider"),
-        model_id: format!("{name}.model"),
-        adapter_id: format!("{name}.adapter"),
-    }
-}
-
-fn turn(content: PersistedAssistantPart, warning: &str) -> PersistedModelTurn {
+fn turn(content: PersistedAssistantPart) -> PersistedModelTurn {
     PersistedModelTurn {
         content: vec![content],
         provider_options: BTreeMap::new(),
@@ -101,83 +82,113 @@ fn turn(content: PersistedAssistantPart, warning: &str) -> PersistedModelTurn {
         usage: Usage::default(),
         response_metadata: BTreeMap::new(),
         provider_metadata: BTreeMap::new(),
-        warnings: vec![warning.into()],
         native_replay: None,
     }
 }
 
-fn test_engine(root: &Path) -> Engine {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).expect("private test root");
-    }
-    let manager = ModelSetManager::new(
-        BTreeMap::new(),
-        Arc::new(Catalog::embedded().expect("catalog")),
-        CredentialStore::new(root.join("credentials")),
-    )
-    .expect("model manager");
-    Engine::open(EngineOptions {
-        data_dir: root.join("data"),
-        cwd: root.to_owned(),
-        config: cookie_agent_config::Config::default(),
-        model_manager: Arc::new(manager),
-        tools: Vec::new(),
-    })
-    .expect("engine")
-}
-
-fn install_parent(
+fn create_session(
     engine: &Engine,
-    root: &Path,
-    parent_session: SessionId,
-    parent_run: RunId,
-    call: ToolCallId,
+    root: &std::path::Path,
+    session: SessionId,
+    origin: SessionOrigin,
+    agent_name: &str,
+    mode: AgentMode,
 ) {
-    let parent_policy = policy("parent", ConfigAgentType::Primary, true);
+    let cwd = cwd_identity(root).expect("cwd identity");
+    let selection = run_selection(agent_name);
+    let agent = agent_snapshot(agent_name, mode);
     engine
         .inner
         .store
         .create(
-            session_meta(parent_session, SessionOrigin::Root, root, &parent_policy),
-            parent_policy.clone(),
+            session_meta(session, origin.clone(), cwd.clone(), selection.clone()),
+            Event::SessionCreated {
+                origin,
+                cwd_identity: cwd,
+                creation_selection: selection,
+                creation_agent: Box::new(agent),
+                model_snapshot_fingerprint: Sha256Digest::of_bytes(b"test models"),
+            },
         )
-        .expect("parent session");
-    engine.spawn_actor(parent_session);
+        .expect("session");
+    engine.spawn_actor(session);
+}
+
+fn start_run(engine: &Engine, session: SessionId, run: RunId, agent_name: &str, mode: AgentMode) {
+    let agent = agent_snapshot(agent_name, mode);
+    engine
+        .append_direct(
+            session,
+            Some(run),
+            Event::RunStarted {
+                client_run_id: ClientRunId::new(format!("{agent_name}-run"))
+                    .expect("client run id"),
+                selection: run_selection(agent_name),
+                selected_suffix: agent.fallback_chain.clone(),
+                agent: Box::new(agent),
+                input_through_seq: 1,
+            },
+        )
+        .expect("run started");
+}
+
+fn install_parent(
+    engine: &Engine,
+    root: &std::path::Path,
+    parent_session: SessionId,
+    parent_run: RunId,
+    call: ToolCallId,
+) {
+    create_session(
+        engine,
+        root,
+        parent_session,
+        SessionOrigin::Root,
+        "parent",
+        AgentMode::Primary,
+    );
+    start_run(
+        engine,
+        parent_session,
+        parent_run,
+        "parent",
+        AgentMode::Primary,
+    );
+    let attempt = AttemptId::new_v7();
+    let resolved = wire_model(&model_binding());
     engine
         .append_direct(
             parent_session,
             Some(parent_run),
-            Event::RunStarted {
-                client_run_id: "parent-run".into(),
-                input: "delegate work".into(),
-                profile: wire_profile(&parent_policy),
-                current_profile: ProfileIdentity {
-                    name: "parent".into(),
-                    agent_type: AgentType::Primary,
-                },
+            Event::ModelAttemptStarted {
+                attempt_id: attempt,
+                attempt_ordinal: 1,
+                fallback_index: 0,
+                retry_ordinal: 0,
+                resolved_model: resolved.clone(),
+                prompt_fingerprint: Sha256Digest::of_bytes(b"parent prompt"),
             },
         )
-        .expect("parent run");
+        .expect("parent attempt");
+    let model_call = ModelCallId::new("delegate-model-call").expect("model call id");
     engine
         .append_direct(
             parent_session,
             Some(parent_run),
             Event::ModelTurnCommitted {
-                model: model("parent-model"),
+                attempt_id: attempt,
+                model_turn_seq: 1,
+                resolved_model: resolved,
                 input_through_seq: 1,
-                turn: turn(
-                    PersistedAssistantPart::ToolCall {
-                        id: "delegate-model-call".into(),
-                        provider_item_id: None,
-                        name: "delegate".into(),
-                        input: serde_json::json!({"profile":"worker","task":"report"}),
-                        raw_input: None,
-                        metadata: None,
-                    },
-                    PARENT_WARNING,
-                ),
+                turn: turn(PersistedAssistantPart::ToolCall {
+                    id: model_call.clone(),
+                    provider_item_id: None,
+                    name: SafeCode::new("delegate").expect("tool name"),
+                    input: serde_json::json!({"agent":"worker","task":"report"}),
+                    raw_input: None,
+                    metadata: None,
+                }),
+                warnings: vec![SafeErrorMessage::new(PARENT_WARNING).expect("warning")],
             },
         )
         .expect("parent model turn");
@@ -186,11 +197,24 @@ fn install_parent(
             parent_session,
             Some(parent_run),
             Event::ToolCallStarted {
-                tool_call_id: call,
-                model_call_id: "delegate-model-call".into(),
-                provider_item_id: None,
-                tool: "delegate".into(),
-                arguments: serde_json::json!({"profile":"worker","task":"report"}),
+                start: ToolCallStart {
+                    tool_call_id: call,
+                    owner: AssistantToolCallRef {
+                        model_turn_seq: 1,
+                        content_index: 0,
+                        model_call_id: model_call,
+                        provider_item_id: None,
+                    },
+                    presentation: ToolCallPresentation {
+                        title: SafeDisplayText::new("Delegate to worker").expect("title"),
+                        primary_argument: Some(
+                            SafeDisplayText::new("report").expect("primary argument"),
+                        ),
+                    },
+                    operation_fingerprint: OperationFingerprint::from_prepared_operation(
+                        &operation(),
+                    ),
+                },
             },
         )
         .expect("delegate call");
@@ -198,58 +222,60 @@ fn install_parent(
 
 fn install_completed_child(
     engine: &Engine,
-    root: &Path,
+    root: &std::path::Path,
     parent: ParentLink,
     child_session: SessionId,
     child_run: RunId,
 ) {
-    let child_policy = policy("worker", ConfigAgentType::Subagent, false);
-    engine
-        .inner
-        .store
-        .create(
-            session_meta(
-                child_session,
-                SessionOrigin::Delegated {
-                    root_session_id: parent.session,
-                    parent_session_id: parent.session,
-                    parent_run_id: parent.run,
-                    parent_tool_call_id: parent.call,
-                    invocation_id: parent.invocation,
-                    depth: 1,
-                },
-                root,
-                &child_policy,
-            ),
-            child_policy.clone(),
-        )
-        .expect("child session");
-    engine.spawn_actor(child_session);
+    create_session(
+        engine,
+        root,
+        child_session,
+        SessionOrigin::Delegated {
+            root_session_id: parent.session,
+            parent_session_id: parent.session,
+            parent_run_id: parent.run,
+            parent_tool_call_id: parent.call,
+            invocation_id: parent.invocation,
+            depth: 1,
+        },
+        "worker",
+        AgentMode::Subagent,
+    );
+    start_run(
+        engine,
+        child_session,
+        child_run,
+        "worker",
+        AgentMode::Subagent,
+    );
+    let attempt = AttemptId::new_v7();
+    let resolved = wire_model(&model_binding());
     engine
         .append_direct(
             child_session,
             Some(child_run),
-            Event::RunStarted {
-                client_run_id: format!("delegate:{}", parent.invocation),
-                input: "produce report".into(),
-                profile: wire_profile(&child_policy),
-                current_profile: ProfileIdentity {
-                    name: "worker".into(),
-                    agent_type: AgentType::SubAgent,
-                },
+            Event::ModelAttemptStarted {
+                attempt_id: attempt,
+                attempt_ordinal: 1,
+                fallback_index: 0,
+                retry_ordinal: 0,
+                resolved_model: resolved.clone(),
+                prompt_fingerprint: Sha256Digest::of_bytes(b"worker prompt"),
             },
         )
-        .expect("child run");
+        .expect("child attempt");
     engine
         .append_direct(
             child_session,
             Some(child_run),
             Event::ModelReplayEvaluated {
-                model: model("child-model"),
-                decisions: vec![ReplayDecision {
+                attempt_id: attempt,
+                resolved_model: resolved.clone(),
+                ordered_decisions: vec![ReplayDecision {
                     history_index: 0,
                     disposition: ReplayDisposition::DiscardedInvalidPayload {
-                        reason: REPLAY_DIAGNOSTIC.into(),
+                        reason: SafeErrorMessage::new(REPLAY_DIAGNOSTIC).expect("diagnostic"),
                     },
                 }],
             },
@@ -260,15 +286,15 @@ fn install_completed_child(
             child_session,
             Some(child_run),
             Event::ModelTurnCommitted {
-                model: model("child-model"),
+                attempt_id: attempt,
+                model_turn_seq: 1,
+                resolved_model: resolved,
                 input_through_seq: 1,
-                turn: turn(
-                    PersistedAssistantPart::Text {
-                        text: FINAL_REPORT.into(),
-                        metadata: None,
-                    },
-                    CHILD_WARNING,
-                ),
+                turn: turn(PersistedAssistantPart::Text {
+                    text: FINAL_REPORT.into(),
+                    metadata: None,
+                }),
+                warnings: vec![SafeErrorMessage::new(CHILD_WARNING).expect("warning")],
             },
         )
         .expect("child model turn");
@@ -292,11 +318,13 @@ fn completed_result(engine: &Engine, parent_session: SessionId, call: ToolCallId
         .log
         .events()
         .into_iter()
-        .find_map(|event| match event.event {
-            Event::ToolCallCompleted {
-                tool_call_id,
-                result,
-            } if tool_call_id == call => Some(result),
+        .find_map(|event| match event.payload {
+            Event::ToolCallTerminated { termination }
+                if termination.tool_call_id == call
+                    && termination.outcome == ToolTerminationOutcome::Completed =>
+            {
+                termination.result
+            }
             _ => None,
         })
         .expect("completed delegate result")
@@ -308,7 +336,6 @@ fn assert_session_local_ownership(
     child_session: SessionId,
     call: ToolCallId,
 ) -> ToolResult {
-    assert_ne!(parent_session, child_session);
     let parent = engine
         .inner
         .store
@@ -333,8 +360,8 @@ fn assert_session_local_ownership(
             .iter()
             .all(|event| event.session_id == child_session)
     );
-    assert_eq!(parent.meta.profile.name, "parent");
-    assert_eq!(child.meta.profile.name, "worker");
+    assert_eq!(parent.meta.creation_selection.agent.as_str(), "parent");
+    assert_eq!(child.meta.creation_selection.agent.as_str(), "worker");
     assert!(matches!(
         child.meta.origin,
         SessionOrigin::Delegated {
@@ -343,66 +370,36 @@ fn assert_session_local_ownership(
             ..
         } if found_parent == parent_session && found_call == call
     ));
-    assert!(parent.log.events().iter().any(|event| matches!(
-        &event.event,
-        Event::RunStarted {
-            profile,
-            current_profile,
-            ..
-        } if profile.name == "parent"
-            && current_profile.name == "parent"
-            && current_profile.agent_type == AgentType::Primary
-    )));
-    assert!(child.log.events().iter().any(|event| matches!(
-        &event.event,
-        Event::RunStarted {
-            profile,
-            current_profile,
-            ..
-        } if profile.name == "worker"
-            && current_profile.name == "worker"
-            && current_profile.agent_type == AgentType::SubAgent
-    )));
 
-    let parent_turns = parent
+    let parent_warnings = parent
         .log
         .events()
         .into_iter()
-        .filter_map(|event| match event.event {
-            Event::ModelTurnCommitted { model, turn, .. } => Some((model, turn.warnings)),
+        .find_map(|event| match event.payload {
+            Event::ModelTurnCommitted { warnings, .. } => Some(warnings),
             _ => None,
-        })
-        .collect::<Vec<_>>();
+        });
     assert_eq!(
-        parent_turns,
-        vec![(model("parent-model"), vec![PARENT_WARNING.into()])]
+        parent_warnings.expect("parent warning")[0].as_str(),
+        PARENT_WARNING
     );
-
-    let child_turns = child
-        .log
-        .events()
-        .into_iter()
-        .filter_map(|event| match event.event {
-            Event::ModelTurnCommitted { model, turn, .. } => Some((model, turn.warnings)),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        child_turns,
-        vec![(model("child-model"), vec![CHILD_WARNING.into()])]
-    );
-    assert!(child.log.events().iter().any(|event| matches!(
-        &event.event,
-        Event::ModelReplayEvaluated { model: replay_model, decisions }
-            if replay_model == &model("child-model")
-                && matches!(decisions.as_slice(), [ReplayDecision {
-                    history_index: 0,
-                    disposition: ReplayDisposition::DiscardedInvalidPayload { reason },
-                }] if reason == REPLAY_DIAGNOSTIC)
+    let child_events = child.log.events();
+    assert!(child_events.iter().any(|event| matches!(
+        &event.payload,
+        Event::ModelTurnCommitted { warnings, .. }
+            if warnings.first().is_some_and(|warning| warning.as_str() == CHILD_WARNING)
+    )));
+    assert!(child_events.iter().any(|event| matches!(
+        &event.payload,
+        Event::ModelReplayEvaluated { ordered_decisions, .. }
+            if matches!(ordered_decisions.as_slice(), [ReplayDecision {
+                history_index: 0,
+                disposition: ReplayDisposition::DiscardedInvalidPayload { reason },
+            }] if reason.as_str() == REPLAY_DIAGNOSTIC)
     )));
 
     let result = completed_result(engine, parent_session, call);
-    assert_eq!(result.title, "Delegate report");
+    assert_eq!(result.title.as_str(), "Delegate report");
     assert_eq!(result.output, FINAL_REPORT);
     assert_eq!(
         result.metadata,
@@ -411,8 +408,6 @@ fn assert_session_local_ownership(
             "child_session_id": child_session,
         })
     );
-    assert_eq!(result.truncation, None);
-    assert!(result.attachments.is_empty());
     assert_eq!(child.status, SessionStatus::Completed);
     result
 }
@@ -457,7 +452,7 @@ async fn restart_recovery_uses_the_same_session_local_completed_delegate_result(
     let child_run = run_id(15);
     let parent = ParentLink::new(parent_session, parent_run, call);
     install_parent(&engine, root.path(), parent_session, parent_run, call);
-    let child_policy = policy("worker", ConfigAgentType::Subagent, false);
+    let child_agent = agent_snapshot("worker", AgentMode::Subagent);
     let entry = engine
         .inner
         .journal
@@ -466,7 +461,8 @@ async fn restart_recovery_uses_the_same_session_local_completed_delegate_result(
             parent_session,
             parent_run,
             call,
-            child_policy,
+            child_agent.clone(),
+            child_agent.fallback_chain.clone(),
             "restart-fixture".into(),
             crate::journal::DelegateRequestPayload {
                 task: "report".into(),

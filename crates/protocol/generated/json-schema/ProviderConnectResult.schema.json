@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProviderConnectResult",
+  "type": "object",
+  "properties": {
+    "client_connect_id": {
+      "description": "Bounded provider connection idempotency key.",
+      "type": "string",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+    },
+    "connection": {
+      "$ref": "#/$defs/ProviderConnection"
+    },
+    "model_revision": {
+      "description": "SHA-256 snapshot revision.",
+      "type": "string",
+      "maxLength": 71,
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "client_connect_id",
+    "connection",
+    "model_revision"
+  ],
+  "$defs": {
+    "ProviderConnection": {
+      "type": "object",
+      "properties": {
+        "catalog_revision": {
+          "type": "string",
+          "const": "sha256:d65af0b058204954f6b08af537fa13e91f251c618d69d8c20a2d5915731d482a"
+        },
+        "connected_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "credential_fields": {
+          "type": "array",
+          "items": {
+            "description": "Strict provider credential field name.",
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[A-Z0-9_]+$"
+          },
+          "maxItems": 32,
+          "minItems": 1
+        },
+        "provider_id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9._-]+$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "provider_id",
+        "credential_fields",
+        "connected_at",
+        "catalog_revision"
+      ]
+    }
+  }
+}

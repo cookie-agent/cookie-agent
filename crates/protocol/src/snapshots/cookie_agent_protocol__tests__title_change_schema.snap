@@ -1,0 +1,125 @@
+---
+source: crates/protocol/src/tests.rs
+expression: schema_for!(SessionTitleChange)
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionTitleChange",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "client_rename_id": {
+          "description": "Bounded title mutation idempotency key.",
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "title": {
+          "description": "Nonblank control-free UTF-8 session title.",
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "user_set"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "title",
+        "client_rename_id"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "client_rename_id": {
+          "description": "Bounded title mutation idempotency key.",
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "type": {
+          "type": "string",
+          "const": "user_clear"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "client_rename_id"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "client_rename_id": {
+          "description": "Bounded title mutation idempotency key.",
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "type": {
+          "type": "string",
+          "const": "user_reset"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "client_rename_id"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "invocation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "title": {
+          "description": "Nonblank control-free UTF-8 session title.",
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "internal_agent_set"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "title",
+        "invocation_id"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "title": {
+          "description": "Nonblank control-free UTF-8 session title.",
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "fallback_set"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "title"
+      ]
+    }
+  ]
+}

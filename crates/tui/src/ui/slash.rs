@@ -70,7 +70,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "new",
         aliases: &[],
         usage: "/new",
-        description: "choose the next run profile",
+        description: "choose the next run agent",
         requires_arguments: false,
     },
     CommandSpec {

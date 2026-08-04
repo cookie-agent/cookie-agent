@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 arc-swap.workspace = true
+cookie_agent_identity = { version = "=0.1.0", path = "../identity" }
 http.workspace = true
 jiff.workspace = true
 futures-util.workspace = true
@@ -30,8 +31,11 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+toml.workspace = true
+url.workspace = true
 uuid.workspace = true
 libc.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

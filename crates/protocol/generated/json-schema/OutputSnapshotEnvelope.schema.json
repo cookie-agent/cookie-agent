@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OutputSnapshotEnvelope",
+  "type": "object",
+  "properties": {
+    "snapshot": {
+      "$ref": "#/$defs/OutputSnapshot"
+    },
+    "stream": {
+      "$ref": "#/$defs/OutputStream"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "stream",
+    "snapshot"
+  ],
+  "$defs": {
+    "OutputDelta": {
+      "type": "object",
+      "properties": {
+        "byte_offset": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "call_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "data": {
+          "type": "string"
+        },
+        "stream": {
+          "$ref": "#/$defs/OutputStream"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "call_id",
+        "stream",
+        "byte_offset",
+        "data"
+      ]
+    },
+    "OutputSnapshot": {
+      "type": "object",
+      "properties": {
+        "call_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "chunks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OutputDelta"
+          }
+        },
+        "end_offset": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "start_offset": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "call_id",
+        "start_offset",
+        "end_offset",
+        "chunks"
+      ]
+    },
+    "OutputStream": {
+      "type": "string",
+      "enum": [
+        "stdout",
+        "stderr"
+      ]
+    }
+  }
+}

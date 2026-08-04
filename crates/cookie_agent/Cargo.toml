@@ -13,6 +13,10 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+default = ["tui"]
+tui = ["dep:cookie_agent_tui"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
@@ -22,9 +26,14 @@ cookie_agent_models = { version = "=0.1.0", path = "../models" }
 cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
 cookie_agent_server = { version = "=0.1.0", path = "../server" }
 cookie_agent_tools = { version = "=0.1.0", path = "../tools" }
-cookie_agent_tui = { version = "=0.1.0", path = "../tui" }
+cookie_agent_tui = { version = "=0.1.0", path = "../tui", optional = true }
+futures-util.workspace = true
 libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 tracing-subscriber.workspace = true
+url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true

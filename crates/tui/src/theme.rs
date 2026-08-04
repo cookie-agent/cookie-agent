@@ -204,17 +204,20 @@ impl Theme {
         )
     }
 
-    /// Inline code in assistant Markdown: same background as the surrounding
-    /// text, distinguished by a semantic foreground and bold. Backtick/code
-    /// styling never relies on color alone — the source backticks stay
-    /// visible, and the modifier carries the distinction in mono terminals.
+    /// Inline code in assistant Markdown: a distinct semantic background
+    /// with a readable foreground, never color-only — the source backticks
+    /// stay visible, and the bold modifier carries the distinction in mono
+    /// terminals.
     pub fn inline_code(&self) -> Style {
-        self.semantic(
-            (255, 175, 100),
-            Color::Yellow,
-            Color::LightYellow,
-            Modifier::BOLD,
-        )
+        let foreground =
+            self.semantic((255, 175, 100), Color::Yellow, Color::Black, Modifier::BOLD);
+        let background = match self.key.colors {
+            ColorLevel::None => None,
+            _ if self.key.kind == ThemeKind::HighContrast => Some(Color::LightYellow),
+            ColorLevel::Ansi16 => Some(Color::Black),
+            ColorLevel::Ansi256 | ColorLevel::TrueColor => self.quantize_rgb(48, 52, 70),
+        };
+        background.map_or(foreground, |background| foreground.bg(background))
     }
 
     pub fn code_border(&self) -> Style {
@@ -418,24 +421,32 @@ default.warning: fg=Some(Rgb(255, 205, 90)) bg=None bold=true italic=false under
 contrast.warning: fg=Some(LightYellow) bg=None bold=true italic=false underline=false dim=false reverse=false
 mono.warning: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
 contrast.heading: fg=Some(White) bg=None bold=true italic=false underline=true dim=false reverse=false
-default.inline_code: fg=Some(Rgb(255, 175, 100)) bg=None bold=true italic=false underline=false dim=false reverse=false
-contrast.inline_code: fg=Some(LightYellow) bg=None bold=true italic=false underline=false dim=false reverse=false
+default.inline_code: fg=Some(Rgb(255, 175, 100)) bg=Some(Rgb(48, 52, 70)) bold=true italic=false underline=false dim=false reverse=false
+contrast.inline_code: fg=Some(Black) bg=Some(LightYellow) bold=true italic=false underline=false dim=false reverse=false
 mono.link: fg=None bg=None bold=true italic=false underline=true dim=false reverse=false
 mono.inline_code: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
 "#);
     }
 
     #[test]
-    fn inline_code_never_sets_a_contrasting_background() {
-        for theme in [
-            Theme::new(ThemeKind::Default, ColorLevel::TrueColor),
-            Theme::new(ThemeKind::Default, ColorLevel::Ansi256),
-            Theme::new(ThemeKind::Default, ColorLevel::Ansi16),
-            Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
-            Theme::new(ThemeKind::Mono, ColorLevel::None),
+    fn inline_code_sets_a_background_in_color_themes_only() {
+        for (theme, has_background) in [
+            (Theme::new(ThemeKind::Default, ColorLevel::TrueColor), true),
+            (Theme::new(ThemeKind::Default, ColorLevel::Ansi256), true),
+            (Theme::new(ThemeKind::Default, ColorLevel::Ansi16), true),
+            (
+                Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
+                true,
+            ),
+            (Theme::new(ThemeKind::Mono, ColorLevel::None), false),
         ] {
             let style = theme.inline_code();
-            assert_eq!(style.bg, None, "no background: {:?}", theme.key());
+            assert_eq!(
+                style.bg.is_some(),
+                has_background,
+                "background: {:?}",
+                theme.key()
+            );
             assert!(
                 !style.add_modifier.contains(Modifier::REVERSED),
                 "no reverse video: {:?}",

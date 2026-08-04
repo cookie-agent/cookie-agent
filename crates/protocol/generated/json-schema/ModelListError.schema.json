@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModelListError",
+  "type": "object",
+  "properties": {
+    "code": {
+      "$ref": "#/$defs/ModelListErrorCode"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "code"
+  ],
+  "$defs": {
+    "ModelListErrorCode": {
+      "type": "string",
+      "enum": [
+        "model_snapshot_unavailable",
+        "model_snapshot_invalid"
+      ]
+    }
+  }
+}

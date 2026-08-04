@@ -1,6 +1,8 @@
 //! Engine-owned retry, fallback, and protocol error policy for Oven models.
 
-use cookie_agent_protocol::{ModelErrorKind, ModelErrorStage, ModelErrorSummary};
+use cookie_agent_protocol::{
+    ModelErrorKind, ModelErrorStage, ModelErrorSummary, SafeCode, SafeDisplayText, SafeErrorMessage,
+};
 use oven_sdk::{ErrorStage, ModelError, ModelErrorKind as OvenErrorKind};
 
 /// The action the engine takes after one model attempt fails.
@@ -46,18 +48,65 @@ pub(crate) fn classify(error: &ModelError) -> ErrorPolicy {
 pub(crate) fn summary(error: &ModelError) -> ModelErrorSummary {
     ModelErrorSummary {
         kind: error_kind(error.kind),
-        message: error.message.clone(),
+        message: SafeErrorMessage::new(sanitize(&error.message, SafeErrorMessage::MAX_BYTES))
+            .expect("sanitized model error"),
         retryable: error.retryable,
         stage: error_stage(error.diagnostics.stage),
         http_status: error.diagnostics.http_status,
         bytes_received: error.diagnostics.bytes_received,
-        vendor_code: error.diagnostics.vendor_code.clone(),
-        request_id: error.diagnostics.request_id.clone(),
+        vendor_code: error
+            .diagnostics
+            .vendor_code
+            .as_deref()
+            .and_then(|value| SafeCode::new(normalize_code(value)).ok()),
+        request_id: error.diagnostics.request_id.as_deref().and_then(|value| {
+            SafeDisplayText::new(sanitize(value, SafeDisplayText::MAX_BYTES)).ok()
+        }),
         retry_after_ms: error
             .diagnostics
             .retry_after
             .and_then(|duration| u64::try_from(duration.as_millis()).ok()),
     }
+}
+
+fn sanitize(value: &str, maximum: usize) -> String {
+    let mut output = String::new();
+    for character in value.chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if output.len() + character.len_utf8() > maximum {
+            break;
+        }
+        output.push(character);
+    }
+    if output.is_empty() {
+        "unavailable".into()
+    } else {
+        output
+    }
+}
+
+fn normalize_code(value: &str) -> String {
+    let mut code = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    code.truncate(SafeCode::MAX_BYTES);
+    if code.starts_with(|character: char| {
+        !character.is_ascii_lowercase() && !character.is_ascii_digit()
+    }) {
+        code.insert(0, 'x');
+    }
+    code
 }
 
 const fn error_kind(kind: OvenErrorKind) -> ModelErrorKind {

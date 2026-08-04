@@ -1,0 +1,8 @@
+{
+  "name": "cookie-agent-protocol-binding-check",
+  "private": true,
+  "version": "0.0.0",
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OutputDelta",
+  "type": "object",
+  "properties": {
+    "byte_offset": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "call_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "data": {
+      "type": "string"
+    },
+    "stream": {
+      "$ref": "#/$defs/OutputStream"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "call_id",
+    "stream",
+    "byte_offset",
+    "data"
+  ],
+  "$defs": {
+    "OutputStream": {
+      "type": "string",
+      "enum": [
+        "stdout",
+        "stderr"
+      ]
+    }
+  }
+}

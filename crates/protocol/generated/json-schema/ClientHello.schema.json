@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ClientHello",
+  "type": "object",
+  "properties": {
+    "protocol_version": {
+      "type": "integer",
+      "const": 7
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "protocol_version"
+  ]
+}

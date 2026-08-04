@@ -1,0 +1,182 @@
+---
+source: crates/protocol/src/tests.rs
+expression: schema_for!(SessionMeta)
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionMeta",
+  "type": "object",
+  "properties": {
+    "creation_selection": {
+      "$ref": "#/$defs/RunSelection"
+    },
+    "cwd_identity": {
+      "description": "Opaque canonical workspace identity.",
+      "type": "string",
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+    },
+    "last_event_seq": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 1
+    },
+    "meta_schema_version": {
+      "type": "integer",
+      "const": 7
+    },
+    "origin": {
+      "$ref": "#/$defs/SessionOrigin"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "status": {
+      "$ref": "#/$defs/SessionStatus"
+    },
+    "title": {
+      "description": "Nonblank control-free UTF-8 session title.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 512,
+      "minLength": 1
+    },
+    "title_updated_seq": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "meta_schema_version",
+    "session_id",
+    "origin",
+    "cwd_identity",
+    "creation_selection",
+    "title",
+    "title_updated_seq",
+    "last_event_seq",
+    "status"
+  ],
+  "$defs": {
+    "RunSelection": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+        },
+        "model": {
+          "description": "One exact base or named-variant model selection.",
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 3,
+              "pattern": "^[a-z0-9._-]{1,128}/[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+            },
+            "variant": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^(?!base$)[a-z0-9._-]+$"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "variant"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "agent",
+        "model"
+      ]
+    },
+    "SessionOrigin": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "root"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "depth": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "parent_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "parent_session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "parent_tool_call_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "root_session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "delegated"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "root_session_id",
+            "parent_session_id",
+            "parent_run_id",
+            "parent_tool_call_id",
+            "invocation_id",
+            "depth"
+          ]
+        }
+      ]
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ]
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Request",
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/JsonRpcId"
+    },
+    "jsonrpc": {
+      "type": "string",
+      "const": "2.0"
+    },
+    "method": {
+      "type": "string"
+    },
+    "params": true
+  },
+  "additionalProperties": false,
+  "required": [
+    "jsonrpc",
+    "id",
+    "method"
+  ],
+  "$defs": {
+    "JsonRpcId": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    }
+  }
+}

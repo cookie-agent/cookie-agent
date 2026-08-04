@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunToolStdinParams",
+  "type": "object",
+  "properties": {
+    "call_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "data": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "eof": {
+      "type": "boolean"
+    },
+    "run_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "call_id",
+    "eof"
+  ]
+}

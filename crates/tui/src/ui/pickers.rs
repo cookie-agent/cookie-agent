@@ -1,4 +1,4 @@
-//! Session/profile/provider picker presentation, filtering, and tree flattening.
+//! Session/agent/provider picker presentation, filtering, and tree flattening.
 
 use std::collections::HashSet;
 
@@ -32,7 +32,8 @@ pub(crate) fn provider_matches<'a>(
         });
     }
     let query = query.trim().to_lowercase();
-    if provider.name.to_lowercase().contains(&query) || provider.id.to_lowercase().contains(&query)
+    if provider.name.as_str().to_lowercase().contains(&query)
+        || provider.id.as_str().to_lowercase().contains(&query)
     {
         return Some(ProviderMatch {
             provider,
@@ -41,8 +42,9 @@ pub(crate) fn provider_matches<'a>(
     }
     if provider
         .documentation_url
-        .as_deref()
-        .is_some_and(|url| url.to_lowercase().contains(&query))
+        .as_str()
+        .to_lowercase()
+        .contains(&query)
     {
         return Some(ProviderMatch {
             provider,
@@ -51,8 +53,8 @@ pub(crate) fn provider_matches<'a>(
     }
     if provider
         .api
-        .as_deref()
-        .is_some_and(|api| api.to_lowercase().contains(&query))
+        .as_ref()
+        .is_some_and(|api| api.as_str().to_lowercase().contains(&query))
     {
         return Some(ProviderMatch {
             provider,
@@ -62,7 +64,7 @@ pub(crate) fn provider_matches<'a>(
     if let Some(field) = provider
         .credential_fields
         .iter()
-        .find(|field| field.to_lowercase().contains(&query))
+        .find(|field| field.as_str().to_lowercase().contains(&query))
     {
         return Some(ProviderMatch {
             provider,
@@ -72,7 +74,7 @@ pub(crate) fn provider_matches<'a>(
     None
 }
 
-/// Session picker matching over title, profile name, and full session ID.
+/// Session picker matching over title, agent ID, and full session ID.
 pub(crate) fn session_matches(session: &SessionMeta, query: &str) -> bool {
     if query.trim().is_empty() {
         return true;
@@ -82,8 +84,17 @@ pub(crate) fn session_matches(session: &SessionMeta, query: &str) -> bool {
         .title
         .as_ref()
         .is_some_and(|title| title.to_string().to_lowercase().contains(&query))
-        || session.profile.name.to_lowercase().contains(&query)
-        || session.id.to_string().to_lowercase().contains(&query)
+        || session
+            .creation_selection
+            .agent
+            .as_str()
+            .to_lowercase()
+            .contains(&query)
+        || session
+            .session_id
+            .to_string()
+            .to_lowercase()
+            .contains(&query)
 }
 
 /// First eight characters of a session ID for subdued secondary display.
@@ -196,8 +207,8 @@ pub(crate) fn flatten_tree(
     collapsed: &HashSet<SessionId>,
     entries: &mut Vec<(SessionId, SessionMeta, usize)>,
 ) {
-    entries.push((tree.session.id, tree.session.clone(), depth));
-    if !collapsed.contains(&tree.session.id) {
+    entries.push((tree.session.session_id, tree.session.clone(), depth));
+    if !collapsed.contains(&tree.session.session_id) {
         for child in &tree.children {
             flatten_tree(child, depth + 1, collapsed, entries);
         }
@@ -215,40 +226,44 @@ fn inner_rect(area: Rect) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use cookie_agent_protocol::{CatalogProvider, SessionId, SessionMeta, SessionTitle};
+    use cookie_agent_protocol::{
+        AgentId, CatalogIdentifier, CatalogText, CredentialFieldName, ModelSelection, RunSelection,
+        SessionId, SessionMeta, SessionMetaSchemaVersion, SessionOrigin, SessionStatus,
+    };
 
-    use super::{clamp_tree_view, provider_matches, session_matches, short_id};
+    use super::{CatalogProvider, clamp_tree_view, provider_matches, session_matches, short_id};
 
     fn provider() -> CatalogProvider {
         CatalogProvider {
-            id: "acme-ai".into(),
-            name: "Acme AI".into(),
-            credential_fields: vec!["ACME_API_KEY".into()],
-            npm: None,
-            api: Some("https://api.acme.example".into()),
-            documentation_url: Some("https://docs.acme.example/setup".into()),
+            id: CatalogIdentifier::new("acme-ai").expect("provider id"),
+            name: CatalogText::new("Acme AI").expect("provider name"),
+            credential_fields: vec![
+                CredentialFieldName::new("ACME_API_KEY").expect("credential field"),
+            ],
+            npm: CatalogText::new("@acme/ai").expect("npm"),
+            api: Some(CatalogText::new("https://api.acme.example").expect("api")),
+            documentation_url: CatalogText::new("https://docs.acme.example/setup").expect("docs"),
         }
     }
 
     fn session_meta(session_id: SessionId) -> SessionMeta {
-        cookie_agent_protocol::SessionMeta {
-            id: session_id,
-            origin: cookie_agent_protocol::SessionOrigin::Root,
-            cwd: "/workspace".into(),
-            profile: cookie_agent_protocol::ProfileSnapshot {
-                name: "primary".into(),
-                agent_type: cookie_agent_protocol::AgentType::Primary,
-                models: Vec::new(),
-                tools: Vec::new(),
-                delegation: cookie_agent_protocol::DelegationSnapshot {
-                    enabled: false,
-                    allowed_profiles: Vec::new(),
-                    depth_limit: cookie_agent_protocol::DepthLimit::Finite(0),
-                    result_limit_bytes: 0,
+        SessionMeta {
+            meta_schema_version: SessionMetaSchemaVersion::current(),
+            session_id,
+            origin: SessionOrigin::Root,
+            cwd_identity: cookie_agent_protocol::CwdIdentity::new("/workspace")
+                .expect("cwd identity"),
+            creation_selection: RunSelection {
+                agent: AgentId::new("primary").expect("agent id"),
+                model: ModelSelection {
+                    model: "provider/model".parse().expect("model key"),
+                    variant: None,
                 },
-                permission_rules: Vec::new(),
             },
             title: None,
+            title_updated_seq: 0,
+            last_event_seq: 1,
+            status: SessionStatus::Idle,
         }
     }
 
@@ -279,11 +294,14 @@ mod tests {
     }
 
     #[test]
-    fn session_filter_matches_title_profile_and_full_id_but_not_short_id() {
+    fn session_filter_matches_title_agent_and_full_id_but_not_short_id() {
         let session_id = SessionId::new_v7();
         let mut session = SessionMeta {
-            id: session_id,
-            title: Some(SessionTitle::new("Quarterly report cleanup").expect("title")),
+            session_id,
+            title: Some(
+                cookie_agent_protocol::SessionTitle::new("Quarterly report cleanup")
+                    .expect("title"),
+            ),
             ..session_meta(session_id)
         };
         assert!(session_matches(&session, "quarterly"));

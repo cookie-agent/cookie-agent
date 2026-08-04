@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApprovalListParams",
+  "type": "object",
+  "properties": {
+    "root_session_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ApprovalStatus"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "root_session_id"
+  ],
+  "$defs": {
+    "ApprovalStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "escalated",
+        "approved",
+        "rejected",
+        "cancelled",
+        "expired"
+      ]
+    }
+  }
+}

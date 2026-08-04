@@ -13,13 +13,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use cookie_agent_config::PolicySnapshot;
 use cookie_agent_protocol::{
-    ChildSummary, Event, ProfileIdentity, ProfileSnapshot, RunId, SessionId, SessionMeta,
-    SessionOrigin, SessionRenameRecord, SessionStatus, SessionTitleCommit, SessionTree, ToolCallId,
-    Usage,
+    AgentSnapshot, ChildSummary, ClientRunId, EventPayload, RunId, RunSelection, SessionId,
+    SessionMeta, SessionOrigin, SessionRenameRecord, SessionStatus, SessionTitleChange,
+    SessionTree, Sha256Digest, ToolCallId, Usage,
 };
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -47,13 +45,13 @@ pub enum SessionError {
     Missing(SessionId),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct RunProjection {
     pub id: RunId,
-    pub client_run_id: String,
+    pub client_run_id: ClientRunId,
     pub input: String,
-    pub profile: ProfileSnapshot,
-    pub current_profile: ProfileIdentity,
+    pub selection: RunSelection,
+    pub agent: AgentSnapshot,
     pub status: SessionStatus,
     pub final_text: Option<String>,
     pub pending_calls: HashMap<ToolCallId, String>,
@@ -62,7 +60,8 @@ pub struct RunProjection {
 #[derive(Clone, Debug)]
 pub struct SessionProjection {
     pub meta: SessionMeta,
-    pub policy: PolicySnapshot,
+    pub creation_agent: AgentSnapshot,
+    pub model_snapshot_fingerprint: Sha256Digest,
     pub status: SessionStatus,
     pub usage: Option<Usage>,
     pub runs: HashMap<RunId, RunProjection>,
@@ -70,17 +69,11 @@ pub struct SessionProjection {
     pub log: Arc<EventLog>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct MetaCache {
-    meta: SessionMeta,
-    status: SessionStatus,
-    usage: Option<Usage>,
-}
-
 #[derive(Debug)]
 pub struct SessionStore {
     project_dir: PathBuf,
     sessions_dir: PathBuf,
+    cwd: PathBuf,
     sessions: Mutex<HashMap<SessionId, SessionProjection>>,
     creation: Mutex<()>,
 }
@@ -106,6 +99,7 @@ impl SessionStore {
         let store = Arc::new(Self {
             project_dir,
             sessions_dir: sessions_dir.clone(),
+            cwd: cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned()),
             sessions: Mutex::new(HashMap::new()),
             creation: Mutex::new(()),
         });
@@ -144,51 +138,39 @@ impl SessionStore {
     pub fn create(
         &self,
         meta: SessionMeta,
-        policy: PolicySnapshot,
+        creation: EventPayload,
     ) -> Result<Arc<EventLog>, SessionError> {
-        self.create_with_status(meta, policy).map(|(log, _)| log)
+        self.create_with_status(meta, creation).map(|(log, _)| log)
     }
 
     /// Creates a session atomically and reports whether this caller won creation.
     pub fn create_with_status(
         &self,
         meta: SessionMeta,
-        policy: PolicySnapshot,
+        creation: EventPayload,
     ) -> Result<(Arc<EventLog>, bool), SessionError> {
         let _creation = self
             .creation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let final_dir = self.sessions_dir.join(meta.id.to_string());
+        let final_dir = self.sessions_dir.join(meta.session_id.to_string());
         if final_dir.exists() {
-            return Ok((self.get(meta.id)?.log, false));
+            return Ok((self.get(meta.session_id)?.log, false));
         }
-        let temporary = self
-            .sessions_dir
-            .join(format!(".{}.{}.tmp", meta.id, SessionId::new_v7()));
+        let temporary =
+            self.sessions_dir
+                .join(format!(".{}.{}.tmp", meta.session_id, SessionId::new_v7()));
         fs::create_dir_all(&temporary).map_err(|source| SessionError::Io {
             path: temporary.clone(),
             source,
         })?;
-        let _log = EventLog::create(
-            temporary.join("events.jsonl"),
-            meta.id,
-            Event::SessionCreated { meta: meta.clone() },
-            policy.clone(),
-        )?;
-        write_cache(
-            &temporary.join("meta.json"),
-            &MetaCache {
-                meta: meta.clone(),
-                status: SessionStatus::Idle,
-                usage: None,
-            },
-        )?;
+        let _log = EventLog::create(temporary.join("events.jsonl"), meta.session_id, creation)?;
+        write_cache(&temporary.join("meta.json"), &meta)?;
         fsync_directory(&temporary)?;
         if let Err(source) = fs::rename(&temporary, &final_dir) {
             if source.kind() == std::io::ErrorKind::AlreadyExists || final_dir.exists() {
                 let _ = fs::remove_dir_all(&temporary);
-                return Ok((self.get(meta.id)?.log, false));
+                return Ok((self.get(meta.session_id)?.log, false));
             }
             return Err(SessionError::Io {
                 path: final_dir.clone(),
@@ -196,12 +178,12 @@ impl SessionStore {
             });
         }
         fsync_directory(&self.sessions_dir)?;
-        let final_log = EventLog::open(final_dir.join("events.jsonl"), meta.id)?;
+        let final_log = EventLog::open(final_dir.join("events.jsonl"), meta.session_id)?;
         let result = projection(final_log.clone())?;
         self.sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(meta.id, result);
+            .insert(meta.session_id, result);
         Ok((final_log, true))
     }
 
@@ -219,11 +201,7 @@ impl SessionStore {
         let rebuilt = projection(current.log.clone())?;
         write_cache(
             &self.sessions_dir.join(id.to_string()).join("meta.json"),
-            &MetaCache {
-                meta: rebuilt.meta.clone(),
-                status: rebuilt.status,
-                usage: rebuilt.usage.clone(),
-            },
+            &rebuilt.meta,
         )?;
         self.sessions
             .lock()
@@ -246,6 +224,10 @@ impl SessionStore {
         &self.project_dir
     }
     #[must_use]
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+    #[must_use]
     pub fn session_dir(&self, id: SessionId) -> PathBuf {
         self.sessions_dir.join(id.to_string())
     }
@@ -257,13 +239,10 @@ impl SessionStore {
                 SessionOrigin::Delegated {
                     parent_session_id, ..
                 } if parent_session_id == parent => Some(ChildSummary {
-                    id: child.meta.id,
-                    profile: child.meta.profile.name.clone(),
-                    task_excerpt: child
-                        .runs
-                        .values()
-                        .min_by_key(|run| run.id.to_string())
-                        .map(|run| run.input.chars().take(160).collect()),
+                    session_id: child.meta.session_id,
+                    agent: child.meta.creation_selection.agent.clone(),
+                    title: child.meta.title.clone(),
+                    title_updated_seq: child.meta.title_updated_seq,
                     status: child.status,
                     usage: child.usage,
                 }),
@@ -279,56 +258,82 @@ impl SessionStore {
             children: self
                 .children(id)
                 .into_iter()
-                .map(|child| self.tree(child.id))
+                .map(|child| self.tree(child.session_id))
                 .collect::<Result<Vec<_>, _>>()?,
         })
     }
 }
 
 fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
-    let policy = log
-        .policy()
-        .ok_or_else(|| EventLogError::MissingCreation(log.path().to_owned()))?;
     let events = log.events();
-    let mut meta = match &events.first().expect("creation checked by EventLog").event {
-        Event::SessionCreated { meta } => meta.clone(),
-        _ => unreachable!(),
+    let (origin, cwd_identity, creation_selection, creation_agent, model_snapshot_fingerprint) =
+        match &events
+            .first()
+            .expect("creation checked by EventLog")
+            .payload
+        {
+            EventPayload::SessionCreated {
+                origin,
+                cwd_identity,
+                creation_selection,
+                creation_agent,
+                model_snapshot_fingerprint,
+            } => (
+                origin.clone(),
+                cwd_identity.clone(),
+                creation_selection.clone(),
+                creation_agent.as_ref().clone(),
+                model_snapshot_fingerprint.clone(),
+            ),
+            _ => unreachable!(),
+        };
+    let mut meta = SessionMeta {
+        meta_schema_version: cookie_agent_protocol::SessionMetaSchemaVersion::current(),
+        session_id: events[0].session_id,
+        origin,
+        cwd_identity,
+        creation_selection,
+        title: None,
+        title_updated_seq: 0,
+        last_event_seq: events.last().map_or(1, |event| event.seq),
+        status: SessionStatus::Idle,
     };
     let mut runs = HashMap::new();
     let mut status = SessionStatus::Idle;
     let mut usage = None;
     let mut rename_records = HashMap::new();
-    let mut automatic_title = meta.title.clone();
+    let mut automatic_title = None;
     let mut user_title: Option<Option<cookie_agent_protocol::SessionTitle>> = None;
     for envelope in &events {
-        if let Event::SessionTitleCommitted { commit, .. } = &envelope.event {
-            match commit {
-                SessionTitleCommit::UserSet { title, .. } => {
+        if let EventPayload::SessionTitleCommitted { change, .. } = &envelope.payload {
+            match change {
+                SessionTitleChange::UserSet { title, .. } => {
                     user_title = Some(Some(title.clone()));
                 }
-                SessionTitleCommit::UserClear { .. } => user_title = Some(None),
-                SessionTitleCommit::UserReset { .. } => user_title = None,
-                SessionTitleCommit::InternalAgentSet { title, .. }
-                | SessionTitleCommit::FallbackSet { title } => {
+                SessionTitleChange::UserClear { .. } => user_title = Some(None),
+                SessionTitleChange::UserReset { .. } => user_title = None,
+                SessionTitleChange::InternalAgentSet { title, .. }
+                | SessionTitleChange::FallbackSet { title } => {
                     automatic_title = Some(title.clone());
                 }
             }
             meta.title = user_title
                 .clone()
                 .unwrap_or_else(|| automatic_title.clone());
-            if let Some(record) = commit.user_rename_record() {
+            meta.title_updated_seq = envelope.seq;
+            if let Some(record) = change.user_rename_record() {
                 rename_records.insert(record.client_rename_id.clone(), record);
             }
         }
         let Some(run_id) = envelope.run_id else {
             continue;
         };
-        match &envelope.event {
-            Event::RunStarted {
+        match &envelope.payload {
+            EventPayload::RunStarted {
                 client_run_id,
-                input,
-                profile,
-                current_profile,
+                selection,
+                agent,
+                ..
             } => {
                 status = SessionStatus::Running;
                 runs.insert(
@@ -336,9 +341,9 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
                     RunProjection {
                         id: run_id,
                         client_run_id: client_run_id.clone(),
-                        input: input.clone(),
-                        profile: profile.clone(),
-                        current_profile: current_profile.clone(),
+                        input: String::new(),
+                        selection: selection.clone(),
+                        agent: agent.as_ref().clone(),
                         status: SessionStatus::Running,
                         final_text: None,
                         pending_calls: HashMap::new(),
@@ -346,46 +351,51 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
                 );
             }
             // User input is prompt history, not a lifecycle transition.
-            Event::UserInputSubmitted { .. } | Event::UserInputApplied { .. } => {}
-            Event::RunCompleted { final_text } => {
+            EventPayload::UserInputSubmitted { input } => {
+                if let Some(run) = runs.get_mut(&run_id)
+                    && run.input.is_empty()
+                {
+                    run.input = input.clone();
+                }
+            }
+            EventPayload::UserInputApplied { .. } => {}
+            EventPayload::RunCompleted { final_text } => {
                 if let Some(run) = runs.get_mut(&run_id) {
                     run.status = SessionStatus::Completed;
                     run.final_text = final_text.clone();
                     status = SessionStatus::Completed;
                 }
             }
-            Event::RunFailed { .. } => {
+            EventPayload::RunFailed { .. } => {
                 if let Some(run) = runs.get_mut(&run_id) {
                     run.status = SessionStatus::Failed;
                     status = SessionStatus::Failed;
                 }
             }
-            Event::RunCancelled { .. } => {
+            EventPayload::RunCancelled { .. } => {
                 if let Some(run) = runs.get_mut(&run_id) {
                     run.status = SessionStatus::Cancelled;
                     status = SessionStatus::Cancelled;
                 }
             }
-            Event::RunInterrupted { .. } => {
+            EventPayload::RunInterrupted { .. } => {
                 if let Some(run) = runs.get_mut(&run_id) {
                     run.status = SessionStatus::Interrupted;
                     status = SessionStatus::Interrupted;
                 }
             }
-            Event::ToolCallStarted {
-                tool_call_id, tool, ..
-            } => {
+            EventPayload::ToolCallStarted { start } => {
                 if let Some(run) = runs.get_mut(&run_id) {
-                    run.pending_calls.insert(*tool_call_id, tool.clone());
+                    let tool = turns_tool_name(&events, &start.owner).unwrap_or_default();
+                    run.pending_calls.insert(start.tool_call_id, tool);
                 }
             }
-            Event::ToolCallCompleted { tool_call_id, .. }
-            | Event::ToolCallFailed { tool_call_id, .. } => {
+            EventPayload::ToolCallTerminated { termination } => {
                 if let Some(run) = runs.get_mut(&run_id) {
-                    run.pending_calls.remove(tool_call_id);
+                    run.pending_calls.remove(&termination.tool_call_id);
                 }
             }
-            Event::ModelTurnCommitted { turn, .. } => {
+            EventPayload::ModelTurnCommitted { turn, .. } => {
                 let reported = &turn.usage;
                 let total = usage.get_or_insert_with(Usage::default);
                 add_usage(&mut total.input_tokens, reported.input_tokens);
@@ -411,9 +421,11 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
             _ => {}
         }
     }
+    meta.status = status;
     Ok(SessionProjection {
         meta,
-        policy,
+        creation_agent,
+        model_snapshot_fingerprint,
         status,
         usage,
         runs,
@@ -428,7 +440,28 @@ fn add_usage(total: &mut Option<u64>, value: Option<u64>) {
     }
 }
 
-fn write_cache(path: &Path, cache: &MetaCache) -> Result<(), SessionError> {
+fn turns_tool_name(
+    events: &[cookie_agent_protocol::StoredEvent],
+    owner: &cookie_agent_protocol::AssistantToolCallRef,
+) -> Option<String> {
+    events.iter().find_map(|event| match &event.payload {
+        EventPayload::ModelTurnCommitted {
+            model_turn_seq,
+            turn,
+            ..
+        } if *model_turn_seq == owner.model_turn_seq => {
+            match turn.content.get(owner.content_index as usize) {
+                Some(cookie_agent_protocol::PersistedAssistantPart::ToolCall { name, .. }) => {
+                    Some(name.as_str().to_owned())
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    })
+}
+
+fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
     let bytes = serde_json::to_vec_pretty(cache).map_err(|source| SessionError::Json {
         path: path.to_owned(),
         source,

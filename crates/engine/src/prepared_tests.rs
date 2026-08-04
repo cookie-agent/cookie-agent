@@ -5,10 +5,10 @@ use std::sync::{
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    ActionKind, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
-    ApprovalResourceSource, ApprovalTrigger, Effect, PreparedApprovalResource,
-    PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
-    PreparedResourceDigest, PreparedResourceIdentity, Sha256Digest,
+    ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
+    ApprovalResourceSource, ApprovalTrigger, PermissionAction, PermissionEffect,
+    PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
+    PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, Sha256Digest,
 };
 
 use crate::{PreparedExecutor, PreparedTool, ToolError, ToolExecutionContext, ToolResult};
@@ -36,11 +36,11 @@ fn operation(lifetime: PreparedBindingLifetime) -> PreparedOperationIdentity {
     PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"normalized"),
         vec![ApprovalCapability {
-            action: ActionKind::Bash,
+            action: PermissionAction::Bash,
             operation: PreparedCapabilityOperation::new("bash:execute").expect("operation"),
         }],
         vec![PreparedApprovalResource {
-            capability: ActionKind::Bash,
+            capability: PermissionAction::Bash,
             canonical: PreparedResourceIdentity::new("command:test").expect("identity"),
             binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"binding"),
             binding_lifetime: lifetime,
@@ -58,12 +58,12 @@ fn evaluation(operation: &PreparedOperationIdentity) -> Vec<ApprovalEvaluation> 
         .iter()
         .map(|resource| ApprovalEvaluation {
             resource_digest: resource.binding_digest.clone(),
-            effect: Effect::Ask,
+            effect: PermissionEffect::Ask,
             trace: cookie_agent_protocol::DecisionTrace {
                 action: resource.capability,
                 normalized_resource: resource.canonical.as_str().into(),
                 candidates: Vec::new(),
-                effect: Effect::Ask,
+                effect: PermissionEffect::Ask,
                 precedence_reason: "test".into(),
             },
         })
@@ -134,11 +134,11 @@ fn process_local_filesystem_style_binding_cannot_enable_tree_grants() {
     let operation = PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"args"),
         vec![ApprovalCapability {
-            action: ActionKind::Read,
+            action: PermissionAction::Read,
             operation: PreparedCapabilityOperation::new("read:read").expect("operation"),
         }],
         vec![PreparedApprovalResource {
-            capability: ActionKind::Read,
+            capability: PermissionAction::Read,
             canonical: PreparedResourceIdentity::new("file:test").expect("identity"),
             binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"inode"),
             binding_lifetime: PreparedBindingLifetime::ProcessLocal,

@@ -10,13 +10,19 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+cookie_agent_identity = { version = "=0.1.0", path = "../identity" }
 cookie_agent_models = { version = "=0.1.0", path = "../models" }
-figment.workspace = true
+libc.workspace = true
+rustix.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
+cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
 insta.workspace = true
 oven-sdk.workspace = true
 serde_json.workspace = true

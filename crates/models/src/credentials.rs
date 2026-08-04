@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use cookie_agent_identity::ProviderId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
@@ -21,7 +22,7 @@ const MAX_STORE_BYTES: u64 = 16 * 1024 * 1024;
 #[serde(deny_unknown_fields)]
 pub struct CredentialConnectRequest {
     pub client_connect_id: String,
-    pub provider_id: String,
+    pub provider_id: ProviderId,
     pub catalog_revision: String,
     pub credentials: BTreeMap<String, String>,
 }
@@ -43,7 +44,7 @@ impl fmt::Debug for CredentialConnectRequest {
 #[serde(deny_unknown_fields)]
 pub struct CredentialConnectReceipt {
     pub client_connect_id: String,
-    pub provider_id: String,
+    pub provider_id: ProviderId,
     pub credential_fields: Vec<String>,
     pub connected_at: String,
     pub catalog_revision: String,
@@ -53,11 +54,11 @@ pub struct CredentialConnectReceipt {
 /// One stored provider connection. Debug never exposes values.
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct StoredConnection {
-    pub provider_id: String,
-    pub credentials: BTreeMap<String, String>,
-    pub connected_at: String,
-    pub catalog_revision: String,
+pub(crate) struct StoredConnection {
+    provider_id: ProviderId,
+    pub(crate) credentials: BTreeMap<String, String>,
+    connected_at: String,
+    pub(crate) catalog_revision: String,
 }
 
 impl fmt::Debug for StoredConnection {
@@ -79,7 +80,7 @@ impl fmt::Debug for StoredConnection {
 #[derive(Clone)]
 pub struct CredentialSnapshot {
     generation: Uuid,
-    connections: BTreeMap<String, StoredConnection>,
+    connections: BTreeMap<ProviderId, StoredConnection>,
 }
 
 impl CredentialSnapshot {
@@ -89,7 +90,7 @@ impl CredentialSnapshot {
     }
 
     #[must_use]
-    pub fn connections(&self) -> &BTreeMap<String, StoredConnection> {
+    pub(crate) fn connections(&self) -> &BTreeMap<ProviderId, StoredConnection> {
         &self.connections
     }
 }
@@ -268,7 +269,7 @@ struct StoreState {
     generation: Uuid,
     updated_at: String,
     hmac_key: String,
-    connections: BTreeMap<String, StoredConnection>,
+    connections: BTreeMap<ProviderId, StoredConnection>,
     receipts: BTreeMap<String, StoredReceipt>,
 }
 
@@ -300,7 +301,7 @@ impl StoreState {
             if provider != &connection.provider_id || connection.credentials.is_empty() {
                 return Err(CredentialStoreError::InvalidStore);
             }
-            validate_text(provider)?;
+            validate_text(provider.as_str())?;
             for (name, value) in &connection.credentials {
                 validate_text(name)?;
                 if value.is_empty() {
@@ -663,7 +664,7 @@ fn path_error(error: rustix::io::Errno) -> CredentialStoreError {
 
 fn validate_request(request: &CredentialConnectRequest) -> Result<(), CredentialStoreError> {
     validate_text(&request.client_connect_id)?;
-    validate_text(&request.provider_id)?;
+    validate_text(request.provider_id.as_str())?;
     validate_text(&request.catalog_revision)?;
     if request.credentials.is_empty() || request.credentials.len() > 32 {
         return Err(CredentialStoreError::InvalidRequest);

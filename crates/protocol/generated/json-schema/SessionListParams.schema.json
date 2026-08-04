@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionListParams",
+  "type": "object",
+  "properties": {
+    "cwd_identity": {
+      "description": "Opaque canonical workspace identity.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+    }
+  },
+  "additionalProperties": false
+}

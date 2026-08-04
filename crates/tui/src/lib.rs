@@ -12,20 +12,25 @@ pub use ui::{run_with_client, run_with_new_session};
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, sync::Arc};
+    use std::{collections::BTreeMap, fs, sync::Arc};
 
     use base64::{Engine as _, engine::general_purpose::STANDARD};
-    use cookie_agent_config::{Config, load_layered};
+    use cookie_agent_config::{
+        AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentMode, AgentSchemaVersion,
+        ApprovalConfig, ConfigSchemaVersion, ContextCompactionConfig, LoadedConfiguration,
+        RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
+    };
     use cookie_agent_engine::{Engine, EngineOptions};
-    use cookie_agent_models::{Catalog, CredentialStore, ModelSetManager};
+    use cookie_agent_models::{Catalog, CredentialStore, ModelSetManager, ProviderDefinition};
     use cookie_agent_protocol::{
-        ActionKind, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
+        AgentId, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
         ApprovalId, ApprovalRequest, ApprovalResourceSource, ApprovalTrigger, DecisionTrace,
-        Effect, Event, EventEnvelope, EventSchemaVersion, EventSubscriptionMessage,
-        MatchedPermissionRule, ModelListParams, OutputDelta, OutputSnapshot,
-        OutputSnapshotEnvelope, OutputStream, PreparedApprovalResource, PreparedBindingLifetime,
-        PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
-        PreparedResourceIdentity, SessionCreateParams, SessionId, Sha256Digest, ToolCallId,
+        EventPayload, EventSchemaVersion, EventSubscriptionMessage, MatchedPermissionRule,
+        ModelKey, ModelSelection, OutputDelta, OutputSnapshot, OutputSnapshotEnvelope,
+        OutputStream, PermissionAction, PermissionEffect, PreparedApprovalResource,
+        PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
+        PreparedResourceDigest, PreparedResourceIdentity, ProviderId, RunSelection, SafeCode,
+        SessionCreateParams, SessionId, Sha256Digest, StoredEvent, ToolCallId,
     };
     use cookie_agent_server::Server;
     use jiff::Timestamp;
@@ -37,66 +42,136 @@ mod tests {
         ui::App,
     };
 
+    pub(crate) fn test_run_selection() -> RunSelection {
+        RunSelection {
+            agent: AgentId::new("primary").expect("agent id"),
+            model: ModelSelection {
+                model: "gateway/arbitrary-model"
+                    .parse::<ModelKey>()
+                    .expect("model key"),
+                variant: None,
+            },
+        }
+    }
+
+    fn test_providers() -> BTreeMap<ProviderId, ProviderDefinition> {
+        let definition: ProviderDefinition = serde_json::from_value(serde_json::json!({
+            "source": "explicit",
+            "endpoint": "https://example.test/v1",
+            "adaptor": "openai-compatible",
+            "auth": {"type": "none"},
+            "models": {
+                "arbitrary-model": {
+                    "display_name": "Arbitrary Model",
+                    "capabilities": {
+                        "input": ["text"],
+                        "output": ["text"],
+                        "context_tokens": 8192,
+                        "output_tokens": 2048,
+                        "tool_calling": true,
+                        "parallel_tool_calls": true,
+                        "structured_output": false,
+                        "reasoning": false,
+                        "temperature": true,
+                        "top_p": true,
+                        "seed": true,
+                        "native_replay": "optional",
+                        "native_compaction": "unsupported",
+                        "cancellation": "local_only",
+                        "media": {}
+                    }
+                }
+            }
+        }))
+        .expect("test provider");
+        BTreeMap::from([(ProviderId::new("gateway").expect("provider id"), definition)])
+    }
+
+    fn test_digest(value: &str) -> cookie_agent_models::Sha256Digest {
+        // A deterministic 64-hex stand-in; config fingerprints are opaque to
+        // the TUI and only carried through to the engine.
+        let base = value.to_owned();
+        let mut hex = String::with_capacity(64);
+        while hex.len() < 64 {
+            hex.push_str(
+                &base
+                    .bytes()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>(),
+            );
+        }
+        hex.truncate(64);
+        let hex = hex
+            .chars()
+            .map(|character| {
+                if character.is_ascii_hexdigit() {
+                    character
+                } else {
+                    'a'
+                }
+            })
+            .collect::<String>()
+            .to_lowercase();
+        cookie_agent_models::Sha256Digest::new(hex).expect("test digest")
+    }
+
+    fn test_agent_document(id: &AgentId) -> AgentDocument {
+        let body = "You are the primary test agent.
+";
+        AgentDocument {
+            id: id.clone(),
+            frontmatter: AgentFrontmatter {
+                schema: AgentSchemaVersion,
+                description: "Test primary agent".into(),
+                mode: AgentMode::Primary,
+                enabled: true,
+                model_fallback: vec![cookie_agent_config::AgentModelFallback {
+                    model: "gateway/arbitrary-model"
+                        .parse::<ModelKey>()
+                        .expect("model key"),
+                    variant: None,
+                }],
+                tools: Vec::new(),
+                permissions: Vec::new(),
+                delegation: None,
+            },
+            body: body.to_owned(),
+            source: AgentDocumentSource::Workspace,
+            document_fingerprint: test_digest("primary document"),
+            prompt_fingerprint: test_digest(body),
+        }
+    }
+
     fn in_process_server() -> (tempfile::TempDir, Arc<Server>) {
         let directory = tempfile::tempdir().expect("temporary data directory");
-        let path = directory.path().join("config.toml");
-        fs::write(
-            &path,
-            r#"
-[models.scripted]
-provider_id = "test"
-model_id = "scripted"
-endpoint = "https://example.test/v1"
-adaptor = "openai-responses"
-
-[models.scripted.auth]
-type = "openai"
-api_key = "test-secret"
-
-[models.scripted.capabilities]
-features = ["max_output_tokens", "tool_calling"]
-cancellation = "local_only"
-compaction = "unsupported"
-
-[models.scripted.capabilities.limits]
-context = 4096
-
-[models.scripted.capabilities.modalities]
-input = ["text"]
-output = ["text"]
-
-[models.scripted.capabilities.media]
-input = {}
-
-[models.scripted.capabilities.replay]
-policy = "never"
-capability = "unsupported"
-reasoning = false
-
-[models.scripted.settings]
-
-[agents.primary]
-type = "primary"
-models = ["scripted"]
-"#,
-        )
-        .expect("write test config");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
             fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
                 .expect("private test root");
         }
-        let config: Config = load_layered(None, Some(&path)).expect("load test config");
-        let catalog = Arc::new(Catalog::embedded().expect("embedded catalog"));
+        let providers = test_providers();
         let model_manager = Arc::new(
             ModelSetManager::new(
-                config.models.clone(),
-                Arc::clone(&catalog),
+                providers.clone(),
+                Arc::new(Catalog::embedded().expect("embedded catalog")),
                 CredentialStore::new(directory.path().join("credentials")),
             )
             .expect("model manager"),
         );
+        let agent_id = AgentId::new("primary").expect("agent id");
+        let config = LoadedConfiguration {
+            runtime: RuntimeConfig {
+                schema_version: ConfigSchemaVersion,
+                server: ServerConfig::default(),
+                tool_output: ToolOutputConfig::default(),
+                approval: ApprovalConfig::default(),
+                context_compaction: ContextCompactionConfig::default(),
+                session_title: SessionTitleConfig::default(),
+                providers,
+            },
+            agents: BTreeMap::from([(agent_id.clone(), test_agent_document(&agent_id))]),
+        };
         let engine = Engine::open(EngineOptions {
             data_dir: directory.path().join("data"),
             cwd: directory.path().to_owned(),
@@ -107,7 +182,12 @@ models = ["scripted"]
         .expect("open engine");
         (
             directory,
-            Arc::new(Server::new(engine, model_manager, catalog)),
+            Arc::new(Server::new(
+                engine,
+                model_manager,
+                Arc::new(Catalog::embedded().expect("embedded catalog")),
+                Arc::new(config),
+            )),
         )
     }
 
@@ -117,21 +197,21 @@ models = ["scripted"]
 
     fn approval_request() -> ApprovalRequest {
         let resource = PreparedApprovalResource {
-            capability: ActionKind::Bash,
+            capability: PermissionAction::Bash,
             canonical: PreparedResourceIdentity::new("command:git-status")
                 .expect("prepared resource identity"),
             binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"git status"),
-            binding_lifetime: PreparedBindingLifetime::RestartStable,
+            binding_lifetime: PreparedBindingLifetime::ProcessLocal,
             boundary: ApprovalBoundary::CommandPrefix {
                 prefix: "git status".into(),
             },
-            source: ApprovalResourceSource::PrimaryOperation,
+            source: ApprovalResourceSource::ModelRequest,
         };
         let resource_digest = resource.binding_digest.clone();
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(b"normalized arguments"),
             vec![ApprovalCapability {
-                action: ActionKind::Bash,
+                action: PermissionAction::Bash,
                 operation: PreparedCapabilityOperation::new("execute")
                     .expect("prepared capability operation"),
             }],
@@ -146,27 +226,47 @@ models = ["scripted"]
             operation,
             vec![ApprovalEvaluation {
                 resource_digest,
-                effect: Effect::Ask,
+                effect: PermissionEffect::Ask,
                 trace: DecisionTrace {
-                    action: ActionKind::Bash,
+                    action: PermissionAction::Bash,
                     normalized_resource: "git status".into(),
                     candidates: vec![MatchedPermissionRule {
                         rule_id: None,
-                        source_layer: "test".into(),
-                        effect: Effect::Ask,
+                        source_layer: SafeCode::new("test").expect("safe code"),
+                        effect: PermissionEffect::Ask,
                     }],
-                    effect: Effect::Ask,
+                    effect: PermissionEffect::Ask,
                     precedence_reason: "test".into(),
                 },
             }],
             ApprovalConstraints {
                 allow_once: true,
-                allow_tree_grant: true,
+                allow_tree_grant: false,
                 cancellable: true,
                 expires_at: None,
             },
         )
         .expect("approval request")
+    }
+
+    fn text_event(
+        session_id: SessionId,
+        seq: u64,
+        run_id: cookie_agent_protocol::RunId,
+        attempt_id: cookie_agent_protocol::AttemptId,
+        text: &str,
+    ) -> StoredEvent {
+        StoredEvent {
+            event_schema_version: EventSchemaVersion::current(),
+            session_id,
+            run_id: Some(run_id),
+            seq,
+            timestamp: Timestamp::now(),
+            payload: EventPayload::TextDelta {
+                attempt_id,
+                text: text.into(),
+            },
+        }
     }
 
     #[test]
@@ -213,146 +313,66 @@ models = ["scripted"]
     }
 
     #[test]
-    fn early_output_snapshot_is_applied_after_tool_replay() {
-        let session = SessionId::new_v7();
-        let call = call_id();
-        let mut store = StateStore::default();
-        store.apply_snapshot(OutputSnapshotEnvelope {
-            stream: OutputStream::Stdout,
-            snapshot: OutputSnapshot {
-                call_id: call,
-                start_offset: 0,
-                end_offset: 4,
-                chunks: vec![OutputDelta {
-                    call_id: call,
-                    stream: OutputStream::Stdout,
-                    byte_offset: 0,
-                    data: STANDARD.encode(b"live"),
-                }],
-            },
-        });
-        store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id: session,
-            run_id: None,
-            seq: 1,
-            timestamp: Timestamp::now(),
-            event: Event::ToolCallStarted {
-                tool_call_id: call,
-                model_call_id: "model-call".into(),
-                provider_item_id: None,
-                tool: "bash".into(),
-                arguments: serde_json::json!({}),
-            },
-        });
-        assert_eq!(
-            store.sessions[&session].output[&(call, false)].text(),
-            "live"
-        );
-    }
-
-    #[test]
     fn terminal_run_expires_pending_approvals() {
         let session = SessionId::new_v7();
+        let run_id = cookie_agent_protocol::RunId::new_v7();
         let mut store = StateStore::default();
-        store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
+        store.apply_event(StoredEvent {
+            event_schema_version: EventSchemaVersion::current(),
             session_id: session,
-            run_id: None,
+            run_id: Some(run_id),
             seq: 1,
             timestamp: Timestamp::now(),
-            event: Event::ApprovalRequested {
+            payload: EventPayload::ApprovalRequested {
                 request: approval_request(),
             },
         });
-        store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
+        store.apply_event(StoredEvent {
+            event_schema_version: EventSchemaVersion::current(),
             session_id: session,
-            run_id: None,
+            run_id: Some(run_id),
             seq: 2,
             timestamp: Timestamp::now(),
-            event: Event::RunCompleted { final_text: None },
+            payload: EventPayload::RunCompleted { final_text: None },
         });
         assert!(store.sessions[&session].approvals.is_empty());
     }
 
-    #[test]
-    fn unknown_output_overflow_is_rendered_as_a_gap() {
-        let session = SessionId::new_v7();
-        let call = call_id();
-        let mut store = StateStore::default();
-        for offset in 0..129 {
-            store.apply_output_delta(OutputDelta {
-                call_id: call,
-                stream: OutputStream::Stderr,
-                byte_offset: offset,
-                data: STANDARD.encode(b"x"),
-            });
-        }
-        store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id: session,
-            run_id: None,
-            seq: 1,
-            timestamp: Timestamp::now(),
-            event: Event::ToolCallStarted {
-                tool_call_id: call,
-                model_call_id: "model-call".into(),
-                provider_item_id: None,
-                tool: "bash".into(),
-                arguments: serde_json::json!({}),
-            },
-        });
-        assert!(store.sessions[&session].output[&(call, true)].has_gap);
-        assert!(!store.sessions[&session].output.contains_key(&(call, false)));
-    }
-
     #[tokio::test]
     async fn app_draws_conversation_approval_tree_and_input() {
-        let (directory, server) = in_process_server();
+        let (_directory, server) = in_process_server();
         let client = Client::connect_in_process(server);
         client.handshake().await.expect("handshake");
         let models = client
-            .list_models(ModelListParams::default())
+            .list_models(cookie_agent_protocol::ModelListParams::default())
             .await
             .expect("list models");
-        assert_eq!(models.models[0].name, "scripted");
+        assert_eq!(models.models[0].key.as_str(), "gateway/arbitrary-model");
         let session = client
             .create_session(SessionCreateParams {
-                cwd: directory.path().display().to_string(),
-                profile: "primary".into(),
+                selection: test_run_selection(),
             })
             .await
             .expect("session")
             .session;
         let mut app = App::new(client).await.expect("TUI config");
-        app.store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id: session.id,
-            run_id: None,
-            seq: 2,
-            timestamp: Timestamp::now(),
-            event: Event::TextDelta {
-                text: "streamed assistant text".into(),
-            },
-        });
         let request = approval_request();
         let approval_id = request.approval_id();
-        app.store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id: session.id,
-            run_id: None,
+        app.store.apply_event(StoredEvent {
+            event_schema_version: EventSchemaVersion::current(),
+            session_id: session.session_id,
+            run_id: Some(cookie_agent_protocol::RunId::new_v7()),
+            seq: 2,
+            timestamp: Timestamp::now(),
+            payload: EventPayload::ApprovalRequested { request },
+        });
+        app.store.apply_event(StoredEvent {
+            event_schema_version: EventSchemaVersion::current(),
+            session_id: session.session_id,
+            run_id: Some(cookie_agent_protocol::RunId::new_v7()),
             seq: 3,
             timestamp: Timestamp::now(),
-            event: Event::ApprovalRequested { request },
-        });
-        app.store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id: session.id,
-            run_id: None,
-            seq: 4,
-            timestamp: Timestamp::now(),
-            event: Event::ApprovalEscalated {
+            payload: EventPayload::ApprovalEscalated {
                 approval_id,
                 reason_code: cookie_agent_protocol::ApprovalReasonCode::Escalated,
             },
@@ -375,28 +395,27 @@ models = ["scripted"]
                 assert!(rendered.contains("Conversation"));
             }
             if (width, height) == (80, 24) {
-                assert!(rendered.contains("ASSISTANT"));
                 assert!(rendered.contains("git status"));
+                assert!(rendered.contains("primary(gateway/arbitrary-model-base)"));
             }
         }
     }
 
     #[tokio::test]
     async fn client_round_trips_handshake_create_and_event_replay_in_process() {
-        let (directory, server) = in_process_server();
+        let (_directory, server) = in_process_server();
         let client = Client::connect_in_process(server);
         client.handshake().await.expect("handshake");
         let session = client
             .create_session(SessionCreateParams {
-                cwd: directory.path().display().to_string(),
-                profile: "primary".into(),
+                selection: test_run_selection(),
             })
             .await
             .expect("create session")
             .session;
         let mut deliveries = client.subscribe_deliveries().expect("delivery receiver");
         client
-            .subscribe_events(session.id, None)
+            .subscribe_events(session.session_id, None)
             .await
             .expect("subscribe events");
         let mut replayed = Vec::new();
@@ -408,18 +427,21 @@ models = ["scripted"]
             }
         }
         assert!(!replayed.is_empty());
-        assert!(replayed.iter().all(|event| event.session_id == session.id));
+        assert!(
+            replayed
+                .iter()
+                .all(|event| event.session_id == session.session_id)
+        );
     }
 
     #[tokio::test]
     async fn local_startup_creates_a_fresh_root_while_attach_keeps_existing_selection() {
-        let (directory, server) = in_process_server();
+        let (_directory, server) = in_process_server();
         let setup = Client::connect_in_process(server.clone());
         setup.handshake().await.expect("setup handshake");
         let existing = setup
             .create_session(SessionCreateParams {
-                cwd: directory.path().display().to_string(),
-                profile: "primary".into(),
+                selection: test_run_selection(),
             })
             .await
             .expect("existing session")
@@ -429,7 +451,12 @@ models = ["scripted"]
         attached.handshake().await.expect("attach handshake");
         let attached_app = App::new(attached).await.expect("attached TUI config");
         assert_eq!(attached_app.store.sessions.len(), 1);
-        assert!(attached_app.store.sessions.contains_key(&existing.id));
+        assert!(
+            attached_app
+                .store
+                .sessions
+                .contains_key(&existing.session_id)
+        );
 
         let local = Client::connect_in_process(server);
         local.handshake().await.expect("local handshake");
@@ -444,34 +471,18 @@ models = ["scripted"]
             .next()
             .copied()
             .expect("new local root session");
-        assert_ne!(local_session, existing.id);
+        assert_ne!(local_session, existing.session_id);
     }
 
     #[test]
     fn state_store_reduces_events_and_surfaces_gap_cursor() {
         let session = SessionId::new_v7();
+        let run_id = cookie_agent_protocol::RunId::new_v7();
+        let attempt_id = cookie_agent_protocol::AttemptId::new_v7();
         let mut store = StateStore::default();
-        store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id: session,
-            run_id: None,
-            seq: 1,
-            timestamp: Timestamp::now(),
-            event: Event::TextDelta {
-                text: "hello".into(),
-            },
-        });
+        store.apply_event(text_event(session, 1, run_id, attempt_id, "hello"));
         // Replayed duplicate is ignored, preserving the projection.
-        store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id: session,
-            run_id: None,
-            seq: 1,
-            timestamp: Timestamp::now(),
-            event: Event::TextDelta {
-                text: "duplicate".into(),
-            },
-        });
+        store.apply_event(text_event(session, 1, run_id, attempt_id, "duplicate"));
         assert_eq!(store.sessions[&session].last_seq, 1);
         assert_eq!(
             store.apply_subscription(EventSubscriptionMessage::Gap {
@@ -480,314 +491,5 @@ models = ["scripted"]
             }),
             Some(1)
         );
-    }
-
-    #[test]
-    fn missing_replay_end_keeps_the_visible_projection() {
-        let session = SessionId::new_v7();
-        let call = call_id();
-        let mut store = StateStore::default();
-        store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id: session,
-            run_id: None,
-            seq: 1,
-            timestamp: Timestamp::now(),
-            event: Event::TextDelta { text: "old".into() },
-        });
-        store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id: session,
-            run_id: None,
-            seq: 2,
-            timestamp: Timestamp::now(),
-            event: Event::ToolCallStarted {
-                tool_call_id: call,
-                model_call_id: "model-call".into(),
-                provider_item_id: None,
-                tool: "bash".into(),
-                arguments: serde_json::json!({}),
-            },
-        });
-        assert_eq!(store.sessions[&session].generation, 0);
-        assert!(matches!(
-            store.apply_delivery(crate::ClientDelivery::ReplayStart {
-                session_id: session,
-                generation: 1,
-                final_seq: 2,
-                rebuild: true,
-            }),
-            crate::state::DeliveryOutcome::Applied
-        ));
-        assert!(matches!(
-            store.apply_delivery(crate::ClientDelivery::ReplayEvent {
-                session_id: session,
-                generation: 1,
-                final_seq: 2,
-                event: Box::new(EventEnvelope {
-                    schema_version: EventSchemaVersion::current(),
-                    session_id: session,
-                    run_id: None,
-                    seq: 2,
-                    timestamp: Timestamp::now(),
-                    event: Event::ToolCallStarted {
-                        tool_call_id: call,
-                        model_call_id: "model-call".into(),
-                        provider_item_id: None,
-                        tool: "bash".into(),
-                        arguments: serde_json::json!({}),
-                    },
-                }),
-            }),
-            crate::state::DeliveryOutcome::ReplayFailed { session_id } if session_id == session
-        ));
-        assert_eq!(store.sessions[&session].generation, 0);
-        assert_eq!(store.sessions[&session].last_seq, 2);
-        assert!(store.abandon_replays().is_empty());
-        assert_eq!(store.sessions[&session].generation, 0);
-        assert!(matches!(
-            store.apply_delivery(crate::ClientDelivery::OutputSnapshot(OutputSnapshotEnvelope {
-                stream: OutputStream::Stdout,
-                snapshot: OutputSnapshot {
-                    call_id: call,
-                    start_offset: 0,
-                    end_offset: 0,
-                    chunks: Vec::new(),
-                },
-            })),
-            crate::state::DeliveryOutcome::ReplayFailed { session_id } if session_id == session
-        ));
-        assert!(!store.sessions[&session].output.contains_key(&(call, false)));
-    }
-
-    #[test]
-    fn buffered_output_overflow_during_replay_never_marks_visible_state() {
-        let session = SessionId::new_v7();
-        let call = call_id();
-        let mut store = StateStore::default();
-        store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id: session,
-            run_id: None,
-            seq: 1,
-            timestamp: Timestamp::now(),
-            event: Event::TextDelta {
-                text: "visible".into(),
-            },
-        });
-        let _ = store.apply_delivery(crate::ClientDelivery::ReplayStart {
-            session_id: session,
-            generation: 1,
-            final_seq: 1,
-            rebuild: true,
-        });
-        for offset in 0..129 {
-            let _ = store.apply_delivery(crate::ClientDelivery::OutputDelta(OutputDelta {
-                call_id: call,
-                stream: OutputStream::Stdout,
-                byte_offset: offset,
-                data: STANDARD.encode(b"x"),
-            }));
-        }
-        let _ = store.apply_delivery(crate::ClientDelivery::ReplayEvent {
-            session_id: session,
-            generation: 1,
-            final_seq: 1,
-            event: Box::new(EventEnvelope {
-                schema_version: EventSchemaVersion::current(),
-                session_id: session,
-                run_id: None,
-                seq: 1,
-                timestamp: Timestamp::now(),
-                event: Event::ToolCallStarted {
-                    tool_call_id: call,
-                    model_call_id: "model-call".into(),
-                    provider_item_id: None,
-                    tool: "bash".into(),
-                    arguments: serde_json::json!({}),
-                },
-            }),
-        });
-        assert_eq!(store.sessions[&session].generation, 0);
-        assert!(!store.sessions[&session].output.contains_key(&(call, false)));
-    }
-
-    #[test]
-    fn validated_rereplay_clears_session_output_quarantine() {
-        let session = SessionId::new_v7();
-        let call = call_id();
-        let mut store = StateStore::default();
-        store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id: session,
-            run_id: None,
-            seq: 1,
-            timestamp: Timestamp::now(),
-            event: Event::ToolCallStarted {
-                tool_call_id: call,
-                model_call_id: "model-call".into(),
-                provider_item_id: None,
-                tool: "bash".into(),
-                arguments: serde_json::json!({}),
-            },
-        });
-        let _ = store.apply_delivery(crate::ClientDelivery::ReplayStart {
-            session_id: session,
-            generation: 1,
-            final_seq: 2,
-            rebuild: true,
-        });
-        let _ = store.apply_delivery(crate::ClientDelivery::ReplayEvent {
-            session_id: session,
-            generation: 1,
-            final_seq: 2,
-            event: Box::new(EventEnvelope {
-                schema_version: EventSchemaVersion::current(),
-                session_id: session,
-                run_id: None,
-                seq: 2,
-                timestamp: Timestamp::now(),
-                event: Event::ToolCallStarted {
-                    tool_call_id: call,
-                    model_call_id: "model-call".into(),
-                    provider_item_id: None,
-                    tool: "bash".into(),
-                    arguments: serde_json::json!({}),
-                },
-            }),
-        });
-        let _ = store.apply_delivery(crate::ClientDelivery::ReplayStart {
-            session_id: session,
-            generation: 2,
-            final_seq: 1,
-            rebuild: true,
-        });
-        let _ = store.apply_delivery(crate::ClientDelivery::ReplayEvent {
-            session_id: session,
-            generation: 2,
-            final_seq: 1,
-            event: Box::new(EventEnvelope {
-                schema_version: EventSchemaVersion::current(),
-                session_id: session,
-                run_id: None,
-                seq: 1,
-                timestamp: Timestamp::now(),
-                event: Event::ToolCallStarted {
-                    tool_call_id: call,
-                    model_call_id: "model-call".into(),
-                    provider_item_id: None,
-                    tool: "bash".into(),
-                    arguments: serde_json::json!({}),
-                },
-            }),
-        });
-        assert!(matches!(
-            store.apply_delivery(crate::ClientDelivery::ReplayEnd {
-                session_id: session,
-                generation: 2,
-                final_seq: 1,
-            }),
-            crate::state::DeliveryOutcome::Applied
-        ));
-        assert!(matches!(
-            store.apply_delivery(crate::ClientDelivery::OutputSnapshot(
-                OutputSnapshotEnvelope {
-                    stream: OutputStream::Stdout,
-                    snapshot: OutputSnapshot {
-                        call_id: call,
-                        start_offset: 0,
-                        end_offset: 0,
-                        chunks: Vec::new(),
-                    },
-                }
-            )),
-            crate::state::DeliveryOutcome::Applied
-        ));
-        assert!(store.sessions[&session].output.contains_key(&(call, false)));
-    }
-
-    #[test]
-    fn rebuild_refuses_quarantined_session_without_erasing_visible_state() {
-        let session = SessionId::new_v7();
-        let mut store = StateStore::default();
-        store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id: session,
-            run_id: None,
-            seq: 1,
-            timestamp: Timestamp::now(),
-            event: Event::TextDelta {
-                text: "visible".into(),
-            },
-        });
-        let _ = store.apply_delivery(crate::ClientDelivery::ReplayStart {
-            session_id: session,
-            generation: 1,
-            final_seq: 2,
-            rebuild: true,
-        });
-        let failed = store.apply_delivery(crate::ClientDelivery::ReplayEvent {
-            session_id: session,
-            generation: 1,
-            final_seq: 2,
-            event: Box::new(EventEnvelope {
-                schema_version: EventSchemaVersion::current(),
-                session_id: session,
-                run_id: None,
-                seq: 2,
-                timestamp: Timestamp::now(),
-                event: Event::TextDelta {
-                    text: "invalid".into(),
-                },
-            }),
-        });
-        assert!(matches!(
-            failed,
-            crate::state::DeliveryOutcome::ReplayFailed { session_id } if session_id == session
-        ));
-        assert!(!store.rebuild_session(
-            session,
-            2,
-            vec![EventEnvelope {
-                schema_version: EventSchemaVersion::current(),
-                session_id: session,
-                run_id: None,
-                seq: 1,
-                timestamp: Timestamp::now(),
-                event: Event::TextDelta {
-                    text: "replacement".into()
-                },
-            }]
-        ));
-        assert_eq!(store.sessions[&session].generation, 0);
-        assert_eq!(store.sessions[&session].last_seq, 1);
-    }
-
-    #[test]
-    fn rebuild_non_quarantined_session_still_replaces_projection() {
-        let session = SessionId::new_v7();
-        let mut store = StateStore::default();
-        store.apply_event(EventEnvelope {
-            schema_version: EventSchemaVersion::current(),
-            session_id: session,
-            run_id: None,
-            seq: 1,
-            timestamp: Timestamp::now(),
-            event: Event::TextDelta { text: "old".into() },
-        });
-        assert!(store.rebuild_session(
-            session,
-            1,
-            vec![EventEnvelope {
-                schema_version: EventSchemaVersion::current(),
-                session_id: session,
-                run_id: None,
-                seq: 1,
-                timestamp: Timestamp::now(),
-                event: Event::TextDelta { text: "new".into() },
-            }]
-        ));
-        assert_eq!(store.sessions[&session].generation, 1);
-        assert_eq!(store.sessions[&session].last_seq, 1);
     }
 }

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunCancelResult",
+  "type": "object",
+  "properties": {
+    "cancelled": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "cancelled"
+  ]
+}

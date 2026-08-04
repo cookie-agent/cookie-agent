@@ -1,0 +1,763 @@
+---
+source: crates/protocol/src/tests.rs
+expression: schema_for!(PersistedModelTurn)
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PersistedModelTurn",
+  "type": "object",
+  "properties": {
+    "content": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PersistedAssistantPart"
+      },
+      "maxItems": 4096
+    },
+    "finish_reason": {
+      "$ref": "#/$defs/ModelFinishReason"
+    },
+    "native_replay": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NativeReplayArtifact"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "provider_metadata": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "provider_options": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "response_metadata": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "usage": {
+      "$ref": "#/$defs/Usage"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "content",
+    "provider_options",
+    "finish_reason",
+    "usage",
+    "response_metadata",
+    "provider_metadata",
+    "native_replay"
+  ],
+  "$defs": {
+    "ArtifactReference": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "uri"
+      ]
+    },
+    "ModelFinishReason": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "stop",
+            "tool_calls",
+            "length",
+            "content_filter",
+            "cancelled",
+            "error",
+            "aborted",
+            "timeout",
+            "refused",
+            "unknown"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "other": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "other"
+          ]
+        }
+      ]
+    },
+    "NativeContextScope": {
+      "type": "object",
+      "properties": {
+        "model_id": {
+          "type": "string",
+          "maxLength": 384,
+          "minLength": 1,
+          "pattern": "^[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+        },
+        "provider_id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9._-]+$"
+        },
+        "resource_id": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "provider_id",
+        "model_id",
+        "resource_id"
+      ]
+    },
+    "NativeReplayArtifact": {
+      "type": "object",
+      "properties": {
+        "adapter_id": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "payload": {
+          "x-max-serialized-bytes": 2097152
+        },
+        "scope": {
+          "$ref": "#/$defs/NativeContextScope"
+        },
+        "selection_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "adapter_id",
+        "selection_fingerprint",
+        "scope",
+        "payload"
+      ]
+    },
+    "PersistedAssistantPart": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text",
+            "metadata"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "reasoning"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text",
+            "metadata"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Bounded semantic model tool-call identity.",
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "input": true,
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "name": {
+              "description": "Stable lowercase machine-readable code.",
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9._-]*$"
+            },
+            "provider_item_id": {
+              "description": "Bounded provider item identity.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "raw_input": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_call"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "provider_item_id",
+            "name",
+            "input",
+            "raw_input",
+            "metadata"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "content": {
+              "$ref": "#/$defs/PersistedToolContent"
+            },
+            "is_error": {
+              "type": "boolean"
+            },
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "tool_call_id": {
+              "description": "Bounded semantic model tool-call identity.",
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_result"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "tool_call_id",
+            "content",
+            "is_error",
+            "metadata"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/PersistedFilePart"
+            },
+            "type": {
+              "type": "string",
+              "const": "file"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "excerpt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "media_type": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "source"
+            },
+            "url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "url",
+            "title",
+            "media_type",
+            "excerpt",
+            "metadata"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "tool_call_id": {
+              "description": "Bounded semantic model tool-call identity.",
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_approval"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "tool_call_id",
+            "message",
+            "metadata"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "data": true,
+            "kind": {
+              "description": "Stable lowercase machine-readable code.",
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9._-]*$"
+            },
+            "metadata": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "type": {
+              "type": "string",
+              "const": "custom"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "kind",
+            "data",
+            "metadata"
+          ]
+        }
+      ]
+    },
+    "PersistedContentValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/PersistedFilePart"
+            },
+            "type": {
+              "type": "string",
+              "const": "file"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "json"
+            },
+            "value": true
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ]
+        }
+      ]
+    },
+    "PersistedFilePart": {
+      "type": "object",
+      "properties": {
+        "filename": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_type": {
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 3,
+          "pattern": "^[^/\\s]+/[^/\\s]+$"
+        },
+        "metadata": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "source": {
+          "$ref": "#/$defs/PersistedFileSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "media_type",
+        "filename",
+        "source",
+        "metadata"
+      ]
+    },
+    "PersistedFileSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "byte_length": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "reference": {
+              "$ref": "#/$defs/ArtifactReference"
+            },
+            "sha256": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "type": {
+              "type": "string",
+              "const": "artifact"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "byte_length",
+            "sha256",
+            "reference"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "url"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "url"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Control-free bounded presentation text.",
+              "type": "string",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "provider_id": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[a-z0-9._-]+$"
+            },
+            "type": {
+              "type": "string",
+              "const": "provider_reference"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "provider_id",
+            "id"
+          ]
+        }
+      ]
+    },
+    "PersistedToolContent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "json"
+            },
+            "value": true
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "mixed"
+            },
+            "values": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/PersistedContentValue"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "values"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "denied"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "Usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens_cache_read": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens_cache_write": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens_no_cache": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens_reasoning": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens_text": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "input_tokens",
+        "input_tokens_no_cache",
+        "input_tokens_cache_read",
+        "input_tokens_cache_write",
+        "output_tokens",
+        "output_tokens_text",
+        "output_tokens_reasoning"
+      ]
+    }
+  }
+}

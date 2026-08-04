@@ -2,26 +2,12 @@
 
 use std::{collections::BTreeMap, fmt, sync::Arc};
 
-use oven_sdk::{
-    CancellationCapability, Capability, CompactionCapability, Modalities, Modality,
-    ModelCapabilities, ModelLimits, ReplayCapability, ReplayDeclaration, ReplayPolicy,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
-use crate::{
-    ModelEntry,
-    schema::{
-        AdapterConfig, AnthropicSettingsConfig, AnthropicThinkingSupportConfig, AuthConfig,
-        CohereSettingsConfig, CommonDefaults, CompatibleOptionsConfig, CompatibleSettingsConfig,
-        ConfiguredModel, GoogleSettingsConfig, GoogleThinkingSettingsConfig, MaxTokensFieldConfig,
-        OpenAiChatOptionsConfig, OpenAiChatSettingsConfig, OpenAiResponsesCompactionConfig,
-        OpenAiResponsesOptionsConfig, OpenAiResponsesSettingsConfig, ReasoningFieldConfig,
-        StructuredOutputConfig, SystemRoleConfig,
-    },
-};
+use crate::ReasoningEffort;
 
 /// Exact upstream commit used by the embedded artifact.
 pub const MODELS_DEV_COMMIT: &str = "c3057690bbb8bd41cafdefadcd2a7b958e2a4642";
@@ -99,7 +85,6 @@ impl Catalog {
 
         let mut providers = BTreeMap::new();
         let mut models = Vec::new();
-        let mut recipe_inputs = Vec::new();
         for (provider_id, raw_provider) in raw_providers {
             validate_identifier(provider_id, "provider id")?;
             let provider = parse_provider(provider_id, raw_provider)?;
@@ -111,23 +96,6 @@ impl Catalog {
                 return Err(CatalogError::Limit("too many provider model records"));
             }
             for (model_id, raw_model) in provider_models {
-                let model_object = object(raw_model, "provider model")?;
-                let override_provider = model_object.get("provider").and_then(Value::as_object);
-                recipe_inputs.push(RecipeInput {
-                    provider_id: provider_id.clone(),
-                    model_id: model_id.clone(),
-                    effective_npm: override_provider
-                        .and_then(|value| value.get("npm"))
-                        .and_then(Value::as_str)
-                        .unwrap_or(&provider.npm)
-                        .to_owned(),
-                    effective_api: override_provider
-                        .and_then(|value| value.get("api"))
-                        .and_then(Value::as_str)
-                        .or(provider.api.as_deref())
-                        .map(ToOwned::to_owned),
-                    provider_injection: override_provider.is_some_and(has_injected_body_or_headers),
-                });
                 models.push(parse_model(
                     &provider,
                     model_id,
@@ -148,19 +116,7 @@ impl Catalog {
             .map(|(index, model)| ((model.provider_id.clone(), model.model_id.clone()), index))
             .collect();
 
-        #[derive(Serialize)]
-        struct Projection<'a> {
-            providers: &'a BTreeMap<String, CatalogProvider>,
-            models: &'a [CatalogModel],
-            recipe_inputs: &'a [RecipeInput],
-        }
-        let canonical = serde_json::to_vec(&Projection {
-            providers: &providers,
-            models: &models,
-            recipe_inputs: &recipe_inputs,
-        })
-        .map_err(CatalogError::Canonical)?;
-        let revision = format!("sha256:{:x}", Sha256::digest(canonical));
+        let revision = format!("sha256:{:x}", Sha256::digest(bytes));
         Ok(Self {
             raw: Arc::new(raw),
             providers: Arc::new(providers),
@@ -170,7 +126,7 @@ impl Catalog {
         })
     }
 
-    /// Returns the canonical revision of the sorted safe projection.
+    /// Returns the SHA-256 revision of the exact parsed snapshot bytes.
     #[must_use]
     pub fn revision(&self) -> &str {
         &self.revision
@@ -276,147 +232,17 @@ impl Catalog {
         }
     }
 
-    /// Builds one generated text-only model using exactly one reviewed recipe.
-    pub fn build_generated(
-        &self,
-        model: &CatalogModel,
-        credentials: &BTreeMap<String, String>,
-    ) -> Result<ModelEntry, CatalogBuildError> {
-        let provider = self
-            .providers
-            .get(&model.provider_id)
-            .ok_or(UnsupportedReason::UnknownProvider)?;
-        let recipe = self.recipe(model)?;
-        let credential = select_credential(provider, credentials)?;
-        let raw = self.raw_provider_model(&model.provider_id, &model.model_id)?;
-        let effective_api = raw
-            .get("provider")
-            .and_then(Value::as_object)
-            .and_then(|value| value.get("api"))
-            .and_then(Value::as_str)
-            .or(provider.api.as_deref());
-        let endpoint = endpoint(effective_api, recipe)?;
-        let capabilities = generated_capabilities(model);
-        let defaults = CommonDefaults {
-            max_output_tokens: Some(model.limits.output.min(16_384)),
-            ..CommonDefaults::default()
-        };
-        let auth = match recipe {
-            CatalogRecipe::Anthropic | CatalogRecipe::Google => AuthConfig::ApiKey {
-                value: credential.to_owned(),
-            },
-            CatalogRecipe::OpenAiResponses | CatalogRecipe::OpenAiChat => AuthConfig::Openai {
-                api_key: credential.to_owned(),
-                organization: None,
-                project: None,
-            },
-            CatalogRecipe::Cohere
-            | CatalogRecipe::OpenRouterChat
-            | CatalogRecipe::OpenAiCompatibleChat => AuthConfig::Bearer {
-                token: credential.to_owned(),
-            },
-        };
-        let adapter = match recipe {
-            CatalogRecipe::Anthropic => AdapterConfig::Anthropic {
-                settings: AnthropicSettingsConfig {
-                    timeouts: Default::default(),
-                    thinking: AnthropicThinkingSupportConfig::None,
-                    thinking_default_active: false,
-                    thinking_disable_allowed: false,
-                    thinking_disable_forbidden_efforts: Default::default(),
-                    effort: false,
-                    assistant_prefill: false,
-                    reject_non_default_sampling: false,
-                    native_context_discriminator: None,
-                },
-                options: Default::default(),
-            },
-            CatalogRecipe::OpenAiResponses => AdapterConfig::OpenaiResponses {
-                settings: OpenAiResponsesSettingsConfig {
-                    routing_discriminator: None,
-                    compaction: OpenAiResponsesCompactionConfig::Unsupported,
-                    timeouts: Default::default(),
-                },
-                options: OpenAiResponsesOptionsConfig::default(),
-            },
-            CatalogRecipe::OpenAiChat => AdapterConfig::OpenaiChat {
-                settings: OpenAiChatSettingsConfig {
-                    system_message_role: SystemRoleConfig::Developer,
-                    max_tokens_field: MaxTokensFieldConfig::MaxCompletionTokens,
-                    stream_usage: false,
-                    structured_output: if model.capabilities.structured_output {
-                        StructuredOutputConfig::JsonSchema
-                    } else {
-                        StructuredOutputConfig::Unsupported
-                    },
-                    reasoning_field: ReasoningFieldConfig::None,
-                    routing_discriminator: None,
-                    timeouts: Default::default(),
-                },
-                options: OpenAiChatOptionsConfig::default(),
-            },
-            CatalogRecipe::Google => AdapterConfig::Google {
-                settings: GoogleSettingsConfig {
-                    model_resource: format!("models/{}", model.model_id),
-                    timeouts: Default::default(),
-                    thinking: GoogleThinkingSettingsConfig::Unsupported,
-                    strict_functions: false,
-                    mixed_client_and_provider_tools: false,
-                    current_turn_signature_sentinel: false,
-                },
-                options: Default::default(),
-            },
-            CatalogRecipe::Cohere => AdapterConfig::Cohere {
-                settings: CohereSettingsConfig {
-                    timeouts: Default::default(),
-                    strict_tools: false,
-                    safety_mode: None,
-                    thinking: None,
-                    reasoning_effort: Default::default(),
-                    top_k: None,
-                    seed: None,
-                    frequency_penalty: None,
-                    presence_penalty: None,
-                    stop_sequences: Vec::new(),
-                    priority: None,
-                },
-                options: Default::default(),
-            },
-            CatalogRecipe::OpenRouterChat | CatalogRecipe::OpenAiCompatibleChat => {
-                AdapterConfig::OpenaiCompatible {
-                    settings: CompatibleSettingsConfig {
-                        adapter_id: "cookie.catalog.openai-compatible.chat.v1".into(),
-                        system_message_role: SystemRoleConfig::System,
-                        max_tokens_field: MaxTokensFieldConfig::MaxTokens,
-                        stream_usage: false,
-                        structured_output: if model.capabilities.structured_output {
-                            StructuredOutputConfig::JsonSchema
-                        } else {
-                            StructuredOutputConfig::Unsupported
-                        },
-                        reasoning_field: ReasoningFieldConfig::None,
-                        query: BTreeMap::new(),
-                        request_id_headers: vec!["x-request-id".into()],
-                        strict_sse_content_type: false,
-                        routing_discriminator: None,
-                        timeouts: Default::default(),
-                    },
-                    options: CompatibleOptionsConfig::default(),
-                }
-            }
-        };
-        ConfiguredModel {
-            provider_id: model.provider_id.clone(),
-            model_id: model.model_id.clone(),
-            endpoint,
-            auth,
-            headers: BTreeMap::new(),
-            capabilities,
-            defaults,
-            adapter,
-        }
-        .build(&model.alias())
-        .map_err(CatalogBuildError::Model)
+    pub(crate) fn effective_api(&self, model: &CatalogModel) -> Option<String> {
+        self.raw_provider_model(&model.provider_id, &model.model_id)
+            .ok()
+            .and_then(|raw| raw.get("provider").and_then(Value::as_object))
+            .and_then(|provider| provider.get("api").and_then(Value::as_str))
+            .or_else(|| {
+                self.providers
+                    .get(&model.provider_id)
+                    .and_then(|provider| provider.api.as_deref())
+            })
+            .map(ToOwned::to_owned)
     }
 
     fn raw_provider_model(
@@ -476,6 +302,7 @@ pub struct CatalogModel {
     pub name: String,
     pub family: Option<String>,
     pub capabilities: CatalogModelCapabilities,
+    pub reasoning_options: Vec<CatalogReasoningOption>,
     pub limits: CatalogModelLimits,
     pub modalities: CatalogModelModalities,
     pub status: CatalogModelStatus,
@@ -483,12 +310,17 @@ pub struct CatalogModel {
     pub last_updated: String,
 }
 
-impl CatalogModel {
-    /// Exact generated alias; no canonicalization or model-name inference is performed.
-    #[must_use]
-    pub fn alias(&self) -> String {
-        format!("{}/{}", self.provider_id, self.model_id)
-    }
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CatalogReasoningOption {
+    Effort {
+        values: Vec<Option<ReasoningEffort>>,
+    },
+    Toggle,
+    BudgetTokens {
+        min: Option<i64>,
+        max: Option<i64>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -537,15 +369,6 @@ pub enum CatalogRecipe {
     OpenAiCompatibleChat,
 }
 
-#[derive(Serialize)]
-struct RecipeInput {
-    provider_id: String,
-    model_id: String,
-    effective_npm: String,
-    effective_api: Option<String>,
-    provider_injection: bool,
-}
-
 /// Why a known catalog record cannot be generated safely.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum UnsupportedReason {
@@ -579,8 +402,6 @@ pub enum CatalogError {
     TooLarge,
     #[error("catalog JSON is invalid")]
     Json(#[source] serde_json::Error),
-    #[error("catalog projection could not be canonicalized")]
-    Canonical(#[source] serde_json::Error),
     #[error("catalog field is missing: {0}")]
     Missing(&'static str),
     #[error("catalog field has an invalid type at {0}")]
@@ -597,25 +418,6 @@ pub enum CatalogError {
     Date(&'static str),
     #[error("catalog limit is invalid at {0}")]
     TokenLimit(&'static str),
-}
-
-impl fmt::Debug for CatalogBuildError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_tuple("CatalogBuildError")
-            .field(&self.to_string())
-            .finish()
-    }
-}
-
-#[derive(Error)]
-pub enum CatalogBuildError {
-    #[error(transparent)]
-    Unsupported(#[from] UnsupportedReason),
-    #[error("credentials do not match the reviewed provider recipe")]
-    Credentials,
-    #[error("catalog model construction failed: {0}")]
-    Model(#[source] crate::ModelBuildError),
 }
 
 fn parse_provider(id: &str, value: &Value) -> Result<CatalogProvider, CatalogError> {
@@ -695,6 +497,7 @@ fn parse_model(
             structured_output: optional_bool(record.get("structured_output"), "structured_output")?,
             temperature: optional_bool(record.get("temperature"), "temperature")?,
         },
+        reasoning_options: parse_reasoning_options(record.get("reasoning_options"))?,
         limits: CatalogModelLimits {
             context,
             input,
@@ -716,34 +519,98 @@ fn parse_model(
     })
 }
 
-fn generated_capabilities(model: &CatalogModel) -> ModelCapabilities {
-    let mut features = Capability::MAX_OUTPUT_TOKENS;
-    if model.capabilities.tool_call {
-        features |= Capability::TOOL_CALLING;
+fn parse_reasoning_options(
+    value: Option<&Value>,
+) -> Result<Vec<CatalogReasoningOption>, CatalogError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let values = value
+        .as_array()
+        .ok_or(CatalogError::Type("reasoning_options"))?;
+    if values.len() > 32 {
+        return Err(CatalogError::Limit("reasoning_options"));
     }
-    if model.capabilities.structured_output {
-        features |= Capability::STRUCTURED_OUTPUT;
-    }
-    if model.capabilities.temperature {
-        features |= Capability::TEMPERATURE;
-    }
-    ModelCapabilities {
-        features,
-        limits: ModelLimits::new(
-            Some(model.limits.context),
-            model.limits.input,
-            Some(model.limits.output),
-        ),
-        modalities: Modalities::new([Modality::text()], [Modality::text()]),
-        media: Default::default(),
-        cancellation: CancellationCapability::LocalOnly,
-        compaction: CompactionCapability::Unsupported,
-        replay: ReplayDeclaration {
-            policy: ReplayPolicy::Never,
-            capability: ReplayCapability::Unsupported,
-            reasoning: false,
-        },
-    }
+    values
+        .iter()
+        .map(|value| {
+            let object = object(value, "reasoning option")?;
+            match string(required(object, "type")?, "reasoning option type")? {
+                "effort" => {
+                    exact_keys(object, &["type", "values"], "reasoning effort")?;
+                    let raw = required(object, "values")?
+                        .as_array()
+                        .ok_or(CatalogError::Type("reasoning effort values"))?;
+                    let mut seen = BTreeMap::new();
+                    let mut parsed = Vec::new();
+                    for value in raw {
+                        let effort = if value.is_null() {
+                            None
+                        } else {
+                            Some(
+                                match value
+                                    .as_str()
+                                    .ok_or(CatalogError::Type("reasoning effort"))?
+                                {
+                                    "none" => ReasoningEffort::None,
+                                    "minimal" => ReasoningEffort::Minimal,
+                                    "low" => ReasoningEffort::Low,
+                                    "medium" => ReasoningEffort::Medium,
+                                    "high" => ReasoningEffort::High,
+                                    "xhigh" => ReasoningEffort::Xhigh,
+                                    "max" => ReasoningEffort::Max,
+                                    "default" => ReasoningEffort::Default,
+                                    _ => return Err(CatalogError::Identifier("reasoning effort")),
+                                },
+                            )
+                        };
+                        let key = format!("{effort:?}");
+                        if seen.insert(key, ()).is_some() {
+                            return Err(CatalogError::Shape("duplicate reasoning effort"));
+                        }
+                        parsed.push(effort);
+                    }
+                    Ok(CatalogReasoningOption::Effort { values: parsed })
+                }
+                "toggle" => {
+                    exact_keys(object, &["type"], "reasoning toggle")?;
+                    Ok(CatalogReasoningOption::Toggle)
+                }
+                "budget_tokens" => {
+                    if object
+                        .keys()
+                        .any(|key| !matches!(key.as_str(), "type" | "min" | "max"))
+                    {
+                        return Err(CatalogError::Shape("reasoning budget_tokens"));
+                    }
+                    let min = object
+                        .get("min")
+                        .map(|value| {
+                            value
+                                .as_i64()
+                                .ok_or(CatalogError::Type("reasoning budget min"))
+                        })
+                        .transpose()?;
+                    let max = object
+                        .get("max")
+                        .map(|value| {
+                            value
+                                .as_i64()
+                                .ok_or(CatalogError::Type("reasoning budget max"))
+                        })
+                        .transpose()?;
+                    if min.is_some_and(|value| value < -1)
+                        || max.is_some_and(|value| value < 0)
+                        || matches!((min, max), (Some(min), Some(max)) if min >= 0 && min > max)
+                    {
+                        return Err(CatalogError::TokenLimit("reasoning budget"));
+                    }
+                    Ok(CatalogReasoningOption::BudgetTokens { min, max })
+                }
+                _ => Err(CatalogError::Identifier("reasoning option type")),
+            }
+        })
+        .collect()
 }
 
 fn openai_recipe(model_id: &str) -> Result<CatalogRecipe, UnsupportedReason> {
@@ -829,43 +696,6 @@ fn https_single_credential(
         return Err(UnsupportedReason::InsecureEndpoint);
     }
     Ok(())
-}
-
-fn endpoint(api: Option<&str>, recipe: CatalogRecipe) -> Result<String, CatalogBuildError> {
-    let value = match recipe {
-        CatalogRecipe::Anthropic => api
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| "https://api.anthropic.com/v1".into()),
-        CatalogRecipe::OpenAiResponses | CatalogRecipe::OpenAiChat => api
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| "https://api.openai.com/v1".into()),
-        CatalogRecipe::Google => api
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".into()),
-        CatalogRecipe::Cohere => api
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| "https://api.cohere.com/v2/chat".into()),
-        CatalogRecipe::OpenRouterChat | CatalogRecipe::OpenAiCompatibleChat => api
-            .map(ToOwned::to_owned)
-            .ok_or(CatalogBuildError::Unsupported(
-                UnsupportedReason::InsecureEndpoint,
-            ))?,
-    };
-    Ok(value)
-}
-
-fn select_credential<'a>(
-    provider: &CatalogProvider,
-    credentials: &'a BTreeMap<String, String>,
-) -> Result<&'a str, CatalogBuildError> {
-    if credentials.len() != 1 {
-        return Err(CatalogBuildError::Credentials);
-    }
-    let (name, value) = credentials.iter().next().expect("length checked");
-    if value.is_empty() || !provider.credential_fields.contains(name) {
-        return Err(CatalogBuildError::Credentials);
-    }
-    Ok(value)
 }
 
 fn has_injected_body_or_headers(value: &Map<String, Value>) -> bool {

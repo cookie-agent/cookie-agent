@@ -1,12 +1,12 @@
-use std::collections::BTreeMap;
-
 use async_trait::async_trait;
-use cookie_agent_config::{AgentType, Config};
 use cookie_agent_engine::{
     DelegateInvocation, EngineClient, PreparedExecutor, PreparedTool, SessionToolContext, ToolCall,
-    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolResult, ToolSpec,
+    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
-use cookie_agent_protocol::{ActionKind, ApprovalResourceSource, PreparedBindingLifetime};
+use cookie_agent_protocol::{
+    AgentId, ApprovalResourceSource, PermissionAction, PersistedToolResult as ToolResult,
+    PreparedBindingLifetime,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{fs_cap, prepared_operation, prepared_resource};
@@ -15,14 +15,13 @@ const CONTEXT_LIMIT_BYTES: usize = 32 * 1024;
 
 pub struct DelegateToolProvider {
     engine: EngineClient,
-    target_profiles: BTreeMap<String, (bool, AgentType)>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct DelegateArgs {
     task: String,
-    profile: String,
+    agent: AgentId,
     #[serde(default)]
     context: Vec<serde_json::Value>,
     #[serde(default)]
@@ -39,35 +38,17 @@ struct DelegateExecutor {
 
 impl DelegateToolProvider {
     #[must_use]
-    pub fn new(engine: EngineClient, config: &Config) -> Self {
-        Self {
-            engine,
-            target_profiles: config
-                .agents
-                .iter()
-                .map(|(name, profile)| (name.clone(), (profile.enabled, profile.r#type)))
-                .collect(),
-        }
+    pub fn new(engine: EngineClient) -> Self {
+        Self { engine }
     }
 
-    fn targets(&self, session: cookie_agent_protocol::SessionId) -> Result<Vec<String>, ToolError> {
-        let delegation = self
-            .engine
-            .get_session(session)
-            .map_err(|error| ToolError::execution(error.to_string()))?
-            .profile
-            .delegation;
-        Ok(delegation
-            .allowed_profiles
-            .into_iter()
-            .filter(|name| {
-                self.target_profiles
-                    .get(name)
-                    .is_some_and(|(enabled, kind)| {
-                        *enabled && matches!(kind, AgentType::Subagent | AgentType::All)
-                    })
-            })
-            .collect())
+    fn targets(
+        &self,
+        session: cookie_agent_protocol::SessionId,
+    ) -> Result<Vec<AgentId>, ToolError> {
+        self.engine
+            .delegate_targets(session)
+            .map_err(|error| ToolError::execution(error.to_string()))
     }
 }
 
@@ -78,11 +59,11 @@ impl ToolProvider for DelegateToolProvider {
         Ok((!targets.is_empty())
             .then(|| ToolSpec {
                 name: "delegate".into(),
-                description: "Delegate a prepared objective to an allowed profile.".into(),
+                description: "Delegate a prepared objective to an allowed agent.".into(),
                 parameters: serde_json::json!({
                     "type":"object","additionalProperties":false,
-                    "properties":{"task":{"type":"string"},"profile":{"type":"string","enum":targets},"context":{"type":"array"},"success_criteria":{"type":"array","items":{"type":"string"}},"expected_output":{}},
-                    "required":["task","profile"]
+                    "properties":{"task":{"type":"string"},"agent":{"type":"string","enum":targets},"context":{"type":"array"},"success_criteria":{"type":"array","items":{"type":"string"}},"expected_output":{}},
+                    "required":["task","agent"]
                 }),
             })
             .into_iter()
@@ -103,14 +84,14 @@ impl ToolProvider for DelegateToolProvider {
         {
             return Err(ToolError::execution("delegate context exceeds 32 KiB"));
         }
-        if !self.targets(ctx.session)?.contains(&args.profile) {
+        if !self.targets(ctx.session)?.contains(&args.agent) {
             return Err(ToolError::execution("delegate target is not allowed"));
         }
         let resource = prepared_resource(
-            ActionKind::Delegate,
-            "profile",
-            args.profile.as_bytes(),
-            args.profile.as_bytes(),
+            PermissionAction::Delegate,
+            "agent",
+            args.agent.as_str().as_bytes(),
+            args.agent.as_str().as_bytes(),
             PreparedBindingLifetime::RestartStable,
             ApprovalResourceSource::PrimaryOperation,
         )?;
@@ -118,11 +99,11 @@ impl ToolProvider for DelegateToolProvider {
         let operation = prepared_operation(
             "delegate",
             &args,
-            vec![(ActionKind::Delegate, "spawn")],
+            vec![(PermissionAction::Delegate, "spawn")],
             vec![resource],
             &context,
         )?;
-        let policy_labels = vec![args.profile.clone()];
+        let policy_labels = vec![args.agent.to_string()];
         PreparedTool::new(
             operation,
             None,
@@ -155,7 +136,7 @@ impl PreparedExecutor for DelegateExecutor {
                 parent_session_id: context.session,
                 parent_run_id: context.run,
                 parent_tool_call_id: self.call_id,
-                profile: self.args.profile,
+                agent: self.args.agent,
                 task: self.args.task,
                 context: self.args.context,
                 success_criteria: self.args.success_criteria,
