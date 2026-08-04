@@ -1,0 +1,153 @@
+use cookie_agent_identity::AgentId;
+use cookie_agent_models::Sha256Digest;
+use serde::Serialize;
+use sha2::{Digest as _, Sha256};
+
+use crate::{AgentFrontmatter, ConfigError};
+
+const MAX_FRONTMATTER_BYTES: usize = 128 * 1024;
+const MAX_BODY_BYTES: usize = 128 * 1024;
+const MAX_LIST: usize = 256;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentDocumentSource {
+    BuiltIn,
+    User,
+    Workspace,
+}
+
+#[derive(Clone, Debug)]
+pub struct AgentDocument {
+    pub id: AgentId,
+    pub frontmatter: AgentFrontmatter,
+    pub body: String,
+    pub source: AgentDocumentSource,
+    pub document_fingerprint: Sha256Digest,
+    pub prompt_fingerprint: Sha256Digest,
+}
+
+pub(crate) fn parse_agent(
+    id: AgentId,
+    bytes: &[u8],
+    source: AgentDocumentSource,
+) -> Result<AgentDocument, ConfigError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| ConfigError::Utf8("agent document"))?
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    if text.contains("${env:") {
+        return Err(ConfigError::AgentFrontmatter(id));
+    }
+    let rest = text
+        .strip_prefix("---\n")
+        .ok_or_else(|| ConfigError::AgentFrontmatter(id.clone()))?;
+    let closing = rest
+        .find("\n---\n")
+        .ok_or_else(|| ConfigError::AgentFrontmatter(id.clone()))?;
+    let yaml = &rest[..closing];
+    let raw_body = &rest[closing + "\n---\n".len()..];
+    if yaml.len() > MAX_FRONTMATTER_BYTES || raw_body.len() > MAX_BODY_BYTES || forbidden_yaml(yaml)
+    {
+        return Err(ConfigError::AgentFrontmatter(id));
+    }
+    let yaml_value: serde_yaml::Value =
+        serde_yaml::from_str(yaml).map_err(|_| ConfigError::AgentFrontmatter(id.clone()))?;
+    validate_yaml_limits(&yaml_value, 0)?;
+    let frontmatter: AgentFrontmatter = serde_yaml::from_value(yaml_value)
+        .map_err(|_| ConfigError::AgentFrontmatter(id.clone()))?;
+    let body = format!("{}\n", raw_body.trim_end_matches('\n'));
+    if !body.chars().any(|character| !character.is_whitespace()) {
+        return Err(ConfigError::EmptyPrompt(id));
+    }
+    let document_fingerprint = hash(
+        "cookie-agent/agent-document/v1",
+        &(id.as_str(), yaml, &body),
+    )?;
+    let prompt_fingerprint = hash("cookie-agent/system-prompt/v1", &body)?;
+    Ok(AgentDocument {
+        id,
+        frontmatter,
+        body,
+        source,
+        document_fingerprint,
+        prompt_fingerprint,
+    })
+}
+
+fn forbidden_yaml(yaml: &str) -> bool {
+    yaml.lines().any(|line| {
+        if line.trim_start().starts_with("<<:") {
+            return true;
+        }
+        let mut single = false;
+        let mut double = false;
+        let mut escaped = false;
+        for (index, character) in line.char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if double && character == '\\' {
+                escaped = true;
+                continue;
+            }
+            match character {
+                '\'' if !double => single = !single,
+                '"' if !single => double = !double,
+                '#' if !single && !double => break,
+                '&' | '!' | '*' if !single && !double => {
+                    let boundary = index == 0
+                        || line[..index]
+                            .chars()
+                            .next_back()
+                            .is_some_and(char::is_whitespace);
+                    if boundary {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    })
+}
+
+fn validate_yaml_limits(value: &serde_yaml::Value, depth: usize) -> Result<(), ConfigError> {
+    if depth > 16 {
+        return Err(ConfigError::AgentYamlLimit);
+    }
+    match value {
+        serde_yaml::Value::Sequence(values) => {
+            if values.len() > MAX_LIST {
+                return Err(ConfigError::AgentYamlLimit);
+            }
+            for value in values {
+                validate_yaml_limits(value, depth + 1)?;
+            }
+        }
+        serde_yaml::Value::Mapping(values) => {
+            if values.len() > MAX_LIST {
+                return Err(ConfigError::AgentYamlLimit);
+            }
+            for (key, value) in values {
+                validate_yaml_limits(key, depth + 1)?;
+                validate_yaml_limits(value, depth + 1)?;
+            }
+        }
+        serde_yaml::Value::Tagged(_) => return Err(ConfigError::AgentYamlLimit),
+        serde_yaml::Value::String(value) if value.len() > 128 * 1024 => {
+            return Err(ConfigError::AgentYamlLimit);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn hash(domain: &str, value: &impl Serialize) -> Result<Sha256Digest, ConfigError> {
+    let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
+    hasher.update([0]);
+    hasher.update(serde_json::to_vec(value).map_err(ConfigError::Json)?);
+    Sha256Digest::new(format!("{:x}", hasher.finalize())).map_err(|_| ConfigError::Fingerprint)
+}

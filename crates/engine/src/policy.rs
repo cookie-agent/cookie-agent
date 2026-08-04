@@ -5,7 +5,9 @@ use cookie_agent_models as models;
 use cookie_agent_protocol as protocol;
 use protocol::{AgentId, ModelSelection, RunSelection};
 
-use crate::{EngineError, ModelError};
+use oven_sdk::ModelError;
+
+use crate::EngineError;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ResultLimits {
