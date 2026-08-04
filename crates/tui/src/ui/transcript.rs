@@ -1092,7 +1092,7 @@ fn split_read_detail(detail: &str) -> (&str, Vec<&str>) {
 }
 
 fn assistant_header(attribution: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    // The frozen `Agent(Model)` attribution wraps at tiny widths and is
+    // The frozen `Agent • Model` attribution wraps at tiny widths and is
     // never reduced to a tag: it is the sole producer identity.
     let text = if width >= 8 {
         format!("╭─ {attribution}")
@@ -2063,6 +2063,14 @@ mod tests {
             .collect()
     }
 
+    fn rect_text(rows: &[String], rect: Rect) -> String {
+        rows[usize::from(rect.y)]
+            .chars()
+            .skip(usize::from(rect.x))
+            .take(usize::from(rect.width))
+            .collect()
+    }
+
     async fn test_app() -> App {
         let (client, _requests) = recording_client();
         App::new(client).await.expect("test app")
@@ -2106,6 +2114,34 @@ mod tests {
                 sent,
             }),
             recorded,
+        )
+    }
+
+    fn live_recording_client() -> (
+        Client,
+        Arc<Mutex<Vec<Value>>>,
+        tokio::sync::mpsc::UnboundedSender<MessageFrame>,
+    ) {
+        let (incoming, incoming_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (sent, mut sent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let sink = recorded.clone();
+        tokio::spawn(async move {
+            while let Some(frame) = sent_rx.recv().await {
+                let value = match frame {
+                    MessageFrame::Value(value) => value,
+                    MessageFrame::Text(text) => serde_json::from_str(&text).unwrap_or(Value::Null),
+                };
+                sink.lock().expect("recorded lock").push(value);
+            }
+        });
+        (
+            Client::connect_stream(ScriptedStream {
+                incoming: incoming_rx,
+                sent,
+            }),
+            recorded,
+            incoming,
         )
     }
 
@@ -2213,15 +2249,15 @@ mod tests {
     fn assistant_header_projects_exact_agent_model_and_variant() {
         assert_eq!(
             attribution(None).header(),
-            "primary(gateway/arbitrary-model[base])"
+            "primary • gateway/arbitrary-model[base]"
         );
         assert_eq!(
             attribution(Some("high")).header(),
-            "primary(gateway/arbitrary-model[high])"
+            "primary • gateway/arbitrary-model[high]"
         );
         assert_eq!(
             attribution(Some("default")).header(),
-            "primary(gateway/arbitrary-model[default])"
+            "primary • gateway/arbitrary-model[default]"
         );
         assert_eq!(attribution(Some("high")).variant_label(), "high");
         assert_eq!(attribution(None).variant_label(), "base");
@@ -2262,13 +2298,13 @@ mod tests {
             }
             let squashed = visible.replace(['│', ' '], "");
             assert!(
-                squashed.contains("primary(gateway/arbitrary-model"),
+                squashed.contains("primary•gateway/arbitrary-model"),
                 "width {width}: {visible}"
             );
             assert!(!visible.contains("[A]"), "width {width}");
         }
         let rendered = snapshot_lines(&transcript_layout(&state, None, 80).lines);
-        assert!(rendered.contains("╭─ primary(gateway/arbitrary-model[base])"));
+        assert!(rendered.contains("╭─ primary • gateway/arbitrary-model[base]"));
     }
 
     #[test]
@@ -2294,7 +2330,7 @@ mod tests {
             .join("\n");
         assert_eq!(
             rendered
-                .matches("╭─ primary(gateway/arbitrary-model[base])")
+                .matches("╭─ primary • gateway/arbitrary-model[base]")
                 .count(),
             1
         );
@@ -2474,7 +2510,7 @@ mod tests {
         assert_eq!(*committed_turn_seq, Some(3));
         assert_eq!(
             attribution.header(),
-            "primary(gateway/arbitrary-model[high])"
+            "primary • gateway/arbitrary-model[high]"
         );
         assert_eq!(attribution.variant_label(), "high");
         assert!(children_has_tool(&state.transcript[0], call_id));
@@ -2635,13 +2671,13 @@ mod tests {
             .join("\n");
         assert_eq!(
             rendered
-                .matches("primary(gateway/arbitrary-model[base])")
+                .matches("primary • gateway/arbitrary-model[base]")
                 .count(),
             1
         );
         assert_eq!(
             rendered
-                .matches("primary(gateway/arbitrary-model[high])")
+                .matches("primary • gateway/arbitrary-model[high]")
                 .count(),
             1
         );
@@ -2915,7 +2951,7 @@ mod tests {
             },
         });
         let rendered = rendered_frame(&mut app, 100, 30);
-        assert!(rendered.contains("primary(gateway/arbitrary-model[high])"));
+        assert!(rendered.contains("primary • gateway/arbitrary-model[high]"));
         let segments = &app.hit_map.title_segments;
         assert_eq!(segments.len(), 3);
         let agent_rect = segments
@@ -2936,8 +2972,190 @@ mod tests {
         assert_eq!(agent_rect.width, 7);
         assert_eq!(model_rect.width, 23);
         assert_eq!(variant_rect.width, 6);
-        assert_eq!(model_rect.x, agent_rect.x + agent_rect.width + 1);
+        assert_eq!(model_rect.x, agent_rect.x + agent_rect.width + 3);
         assert_eq!(variant_rect.x, model_rect.x + model_rect.width);
+        let bullet_x = agent_rect.x + agent_rect.width + 1;
+        assert!(
+            segments
+                .iter()
+                .all(|hit| !hit.rect.contains((bullet_x, agent_rect.y).into())),
+            "the bullet must remain decoration"
+        );
+
+        let narrow = rendered_frame(&mut app, 28, 12);
+        assert!(narrow.contains("primary • gateway/arbit"));
+        assert_eq!(app.hit_map.title_segments.len(), 2);
+        let narrow_model = app
+            .hit_map
+            .title_segments
+            .iter()
+            .find(|hit| hit.segment == TitleSegment::Model)
+            .expect("clipped model segment");
+        assert_eq!(narrow_model.rect.x, agent_rect.x + agent_rect.width + 3);
+        assert_eq!(narrow_model.rect.width, 16);
+        assert!(
+            app.hit_map
+                .title_segments
+                .iter()
+                .all(|hit| hit.segment != TitleSegment::Variant)
+        );
+    }
+
+    #[tokio::test]
+    async fn scrolled_message_title_hits_follow_visible_cells_or_disappear() {
+        async fn app_at_scroll_position(position: usize, width: u16) -> (App, Vec<String>) {
+            let mut app = test_app().await;
+            app.agents = vec![descriptor("primary", true)];
+            app.models = vec![model_descriptor()];
+            app.draft = Some(RunSelection {
+                agent: agent_id(),
+                model: ModelSelection {
+                    model: model_key(),
+                    variant: None,
+                },
+            });
+            app.input
+                .set_buffer("zero\none\ntwo\nthree\nfour\nfive\nsix".into());
+            frame_rows(&mut app, width, 24);
+            match position {
+                0 => app.input.move_buffer_home(),
+                1 => {
+                    app.input.move_buffer_home();
+                    app.input.move_page_down();
+                }
+                2 => {}
+                _ => unreachable!(),
+            }
+            assert_eq!(app.input.viewport_row(), [0, 1, 4][position]);
+            let rows = frame_rows(&mut app, width, 24);
+            (app, rows)
+        }
+
+        for position in 0..3 {
+            let (mut app, rows) = app_at_scroll_position(position, 100).await;
+            let agent = app
+                .hit_map
+                .title_segments
+                .iter()
+                .find(|hit| hit.segment == TitleSegment::Agent)
+                .copied()
+                .expect("visible agent");
+            let model = app
+                .hit_map
+                .title_segments
+                .iter()
+                .find(|hit| hit.segment == TitleSegment::Model)
+                .copied()
+                .expect("visible model");
+            let variant = app
+                .hit_map
+                .title_segments
+                .iter()
+                .find(|hit| hit.segment == TitleSegment::Variant)
+                .copied()
+                .expect("visible variant");
+            assert_eq!(rect_text(&rows, agent.rect), "primary");
+            assert_eq!(rect_text(&rows, model.rect), "gateway/arbitrary-model");
+            assert_eq!(rect_text(&rows, variant.rect), "[base]");
+
+            app.handle_click(agent.rect.x, agent.rect.y).await;
+            assert_eq!(app.modal, Modal::Agents);
+            assert!(app.draft.as_ref().expect("draft").model.variant.is_none());
+            app.modal = Modal::None;
+            frame_rows(&mut app, 100, 24);
+
+            app.handle_click(model.rect.x, model.rect.y).await;
+            assert_eq!(app.modal, Modal::Models);
+            assert!(app.draft.as_ref().expect("draft").model.variant.is_none());
+            app.modal = Modal::None;
+            frame_rows(&mut app, 100, 24);
+
+            app.handle_click(variant.rect.x, variant.rect.y).await;
+            assert_eq!(app.modal, Modal::None);
+            assert_eq!(
+                app.draft
+                    .as_ref()
+                    .and_then(|draft| draft.model.variant.as_ref())
+                    .map(|variant| variant.as_str()),
+                Some("fast")
+            );
+
+            let rows = frame_rows(&mut app, 100, 24);
+            let agent = app
+                .hit_map
+                .title_segments
+                .iter()
+                .find(|hit| hit.segment == TitleSegment::Agent)
+                .copied()
+                .expect("visible agent");
+            let model = app
+                .hit_map
+                .title_segments
+                .iter()
+                .find(|hit| hit.segment == TitleSegment::Model)
+                .copied()
+                .expect("visible model");
+            let bullet_x = agent.rect.x + agent.rect.width + 1;
+            assert_eq!(
+                rect_text(&rows, Rect::new(bullet_x, agent.rect.y, 1, 1)),
+                "•"
+            );
+            app.handle_click(bullet_x, agent.rect.y).await;
+            assert_eq!(app.modal, Modal::None);
+            assert_eq!(model.rect.x, bullet_x + 2);
+            assert_eq!(
+                app.draft
+                    .as_ref()
+                    .and_then(|draft| draft.model.variant.as_ref())
+                    .map(|variant| variant.as_str()),
+                Some("fast")
+            );
+
+            let marker_x = rows[usize::from(agent.rect.y)]
+                .chars()
+                .position(|character| matches!(character, '↑' | '↓'))
+                .and_then(|column| u16::try_from(column).ok())
+                .expect("scroll marker");
+            app.handle_click(marker_x, agent.rect.y).await;
+            assert_eq!(app.modal, Modal::None);
+            assert_eq!(
+                app.draft
+                    .as_ref()
+                    .and_then(|draft| draft.model.variant.as_ref())
+                    .map(|variant| variant.as_str()),
+                Some("fast")
+            );
+        }
+
+        for position in 0..3 {
+            let (mut app, rows) = app_at_scroll_position(position, 28).await;
+            let title_y =
+                terminal_layout_with_tree_rows(Rect::new(0, 0, 28, 24), app.tree_entries().len())
+                    .input
+                    .y;
+            assert!(app.hit_map.title_segments.is_empty());
+            assert!(!rows[usize::from(title_y)].contains("primary"));
+            let original_variant = app.draft.as_ref().expect("draft").model.variant.clone();
+            for column in [1, 9, 11] {
+                app.handle_click(column, title_y).await;
+                assert_eq!(app.modal, Modal::None);
+                assert_eq!(
+                    app.draft.as_ref().expect("draft").model.variant,
+                    original_variant
+                );
+            }
+            let marker_x = rows[usize::from(title_y)]
+                .chars()
+                .position(|character| matches!(character, '↑' | '↓'))
+                .and_then(|column| u16::try_from(column).ok())
+                .expect("scroll marker");
+            app.handle_click(marker_x, title_y).await;
+            assert_eq!(app.modal, Modal::None);
+            assert_eq!(
+                app.draft.as_ref().expect("draft").model.variant,
+                original_variant
+            );
+        }
     }
 
     #[tokio::test]
@@ -3243,12 +3461,12 @@ mod tests {
         };
         assert_eq!(
             attribution.header(),
-            "primary(gateway/arbitrary-model[default])"
+            "primary • gateway/arbitrary-model[default]"
         );
         assert_eq!(app.active_run_agent().map(AgentId::as_str), Some("primary"));
         let rendered = frame_rows(&mut app, 80, 24).join("\n");
-        assert!(rendered.contains("primary(gateway/arbitrary-model[default])"));
-        assert!(rendered.contains("primary(gateway/arbitrary-model[fast])"));
+        assert!(rendered.contains("primary • gateway/arbitrary-model[default]"));
+        assert!(rendered.contains("primary • gateway/arbitrary-model[fast]"));
     }
 
     #[tokio::test]
@@ -4168,6 +4386,314 @@ mod tests {
         ));
     }
 
+    async fn submit_direct_command(app: &mut App, command: &str) {
+        type_input(app, command).await;
+        if app.command_palette_visible() {
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+    }
+
+    async fn settle_recording() {
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn wait_for_method(recorded: &Arc<Mutex<Vec<Value>>>, method: &str, count: usize) {
+        for _ in 0..100 {
+            if recorded_method_count(recorded, method) == count {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(recorded_method_count(recorded, method), count, "{method}");
+    }
+
+    #[tokio::test]
+    async fn command_palette_no_matches_renders_empty_state_then_reports_unknown_command() {
+        let mut app = test_app().await;
+        type_input(&mut app, "/definitely-not-a-command").await;
+        assert!(app.command_palette_visible());
+
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("Commands"));
+        assert!(rendered.contains("No matching commands"));
+        assert!(app.hit_map.palette.is_some());
+        assert!(app.hit_map.palette_rows.is_empty());
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert!(app.input.as_str().is_empty());
+        assert!(app.status.contains("unknown command"));
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("unknown command"));
+    }
+
+    #[tokio::test]
+    async fn empty_agent_and_model_selectors_are_truthful_and_safe() {
+        let mut agents = test_app().await;
+        agents.agents.clear();
+        submit_direct_command(&mut agents, "/new").await;
+        assert_eq!(agents.modal, Modal::Agents);
+        let rendered = rendered_frame(&mut agents, 100, 30);
+        assert!(rendered.contains("No root-runnable agents are available."));
+        assert!(!rendered.contains("Backspace or Ctrl-U clears the filter"));
+        assert!(agents.hit_map.picker_rows.is_empty());
+        agents
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(agents.modal, Modal::Agents);
+        agents
+            .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert_eq!(agents.modal, Modal::None);
+
+        let mut models = test_app().await;
+        models.agents = vec![descriptor("primary", true)];
+        models.models.clear();
+        models.draft = Some(RunSelection {
+            agent: agent_id(),
+            model: ModelSelection {
+                model: model_key(),
+                variant: None,
+            },
+        });
+        rendered_frame(&mut models, 100, 30);
+        let model_hit = models
+            .hit_map
+            .title_segments
+            .iter()
+            .find(|hit| hit.segment == TitleSegment::Model)
+            .copied()
+            .expect("model title hit");
+        models
+            .handle_click(model_hit.rect.x, model_hit.rect.y)
+            .await;
+        assert_eq!(models.modal, Modal::Models);
+        let rendered = rendered_frame(&mut models, 100, 30);
+        assert!(rendered.contains("No models are available for this draft."));
+        assert!(!rendered.contains("Backspace or Ctrl-U clears the filter"));
+        assert!(models.hit_map.picker_rows.is_empty());
+        models
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(models.modal, Modal::Models);
+        models
+            .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert_eq!(models.modal, Modal::None);
+    }
+
+    #[tokio::test]
+    async fn every_slash_command_variant_dispatches_from_key_events_without_starting_a_run() {
+        let cases = [
+            ("/quit", InputMode::Message, None),
+            ("/new", InputMode::Message, Some("Agent")),
+            ("/connect", InputMode::Message, Some("Connect provider")),
+            ("/sessions", InputMode::Message, Some("Sessions")),
+            ("/cancel", InputMode::Message, Some("no active run")),
+            (
+                "/stdin",
+                InputMode::Message,
+                Some("no running interactive tool"),
+            ),
+            (
+                "/stdin next",
+                InputMode::Message,
+                Some("no running interactive tool"),
+            ),
+            ("/eof", InputMode::ToolStdin, None),
+            ("/message", InputMode::ToolStdin, Some("message mode")),
+            ("/watch", InputMode::Message, Some("no session selected")),
+            ("/tree up", InputMode::Message, None),
+            ("/tree down", InputMode::Message, None),
+            ("/tree toggle", InputMode::Message, None),
+            ("/approve once", InputMode::Message, None),
+            ("/approve tree", InputMode::Message, None),
+            ("/approve reject", InputMode::Message, None),
+            ("/approve cancel", InputMode::Message, None),
+            ("/scroll up", InputMode::Message, None),
+            ("/scroll down 2", InputMode::Message, None),
+            ("/scroll top", InputMode::Message, None),
+            ("/scroll bottom", InputMode::Message, None),
+            ("/block next", InputMode::Message, None),
+            ("/block previous", InputMode::Message, None),
+            ("/block toggle", InputMode::Message, None),
+            ("/block clear", InputMode::Message, None),
+            (
+                "/events debug",
+                InputMode::Message,
+                Some("diagnostic event filter"),
+            ),
+            (
+                "/events info",
+                InputMode::Message,
+                Some("diagnostic event filter"),
+            ),
+            (
+                "/events warning",
+                InputMode::Message,
+                Some("diagnostic event filter"),
+            ),
+            (
+                "/events error",
+                InputMode::Message,
+                Some("diagnostic event filter"),
+            ),
+            ("/help", InputMode::Message, Some("Commands:")),
+        ];
+
+        for (command, mode, expected) in cases {
+            let mut app = test_app().await;
+            let (client, recorded, incoming_guard) = live_recording_client();
+            app.client = client;
+            app.input_mode = mode;
+            submit_direct_command(&mut app, command).await;
+            settle_recording().await;
+            let rendered = rendered_frame(&mut app, 100, 30);
+            assert!(!rendered.is_empty(), "{command}");
+            if let Some(expected) = expected {
+                assert!(rendered.contains(expected), "{command}: {rendered}");
+            }
+            assert_eq!(
+                recorded_method_count(&recorded, "run.start"),
+                0,
+                "{command}"
+            );
+            assert_eq!(
+                recorded_method_count(&recorded, "run.steer"),
+                0,
+                "{command}"
+            );
+            drop(incoming_guard);
+        }
+    }
+
+    #[tokio::test]
+    async fn command_palette_mouse_activation_uses_the_same_local_dispatch() {
+        let mut app = test_app().await;
+        let (client, recorded, incoming_guard) = live_recording_client();
+        app.client = client;
+        type_input(&mut app, "/ne").await;
+        rendered_frame(&mut app, 100, 30);
+        let row = app
+            .hit_map
+            .palette_rows
+            .first()
+            .copied()
+            .expect("new palette row");
+        app.handle_click(row.rect.x, row.rect.y).await;
+        assert_eq!(app.modal, Modal::Agents);
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("No root-runnable agents are available."));
+        settle_recording().await;
+        assert_eq!(recorded_method_count(&recorded, "run.start"), 0);
+        assert_eq!(recorded_method_count(&recorded, "run.steer"), 0);
+        drop(incoming_guard);
+    }
+
+    #[tokio::test]
+    async fn rpc_slash_commands_issue_only_their_intended_methods() {
+        let mut cancel = test_app().await;
+        let (client, recorded, incoming_guard) = live_recording_client();
+        cancel.client = client;
+        let session = SessionId::new_v7();
+        cancel.selected = Some(session);
+        cancel.store.sessions.entry(session).or_default().active_run = Some(run_id());
+        submit_direct_command(&mut cancel, "/cancel").await;
+        wait_for_method(&recorded, "run.cancel", 1).await;
+        assert_eq!(recorded_method_count(&recorded, "run.cancel"), 1);
+        assert_eq!(recorded_method_count(&recorded, "run.start"), 0);
+        assert_eq!(recorded_method_count(&recorded, "run.steer"), 0);
+        drop(incoming_guard);
+
+        let mut watch = test_app().await;
+        let (client, recorded, incoming_guard) = live_recording_client();
+        watch.client = client;
+        let session = SessionId::new_v7();
+        watch.tree = Some(SessionTree {
+            session: session_meta(session),
+            children: Vec::new(),
+        });
+        watch.tree_cursor = Some(session);
+        submit_direct_command(&mut watch, "/watch").await;
+        wait_for_method(&recorded, "events.subscribe", 1).await;
+        assert_eq!(watch.selected, Some(session));
+        assert_eq!(recorded_method_count(&recorded, "run.start"), 0);
+        assert_eq!(recorded_method_count(&recorded, "run.steer"), 0);
+        drop(incoming_guard);
+
+        let mut eof = test_app().await;
+        let (client, recorded, incoming_guard) = live_recording_client();
+        eof.client = client;
+        let session = SessionId::new_v7();
+        let call_id = ToolCallId::new_v7();
+        let mut state = SessionState {
+            active_run: Some(run_id()),
+            ..SessionState::default()
+        };
+        state.tools.insert(
+            call_id,
+            ToolCallState {
+                id: call_id,
+                owner: owner(1, "call-1"),
+                presentation: presentation("bash", None),
+                arguments: "{}".into(),
+                status: ToolStatus::Running,
+                detail: String::new(),
+            },
+        );
+        eof.selected = Some(session);
+        eof.store.sessions.insert(session, state);
+        eof.input_mode = InputMode::ToolStdin;
+        submit_direct_command(&mut eof, "/eof").await;
+        wait_for_method(&recorded, "run.tool_stdin", 1).await;
+        assert_eq!(recorded_method_count(&recorded, "run.tool_stdin"), 1);
+        assert_eq!(recorded_method_count(&recorded, "run.start"), 0);
+        assert_eq!(recorded_method_count(&recorded, "run.steer"), 0);
+        drop(incoming_guard);
+
+        for command in [
+            "/approve once",
+            "/approve tree",
+            "/approve reject",
+            "/approve cancel",
+        ] {
+            let mut app = test_app().await;
+            let (client, recorded, incoming_guard) = live_recording_client();
+            app.client = client;
+            let approval = bash_approval_state();
+            app.selected = Some(approval.session_id);
+            app.store
+                .sessions
+                .entry(approval.session_id)
+                .or_default()
+                .approvals
+                .push(approval);
+            submit_direct_command(&mut app, command).await;
+            wait_for_method(&recorded, "approval.respond", 1).await;
+            assert_eq!(
+                recorded_method_count(&recorded, "approval.respond"),
+                1,
+                "{command}"
+            );
+            assert_eq!(
+                recorded_method_count(&recorded, "run.start"),
+                0,
+                "{command}"
+            );
+            assert_eq!(
+                recorded_method_count(&recorded, "run.steer"),
+                0,
+                "{command}"
+            );
+            drop(incoming_guard);
+        }
+    }
+
     // ------------------------------------------------------------------
     // Markdown, themes, and diagnostics
     // ------------------------------------------------------------------
@@ -4474,6 +5000,92 @@ mod tests {
     // Connect flow
     // ------------------------------------------------------------------
 
+    fn catalog_provider() -> CatalogProvider {
+        CatalogProvider {
+            id: CatalogIdentifier::new("acme-ai").expect("id"),
+            name: CatalogText::new("Acme AI").expect("name"),
+            credential_fields: vec![CredentialFieldName::new("ACME_API_KEY").expect("field")],
+            npm: CatalogText::new("@acme/ai").expect("npm"),
+            api: Some(CatalogText::new("https://api.acme.example").expect("api")),
+            documentation_url: CatalogText::new("https://docs.acme.example").expect("docs"),
+        }
+    }
+
+    async fn type_input(app: &mut App, text: &str) {
+        for character in text.chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+                .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_submission_renders_the_provider_panel_with_an_empty_catalog() {
+        let mut app = test_app().await;
+        let (client, recorded, incoming_guard) = live_recording_client();
+        app.client = client;
+        app.providers.clear();
+        app.selected = Some(SessionId::new_v7());
+        app.draft = Some(RunSelection {
+            agent: agent_id(),
+            model: ModelSelection {
+                model: model_key(),
+                variant: None,
+            },
+        });
+
+        type_input(&mut app, "/connect").await;
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(app.modal, Modal::ConnectProviders);
+        assert!(app.input.as_str().is_empty());
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("Connect provider — type to filter"));
+        assert!(rendered.contains("No catalog providers are available."));
+        assert!(app.hit_map.picker.is_some());
+        assert!(app.hit_map.picker_rows.is_empty());
+        tokio::task::yield_now().await;
+        assert_eq!(recorded_method_count(&recorded, "run.start"), 0);
+        assert_eq!(recorded_method_count(&recorded, "run.steer"), 0);
+        drop(incoming_guard);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.picker_query, "x");
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("Connect provider — filter: x"));
+    }
+
+    #[tokio::test]
+    async fn connect_palette_submission_opens_and_focuses_provider_search() {
+        let mut app = test_app().await;
+        app.providers = vec![catalog_provider()];
+
+        type_input(&mut app, "/connect").await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(app.modal, Modal::ConnectProviders);
+        type_input(&mut app, "acme_api").await;
+        assert_eq!(app.picker_query, "acme_api");
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("Connect provider — filter: acme_api"));
+        assert!(rendered.contains("Acme AI (acme-ai) · field: ACME_API_KEY"));
+        assert!(app.hit_map.picker.is_some());
+        assert_eq!(app.hit_map.picker_rows.len(), 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
+            .await;
+        type_input(&mut app, "missing").await;
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("Connect provider — filter: missing"));
+        assert!(rendered.contains("No matches."));
+        assert!(app.hit_map.picker.is_some());
+        assert!(app.hit_map.picker_rows.is_empty());
+    }
+
     #[tokio::test]
     async fn credential_inputs_wipe_on_cancel_and_app_drop() {
         let before = credential_wipe_count();
@@ -4495,16 +5107,8 @@ mod tests {
 
     #[tokio::test]
     async fn provider_picker_filter_matches_credential_labels() {
-        let provider = CatalogProvider {
-            id: CatalogIdentifier::new("acme-ai").expect("id"),
-            name: CatalogText::new("Acme AI").expect("name"),
-            credential_fields: vec![CredentialFieldName::new("ACME_API_KEY").expect("field")],
-            npm: CatalogText::new("@acme/ai").expect("npm"),
-            api: Some(CatalogText::new("https://api.acme.example").expect("api")),
-            documentation_url: CatalogText::new("https://docs.acme.example").expect("docs"),
-        };
         let mut app = test_app().await;
-        app.providers = vec![provider];
+        app.providers = vec![catalog_provider()];
         app.picker_query = "acme_api".into();
         assert_eq!(app.filtered_providers().len(), 1);
         app.picker_query = "unknown".into();
@@ -4651,6 +5255,170 @@ mod tests {
             .join("\n");
         assert!(rendered.contains("discarded foreign variant base (expected high)"));
         assert!(rendered.contains("gateway/arbitrary-model (high, openai-compatible)"));
+    }
+
+    #[test]
+    fn replay_projection_deduplicates_logical_transitions_without_losing_evidence() {
+        let session = SessionId::new_v7();
+        let first_run = run_id();
+        let second_run = run_id();
+        let resolved = resolved_model(None);
+        let adapter_discard = cookie_agent_protocol::ReplayDisposition::DiscardedForeignAdapter {
+            found: SafeCode::new("anthropic").expect("adapter"),
+            expected: SafeCode::new(resolved.adapter_id.as_str()).expect("adapter"),
+        };
+        let adapter_evidence = vec![
+            cookie_agent_protocol::ReplayDecision {
+                history_index: 1,
+                disposition: adapter_discard.clone(),
+            },
+            cookie_agent_protocol::ReplayDecision {
+                history_index: 1,
+                disposition:
+                    cookie_agent_protocol::ReplayDisposition::ReconstructedNormalizedHistory,
+            },
+            cookie_agent_protocol::ReplayDecision {
+                history_index: 3,
+                disposition: adapter_discard.clone(),
+            },
+            cookie_agent_protocol::ReplayDecision {
+                history_index: 3,
+                disposition:
+                    cookie_agent_protocol::ReplayDisposition::ReconstructedNormalizedHistory,
+            },
+        ];
+        let other_model = ModelSelection {
+            model: "other/model".parse().expect("model key"),
+            variant: None,
+        };
+        let events = vec![
+            event(
+                session,
+                1,
+                first_run,
+                EventPayload::ModelReplayEvaluated {
+                    attempt_id: AttemptId::new_v7(),
+                    resolved_model: resolved.clone(),
+                    ordered_decisions: adapter_evidence.clone(),
+                },
+            ),
+            event(
+                session,
+                2,
+                first_run,
+                EventPayload::ModelReplayEvaluated {
+                    attempt_id: AttemptId::new_v7(),
+                    resolved_model: resolved.clone(),
+                    ordered_decisions: adapter_evidence,
+                },
+            ),
+            event(
+                session,
+                3,
+                first_run,
+                EventPayload::ModelReplayEvaluated {
+                    attempt_id: AttemptId::new_v7(),
+                    resolved_model: resolved.clone(),
+                    ordered_decisions: vec![cookie_agent_protocol::ReplayDecision {
+                        history_index: 5,
+                        disposition: cookie_agent_protocol::ReplayDisposition::DiscardedForeignModelSelection {
+                            found: other_model,
+                            expected: resolved.selection.clone(),
+                        },
+                    }],
+                },
+            ),
+            event(
+                session,
+                4,
+                first_run,
+                EventPayload::ModelReplayEvaluated {
+                    attempt_id: AttemptId::new_v7(),
+                    resolved_model: resolved.clone(),
+                    ordered_decisions: vec![cookie_agent_protocol::ReplayDecision {
+                        history_index: 7,
+                        disposition: cookie_agent_protocol::ReplayDisposition::DiscardedForeignVariant {
+                            found: Some(cookie_agent_protocol::VariantId::new("foreign").expect("variant")),
+                            expected: None,
+                        },
+                    }],
+                },
+            ),
+            event(
+                session,
+                5,
+                second_run,
+                EventPayload::ModelReplayEvaluated {
+                    attempt_id: AttemptId::new_v7(),
+                    resolved_model: resolved,
+                    ordered_decisions: vec![cookie_agent_protocol::ReplayDecision {
+                        history_index: 1,
+                        disposition: adapter_discard,
+                    }],
+                },
+            ),
+        ];
+
+        let assert_projection = |store: &StateStore| {
+            let projected = &store.sessions[&session].transcript;
+            let warnings = projected
+                .iter()
+                .filter_map(|item| match item {
+                    TranscriptItem::Event {
+                        level: crate::state::EventLevel::Warning,
+                        text,
+                        ..
+                    } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(warnings.len(), 4);
+            assert_eq!(
+                warnings
+                    .iter()
+                    .filter(|warning| warning.contains("discarded foreign adapter"))
+                    .count(),
+                2
+            );
+            assert_eq!(
+                warnings
+                    .iter()
+                    .filter(|warning| warning.contains("discarded foreign model selection"))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                warnings
+                    .iter()
+                    .filter(|warning| warning.contains("discarded foreign variant"))
+                    .count(),
+                1
+            );
+            let reconstructions = projected
+                .iter()
+                .filter(|item| {
+                    matches!(
+                        item,
+                        TranscriptItem::Event {
+                            level: crate::state::EventLevel::Debug,
+                            text,
+                            ..
+                        } if text.contains("reconstructed normalized history")
+                    )
+                })
+                .count();
+            assert_eq!(reconstructions, 4);
+        };
+
+        let mut live = StateStore::default();
+        for event in events.clone() {
+            assert!(live.apply_event(event));
+        }
+        assert_projection(&live);
+
+        let mut reopened = StateStore::default();
+        assert!(reopened.rebuild_session(session, 0, events));
+        assert_projection(&reopened);
     }
 
     #[test]

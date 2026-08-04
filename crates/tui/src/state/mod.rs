@@ -3,7 +3,7 @@
 //! Assistant attribution is derived only from the frozen `RunStarted` plus
 //! `ModelAttemptStarted`/`ModelTurnCommitted` ownership — never from the
 //! current picker, live agent files, or provider configuration. The visible
-//! assistant header projects the exact canonical `Agent(Model[variant])`.
+//! assistant header projects the exact canonical `Agent • Model[variant]`.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -17,8 +17,9 @@ use cookie_agent_protocol::{
     AssistantToolCallRef, AttemptId, EventPayload, EventSubscriptionMessage, ModelErrorSummary,
     OperationFingerprint, OutputDelta, OutputGap, OutputSnapshotEnvelope, OutputStream,
     PersistedModelTurn, PreparedApprovalResource, PreparedCapabilityLifetime, ReplayDecision,
-    ReplayDisposition, ResolvedModelRef, RunId, SessionId, SessionTitleChange, Sha256Digest,
-    StoredEvent, ToolAttachment, ToolCallId, ToolTerminationOutcome, Usage,
+    ReplayDisposition, ResolvedModelRef, RunId, SafeCode, SessionId, SessionTitleChange,
+    Sha256Digest, StoredEvent, ToolAttachment, ToolCallId, ToolTerminationOutcome, Usage,
+    VariantId,
 };
 use serde::Serialize;
 
@@ -130,10 +131,10 @@ pub struct FrozenAssistantAttribution {
 }
 
 impl FrozenAssistantAttribution {
-    /// The exact visible header `<agent-id>(<provider>/<model-id>[<variant>])`.
+    /// The exact visible header `<agent-id> • <provider>/<model-id>[<variant>]`.
     pub fn header(&self) -> String {
         format!(
-            "{}({}[{}])",
+            "{} • {}[{}]",
             self.agent,
             self.resolved_model.selection.model,
             self.variant_label()
@@ -284,6 +285,25 @@ pub(crate) struct PendingToolRow {
     call_id: ToolCallId,
 }
 
+/// Projection-only identity composed exclusively from frozen, secret-safe
+/// protocol values. History indices are deliberately excluded so one logical
+/// compatibility transition warns once without altering durable evidence.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum ReplayContextTransition {
+    Adapter {
+        found: SafeCode,
+        expected: SafeCode,
+    },
+    ModelSelection {
+        found: cookie_agent_protocol::ModelSelection,
+        expected: cookie_agent_protocol::ModelSelection,
+    },
+    Variant {
+        found: Option<VariantId>,
+        expected: Option<VariantId>,
+    },
+}
+
 /// Per-session projection of persisted events and live output.
 #[derive(Clone, Debug, Default)]
 pub struct SessionState {
@@ -318,6 +338,10 @@ pub struct SessionState {
     pub(crate) turn_tool_index: HashMap<(u64, String), String>,
     /// The assistant item owning each committed model-turn sequence.
     pub(crate) turn_items: HashMap<u64, u64>,
+    /// User-visible replay compatibility transitions already projected for a
+    /// run. Durable replay/reconnect and later tool-loop attempts may repeat
+    /// request diagnostics without creating another logical transition.
+    pub(crate) replay_context_warnings: HashSet<(RunId, Sha256Digest, ReplayContextTransition)>,
     pub approvals: Vec<ApprovalState>,
     pub output: HashMap<(ToolCallId, bool), OrderedOutput>,
 }
@@ -1049,10 +1073,28 @@ fn reduce_event(
             ..
         } => {
             close_open_assistant(state);
-            // Replay/cache discard and reconstruction dispositions are
-            // WARNING rows with the exact model and a concise reason; routine
-            // replay detail stays at DEBUG.
-            for (level, decision) in render_replay(&ordered_decisions) {
+            // Incompatible replay/cache discards are one WARNING per logical
+            // run transition. Reconstruction is the expected consequence and
+            // remains DEBUG, as do routine replay details.
+            if ordered_decisions.is_empty() {
+                push_event(
+                    state,
+                    EventLevel::Info,
+                    format!(
+                        "model {} replay · no history entries",
+                        render_model(&resolved_model)
+                    ),
+                );
+            }
+            for source in &ordered_decisions {
+                let (level, decision) = render_replay_decision(source);
+                if level == EventLevel::Warning
+                    && let Some(run_id) = run_id
+                    && let Some(key) = replay_context_warning_key(&resolved_model, source)
+                    && !state.replay_context_warnings.insert(key.with_run(run_id))
+                {
+                    continue;
+                }
                 push_event(
                     state,
                     level,
@@ -1832,63 +1874,96 @@ fn render_usage(usage: &Usage) -> String {
     )
 }
 
-fn render_replay(decisions: &[ReplayDecision]) -> Vec<(EventLevel, String)> {
-    if decisions.is_empty() {
-        return vec![(EventLevel::Info, "no history entries".into())];
+fn render_replay_decision(decision: &ReplayDecision) -> (EventLevel, String) {
+    let (level, disposition) = match &decision.disposition {
+        ReplayDisposition::Replayed => (EventLevel::Debug, "replayed".into()),
+        ReplayDisposition::NoArtifact => (EventLevel::Debug, "no artifact".into()),
+        ReplayDisposition::DiscardedForeignAdapter { found, expected } => (
+            EventLevel::Warning,
+            format!(
+                "discarded foreign adapter {found} (expected {})",
+                expected.as_str()
+            ),
+        ),
+        ReplayDisposition::DiscardedForeignModelSelection { found, expected } => (
+            EventLevel::Warning,
+            format!(
+                "discarded foreign model selection {}/{} (expected {}/{})",
+                found.model,
+                found
+                    .variant
+                    .as_ref()
+                    .map_or("base".into(), |variant| variant.to_string()),
+                expected.model,
+                expected
+                    .variant
+                    .as_ref()
+                    .map_or("base".into(), |variant| variant.to_string())
+            ),
+        ),
+        ReplayDisposition::DiscardedForeignVariant { found, expected } => (
+            EventLevel::Warning,
+            format!(
+                "discarded foreign variant {} (expected {})",
+                found
+                    .as_ref()
+                    .map_or("base".into(), |variant| variant.to_string()),
+                expected
+                    .as_ref()
+                    .map_or("base".into(), |variant| variant.to_string())
+            ),
+        ),
+        ReplayDisposition::DiscardedInvalidPayload { reason } => (
+            EventLevel::Warning,
+            format!("discarded invalid payload: {reason}"),
+        ),
+        ReplayDisposition::ReconstructedNormalizedHistory => {
+            (EventLevel::Debug, "reconstructed normalized history".into())
+        }
+    };
+    (level, format!("#{} {disposition}", decision.history_index))
+}
+
+fn replay_context_warning_key(
+    model: &ResolvedModelRef,
+    decision: &ReplayDecision,
+) -> Option<ReplayContextWarningKey> {
+    let transition = match &decision.disposition {
+        ReplayDisposition::DiscardedForeignAdapter { found, expected } => {
+            ReplayContextTransition::Adapter {
+                found: found.clone(),
+                expected: expected.clone(),
+            }
+        }
+        ReplayDisposition::DiscardedForeignModelSelection { found, expected } => {
+            ReplayContextTransition::ModelSelection {
+                found: found.clone(),
+                expected: expected.clone(),
+            }
+        }
+        ReplayDisposition::DiscardedForeignVariant { found, expected } => {
+            ReplayContextTransition::Variant {
+                found: found.clone(),
+                expected: expected.clone(),
+            }
+        }
+        _ => return None,
+    };
+    Some(ReplayContextWarningKey {
+        selection_fingerprint: model.selection_fingerprint.clone(),
+        transition,
+    })
+}
+
+struct ReplayContextWarningKey {
+    selection_fingerprint: Sha256Digest,
+    transition: ReplayContextTransition,
+}
+
+impl ReplayContextWarningKey {
+    fn with_run(self, run_id: RunId) -> (RunId, Sha256Digest, ReplayContextTransition) {
+        (run_id, self.selection_fingerprint, self.transition)
     }
-    decisions
-        .iter()
-        .map(|decision| {
-            let (level, disposition) = match &decision.disposition {
-                ReplayDisposition::Replayed => (EventLevel::Debug, "replayed".into()),
-                ReplayDisposition::NoArtifact => (EventLevel::Debug, "no artifact".into()),
-                ReplayDisposition::DiscardedForeignAdapter { found, expected } => (
-                    EventLevel::Warning,
-                    format!(
-                        "discarded foreign adapter {found} (expected {})",
-                        expected.as_str()
-                    ),
-                ),
-                ReplayDisposition::DiscardedForeignModelSelection { found, expected } => (
-                    EventLevel::Warning,
-                    format!(
-                        "discarded foreign model selection {}/{} (expected {}/{})",
-                        found.model,
-                        found
-                            .variant
-                            .as_ref()
-                            .map_or("base".into(), |variant| variant.to_string()),
-                        expected.model,
-                        expected
-                            .variant
-                            .as_ref()
-                            .map_or("base".into(), |variant| variant.to_string())
-                    ),
-                ),
-                ReplayDisposition::DiscardedForeignVariant { found, expected } => (
-                    EventLevel::Warning,
-                    format!(
-                        "discarded foreign variant {} (expected {})",
-                        found
-                            .as_ref()
-                            .map_or("base".into(), |variant| variant.to_string()),
-                        expected
-                            .as_ref()
-                            .map_or("base".into(), |variant| variant.to_string())
-                    ),
-                ),
-                ReplayDisposition::DiscardedInvalidPayload { reason } => (
-                    EventLevel::Warning,
-                    format!("discarded invalid payload: {reason}"),
-                ),
-                ReplayDisposition::ReconstructedNormalizedHistory => (
-                    EventLevel::Warning,
-                    "reconstructed normalized history".into(),
-                ),
-            };
-            (level, format!("#{} {disposition}", decision.history_index))
-        })
-        .collect()
 }
 
 fn render_model_error(error: &ModelErrorSummary) -> String {

@@ -410,17 +410,18 @@ final result plus safe artifact metadata.
 ## 9. TUI transcript and selectors
 
 The Message title represents client-local draft selection as
-`Agent(provider/model[variant])`. Agent and canonical model-selection text are
-the selection regions; there is no separate variant picker. Base is rendered
-explicitly as `[base]`. The global model picker has one row per available model,
-showing its canonical resolved default selection and display name; it never
-expands variants into rows. Changing models selects that default, while
-reselecting the current model retains its exact variant. Clicking the Message
-title's `[variant]` region cycles exact variants directly. Draft changes do not
-alter an active run.
+`Agent • provider/model[variant]`, with one ASCII space on each side of the
+decorative bullet. Agent and canonical model-selection text are the selection
+regions; the bullet is not clickable, and there is no separate variant picker.
+Base is rendered explicitly as `[base]`. The global model picker has one row per
+available model, showing its canonical resolved default selection and display
+name; it never expands variants into rows. Changing models selects that default,
+while reselecting the current model retains its exact variant. Clicking the
+Message title's `[variant]` region cycles exact variants directly. Draft changes
+do not alter an active run.
 
 The visible header of every assistant item has the exact form
-`<agent-id>(<provider>/<model-id>[<variant>])` from frozen attempt attribution,
+`<agent-id> • <provider>/<model-id>[<variant>]` from frozen attempt attribution,
 with `[base]` for base behavior. It has no textual `ASSISTANT` prefix and never
 hides or infers the exact variant.
 

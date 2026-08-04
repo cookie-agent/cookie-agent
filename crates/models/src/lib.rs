@@ -365,6 +365,58 @@ pub struct ModelSet {
     fingerprint: Sha256Digest,
 }
 
+/// Scripted executable input for cross-crate integration tests.
+#[cfg(feature = "test-support")]
+pub struct TestModelEntry {
+    pub key: ModelKey,
+    pub display_name: String,
+    pub adapter_id: AdaptorId,
+    pub capabilities: ModelCapabilities,
+    pub model: Arc<dyn LanguageModel>,
+    pub descriptor: LanguageModelDescriptor,
+}
+
+/// Builds an immutable model set from exact scripted adapter identities.
+#[cfg(feature = "test-support")]
+pub fn test_model_set(entries: Vec<TestModelEntry>) -> ModelSet {
+    let fingerprint = Sha256Digest::hash(
+        "cookie-agent/test-model-set/v1",
+        &entries
+            .iter()
+            .map(|entry| (&entry.key, entry.adapter_id, &entry.descriptor))
+            .collect::<Vec<_>>(),
+    )
+    .expect("test model set fingerprint");
+    let entries = entries
+        .into_iter()
+        .map(|entry| {
+            let behavior_fingerprint = Sha256Digest::hash(
+                "cookie-agent/test-model-behavior/v1",
+                &(&entry.key, entry.adapter_id, &entry.descriptor),
+            )
+            .expect("test model behavior fingerprint");
+            let model = ModelEntry::new(
+                entry.key.clone(),
+                entry.display_name,
+                entry.adapter_id,
+                Some(entry.model),
+                entry.descriptor,
+                entry.capabilities,
+                ResolvedRequestDefaults::default(),
+                ProviderOptions::default(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                None,
+                behavior_fingerprint,
+                true,
+            );
+            (entry.key, model)
+        })
+        .collect::<Vec<_>>();
+    ModelSet::new(entries, fingerprint).expect("test model set")
+}
+
 impl ModelSet {
     pub fn new(
         entries: impl IntoIterator<Item = (ModelKey, ModelEntry)>,

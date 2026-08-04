@@ -396,7 +396,7 @@ mod tests {
             }
             if (width, height) == (80, 24) {
                 assert!(rendered.contains("git status"));
-                assert!(rendered.contains("primary(gateway/arbitrary-model[base])"));
+                assert!(rendered.contains("primary • gateway/arbitrary-model[base]"));
             }
         }
     }

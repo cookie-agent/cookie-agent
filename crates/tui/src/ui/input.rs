@@ -435,6 +435,14 @@ pub(crate) fn credential_wipe_count() -> usize {
     CREDENTIAL_WIPE_COUNT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RenderedInput {
+    pub(crate) text_rect: Rect,
+    /// The visible cells occupied by the caller-provided title, excluding any
+    /// scroll prefix. `None` means scroll indicators replaced the title.
+    pub(crate) title_rect: Option<Rect>,
+}
+
 pub(crate) fn render(
     frame: &mut Frame,
     area: Rect,
@@ -442,7 +450,7 @@ pub(crate) fn render(
     focused: bool,
     title: &str,
     theme: &Theme,
-) -> Rect {
+) -> RenderedInput {
     let border_style = theme.input_border(focused);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -450,8 +458,20 @@ pub(crate) fn render(
     let inner = block.inner(area);
     let (lines, cursor_column, cursor_row, rows_above, rows_below) =
         input.visible_rows(inner.width, inner.height);
-    let title = overflow_title(title, rows_above, rows_below, area.width);
-    let block = block.title(title);
+    let title_layout = overflow_title(title, rows_above, rows_below, area.width);
+    let title_rect = title_layout.original_offset.and_then(|offset| {
+        let available = area.width.saturating_sub(2);
+        let visible_width = available.saturating_sub(offset).min(text_width(title));
+        (visible_width > 0).then(|| {
+            Rect::new(
+                area.x.saturating_add(1).saturating_add(offset),
+                area.y,
+                visible_width,
+                1,
+            )
+        })
+    });
+    let block = block.title(title_layout.text);
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
     if focused && inner.width > 0 && inner.height > 0 {
@@ -460,23 +480,44 @@ pub(crate) fn render(
             inner.y.saturating_add(cursor_row.min(inner.height - 1)),
         ));
     }
-    inner
+    RenderedInput {
+        text_rect: inner,
+        title_rect,
+    }
 }
 
-fn overflow_title(title: &str, rows_above: usize, rows_below: usize, width: u16) -> String {
+struct OverflowTitle {
+    text: String,
+    original_offset: Option<u16>,
+}
+
+fn overflow_title(title: &str, rows_above: usize, rows_below: usize, width: u16) -> OverflowTitle {
     if rows_above == 0 && rows_below == 0 {
-        return title.to_owned();
+        return OverflowTitle {
+            text: title.to_owned(),
+            original_offset: Some(0),
+        };
     }
     let available = width.saturating_sub(2);
-    let full = format!("Input ↑{rows_above} ↓{rows_below} · {title}");
+    let prefix = format!("Input ↑{rows_above} ↓{rows_below} · ");
+    let full = format!("{prefix}{title}");
     if text_width(&full) <= available {
-        return full;
+        return OverflowTitle {
+            text: full,
+            original_offset: Some(text_width(&prefix)),
+        };
     }
     let labelled = format!("Input ↑{rows_above} ↓{rows_below}");
     if text_width(&labelled) <= available {
-        return labelled;
+        return OverflowTitle {
+            text: labelled,
+            original_offset: None,
+        };
     }
-    format!("↑{rows_above}↓{rows_below}")
+    OverflowTitle {
+        text: format!("↑{rows_above}↓{rows_below}"),
+        original_offset: None,
+    }
 }
 
 fn visual_rows(value: &str, width: u16) -> Vec<VisualRow> {
@@ -645,10 +686,47 @@ fn text_width(text: &str) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+    use ratatui::{
+        Terminal,
+        backend::TestBackend,
+        layout::Rect,
+        style::{Modifier, Style},
+    };
 
     use super::{CredentialInput, InputState, render};
     use crate::theme::Theme;
+
+    #[test]
+    fn focused_and_unfocused_message_borders_share_the_bright_color() {
+        fn rendered_styles(focused: bool) -> (Style, Style) {
+            let mut input = InputState::default();
+            let mut terminal = Terminal::new(TestBackend::new(12, 3)).expect("terminal");
+            terminal
+                .draw(|frame| {
+                    render(
+                        frame,
+                        frame.area(),
+                        &mut input,
+                        focused,
+                        "Message",
+                        &Theme::default(),
+                    );
+                })
+                .expect("render Message box");
+            let buffer = terminal.backend().buffer();
+            (buffer[(0, 0)].style(), buffer[(1, 0)].style())
+        }
+
+        let (focused_border, focused_title) = rendered_styles(true);
+        let (unfocused_border, unfocused_title) = rendered_styles(false);
+
+        assert_eq!(unfocused_border.fg, focused_border.fg);
+        assert_eq!(unfocused_title.fg, focused_title.fg);
+        assert!(focused_border.add_modifier.contains(Modifier::BOLD));
+        assert!(!focused_border.add_modifier.contains(Modifier::DIM));
+        assert!(unfocused_border.add_modifier.contains(Modifier::DIM));
+        assert!(!unfocused_border.add_modifier.contains(Modifier::BOLD));
+    }
 
     #[test]
     fn credential_owned_insert_reuses_the_sanitized_allocation() {

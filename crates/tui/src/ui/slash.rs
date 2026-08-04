@@ -354,6 +354,11 @@ pub(crate) fn render(
         Rect::new(inner.x, inner.y, inner.width, inner.height.min(2)),
     );
     let entry_count = entries.len();
+    if entry_count == 0 {
+        frame.render_widget(Paragraph::new("No matching commands"), list_area);
+        state.select(None);
+        return Vec::new();
+    }
     frame.render_stateful_widget(
         List::new(entries.into_iter().map(ListItem::new).collect::<Vec<_>>())
             .highlight_symbol("> "),

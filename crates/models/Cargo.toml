@@ -9,6 +9,9 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 arc-swap.workspace = true
 cookie_agent_identity = { version = "=0.1.0", path = "../identity" }

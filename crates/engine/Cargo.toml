@@ -34,6 +34,7 @@ tree-sitter-bash.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+cookie_agent_models = { version = "=0.1.0", path = "../models", features = ["test-support"] }
 flate2.workspace = true
 insta.workspace = true
 tempfile.workspace = true

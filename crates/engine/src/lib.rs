@@ -3,6 +3,8 @@
 pub mod actor;
 #[cfg(test)]
 mod builtin_revision_tests;
+#[cfg(test)]
+mod cross_protocol_model_switch_tests;
 mod delegation_api;
 #[cfg(test)]
 mod delegation_tests;

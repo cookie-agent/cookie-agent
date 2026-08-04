@@ -234,7 +234,13 @@ impl Theme {
     }
 
     pub fn input_border(&self, focused: bool) -> Style {
-        if focused { self.user() } else { self.muted() }
+        if focused {
+            self.user()
+        } else {
+            let mut style = self.muted();
+            style.fg = self.user().fg;
+            style
+        }
     }
 
     pub fn quantize_rgb(&self, red: u8, green: u8, blue: u8) -> Option<Color> {

@@ -28,12 +28,14 @@ failure behavior are mandatory.
    models. They can be generated from pinned models.dev reasoning metadata or
    explicitly added, replaced, disabled, and selected as a model default.
 6. The visible assistant header text is exactly
-   `Agent(provider/model[variant])`. It identifies the frozen producing agent
-   and exact model selection; base is explicit as `[base]`, and a named variant
-   is preserved exactly, including `[default]`.
+   `Agent • provider/model[variant]`, with one ASCII space on each side of the
+   bullet. It identifies the frozen producing agent and exact model selection;
+   base is explicit as `[base]`, and a named variant is preserved exactly,
+   including `[default]`.
 7. The Message panel title uses the same canonical model-selection text. Agent
-   and model selection are separate hit regions, but variant is part of the
-   model selection and has no separate picker.
+   and model selection are separate hit regions, the bullet is decoration and
+   not clickable, and variant is part of the model selection with no separate
+   picker.
 
 In those forms, `Agent` is the exact `AgentId`; `provider/model` is the exact
 `ModelKey`; and the bracketed value is the exact variant or `base`. They are
@@ -1076,7 +1078,7 @@ Assistant attribution on live streaming and replay is derived from the frozen
 `RunStarted` plus `ModelAttemptStarted`/`ModelTurnCommitted`, never from the
 current picker, live agent files, current provider config, or an inferred model
 name. The visible header projects the exact canonical
-`Agent(provider/model[variant])` selection, including `[base]`.
+`Agent • provider/model[variant]` selection, including `[base]`.
 
 ## 11. Inline assistant children and selectors
 
@@ -1099,7 +1101,7 @@ pub enum AssistantChild {
 ```
 
 Each attempt/committed model turn has one visible header:
-`<agent-id>(<provider>/<model-id>[<variant>])`. Text,
+`<agent-id> • <provider>/<model-id>[<variant>]`. Text,
 thinking, and tools remain in model-content order beneath it. Thinking has one
 `▸`/`▾` chevron, plain wrapped text, independent expansion/cache state, and no
 standalone header. Tools are ordered by owning committed model content, not
@@ -1112,8 +1114,9 @@ sanitization, secret redaction, and bounding. Known primary arguments are bash
 command; read/write/edit path; grep/glob pattern; and delegate target plus task
 excerpt.
 
-Message title uses `Agent(provider/model[variant])` and represents the draft
-selection. Changing it does not mutate an active run. The root Agent selector
+Message title uses `Agent • provider/model[variant]` and represents the draft
+selection; the bullet is decorative and not clickable. Changing it does not
+mutate an active run. The root Agent selector
 lists only agents with `runnable_as_root = true`; therefore an empty-chain `all`
 agent is not selectable as a root. The root model-selection picker uses the
 complete current public model catalog with exactly one row per globally

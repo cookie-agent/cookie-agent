@@ -1421,6 +1421,68 @@ mod tests {
     }
 
     #[test]
+    fn identical_foreign_dispositions_on_distinct_history_entries_are_preserved() {
+        let binding = binding();
+        let foreign = ReplayDisposition::DiscardedForeignAdapter {
+            found: SafeCode::new("anthropic").expect("adapter"),
+            expected: SafeCode::new(binding.descriptor.adapter_id.as_str()).expect("adapter"),
+        };
+        let preflight = vec![
+            cookie_agent_protocol::ReplayDecision {
+                history_index: 1,
+                disposition: foreign.clone(),
+            },
+            cookie_agent_protocol::ReplayDecision {
+                history_index: 3,
+                disposition: foreign,
+            },
+        ];
+        let merged = replay_decisions_with_preflight(
+            &[
+                OvenReplayDecision {
+                    history_index: 1,
+                    disposition: OvenReplayDisposition::NoArtifact,
+                },
+                OvenReplayDecision {
+                    history_index: 1,
+                    disposition: OvenReplayDisposition::ReconstructedNormalized,
+                },
+                OvenReplayDecision {
+                    history_index: 3,
+                    disposition: OvenReplayDisposition::NoArtifact,
+                },
+                OvenReplayDecision {
+                    history_index: 3,
+                    disposition: OvenReplayDisposition::ReconstructedNormalized,
+                },
+            ],
+            &binding,
+            &preflight,
+        );
+        assert!(matches!(
+            merged.as_slice(),
+            [
+                cookie_agent_protocol::ReplayDecision {
+                    history_index: 1,
+                    disposition: ReplayDisposition::DiscardedForeignAdapter { .. },
+                },
+                cookie_agent_protocol::ReplayDecision {
+                    history_index: 1,
+                    disposition: ReplayDisposition::ReconstructedNormalizedHistory,
+                },
+                cookie_agent_protocol::ReplayDecision {
+                    history_index: 3,
+                    disposition: ReplayDisposition::DiscardedForeignAdapter { .. },
+                },
+                cookie_agent_protocol::ReplayDecision {
+                    history_index: 3,
+                    disposition: ReplayDisposition::ReconstructedNormalizedHistory,
+                },
+            ]
+        ));
+    }
+
+    #[test]
     fn foreign_model_selection_discards_without_aborting_history_restore() {
         let binding = binding();
         let current = wire_model(&binding);

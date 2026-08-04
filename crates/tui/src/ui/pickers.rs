@@ -106,6 +106,7 @@ pub(crate) fn render(
     frame: &mut Frame,
     title: &str,
     entries: Vec<String>,
+    empty_message: Option<&str>,
     area: Rect,
     state: &mut ListState,
     theme: &Theme,
@@ -113,12 +114,18 @@ pub(crate) fn render(
     frame.render_widget(Clear, area);
     let entry_count = entries.len();
     if entry_count == 0 {
+        let content = empty_message.map_or_else(
+            || {
+                Line::from(vec![
+                    Span::styled("No matches. ", theme.muted()),
+                    Span::styled("Backspace or Ctrl-U clears the filter.", theme.internal()),
+                ])
+            },
+            |message| Line::from(Span::styled(message.to_owned(), theme.muted())),
+        );
         frame.render_widget(
-            ratatui::widgets::Paragraph::new(Line::from(vec![
-                Span::styled("No matches. ", theme.muted()),
-                Span::styled("Backspace or Ctrl-U clears the filter.", theme.internal()),
-            ]))
-            .block(Block::default().borders(Borders::ALL).title(title)),
+            ratatui::widgets::Paragraph::new(content)
+                .block(Block::default().borders(Borders::ALL).title(title)),
             area,
         );
         return Vec::new();

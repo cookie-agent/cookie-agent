@@ -109,10 +109,12 @@ resources, and `write` permission governs both write and edit.
 
 ## TUI behavior
 
-The Message panel title uses `Agent(provider/model[variant])` with Agent and the
-canonical exact model selection as its selector regions; there is no separate
-variant picker. Visible assistant headers use the same exact selection from
-frozen attribution, including `[base]`, with no `ASSISTANT` prefix.
+The Message panel title uses `Agent • provider/model[variant]` with one ASCII
+space on each side of the decorative bullet. Agent and the canonical exact
+model selection are selector regions; the bullet is not clickable, and there
+is no separate variant picker. Visible assistant headers use the same format
+and exact selection from frozen attribution, including `[base]`, with no
+`ASSISTANT` prefix.
 The global model picker renders one row per available model using its resolved
 default (`[base]` or a named variant) plus display name. Variants are changed
 only by clicking `[variant]` in the Message title; variants are never picker

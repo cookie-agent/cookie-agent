@@ -2806,13 +2806,13 @@ impl App {
                 }
             }
             SlashCommand::Connect => {
+                self.clear_connect_secrets();
+                self.modal = Modal::ConnectProviders;
+                self.picker_query.clear();
+                self.picker_state.select(Some(0));
                 if self.providers.is_empty() {
                     self.status = "No catalog providers are available.".into();
                 } else {
-                    self.clear_connect_secrets();
-                    self.modal = Modal::ConnectProviders;
-                    self.picker_query.clear();
-                    self.picker_state.select(Some(0));
                     self.status =
                         "Select a provider to connect. Type to filter; Enter: details.".into();
                 }
@@ -3185,6 +3185,7 @@ impl App {
 
     pub(super) fn cancel_active_run(&mut self) {
         let Some(session_id) = self.selected else {
+            self.status = "no active run to cancel".into();
             return;
         };
         let Some(run_id) = self
@@ -3208,13 +3209,13 @@ impl App {
         });
     }
 
-    /// The exact Message panel title `Agent(Model[Variant])` with separate
+    /// The exact Message panel title `Agent • Model[Variant]` with separate
     /// structured agent, model, and bracketed variant hit regions.
     fn message_title_spans(&self) -> Vec<Span<'static>> {
         match &self.draft {
             Some(draft) => vec![
                 Span::styled(draft.agent.to_string(), self.theme.user()),
-                Span::raw("("),
+                Span::raw(" • "),
                 Span::styled(draft.model.model.to_string(), self.theme.assistant()),
                 Span::styled(
                     format!(
@@ -3227,7 +3228,6 @@ impl App {
                     ),
                     self.theme.tool(),
                 ),
-                Span::raw(")"),
             ],
             None => vec![Span::styled(
                 "Message — setup required".to_owned(),
@@ -3247,7 +3247,7 @@ impl App {
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        let text_rect = super::input::render(
+        let rendered_input = super::input::render(
             frame,
             layout.input,
             &mut self.input,
@@ -3256,40 +3256,40 @@ impl App {
             &self.theme,
         );
         // Agent, Model, and the complete bracketed Variant suffix are separate
-        // clickable regions inside the canonical title.
+        // clickable regions inside the canonical title. The bullet is decoration.
         self.hit_map.title_segments = {
             let segments = [
                 Some(TitleSegment::Agent),
                 None,
                 Some(TitleSegment::Model),
                 Some(TitleSegment::Variant),
-                None,
             ];
-            let mut hits = Vec::new();
-            let mut column = layout.input.x.saturating_add(1);
-            let visible_end = layout
-                .input
-                .x
-                .saturating_add(layout.input.width.saturating_sub(1));
-            for (span, segment) in title_spans.iter().zip(segments) {
-                let width =
-                    UnicodeWidthStr::width(span.content.as_ref()).min(usize::from(u16::MAX)) as u16;
-                let visible_width = visible_end.saturating_sub(column).min(width);
-                if let Some(segment) = segment
-                    && visible_width > 0
-                {
-                    hits.push(TitleSegmentHit {
-                        rect: Rect::new(column, layout.input.y, visible_width, 1),
-                        segment,
-                    });
-                }
-                column = column.saturating_add(width);
-            }
-            hits
+            rendered_input
+                .title_rect
+                .map_or_else(Vec::new, |title_rect| {
+                    let mut hits = Vec::new();
+                    let mut column = title_rect.x;
+                    let visible_end = title_rect.x.saturating_add(title_rect.width);
+                    for (span, segment) in title_spans.iter().zip(segments) {
+                        let width = UnicodeWidthStr::width(span.content.as_ref())
+                            .min(usize::from(u16::MAX)) as u16;
+                        let visible_width = visible_end.saturating_sub(column).min(width);
+                        if let Some(segment) = segment
+                            && visible_width > 0
+                        {
+                            hits.push(TitleSegmentHit {
+                                rect: Rect::new(column, title_rect.y, visible_width, 1),
+                                segment,
+                            });
+                        }
+                        column = column.saturating_add(width);
+                    }
+                    hits
+                })
         };
         self.hit_map.input = Some(InputHit {
             rect: layout.input,
-            text_rect,
+            text_rect: rendered_input.text_rect,
         });
         let base_status = if self.pending_approval.is_some() {
             "Approval submitting…".to_owned()
@@ -3327,6 +3327,7 @@ impl App {
                         format!("{title}  ({})", short_id(session.session_id))
                     })
                     .collect(),
+                None,
                 centered(frame.area(), 68, 50),
             ),
             Modal::Agents => {
@@ -3358,12 +3359,22 @@ impl App {
                         format!("Agent — {}", self.descriptor_revisions_label()),
                     )
                 };
-                self.render_picker(frame, &title, entries, centered(frame.area(), 56, 44));
+                let empty_message = entries
+                    .is_empty()
+                    .then_some("No root-runnable agents are available.");
+                self.render_picker(
+                    frame,
+                    &title,
+                    entries,
+                    empty_message,
+                    centered(frame.area(), 56, 44),
+                );
             }
             Modal::Models => self.render_picker(
                 frame,
                 "Model",
                 self.draft_model_labels(),
+                Some("No models are available for this draft."),
                 centered(frame.area(), 56, 44),
             ),
             Modal::ConnectProviders => {
@@ -3384,6 +3395,9 @@ impl App {
                             )
                         })
                         .collect(),
+                    self.providers
+                        .is_empty()
+                        .then_some("No catalog providers are available."),
                     centered(frame.area(), 72, 60),
                 );
             }
@@ -3615,6 +3629,7 @@ impl App {
         frame: &mut ratatui::Frame,
         title: &str,
         entries: Vec<String>,
+        empty_message: Option<&str>,
         area: Rect,
     ) {
         self.clamp_picker_selection();
@@ -3623,6 +3638,7 @@ impl App {
             frame,
             title,
             entries,
+            empty_message,
             area,
             &mut self.picker_state,
             &self.theme,
@@ -3884,14 +3900,14 @@ fn is_approval_scroll_key(code: KeyCode) -> bool {
     )
 }
 
-/// The exact `Agent(Model[Variant])` draft-selection title form.
+/// The exact `Agent • Model[Variant]` draft-selection title form.
 fn draft_title(draft: &RunSelection) -> String {
     let variant = draft
         .model
         .variant
         .as_ref()
         .map_or_else(|| "base".to_owned(), |variant| variant.to_string());
-    format!("{}({}[{}])", draft.agent, draft.model.model, variant)
+    format!("{} • {}[{}]", draft.agent, draft.model.model, variant)
 }
 
 fn canonical_model_row(selection: &ModelSelection, display_name: Option<&str>) -> String {

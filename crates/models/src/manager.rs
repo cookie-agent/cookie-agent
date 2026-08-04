@@ -77,6 +77,32 @@ pub struct ModelSetManager {
 }
 
 impl ModelSetManager {
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn from_test_model_set(model_set: ModelSet, credentials: CredentialStore) -> Self {
+        let model_set = Arc::new(model_set);
+        let initial = Arc::new(ModelSnapshot {
+            revision: format!("sha256:{}", model_set.fingerprint().as_str()),
+            model_set,
+            generated_at: jiff::Timestamp::now().to_string(),
+            catalog_revision: format!("sha256:{}", crate::MODELS_DEV_ARTIFACT_SHA256),
+        });
+        let retained = [(
+            initial.model_set.fingerprint().clone(),
+            vec![Arc::clone(&initial)],
+        )]
+        .into_iter()
+        .collect();
+        Self {
+            providers: BTreeMap::new(),
+            catalog: Arc::new(Catalog::embedded().expect("embedded test catalog")),
+            credentials,
+            current: ArcSwap::from(initial),
+            retained: Mutex::new(retained),
+            refresh: Mutex::new(()),
+        }
+    }
+
     pub fn new(
         providers: BTreeMap<ProviderId, ProviderDefinition>,
         catalog: Arc<Catalog>,
