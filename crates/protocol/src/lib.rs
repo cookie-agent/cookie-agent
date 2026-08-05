@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol, event, and persistence schema version 7.
+//! Exact cookie-agent protocol, event, and persistence schema version 8.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders.
 
@@ -94,30 +94,44 @@ mod bindings;
 mod catalog;
 mod event;
 mod identity;
+mod journal;
+mod manifest;
 mod model;
+mod provider;
 mod rpc;
+mod runtime;
 
 pub use agent::*;
 pub use approval::*;
 pub use bindings::*;
 pub use catalog::*;
 pub use cookie_agent_identity::{
-    AgentId, IdentityError, ModelKey, ModelSelection, ProviderId, ProviderModelId, SafeCode,
-    VariantId, WildcardPattern,
+    AdapterId, AgentId, AgentRevision, AuthFieldName, AuthMethodId, AuthParameterId, AuthRecipeId,
+    CacheEntryId, CacheRevision, CanonicalModelId, CatalogRevision, IdentityError, ManifestEntryId,
+    ManifestRevision, ModelKey, ModelRevision, ModelSelection, ModelSnapshotRevision,
+    ProtocolRecipeId, ProviderId, ProviderModelId, ProviderRecipeId, ProviderSetupRecipeId,
+    ProviderStateRevision, ProviderStoreRevision, RecipeCompilerVersion, RecipeRegistryRevision,
+    RuntimeRevision, SafeCode, SetupFieldId, StoreEntryId, VariantId, WildcardPattern,
 };
 pub use event::*;
 pub use identity::*;
+pub use journal::*;
+pub use manifest::*;
 pub use model::*;
+pub use provider::*;
 pub use rpc::*;
+pub use runtime::*;
 
 /// The only protocol version supported by this build.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 /// The only durable event/session-JSONL schema supported by this build.
-pub const EVENT_SCHEMA_VERSION: u32 = 7;
+pub const EVENT_SCHEMA_VERSION: u32 = 8;
 /// The only session metadata schema supported by this build.
-pub const SESSION_META_SCHEMA_VERSION: u32 = 7;
+pub const SESSION_META_SCHEMA_VERSION: u32 = 8;
 /// The only delegation-journal schema supported by this build.
-pub const DELEGATION_JOURNAL_SCHEMA_VERSION: u32 = 7;
+pub const DELEGATION_JOURNAL_SCHEMA_VERSION: u32 = 8;
+/// The only coherent runtime snapshot schema supported by this build.
+pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
 /// Returns the TypeScript generation configuration required by this JSON wire.
 #[must_use]
@@ -206,24 +220,30 @@ macro_rules! exact_numeric_wire_type {
     };
 }
 
-exact_numeric_wire_type!(ProtocolVersion, 7, "7", "The exact protocol wire version.");
+exact_numeric_wire_type!(ProtocolVersion, 8, "8", "The exact protocol wire version.");
 exact_numeric_wire_type!(
     EventSchemaVersion,
-    7,
-    "7",
+    8,
+    "8",
     "The exact event/session-JSONL schema version."
 );
 exact_numeric_wire_type!(
     SessionMetaSchemaVersion,
-    7,
-    "7",
+    8,
+    "8",
     "The exact session metadata schema version."
 );
 exact_numeric_wire_type!(
     DelegationJournalSchemaVersion,
-    7,
-    "7",
+    8,
+    "8",
     "The exact delegation-journal schema version."
+);
+exact_numeric_wire_type!(
+    RuntimeSnapshotSchemaVersion,
+    1,
+    "1",
+    "The exact coherent runtime snapshot schema version."
 );
 
 #[cfg(test)]

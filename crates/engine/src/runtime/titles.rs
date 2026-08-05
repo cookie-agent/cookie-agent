@@ -1,21 +1,11 @@
 use super::*;
 
 impl Engine {
-    pub(crate) fn historical_run_model_snapshot(
+    pub(crate) fn historical_run_runtime(
         &self,
-        run: RunId,
-    ) -> Result<Arc<cookie_agent_models::ModelSnapshot>, EngineError> {
-        self.inner
-            .run_model_snapshots
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&run)
-            .cloned()
-            .ok_or_else(|| {
-                EngineError::from(ModelError::invalid_request(
-                    "historical_run_model_snapshot_unavailable",
-                ))
-            })
+        _run: RunId,
+    ) -> Result<Arc<PublishedRuntime>, EngineError> {
+        Ok(self.current_runtime())
     }
 
     pub(crate) fn historical_title_policy(
@@ -24,13 +14,13 @@ impl Engine {
         run: RunId,
     ) -> Result<FrozenRunPolicy, EngineError> {
         let (agent, suffix) = latest_run_policy(events, run)?;
-        let model_snapshot = self.historical_run_model_snapshot(run)?;
-        let agents = self.materialize_agents(model_snapshot.model_set())?;
+        let runtime = self.historical_run_runtime(run)?;
+        let agents = Arc::clone(&runtime.agents);
         policy_from_snapshot(
             agent,
             suffix,
             agents,
-            model_snapshot,
+            runtime,
             self.inner.config.runtime.tool_output.max_lines,
             self.inner.config.runtime.tool_output.max_bytes,
         )

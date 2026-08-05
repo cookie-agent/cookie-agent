@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProviderDisconnectError",
+  "type": "object",
+  "properties": {
+    "client_request_id": {
+      "description": "Bounded provider mutation idempotency key.",
+      "type": "string",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+    },
+    "code": {
+      "$ref": "#/$defs/ProviderDisconnectErrorCode"
+    },
+    "provider_id": {
+      "type": "string",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "code",
+    "provider_id",
+    "client_request_id"
+  ],
+  "$defs": {
+    "ProviderDisconnectErrorCode": {
+      "type": "string",
+      "enum": [
+        "invalid_provider",
+        "custom_provider_not_store_backed",
+        "runtime_revision_conflict",
+        "provider_state_revision_conflict",
+        "stale_provider_connection_generation",
+        "provider_store_write_failed",
+        "runtime_compile_failed",
+        "idempotency_conflict"
+      ]
+    }
+  }
+}

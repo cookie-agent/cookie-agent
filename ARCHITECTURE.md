@@ -1,513 +1,617 @@
 # cookie_code Architecture
 
-**Status:** accepted future implementation architecture
-**Required versions:** configuration schema 6; agent document schema 1;
-protocol 7; event schema 7; session JSONL 7; session metadata 7;
-delegation-journal schema 7
-**Tagline:** subagent-first coding harness
+**Status:** frozen current implementation contract
 
-This file is the authoritative architecture record. The strict implementation
-contract for provider configuration, Markdown agents, variants, fallback
-resolution, permissions, delegation, protocol fields, persistence, security,
-and TUI behavior is
+**Required versions:** configuration schema 7; agent document schema 1;
+protocol 8; event schema 8; session JSONL 8; session metadata 8;
+delegation-journal schema 8; runtime snapshot schema 1; catalog cache schema 1;
+provider store schema 2; recipe registry schema 1; project model-snapshot
+manifest schema 1.
+
+Only those versions are accepted. Configuration schema 6, protocol/event/
+persistence 7, provider store 1, and every unversioned or earlier replacement
+are rejected. There are no migrations, compatibility readers, aliases, or dual
+paths.
+
+This file is authoritative. Exact types, ordering, failure behavior, startup,
+RPC, persistence, and TUI semantics are in
 [docs/agent-model-variant-redesign.md](docs/agent-model-variant-redesign.md).
-That contract is part of this architecture and must be implemented as written.
+Recipe registry 1 is frozen in
+[docs/provider-conformance.md](docs/provider-conformance.md).
 
-Cookie Agent is a Rust coding-agent harness whose local daemon owns agent
-behavior. Thin clients consume one versioned protocol. Sessions form durable
-delegation trees, while each session remains an isolated conversation with its
-own frozen run policy and event log.
+## 1. Core invariants
 
-## 1. Architectural invariants
+1. The daemon refreshes only `https://models.dev/catalog.json`. The URL is
+   code-owned, receives no provider credentials, and never redirects.
+2. Catalog startup selection is exactly network, validated cache schema 1, then
+   bundled bootstrap. A selected body's revision is
+   `sha256:<lowercase SHA-256 digest of the exact selected body bytes>`.
+3. Structural candidate failure rejects one network/cache/bootstrap candidate.
+   A bounded, structurally valid candidate quarantines malformed or ambiguous
+   provider/model records independently so valid siblings survive.
+4. `/connect` lists every valid current catalog provider and every configured
+   managed provider removed from the current catalog. “Configured managed” is
+   the union of authored `source = "models_dev"` definitions and provider-store
+   records. Custom providers never appear in `/connect` and never use store 2.
+5. Runtime TOML has exactly one `[providers.<id>]` namespace. Definitions are
+   tagged `source = "models_dev" | "custom"`. Custom IDs begin with `custom.`.
+6. A same-ID user/workspace provider definition is an atomic replacement. No
+   provider, model, map, array, auth, or override field merges across layers.
+7. A managed endpoint is an authored `base_url`, otherwise the code-owned recipe
+   default. Catalog API metadata is checked only as a claim. It is never endpoint
+   authority. An authored base URL requires authored auth in that same provider
+   definition unless the selected recipe is reviewed no-auth.
+8. Credentials are semantic values. `api_key` is permitted only for an
+   unambiguous one-secret default API-key method. `auth_override` is exactly
+   `{ method, values }`. A recipe owns the reviewed wire header/signing form;
+   registry 1 emits no credential query.
+9. Every authored/catalog endpoint is absolute, bounded, query-free,
+   userinfo-free, fragment-free, and HTTPS, except an exact code-reviewed
+   loopback HTTP policy. Query strings are rejected, including empty `?`.
+10. All managed supported, non-deprecated text-output models are automatic.
+    Managed TOML has sparse `model_overrides`; it has no inclusion map.
+11. Provider/protocol/auth behavior comes only from recipe registry schema 1.
+    Known-entry npm/API/env/shape/model-override drift quarantines the exact
+    provider or model record with a typed reason; behavior is never guessed.
+12. `provider.connect` and `provider.disconnect` mutate only managed provider
+    store state. Connect compiles before a single durable transaction; after a
+    successful transaction publication is an infallible in-memory swap.
+13. Runtime snapshot schema 1 is the sole coherent discovery surface. Legacy
+    independently refreshed provider/model/agent list flows do not exist in
+    protocol 8.
+14. Runs persist exact safe model bindings, source kind, credential source, and
+    config-override fingerprint. Rehydration never changes credential source.
+15. Model keys split at the first `/`; a model ID may contain `/`.
+16. Secrets never enter caches, revisions, snapshots, events, errors, logs,
+    generated artifacts, session files, or TUI projections.
+17. **Empty setup is valid.** Config schema 7 permits `providers` to be omitted
+    or empty. When provider store 2 is also empty and no effective authored
+    custom provider exists, startup publishes zero models/root-runnable agents
+    and opens the TUI so `/connect` can bootstrap setup. Empty TOML does not hide
+    existing per-user stored managed connections.
 
-1. **Current-only formats.** Config is exactly schema 6, Markdown agent
-   documents exactly schema 1, and protocol/event/persistence exactly 7. Older
-   project formats are rejected; there are no aliases, compatibility readers,
-   migrations, dual paths, or deprecated fields.
-2. **Provider-centric configuration.** Runtime TOML defines providers and
-   included models directly. A runnable model key is `provider/model-id`; model
-   aliases do not exist.
-3. **Markdown agents.** Agents are strict `.md` documents whose required body
-   is the complete system prompt. Agent policy is not stored in runtime TOML.
-4. **Immutable runs.** Before a run begins, the engine freezes its complete
-   agent prompt, tools, permissions, delegation policy, exact model/variant
-   suffix, descriptors, defaults, options, and fingerprints. Live file or
-   credential changes do not reinterpret that run.
-5. **Subagent-first, delegate-only.** Only the `delegate` tool can create a
-   child. Children are ordinary sessions with durable provenance and use their
-   own agent permissions.
-6. **Event-sourced.** Strict per-session JSONL events and the delegation journal
-   are durable truth. Metadata and client state are rebuildable projections.
-7. **One engine, many frontends.** The daemon owns model loops, tools,
-   permissions, approvals, persistence, titles, and delegation. TUI, web, and
-   editor clients are protocol consumers.
-8. **Explicit capability honesty.** Provider/model/adaptor behavior is explicit
-   and validated. Model names never infer adaptors, capabilities, defaults, or
-   variants.
-9. **Prepared authority.** Filesystem and process operations are prepared once,
-   approved against immutable resources, then executed through the held
-   capability. Permissions are consent control, not an OS sandbox.
-10. **Stable UI attribution.** Draft selection and frozen producer attribution
-    are separate. Exact selections use canonical
-    `provider/model[variant]` text, including `[base]`, and visible assistant
-    headers come from persisted attempt data rather than current picker state.
-11. **Locked internal distribution.** Workspace crates are nonpublishable. The
-    root `Cargo.lock` is the sole dependency graph and releases are locked
-    workspace builds of the `cookie` binary.
-
-Explicit non-goals for the initial implementation remain OS sandboxing, MCP,
-plugins, remote deployment, budget accounting, and user-visible parallelism
-caps.
-
-## 2. Components and dependency direction
+## 2. Component boundary
 
 ```text
-TUI / CLI / future web / VS Code
-                 │
-                 ▼
-             protocol v7
-                 │
-              server
-                 │
-        ┌────────▼────────┐
-        │     engine      │  sessions, runs, prompts, events,
-        │                 │  permissions, approvals, provenance
-        ├─────────────────┤
-        │ tools/delegate  │  built-ins and only child-creation path
-        ├─────────────────┤
-        │ models/config   │  immutable provider/model snapshots
-        └─────────────────┘
+TUI / CLI
+    │ protocol 8
+    ▼
+server ─────────────── runtime.changed notifications
+    │
+    ▼
+engine ── version-8 events/sessions and frozen run policy
+    │
+    ▼
+model manager ── atomic RuntimeSnapshot schema 1
+    │
+    ├── catalog manager ── fixed HTTPS / cache 1 / bootstrap
+    ├── recipe registry 1 ── provider/protocol/auth compilers
+    ├── config loader ── schema 7 and agent schema 1
+    └── provider store 2 ── managed durable connections only
 ```
 
-Dependency direction has no cycles:
+The catalog manager decides only catalog data and quarantine status. The recipe
+registry decides support, endpoint policy, auth semantics, capability projection,
+and Oven construction. The model manager compiles a complete candidate runtime
+before one atomic publication. The engine freezes one published snapshot at run
+admission. Clients consume one coherent snapshot and notifications.
+
+## 3. Filesystem layout and protection
+
+Workspace configuration is only:
 
 ```text
-tui ──────► protocol ◄────── server
-               ▲               │
-               │               ▼
-models ◄──── engine ◄──────── tools
-  ▲            │
-identity ◄── config
-```
-
-- `identity` owns `AgentId`, `ProviderId`, `ProviderModelId`, `ModelKey`,
-  `VariantId`, and `ModelSelection`.
-- `config` loads schema-6 runtime TOML plus schema-1 agent documents.
-- `models` constructs reviewed Oven adapters and immutable variant-aware model
-  snapshots.
-- `engine` owns sessions, runs, frozen `AgentSnapshot`s, event persistence,
-  replay, permissions, approvals, and privileged child admission.
-- `tools` implements built-ins and the `delegate` provider through engine APIs;
-  the engine does not import concrete tool implementations.
-- `protocol` owns exact v7 requests, responses, events, generated schemas, and
-  TypeScript bindings.
-- `server` routes JSON-RPC over transport-agnostic streams.
-- `tui` is a pure protocol client.
-- `cookie_agent` is the sole composition root and publishes complete snapshots
-  atomically.
-
-The engine actor for one session serializes history mutations but never awaits
-tool futures. Tool calls execute outside the mailbox and report back through
-messages, preserving cancellation and deadlock-free delegation.
-
-## 3. Current workspace configuration
-
-The only workspace path is:
-
-```text
-<cwd>/.cookie-agent/
+<exact-cwd>/.cookie-agent/
   config.toml
   agents/
     <agent-id>.md
 ```
 
-Optional user configuration is below `~/.config/cookie_agent/`. Layering is
-built-in runtime defaults, user TOML, then workspace TOML; user agents are
-replaced by same-ID workspace agents. Provider definitions and agent documents
-are atomic replacements, not field merges. Arrays replace.
-
-There is no upward search and no environment configuration layer. Interpolation
-is single-pass and restricted to provider endpoints, approved auth secret
-fields, and provider header values. Agent documents and model behavior fields
-do not interpolate.
-
-Loading is descriptor-relative and no-follow from the exact user config root or
-cwd. User files require current-user ownership and private modes. Both user and
-workspace loaders reject links, wrong types, multiply linked files, malformed
-or oversized TOML/YAML, duplicate keys/IDs, and unknown fields. Secret values
-are redacted and excluded from events, errors, debug output, fingerprints,
-session persistence, and generated artifacts.
-
-`attach` and `connect` are workspace-independent. `.cookie_agent` and old
-workspace-acceptance/trust artifacts are not inspected.
-
-## 4. Provider and model architecture
-
-`RuntimeConfig.providers` is a strict map of tagged `ProviderDefinition`:
-
-- `ModelsDevProvider` binds an exact vendored models.dev catalog revision,
-  reviewed recipe, optional permitted endpoint/adaptor override, auth, headers,
-  and an explicit map of included model IDs.
-- `ExplicitProvider` requires endpoint, supported adaptor, auth, headers, and a
-  nonempty explicit model map.
-
-Only listed, enabled models are runnable. Every model has honest capabilities,
-normalized frozen request defaults, strict adaptor-specific provider options, base
-behavior, a variant map, an optional default variant, and behavior/configuration
-fingerprints. Models.dev model entries derive complete capabilities from the
-pinned source and reviewed recipe and cannot author a capabilities table;
-explicit declarations must state every capability field, including false
-booleans and an empty media map. `parallel_tool_calls = true` requires tool
-calling, seed support is an explicit capability, and each non-text input
-modality requires its matching bounded media entry. Unknown or
-unsupported fields and auth/adaptor/capability/default combinations fail the
-whole provider candidate.
-
-For both provider forms, `source`, `auth`, and a nonempty `models` map are
-required; models.dev additionally requires catalog revision, while explicit
-requires endpoint and adaptor. Headers default empty. Model `enabled` defaults
-true; defaults/options/variants default empty; models.dev display name defaults
-to its source value; explicit display name and complete capabilities are
-required. Every other provider/model field is either explicitly required or
-has the omission behavior fixed in the redesign contract.
-
-Provider publication is atomic: construct every enabled model and variant,
-validate all defaults and fingerprints, then replace the immutable provider
-snapshot in one swap. A failed refresh leaves the preceding snapshot intact.
-Credential values are never part of a snapshot or fingerprint; safe auth shape
-and header names are.
-
-The engine retains immutable authored agent documents, not one startup-resolved
-registry. `agent.list` and `session.create` each load one current model-manager
-snapshot and materialize the complete registry against that same snapshot, so a
-provider connection cannot advertise an agent that session creation still sees
-as unavailable. Published model snapshots referenced by existing sessions and
-runs remain retained for the daemon lifetime.
-
-The public root model catalog is the complete set of configured, enabled, and
-currently executable models in strict `ModelKey` order. Credential-blocked
-entries remain in the immutable internal snapshot for agent resolution but are
-not emitted as public `AvailableModelDescriptor` values until a coherent
-credential refresh makes them executable.
-
-### 4.1 Variants
-
-A `ModelSelection` contains a direct `ModelKey` plus `Option<VariantId>`; `None`
-means exact base behavior. Variants are named behavior presets under one model,
-not separate model IDs. Its canonical display is
-`provider/model[variant]`: base is always explicit as `[base]`, and named IDs
-are preserved exactly, including a literal `[default]`. This display rule does
-not change the structured serialized shape.
-
-Agent fallback authoring stores `Option<ConfiguredVariantRef>` with three
-distinct states:
-
-- omitted/`None` → the provider model's already-resolved default selection;
-- explicit `base`/`Some(Base)` → exact base even when a named default exists;
-- any other valid string/`Some(Named)` → named variant, including an ID literally named
-  `default`.
-
-Provider model default authoring is separate:
-`default_variant: Option<ConfiguredModelDefault>` uses `None` for omitted and
-retaining the provider source default, `Some(Base)` for explicit exact base, and
-`Some(Named)` for a named variant. Both provider defaults and agent fallback
-entries resolve to exact `ModelSelection` before freezing.
-
-Every authored entry resolves to exact `ModelSelection` before freezing. A
-fallback chain may not repeat a `ModelKey`, so delegated chain selection remains
-unambiguous and does not wrap.
-
-The only models.dev reasoning option forms are `effort`, `toggle`, and
-`budget_tokens`. Effort supports `none`, `minimal`, `low`, `medium`, `high`,
-`xhigh`, `max`, `default`, and `null`; null produces `off`. Toggle produces
-`off`/`on`. Budget metadata produces only the deterministic IDs justified by
-the pinned `min`/`max` fields: `min = -1` produces `budget-auto`, finite `min`
-produces `budget-min`, and present `max` produces `budget-max`. There is no
-additional budget field or generated ID; separate reviewed recipe
-metadata affects base/source behavior only. Absent bounds produce no invented
-variants. Multiple options form a deterministic union, not a Cartesian
-product. Explicit add/replace/disable directives are applied after generation;
-remaining
-collisions follow the strict precedence and failure rules in the redesign
-contract.
-
-Reasoning is authorable only as `VariantDirective.reasoning`; ordinary
-`RequestDefaults` and provider options reject reasoning aliases. Every variant
-passes an adaptor-specific compiler into internal resolved defaults and
-typed provider options. If behavior cannot be encoded exactly, provider
-construction fails. Silent approximation or dropped variants are forbidden.
-
-## 5. Agents, prompts, and run selection
-
-An agent document basename is its `AgentId`. Strict schema-1 frontmatter defines
-description, mode (`primary`, `subagent`, or `all`), enabled state, fallback,
-tool allowlist, ordered permissions, and optional delegation. Its normalized,
-required, nonempty Markdown body replaces the generic system prompt.
-
-The engine appends no environment, cwd, date, repository, tool, or project
-metadata to this system prompt. The complete composed prompt is therefore the
-normalized body, and both text and fingerprint are frozen in `AgentSnapshot`.
-Tool schemas are request tools; a delegated task is an initial user message.
-
-Every `primary` agent must configure a nonempty fallback chain. `subagent` and
-`all` may configure an empty chain and inherit only when delegated. Every
-empty-chain agent has `runnable_as_root = false`; a subagent is never root
-runnable, and an `all` agent is root-selectable only when enabled with its own
-nonempty chain and at least one available selection. Root creation and the root
-selector use only `runnable_as_root = true` descriptors.
-
-`SessionCreateParams` and `RunStartParams` use exact `RunSelection { agent,
-model }`. Root model/variant validation and plan construction use one current
-model snapshot. Before `RunStarted`, the engine freezes:
-
-- complete prompt text and fingerprint;
-- identity, mode, description, and document fingerprint;
-- tools and ordered permissions;
-- delegation targets and effective depth ceiling;
-- exact resolved model/variant bindings, descriptors, defaults, options, and
-  fingerprints;
-- the selected fallback suffix.
-
-For a root session, each public `run.start` may select any agent that is
-currently `runnable_as_root` after the authored documents are materialized
-against one current model snapshot. Its exact model and requested base or named
-variant may be any entry in the public root model catalog. If the model occurs
-in the authored chain, the root plan is that exact selected head plus the
-available authored tail after it. If it is outside the chain, the root plan is
-a synthetic exact head plus every available authored fallback entry.
-Unavailable authored entries are skipped in either plan. Root eligibility still
-requires the agent's own authored chain to be nonempty and to contain at least
-one available entry; an arbitrary catalog selection does not make an otherwise
-ineligible agent runnable. The accepted run freezes the resulting exact plan,
-so later selections or provider refreshes do not alter it.
-
-Delegated planning is unchanged. A delegated agent with an authored chain uses
-the selected exact authored suffix, preserving its later authored entries; an
-empty-chain child inherits the invoking parent's active frozen suffix.
-
-Retries, fallback attempts, tool-loop passes, compaction, title generation,
-approval work, and replay use that frozen run policy rather than live config.
-
-## 6. Permissions and approvals
-
-Permission actions are exactly `read`, `write`, `bash`, `grep`, `glob`,
-`delegate`, and `external_directory`; effects are exactly `allow`, `ask`, and
-`deny`. Permission rule IDs use the same 1..=128-byte lowercase `SafeCode`
-grammar in authored configuration and frozen protocol values. Rules are ordered
-and last match wins; no match is Ask. The sole wildcard grammar is nonempty and
-at most 4096 UTF-8 bytes, with no controls, globstar (`**`), escaping, classes,
-or braces; `*` matches any characters including `/` and `?` matches exactly one
-character. A terminal ` *` also matches the same resource without that suffix.
-Checked agent fixtures spell both root and nested secret labels explicitly,
-including `.env`, `.env.*`, credential/token files, `id_*`, `.netrc`, and cloud
-credential files; `.env.example` is the explicit root/nested exception.
-
-Tool mapping is exact: read→read, write/edit→write, bash→bash, grep→grep,
-glob→glob, and delegate→delegate. `external_directory` is a prior guard, not a
-tool. Bash permissions evaluate parsed subcommands; file actions evaluate held
-canonical prepared resources; delegate evaluates the target `AgentId`.
-
-Every operation is prepared once into immutable resources and an operation
-fingerprint. Permission and approval evaluate those resources, and execution
-uses only the held capability. External-directory checks occur before the
-underlying file action. `.env` reads ask by default, prepared-resource changes
-fail closed, and the fourth repeated identical operation in one run without
-intervening user input or a successful different operation is denied as a doom
-loop.
-
-Ask creates durable internal evaluation. Only an escalated request is exposed
-to users. Responses are exact, revision/fingerprint bound, idempotent, and
-limited to approve once/tree, reject, or cancel. Unattended Ask denies.
-Prepared process-local filesystem authority is never reconstructed after
-restart.
-
-The frontmatter tool allowlist contains only read/write/edit/bash/grep/glob;
-delegate is engine-owned and cannot be listed. Tool exposure starts from that
-frozen allowlist and registration. A final
-unconditional deny can make a tool unavailable. Ask-by-default tools remain
-exposed and request approval at invocation. A child uses only its own frozen
-permissions; configured parent rules never flow down. Exact tree-scoped runtime
-grants are consent records, not permission inheritance.
-
-## 7. Delegation and stable trees
-
-Absence of an agent's delegation block disables delegation. The `delegate` tool
-is the only child-creation path. Targets must be listed, enabled agents of mode
-`subagent` or `all`. Tool schema/list exposure filters to eligible targets, and
-the engine authoritatively revalidates target, permission, frozen registry,
-depth, ceiling, and idempotency immediately before durable reservation.
-
-Root depth is 0 and child depth is parent + 1. `max_depth` is the inclusive
-maximum depth beneath that root. A root ceiling remains authoritative for the
-tree; a child's effective onward ceiling is the minimum of the inherited
-ceiling and its own configured `max_depth`. A child without delegation cannot
-delegate.
-
-A child with a configured nonempty chain uses its own chain. A child with an
-empty chain inherits the invoking parent run's currently active frozen fallback
-suffix at admission, including the exact selected variant. It never inherits
-the parent's original full chain or exhausted entries.
-
-Delegation uses durable reservation/idempotency, a parent `ToolCallLinked`, a
-child `SessionCreated` with engine-derived provenance, exactly-once run start,
-cancellation propagation, bounded retained result, and restart reconciliation.
-The engine derives root and depth; no tool/client value is trusted.
-
-Client tree projections retain one stable root while descendants are watched.
-Only the Sessions picker reroots. Rows are `agent-id:session-title`, title
-updates are sequence-monotonic, and stale tree responses cannot overwrite a
-newer title.
-
-## 8. Protocol, events, and persistence
-
-JSON-RPC 2.0 message semantics are transport independent. In-process and
-WebSocket are initial transports; stdio and Unix sockets remain deferred.
-Handshake `ProtocolVersion` is exactly 7 and durable `EventSchemaVersion` is
-exactly 7.
-
-`StoredEvent` contains version, session ID, optional run ID, per-session
-monotonic sequence, timestamp, and one strict payload. The envelope does not
-repeat policy. `SessionCreated` stores creation selection and creation
-`AgentSnapshot`; every `RunStarted` stores the complete authoritative run
-snapshot and selected suffix.
-
-Required attribution/ownership events include:
-
-- `ModelAttemptStarted` before any delta, with exact resolved model/variant and
-  prompt fingerprint;
-- `ModelReplayEvaluated` with ordered decisions for that attempt;
-- `ModelTurnCommitted` with exact resolved model, stable model-turn sequence,
-  complete persisted turn, warnings, and input boundary;
-- `ModelFallback` with exact from/to selections, indices, attempt count, and
-  safe typed error;
-- `ToolCallStarted` with `AssistantToolCallRef` ownership and safe compact
-  presentation;
-- `ToolCallTerminated` as the sole completed/failed/cancelled/interrupted
-  terminal tool event, repeating exact ownership;
-- `SessionTitleCommitted`, whose event sequence is the authoritative
-  `title_updated_seq`.
-
-Every stream delta carries `attempt_id`; replay attribution derives from
-`RunStarted` and attempt/turn events. It never uses current picker state or live
-configuration.
-
-`events.jsonl`, `meta.json`, and the delegation journal are strict version 7.
-`SessionMeta` is the separate `meta.json` schema and is not an event payload.
-The first session event is `SessionCreated`; sequence/ownership references are
-validated. A partial final JSONL line may be truncated, but non-tail corruption
-fails closed. Restart rebuilds metadata, titles, attempts, turns, tool ownership,
-approvals, and trees from events/journal, marks nonterminal runs interrupted,
-and never recreates prepared OS capabilities.
-
-Frozen model bindings require an exact retained selection/behavior fingerprint.
-An obsolete fingerprint leaves history readable but fails execution with a
-typed error; there is no fallback by key/name.
-
-Secrets and provider-native private payloads never enter safe events. Live raw
-tool-output deltas remain ephemeral; the model and event log receive one bounded
-final result plus safe artifact metadata.
-
-## 9. TUI transcript and selectors
-
-The Message title represents client-local draft selection as
-`Agent • provider/model[variant]`, with one ASCII space on each side of the
-decorative bullet. Agent and canonical model-selection text are the selection
-regions; the bullet is not clickable, and there is no separate variant picker.
-Base is rendered explicitly as `[base]`. The global model picker has one row per
-available model, showing its canonical resolved default selection and display
-name; it never expands variants into rows. Changing models selects that default,
-while reselecting the current model retains its exact variant. Clicking the
-Message title's `[variant]` region cycles exact variants directly. Draft changes
-do not alter an active run.
-
-The visible header of every assistant item has the exact form
-`<agent-id> • <provider>/<model-id>[<variant>]` from frozen attempt attribution,
-with `[base]` for base behavior. It has no textual `ASSISTANT` prefix and never
-hides or infers the exact variant.
-
-One assistant item owns ordered child segments:
+User configuration is only:
 
 ```text
-Text | Thinking | Tool
+~/.config/cookie_agent/
+  config.toml
+  agents/
+    <agent-id>.md
 ```
 
-Thinking and tools are independently collapsible and cached. Each toggle row
-has exactly one chevron. Thinking is plain wrapped text with no standalone
-`REASONING` block. Tools remain in owning model-content order with no standalone
-`TOOL` block. Running compact rows add `…`; successful rows add nothing;
-failures/cancellation/interruption use concise text; `COMPLETED` is forbidden.
-Expanded details retain arguments, output, truncation, artifacts, attachments,
-and read syntax highlighting.
+There is no upward search. User and workspace config roots and `agents`
+directories must be current-user-owned mode `0700`. Every config and agent file
+must be a current-user-owned, mode-`0600`, regular, single-link file. Every path
+component is opened descriptor-relative with no-follow behavior. Symlinks,
+magic links, multiply linked files, wrong ownership, weak modes, replacement
+races, wrong object types, oversize content, duplicate keys, and unknown fields
+fail closed. Files are read from held descriptors and never reopened by path.
 
-The Agents panel text rows are exactly
-`clamp(visible_tree_row_count, 1, 3)`, with borders outside the count. The TUI
-keeps the full-width vertical stack, stable scroll geometry, grapheme-safe
-multiline input, Markdown/table/code rendering, semantic no-color themes,
-approval UI, diagnostics filtering, and immediate monotonic title patching.
-Conversation and Message titles contain no instructional drag/hotkey prose.
+On Unix, runtime user data is fixed below:
 
-## 10. Tools and runtime behavior retained
+```text
+~/.local/share/cookie_agent/
+  catalog/
+    models-dev-v1.json
+    models-dev-v1.meta.json
+    models-dev-v1.lock
+  providers/
+    store-v2.json
+    store-v2.lock
+  sessions/
+```
 
-The built-ins remain read, write, edit, bash, grep, and glob, plus conditional
-delegate. Write is atomic; edit is optimistic exact-match with a pre-rename
-conflict check; bash uses process groups, cancellation, streamed stdout/stderr,
-and optional stdin. Read supports bounded text/directory output and validated
-durable image/PDF attachments. Grep/glob honor repository ignore behavior.
+Each project may additionally contain the private runtime directory:
 
-Every tool returns a rich final result with safe title, model-visible bounded
-text, structured metadata, truncation/retention details, and attachment
-descriptors. Complete oversized output is retained atomically in private
-content-addressed artifacts before a bounded preview is exposed. Retention
-failure fails closed.
+```text
+<exact-cwd>/.cookie-agent/model-snapshots/
+  <64-lowercase-hex>.json
+  model-snapshots-v1.lock
+```
 
-Tool output streaming uses ephemeral per-call offsets and gap markers; it is
-not session-event replay. `ToolCallProgress` may be durable. Tool stdin persists
-only call ID and byte count, never submitted bytes. Cancellation stops model
-streaming and in-flight tools.
+The `cookie_agent`, `catalog`, `providers`, and session directories are
+current-user-owned mode `0700`. Cache/store/body/meta/lock/temp files are
+current-user-owned mode `0600`, regular, and single-link. Traversal is
+descriptor-relative and no-follow. Every mutation locks and rereads, writes an
+exclusive same-directory temporary file, fsyncs it, atomically renames it, and
+fsyncs the parent. Unsafe state fails closed; no permissive fallback path exists.
 
-Model fallback remains error-classified and sticky within one run. Same-entry
-retry is permitted only before meaningful text, reasoning, or tool-call output;
-retryable failure after meaningful output advances. Abandoned partial output is
-not committed into later prompt history. Earlier committed turns and tool
-results remain.
+## 4. Configuration layering
 
-Native replay/context artifacts are selection-fingerprint scoped. A foreign
-variant is discarded with a typed disposition rather than guessed compatible.
-Context compaction, approval, and title work inherit the owning run's active
-frozen suffix and exact prompt policy.
+Runtime defaults and catalog/recipes are not TOML layers. The only authored
+layer precedence is:
 
-## 11. Source ownership and generated artifacts
+```text
+user config schema 7 < exact-cwd workspace config schema 7
+user agent document < same-ID workspace agent document
+```
 
-Implementation ownership is:
+A provider definition is atomic by `ProviderId`: if workspace TOML defines an
+ID, the entire user definition with that ID is discarded before parsing and
+semantic validation. Provider fields, model maps, overrides, variants, headers,
+auth values, and arrays never merge. Agent documents are likewise atomic.
 
-| Owner | Surface |
-|---|---|
-| Config-model | `crates/identity/**`, `crates/config/**`, `crates/models/**`, pinned models.dev updater/compiler |
-| Protocol | `crates/protocol/**`, JSON Schemas, TypeScript bindings, protocol/event snapshots |
-| Runtime | `crates/engine/**`, `crates/tools/**` |
-| Service | `crates/server/**`, `crates/cookie_agent/**` |
-| TUI | `crates/tui/**` |
-| Integration | root manifests and `Cargo.lock`, architecture/docs, checked `.cookie-agent/**`, integration fixtures, generated artifact aggregation, stale-claim review, final locked-workspace validation |
+Managed `source = "models_dev"` definitions may directly author credentials in
+either user or workspace TOML using `api_key` or typed `auth_override`. The
+effective atomic definition's authored credential always takes precedence over
+provider-store credentials. A workspace replacement never inherits a user-layer
+credential. On recomposition, removing authored auth from a definition that has
+no authored `base_url` makes an exact eligible provider-store credential
+effective. If authored `base_url` remains, removing same-definition authored
+auth is invalid rather than falling through to the store.
 
-The integration owner is accountable for cross-phase coherence and assigns any
-generated schema/binding/snapshot change to one owner. No phase silently edits
-another phase's generated output.
+`${env:NAME}` interpolation is single-pass and allowed only in schema-approved
+secret values and authored endpoint strings. Environment variables do not form
+a config layer. Documentation recommends interpolation or `/connect` provider
+store input rather than plaintext. Parsed and interpolated secrets live in
+`SecretString`; owned buffers are best-effort zeroized on drop and after
+dispatch. Transport/kernel copies cannot be promised forensic erasure.
 
-## 12. Validation and deferred work
+## 5. Catalog and quarantine architecture
 
-Required validation is warning-free formatting, locked workspace
-build/check/clippy/test/rustdoc, Rust 1.88 equivalents, dependency audit/deny,
-schema/binding/snapshot regeneration checks, provider/adaptor conformance,
-filesystem/security adversarial tests, restart/replay/delegation E2E, and TUI
-render/hit-region tests.
+The fixed request rejects redirects, cookies, configurable headers, auth,
+userinfo, fragments, and every query. If cache schema 1 has a validated ETag,
+only `If-None-Match` is added.
 
-Final stale-claim checks must reject old workspace paths, old agent/profile
-configuration, model aliases, protocol/event/storage v6, hidden assistant
-variants, separate variant pickers, standalone reasoning/tool blocks, inherited
-parent permissions,
-original-full-chain child inheritance, stale title replacement, and
-compatibility decoders.
+The request sends `Accept-Encoding: identity`. Any non-identity
+`Content-Encoding` is rejected. A `Content-Length` greater than 16 MiB is
+rejected before body read; absent or acceptable length is still streamed through
+a hard 16 MiB counter before buffering, UTF-8 decoding, or JSON parsing. JSON is
+bounded to depth 32, 4096 providers, 65,536 provider models per provider, 65,536
+root canonical models, 1,000,000 total object/array entries, and 256 KiB per
+string before narrower field limits.
 
-Deferred features remain session forks, stdio/Unix-socket transports, MCP, web,
-VS Code, SQLite projections, and plugins. They must consume the same strict
-identity, frozen-policy, event, and security boundaries when introduced.
+Candidate boundaries are exact:
+
+- the strict root is exactly `{ providers, models }`; both maps are required,
+  bounded, and nonempty, and every other root field is unknown;
+- invalid UTF-8, invalid JSON, non-object root, missing/non-object/empty
+  `providers` or `models`, unknown top-level fields, root duplicate keys, or exceeded
+  candidate/depth/container/string bounds is a **candidate failure**;
+- once the bounded root provider map is structurally recoverable, each provider
+  value is parsed independently;
+- malformed provider-local shape, duplicate provider-local keys, invalid unique
+  provider identity, or ambiguous normalized provider identity quarantines that
+  provider and all of its models;
+- within a valid provider, each model value is parsed independently; malformed
+  model-local shape, duplicate model-local keys, invalid identity, or ambiguous
+  normalized model identity quarantines only that model and all colliding peers;
+- for a known recipe entry, provider npm/API/env/shape drift quarantines that
+  provider and all children; model provider npm/API/shape or model-shape drift
+  quarantines only that model. A recoverable ID remains safe-visible with its
+  quarantine reason.
+
+`providers` contains provider-scoped executable claims: provider identity,
+npm/API/env claims, provider model records, and optional model provider
+overrides. `models` contains canonical metadata/provenance keyed by canonical
+model ID. It never supplies endpoint, protocol, auth, setup, package selection,
+or executable inclusion. Provider model keys/embedded IDs and canonical model
+keys/embedded IDs must agree. An exact provider-model key match to `models` is an
+optional provenance cross-reference only; provider-scoped executable claims win
+on disagreement, absence of a canonical record is allowed, and a malformed
+canonical record quarantines only that canonical record/cross-reference.
+
+Quarantine entries are safe diagnostics and never executable. Valid siblings in
+the same candidate remain eligible. The candidate may publish when at least one
+provider record is valid or safely quarantined with a recoverable unique ID.
+
+Cache metadata schema 1 records the catalog revision exactly as
+`sha256:<lowercase SHA-256 digest of the exact selected body bytes>`, ETag, byte length,
+validation time, last-check time, source, stale flag, quarantine counts/digests,
+and `last_error { code, safe_message, occurred_at } | null`. Network/cache/
+bootstrap fallback updates stale/error metadata atomically even when body bytes
+remain unchanged. Errors never contain bodies, URLs with secrets, or credentials.
+
+## 6. Provider and endpoint architecture
+
+All provider definitions live in `[providers.<id>]`:
+
+- `source = "models_dev"`: optional `base_url`, typed `setup`, `api_key`,
+  `auth_override`, and sparse `model_overrides`;
+- `source = "custom"`: required `endpoint`, `adaptor`, `auth`, and nonempty
+  explicit `models`; optional typed adapter `setup` and strict `headers`.
+
+The top-level `providers` map defaults to `{}` and may be empty. It produces the
+zero-model setup state only when provider store 2 is empty and no effective
+authored custom provider exists; otherwise stored managed connections or
+authored custom providers still materialize. Empty setup is not a configuration
+error and must never produce `runtime providers must be nonempty`. Agent
+fallback references with no current model are retained as unavailable
+descriptors; their agents are not root-runnable.
+
+Custom IDs must begin `custom.`; managed IDs must not. Custom providers are
+config-only, are not `/connect` rows, and never read or write provider store 2.
+
+Custom static headers are non-secret behavior metadata with bounded RFC-token
+names and control/CRLF/NUL-free safe values. They never interpolate and are
+included exactly, sorted by canonical lowercase name plus value, in custom
+behavior/config fingerprints and model-snapshot manifests. They reject
+case-insensitive duplicates and transport/protocol/auth-owned names, including at
+least authorization, host, content-length, transfer-encoding, connection,
+proxy-authorization, cookie/set-cookie, accept, content-type, and user-agent.
+Adaptor recipes extend the owned set. Secret header auth must use a typed auth
+method; static header values are never secret/redacted.
+
+For managed providers the endpoint precedence is exactly:
+
+```text
+same-definition authored base_url > recipe-registry default
+```
+
+Neither provider store, another config layer's replaced definition, environment
+outside explicit interpolation, nor catalog API metadata supplies an endpoint.
+The catalog API value is compared with the recipe's exact/allowed claim set;
+mismatch quarantines the known provider record with typed
+`catalog_provider_api_drift`.
+
+An authored `base_url` requires `api_key` or `auth_override` in that same atomic
+definition unless the recipe's selected method is reviewed no-auth. It also
+requires every non-defaulted setup field in that same definition; only setup
+fields explicitly declared defaultable by the recipe may use recipe defaults.
+It cannot inherit store setup or credentials. This blocks store or replaced-user
+state from attaching to a new endpoint.
+
+## 7. Authentication architecture
+
+Managed auth precedence is exact:
+
+```text
+same-definition api_key mapped by the recipe default method
+> same-definition auth_override
+> exact active provider-store-2 connection only without authored base_url
+> reviewed no-auth
+> unavailable
+```
+
+`auth_override` and `api_key` are mutually exclusive. `auth_override` is exactly
+`{ method = <AuthMethodId>, values = { ... } }`; keys must exactly equal that
+auth method's credential schema. Provider `setup` is separate and owns only
+typed endpoint/resource fields. `api_key` is legal only when the recipe has one
+default auth method with exactly one required credential field classified
+`api_key`. Multiple auth methods, any additional required credential, or a
+differently classified credential is ambiguous and requires `auth_override`.
+
+Provider-store auth is considered only when there is no authored auth and no
+authored `base_url`. Its compatibility scope is provider ID, code-owned
+`recipe_fingerprint`, recipe default normalized base URL/endpoint identity,
+canonical safe setup fingerprint, and auth method/credential shape. No endpoint,
+host-family, method, provider-name, or identity fallback exists.
+
+`source_record_digest` and `recipe_fingerprint` are independent secret-free
+identities. `source_record_digest` is immutable provenance: SHA-256 over the
+canonical exact validated catalog provider record selected to compile that
+runtime or manifest. `recipe_fingerprint` is compatibility: a canonical hash of
+Registry 1 revision/schema, compiler version, the selected provider/protocol/
+adapter/setup/auth/endpoint recipe, and versioned model-exception semantics.
+Provider store 2 persists both. A harmless catalog metadata refresh produces a
+new source-record digest but the same recipe fingerprint, so the unchanged
+stored setup and credentials remain eligible. Claim, adapter, protocol, setup,
+auth, endpoint-policy, compiler, registry, or model-exception drift changes or
+quarantines the recipe identity and blocks reuse.
+
+Managed setup precedence is complete same-definition authored `setup`, then
+provider-store setup, then explicitly declared recipe defaults, then
+unavailable. An authored setup map never field-merges with store or the replaced
+user definition; it must supply every non-defaulted field, while recipe defaults
+may fill only fields declared defaultable. Provider store 2 stores normalized
+non-secret setup values and secret auth credentials plus policy/scope, exact
+source-record provenance, recipe compatibility fingerprint, generation, and
+receipt metadata. Store state revisions and connect receipt digests cover both
+fingerprints. Schema-2 records missing either required field are rejected.
+Custom setup is authored-only and custom compilation/
+fingerprints/rehydration never depend on provider store. Every Registry-1 setup
+field is non-secret behavioral metadata and its normalized value participates
+directly in safe behavior/config fingerprints where relevant. Every secret or
+sensitive value belongs to auth, is excluded from fingerprints, and may rotate
+without behavior-fingerprint change. A future non-auth sensitive setup need
+requires a future schema/recipe version and independent mechanism.
+
+If a managed definition has no authored `setup` and no authored `base_url`, its
+exact stored setup may become effective. Removing authored setup, auth, and
+`base_url` on recomposition permits exact stored setup and stored auth to become
+effective. An authored `base_url` disables all stored setup and stored auth
+inheritance.
+
+## 8. Providers and models
+
+`/connect` contains every current structurally valid/quarantined catalog provider
+with recoverable ID plus authored or store-backed managed providers absent from
+the current catalog. Removed configured providers use state `removed`; they are
+connectable only when recipe registry 1 still has an exact provider/package/
+source recipe match retained in a prior durable connection or other validated
+safe source projection. Otherwise they remain visible with
+`removed_without_retained_recipe_match`. Custom providers never appear.
+
+For each supported managed provider, the runtime automatically includes every
+reviewed, non-deprecated, text-output model that compiles honestly. Sparse model
+overrides may disable a model or alter only recipe-approved defaults, variants,
+and display text. They cannot invent an absent model, capabilities, protocol,
+auth, package, or endpoint.
+
+Custom providers manually define every model and complete honest capabilities.
+A custom model ID may contain `/`. A model key splits once at its first slash.
+
+## 9. Connect, disconnect, and publication
+
+`provider.connect` requires an expected catalog revision exactly equal to
+`sha256:<lowercase SHA-256 digest of the exact selected body bytes>`. It accepts current managed providers and
+configured managed providers absent from the catalog when recipe/source matching
+succeeds. Absence of a prior store record is a normal upsert.
+
+The service holds the serialized runtime-mutation lock, then the provider-store
+lock; rereads the store; assigns the final store revision, connection generation,
+and receipt into a proposed state; validates exact recipe-typed setup and auth
+fields; and compiles the complete provider/model/agent/runtime candidate against
+exactly that proposed state. Only then does one provider-store transaction write
+normalized setup, credentials, connection policy metadata, and idempotency
+receipt. After durable commit, publishing the already compiled
+`Arc<RuntimeSnapshot>` is an infallible atomic swap. No fallible refresh or
+revision allocation occurs between durable write and publication.
+
+The response contains `durable_connection`, `effective_auth_source`, the full
+coherent runtime snapshot, and `replayed`. A stored update never outranks
+same-definition authored auth; therefore a successful durable update may report
+effective source `authored_api_key` or `authored_override`.
+
+`provider.disconnect` is managed/store-only. It removes the exact stored active
+setup and credentials with the connection and commits its receipt atomically,
+compiles before commit, then
+infallibly publishes. It never edits TOML, removes authored auth, touches custom
+providers, or deletes a different scope. Custom disconnect returns typed
+`custom_provider_not_store_backed`.
+
+Disconnect params contain provider ID, client idempotency ID, expected runtime
+and provider-state revisions, and optional expected connection generation. Same
+ID/same canonical payload replays the durable result; same ID/different payload
+is `idempotency_conflict`. An absent managed provider is a successful idempotent
+disconnect with a durable receipt. The result includes receipt, provider ID,
+`disconnected = true`, post-removal effective auth state, coherent
+`RuntimeSnapshotResult`, and `replayed`. Present removal or absent no-op plus
+receipt is one atomic store transaction after candidate compilation, followed by
+infallible publication with `ProviderDisconnected`; replay publishes nothing.
+
+## 10. Runtime snapshot and notifications
+
+Runtime snapshot schema 1 contains the snapshot schema version, recipe registry
+revision, catalog revision/source/cache state, provider-state revision, model
+revision, provider-store generation, agent revision, aggregate runtime revision,
+provider descriptors, model descriptors, and materialized agent descriptors.
+
+`runtime.snapshot.get` is mandatory and atomically returns the entire object.
+Protocol 8 removes legacy independently refreshed catalog/provider/model/agent
+list RPCs and list-refresh choreography. Every mutation returns the published
+snapshot. The server emits `runtime.changed { previous_revision, snapshot,
+reasons }`; Rust reason variants and wire values include
+`ProviderConnected`/`provider_connected`,
+`ProviderDisconnected`/`provider_disconnected`,
+`ProviderStoreChanged`/`provider_store_changed`, and
+`ProviderStoreReloaded`/`provider_store_reloaded`, in addition to startup,
+catalog, config, and agent reasons.
+
+The local durable connect transaction publishes `ProviderConnected`; local
+disconnect publishes `ProviderDisconnected`. Detecting another process's newer
+store generation publishes the pair `ProviderStoreChanged` and
+`ProviderStoreReloaded` after successful coherent recompilation.
+
+Provider store 2 is per-user global across workspaces. Before discovery RPCs,
+session admission, or root-run admission, the process locks and rereads the
+store generation. A changed generation blocks admission, recompiles and
+publishes a coherent runtime with both `ProviderStoreChanged` and
+`ProviderStoreReloaded`, then retries against that snapshot. Reload failure
+returns `provider_store_reload_failed`; accepted runs remain unchanged.
+
+## 11. Project model-snapshot manifests and exact rehydration
+
+Project model-snapshot manifest schema 1 is stored only at
+`<exact-cwd>/.cookie-agent/model-snapshots/<64-lowercase-hex>.json`, with exact
+lock `model-snapshots-v1.lock`. The filename digest and manifest
+`revision = "sha256:<digest>"` are SHA-256 over RFC 8785 JCS bytes of the
+self-contained secret-free `payload` only; envelope schema/revision are excluded
+to avoid self-reference. Each manifest contains catalog, recipe
+registry, provider-state, and model revisions plus compiled safe blueprints.
+
+Each blueprint records exact model/variant selection, descriptor/capabilities,
+safe endpoint identity, provider/protocol/auth recipe IDs and compiler versions,
+source kind, exact source-record digest, independent recipe fingerprint,
+config-override fingerprint, credential
+binding source/method/semantic field names, normalized defaults/options/variants,
+and behavior fingerprints. Custom static header names/values are included as safe
+behavior metadata. Auth credential values, generated auth-owned header values,
+environment values, live handles, raw catalog records, and provider-native
+private payloads are forbidden.
+
+The directory is current-user-owned `0700`; manifests/lock/temp files are
+current-user-owned `0600`, regular, single-link, descriptor-relative/no-follow,
+bounded, and atomically written by lock/reread, exclusive sibling temp, fsync,
+rename, and parent fsync. A manifest is durable before any version-8 event may
+reference its revision. Referenced manifests are retained for the lifetime of
+their sessions and delegation journals and are never garbage-collected; Registry
+1 performs no automatic manifest GC.
+
+Startup scans direct matching filenames in sorted byte order, validates filename
+digest, strict schema, RFC-8785 reserialization/payload digest, unique blueprint
+fingerprints, and bounds, then indexes them by revision. Maps use JCS ordering;
+models/variants/setup/binding-name arrays are ID-sorted, semantically ordered
+arrays are preserved, JSON floats are forbidden, decimal domain values are
+normalized strings, integers are I-JSON-safe, and Unicode code points are
+preserved without normalization.
+Unsafe objects or malformed matching
+files fail project open. Session/journal references to absent manifests fail
+reconciliation without deleting history.
+
+Version-8 frozen bindings reference one manifest revision/blueprint and record
+the accepted exact selection. Their managed source carries both the immutable
+source-record provenance and recipe compatibility fingerprint. Runtime provider
+descriptors expose the safe recipe fingerprint, and persisted events/delegation
+journals retain it transitively through their exact frozen bindings. No secret
+value is stored.
+
+Credential source is frozen as `authored_api_key`, `authored_override`,
+`provider_store`, or `no_auth`. Rehydration never changes it:
+
+- authored config sources require the current same-ID atomic provider definition
+  to have the same source kind and safe config-override fingerprint; missing or
+  changed config fails and never falls to provider store;
+- provider-store sources require the exact managed provider, current
+  `recipe_fingerprint`, recipe endpoint policy, normalized setup values/
+  fingerprint, and auth method/shape; config is not substituted. They do not
+  require the store connection's historical `source_record_digest` to equal a
+  newly refreshed manifest's source digest;
+- managed bindings reconstruct from persisted safe source projection only when
+  recipe registry 1 still has the exact recipe fingerprint/package/protocol/
+  compiler match. The binding and referenced blueprint must retain their own
+  exact source-record digest, but source provenance does not scope credential
+  compatibility; current catalog presence is unnecessary;
+- custom bindings require a current `source = "custom"` definition whose safe
+  definition fingerprint exactly matches the frozen fingerprint; custom has no
+  store fallback;
+- every reconstruction must reproduce the frozen behavior fingerprint.
+
+New root runs always resolve against the current coherent runtime and durably
+write/reference its manifest. A harmless catalog refresh therefore freezes the
+new source-record digest while retaining the same compatible store credentials.
+Previously accepted runs retain their older manifest/source provenance and may
+rehydrate the same store secret through the unchanged recipe/auth/setup identity.
+Delegated sessions remain pinned to the invoking parent's accepted manifest and
+frozen suffix. Once a run is accepted, catalog, config, provider-store,
+manifest-directory, or runtime changes do not reinterpret it.
+
+Typed failures leave history readable and never substitute another model:
+`snapshot_config_mismatch`, `snapshot_credentials_unavailable`,
+`unsupported_snapshot_recipe`, and `snapshot_rehydration_mismatch`.
+
+## 12. Normative startup order
+
+Startup order is frozen and must not be reordered:
+
+1. **Schema 7 and agents:** securely open roots, load recipe registry 1, then
+   strictly load atomic config schema 7 and agent documents.
+2. **Catalog:** securely open cache schema 1, perform the bounded identity-only
+   network request, then select network, validated cache, or bundled bootstrap
+   and apply record quarantine.
+3. **Provider store:** lock and load provider store 2 and its generation.
+4. **Effective providers:** combine authored definitions, global stored managed
+   connections, catalog claims, and code-owned recipes.
+5. **Coherent runtime:** compile all effective providers/models/agents and build
+   one runtime snapshot 1; an empty effective set is valid.
+6. **Project manifests:** scan/validate model-snapshot manifests 1 and rehydrate
+   every referenced safe blueprint needed by project sessions.
+7. **Engine:** open version-8 session/event/delegation state and reconcile it
+   against the manifest index; accepted/delegated bindings stay pinned.
+8. **Service:** atomically publish runtime, open server/TUI, then emit startup
+   `runtime.changed`.
+
+Any failure before step 8 opens no server/TUI except the documented usable
+catalog fallback paths. Cross-process provider-store generation reconciliation
+is mandatory again before discovery, session admission, and root-run admission.
+
+## 13. TUI contract
+
+The TUI consumes only runtime snapshot schema 1 and `runtime.changed`. Required
+global/row states are:
+
+- `loading`: no snapshot yet; controls disabled;
+- `empty`: after authored providers and global store records are applied, a valid
+  snapshot has zero models or zero root-runnable agents. The
+  Message model/draft display is exactly `type /connect to continue`; it has no
+  Model or Variant hit region, ordinary text/run submission is blocked with the
+  same guidance, and `/connect` remains accepted;
+- `ready`: live or not-modified catalog selected with no unresolved global error;
+- `stale`: validated cache used after refresh failure; existing rows remain
+  usable and a durable global explanation names the safe error/time;
+- `bootstrap`: bundled catalog used; durable global explanation remains visible;
+- `unsupported`: row has typed unsupported reason; Enter opens details only and
+  never starts connect;
+- `disconnected`: supported managed row lacks complete effective setup and/or
+  auth; Enter opens separate public setup and secret credential controls from
+  recipe descriptors;
+- `connected-reconnect`: effective stored state exists; Enter opens reconnect/
+  update with public setup prefilled and secret credentials blank; disconnect
+  removes both stored setup and credentials;
+- `removed`: configured managed provider or retained session model is absent
+  from current catalog; details explain whether recipe-matched connect or session
+  rehydration is available;
+- `error-retry`: no runtime snapshot or an operation failed without a usable
+  fallback; Enter/retry performs the explicit operation.
+
+Global stale/bootstrap/error explanations are durable application state, not
+toasts, and remain visible across picker navigation until a newer snapshot
+clears or replaces them. Active frozen runs never mutate on refresh/connect/
+disconnect. Unsupported Enter is details-only.
+
+`loading`, `empty`, and `error-retry` are distinct: loading has no snapshot;
+empty has a valid coherent snapshot but no runnable draft; error-retry has no
+usable snapshot or a failed explicit operation. After connect publishes a
+coherent snapshot with a root-runnable agent/model selection, normal structured
+draft attribution replaces the exact guidance and its Model/Variant hit regions
+become active. If a durable connection still yields no root-runnable selection,
+the valid `empty` state and guidance remain; no model is fabricated.
+
+`/connect` always displays the exact durable copy
+`Stored setup, connections, and credentials are per-user and shared across workspaces.`
+Stored setup is non-secret and projected only where recipe policy permits;
+credential values remain secret/redacted.
+Connect/disconnect changes become visible to other workspace daemons through
+provider-store generation reconciliation.
+
+## 14. Validation ownership
+
+Required validation covers every version rejection, secure file mode/ownership/
+link attack, exact startup order, identity-only streamed 16 MiB acquisition,
+ETag and stale/error metadata, candidate versus exact-record quarantine,
+strict root `providers`/`models` roles and cross-references, bundled/live npm/API/
+env/model-override claims, Vertex family rejection, atomic provider replacement,
+separate provider setup schemas and auth methods, complete custom-model validation, endpoint/auth
+precedence, all-input-query rejection, connect/disconnect absent/replay/conflict
+transactions, cross-process store-generation reload, infallible publication,
+coherent notifications, RFC-8785 manifest digest/ordering/mismatch/retention/
+rehydration, slash-containing IDs, frozen credential-source rehydration, and
+every TUI state.
+
+TUI validation must exercise the actual rendered/input buffer and hit map, not
+only helper strings: absent/empty provider TOML plus empty provider store and no
+effective custom provider; nonempty store with empty TOML; zero-model snapshot;
+byte-exact guidance; no Model/Variant target; blocked ordinary submission with
+no run RPC; accepted `/connect`; all-provider discovery RPC; and guidance removal
+after a coherent runnable refresh. Connect tests must cover recipe-derived setup
+and auth descriptors, public/secret controls, defaults, missing/extra rejection,
+absent-provider upsert, reconnect replacement, cross-workspace setup persistence,
+and disconnect removal of setup plus credentials. Server tests must prove empty startup and
+typed run rejection without `runtime providers must be nonempty`.

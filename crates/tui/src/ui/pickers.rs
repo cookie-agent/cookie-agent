@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use cookie_agent_protocol::{CatalogProvider, SessionId, SessionMeta, SessionTree};
+use cookie_agent_protocol::{ProviderDescriptor, SessionId, SessionMeta, SessionTree};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -15,14 +15,14 @@ use crate::theme::Theme;
 /// A provider row that matched the picker query, plus a subdued annotation
 /// naming the non-name field that produced the match.
 pub(crate) struct ProviderMatch<'a> {
-    pub(crate) provider: &'a CatalogProvider,
+    pub(crate) provider: &'a ProviderDescriptor,
     pub(crate) label: String,
 }
 
-/// Case-insensitive substring matching over provider name, ID, documentation
-/// URL, endpoint, and credential field labels.
+/// Case-insensitive substring matching over provider identity and public
+/// setup/auth descriptor labels.
 pub(crate) fn provider_matches<'a>(
-    provider: &'a CatalogProvider,
+    provider: &'a ProviderDescriptor,
     query: &str,
 ) -> Option<ProviderMatch<'a>> {
     if query.trim().is_empty() {
@@ -32,7 +32,11 @@ pub(crate) fn provider_matches<'a>(
         });
     }
     let query = query.trim().to_lowercase();
-    if provider.name.as_str().to_lowercase().contains(&query)
+    if provider
+        .display_name
+        .as_str()
+        .to_lowercase()
+        .contains(&query)
         || provider.id.as_str().to_lowercase().contains(&query)
     {
         return Some(ProviderMatch {
@@ -40,36 +44,33 @@ pub(crate) fn provider_matches<'a>(
             label: String::new(),
         });
     }
-    if provider
-        .documentation_url
-        .as_str()
-        .to_lowercase()
-        .contains(&query)
-    {
+    if let Some(field) = provider.setup_fields.iter().find(|field| {
+        field.id.as_str().to_lowercase().contains(&query)
+            || field.display_name.as_str().to_lowercase().contains(&query)
+            || field.help.as_str().to_lowercase().contains(&query)
+    }) {
         return Some(ProviderMatch {
             provider,
-            label: " · docs".into(),
+            label: format!(" · setup: {}", field.display_name),
         });
     }
-    if provider
-        .api
-        .as_ref()
-        .is_some_and(|api| api.as_str().to_lowercase().contains(&query))
-    {
-        return Some(ProviderMatch {
-            provider,
-            label: " · endpoint".into(),
-        });
-    }
-    if let Some(field) = provider
-        .credential_fields
-        .iter()
-        .find(|field| field.as_str().to_lowercase().contains(&query))
-    {
-        return Some(ProviderMatch {
-            provider,
-            label: format!(" · field: {field}"),
-        });
+    for method in &provider.auth_methods {
+        if method.display_name.as_str().to_lowercase().contains(&query) {
+            return Some(ProviderMatch {
+                provider,
+                label: format!(" · auth: {}", method.display_name),
+            });
+        }
+        if let Some(field) = method.credentials.iter().find(|field| {
+            field.id.as_str().to_lowercase().contains(&query)
+                || field.display_name.as_str().to_lowercase().contains(&query)
+                || field.help.as_str().to_lowercase().contains(&query)
+        }) {
+            return Some(ProviderMatch {
+                provider,
+                label: format!(" · credential: {}", field.display_name),
+            });
+        }
     }
     None
 }
@@ -234,23 +235,52 @@ fn inner_rect(area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use cookie_agent_protocol::{
-        AgentId, CatalogIdentifier, CatalogText, CredentialFieldName, ModelSelection, RunSelection,
-        SessionId, SessionMeta, SessionMetaSchemaVersion, SessionOrigin, SessionStatus,
+        AgentId, ModelSelection, ProviderDescriptor, RunSelection, SessionId, SessionMeta,
+        SessionMetaSchemaVersion, SessionOrigin, SessionStatus,
     };
 
-    use super::{CatalogProvider, clamp_tree_view, provider_matches, session_matches, short_id};
+    use super::{clamp_tree_view, provider_matches, session_matches, short_id};
 
-    fn provider() -> CatalogProvider {
-        CatalogProvider {
-            id: CatalogIdentifier::new("acme-ai").expect("provider id"),
-            name: CatalogText::new("Acme AI").expect("provider name"),
-            credential_fields: vec![
-                CredentialFieldName::new("ACME_API_KEY").expect("credential field"),
-            ],
-            npm: CatalogText::new("@acme/ai").expect("npm"),
-            api: Some(CatalogText::new("https://api.acme.example").expect("api")),
-            documentation_url: CatalogText::new("https://docs.acme.example/setup").expect("docs"),
-        }
+    fn provider() -> ProviderDescriptor {
+        serde_json::from_value(serde_json::json!({
+            "id": "acme-ai",
+            "display_name": "Acme AI",
+            "presence": "current",
+            "support": {"state": "supported", "reason": null},
+            "setup_fields": [{
+                "id": "region",
+                "display_name": "Region",
+                "help": "API region endpoint",
+                "required": true,
+                "default": "us-east-1",
+                "validation": {"value_type": "string", "min_length": 1, "max_length": 32, "minimum": null, "maximum": null},
+                "safe_to_project": true
+            }],
+            "auth_methods": [{
+                "id": "api-key",
+                "display_name": "API key",
+                "credentials": [{
+                    "id": "api_key",
+                    "display_name": "Acme API Key",
+                    "help": "ACME_API_KEY credential",
+                    "required": true,
+                    "credential_type": "api_key"
+                }]
+            }],
+            "configuration": "unconfigured",
+            "effective_auth_state": "unavailable",
+            "durable_connection": null,
+            "quarantine": null
+        }))
+        .expect("provider descriptor")
+    }
+
+    fn revision<T>(value: &str) -> T
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        serde_json::from_value(serde_json::json!(format!("sha256:{}", value.repeat(64))))
+            .expect("revision")
     }
 
     fn session_meta(session_id: SessionId) -> SessionMeta {
@@ -267,6 +297,13 @@ mod tests {
                     variant: None,
                 },
             },
+            runtime_revision: revision("1"),
+            catalog_revision: revision("2"),
+            provider_state_revision: revision("3"),
+            model_revision: revision("4"),
+            agent_revision: revision("5"),
+            recipe_registry_revision: revision("6"),
+            manifest_revision: revision("7"),
             title: None,
             title_updated_seq: 0,
             last_event_seq: 1,
@@ -275,15 +312,10 @@ mod tests {
     }
 
     #[test]
-    fn provider_filter_matches_name_id_docs_endpoint_and_credential_labels() {
+    fn provider_filter_matches_identity_setup_and_credential_labels() {
         let provider = provider();
         for query in [
-            "acme",
-            "ACME-AI",
-            "docs.acme",
-            "api.acme",
-            "api_key",
-            "ACME_API",
+            "acme", "ACME-AI", "region", "endpoint", "api_key", "ACME_API",
         ] {
             assert!(
                 provider_matches(&provider, query).is_some(),
@@ -295,7 +327,7 @@ mod tests {
             provider_matches(&provider, "api_key")
                 .expect("field match")
                 .label,
-            " · field: ACME_API_KEY"
+            " · credential: Acme API Key"
         );
         assert_eq!(provider_matches(&provider, "").expect("empty").label, "");
     }

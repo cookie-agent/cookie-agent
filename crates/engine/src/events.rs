@@ -71,6 +71,7 @@ impl EventLog {
     }
 
     pub fn open(path: PathBuf, session_id: SessionId) -> Result<Arc<Self>, EventLogError> {
+        reject_legacy_event_schema(&path)?;
         let records = load_jsonl::<StoredEvent>(&path)?;
         if !matches!(
             records.first().map(|record| &record.payload),
@@ -136,6 +137,44 @@ impl EventLog {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+fn reject_legacy_event_schema(path: &Path) -> Result<(), EventLogError> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(EventLogError::Io {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    };
+    let Some(line) = bytes
+        .split(|byte| *byte == b'\n')
+        .find(|line| !line.is_empty())
+    else {
+        return Ok(());
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
+        return Ok(());
+    };
+    let Some(found) = value
+        .get("event_schema_version")
+        .and_then(serde_json::Value::as_u64)
+    else {
+        return Ok(());
+    };
+    let expected = u64::from(EventSchemaVersion::current().value());
+    if found == expected {
+        Ok(())
+    } else {
+        Err(EventLogError::UnsupportedSchemaVersion {
+            path: path.to_owned(),
+            found: u32::try_from(found).unwrap_or(u32::MAX),
+            expected: expected as u32,
+        })
     }
 }
 
@@ -217,7 +256,7 @@ fn validate_records(
                     prompt_fingerprint: agent.prompt_fingerprint.clone(),
                     selected_suffix: selected_suffix
                         .iter()
-                        .map(|binding| binding.resolved.clone())
+                        .map(crate::policy::wire_resolved)
                         .collect(),
                     active_fallback_index: 0,
                     next_attempt_ordinal: 1,
@@ -947,21 +986,51 @@ mod tests {
     use std::fs;
 
     use cookie_agent_protocol::{
-        AgentMode, ApprovalReasonCode, ApprovalTrigger, AttemptId, ClientRunId, CwdIdentity,
-        EventPayload, EventSchemaVersion, FrozenModelBinding, ModelErrorKind, ModelErrorStage,
-        ModelErrorSummary, ModelKey, OutputStream, PermissionAction, PermissionEffect, RunId,
-        RunSelection, SafeErrorMessage, SessionId, SessionOrigin, Sha256Digest, StoredEvent,
-        ToolCallId, VariantId,
+        AgentMode, AgentRevision, ApprovalReasonCode, ApprovalTrigger, AttemptId, CatalogRevision,
+        ClientRunId, CwdIdentity, EventPayload, EventSchemaVersion, FrozenModelBinding,
+        ModelErrorKind, ModelErrorStage, ModelErrorSummary, ModelKey, ModelRevision, OutputStream,
+        PermissionAction, PermissionEffect, ProviderStateRevision, RecipeRegistryRevision, RunId,
+        RunSelection, RuntimeRevision, SafeErrorMessage, SessionId, SessionOrigin, Sha256Digest,
+        StoredEvent, ToolCallId, VariantId,
     };
     use serde_json::Value;
     use tempfile::tempdir;
     use uuid::Uuid;
 
     use super::{EventLog, OutputHub, OutputMessage, load_jsonl};
-    use crate::test_support::{agent_snapshot, run_selection};
+    use crate::{
+        policy::wire_resolved,
+        test_support::{agent_snapshot, model_binding_named, run_selection},
+    };
+
+    fn runtime_revision() -> RuntimeRevision {
+        RuntimeRevision::new(format!("sha256:{}", "1".repeat(64))).expect("runtime revision")
+    }
+
+    fn catalog_revision() -> CatalogRevision {
+        CatalogRevision::new(format!("sha256:{}", "2".repeat(64))).expect("catalog revision")
+    }
+
+    fn provider_revision() -> ProviderStateRevision {
+        ProviderStateRevision::new(format!("sha256:{}", "3".repeat(64))).expect("provider revision")
+    }
+
+    fn model_revision() -> ModelRevision {
+        ModelRevision::new(format!("sha256:{}", "4".repeat(64))).expect("model revision")
+    }
+
+    fn agent_revision() -> AgentRevision {
+        AgentRevision::new(format!("sha256:{}", "5".repeat(64))).expect("agent revision")
+    }
+
+    fn registry_revision() -> RecipeRegistryRevision {
+        RecipeRegistryRevision::new(format!("sha256:{}", "6".repeat(64)))
+            .expect("registry revision")
+    }
 
     fn stored_event() -> StoredEvent {
         let session_id = SessionId(Uuid::from_u128(99));
+        let agent = agent_snapshot("test", AgentMode::Primary);
         StoredEvent {
             event_schema_version: EventSchemaVersion::current(),
             session_id,
@@ -972,8 +1041,14 @@ mod tests {
                 origin: SessionOrigin::Root,
                 cwd_identity: CwdIdentity::new("workspace:test").expect("cwd identity"),
                 creation_selection: run_selection("test"),
-                creation_agent: Box::new(agent_snapshot("test", AgentMode::Primary)),
-                model_snapshot_fingerprint: Sha256Digest::of_bytes(b"models"),
+                manifest_revision: agent.fallback_chain[0].manifest_revision.clone(),
+                creation_agent: Box::new(agent),
+                runtime_revision: runtime_revision(),
+                catalog_revision: catalog_revision(),
+                provider_state_revision: provider_revision(),
+                model_revision: model_revision(),
+                agent_revision: agent_revision(),
+                recipe_registry_revision: registry_revision(),
             },
         }
     }
@@ -995,29 +1070,7 @@ mod tests {
     }
 
     fn fallback_binding(model_id: &str) -> FrozenModelBinding {
-        let mut binding = agent_snapshot("test", AgentMode::Primary)
-            .fallback_chain
-            .remove(0);
-        let model = format!("gateway/{model_id}")
-            .parse::<ModelKey>()
-            .expect("fallback model key");
-        binding.resolved.selection.model = model.clone();
-        binding.resolved.provider_id = model.provider_id();
-        binding.resolved.model_id = model.model_id();
-        binding.descriptor.identity.provider_id =
-            oven_sdk::ProviderId::new(binding.resolved.provider_id.as_str());
-        binding.descriptor.identity.model_id =
-            oven_sdk::ModelId::new(binding.resolved.model_id.as_str());
-        binding.resolved.selection_fingerprint =
-            FrozenModelBinding::expected_selection_fingerprint(
-                &binding.resolved.selection,
-                binding.resolved.adapter_id,
-                &binding.descriptor,
-                &binding.behavior_fingerprint,
-            )
-            .expect("selection fingerprint");
-        binding.validate().expect("fallback binding");
-        binding
+        model_binding_named(model_id)
     }
 
     fn fallback_error() -> ModelErrorSummary {
@@ -1063,7 +1116,7 @@ mod tests {
                 attempt_ordinal,
                 fallback_index: fallback_index as u32,
                 retry_ordinal,
-                resolved_model: suffix[fallback_index].resolved.clone(),
+                resolved_model: wire_resolved(&suffix[fallback_index]),
                 prompt_fingerprint: prompt_fingerprint.clone(),
             },
         );
@@ -1088,7 +1141,7 @@ mod tests {
         agent.fallback_chain = suffix.to_vec();
         let selection = RunSelection {
             agent: agent.agent.clone(),
-            model: suffix[0].resolved.selection.clone(),
+            model: suffix[0].selection.clone(),
         };
         let prompt_fingerprint = agent.prompt_fingerprint.clone();
         let mut records = vec![
@@ -1101,6 +1154,13 @@ mod tests {
                     client_run_id: ClientRunId::new("strict-attribution").expect("client run id"),
                     selection,
                     agent: Box::new(agent),
+                    runtime_revision: runtime_revision(),
+                    catalog_revision: catalog_revision(),
+                    provider_state_revision: provider_revision(),
+                    model_revision: model_revision(),
+                    agent_revision: agent_revision(),
+                    recipe_registry_revision: registry_revision(),
+                    manifest_revision: suffix[0].manifest_revision.clone(),
                     selected_suffix: suffix.to_vec(),
                     input_through_seq: 1,
                 },
@@ -1127,8 +1187,8 @@ mod tests {
             session_id,
             run_id,
             EventPayload::ModelFallback {
-                from: suffix[0].resolved.clone(),
-                to: suffix[1].resolved.clone(),
+                from: wire_resolved(&suffix[0]),
+                to: wire_resolved(&suffix[1]),
                 from_fallback_index: 0,
                 to_fallback_index: 1,
                 attempts_on_from: 2,
@@ -1156,8 +1216,8 @@ mod tests {
             session_id,
             run_id,
             EventPayload::ModelFallback {
-                from: suffix[1].resolved.clone(),
-                to: suffix[2].resolved.clone(),
+                from: wire_resolved(&suffix[1]),
+                to: wire_resolved(&suffix[2]),
                 from_fallback_index: 1,
                 to_fallback_index: 2,
                 attempts_on_from: 2,
@@ -1278,6 +1338,13 @@ mod tests {
                 EventPayload::RunStarted {
                     client_run_id: ClientRunId::new(format!("run-{seq}")).expect("client run id"),
                     selection: run_selection("test"),
+                    runtime_revision: runtime_revision(),
+                    catalog_revision: catalog_revision(),
+                    provider_state_revision: provider_revision(),
+                    model_revision: model_revision(),
+                    agent_revision: agent_revision(),
+                    recipe_registry_revision: registry_revision(),
+                    manifest_revision: agent.fallback_chain[0].manifest_revision.clone(),
                     selected_suffix: agent.fallback_chain.clone(),
                     agent: Box::new(agent),
                     input_through_seq: 1,
@@ -1376,7 +1443,7 @@ mod tests {
                 selected_suffix, ..
             } => selected_suffix
                 .iter()
-                .map(|binding| binding.resolved.clone())
+                .map(wire_resolved)
                 .collect::<Vec<_>>(),
             _ => unreachable!(),
         };
@@ -1454,7 +1521,7 @@ mod tests {
                 selected_suffix, ..
             } => selected_suffix
                 .iter()
-                .map(|binding| binding.resolved.clone())
+                .map(wire_resolved)
                 .collect::<Vec<_>>(),
             _ => unreachable!(),
         };

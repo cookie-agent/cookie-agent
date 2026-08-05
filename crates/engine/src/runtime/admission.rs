@@ -65,11 +65,11 @@ impl Engine {
         parent_tool_call_id: ToolCallId,
         agent: &AgentId,
         child_policy: FrozenRunPolicy,
-        request_fingerprint: String,
+        request_fingerprint: Sha256Digest,
         request: journal::DelegateRequestPayload,
         admission: Option<(InvocationId, u64)>,
     ) -> Result<SessionMeta, EngineError> {
-        let child_model_snapshot = Arc::clone(&child_policy.model_snapshot);
+        let child_runtime = Arc::clone(&child_policy.runtime);
         let parent = self.inner.store.get(parent_session_id)?;
         if parent
             .runs
@@ -110,6 +110,20 @@ impl Engine {
         let journal = self.inner.journal.clone();
         let journal_agent = child_policy.agent.clone();
         let journal_suffix = child_policy.selected_suffix_wire.clone();
+        let snapshot = &child_runtime.result.snapshot;
+        let journal_revisions = journal::DelegationRuntimeRevisions {
+            manifest_revision: journal_suffix
+                .first()
+                .ok_or(EngineError::NoRunnableModel)?
+                .manifest_revision
+                .clone(),
+            runtime_revision: snapshot.runtime_revision.clone(),
+            catalog_revision: snapshot.catalog_revision.clone(),
+            provider_state_revision: snapshot.provider_state_revision.clone(),
+            model_revision: snapshot.model_revision.clone(),
+            agent_revision: snapshot.agent_revision.clone(),
+            recipe_registry_revision: snapshot.recipe_registry_revision.clone(),
+        };
         let entry = self
             .spawn_admission_blocking(move || {
                 journal.reserve(
@@ -118,6 +132,7 @@ impl Engine {
                     parent_run_id,
                     parent_tool_call_id,
                     journal_agent,
+                    journal_revisions,
                     journal_suffix,
                     request_fingerprint,
                     request,
@@ -142,12 +157,6 @@ impl Engine {
             ));
         }
         if let Ok(existing) = self.inner.store.get(entry.reservation.child_session_id) {
-            self.inner
-                .session_model_snapshots
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .entry(existing.meta.session_id)
-                .or_insert_with(|| Arc::clone(&child_model_snapshot));
             self.ensure_parent_link(
                 parent_session_id,
                 parent_run_id,
@@ -178,32 +187,41 @@ impl Engine {
         };
         let selection = RunSelection {
             agent: agent.clone(),
-            model: child_policy.selected_suffix[0].resolved.selection.clone(),
+            model: child_policy.selected_suffix[0].selection.clone(),
         };
         let meta = session_meta(
             entry.reservation.child_session_id,
             origin.clone(),
             parent.meta.cwd_identity.clone(),
             selection.clone(),
+            &child_runtime.result.snapshot,
+            child_policy.selected_suffix[0].manifest_revision.clone(),
         );
         let creation = Event::SessionCreated {
             origin,
             cwd_identity: parent.meta.cwd_identity.clone(),
             creation_selection: selection,
             creation_agent: Box::new(child_policy.agent.clone()),
-            model_snapshot_fingerprint: protocol_digest(
-                child_policy.model_snapshot.model_set().fingerprint(),
-            )?,
+            runtime_revision: child_runtime.result.snapshot.runtime_revision.clone(),
+            catalog_revision: child_runtime.result.snapshot.catalog_revision.clone(),
+            provider_state_revision: child_runtime
+                .result
+                .snapshot
+                .provider_state_revision
+                .clone(),
+            model_revision: child_runtime.result.snapshot.model_revision.clone(),
+            agent_revision: child_runtime.result.snapshot.agent_revision.clone(),
+            recipe_registry_revision: child_runtime
+                .result
+                .snapshot
+                .recipe_registry_revision
+                .clone(),
+            manifest_revision: child_policy.selected_suffix[0].manifest_revision.clone(),
         };
         let store = self.inner.store.clone();
         let creation_meta = meta.clone();
         self.spawn_admission_blocking(move || store.create_with_status(creation_meta, creation))
             .await?;
-        self.inner
-            .session_model_snapshots
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(meta.session_id, child_model_snapshot);
         self.spawn_actor(meta.session_id);
         if admission.is_some_and(|(invocation_id, generation)| {
             !self.admission_generation_live(invocation_id, generation)

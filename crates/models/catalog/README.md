@@ -1,35 +1,66 @@
-# Vendored models.dev catalog
+# Bundled models.dev bootstrap catalog
 
-`models-dev.json` is the exact deterministic `snapshotPayload` generated from
-[`anomalyco/models.dev`](https://github.com/anomalyco/models.dev) commit
-`c3057690bbb8bd41cafdefadcd2a7b958e2a4642`.
+The artifact in this directory is fallback bootstrap input for catalog cache
+schema 1. It is not a configured revision pin and is selected only after the
+fixed network request and validated per-user cache are unusable.
 
-- Upstream generator: `packages/sdk/script/generate.ts`
-- Authoritative inputs: the upstream `models/` and `providers/` TOMLs plus
-  `packages/core/src/schema.ts` and `packages/core/src/generate.ts`
-- Explicit opt-in update command (may clone and run `bun install`):
-  `python3 scripts/update_models_dev.py --update`
-- Strictly offline check against an existing pinned checkout with dependencies
-  already installed:
-  `python3 scripts/update_models_dev.py --check --source /path/to/models.dev`
-- Size: `3,567,054` bytes
-- SHA-256: `d65af0b058204954f6b08af537fa13e91f251c618d69d8c20a2d5915731d482a`
-- Encoding: canonical compact JSON with sorted provider, provider-model, and
-  model-metadata keys and no trailing newline
+Bundled artifact facts are 3,567,054 bytes and
+`sha256:d65af0b058204954f6b08af537fa13e91f251c618d69d8c20a2d5915731d482a`.
+The independently reviewed test-only live fixture captured on 2026-08-05 is
+`crates/models/tests/fixtures/models-dev-live-audit-2026-08-05.json`: 3,801,566
+identity bytes, ETag `"25dd5dd6eb21b2d78044606eeb806d8c"`, 180 providers,
+6,131 provider models, 293 canonical models, and
+`sha256:25dd5dd6eb21b2d78044606eeb806d8cdd38640c8deea071122d5591edb88795`.
+The fixture and digest are audit evidence only, not a runtime pin or runtime
+acceptance criterion.
 
-The repository-root upstream `models.json` is not this artifact and must not be
-used as a substitute. Offline check mode never clones, installs, or accesses
-the network; it fails with instructions when source dependencies are absent.
-Only explicit `--update` permits clone/install activity. The updater is
-developer-only. Cargo builds, tests, and runtime catalog loading perform no
-network access.
+Normative source order is:
 
-The vendored artifact is distributed under the upstream MIT license in
-`LICENSE.models.dev`.
+1. `https://models.dev/catalog.json` response or ETag `304` cache validation;
+2. independently validated cache schema 1;
+3. independently validated bundled bootstrap.
 
-The runtime compiler accepts only the pinned `reasoning_options` forms
-`effort`, `toggle`, and `budget_tokens`. Effort values, JSON `null`, budget
-bounds, duplicate values, unknown fields, deterministic union ordering, and
-collision precedence are validated before any configured provider snapshot is
-published. The updater preserves the exact upstream bytes; it does not invent
-or rewrite variant metadata.
+The network client sends `Accept-Encoding: identity`, rejects compressed
+responses, rejects `Content-Length` above 16 MiB before reading, and enforces a
+streamed 16 MiB hard cap before buffering/decoding. Parsed JSON is bounded to
+depth 32, 4096 providers, 65,536 provider models per provider, 65,536 root
+canonical models, 1,000,000 aggregate container entries, and 256 KiB strings
+before narrower field limits.
+
+On Unix, cache files are fixed at:
+
+```text
+~/.local/share/cookie_agent/catalog/models-dev-v1.json
+~/.local/share/cookie_agent/catalog/models-dev-v1.meta.json
+~/.local/share/cookie_agent/catalog/models-dev-v1.lock
+```
+
+Directories are current-user-owned mode `0700`. Body, metadata, lock, and
+temporary files are current-user-owned mode `0600`, regular, single-link, opened
+descriptor-relative/no-follow, and written by lock/reread, exclusive sibling
+temp, fsync, atomic rename, and parent fsync.
+
+Metadata schema 1 records
+`sha256:<lowercase SHA-256 digest of the exact selected body bytes>`, ETag, size,
+validation/check times, source, stale flag, quarantine counts/digest, and safe
+last-error code/message/time. Cache or bootstrap fallback explicitly persists
+stale/error metadata when safe atomic writing is available.
+
+Invalid candidate structure rejects that source. Once a bounded root provider
+map is recovered, malformed/ambiguous provider records are quarantined with all
+children and malformed/ambiguous model records are quarantined individually;
+valid siblings survive. For a known recipe, provider npm/API/env/shape drift
+quarantines that provider and model-provider npm/API/shape or model-shape drift
+quarantines only that model. Recoverable IDs remain safe-visible with typed
+quarantine reasons.
+
+The strict catalog root has exactly required nonempty `providers` and `models`
+maps. `providers` carries provider-scoped executable claims. Root `models`
+carries canonical metadata/provenance only and never defines transport, setup,
+auth, adaptor, or executable inclusion. Exact same-key links are optional
+provenance references; provider records remain executable authority. Invalid
+canonical records quarantine only their provenance entries.
+
+Catalog values never define executable endpoints, protocols, auth, headers, or
+request templates. Recipe registry schema 1 owns those decisions. Cargo builds
+do not fetch the runtime catalog; daemon startup does.

@@ -24,6 +24,10 @@ pub enum IdentityError {
     SafeCode,
     #[error("invalid wildcard pattern")]
     WildcardPattern,
+    #[error("invalid strict identifier")]
+    StrictIdentifier,
+    #[error("invalid revision")]
+    Revision,
 }
 
 macro_rules! string_identity {
@@ -260,21 +264,133 @@ string_identity!(
     Provider,
     valid_provider_id,
     128,
-    "^[a-z0-9._-]+$"
+    "^[a-z0-9][a-z0-9._-]{0,127}$"
 );
 string_identity!(
     ProviderModelId,
     ProviderModel,
     valid_provider_model_id,
     384,
-    "^[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+    "^[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
 );
 string_identity!(
     VariantId,
     Variant,
     valid_variant_id,
     64,
-    "^(?!base$)[a-z0-9._-]+$"
+    "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
+);
+
+macro_rules! strict_identifier {
+    ($($name:ident),+ $(,)?) => {$(
+        string_identity!(
+            $name,
+            StrictIdentifier,
+            valid_strict_identifier,
+            128,
+            "^[a-z0-9][a-z0-9._-]{0,127}$"
+        );
+    )+};
+}
+
+strict_identifier!(
+    AuthMethodId,
+    AdapterId,
+    ProviderRecipeId,
+    ProtocolRecipeId,
+    ProviderSetupRecipeId,
+    AuthRecipeId,
+    RecipeCompilerVersion,
+    CacheEntryId,
+    StoreEntryId,
+    ManifestEntryId,
+);
+
+macro_rules! field_identifier {
+    ($($name:ident),+ $(,)?) => {$(
+        string_identity!(
+            $name,
+            StrictIdentifier,
+            valid_field_identifier,
+            128,
+            "^[a-z][a-z0-9_]{0,127}$"
+        );
+    )+};
+}
+
+field_identifier!(SetupFieldId, AuthParameterId, AuthFieldName);
+
+string_identity!(
+    CanonicalModelId,
+    StrictIdentifier,
+    valid_provider_model_id,
+    384,
+    "^[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
+);
+
+macro_rules! revision_identity {
+    ($($name:ident),+ $(,)?) => {$(
+        #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        pub struct $name(String);
+
+        impl $name {
+            pub fn new(value: impl Into<String>) -> Result<Self, IdentityError> {
+                let value = value.into();
+                if valid_revision(&value) { Ok(Self(value)) } else { Err(IdentityError::Revision) }
+            }
+            #[must_use]
+            pub fn as_str(&self) -> &str { &self.0 }
+            #[must_use]
+            pub fn into_string(self) -> String { self.0 }
+        }
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_tuple(stringify!($name)).field(&self.0).finish()
+            }
+        }
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
+        }
+        impl FromStr for $name {
+            type Err = IdentityError;
+            fn from_str(value: &str) -> Result<Self, Self::Err> { Self::new(value) }
+        }
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where S: Serializer { serializer.serialize_str(&self.0) }
+        }
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where D: Deserializer<'de> {
+                Self::new(String::deserialize(deserializer)?).map_err(de::Error::custom)
+            }
+        }
+        impl JsonSchema for $name {
+            fn inline_schema() -> bool { true }
+            fn schema_name() -> Cow<'static, str> { stringify!($name).into() }
+            fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+                json_schema!({
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "minLength": 71,
+                    "maxLength": 71
+                })
+            }
+        }
+    )+};
+}
+
+revision_identity!(
+    CatalogRevision,
+    ModelRevision,
+    RecipeRegistryRevision,
+    ProviderStoreRevision,
+    ProviderStateRevision,
+    ModelSnapshotRevision,
+    RuntimeRevision,
+    AgentRevision,
+    ManifestRevision,
+    CacheRevision,
 );
 
 fn valid_agent_id(value: &str) -> bool {
@@ -295,6 +411,10 @@ fn valid_agent_id(value: &str) -> bool {
 
 fn valid_provider_id(value: &str) -> bool {
     (1..=128).contains(&value.len())
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
         && value.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
@@ -302,17 +422,50 @@ fn valid_provider_id(value: &str) -> bool {
 
 fn valid_provider_model_id(value: &str) -> bool {
     (1..=384).contains(&value.len())
-        && !value.contains('/')
-        && value.trim() == value
-        && !value.chars().any(char::is_control)
+        && !value.contains(['[', ']'])
+        && !value.split('/').any(|segment| segment.is_empty())
+        && !value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
 }
 
 fn valid_variant_id(value: &str) -> bool {
     value != "base"
         && (1..=64).contains(&value.len())
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
         && value.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
+}
+
+fn valid_strict_identifier(value: &str) -> bool {
+    (1..=128).contains(&value.len())
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
+}
+
+fn valid_field_identifier(value: &str) -> bool {
+    (1..=128).contains(&value.len())
+        && value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn valid_revision(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// Direct runnable `provider/model-id` identity.
@@ -409,7 +562,7 @@ impl JsonSchema for ModelKey {
             "type": "string",
             "minLength": 3,
             "maxLength": 512,
-            "pattern": "^[a-z0-9._-]{1,128}/[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
         })
     }
 }
@@ -519,12 +672,19 @@ mod tests {
         assert!(AgentId::new("worker-one").is_ok());
         assert!(AgentId::new("Worker").is_err());
         assert!(ProviderId::new("openai.compat").is_ok());
-        assert!(ProviderModelId::new("model/child").is_err());
+        assert!(ProviderModelId::new("model/child").is_ok());
         assert!(VariantId::new("base").is_err());
         let key: ModelKey = "openai/gpt-5.6-sol".parse().unwrap();
         assert_eq!(key.provider_id().as_str(), "openai");
         assert_eq!(key.model_id().as_str(), "gpt-5.6-sol");
-        assert!("openai/group/model".parse::<ModelKey>().is_err());
+        assert_eq!(
+            "openai/group/model"
+                .parse::<ModelKey>()
+                .unwrap()
+                .model_id()
+                .as_str(),
+            "group/model"
+        );
     }
 
     #[test]
@@ -578,14 +738,14 @@ mod tests {
     fn provider_schema_exposes_runtime_bounds() {
         let schema = serde_json::to_value(schemars::schema_for!(ProviderId)).unwrap();
         assert_eq!(schema["maxLength"], 128);
-        assert_eq!(schema["pattern"], "^[a-z0-9._-]+$");
+        assert_eq!(schema["pattern"], "^[a-z0-9][a-z0-9._-]{0,127}$");
     }
 
     #[test]
     fn provider_model_schema_exposes_runtime_bounds() {
         let schema = serde_json::to_value(schemars::schema_for!(ProviderModelId)).unwrap();
         assert_eq!(schema["maxLength"], 384);
-        assert!(schema["pattern"].as_str().unwrap().contains("u0020"));
+        assert!(schema["pattern"].as_str().unwrap().contains("\\s"));
     }
 
     #[test]

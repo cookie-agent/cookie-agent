@@ -1,15 +1,11 @@
 mod routes;
+mod runtime_notifications;
 mod subscriptions;
 mod websocket;
 
-#[cfg(test)]
-pub(crate) use websocket::authorized;
-
 use std::{io, net::SocketAddr, path::PathBuf, sync::Arc};
 
-use cookie_agent_config::LoadedConfiguration;
 use cookie_agent_engine::Engine;
-use cookie_agent_models::{Catalog, ModelSetManager};
 use cookie_agent_protocol::{ProtocolVersion, ServerHello};
 use thiserror::Error;
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -33,30 +29,19 @@ impl Drop for ConnectionShutdown {
     }
 }
 
-/// Protocol service composed with one engine and its atomic model manager.
+/// Protocol service composed with one coherent engine runtime.
 #[derive(Clone)]
 pub struct Server {
     pub(crate) engine: Engine,
-    pub(crate) model_manager: Arc<ModelSetManager>,
-    pub(crate) catalog: Arc<Catalog>,
-    pub(crate) configuration: Arc<LoadedConfiguration>,
     pub(crate) shutdown: CancellationToken,
     pub(crate) token_path: PathBuf,
 }
 
 impl Server {
     #[must_use]
-    pub fn new(
-        engine: Engine,
-        model_manager: Arc<ModelSetManager>,
-        catalog: Arc<Catalog>,
-        configuration: Arc<LoadedConfiguration>,
-    ) -> Self {
+    pub fn new(engine: Engine) -> Self {
         Self {
             engine,
-            model_manager,
-            catalog,
-            configuration,
             shutdown: CancellationToken::new(),
             token_path: standard_token_path().unwrap_or_default(),
         }
@@ -72,6 +57,7 @@ impl Server {
     {
         let (notifications, mut notification_rx) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
         let mut handshaken = false;
+        let mut runtime_notifications_started = false;
         let connection_shutdown = self.shutdown.child_token();
         let _guard = ConnectionShutdown(connection_shutdown.clone());
         loop {
@@ -96,12 +82,22 @@ impl Server {
                                 notifications.clone(),
                                 &connection_shutdown,
                             ).await;
-                            let response = match result {
-                                Ok(RouteResult::Handshake) => success_response(id, &ServerHello { protocol_version: ProtocolVersion::current() })?,
-                                Ok(RouteResult::Value(value)) => success_response(id, &value)?,
-                                Err(error) => error_response(Some(id), error)?,
+                            let (response, start_runtime_notifications) = match result {
+                                Ok(RouteResult::Handshake) => (
+                                    success_response(id, &ServerHello { protocol_version: ProtocolVersion::current() })?,
+                                    true,
+                                ),
+                                Ok(RouteResult::Value(value)) => (success_response(id, &value)?, false),
+                                Err(error) => (error_response(Some(id), error)?, false),
                             };
                             stream.send(MessageFrame::Value(response)).await?;
+                            if start_runtime_notifications && !runtime_notifications_started {
+                                runtime_notifications_started = true;
+                                self.start_runtime_notifications(
+                                    notifications.clone(),
+                                    connection_shutdown.child_token(),
+                                );
+                            }
                         }
                         Incoming::Notification { method, params } => {
                             let _ = self.route_after_handshake(

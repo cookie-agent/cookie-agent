@@ -3,13 +3,12 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use bytes::Bytes;
-use cookie_agent_models::FrozenModelBinding;
 use cookie_agent_protocol::{
-    ApprovalDecisionSource, ContextCheckpoint, EventPayload, ModelFinishReason, ModelSelection,
-    NativeContextScope, NativeReplayArtifact, PersistedAssistantPart, PersistedContentValue,
-    PersistedFilePart, PersistedFileSource, PersistedModelTurn, PersistedToolContent,
-    PersistedToolResult, ReplayDecision, ReplayDisposition, ResolvedModelRef, SafeCode,
-    SafeErrorMessage, Sha256Digest, StoredEvent, ToolAttachment, ToolCallId,
+    ApprovalDecisionSource, ContextCheckpoint, EventPayload, FrozenModelBinding, ModelFinishReason,
+    ModelSelection, NativeContextScope, NativeReplayArtifact, PersistedAssistantPart,
+    PersistedContentValue, PersistedFilePart, PersistedFileSource, PersistedModelTurn,
+    PersistedToolContent, PersistedToolResult, ReplayDecision, ReplayDisposition, ResolvedModelRef,
+    SafeCode, SafeErrorMessage, Sha256Digest, StoredEvent, ToolAttachment, ToolCallId,
     ToolTerminationOutcome, Usage,
 };
 use oven_sdk::{
@@ -43,7 +42,7 @@ impl From<ModelError> for HistoryError {
 
 #[must_use]
 pub(crate) fn wire_model(binding: &FrozenModelBinding) -> ResolvedModelRef {
-    crate::policy::wire_resolved(binding).expect("validated frozen model binding")
+    crate::policy::wire_resolved(binding)
 }
 
 pub(crate) fn persist_turn(
@@ -105,12 +104,12 @@ pub(crate) fn replay_decisions(
                     if found_selection.model == expected_selection.model {
                         ReplayDisposition::DiscardedForeignVariant {
                             found: found_selection.variant,
-                            expected: binding.resolved.selection.variant.clone(),
+                            expected: binding.selection.variant.clone(),
                         }
                     } else {
                         ReplayDisposition::DiscardedForeignModelSelection {
                             found: found_selection,
-                            expected: binding.resolved.selection.clone(),
+                            expected: binding.selection.clone(),
                         }
                     }
                 }
@@ -263,10 +262,7 @@ pub(crate) fn assemble_model_context(
             native_context,
         } if model == &wire_model(binding)
             && native_context
-                .validate_for_binding(
-                    &crate::policy::wire_binding(binding).expect("validated frozen model binding"),
-                    &native_context.scope,
-                )
+                .validate_for_binding(binding, &native_context.scope)
                 .is_ok() =>
         {
             let window = store
@@ -916,7 +912,7 @@ fn persist_replay(
     NativeReplayArtifact::new(
         cookie_agent_protocol::SafeCode::new(artifact.adapter_id().as_str())
             .map_err(|error| HistoryError::Corrupt(error.to_string()))?,
-        cookie_agent_protocol::Sha256Digest::new(binding.resolved.selection_fingerprint.as_str())
+        cookie_agent_protocol::Sha256Digest::new(binding.selection_fingerprint.as_str())
             .map_err(|error| HistoryError::Corrupt(error.to_string()))?,
         persist_scope(artifact.scope()),
         artifact.payload().clone(),
@@ -952,22 +948,21 @@ fn restore_replay(
             }),
         );
     }
-    if resolved_model.selection != binding.resolved.selection {
-        let disposition = if resolved_model.selection.model == binding.resolved.selection.model {
+    if resolved_model.selection != binding.selection {
+        let disposition = if resolved_model.selection.model == binding.selection.model {
             ReplayDisposition::DiscardedForeignVariant {
                 found: resolved_model.selection.variant.clone(),
-                expected: binding.resolved.selection.variant.clone(),
+                expected: binding.selection.variant.clone(),
             }
         } else {
             ReplayDisposition::DiscardedForeignModelSelection {
                 found: resolved_model.selection.clone(),
-                expected: binding.resolved.selection.clone(),
+                expected: binding.selection.clone(),
             }
         };
         return (None, Some(disposition));
     }
-    if artifact.selection_fingerprint().as_str() != binding.resolved.selection_fingerprint.as_str()
-    {
+    if artifact.selection_fingerprint().as_str() != binding.selection_fingerprint.as_str() {
         return (
             None,
             Some(ReplayDisposition::DiscardedInvalidPayload {
@@ -1517,7 +1512,7 @@ mod tests {
             Some(ReplayDisposition::DiscardedForeignModelSelection {
                 found: persisted,
                 expected,
-            }) if persisted == selection && expected == binding.resolved.selection
+            }) if persisted == selection && expected == binding.selection
         ));
     }
 
@@ -1690,7 +1685,7 @@ mod tests {
             &decisions[0].disposition,
             ReplayDisposition::DiscardedForeignModelSelection { found: persisted_found, expected: persisted_expected }
                 if persisted_found.model.to_string() == "provider/one"
-                    && persisted_expected == &binding.resolved.selection
+                    && persisted_expected == &binding.selection
         ));
     }
 

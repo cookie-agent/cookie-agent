@@ -491,6 +491,7 @@ name = "cookie_agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "cookie_agent_config",
  "cookie_agent_engine",
@@ -503,8 +504,10 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-tungstenite",
+ "tokio-util",
  "tracing-subscriber",
  "url",
  "uuid",
@@ -529,16 +532,19 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "toml",
+ "zeroize",
 ]
 
 [[package]]
 name = "cookie_agent_engine"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "base64",
  "bytes",
  "cookie_agent_config",
+ "cookie_agent_identity",
  "cookie_agent_models",
  "cookie_agent_protocol",
  "crc32fast",
@@ -557,6 +563,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tokio-util",
+ "toml",
  "tree-sitter",
  "tree-sitter-bash",
  "uuid",
@@ -579,6 +586,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "cookie_agent_identity",
+ "cookie_agent_protocol",
  "futures-util",
  "http",
  "jiff",
@@ -590,7 +598,6 @@ dependencies = [
  "oven-sdk-cohere",
  "oven-sdk-google",
  "oven-sdk-google-vertex",
- "oven-sdk-open-responses",
  "oven-sdk-openai",
  "reqwest",
  "rustix",
@@ -620,6 +627,7 @@ dependencies = [
  "sha2 0.10.9",
  "ts-rs",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -635,6 +643,7 @@ dependencies = [
  "cookie_agent_models",
  "cookie_agent_protocol",
  "futures-util",
+ "jiff",
  "libc",
  "oven-sdk",
  "rustix",
@@ -2233,26 +2242,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "oven-sdk-open-responses"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "779a7035b3671f5111fe7fe620f678835ad30619f0249473b0e9ab04bf4bdf2c"
-dependencies = [
- "base64",
- "bytes",
- "futures-core",
- "futures-util",
- "httpdate",
- "oven-sdk",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.10.9",
  "tokio",
  "url",
 ]

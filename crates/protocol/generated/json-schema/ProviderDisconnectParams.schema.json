@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProviderDisconnectParams",
+  "type": "object",
+  "properties": {
+    "client_request_id": {
+      "description": "Bounded provider mutation idempotency key.",
+      "type": "string",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+    },
+    "expected_connection_generation": {
+      "description": "Monotonic provider connection generation.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "maximum": 9007199254740991,
+      "minimum": 1
+    },
+    "expected_provider_state_revision": {
+      "type": "string",
+      "maxLength": 71,
+      "minLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "expected_runtime_revision": {
+      "type": "string",
+      "maxLength": 71,
+      "minLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "provider_id": {
+      "type": "string",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "provider_id",
+    "expected_runtime_revision",
+    "expected_provider_state_revision",
+    "expected_connection_generation",
+    "client_request_id"
+  ]
+}

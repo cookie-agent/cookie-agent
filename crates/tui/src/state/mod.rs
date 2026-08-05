@@ -1,9 +1,13 @@
-//! Disposable UI projections reduced from protocol v7 stored events.
+//! Disposable UI projections reduced from protocol-8 stored events.
 //!
 //! Assistant attribution is derived only from the frozen `RunStarted` plus
 //! `ModelAttemptStarted`/`ModelTurnCommitted` ownership — never from the
 //! current picker, live agent files, or provider configuration. The visible
 //! assistant header projects the exact canonical `Agent • Model[variant]`.
+
+mod runtime;
+
+pub use runtime::{EMPTY_RUNTIME_GUIDANCE, RuntimePhase, RuntimeState};
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -25,7 +29,7 @@ use serde::Serialize;
 
 use crate::{client::ClientDelivery, markdown::MarkdownDocument};
 
-/// The visible state of a tool invocation, reduced from the exact v7
+/// The visible state of a tool invocation, reduced from the exact protocol-8
 /// termination outcome. Failed, cancelled, and interrupted stay distinct.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToolStatus {
@@ -123,7 +127,7 @@ impl EventLevel {
 }
 
 /// Frozen producing identity for one assistant attempt/turn, reduced from the
-/// exact v7 attempt and turn ownership events.
+/// exact protocol-8 attempt and turn ownership events.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrozenAssistantAttribution {
     pub agent: AgentId,
@@ -563,6 +567,7 @@ impl StateStore {
                 DeliveryOutcome::Applied
             }
             ClientDelivery::RecoveryFailed { .. } => DeliveryOutcome::Applied,
+            ClientDelivery::RuntimeChanged(_) => DeliveryOutcome::Applied,
         }
     }
 

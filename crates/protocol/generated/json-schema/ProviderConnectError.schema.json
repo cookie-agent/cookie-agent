@@ -13,30 +13,18 @@
     "code": {
       "$ref": "#/$defs/ProviderConnectErrorCode"
     },
-    "missing_credential_fields": {
-      "type": "array",
-      "items": {
-        "description": "Strict provider credential field name.",
-        "type": "string",
-        "maxLength": 1024,
-        "minLength": 1,
-        "pattern": "^[A-Z0-9_]+$"
-      },
-      "maxItems": 32
-    },
     "provider_id": {
       "type": "string",
       "maxLength": 128,
       "minLength": 1,
-      "pattern": "^[a-z0-9._-]+$"
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
     }
   },
   "additionalProperties": false,
   "required": [
     "code",
     "provider_id",
-    "client_connect_id",
-    "missing_credential_fields"
+    "client_connect_id"
   ],
   "$defs": {
     "ProviderConnectErrorCode": {
@@ -44,10 +32,16 @@
       "enum": [
         "unknown_provider",
         "unsupported_provider",
+        "quarantined_provider",
+        "removed_without_retained_recipe_match",
         "catalog_revision_conflict",
+        "missing_setup_field",
+        "invalid_setup_field",
         "missing_credential",
         "invalid_credential",
-        "credential_storage_failed",
+        "unsupported_auth_method",
+        "provider_store_write_failed",
+        "runtime_compile_failed",
         "idempotency_conflict"
       ]
     }

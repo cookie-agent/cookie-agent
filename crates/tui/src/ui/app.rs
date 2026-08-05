@@ -1,7 +1,7 @@
 //! Application state, event handling, and terminal loop.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     fmt::Write as _,
     io,
     sync::Arc,
@@ -11,14 +11,13 @@ use std::{
 use anyhow::Context;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
-    AgentDescriptor, AgentId, AgentListParams, ApprovalListParams, ApprovalListResult,
-    ApprovalRespondError, ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus,
-    ApprovalUserDecision, AvailableModelDescriptor, CatalogProvider, CatalogProviderListParams,
-    ClientConnectId, ClientResponseId, ClientRunId, CredentialFieldName, EventPayload, ModelKey,
-    ModelListParams, ModelSelection, ProviderConnectParams, ProviderCredentials, RunCancelParams,
-    RunSelection, RunStartParams, RunSteerParams, RunToolStdinParams, SessionCreateParams,
-    SessionId, SessionListParams, SessionMeta, SessionTitle, SessionTitleChange, SessionTree,
-    SessionTreeParams, VariantId,
+    AgentDescriptor, AgentId, ApprovalListParams, ApprovalListResult, ApprovalRespondError,
+    ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision,
+    AvailableModelDescriptor, ClientConnectId, ClientRequestId, ClientResponseId, ClientRunId,
+    EventPayload, ModelKey, ModelSelection, ProviderConnectParams, ProviderDescriptor,
+    ProviderDisconnectParams, RunCancelParams, RunSelection, RunStartParams, RunSteerParams,
+    RunToolStdinParams, SessionCreateParams, SessionId, SessionListParams, SessionMeta,
+    SessionTitle, SessionTitleChange, SessionTree, SessionTreeParams, VariantId,
 };
 use crossterm::{
     event::{
@@ -46,17 +45,21 @@ use crate::{
     config::TuiConfig,
     markdown::{Highlighter, SyntectHighlighter},
     state::{
-        ApprovalState, DeliveryOutcome, StateStore, ToolStatus, TranscriptItem,
-        approval_state_from_record,
+        ApprovalState, DeliveryOutcome, EMPTY_RUNTIME_GUIDANCE, RuntimePhase, RuntimeState,
+        StateStore, ToolStatus, TranscriptItem, approval_state_from_record,
     },
     theme::Theme,
 };
 
 use super::events::{RenderScheduler, TerminalRestore};
-use super::input::{CredentialInput, InputState};
+use super::input::InputState;
 use super::pickers::{
     ProviderMatch, cycle_selection, flatten_tree, move_selection as move_picker_selection,
     provider_matches, session_matches, short_id,
+};
+use super::provider::{
+    DURABLE_PROVIDER_COPY, ProviderAction, ProviderForm, ProviderOperation, ProviderRowState,
+    action_name, row_label, row_state,
 };
 use super::slash::{
     CommandSpec, InputMode, ScrollCommand, SlashCommand, Submission, command_allowed_in_mode,
@@ -73,8 +76,11 @@ pub(super) enum Modal {
     Agents,
     Models,
     ConnectProviders,
+    ConnectDetails,
+    ConnectSetup,
     ConnectCredentials,
     ConnectConfirm,
+    DisconnectConfirm,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -176,20 +182,21 @@ pub struct App {
     >,
     pub store: StateStore,
     pub(super) sessions: Vec<SessionMeta>,
+    pub(super) runtime: RuntimeState,
     pub(super) agents: Vec<AgentDescriptor>,
     /// Revision of the current agent descriptor snapshot; refreshed
     /// coherently with the model revision.
-    pub(super) agent_revision: Option<cookie_agent_protocol::SnapshotRevision>,
+    pub(super) agent_revision: Option<cookie_agent_protocol::AgentRevision>,
     pub(super) models: Vec<AvailableModelDescriptor>,
     /// Revision of the current model descriptor snapshot.
-    pub(super) model_revision: Option<cookie_agent_protocol::SnapshotRevision>,
-    pub(super) providers: Vec<CatalogProvider>,
+    pub(super) model_revision: Option<cookie_agent_protocol::ModelRevision>,
+    pub(super) providers: Vec<ProviderDescriptor>,
     pub(super) catalog_revision: Option<cookie_agent_protocol::CatalogRevision>,
     /// Client-local draft selection; never alters an active run.
     pub(super) draft: Option<RunSelection>,
-    pub(super) connect_provider: Option<CatalogProvider>,
-    pub(super) connect_fields: Vec<(CredentialFieldName, CredentialInput)>,
-    pub(super) connect_field_index: usize,
+    pub(super) connect_provider: Option<ProviderDescriptor>,
+    pub(super) provider_form: Option<ProviderForm>,
+    pub(super) provider_operations: HashMap<cookie_agent_protocol::ProviderId, ProviderOperation>,
     pub(super) connect_task: Option<tokio::task::JoinHandle<()>>,
     pub(super) tree: Option<SessionTree>,
     /// Session the conversation currently shows. Independent of the tree root.
@@ -256,8 +263,8 @@ pub(super) enum RpcUpdate {
         request_id: u64,
         error: String,
     },
-    ConnectFinished {
-        outcome: ConnectOutcome,
+    ProviderMutationFinished {
+        outcome: ProviderMutationOutcome,
     },
     ApprovalResponse {
         request_id: u64,
@@ -319,48 +326,21 @@ impl ApprovalSubmissionError {
     }
 }
 
-pub(super) enum ConnectOutcome {
+pub(super) enum ProviderMutationOutcome {
     Failed {
+        provider_id: cookie_agent_protocol::ProviderId,
+        action: ProviderAction,
         error: String,
     },
     Connected {
         provider_id: cookie_agent_protocol::ProviderId,
-        receipt_model_revision: cookie_agent_protocol::SnapshotRevision,
-        follow_up: Box<ConnectFollowUp>,
+        baseline: Option<cookie_agent_protocol::RuntimeRevision>,
+        runtime: Box<cookie_agent_protocol::RuntimeSnapshotV1>,
     },
-}
-
-pub(super) enum ConnectFollowUp {
-    ModelRefreshFailed {
-        error: String,
-    },
-    /// The refreshed pair failed the revision comparison after a bounded
-    /// retry; the prior coherent pair is retained and no session is created.
-    Incoherent {
-        model_revision: cookie_agent_protocol::SnapshotRevision,
-        agent_model_revision: cookie_agent_protocol::SnapshotRevision,
-    },
-    AgentRefreshFailed {
-        model_revision: cookie_agent_protocol::SnapshotRevision,
-        model_count: usize,
-        error: String,
-    },
-    /// The complete refreshed pair, retained whole for the atomic
-    /// coherent-pair install and revision comparison.
-    Refreshed {
-        models: Box<cookie_agent_protocol::ModelListResult>,
-        agents: Box<cookie_agent_protocol::AgentListResult>,
-        created: Option<Box<SessionMeta>>,
-    },
-    InitialSessionFailed {
-        models: Box<cookie_agent_protocol::ModelListResult>,
-        agents: Box<cookie_agent_protocol::AgentListResult>,
-        error: String,
-    },
-    InvalidInitialSelection {
-        models: Box<cookie_agent_protocol::ModelListResult>,
-        agents: Box<cookie_agent_protocol::AgentListResult>,
-        agent: AgentId,
+    Disconnected {
+        provider_id: cookie_agent_protocol::ProviderId,
+        baseline: Option<cookie_agent_protocol::RuntimeRevision>,
+        runtime: Box<cookie_agent_protocol::RuntimeSnapshotV1>,
     },
 }
 
@@ -405,6 +385,7 @@ impl App {
             stdin_lanes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             store: StateStore::default(),
             sessions: Vec::new(),
+            runtime: RuntimeState::default(),
             agents: Vec::new(),
             agent_revision: None,
             models: Vec::new(),
@@ -413,8 +394,8 @@ impl App {
             catalog_revision: None,
             draft: None,
             connect_provider: None,
-            connect_fields: Vec::new(),
-            connect_field_index: 0,
+            provider_form: None,
+            provider_operations: HashMap::new(),
             connect_task: None,
             tree: None,
             selected: None,
@@ -484,6 +465,10 @@ impl App {
     }
 
     async fn create_startup_session(&mut self) {
+        if self.runtime.is_empty() {
+            self.status = EMPTY_RUNTIME_GUIDANCE.into();
+            return;
+        }
         let Some(selection) = self.default_draft_selection() else {
             self.status = self.setup_status();
             return;
@@ -603,53 +588,68 @@ impl App {
             Err(error) => self.status = error.to_string(),
         }
         self.refresh_coherent_lists().await;
-        self.revalidate_draft();
-        match self
-            .client
-            .list_catalog_providers(CatalogProviderListParams {})
-            .await
-        {
-            Ok(result) => {
-                self.catalog_revision = Some(result.snapshot.revision);
-                self.providers = result.providers;
+    }
+
+    /// Fetch and install the sole protocol-8 discovery object.
+    pub(super) async fn refresh_coherent_lists(&mut self) {
+        match self.client.runtime_snapshot().await {
+            Ok(result) => self.install_initial_runtime(result.snapshot),
+            Err(error) => {
+                self.runtime.set_error(error.to_string());
+                self.status =
+                    format!("Runtime snapshot unavailable: {error}. Press Enter to retry.");
             }
-            Err(error) => self.status = error.to_string(),
         }
     }
 
-    /// Refresh model and agent descriptors as one coherent snapshot: models
-    /// (and their variants) are applied first, then agents, atomically, and
-    /// only when `agent.list`'s model revision equals `model.list`'s
-    /// revision. A mismatched pair is retried once against the current
-    /// snapshot; a still-mismatched pair is discarded whole, leaving the
-    /// previous coherent descriptors intact.
-    pub(super) async fn refresh_coherent_lists(&mut self) {
-        for attempt in 0..2 {
-            let models = match self.client.list_models(ModelListParams {}).await {
-                Ok(result) => result,
-                Err(error) => {
-                    self.status = error.to_string();
-                    return;
-                }
-            };
-            let agents = match self.client.list_agents(AgentListParams::default()).await {
-                Ok(result) => result,
-                Err(error) => {
-                    self.status = error.to_string();
-                    return;
-                }
-            };
-            if agents.model_revision == models.revision {
-                self.install_coherent_pair(models, agents);
-                return;
-            }
-            if attempt == 0 {
-                continue;
-            }
-            self.status = format!(
-                "discarded an incoherent descriptor pair (agents resolved against {} but models are at {}); keeping the previous coherent snapshot",
-                agents.model_revision, models.revision
-            );
+    pub(super) fn install_initial_runtime(
+        &mut self,
+        snapshot: cookie_agent_protocol::RuntimeSnapshotV1,
+    ) {
+        if self.runtime.snapshot().is_some() {
+            return;
+        }
+        self.runtime.install_initial(snapshot.clone());
+        self.install_runtime_projection(snapshot);
+    }
+
+    pub(super) fn install_runtime_response(
+        &mut self,
+        baseline: Option<&cookie_agent_protocol::RuntimeRevision>,
+        snapshot: cookie_agent_protocol::RuntimeSnapshotV1,
+    ) -> bool {
+        if !self.runtime.install_response(baseline, snapshot.clone()) {
+            return false;
+        }
+        self.install_runtime_projection(snapshot);
+        true
+    }
+
+    pub(super) fn install_runtime_notification(
+        &mut self,
+        changed: cookie_agent_protocol::RuntimeChangedNotification,
+    ) -> bool {
+        let snapshot = changed.snapshot.clone();
+        if !self.runtime.apply_notification(changed) {
+            return false;
+        }
+        self.install_runtime_projection(snapshot);
+        true
+    }
+
+    fn install_runtime_projection(&mut self, snapshot: cookie_agent_protocol::RuntimeSnapshotV1) {
+        self.catalog_revision = Some(snapshot.catalog_revision);
+        self.model_revision = Some(snapshot.model_revision);
+        self.agent_revision = Some(snapshot.agent_revision);
+        self.providers = snapshot.providers;
+        self.models = snapshot.models;
+        self.agents = snapshot.agents;
+        self.revalidate_draft();
+        if self.runtime.is_empty() && self.watching_root_session() {
+            self.draft = None;
+            self.status = EMPTY_RUNTIME_GUIDANCE.into();
+        } else if self.draft.is_none() {
+            self.draft = self.default_draft_selection();
         }
     }
 
@@ -743,7 +743,11 @@ impl App {
                     .unwrap_or_else(|| "agent switching requires a root session".into());
             }
             Modal::Models if !self.model_selection_allowed() => {
-                self.status = "no draft model is available for this session".into();
+                self.status = if self.runtime.is_empty() {
+                    EMPTY_RUNTIME_GUIDANCE.into()
+                } else {
+                    "no draft model is available for this session".into()
+                };
             }
             _ => {
                 self.picker_state.select(Some(0));
@@ -786,6 +790,19 @@ impl App {
     }
 
     fn setup_status(&self) -> String {
+        if self.runtime.is_empty() {
+            return EMPTY_RUNTIME_GUIDANCE.into();
+        }
+        if self.runtime.phase() == RuntimePhase::Loading {
+            return "loading runtime snapshot".into();
+        }
+        if self.runtime.phase() == RuntimePhase::ErrorRetry {
+            return self
+                .runtime
+                .durable_explanation()
+                .unwrap_or("runtime snapshot unavailable; retry")
+                .into();
+        }
         if self.agents.is_empty() {
             "No agents are configured; no session was created. Add an agent document, then restart or connect a provider."
                 .into()
@@ -854,7 +871,7 @@ impl App {
             return Some(
                 suffix
                     .iter()
-                    .map(|binding| binding.resolved.selection.clone())
+                    .map(|binding| binding.selection.clone())
                     .collect(),
             );
         }
@@ -866,7 +883,7 @@ impl App {
                 .get(start..)
                 .unwrap_or(&snapshot.fallback_chain)
                 .iter()
-                .map(|binding| binding.resolved.selection.clone())
+                .map(|binding| binding.selection.clone())
                 .collect(),
         )
     }
@@ -1048,9 +1065,7 @@ impl App {
         self.set_draft_variant(variants[(index + 1) % variants.len()].clone());
     }
 
-    /// The coherent descriptor revision label for selector presentation:
-    /// agent and model snapshots travel together (agent.list carries the
-    /// model revision it was resolved against).
+    /// The coherent descriptor revision label projected from one runtime snapshot.
     pub(super) fn descriptor_revisions_label(&self) -> String {
         match (&self.agent_revision, &self.model_revision) {
             (Some(agents), Some(models)) => {
@@ -1330,9 +1345,9 @@ impl App {
             }
             RpcUpdate::Tree { .. } => {}
             RpcUpdate::TreeFailed { .. } => {}
-            RpcUpdate::ConnectFinished { outcome } => {
+            RpcUpdate::ProviderMutationFinished { outcome } => {
                 self.connect_task = None;
-                self.apply_connect_outcome(outcome);
+                self.apply_provider_mutation_outcome(outcome);
             }
             RpcUpdate::ApprovalResponse {
                 request_id,
@@ -1381,132 +1396,51 @@ impl App {
         patch_tree_node_titles(tree, &self.title_sequences, &known_titles);
     }
 
-    pub(super) fn apply_connect_outcome(&mut self, outcome: ConnectOutcome) {
+    pub(super) fn apply_provider_mutation_outcome(&mut self, outcome: ProviderMutationOutcome) {
         match outcome {
-            ConnectOutcome::Failed { error } => {
+            ProviderMutationOutcome::Failed {
+                provider_id,
+                action,
+                error,
+            } => {
+                self.provider_operations.insert(
+                    provider_id.clone(),
+                    ProviderOperation::Error {
+                        action,
+                        message: error.clone(),
+                    },
+                );
                 self.status = format!(
-                    "Provider connection failed: {error}. Credential buffers were cleared."
+                    "Provider {} failed: {error}. Enter the row to retry.",
+                    action_name(action)
                 );
             }
-            ConnectOutcome::Connected {
+            ProviderMutationOutcome::Connected {
                 provider_id,
-                receipt_model_revision,
-                follow_up,
-            } => match *follow_up {
-                ConnectFollowUp::ModelRefreshFailed { error } => {
-                    self.status = format!(
-                        "Connected provider {provider_id} at model revision {receipt_model_revision}, but model.list refresh failed: {error}"
-                    );
-                }
-                ConnectFollowUp::AgentRefreshFailed {
-                    model_revision,
-                    model_count,
-                    error,
-                    ..
-                } => {
-                    // Models are never installed alone: the previous
-                    // coherent descriptor pair stays authoritative.
-                    self.status = format!(
-                        "Connected provider {provider_id}; model.list reported {model_revision} ({model_count} models), but agent.list refresh failed: {error}. The previous coherent descriptor pair is unchanged."
-                    );
-                }
-                ConnectFollowUp::Incoherent {
-                    model_revision,
-                    agent_model_revision,
-                } => {
-                    self.status = format!(
-                        "discarded an incoherent connect refresh (agents resolved against {agent_model_revision} but models are at {model_revision}); keeping the previous coherent snapshot. No session was created."
-                    );
-                }
-                ConnectFollowUp::Refreshed {
-                    models,
-                    agents,
-                    created,
-                } => {
-                    let model_revision = models.revision.clone();
-                    let model_count = models.models.len();
-                    let agent_count = agents.agents.len();
-                    // The pair was verified coherent before any side effect;
-                    // install atomically through the coherent-pair path.
-                    debug_assert_eq!(agents.model_revision, models.revision);
-                    self.install_coherent_pair(*models, *agents);
-                    if agent_count == 0 {
-                        self.draft = None;
-                        self.status = format!(
-                            "Connected provider {provider_id}; model.list refreshed to {model_revision} ({model_count} models), but no agents are configured. No session was created."
-                        );
-                        return;
-                    }
-                    if self.selectable_agents().is_empty() {
-                        self.status = format!(
-                            "Connected provider {provider_id}; model.list refreshed to {model_revision} ({model_count} models), but no agent is root-runnable. Disabled agents remain disabled; unresolved agents require an available model. No session was created."
-                        );
-                        return;
-                    }
-                    if let Some(session) = created {
-                        let session = self.merge_session_meta(*session);
-                        let agent = session.creation_selection.agent.clone();
-                        let session_id = session.session_id;
-                        self.sessions.push(session);
-                        self.watch_session(session_id);
-                        self.status = format!(
-                            "Connected provider {provider_id}; refreshed {model_count} models at {model_revision}; created the initial session with agent {agent}."
-                        );
-                    } else {
-                        self.status = format!(
-                            "Connected provider {provider_id}; refreshed {model_count} models at {model_revision}; agents are ready."
-                        );
-                    }
-                }
-                ConnectFollowUp::InitialSessionFailed {
-                    models,
-                    agents,
-                    error,
-                } => {
-                    let model_revision = models.revision.clone();
-                    let model_count = models.models.len();
-                    // The pair was verified coherent before session.create
-                    // was attempted; install atomically and report only the
-                    // creation failure.
-                    debug_assert_eq!(agents.model_revision, models.revision);
-                    self.install_coherent_pair(*models, *agents);
-                    self.status = format!(
-                        "Connected provider {provider_id}; refreshed {model_count} models at {model_revision}, but initial session.create failed: {error}. No session was created."
-                    );
-                }
-                ConnectFollowUp::InvalidInitialSelection {
-                    models,
-                    agents,
-                    agent,
-                } => {
-                    let model_revision = models.revision.clone();
-                    let model_count = models.models.len();
-                    debug_assert_eq!(agents.model_revision, models.revision);
-                    self.install_coherent_pair(*models, *agents);
-                    self.status = format!(
-                        "Connected provider {provider_id}; refreshed {model_count} models at {model_revision}, but root-runnable agent {agent} has no authored fallback selection represented by the coherent public model catalog. No session was created."
-                    );
-                }
-            },
-        }
-    }
-
-    /// Apply one coherent snapshot atomically: models (and variants), then
-    /// agents, then both revision labels. The pair is installed only after
-    /// `agent.list`'s model revision equals `model.list`'s revision.
-    pub(super) fn install_coherent_pair(
-        &mut self,
-        models: cookie_agent_protocol::ModelListResult,
-        agents: cookie_agent_protocol::AgentListResult,
-    ) {
-        debug_assert_eq!(agents.model_revision, models.revision);
-        self.model_revision = Some(models.revision);
-        self.models = models.models;
-        self.agent_revision = Some(agents.revision);
-        self.agents = agents.agents;
-        self.revalidate_draft();
-        if self.selectable_agents().is_empty() && self.watching_root_session() {
-            self.draft = None;
+                baseline,
+                runtime,
+            } => {
+                self.provider_operations.remove(&provider_id);
+                self.install_runtime_response(baseline.as_ref(), *runtime);
+                self.status = if self.runtime.is_empty() {
+                    EMPTY_RUNTIME_GUIDANCE.into()
+                } else {
+                    format!("Connected provider {provider_id}.")
+                };
+            }
+            ProviderMutationOutcome::Disconnected {
+                provider_id,
+                baseline,
+                runtime,
+            } => {
+                self.provider_operations.remove(&provider_id);
+                self.install_runtime_response(baseline.as_ref(), *runtime);
+                self.status = if self.runtime.is_empty() {
+                    EMPTY_RUNTIME_GUIDANCE.into()
+                } else {
+                    format!("Disconnected provider {provider_id}.")
+                };
+            }
         }
     }
 
@@ -1611,6 +1545,10 @@ impl App {
     }
 
     pub(super) async fn handle_delivery(&mut self, delivery: ClientDelivery) {
+        if let ClientDelivery::RuntimeChanged(changed) = &delivery {
+            self.install_runtime_notification((**changed).clone());
+            return;
+        }
         if let ClientDelivery::RecoveryFailed { session_id, error } = &delivery {
             self.status = match session_id {
                 Some(session_id) => format!("recovery for {session_id} failed: {error}"),
@@ -1709,8 +1647,11 @@ impl App {
             Modal::Sessions => self.handle_session_picker(key).await,
             Modal::Agents | Modal::Models => self.handle_selection_picker(key).await,
             Modal::ConnectProviders => self.handle_connect_provider_key(key),
+            Modal::ConnectDetails => self.handle_connect_details_key(key),
+            Modal::ConnectSetup => self.handle_connect_setup_key(key),
             Modal::ConnectCredentials => self.handle_connect_credentials_key(key),
             Modal::ConnectConfirm => self.handle_connect_confirm_key(key),
+            Modal::DisconnectConfirm => self.handle_disconnect_confirm_key(key),
             Modal::None
                 if self.current_approval().is_none()
                     && !self.command_palette_visible()
@@ -1808,7 +1749,12 @@ impl App {
             Modal::Agents => self.selectable_agents().len(),
             Modal::Models => self.draft_models().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
-            Modal::ConnectCredentials | Modal::ConnectConfirm | Modal::None => 0,
+            Modal::ConnectDetails
+            | Modal::ConnectSetup
+            | Modal::ConnectCredentials
+            | Modal::ConnectConfirm
+            | Modal::DisconnectConfirm
+            | Modal::None => 0,
         }
     }
 
@@ -2093,7 +2039,12 @@ impl App {
                     Modal::Sessions => self.filtered_sessions().len(),
                     Modal::Agents | Modal::Models => self.picker_entry_count(),
                     Modal::ConnectProviders => self.filtered_providers().len(),
-                    Modal::ConnectCredentials | Modal::ConnectConfirm | Modal::None => 0,
+                    Modal::ConnectDetails
+                    | Modal::ConnectSetup
+                    | Modal::ConnectCredentials
+                    | Modal::ConnectConfirm
+                    | Modal::DisconnectConfirm
+                    | Modal::None => 0,
                 };
                 move_picker_selection(&mut self.picker_state, len, up);
             }
@@ -2202,6 +2153,18 @@ impl App {
     }
 
     pub(super) async fn handle_input_key(&mut self, key: KeyEvent) {
+        if self.runtime.phase() == RuntimePhase::ErrorRetry
+            && key.code == KeyCode::Enter
+            && self.input.as_str().is_empty()
+        {
+            self.status = "Retrying runtime snapshot…".into();
+            self.refresh_coherent_lists().await;
+            return;
+        }
+        if self.runtime.phase() == RuntimePhase::Loading {
+            self.status = "loading runtime snapshot".into();
+            return;
+        }
         if is_newline_key(key) {
             self.input_focused = true;
             self.input.insert_newline();
@@ -2268,10 +2231,21 @@ impl App {
     }
 
     pub(super) fn handle_paste(&mut self, text: &str) {
+        if self.modal == Modal::ConnectSetup {
+            let sanitized = text.replace(['\r', '\n'], "");
+            if let Some(form) = &mut self.provider_form
+                && let Some(field) = form.setup.get_mut(form.field_index)
+            {
+                field.input.insert_text(&sanitized);
+            }
+            return;
+        }
         if self.modal == Modal::ConnectCredentials {
             let mut sanitized = Zeroizing::new(text.replace(['\r', '\n'], ""));
-            if let Some((_, input)) = self.connect_fields.get_mut(self.connect_field_index) {
-                input.insert_owned(std::mem::take(&mut *sanitized));
+            if let Some(form) = &mut self.provider_form
+                && let Some(field) = form.secrets.get_mut(form.field_index)
+            {
+                field.input.insert_owned(std::mem::take(&mut *sanitized));
             }
             return;
         }
@@ -2347,16 +2321,141 @@ impl App {
                     .get(index)
                     .map(|matched| (*matched.provider).clone())
                 {
-                    self.connect_fields = provider
-                        .credential_fields
-                        .iter()
-                        .cloned()
-                        .map(|field| (field, CredentialInput::default()))
-                        .collect();
-                    self.connect_field_index = 0;
-                    self.connect_provider = Some(provider);
-                    self.picker_query.clear();
-                    self.modal = if self.connect_fields.is_empty() {
+                    if matches!(
+                        self.provider_operations.get(&provider.id),
+                        Some(ProviderOperation::InProgress(_))
+                    ) {
+                        self.status = "Provider operation already in progress.".into();
+                        return;
+                    }
+                    let state = row_state(
+                        &provider,
+                        &self.models,
+                        self.provider_operations.get(&provider.id),
+                    );
+                    match state {
+                        ProviderRowState::Unsupported => {
+                            self.connect_provider = Some(provider);
+                            self.picker_query.clear();
+                            self.modal = Modal::ConnectDetails;
+                        }
+                        ProviderRowState::Disconnected
+                        | ProviderRowState::ConnectedReconnect
+                        | ProviderRowState::Removed => self.begin_provider_form(provider),
+                        ProviderRowState::ErrorRetry => {
+                            let failed_action = self
+                                .provider_operations
+                                .get(&provider.id)
+                                .and_then(|operation| match operation {
+                                    ProviderOperation::Error { action, .. } => Some(*action),
+                                    ProviderOperation::InProgress(_) => None,
+                                });
+                            if failed_action == Some(ProviderAction::Disconnect) {
+                                self.connect_provider = Some(provider);
+                                self.modal = Modal::DisconnectConfirm;
+                            } else {
+                                self.begin_provider_form(provider);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+                self.handle_picker_query_key(key);
+            }
+        }
+    }
+
+    pub(super) fn begin_provider_form(&mut self, provider: ProviderDescriptor) {
+        self.clear_connect_secrets();
+        self.connect_provider = Some(provider.clone());
+        let reconnect = provider.durable_connection.is_some()
+            || row_state(&provider, &self.models, None) == ProviderRowState::ConnectedReconnect;
+        let Some(form) = ProviderForm::new(provider, reconnect) else {
+            self.modal = Modal::ConnectDetails;
+            self.status = "This provider has no store-backed authentication form.".into();
+            return;
+        };
+        self.modal = if !form.setup.is_empty() {
+            Modal::ConnectSetup
+        } else if !form.secrets.is_empty() {
+            Modal::ConnectCredentials
+        } else {
+            Modal::ConnectConfirm
+        };
+        self.provider_form = Some(form);
+        self.picker_query.clear();
+    }
+
+    fn handle_connect_details_key(&mut self, key: KeyEvent) {
+        let Some(provider) = self.connect_provider.clone() else {
+            self.modal = Modal::None;
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.clear_connect_secrets();
+                self.modal = Modal::None;
+            }
+            KeyCode::Char('r' | 'R')
+                if matches!(
+                    row_state(
+                        &provider,
+                        &self.models,
+                        self.provider_operations.get(&provider.id)
+                    ),
+                    ProviderRowState::ConnectedReconnect | ProviderRowState::Removed
+                ) =>
+            {
+                self.begin_provider_form(provider);
+            }
+            KeyCode::Char('d' | 'D') if provider.durable_connection.is_some() => {
+                self.modal = Modal::DisconnectConfirm;
+            }
+            KeyCode::Enter => {
+                // Unsupported providers are details-only. Enter deliberately
+                // performs no mutation.
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_connect_setup_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Esc {
+            self.clear_connect_secrets();
+            self.modal = Modal::None;
+            self.status = "Provider connection cancelled; credentials were cleared.".into();
+            return;
+        }
+        if key.code == KeyCode::Char('d')
+            && key.modifiers == KeyModifiers::CONTROL
+            && self
+                .provider_form
+                .as_ref()
+                .is_some_and(|form| form.can_disconnect)
+        {
+            self.connect_provider = self
+                .provider_form
+                .as_ref()
+                .map(|form| form.provider.clone());
+            self.modal = Modal::DisconnectConfirm;
+            return;
+        }
+        let Some(form) = &mut self.provider_form else {
+            self.modal = Modal::None;
+            return;
+        };
+        let count = form.setup.len();
+        match key.code {
+            KeyCode::Up | KeyCode::BackTab => {
+                form.field_index = form.field_index.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Tab | KeyCode::Enter => {
+                if form.field_index + 1 < count {
+                    form.field_index += 1;
+                } else {
+                    form.field_index = 0;
+                    self.modal = if form.secrets.is_empty() {
                         Modal::ConnectConfirm
                     } else {
                         Modal::ConnectCredentials
@@ -2364,7 +2463,21 @@ impl App {
                 }
             }
             _ => {
-                self.handle_picker_query_key(key);
+                let Some(field) = form.setup.get_mut(form.field_index) else {
+                    return;
+                };
+                match key.code {
+                    KeyCode::Backspace => field.input.backspace(),
+                    KeyCode::Delete => field.input.delete(),
+                    KeyCode::Left => field.input.move_left(),
+                    KeyCode::Right => field.input.move_right(),
+                    KeyCode::Home => field.input.move_buffer_home(),
+                    KeyCode::End => field.input.move_buffer_end(),
+                    KeyCode::Char(character) if is_printable_key(key) => {
+                        field.input.insert(character);
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -2376,36 +2489,56 @@ impl App {
             self.status = "Provider connection cancelled; credentials were cleared.".into();
             return;
         }
-        let field_count = self.connect_fields.len();
+        if key.code == KeyCode::Char('d')
+            && key.modifiers == KeyModifiers::CONTROL
+            && self
+                .provider_form
+                .as_ref()
+                .is_some_and(|form| form.can_disconnect)
+        {
+            self.connect_provider = self
+                .provider_form
+                .as_ref()
+                .map(|form| form.provider.clone());
+            self.modal = Modal::DisconnectConfirm;
+            return;
+        }
+        let Some(form) = &mut self.provider_form else {
+            self.modal = Modal::None;
+            return;
+        };
+        let field_count = form.secrets.len();
         match key.code {
             KeyCode::Up | KeyCode::BackTab => {
-                self.connect_field_index = self.connect_field_index.saturating_sub(1);
+                form.field_index = form.field_index.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Tab => {
-                self.connect_field_index = (self.connect_field_index + 1).min(field_count);
-                if self.connect_field_index == field_count {
+                form.field_index = (form.field_index + 1).min(field_count);
+                if form.field_index == field_count {
                     self.modal = Modal::ConnectConfirm;
                 }
             }
             KeyCode::Enter => {
-                if self.connect_field_index + 1 < field_count {
-                    self.connect_field_index += 1;
+                if form.field_index + 1 < field_count {
+                    form.field_index += 1;
                 } else {
                     self.modal = Modal::ConnectConfirm;
                 }
             }
             _ => {
-                let Some((_, input)) = self.connect_fields.get_mut(self.connect_field_index) else {
+                let Some(field) = form.secrets.get_mut(form.field_index) else {
                     return;
                 };
                 match key.code {
-                    KeyCode::Backspace => input.backspace(),
-                    KeyCode::Delete => input.delete(),
-                    KeyCode::Left => input.move_left(),
-                    KeyCode::Right => input.move_right(),
-                    KeyCode::Home => input.move_buffer_home(),
-                    KeyCode::End => input.move_buffer_end(),
-                    KeyCode::Char(character) if is_printable_key(key) => input.insert(character),
+                    KeyCode::Backspace => field.input.backspace(),
+                    KeyCode::Delete => field.input.delete(),
+                    KeyCode::Left => field.input.move_left(),
+                    KeyCode::Right => field.input.move_right(),
+                    KeyCode::Home => field.input.move_buffer_home(),
+                    KeyCode::End => field.input.move_buffer_end(),
+                    KeyCode::Char(character) if is_printable_key(key) => {
+                        field.input.insert(character);
+                    }
                     _ => {}
                 }
             }
@@ -2420,186 +2553,104 @@ impl App {
                 self.status = "Provider connection cancelled; credentials were cleared.".into();
             }
             KeyCode::Enter | KeyCode::Char('y' | 'Y') => self.dispatch_provider_connect(),
+            KeyCode::Char('d' | 'D')
+                if self
+                    .provider_form
+                    .as_ref()
+                    .is_some_and(|form| form.can_disconnect) =>
+            {
+                self.connect_provider = self
+                    .provider_form
+                    .as_ref()
+                    .map(|form| form.provider.clone());
+                self.modal = Modal::DisconnectConfirm;
+            }
             KeyCode::BackTab => {
-                self.connect_field_index = self.connect_fields.len().saturating_sub(1);
-                self.modal = Modal::ConnectCredentials;
+                if let Some(form) = &mut self.provider_form {
+                    if form.secrets.is_empty() {
+                        form.field_index = form.setup.len().saturating_sub(1);
+                        self.modal = Modal::ConnectSetup;
+                    } else {
+                        form.field_index = form.secrets.len().saturating_sub(1);
+                        self.modal = Modal::ConnectCredentials;
+                    }
+                }
             }
             _ => {}
         }
     }
 
     pub(super) fn dispatch_provider_connect(&mut self) {
-        let Some(provider) = self.connect_provider.clone() else {
+        let Some(form) = self.provider_form.as_ref() else {
             self.clear_connect_secrets();
             self.modal = Modal::None;
             return;
         };
+        let provider = form.provider.clone();
         let Some(catalog_revision) = self.catalog_revision.clone() else {
             self.clear_connect_secrets();
             self.modal = Modal::None;
             self.status = "Catalog revision is unavailable.".into();
             return;
         };
-        let mut values = BTreeMap::new();
-        for (field, input) in &mut self.connect_fields {
-            let value = input.take_owned();
-            if !value.is_empty() {
-                values.insert(field.clone(), value);
+        let setup_values = match form.setup_values() {
+            Ok(values) => values,
+            Err(error) => {
+                self.status = format!("Invalid public setup: {error}");
+                return;
             }
-        }
+        };
+        let auth_values = match form.auth_values() {
+            Ok(values) => values,
+            Err(error) => {
+                self.status = format!("Invalid credentials: {error}");
+                return;
+            }
+        };
+        let auth_method = form.auth_method.clone();
+        let action = if form.reconnect {
+            ProviderAction::Reconnect
+        } else {
+            ProviderAction::Connect
+        };
+        let baseline = self.runtime.revision().cloned();
         self.clear_connect_secrets();
         self.modal = Modal::None;
-        if values.is_empty() {
-            self.status = "No credentials were entered; buffers were cleared.".into();
-            return;
-        }
-        self.status = format!("Connecting provider {}…", provider.id);
+        self.provider_operations
+            .insert(provider.id.clone(), ProviderOperation::InProgress(action));
+        self.status = format!("{} provider {}…", action_name(action), provider.id);
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
-        let create_default = self.selected.is_none() && self.sessions.is_empty();
         let task = tokio::spawn(async move {
             let connect = match client
                 .connect_provider(ProviderConnectParams {
                     client_connect_id: ClientConnectId::new(Uuid::now_v7().to_string())
                         .expect("uuid-derived client connect id"),
-                    provider_id: cookie_agent_protocol::ProviderId::new(provider.id.as_str())
-                        .expect("catalog provider ids are valid provider ids"),
-                    catalog_revision,
-                    credentials: ProviderCredentials { values },
+                    provider_id: provider.id.clone(),
+                    expected_catalog_revision: catalog_revision,
+                    setup_values,
+                    auth_method,
+                    auth_values,
                 })
                 .await
             {
                 Ok(connect) => connect,
                 Err(error) => {
-                    let _ = updates.send(RpcUpdate::ConnectFinished {
-                        outcome: ConnectOutcome::Failed {
+                    let _ = updates.send(RpcUpdate::ProviderMutationFinished {
+                        outcome: ProviderMutationOutcome::Failed {
+                            provider_id: provider.id,
+                            action,
                             error: error.to_string(),
                         },
                     });
                     return;
                 }
             };
-            let provider_id = connect.connection.provider_id;
-            let receipt_model_revision = connect.model_revision;
-            let models = match client.list_models(ModelListParams {}).await {
-                Ok(models) => models,
-                Err(error) => {
-                    let _ = updates.send(RpcUpdate::ConnectFinished {
-                        outcome: ConnectOutcome::Connected {
-                            provider_id,
-                            receipt_model_revision,
-                            follow_up: Box::new(ConnectFollowUp::ModelRefreshFailed {
-                                error: error.to_string(),
-                            }),
-                        },
-                    });
-                    return;
-                }
-            };
-            // Coherence gate before any side effect: fetch the descriptor
-            // pair, require `agent.list`'s model revision to equal
-            // `model.list`'s revision, and retry the pair once on mismatch.
-            // `session.create` runs only for a verified coherent pair, so an
-            // incoherent refresh never creates an orphan session.
-            let model_revision = models.revision.clone();
-            let model_count = models.models.len();
-            let mut pair = None;
-            for attempt in 0..2 {
-                let agents = match client.list_agents(AgentListParams::default()).await {
-                    Ok(agents) => agents,
-                    Err(error) => {
-                        let _ = updates.send(RpcUpdate::ConnectFinished {
-                            outcome: ConnectOutcome::Connected {
-                                provider_id,
-                                receipt_model_revision,
-                                follow_up: Box::new(ConnectFollowUp::AgentRefreshFailed {
-                                    model_revision,
-                                    model_count,
-                                    error: error.to_string(),
-                                }),
-                            },
-                        });
-                        return;
-                    }
-                };
-                if agents.model_revision == models.revision {
-                    pair = Some(agents);
-                    break;
-                }
-                if attempt == 1 {
-                    let _ = updates.send(RpcUpdate::ConnectFinished {
-                        outcome: ConnectOutcome::Connected {
-                            provider_id,
-                            receipt_model_revision,
-                            follow_up: Box::new(ConnectFollowUp::Incoherent {
-                                model_revision: models.revision.clone(),
-                                agent_model_revision: agents.model_revision.clone(),
-                            }),
-                        },
-                    });
-                    return;
-                }
-            }
-            let Some(agents) = pair else { return };
-            let runnable_agent = agents
-                .agents
-                .iter()
-                .filter(|agent| agent.runnable_as_root)
-                .find(|agent| agent.id.as_str() == "primary")
-                .or_else(|| agents.agents.iter().find(|agent| agent.runnable_as_root))
-                .cloned();
-            // Only a verified coherent pair reaches session creation; the
-            // selection comes from that same coherent agent snapshot.
-            let follow_up = if create_default {
-                match runnable_agent {
-                    Some(agent) => {
-                        match first_available_authored_selection(&agent, &models.models) {
-                            Some(model) => {
-                                let selection = RunSelection {
-                                    agent: agent.id.clone(),
-                                    model,
-                                };
-                                match client
-                                    .create_session(SessionCreateParams { selection })
-                                    .await
-                                {
-                                    Ok(result) => ConnectFollowUp::Refreshed {
-                                        models: Box::new(models),
-                                        agents: Box::new(agents),
-                                        created: Some(Box::new(result.session)),
-                                    },
-                                    Err(error) => ConnectFollowUp::InitialSessionFailed {
-                                        models: Box::new(models),
-                                        agents: Box::new(agents),
-                                        error: error.to_string(),
-                                    },
-                                }
-                            }
-                            None => ConnectFollowUp::InvalidInitialSelection {
-                                models: Box::new(models),
-                                agents: Box::new(agents),
-                                agent: agent.id.clone(),
-                            },
-                        }
-                    }
-                    None => ConnectFollowUp::Refreshed {
-                        models: Box::new(models),
-                        agents: Box::new(agents),
-                        created: None,
-                    },
-                }
-            } else {
-                ConnectFollowUp::Refreshed {
-                    models: Box::new(models),
-                    agents: Box::new(agents),
-                    created: None,
-                }
-            };
-            let _ = updates.send(RpcUpdate::ConnectFinished {
-                outcome: ConnectOutcome::Connected {
-                    provider_id,
-                    receipt_model_revision,
-                    follow_up: Box::new(follow_up),
+            let _ = updates.send(RpcUpdate::ProviderMutationFinished {
+                outcome: ProviderMutationOutcome::Connected {
+                    provider_id: connect.durable_connection.provider_id,
+                    baseline,
+                    runtime: Box::new(connect.runtime),
                 },
             });
         });
@@ -2609,15 +2660,77 @@ impl App {
     }
 
     pub(super) fn clear_connect_secrets(&mut self) {
-        for (_, input) in &mut self.connect_fields {
-            input.wipe();
+        if let Some(form) = &mut self.provider_form {
+            form.wipe_secrets();
         }
-        self.connect_fields.clear();
+        self.provider_form = None;
         self.connect_provider = None;
-        self.connect_field_index = 0;
     }
 
-    fn abort_connect_work(&mut self) {
+    fn handle_disconnect_confirm_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('n' | 'N') => {
+                self.clear_connect_secrets();
+                self.modal = Modal::None;
+                self.status = "Provider disconnect cancelled.".into();
+            }
+            KeyCode::Enter | KeyCode::Char('y' | 'Y') => self.dispatch_provider_disconnect(),
+            _ => {}
+        }
+    }
+
+    fn dispatch_provider_disconnect(&mut self) {
+        let Some(provider) = self.connect_provider.clone() else {
+            self.modal = Modal::None;
+            return;
+        };
+        let Some(snapshot) = self.runtime.snapshot() else {
+            self.status = "Runtime snapshot unavailable; retry before disconnecting.".into();
+            return;
+        };
+        let baseline = Some(snapshot.runtime_revision.clone());
+        let params = ProviderDisconnectParams {
+            provider_id: provider.id.clone(),
+            expected_runtime_revision: snapshot.runtime_revision.clone(),
+            expected_provider_state_revision: snapshot.provider_state_revision.clone(),
+            expected_connection_generation: provider
+                .durable_connection
+                .as_ref()
+                .map(|connection| connection.connection_generation),
+            client_request_id: ClientRequestId::new(Uuid::now_v7().to_string())
+                .expect("uuid-derived client request id"),
+        };
+        self.clear_connect_secrets();
+        self.modal = Modal::None;
+        self.provider_operations.insert(
+            provider.id.clone(),
+            ProviderOperation::InProgress(ProviderAction::Disconnect),
+        );
+        self.status = format!("disconnect provider {}…", provider.id);
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        let provider_id = provider.id;
+        let task = tokio::spawn(async move {
+            let outcome = match client.disconnect_provider(params).await {
+                Ok(result) => ProviderMutationOutcome::Disconnected {
+                    provider_id,
+                    baseline,
+                    runtime: Box::new(result.runtime.snapshot),
+                },
+                Err(error) => ProviderMutationOutcome::Failed {
+                    provider_id,
+                    action: ProviderAction::Disconnect,
+                    error: error.to_string(),
+                },
+            };
+            let _ = updates.send(RpcUpdate::ProviderMutationFinished { outcome });
+        });
+        if let Some(previous) = self.connect_task.replace(task) {
+            previous.abort();
+        }
+    }
+
+    pub(super) fn abort_connect_work(&mut self) {
         if let Some(task) = self.connect_task.take() {
             task.abort();
         }
@@ -2670,7 +2783,11 @@ impl App {
                 self.picker_state.select(Some(index));
                 self.handle_connect_provider_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
             }
-            Modal::ConnectCredentials | Modal::ConnectConfirm => {}
+            Modal::ConnectDetails
+            | Modal::ConnectSetup
+            | Modal::ConnectCredentials
+            | Modal::ConnectConfirm
+            | Modal::DisconnectConfirm => {}
             Modal::None => {}
         }
     }
@@ -2704,6 +2821,24 @@ impl App {
     }
 
     pub(super) async fn submit_prompt(&mut self, input: String) {
+        if self.runtime.phase() == RuntimePhase::Loading {
+            self.status = "loading runtime snapshot".into();
+            return;
+        }
+        if self.runtime.phase() == RuntimePhase::ErrorRetry && self.runtime.snapshot().is_none() {
+            self.status = self
+                .runtime
+                .durable_explanation()
+                .unwrap_or("runtime snapshot unavailable; retry")
+                .into();
+            return;
+        }
+        if self.runtime.is_empty() {
+            self.input.take();
+            self.palette_dismissed = false;
+            self.status = EMPTY_RUNTIME_GUIDANCE.into();
+            return;
+        }
         let Some(session_id) = self.selected else {
             self.status = "create or select a session first".into();
             return;
@@ -2800,6 +2935,10 @@ impl App {
         match command {
             SlashCommand::Quit => self.should_quit = true,
             SlashCommand::New => {
+                if self.runtime.is_empty() {
+                    self.status = EMPTY_RUNTIME_GUIDANCE.into();
+                    return;
+                }
                 self.open_selection_modal(Modal::Agents);
                 if self.modal == Modal::Agents {
                     self.status = "Select the draft agent for the next run.".into();
@@ -2811,7 +2950,7 @@ impl App {
                 self.picker_query.clear();
                 self.picker_state.select(Some(0));
                 if self.providers.is_empty() {
-                    self.status = "No catalog providers are available.".into();
+                    self.status = "No providers are available in the runtime snapshot.".into();
                 } else {
                     self.status =
                         "Select a provider to connect. Type to filter; Enter: details.".into();
@@ -3229,10 +3368,17 @@ impl App {
                     self.theme.tool(),
                 ),
             ],
-            None => vec![Span::styled(
-                "Message — setup required".to_owned(),
-                self.theme.muted(),
-            )],
+            None => {
+                let text = match self.runtime.phase() {
+                    RuntimePhase::Loading => "loading runtime snapshot",
+                    RuntimePhase::Empty => EMPTY_RUNTIME_GUIDANCE,
+                    RuntimePhase::ErrorRetry => "runtime error — retry",
+                    RuntimePhase::Ready | RuntimePhase::Stale | RuntimePhase::Bootstrap => {
+                        EMPTY_RUNTIME_GUIDANCE
+                    }
+                };
+                vec![Span::styled(text.to_owned(), self.theme.muted())]
+            }
         }
     }
 
@@ -3257,7 +3403,9 @@ impl App {
         );
         // Agent, Model, and the complete bracketed Variant suffix are separate
         // clickable regions inside the canonical title. The bullet is decoration.
-        self.hit_map.title_segments = {
+        self.hit_map.title_segments = if self.draft.is_none() {
+            Vec::new()
+        } else {
             let segments = [
                 Some(TitleSegment::Agent),
                 None,
@@ -3291,11 +3439,16 @@ impl App {
             rect: layout.input,
             text_rect: rendered_input.text_rect,
         });
-        let base_status = if self.pending_approval.is_some() {
+        let mut base_status = if self.pending_approval.is_some() {
             "Approval submitting…".to_owned()
         } else {
             self.status.clone()
         };
+        if let Some(explanation) = self.runtime.durable_explanation()
+            && !base_status.contains(explanation)
+        {
+            base_status = format!("{explanation} · {base_status}");
+        }
         let status = if self.conversation_scroll.following {
             base_status
         } else {
@@ -3383,6 +3536,25 @@ impl App {
                 } else {
                     format!("Connect provider — filter: {}", self.picker_query)
                 };
+                let area = centered(frame.area(), 78, 64);
+                let copy_height = 3.min(area.height);
+                let copy = Rect::new(area.x, area.y, area.width, copy_height);
+                frame.render_widget(
+                    Paragraph::new(DURABLE_PROVIDER_COPY)
+                        .wrap(Wrap { trim: false })
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title("Global provider store"),
+                        ),
+                    copy,
+                );
+                let picker = Rect::new(
+                    area.x,
+                    area.y.saturating_add(copy_height),
+                    area.width,
+                    area.height.saturating_sub(copy_height),
+                );
                 self.render_picker(
                     frame,
                     &title,
@@ -3390,22 +3562,36 @@ impl App {
                         .iter()
                         .map(|matched| {
                             format!(
-                                "{} ({}){}",
-                                matched.provider.name, matched.provider.id, matched.label
+                                "{}{}",
+                                row_label(
+                                    matched.provider,
+                                    &self.models,
+                                    self.provider_operations.get(&matched.provider.id)
+                                ),
+                                matched.label
                             )
                         })
                         .collect(),
                     self.providers
                         .is_empty()
-                        .then_some("No catalog providers are available."),
-                    centered(frame.area(), 72, 60),
+                        .then_some("No providers are available in the runtime snapshot."),
+                    picker,
                 );
+            }
+            Modal::ConnectDetails => {
+                self.render_connect_details(frame, centered(frame.area(), 80, 62));
+            }
+            Modal::ConnectSetup => {
+                self.render_connect_setup(frame, centered(frame.area(), 80, 70));
             }
             Modal::ConnectCredentials => {
                 self.render_connect_credentials(frame, centered(frame.area(), 80, 70));
             }
             Modal::ConnectConfirm => {
                 self.render_connect_confirm(frame, centered(frame.area(), 80, 60));
+            }
+            Modal::DisconnectConfirm => {
+                self.render_disconnect_confirm(frame, centered(frame.area(), 72, 42));
             }
             Modal::None => {}
         }
@@ -3648,74 +3834,202 @@ impl App {
         .collect();
     }
 
-    fn render_connect_credentials(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+    fn render_connect_details(&mut self, frame: &mut ratatui::Frame, area: Rect) {
         frame.render_widget(Clear, area);
         let Some(provider) = self.connect_provider.as_ref() else {
             return;
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(format!("Connect {} ({})", provider.name, provider.id));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        let endpoint = provider
-            .api
+        let state = row_state(
+            provider,
+            &self.models,
+            self.provider_operations.get(&provider.id),
+        );
+        let reason = provider
+            .support
+            .reason
             .as_ref()
-            .map_or("catalog default", |api| api.as_str());
-        let docs = provider.documentation_url.as_str();
-        let revision = self
-            .catalog_revision
+            .map_or("none", |reason| reason.as_str());
+        let quarantine = provider
+            .quarantine
             .as_ref()
-            .map_or("unavailable", |revision| revision.as_str());
+            .map_or("none".into(), |diagnostic| {
+                format!("{}: {}", diagnostic.code, diagnostic.message)
+            });
+        let action = if let Some(ProviderOperation::InProgress(operation)) =
+            self.provider_operations.get(&provider.id)
+        {
+            format!("{} in progress… · Esc: close", action_name(*operation))
+        } else {
+            match state {
+                ProviderRowState::ConnectedReconnect if provider.durable_connection.is_some() => {
+                    "R: reconnect/update · D: disconnect · Esc: close".into()
+                }
+                ProviderRowState::ConnectedReconnect => {
+                    "R: reconnect/update · Esc: close".into()
+                }
+                ProviderRowState::Removed => {
+                    "Removed from the current catalog; retained recipe matching permits reconnect/update. Frozen session models remain available through exact manifest rehydration. Esc: close".into()
+                }
+                ProviderRowState::Unsupported
+                | ProviderRowState::Disconnected
+                | ProviderRowState::ErrorRetry => "Enter: details only · Esc: close".into(),
+            }
+        };
+        let content = format!(
+            "{DURABLE_PROVIDER_COPY}\n\nProvider: {} ({})\nState: {:?}\nPresence: {:?}\nSupport: {:?}\nTyped reason: {reason}\nConfiguration: {:?}\nEffective auth: {:?}\nQuarantine: {quarantine}\nSetup fields: {}\nAuth methods: {}\n\n{action}",
+            provider.display_name,
+            provider.id,
+            state,
+            provider.presence,
+            provider.support.state,
+            provider.configuration,
+            provider.effective_auth_state,
+            provider.setup_fields.len(),
+            provider.auth_methods.len(),
+        );
+        frame.render_widget(
+            Paragraph::new(content).wrap(Wrap { trim: false }).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Provider details"),
+            ),
+            area,
+        );
+    }
+
+    fn render_connect_setup(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        frame.render_widget(Clear, area);
+        let Some(form) = self.provider_form.as_ref() else {
+            return;
+        };
         let mut lines = vec![
-            format!("Endpoint: {endpoint}"),
-            format!("Documentation: {docs}"),
-            format!("Catalog revision: {revision}"),
-            "Blank fields are omitted. Enter advances; Esc cancels and clears.".into(),
-        ];
-        for (index, (field, input)) in self.connect_fields.iter().enumerate() {
-            let marker = if index == self.connect_field_index {
-                ">"
+            DURABLE_PROVIDER_COPY.to_owned(),
+            format!(
+                "Provider: {} ({})",
+                form.provider.display_name, form.provider.id
+            ),
+            format!("Auth method: {}", form.auth_method),
+            if form.can_disconnect {
+                "PUBLIC SETUP (non-secret) · defaults/prefill shown · Enter advances · Ctrl-D disconnect".into()
             } else {
-                " "
-            };
-            let masked = "•".repeat(input.as_str().chars().count());
-            lines.push(format!("{marker} {field}: {masked}"));
+                "PUBLIC SETUP (non-secret) · defaults/prefill shown · Enter advances".into()
+            },
+        ];
+        for (index, field) in form.setup.iter().enumerate() {
+            let marker = if index == form.field_index { ">" } else { " " };
+            lines.push(format!(
+                "{marker} {} [{}]{}: {}",
+                field.descriptor.display_name,
+                field.descriptor.id,
+                if field.descriptor.required {
+                    " required"
+                } else {
+                    ""
+                },
+                field.input.as_str()
+            ));
+            lines.push(format!("    {}", field.descriptor.help));
         }
         frame.render_widget(
-            Paragraph::new(lines.join("\n")).wrap(Wrap { trim: false }),
-            inner,
+            Paragraph::new(lines.join("\n"))
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Provider public setup"),
+                ),
+            area,
+        );
+    }
+
+    fn render_connect_credentials(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        frame.render_widget(Clear, area);
+        let Some(form) = self.provider_form.as_ref() else {
+            return;
+        };
+        let mut lines = vec![
+            DURABLE_PROVIDER_COPY.to_owned(),
+            format!(
+                "Provider: {} ({})",
+                form.provider.display_name, form.provider.id
+            ),
+            format!("Auth method: {}", form.auth_method),
+            if form.can_disconnect {
+                "SECRET CREDENTIALS · reconnect fields are always blank · Enter advances · Ctrl-D disconnect".into()
+            } else if form.reconnect {
+                "SECRET CREDENTIALS · reconnect fields are always blank · Enter advances".into()
+            } else {
+                "SECRET CREDENTIALS · Enter advances".into()
+            },
+        ];
+        for (index, field) in form.secrets.iter().enumerate() {
+            let marker = if index == form.field_index { ">" } else { " " };
+            let masked = "•".repeat(field.input.as_str().chars().count());
+            lines.push(format!(
+                "{marker} {} [{}]{}: {masked}",
+                field.descriptor.display_name,
+                field.descriptor.id,
+                if field.descriptor.required {
+                    " required"
+                } else {
+                    ""
+                },
+            ));
+            lines.push(format!("    {}", field.descriptor.help));
+        }
+        frame.render_widget(
+            Paragraph::new(lines.join("\n"))
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Provider secret credentials"),
+                ),
+            area,
         );
     }
 
     fn render_connect_confirm(&mut self, frame: &mut ratatui::Frame, area: Rect) {
         frame.render_widget(Clear, area);
-        let Some(provider) = self.connect_provider.as_ref() else {
+        let Some(form) = self.provider_form.as_ref() else {
             return;
         };
-        let populated = self
-            .connect_fields
+        let populated = form
+            .secrets
             .iter()
-            .filter(|(_, input)| !input.as_str().is_empty())
-            .map(|(field, _)| field.as_str())
+            .filter(|field| !field.input.as_str().is_empty())
+            .map(|field| field.descriptor.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let setup = form
+            .setup
+            .iter()
+            .map(|field| format!("{}={}", field.descriptor.id, field.input.as_str()))
             .collect::<Vec<_>>()
             .join(", ");
         let content = format!(
-            "Provider ID: {}\nName: {}\nEndpoint: {}\nDocumentation: {}\nCatalog revision: {}\nCredential fields supplied: {}\n\nPress Enter/Y to connect, BackTab to edit, or Esc/N to cancel and clear.",
-            provider.id,
-            provider.name,
-            provider
-                .api
-                .as_ref()
-                .map_or("catalog default", |api| api.as_str()),
-            provider.documentation_url.as_str(),
+            "{DURABLE_PROVIDER_COPY}\n\nProvider ID: {}\nName: {}\nAction: {}\nAuth method: {}\nCatalog revision: {}\nPublic setup: {}\nSecret fields supplied: {}\n\nPress Enter/Y to continue, BackTab to edit, Esc/N to cancel and clear{}.",
+            form.provider.id,
+            form.provider.display_name,
+            if form.reconnect {
+                "reconnect/update"
+            } else {
+                "connect"
+            },
+            form.auth_method,
             self.catalog_revision
                 .as_ref()
                 .map_or("unavailable", |revision| revision.as_str()),
+            if setup.is_empty() { "none" } else { &setup },
             if populated.is_empty() {
                 "none"
             } else {
                 &populated
+            },
+            if form.can_disconnect {
+                ", or D to disconnect"
+            } else {
+                ""
             },
         );
         frame.render_widget(
@@ -3723,6 +4037,25 @@ impl App {
                 Block::default()
                     .borders(Borders::ALL)
                     .title("Confirm provider connection"),
+            ),
+            area,
+        );
+    }
+
+    fn render_disconnect_confirm(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        frame.render_widget(Clear, area);
+        let Some(provider) = self.connect_provider.as_ref() else {
+            return;
+        };
+        let content = format!(
+            "{DURABLE_PROVIDER_COPY}\n\nDisconnect {} ({})?\nThis removes both stored public setup and stored credentials. Authored configuration is unchanged.\n\nPress Enter/Y to disconnect or Esc/N to cancel.",
+            provider.display_name, provider.id
+        );
+        frame.render_widget(
+            Paragraph::new(content).wrap(Wrap { trim: false }).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Confirm provider disconnect"),
             ),
             area,
         );
@@ -3915,24 +4248,6 @@ fn canonical_model_row(selection: &ModelSelection, display_name: Option<&str>) -
     let canonical = format!("{}[{variant}]", selection.model);
     display_name.map_or(canonical.clone(), |display_name| {
         format!("{canonical} — {display_name}")
-    })
-}
-
-fn first_available_authored_selection(
-    agent: &AgentDescriptor,
-    models: &[AvailableModelDescriptor],
-) -> Option<ModelSelection> {
-    agent.resolved_fallback.iter().find_map(|selection| {
-        let descriptor = models
-            .iter()
-            .find(|descriptor| descriptor.key == selection.model)?;
-        let valid_variant = selection.variant.as_ref().is_none_or(|variant| {
-            descriptor
-                .variants
-                .iter()
-                .any(|candidate| candidate.id == *variant)
-        });
-        valid_variant.then(|| selection.clone())
     })
 }
 

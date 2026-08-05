@@ -46,7 +46,7 @@
               "type": "string",
               "maxLength": 512,
               "minLength": 3,
-              "pattern": "^[a-z0-9._-]{1,128}/[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
             },
             "variant": {
               "type": [
@@ -55,7 +55,7 @@
               ],
               "maxLength": 64,
               "minLength": 1,
-              "pattern": "^(?!base$)[a-z0-9._-]+$"
+              "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
             }
           },
           "additionalProperties": false,

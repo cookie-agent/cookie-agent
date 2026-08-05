@@ -67,24 +67,11 @@ impl Engine {
                 )
                 .await?;
             }
-            let model = match policy
-                .model_snapshot
+            let runtime = policy
+                .runtime
                 .as_ref()
-                .expect("internal model policy retains its executable snapshot")
-                .resolve(binding)
-            {
-                Ok(model) => model,
-                Err(error) => {
-                    last_failure = InternalAgentFailure {
-                        code: safe_code("model_unavailable"),
-                        message: safe_error(&error.to_string()),
-                        retryable: false,
-                        model_error: None,
-                    };
-                    previous_backend = Some(backend);
-                    continue;
-                }
-            };
+                .ok_or(EngineError::NoRunnableModel)?;
+            let model = policy::resolve_model(binding, runtime)?;
             let history = vec![
                 oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
                     oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(
@@ -254,7 +241,7 @@ pub(super) fn unavailable_internal_policy(
             selected_suffix_start: 0,
         },
         models: Vec::new(),
-        model_snapshot: None,
+        runtime: None,
         limits: InternalAgentLimits {
             max_input_tokens,
             max_output_tokens,
@@ -266,7 +253,7 @@ pub(super) fn unavailable_internal_policy(
 pub(super) fn inherit_internal_policy(
     configured: &FrozenInternalAgentPolicy,
     owner: &FrozenRunPolicy,
-    active_suffix: &[cookie_agent_models::FrozenModelBinding],
+    active_suffix: &[cookie_agent_protocol::FrozenModelBinding],
 ) -> FrozenInternalAgentPolicy {
     FrozenInternalAgentPolicy {
         agent: owner.agent.clone(),
@@ -275,7 +262,7 @@ pub(super) fn inherit_internal_policy(
         } else {
             configured.models.clone()
         },
-        model_snapshot: Some(Arc::clone(&owner.model_snapshot)),
+        runtime: Some(Arc::clone(&owner.runtime)),
         limits: configured.limits.clone(),
     }
 }

@@ -14,6 +14,9 @@ pub use ui::{run_with_client, run_with_new_session};
 mod tests {
     use std::{collections::BTreeMap, fs, sync::Arc};
 
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
+
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use cookie_agent_config::{
         AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentMode, AgentSchemaVersion,
@@ -21,7 +24,14 @@ mod tests {
         RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
     };
     use cookie_agent_engine::{Engine, EngineOptions};
-    use cookie_agent_models::{Catalog, CredentialStore, ModelSetManager, ProviderDefinition};
+    use cookie_agent_models::{ModelManager, ProviderDefinition};
+    use cookie_agent_models::{
+        catalog::{
+            CatalogAgeState, CatalogAvailability, CatalogRuntimeState, CatalogSnapshot,
+            CatalogSource,
+        },
+        provider_store::ProviderStore,
+    };
     use cookie_agent_protocol::{
         AgentId, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
         ApprovalId, ApprovalRequest, ApprovalResourceSource, ApprovalTrigger, DecisionTrace,
@@ -46,7 +56,7 @@ mod tests {
         RunSelection {
             agent: AgentId::new("primary").expect("agent id"),
             model: ModelSelection {
-                model: "gateway/arbitrary-model"
+                model: "custom.gateway/arbitrary-model"
                     .parse::<ModelKey>()
                     .expect("model key"),
                 variant: None,
@@ -56,10 +66,10 @@ mod tests {
 
     fn test_providers() -> BTreeMap<ProviderId, ProviderDefinition> {
         let definition: ProviderDefinition = serde_json::from_value(serde_json::json!({
-            "source": "explicit",
+            "source": "custom",
             "endpoint": "https://example.test/v1",
             "adaptor": "openai-compatible",
-            "auth": {"type": "none"},
+            "auth": {"method": "no-auth-v1", "values": {}},
             "models": {
                 "arbitrary-model": {
                     "display_name": "Arbitrary Model",
@@ -68,14 +78,14 @@ mod tests {
                         "output": ["text"],
                         "context_tokens": 8192,
                         "output_tokens": 2048,
-                        "tool_calling": true,
-                        "parallel_tool_calls": true,
+                        "tool_calling": false,
+                        "parallel_tool_calls": false,
                         "structured_output": false,
                         "reasoning": false,
-                        "temperature": true,
-                        "top_p": true,
-                        "seed": true,
-                        "native_replay": "optional",
+                        "temperature": false,
+                        "top_p": false,
+                        "seed": false,
+                        "native_replay": "unsupported",
                         "native_compaction": "unsupported",
                         "cancellation": "local_only",
                         "media": {}
@@ -84,7 +94,10 @@ mod tests {
             }
         }))
         .expect("test provider");
-        BTreeMap::from([(ProviderId::new("gateway").expect("provider id"), definition)])
+        BTreeMap::from([(
+            ProviderId::new("custom.gateway").expect("provider id"),
+            definition,
+        )])
     }
 
     fn test_digest(value: &str) -> cookie_agent_models::Sha256Digest {
@@ -126,7 +139,7 @@ mod tests {
                 mode: AgentMode::Primary,
                 enabled: true,
                 model_fallback: vec![cookie_agent_config::AgentModelFallback {
-                    model: "gateway/arbitrary-model"
+                    model: "custom.gateway/arbitrary-model"
                         .parse::<ModelKey>()
                         .expect("model key"),
                     variant: None,
@@ -151,11 +164,35 @@ mod tests {
                 .expect("private test root");
         }
         let providers = test_providers();
+        let provider_store = directory.path().join("provider-store");
+        fs::create_dir(&provider_store).expect("provider store directory");
+        #[cfg(unix)]
+        fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
+            .expect("private provider store");
+        let revision =
+            cookie_agent_protocol::CatalogRevision::new(format!("sha256:{}", "0".repeat(64)))
+                .expect("catalog revision");
+        let now = Timestamp::now();
+        let catalog = Arc::new(CatalogSnapshot {
+            revision,
+            source: CatalogSource::Bootstrap,
+            state: CatalogRuntimeState {
+                availability: CatalogAvailability::Bootstrap,
+                age: CatalogAgeState::Current,
+                last_error: None,
+            },
+            validated_at: now,
+            last_checked_at: now,
+            etag: None,
+            providers: BTreeMap::new(),
+            canonical_models: BTreeMap::new(),
+            quarantine: Vec::new(),
+        });
         let model_manager = Arc::new(
-            ModelSetManager::new(
+            ModelManager::new(
                 providers.clone(),
-                Arc::new(Catalog::embedded().expect("embedded catalog")),
-                CredentialStore::new(directory.path().join("credentials")),
+                catalog,
+                ProviderStore::open(&provider_store).expect("provider store"),
             )
             .expect("model manager"),
         );
@@ -171,24 +208,17 @@ mod tests {
                 providers,
             },
             agents: BTreeMap::from([(agent_id.clone(), test_agent_document(&agent_id))]),
+            provider_provenance: BTreeMap::new(),
         };
         let engine = Engine::open(EngineOptions {
             data_dir: directory.path().join("data"),
             cwd: directory.path().to_owned(),
-            config: config.clone(),
+            config,
             model_manager: Arc::clone(&model_manager),
             tools: Vec::new(),
         })
         .expect("open engine");
-        (
-            directory,
-            Arc::new(Server::new(
-                engine,
-                model_manager,
-                Arc::new(Catalog::embedded().expect("embedded catalog")),
-                Arc::new(config),
-            )),
-        )
+        (directory, Arc::new(Server::new(engine)))
     }
 
     fn call_id() -> ToolCallId {
@@ -343,11 +373,11 @@ mod tests {
         let (_directory, server) = in_process_server();
         let client = Client::connect_in_process(server);
         client.handshake().await.expect("handshake");
-        let models = client
-            .list_models(cookie_agent_protocol::ModelListParams::default())
-            .await
-            .expect("list models");
-        assert_eq!(models.models[0].key.as_str(), "gateway/arbitrary-model");
+        let models = client.runtime_snapshot().await.expect("runtime snapshot");
+        assert_eq!(
+            models.snapshot.models[0].key.as_str(),
+            "custom.gateway/arbitrary-model"
+        );
         let session = client
             .create_session(SessionCreateParams {
                 selection: test_run_selection(),
@@ -396,7 +426,7 @@ mod tests {
             }
             if (width, height) == (80, 24) {
                 assert!(rendered.contains("git status"));
-                assert!(rendered.contains("primary • gateway/arbitrary-model[base]"));
+                assert!(rendered.contains("primary • custom.gateway/arbitrary-model[base]"));
             }
         }
     }

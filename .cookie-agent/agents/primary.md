@@ -22,8 +22,8 @@ permissions:
   - { id: deny-read-nested-dotenv-variants, action: read, resource: "*/.env.*", effect: deny }
   - { id: allow-read-root-dotenv-example, action: read, resource: ".env.example", effect: allow }
   - { id: allow-read-nested-dotenv-example, action: read, resource: "*/.env.example", effect: allow }
-  - { id: deny-read-root-credential-store, action: read, resource: "store-v1.json", effect: deny }
-  - { id: deny-read-nested-credential-store, action: read, resource: "*/store-v1.json", effect: deny }
+  - { id: deny-read-root-credential-store, action: read, resource: "store-v2.json", effect: deny }
+  - { id: deny-read-nested-credential-store, action: read, resource: "*/store-v2.json", effect: deny }
   - { id: deny-read-root-daemon-token, action: read, resource: "token-v1", effect: deny }
   - { id: deny-read-nested-daemon-token, action: read, resource: "*/token-v1", effect: deny }
   - { id: deny-read-root-private-keys, action: read, resource: "id_*", effect: deny }

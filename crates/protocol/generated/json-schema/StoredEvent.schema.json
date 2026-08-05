@@ -5,7 +5,7 @@
   "properties": {
     "event_schema_version": {
       "type": "integer",
-      "const": 7
+      "const": 8
     },
     "payload": {
       "$ref": "#/$defs/EventPayload"
@@ -53,8 +53,7 @@
         "aws-bedrock-converse",
         "azure-openai-chat",
         "azure-openai-responses",
-        "cohere-v2-chat",
-        "open-responses"
+        "cohere-v2-chat"
       ]
     },
     "AgentDocumentSource": {
@@ -788,6 +787,18 @@
         {
           "type": "object",
           "properties": {
+            "agent_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "catalog_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
             "creation_agent": {
               "$ref": "#/$defs/AgentSnapshot"
             },
@@ -801,14 +812,38 @@
               "minLength": 1,
               "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
             },
-            "model_snapshot_fingerprint": {
+            "manifest_revision": {
               "type": "string",
-              "maxLength": 64,
-              "minLength": 64,
-              "pattern": "^[0-9a-f]{64}$"
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "model_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
             },
             "origin": {
               "$ref": "#/$defs/SessionOrigin"
+            },
+            "provider_state_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "recipe_registry_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "runtime_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
             },
             "type": {
               "type": "string",
@@ -822,7 +857,13 @@
             "cwd_identity",
             "creation_selection",
             "creation_agent",
-            "model_snapshot_fingerprint"
+            "runtime_revision",
+            "catalog_revision",
+            "provider_state_revision",
+            "model_revision",
+            "agent_revision",
+            "recipe_registry_revision",
+            "manifest_revision"
           ]
         },
         {
@@ -830,6 +871,18 @@
           "properties": {
             "agent": {
               "$ref": "#/$defs/AgentSnapshot"
+            },
+            "agent_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "catalog_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
             },
             "client_run_id": {
               "description": "Bounded run idempotency key.",
@@ -842,6 +895,36 @@
               "type": "integer",
               "format": "uint64",
               "minimum": 0
+            },
+            "manifest_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "model_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "provider_state_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "recipe_registry_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "runtime_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
             },
             "selected_suffix": {
               "type": "array",
@@ -865,6 +948,13 @@
             "client_run_id",
             "selection",
             "agent",
+            "runtime_revision",
+            "catalog_revision",
+            "provider_state_revision",
+            "model_revision",
+            "agent_revision",
+            "recipe_registry_revision",
+            "manifest_revision",
             "selected_suffix",
             "input_through_seq"
           ]
@@ -1836,6 +1926,67 @@
         }
       ]
     },
+    "FrozenCredentialBinding": {
+      "type": "object",
+      "properties": {
+        "auth_method": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_]{0,127}$"
+          },
+          "maxItems": 32
+        },
+        "owned_headers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+          }
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,127}$": {
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1
+            }
+          }
+        },
+        "source": {
+          "$ref": "#/$defs/FrozenCredentialSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "auth_method",
+        "fields",
+        "parameters",
+        "owned_headers"
+      ]
+    },
+    "FrozenCredentialSource": {
+      "type": "string",
+      "enum": [
+        "authored_api_key",
+        "authored_override",
+        "provider_store",
+        "no_auth"
+      ]
+    },
     "FrozenDelegationPolicy": {
       "type": "object",
       "properties": {
@@ -1877,8 +2028,29 @@
           "minLength": 64,
           "pattern": "^[0-9a-f]{64}$"
         },
+        "blueprint_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "compiler_version": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "config_override_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "credential_binding": {
+          "$ref": "#/$defs/FrozenCredentialBinding"
+        },
         "defaults": {
-          "$ref": "#/$defs/ResolvedRequestDefaults"
+          "$ref": "#/$defs/FrozenResolvedRequestDefaults"
         },
         "descriptor": {
           "type": "object",
@@ -2102,20 +2274,256 @@
             "provider_metadata"
           ]
         },
-        "provider_options": {
+        "endpoint_identity": {
+          "type": "string",
+          "maxLength": 2048,
+          "minLength": 1
+        },
+        "manifest_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "options": {
           "$ref": "#/$defs/ProviderOptions"
         },
-        "resolved": {
-          "$ref": "#/$defs/ResolvedModelRef"
+        "protocol_recipe": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "provider_recipe": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "selection": {
+          "$ref": "#/$defs/ModelSelection"
+        },
+        "selection_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "setup_binding": {
+          "$ref": "#/$defs/FrozenSetupBinding"
+        },
+        "setup_recipe": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "source": {
+          "$ref": "#/$defs/FrozenProviderSource"
+        },
+        "static_headers": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$": {
+              "type": "string",
+              "maxLength": 8192
+            }
+          }
         }
       },
       "additionalProperties": false,
       "required": [
-        "resolved",
+        "manifest_revision",
+        "blueprint_fingerprint",
+        "selection",
+        "source",
+        "config_override_fingerprint",
+        "credential_binding",
+        "setup_binding",
+        "endpoint_identity",
+        "provider_recipe",
+        "protocol_recipe",
+        "setup_recipe",
+        "compiler_version",
         "descriptor",
         "defaults",
-        "provider_options",
-        "behavior_fingerprint"
+        "options",
+        "static_headers",
+        "behavior_fingerprint",
+        "selection_fingerprint"
+      ]
+    },
+    "FrozenProviderSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "package_claim": {
+              "type": "string"
+            },
+            "provider_recipe": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+            },
+            "recipe_fingerprint": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "source_record_digest": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "type": {
+              "type": "string",
+              "const": "managed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "provider_recipe",
+            "source_record_digest",
+            "recipe_fingerprint",
+            "package_claim"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "safe_definition_fingerprint": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "type": {
+              "type": "string",
+              "const": "custom"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "safe_definition_fingerprint"
+          ]
+        }
+      ]
+    },
+    "FrozenRequestDefaults": {
+      "type": "object",
+      "properties": {
+        "max_output_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "seed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "stop": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "temperature": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 32,
+          "minLength": 1
+        },
+        "tool_choice": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolChoice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "top_p": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 32,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "stop"
+      ]
+    },
+    "FrozenResolvedRequestDefaults": {
+      "type": "object",
+      "properties": {
+        "reasoning": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompiledReasoningBehavior"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "request": {
+          "$ref": "#/$defs/FrozenRequestDefaults"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request"
+      ]
+    },
+    "FrozenSetupBinding": {
+      "type": "object",
+      "properties": {
+        "setup_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "setup_recipe": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "values": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,127}$": {
+              "$ref": "#/$defs/SafeSetupValue"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "setup_recipe",
+        "values",
+        "setup_fingerprint"
       ]
     },
     "InternalAgentBackend": {
@@ -2414,6 +2822,31 @@
         }
       ]
     },
+    "ModelSelection": {
+      "description": "One exact base or named-variant model selection.",
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
+        },
+        "variant": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "model"
+      ]
+    },
     "NativeContextArtifact": {
       "type": "object",
       "properties": {
@@ -2465,13 +2898,13 @@
           "type": "string",
           "maxLength": 384,
           "minLength": 1,
-          "pattern": "^[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+          "pattern": "^[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
         },
         "provider_id": {
           "type": "string",
           "maxLength": 128,
           "minLength": 1,
-          "pattern": "^[a-z0-9._-]+$"
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
         },
         "resource_id": {
           "description": "Control-free bounded presentation text.",
@@ -2517,13 +2950,6 @@
         "selection_fingerprint",
         "scope",
         "payload"
-      ]
-    },
-    "OpenResponsesMode": {
-      "type": "string",
-      "enum": [
-        "standard",
-        "compact"
       ]
     },
     "OperationFingerprint": {
@@ -3031,7 +3457,7 @@
               "type": "string",
               "maxLength": 128,
               "minLength": 1,
-              "pattern": "^[a-z0-9._-]+$"
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
             },
             "type": {
               "type": "string",
@@ -3599,23 +4025,6 @@
             "type",
             "api_version"
           ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "protocol_mode": {
-              "$ref": "#/$defs/OpenResponsesMode"
-            },
-            "type": {
-              "type": "string",
-              "const": "open-responses"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "type",
-            "protocol_mode"
-          ]
         }
       ]
     },
@@ -3718,7 +4127,7 @@
                   "type": "string",
                   "maxLength": 512,
                   "minLength": 3,
-                  "pattern": "^[a-z0-9._-]{1,128}/[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+                  "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
                 },
                 "variant": {
                   "type": [
@@ -3727,7 +4136,7 @@
                   ],
                   "maxLength": 64,
                   "minLength": 1,
-                  "pattern": "^(?!base$)[a-z0-9._-]+$"
+                  "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
                 }
               },
               "additionalProperties": false,
@@ -3744,7 +4153,7 @@
                   "type": "string",
                   "maxLength": 512,
                   "minLength": 3,
-                  "pattern": "^[a-z0-9._-]{1,128}/[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+                  "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
                 },
                 "variant": {
                   "type": [
@@ -3753,7 +4162,7 @@
                   ],
                   "maxLength": 64,
                   "minLength": 1,
-                  "pattern": "^(?!base$)[a-z0-9._-]+$"
+                  "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
                 }
               },
               "additionalProperties": false,
@@ -3784,7 +4193,7 @@
               ],
               "maxLength": 64,
               "minLength": 1,
-              "pattern": "^(?!base$)[a-z0-9._-]+$"
+              "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
             },
             "found": {
               "type": [
@@ -3793,7 +4202,7 @@
               ],
               "maxLength": 64,
               "minLength": 1,
-              "pattern": "^(?!base$)[a-z0-9._-]+$"
+              "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
             },
             "type": {
               "type": "string",
@@ -3843,81 +4252,6 @@
         }
       ]
     },
-    "RequestDefaults": {
-      "type": "object",
-      "properties": {
-        "max_output_tokens": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 1
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "seed": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "int64"
-        },
-        "stop": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "maxLength": 256,
-            "minLength": 1
-          },
-          "maxItems": 8
-        },
-        "temperature": {
-          "anyOf": [
-            {
-              "type": "number",
-              "maximum": 2.0,
-              "minimum": 0.0
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "tool_choice": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ToolChoice"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "top_p": {
-          "anyOf": [
-            {
-              "type": "number",
-              "maximum": 1.0,
-              "minimum": 0.0
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "temperature",
-        "top_p",
-        "max_output_tokens",
-        "stop",
-        "seed",
-        "tool_choice"
-      ]
-    },
     "ResolvedModelRef": {
       "type": "object",
       "properties": {
@@ -3928,13 +4262,13 @@
           "type": "string",
           "maxLength": 384,
           "minLength": 1,
-          "pattern": "^[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+          "pattern": "^[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
         },
         "provider_id": {
           "type": "string",
           "maxLength": 128,
           "minLength": 1,
-          "pattern": "^[a-z0-9._-]+$"
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
         },
         "selection": {
           "description": "One exact base or named-variant model selection.",
@@ -3944,7 +4278,7 @@
               "type": "string",
               "maxLength": 512,
               "minLength": 3,
-              "pattern": "^[a-z0-9._-]{1,128}/[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
             },
             "variant": {
               "type": [
@@ -3953,7 +4287,7 @@
               ],
               "maxLength": 64,
               "minLength": 1,
-              "pattern": "^(?!base$)[a-z0-9._-]+$"
+              "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
             }
           },
           "additionalProperties": false,
@@ -3978,29 +4312,6 @@
         "selection_fingerprint"
       ]
     },
-    "ResolvedRequestDefaults": {
-      "type": "object",
-      "properties": {
-        "reasoning": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CompiledReasoningBehavior"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "request": {
-          "$ref": "#/$defs/RequestDefaults"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "request",
-        "reasoning"
-      ]
-    },
     "RunSelection": {
       "type": "object",
       "properties": {
@@ -4018,7 +4329,7 @@
               "type": "string",
               "maxLength": 512,
               "minLength": 3,
-              "pattern": "^[a-z0-9._-]{1,128}/[^/\\u0000-\\u0020\\u007f](?:[^/\\u0000-\\u001f\\u007f]{0,382}[^/\\u0000-\\u0020\\u007f])?$"
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
             },
             "variant": {
               "type": [
@@ -4027,7 +4338,7 @@
               ],
               "maxLength": 64,
               "minLength": 1,
-              "pattern": "^(?!base$)[a-z0-9._-]+$"
+              "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
             }
           },
           "additionalProperties": false,
@@ -4095,6 +4406,30 @@
       "required": [
         "output_summary",
         "output_digest"
+      ]
+    },
+    "SafeSetupValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "description": "Stable lowercase machine-readable code.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        {
+          "type": "string",
+          "maxLength": 2048,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        }
       ]
     },
     "SafeToolError": {

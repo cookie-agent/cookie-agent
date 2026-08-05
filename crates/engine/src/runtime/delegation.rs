@@ -191,17 +191,18 @@ impl Engine {
             .iter()
             .find(|selection| {
                 parent_policy
-                    .model_snapshot
-                    .model_set()
-                    .get(&selection.model)
-                    .is_some_and(cookie_agent_models::ModelEntry::is_available)
+                    .runtime
+                    .models
+                    .model(&selection.model)
+                    .is_some_and(|model| {
+                        model.model.status
+                            == cookie_agent_models::compiler::CompiledModelStatus::Available
+                    })
             })
             .cloned()
             .or_else(|| {
                 if child_agent.resolved_fallback.is_empty() {
-                    inherited
-                        .first()
-                        .map(|binding| binding.resolved.selection.clone())
+                    inherited.first().map(|binding| binding.selection.clone())
                 } else {
                     None
                 }
@@ -218,7 +219,7 @@ impl Engine {
                 tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
             },
         )?;
-        let fingerprint = serde_json::to_string(&(
+        let fingerprint_payload = serde_json::to_vec(&(
             &invocation.agent,
             &invocation.task,
             &invocation.context,
@@ -227,7 +228,9 @@ impl Engine {
             &child_policy.agent,
             &child_policy.selected_suffix_wire,
         ))
-        .expect("delegate invocation fingerprint serializes");
+        .map_err(|_| EngineError::RuntimeCompileFailed)?;
+        let fingerprint = Sha256Digest::new(format!("{:x}", Sha256::digest(&fingerprint_payload)))
+            .map_err(|_| EngineError::RuntimeCompileFailed)?;
         let request = journal::DelegateRequestPayload {
             task: invocation.task,
             context: invocation.context,
@@ -629,17 +632,17 @@ impl Engine {
 }
 
 pub(crate) fn freeze_delegated_child_policy(
-    child_agent: &cookie_agent_config::ResolvedAgent,
+    child_agent: &crate::runtime_snapshot::ResolvedAgent,
     parent_policy: &FrozenRunPolicy,
     child_selection: &cookie_agent_protocol::ModelSelection,
-    inherited_suffix: &[cookie_agent_models::FrozenModelBinding],
+    inherited_suffix: &[cookie_agent_protocol::FrozenModelBinding],
     inherited_depth_ceiling: u32,
     result_limits: policy::ResultLimits,
 ) -> Result<FrozenRunPolicy, EngineError> {
     freeze_delegated_agent_policy(
         child_agent,
         Arc::clone(&parent_policy.registry),
-        Arc::clone(&parent_policy.model_snapshot),
+        Arc::clone(&parent_policy.runtime),
         child_selection,
         inherited_suffix,
         inherited_depth_ceiling,

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "fixture_kind": "full_live_catalog_audit",
+  "review_status": "approved",
+  "source_url": "https://models.dev/catalog.json",
+  "captured_at": "2026-08-05T22:11:05Z",
+  "etag": "\"25dd5dd6eb21b2d78044606eeb806d8c\"",
+  "accept_encoding": "identity",
+  "byte_length": 3801566,
+  "sha256": "25dd5dd6eb21b2d78044606eeb806d8cdd38640c8deea071122d5591edb88795",
+  "provider_count": 180,
+  "provider_model_count": 6131,
+  "canonical_model_count": 293,
+  "test_only": true,
+  "runtime_pin": false,
+  "contains_secrets": false
+}

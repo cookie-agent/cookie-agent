@@ -4,6 +4,21 @@ declare global {
   type ProviderModelId = string;
   type ModelKey = string;
   type VariantId = string;
+  type SetupFieldId = string;
+  type AuthFieldName = string;
+  type AuthMethodId = string;
+  type ProviderRecipeId = string;
+  type ProtocolRecipeId = string;
+  type ProviderSetupRecipeId = string;
+  type RecipeCompilerVersion = string;
+  type CatalogRevision = string;
+  type RecipeRegistryRevision = string;
+  type ProviderStoreRevision = string;
+  type ProviderStateRevision = string;
+  type ModelRevision = string;
+  type AgentRevision = string;
+  type RuntimeRevision = string;
+  type ModelSnapshotRevision = string;
   type ModelSelection = { model: ModelKey; variant: VariantId | null };
   type LanguageModelDescriptor = {
     identity: { provider_id: string; model_id: string };

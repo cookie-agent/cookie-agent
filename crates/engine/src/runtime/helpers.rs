@@ -82,36 +82,6 @@ impl Engine {
     }
 }
 
-pub(super) fn wire_agent_descriptor(
-    value: cookie_agent_config::AgentDescriptor,
-) -> AgentDescriptor {
-    AgentDescriptor {
-        id: value.id,
-        description: value.description,
-        mode: match value.mode {
-            cookie_agent_config::AgentMode::Primary => AgentMode::Primary,
-            cookie_agent_config::AgentMode::Subagent => AgentMode::Subagent,
-            cookie_agent_config::AgentMode::All => AgentMode::All,
-        },
-        enabled: value.enabled,
-        runnable_as_root: value.runnable_as_root,
-        resolved_fallback: value.resolved_fallback,
-        tools: value
-            .tools
-            .into_iter()
-            .map(|tool| match tool {
-                cookie_agent_config::ToolName::Read => cookie_agent_protocol::ToolName::Read,
-                cookie_agent_config::ToolName::Write => cookie_agent_protocol::ToolName::Write,
-                cookie_agent_config::ToolName::Edit => cookie_agent_protocol::ToolName::Edit,
-                cookie_agent_config::ToolName::Bash => cookie_agent_protocol::ToolName::Bash,
-                cookie_agent_config::ToolName::Grep => cookie_agent_protocol::ToolName::Grep,
-                cookie_agent_config::ToolName::Glob => cookie_agent_protocol::ToolName::Glob,
-            })
-            .collect(),
-        delegation_targets: value.delegation_targets,
-    }
-}
-
 pub(super) fn root_id(origin: &SessionOrigin, session: SessionId) -> SessionId {
     match origin {
         SessionOrigin::Delegated {
@@ -135,13 +105,6 @@ pub(crate) fn cwd_identity(path: &Path) -> Result<cookie_agent_protocol::CwdIden
             "invalid cwd identity: {error}"
         )))
     })
-}
-
-pub(crate) fn protocol_digest(
-    value: &cookie_agent_models::Sha256Digest,
-) -> Result<Sha256Digest, EngineError> {
-    Sha256Digest::new(value.as_str())
-        .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))
 }
 
 pub(crate) fn invocation_id(session: SessionId, run: RunId, call: ToolCallId) -> InvocationId {

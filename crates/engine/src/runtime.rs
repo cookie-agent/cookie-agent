@@ -13,28 +13,34 @@ use std::{
 #[cfg(test)]
 use std::sync::mpsc as std_mpsc;
 
+use arc_swap::ArcSwap;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use cookie_agent_config::{AgentRegistry, LoadedConfiguration};
-use cookie_agent_models::ModelSetManager;
+use cookie_agent_config::LoadedConfiguration;
+use cookie_agent_models::{
+    ModelManager,
+    manifests::{ManifestError, ModelSnapshotManifestStore, RehydrationError},
+};
 use cookie_agent_protocol::{
-    AgentDescriptor, AgentId, AgentListResult, AgentMode, ApprovalConstraints,
-    ApprovalDecisionSource, ApprovalEvaluation, ApprovalFinalDecision, ApprovalFinalOutcome,
-    ApprovalId, ApprovalInternalDecision, ApprovalInternalDecisionKind, ApprovalListResult,
-    ApprovalReasonCode, ApprovalRecord, ApprovalRequest, ApprovalRespondErrorCode,
-    ApprovalRespondParams, ApprovalRespondResult, ApprovalStatus, ApprovalTrigger,
-    ApprovalUserDecision, ArtifactReference, ChildSummary, ContextCheckpoint,
-    ContextCheckpointBoundaries, ContextCheckpointBudgets, ContextCheckpointCommit,
-    EventPayload as Event, EventSubscriptionMessage, EventsSubscribeResult, InternalAgentBackend,
-    InternalAgentFailure, InternalAgentInvocationId, InternalAgentKind, InternalAgentRunId,
-    InternalSummaryCheckpoint, InvocationId, NativeContextArtifact, OperationFingerprint,
-    OutputStream, PersistedAssistantPart, PersistedModelTurn, PersistedToolResult as ToolResult,
-    PreparedOperationIdentity, RunCancelResult, RunId, RunSelection, RunStartParams,
-    RunStartResult, RunSteerResult, RunToolStdinParams, RunToolStdinResult, SafeCode,
-    SafeDisplayText, SafeErrorMessage, SafeInternalAgentCall, SafeInternalAgentResult,
-    SafeToolError, SessionId, SessionMeta, SessionOrigin, SessionRenameChange, SessionRenameParams,
-    SessionRenameResult, SessionStatus, SessionTitle, SessionTitleChange, Sha256Digest,
-    StoredEvent, SummaryByteLimit, ToolAttachment, ToolCallId, ToolCallPresentation, ToolCallStart,
-    ToolCallTermination, ToolOutputTruncation, ToolTerminationOutcome, TreeApprovalGrant,
+    AgentId, AgentMode, ApprovalConstraints, ApprovalDecisionSource, ApprovalEvaluation,
+    ApprovalFinalDecision, ApprovalFinalOutcome, ApprovalId, ApprovalInternalDecision,
+    ApprovalInternalDecisionKind, ApprovalListResult, ApprovalReasonCode, ApprovalRecord,
+    ApprovalRequest, ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalRespondResult,
+    ApprovalStatus, ApprovalTrigger, ApprovalUserDecision, ArtifactReference, ChildSummary,
+    ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
+    ContextCheckpointCommit, EventPayload as Event, EventSubscriptionMessage,
+    EventsSubscribeResult, InternalAgentBackend, InternalAgentFailure, InternalAgentInvocationId,
+    InternalAgentKind, InternalAgentRunId, InternalSummaryCheckpoint, InvocationId,
+    NativeContextArtifact, OperationFingerprint, OutputStream, PersistedAssistantPart,
+    PersistedModelTurn, PersistedToolResult as ToolResult, PreparedOperationIdentity,
+    ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
+    ProviderDisconnectResult, RunCancelResult, RunId, RunSelection, RunStartParams, RunStartResult,
+    RunSteerResult, RunToolStdinParams, RunToolStdinResult, RuntimeChangeReason,
+    RuntimeChangedNotification, RuntimeSnapshotResult, SafeCode, SafeDisplayText, SafeErrorMessage,
+    SafeInternalAgentCall, SafeInternalAgentResult, SafeToolError, SessionId, SessionMeta,
+    SessionOrigin, SessionRenameChange, SessionRenameParams, SessionRenameResult, SessionStatus,
+    SessionTitle, SessionTitleChange, Sha256Digest, StoredEvent, SummaryByteLimit, ToolAttachment,
+    ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolOutputTruncation,
+    ToolTerminationOutcome, TreeApprovalGrant,
 };
 use futures_util::StreamExt;
 use oven_sdk::{
@@ -49,7 +55,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
@@ -66,10 +72,14 @@ use crate::{
         self, assemble_model_context, persist_turn, replay_decisions_with_preflight, wire_model,
     },
     model_policy::{ErrorPolicy, classify as classify_model_error, summary as model_error_summary},
+    model_snapshots::{prepare_runtime_manifest, validate_referenced_binding},
     permissions::{ApprovalStore, PermissionPipeline},
     policy::{
         self, FrozenRunPolicy, freeze_delegated_agent_policy, freeze_root_agent_policy,
         policy_for_session_selection, policy_from_snapshot, resolve_agent,
+    },
+    runtime_snapshot::{
+        AgentRegistry, PublishedRuntime, RuntimePublication, build_runtime_snapshot,
     },
     session::{self, SessionError, SessionStore},
 };
@@ -100,21 +110,6 @@ use helpers::*;
 use internal_agents::*;
 use tool_execution::*;
 
-#[cfg(test)]
-pub(crate) use approval_projection::{approval_records, doom_loop_repetitions};
-#[cfg(test)]
-pub(crate) use delegation::{completed_delegate_result, freeze_delegated_child_policy};
-#[cfg(test)]
-pub(crate) use helpers::{cwd_identity, invocation_id, protocol_digest};
-#[cfg(test)]
-pub(crate) use recovery::{restart_approval_decision, restart_tool_failure};
-#[cfg(test)]
-pub(crate) use sessions::session_meta;
-#[cfg(test)]
-pub(crate) use titles::{active_fallback_index, title_regeneration_target};
-#[cfg(test)]
-pub(crate) use tool_execution::{safe_tool_presentation, validate_attachment};
-
 use crate::{
     delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation},
     tool_api::{
@@ -129,7 +124,7 @@ pub struct EngineOptions {
     pub data_dir: PathBuf,
     pub cwd: PathBuf,
     pub config: LoadedConfiguration,
-    pub model_manager: Arc<ModelSetManager>,
+    pub model_manager: Arc<ModelManager>,
     pub tools: Vec<Arc<dyn ToolProvider>>,
 }
 
@@ -182,6 +177,20 @@ pub enum EngineError {
     MissingActor(SessionId),
     #[error("session actor stopped before replying")]
     ActorStopped,
+    #[error("no_runnable_model")]
+    NoRunnableModel,
+    #[error("provider_store_reload_failed")]
+    ProviderStoreReloadFailed,
+    #[error("runtime_compile_failed")]
+    RuntimeCompileFailed,
+    #[error("invalid runtime agent `{0}`")]
+    InvalidRuntimeAgent(AgentId),
+    #[error(transparent)]
+    ModelManager(#[from] cookie_agent_models::ModelManagerError),
+    #[error(transparent)]
+    Manifest(ManifestError),
+    #[error(transparent)]
+    SnapshotRehydration(RehydrationError),
 }
 
 /// Atomic, secret-safe rejection details produced by the serialized approval transaction.
@@ -291,8 +300,8 @@ impl From<ToolError> for ToolFailure {
 #[derive(Clone, Debug)]
 pub(crate) struct FrozenInternalAgentPolicy {
     pub(crate) agent: cookie_agent_protocol::AgentSnapshot,
-    pub(crate) models: Vec<cookie_agent_models::FrozenModelBinding>,
-    model_snapshot: Option<Arc<cookie_agent_models::ModelSnapshot>>,
+    pub(crate) models: Vec<cookie_agent_protocol::FrozenModelBinding>,
+    pub(crate) runtime: Option<Arc<PublishedRuntime>>,
     limits: InternalAgentLimits,
 }
 
@@ -315,7 +324,7 @@ impl InternalAgentRuntime {
         &self,
         kind: InternalAgentKind,
         owner: &FrozenRunPolicy,
-        active_suffix: &[cookie_agent_models::FrozenModelBinding],
+        active_suffix: &[cookie_agent_protocol::FrozenModelBinding],
     ) -> FrozenInternalAgentPolicy {
         let configured = match kind {
             InternalAgentKind::Approval => &self.approval,
@@ -385,6 +394,71 @@ struct AbandonedSweepHook {
 #[derive(Debug)]
 struct PersistedSubscriber {
     sender: mpsc::Sender<EventSubscriptionMessage>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredRuntimeRevisionMapping {
+    protocol_version: cookie_agent_protocol::ProtocolVersion,
+    runtime_revision: cookie_agent_protocol::RuntimeRevision,
+    model_runtime_revision: cookie_agent_protocol::RuntimeRevision,
+}
+
+#[derive(Debug)]
+struct RuntimeRevisionIndex {
+    path: PathBuf,
+    mappings:
+        HashMap<cookie_agent_protocol::RuntimeRevision, cookie_agent_protocol::RuntimeRevision>,
+}
+
+impl RuntimeRevisionIndex {
+    fn open(path: PathBuf) -> Result<Self, EngineError> {
+        let mut mappings = HashMap::new();
+        for record in events::load_jsonl::<StoredRuntimeRevisionMapping>(&path)? {
+            match mappings.insert(
+                record.runtime_revision.clone(),
+                record.model_runtime_revision.clone(),
+            ) {
+                Some(existing) if existing != record.model_runtime_revision => {
+                    return Err(EngineError::RuntimeCompileFailed);
+                }
+                _ => {}
+            }
+        }
+        Ok(Self { path, mappings })
+    }
+
+    fn record(
+        &mut self,
+        runtime_revision: cookie_agent_protocol::RuntimeRevision,
+        model_runtime_revision: cookie_agent_protocol::RuntimeRevision,
+    ) -> Result<(), EngineError> {
+        if let Some(existing) = self.mappings.get(&runtime_revision) {
+            return if existing == &model_runtime_revision {
+                Ok(())
+            } else {
+                Err(EngineError::RuntimeCompileFailed)
+            };
+        }
+        events::append_jsonl(
+            &self.path,
+            &StoredRuntimeRevisionMapping {
+                protocol_version: cookie_agent_protocol::ProtocolVersion::current(),
+                runtime_revision: runtime_revision.clone(),
+                model_runtime_revision: model_runtime_revision.clone(),
+            },
+        )?;
+        self.mappings
+            .insert(runtime_revision, model_runtime_revision);
+        Ok(())
+    }
+
+    fn resolve(
+        &self,
+        runtime_revision: &cookie_agent_protocol::RuntimeRevision,
+    ) -> Option<cookie_agent_protocol::RuntimeRevision> {
+        self.mappings.get(runtime_revision).cloned()
+    }
 }
 
 const SESSION_MAILBOX_CAPACITY: usize = 256;
@@ -509,10 +583,12 @@ pub(crate) struct Inner {
     pub(crate) store: Arc<SessionStore>,
     pub(crate) journal: Arc<DelegationJournal>,
     grant_journal: Arc<GrantInvalidationJournal>,
-    pub(crate) model_manager: Arc<ModelSetManager>,
-    pub(crate) session_model_snapshots:
-        Mutex<HashMap<SessionId, Arc<cookie_agent_models::ModelSnapshot>>>,
-    run_model_snapshots: Mutex<HashMap<RunId, Arc<cookie_agent_models::ModelSnapshot>>>,
+    pub(crate) model_manager: Arc<ModelManager>,
+    published_runtime: ArcSwap<PublishedRuntime>,
+    runtime_mutation: Mutex<()>,
+    runtime_notifications: broadcast::Sender<RuntimeChangedNotification>,
+    runtime_revision_index: Mutex<RuntimeRevisionIndex>,
+    manifest_store: ModelSnapshotManifestStore,
     internal_agents: InternalAgentRuntime,
     tools: Mutex<Vec<Arc<dyn ToolProvider>>>,
     approvals: ApprovalStore,
@@ -542,6 +618,8 @@ pub(crate) struct Inner {
     admission_blocking_hook: Mutex<Option<AdmissionBlockingHook>>,
     #[cfg(test)]
     abandoned_sweep_hook: Mutex<Option<AbandonedSweepHook>>,
+    #[cfg(test)]
+    pub(crate) publication_failure: AtomicBool,
 }
 
 /// Cloneable in-process client facade. It contains no transport concerns and
@@ -553,56 +631,20 @@ pub struct Engine {
 pub type EngineClient = Engine;
 
 impl Engine {
-    pub(crate) fn materialize_agents(
-        &self,
-        model_set: &cookie_agent_models::ModelSet,
-    ) -> Result<Arc<AgentRegistry>, EngineError> {
-        self.inner
-            .config
-            .resolve_agents(model_set)
-            .map(Arc::new)
-            .map_err(|error| EngineError::Config(Box::new(error)))
-    }
-
-    pub(super) fn session_model_snapshot(
-        &self,
-        session: &session::SessionProjection,
-    ) -> Result<Arc<cookie_agent_models::ModelSnapshot>, EngineError> {
-        if let Some(snapshot) = self
-            .inner
-            .session_model_snapshots
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&session.meta.session_id)
-            .cloned()
-        {
-            return Ok(snapshot);
-        }
-        let fingerprint =
-            cookie_agent_models::Sha256Digest::new(session.model_snapshot_fingerprint.as_str())
-                .map_err(|error| {
-                    EngineError::from(ModelError::invalid_request(error.to_string()))
-                })?;
-        let snapshot = self
-            .inner
-            .model_manager
-            .snapshot(&fingerprint)
-            .ok_or_else(|| {
-                EngineError::from(ModelError::invalid_request("obsolete_model_fingerprint"))
-            })?;
-        self.inner
-            .session_model_snapshots
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(session.meta.session_id, Arc::clone(&snapshot));
-        Ok(snapshot)
-    }
-
     pub fn open(options: EngineOptions) -> Result<Self, EngineError> {
-        options
-            .config
-            .resolve_agents(options.model_manager.current().model_set())
-            .map_err(|error| EngineError::Config(Box::new(error)))?;
+        let current_models = options.model_manager.current();
+        let authored_agents = options.config.agent_registry();
+        let agents = Arc::new(AgentRegistry::resolve(&authored_agents, &current_models)?);
+        let manifest_store = ModelSnapshotManifestStore::open(&options.cwd)?;
+        let prepared_manifest = prepare_runtime_manifest(&manifest_store, &current_models)?;
+        let snapshot = build_runtime_snapshot(&current_models, &agents)?;
+        let published_runtime = Arc::new(PublishedRuntime {
+            result: RuntimeSnapshotResult { snapshot },
+            models: Arc::clone(&current_models),
+            agents,
+            manifests: prepared_manifest.index,
+            current_manifest: prepared_manifest.manifest,
+        });
         let store = SessionStore::open(&options.data_dir, &options.cwd)?;
         let artifacts = ArtifactStore::open(store.project_dir_path().join("artifacts"))?;
         let journal = DelegationJournal::open(store.project_dir_path().join("delegations.jsonl"))?;
@@ -610,6 +652,14 @@ impl Engine {
             store.project_dir_path().join("grant-invalidations.jsonl"),
         )?;
         let internal_agents = InternalAgentRuntime::freeze();
+        let (runtime_notifications, _) = broadcast::channel(64);
+        let mut runtime_revision_index = RuntimeRevisionIndex::open(
+            store.project_dir_path().join("runtime-revisions-v8.jsonl"),
+        )?;
+        runtime_revision_index.record(
+            published_runtime.result.snapshot.runtime_revision.clone(),
+            current_models.runtime_revision().clone(),
+        )?;
         let engine = Self {
             inner: Arc::new(Inner {
                 config: options.config,
@@ -619,8 +669,11 @@ impl Engine {
                 journal,
                 grant_journal,
                 model_manager: options.model_manager,
-                session_model_snapshots: Mutex::new(HashMap::new()),
-                run_model_snapshots: Mutex::new(HashMap::new()),
+                published_runtime: ArcSwap::from(published_runtime),
+                runtime_mutation: Mutex::new(()),
+                runtime_notifications,
+                runtime_revision_index: Mutex::new(runtime_revision_index),
+                manifest_store,
                 internal_agents,
                 tools: Mutex::new(options.tools),
                 approvals: ApprovalStore::default(),
@@ -650,8 +703,11 @@ impl Engine {
                 admission_blocking_hook: Mutex::new(None),
                 #[cfg(test)]
                 abandoned_sweep_hook: Mutex::new(None),
+                #[cfg(test)]
+                publication_failure: AtomicBool::new(false),
             }),
         };
+        engine.validate_referenced_manifests()?;
         for session in engine.inner.store.all() {
             engine.spawn_actor(session.meta.session_id);
         }
@@ -668,6 +724,382 @@ impl Engine {
             engine.reconcile()?;
         }
         Ok(engine)
+    }
+
+    #[must_use]
+    pub fn current_runtime(&self) -> Arc<PublishedRuntime> {
+        self.inner.published_runtime.load_full()
+    }
+
+    pub fn runtime_snapshot(&self) -> Result<RuntimeSnapshotResult, EngineError> {
+        self.reconcile_provider_store()?;
+        Ok(self.current_runtime().result.clone())
+    }
+
+    #[must_use]
+    pub fn subscribe_runtime_changes(&self) -> broadcast::Receiver<RuntimeChangedNotification> {
+        self.inner.runtime_notifications.subscribe()
+    }
+
+    pub fn connect_provider(
+        &self,
+        params: ProviderConnectParams,
+    ) -> Result<ProviderConnectResult, EngineError> {
+        use cookie_agent_models::provider_store::{
+            ClientConnectId, ProviderAuthValues, ProviderStoreMutation,
+        };
+
+        let _mutation = self
+            .inner
+            .runtime_mutation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let provider_id = params.provider_id.clone();
+        let auth_values = params
+            .auth_values
+            .field_names()
+            .map(|name| {
+                let field = cookie_agent_protocol::AuthFieldName::new(name.to_owned())
+                    .map_err(|_| EngineError::RuntimeCompileFailed)?;
+                let value = params
+                    .auth_values
+                    .get(&field)
+                    .ok_or(EngineError::RuntimeCompileFailed)?
+                    .to_owned();
+                Ok((field, value))
+            })
+            .collect::<Result<_, EngineError>>()?;
+        let request = cookie_agent_models::ProviderConnectRequest {
+            provider_id,
+            expected_catalog_revision: params.expected_catalog_revision,
+            setup_values: params
+                .setup_values
+                .into_iter()
+                .map(|(id, value)| {
+                    let value = serde_json::from_value(
+                        serde_json::to_value(value)
+                            .map_err(|_| EngineError::RuntimeCompileFailed)?,
+                    )
+                    .map_err(|_| EngineError::RuntimeCompileFailed)?;
+                    Ok((id, value))
+                })
+                .collect::<Result<_, EngineError>>()?,
+            auth_method: params.auth_method,
+            auth_values: ProviderAuthValues::new(auth_values)
+                .map_err(cookie_agent_models::ModelManagerError::from)?,
+            client_connect_id: ClientConnectId::new(params.client_connect_id.as_str())
+                .map_err(cookie_agent_models::ModelManagerError::from)?,
+        };
+        let previous = self.current_runtime();
+        let result = self.inner.model_manager.connect(request, |candidate, _| {
+            self.prepare_publication(
+                candidate,
+                &previous,
+                vec![RuntimeChangeReason::ProviderConnected],
+            )
+            .map_err(|_| cookie_agent_models::ModelManagerError::RuntimeCompileFailed)
+        })?;
+        let runtime = result.publication.map_or_else(
+            || self.current_runtime(),
+            |publication| self.publish(publication),
+        );
+        let durable_connection = match &result.mutation {
+            ProviderStoreMutation::Connect {
+                durable_connection, ..
+            } => {
+                crate::runtime_snapshot::projection::project_durable_connection(durable_connection)?
+            }
+            ProviderStoreMutation::Disconnect { .. } => {
+                return Err(EngineError::RuntimeCompileFailed);
+            }
+        };
+        Ok(ProviderConnectResult {
+            durable_connection,
+            effective_auth_source: crate::runtime_snapshot::projection::effective_auth_source(
+                result.effective_auth,
+            )?,
+            runtime: runtime.result.snapshot.clone(),
+            replayed: result.replayed,
+        })
+    }
+
+    pub fn disconnect_provider(
+        &self,
+        params: ProviderDisconnectParams,
+    ) -> Result<ProviderDisconnectResult, EngineError> {
+        use cookie_agent_models::provider_store::{ClientRequestId, ProviderStoreMutation};
+
+        let _mutation = self
+            .inner
+            .runtime_mutation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = self.current_runtime();
+        let expected_model_runtime_revision = self
+            .inner
+            .runtime_revision_index
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resolve(&params.expected_runtime_revision)
+            .ok_or({
+                EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(
+                    cookie_agent_models::provider_store::ProviderStoreError::RuntimeRevisionConflict,
+                ))
+            })?;
+        let request = cookie_agent_models::ProviderDisconnectRequest {
+            provider_id: params.provider_id.clone(),
+            expected_runtime_revision: expected_model_runtime_revision,
+            expected_provider_state_revision: params.expected_provider_state_revision,
+            expected_connection_generation: params
+                .expected_connection_generation
+                .map(|value| {
+                    cookie_agent_models::provider_store::ProviderConnectionGeneration::new(
+                        value.get(),
+                    )
+                })
+                .transpose()
+                .map_err(cookie_agent_models::ModelManagerError::from)?,
+            client_request_id: ClientRequestId::new(params.client_request_id.as_str())
+                .map_err(cookie_agent_models::ModelManagerError::from)?,
+        };
+        let result = self
+            .inner
+            .model_manager
+            .disconnect(request, |candidate, _| {
+                self.prepare_publication(
+                    candidate,
+                    &previous,
+                    vec![RuntimeChangeReason::ProviderDisconnected],
+                )
+                .map_err(|_| cookie_agent_models::ModelManagerError::RuntimeCompileFailed)
+            })?;
+        let runtime = result.publication.map_or_else(
+            || self.current_runtime(),
+            |publication| self.publish(publication),
+        );
+        if !matches!(result.mutation, ProviderStoreMutation::Disconnect { .. }) {
+            return Err(EngineError::RuntimeCompileFailed);
+        }
+        let receipt = result.mutation.durable_receipt();
+        Ok(ProviderDisconnectResult {
+            durable_receipt: cookie_agent_protocol::DurableProviderReceipt {
+                receipt_id: receipt
+                    .receipt_id
+                    .to_string()
+                    .parse()
+                    .map_err(|_| EngineError::RuntimeCompileFailed)?,
+                store_revision: receipt.store_revision.clone(),
+                provider_state_revision: receipt.provider_state_revision.clone(),
+                committed_at: receipt.committed_at,
+            },
+            provider_id: params.provider_id,
+            disconnected: true,
+            effective_auth_state: crate::runtime_snapshot::projection::effective_auth_state(
+                result.effective_auth,
+            ),
+            runtime: runtime.result.clone(),
+            replayed: result.replayed,
+        })
+    }
+
+    pub fn reconcile_provider_store(&self) -> Result<bool, EngineError> {
+        let _mutation = self
+            .inner
+            .runtime_mutation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = self.current_runtime();
+        let reloaded = self
+            .inner
+            .model_manager
+            .reload_store_if_changed(|candidate| {
+                self.prepare_publication(
+                    candidate,
+                    &previous,
+                    vec![
+                        RuntimeChangeReason::ProviderStoreChanged,
+                        RuntimeChangeReason::ProviderStoreReloaded,
+                    ],
+                )
+                .map_err(|_| cookie_agent_models::ModelManagerError::RuntimeCompileFailed)
+            })
+            .map_err(|_| EngineError::ProviderStoreReloadFailed)?;
+        if let Some((_, publication)) = reloaded {
+            self.publish(publication);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Atomically recompiles and publishes a newly acquired catalog snapshot.
+    pub fn refresh_catalog(
+        &self,
+        catalog: Arc<cookie_agent_models::catalog::CatalogSnapshot>,
+    ) -> Result<RuntimeSnapshotResult, EngineError> {
+        let _mutation = self
+            .inner
+            .runtime_mutation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = self.current_runtime();
+        let authored = previous.models.authored().clone();
+        let reason = match catalog.source {
+            cookie_agent_models::catalog::CatalogSource::Network => {
+                RuntimeChangeReason::CatalogRefreshed
+            }
+            cookie_agent_models::catalog::CatalogSource::Cache
+            | cookie_agent_models::catalog::CatalogSource::Bootstrap => {
+                RuntimeChangeReason::CatalogFallback
+            }
+        };
+        let (_, publication) =
+            self.inner
+                .model_manager
+                .reload_inputs(authored, catalog, |candidate| {
+                    self.prepare_publication(candidate, &previous, vec![reason])
+                        .map_err(|_| cookie_agent_models::ModelManagerError::RuntimeCompileFailed)
+                })?;
+        Ok(self.publish(publication).result.clone())
+    }
+
+    fn prepare_publication(
+        &self,
+        models: &Arc<cookie_agent_models::CompiledModelRuntime>,
+        previous: &Arc<PublishedRuntime>,
+        mut reasons: Vec<RuntimeChangeReason>,
+    ) -> Result<RuntimePublication, EngineError> {
+        #[cfg(test)]
+        if self.inner.publication_failure.swap(false, Ordering::AcqRel) {
+            return Err(EngineError::RuntimeCompileFailed);
+        }
+        let authored_agents = self.inner.config.agent_registry();
+        let agents = Arc::new(AgentRegistry::resolve(&authored_agents, models)?);
+        let prepared = prepare_runtime_manifest(&self.inner.manifest_store, models)?;
+        let snapshot = build_runtime_snapshot(models, &agents)?;
+        self.inner
+            .runtime_revision_index
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .record(
+                snapshot.runtime_revision.clone(),
+                models.runtime_revision().clone(),
+            )?;
+        reasons.sort();
+        reasons.dedup();
+        let notification = RuntimeChangedNotification {
+            previous_revision: Some(previous.result.snapshot.runtime_revision.clone()),
+            snapshot: snapshot.clone(),
+            reasons,
+        };
+        Ok(RuntimePublication {
+            runtime: Arc::new(PublishedRuntime {
+                result: RuntimeSnapshotResult { snapshot },
+                models: Arc::clone(models),
+                agents,
+                manifests: prepared.index,
+                current_manifest: prepared.manifest,
+            }),
+            notification,
+        })
+    }
+
+    fn publish(&self, publication: RuntimePublication) -> Arc<PublishedRuntime> {
+        self.inner
+            .published_runtime
+            .store(Arc::clone(&publication.runtime));
+        let _ = self
+            .inner
+            .runtime_notifications
+            .send(publication.notification);
+        publication.runtime
+    }
+
+    fn validate_referenced_manifests(&self) -> Result<(), EngineError> {
+        let runtime = self.current_runtime();
+        for session in self.inner.store.all() {
+            for event in session.log.events() {
+                match event.payload {
+                    Event::SessionCreated { creation_agent, .. } => {
+                        for binding in &creation_agent.fallback_chain {
+                            let validation = validate_referenced_binding(
+                                &runtime.manifests,
+                                &runtime.models,
+                                binding,
+                            );
+                            if !matches!(
+                                &validation,
+                                Ok(())
+                                    | Err(EngineError::SnapshotRehydration(
+                                        RehydrationError::SnapshotConfigMismatch
+                                            | RehydrationError::SnapshotCredentialsUnavailable
+                                    ))
+                            ) {
+                                validation?;
+                            }
+                        }
+                    }
+                    Event::RunStarted {
+                        selected_suffix, ..
+                    } => {
+                        for binding in &selected_suffix {
+                            let validation = validate_referenced_binding(
+                                &runtime.manifests,
+                                &runtime.models,
+                                binding,
+                            );
+                            if !matches!(
+                                &validation,
+                                Ok(())
+                                    | Err(EngineError::SnapshotRehydration(
+                                        RehydrationError::SnapshotConfigMismatch
+                                            | RehydrationError::SnapshotCredentialsUnavailable
+                                    ))
+                            ) {
+                                validation?;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for entry in self.inner.journal.entries() {
+            let manifest = runtime
+                .manifests
+                .require(&entry.revisions.manifest_revision)?;
+            if manifest.payload.catalog_revision != entry.revisions.catalog_revision
+                || manifest.payload.provider_state_revision
+                    != entry.revisions.provider_state_revision
+                || manifest.payload.model_revision != entry.revisions.model_revision
+                || manifest.payload.recipe_registry_revision
+                    != entry.revisions.recipe_registry_revision
+                || crate::runtime_snapshot::projection::runtime_revision(
+                    &entry.revisions.recipe_registry_revision,
+                    &entry.revisions.catalog_revision,
+                    &entry.revisions.provider_state_revision,
+                    &entry.revisions.model_revision,
+                    &entry.revisions.agent_revision,
+                )? != entry.revisions.runtime_revision
+            {
+                return Err(EngineError::RuntimeCompileFailed);
+            }
+            for binding in &entry.selected_suffix {
+                let validation =
+                    validate_referenced_binding(&runtime.manifests, &runtime.models, binding);
+                if !matches!(
+                    &validation,
+                    Ok(())
+                        | Err(EngineError::SnapshotRehydration(
+                            RehydrationError::SnapshotConfigMismatch
+                                | RehydrationError::SnapshotCredentialsUnavailable
+                        ))
+                ) {
+                    validation?;
+                }
+            }
+        }
+        Ok(())
     }
 
     #[must_use]

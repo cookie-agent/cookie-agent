@@ -1,13 +1,12 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use cookie_agent_config::{AgentRegistry, ResolvedAgent};
-use cookie_agent_models as models;
 use cookie_agent_protocol as protocol;
-use protocol::{AgentId, ModelSelection, RunSelection};
 
-use oven_sdk::ModelError;
-
-use crate::EngineError;
+use crate::{
+    EngineError,
+    model_snapshots::binding_for_selection,
+    runtime_snapshot::{AgentRegistry, PublishedRuntime, ResolvedAgent},
+};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ResultLimits {
@@ -15,18 +14,32 @@ pub(crate) struct ResultLimits {
     pub tool_output_max_bytes: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct FrozenRunPolicy {
     pub agent: protocol::AgentSnapshot,
-    pub selected_suffix: Vec<models::FrozenModelBinding>,
+    pub selected_suffix: Vec<protocol::FrozenModelBinding>,
     pub selected_suffix_wire: Vec<protocol::FrozenModelBinding>,
-    pub model_snapshot: Arc<models::ModelSnapshot>,
+    pub runtime: Arc<PublishedRuntime>,
     pub registry: Arc<AgentRegistry>,
     pub result_limits: ResultLimits,
 }
 
+impl std::fmt::Debug for FrozenRunPolicy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FrozenRunPolicy")
+            .field("agent", &self.agent.agent)
+            .field("selected_suffix", &self.selected_suffix)
+            .field(
+                "runtime_revision",
+                &self.runtime.result.snapshot.runtime_revision,
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 impl FrozenRunPolicy {
-    pub fn active_suffix(&self, fallback_index: usize) -> &[models::FrozenModelBinding] {
+    pub fn active_suffix(&self, fallback_index: usize) -> &[protocol::FrozenModelBinding] {
         self.selected_suffix
             .get(fallback_index..)
             .unwrap_or_default()
@@ -44,24 +57,42 @@ impl FrozenRunPolicy {
 pub(crate) fn freeze_root_agent_policy(
     agent: &ResolvedAgent,
     registry: Arc<AgentRegistry>,
-    model_snapshot: Arc<models::ModelSnapshot>,
-    selection: &ModelSelection,
+    runtime: Arc<PublishedRuntime>,
+    selection: &protocol::ModelSelection,
     result_limits: ResultLimits,
 ) -> Result<FrozenRunPolicy, EngineError> {
-    let model_set = model_snapshot.model_set();
-    let plan = agent
-        .plan_root_selection(selection, model_set)
-        .map_err(config_error)?;
-    let bindings = plan
-        .selections()
+    if !agent.runnable_as_root {
+        return Err(EngineError::NoRunnableModel);
+    }
+    let start = agent
+        .resolved_fallback
         .iter()
-        .map(|candidate| model_set.freeze(candidate).map_err(model_set_error))
-        .collect::<Result<Vec<_>, _>>()?;
+        .position(|candidate| candidate.model == selection.model);
+    let authored = start.map_or(agent.resolved_fallback.as_slice(), |index| {
+        &agent.resolved_fallback[index..]
+    });
+    let mut selections = authored
+        .iter()
+        .filter(|candidate| {
+            runtime.models.model(&candidate.model).is_some_and(|model| {
+                model.model.status == cookie_agent_models::compiler::CompiledModelStatus::Available
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if start.is_some() {
+        if selections.is_empty() {
+            return Err(EngineError::NoRunnableModel);
+        }
+        selections[0] = selection.clone();
+    } else {
+        selections.insert(0, selection.clone());
+    }
     freeze_planned_policy(
         agent,
         registry,
-        model_snapshot,
-        bindings,
+        runtime,
+        selections,
         selection,
         None,
         result_limits,
@@ -71,36 +102,48 @@ pub(crate) fn freeze_root_agent_policy(
 pub(crate) fn freeze_delegated_agent_policy(
     agent: &ResolvedAgent,
     registry: Arc<AgentRegistry>,
-    model_snapshot: Arc<models::ModelSnapshot>,
-    selection: &ModelSelection,
-    inherited_suffix: &[models::FrozenModelBinding],
+    runtime: Arc<PublishedRuntime>,
+    selection: &protocol::ModelSelection,
+    inherited_suffix: &[protocol::FrozenModelBinding],
     inherited_depth_ceiling: u32,
     result_limits: ResultLimits,
 ) -> Result<FrozenRunPolicy, EngineError> {
-    let model_set = model_snapshot.model_set();
     let bindings = if agent.resolved_fallback.is_empty() {
-        let inherited = inherited_suffix
-            .first()
-            .ok_or_else(|| model_error("empty-chain agent requires a delegated active suffix"))?;
-        if inherited.resolved.selection != *selection {
-            return Err(model_error(
-                "delegated inherited selection does not match active suffix",
-            ));
+        if inherited_suffix.first().map(|binding| &binding.selection) != Some(selection) {
+            return Err(EngineError::NoRunnableModel);
         }
         inherited_suffix.to_vec()
     } else {
-        agent
-            .plan_delegated_selection(selection, model_set)
-            .map_err(config_error)?
-            .selections()
+        let index = agent
+            .resolved_fallback
             .iter()
-            .map(|candidate| model_set.freeze(candidate).map_err(model_set_error))
+            .position(|candidate| candidate.model == selection.model)
+            .ok_or(EngineError::NoRunnableModel)?;
+        let mut selections = agent.resolved_fallback[index..]
+            .iter()
+            .filter(|candidate| {
+                runtime.models.model(&candidate.model).is_some_and(|model| {
+                    model.model.status
+                        == cookie_agent_models::compiler::CompiledModelStatus::Available
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if selections.is_empty() {
+            return Err(EngineError::NoRunnableModel);
+        }
+        selections[0] = selection.clone();
+        selections
+            .iter()
+            .map(|candidate| {
+                binding_for_selection(&runtime.current_manifest, &runtime.models, candidate)
+            })
             .collect::<Result<Vec<_>, _>>()?
     };
-    freeze_planned_policy(
+    freeze_with_bindings(
         agent,
         registry,
-        model_snapshot,
+        runtime,
         bindings,
         selection,
         Some(inherited_depth_ceiling),
@@ -111,30 +154,52 @@ pub(crate) fn freeze_delegated_agent_policy(
 fn freeze_planned_policy(
     agent: &ResolvedAgent,
     registry: Arc<AgentRegistry>,
-    model_snapshot: Arc<models::ModelSnapshot>,
-    fallback_chain: Vec<models::FrozenModelBinding>,
-    selection: &ModelSelection,
+    runtime: Arc<PublishedRuntime>,
+    selections: Vec<protocol::ModelSelection>,
+    selection: &protocol::ModelSelection,
     inherited_depth_ceiling: Option<u32>,
     result_limits: ResultLimits,
 ) -> Result<FrozenRunPolicy, EngineError> {
-    if fallback_chain.is_empty() {
-        return Err(model_error("planned model suffix is empty"));
-    }
-    let selected_suffix = fallback_chain.clone();
-    let selected_suffix_start = 0;
+    let bindings = selections
+        .iter()
+        .map(|candidate| {
+            binding_for_selection(&runtime.current_manifest, &runtime.models, candidate)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    freeze_with_bindings(
+        agent,
+        registry,
+        runtime,
+        bindings,
+        selection,
+        inherited_depth_ceiling,
+        result_limits,
+    )
+}
 
+fn freeze_with_bindings(
+    agent: &ResolvedAgent,
+    registry: Arc<AgentRegistry>,
+    runtime: Arc<PublishedRuntime>,
+    bindings: Vec<protocol::FrozenModelBinding>,
+    selection: &protocol::ModelSelection,
+    inherited_depth_ceiling: Option<u32>,
+    result_limits: ResultLimits,
+) -> Result<FrozenRunPolicy, EngineError> {
+    if bindings.is_empty() {
+        return Err(EngineError::NoRunnableModel);
+    }
     let document = &agent.document;
     let delegation = document.frontmatter.delegation.as_ref().map(|delegation| {
         let mut targets = delegation.agents.clone();
         targets.sort();
-        let effective_depth_ceiling = inherited_depth_ceiling
-            .map_or(delegation.max_depth, |parent| {
-                parent.min(delegation.max_depth)
-            });
         protocol::FrozenDelegationPolicy {
             targets,
             max_depth: delegation.max_depth,
-            effective_depth_ceiling,
+            effective_depth_ceiling: inherited_depth_ceiling
+                .map_or(delegation.max_depth, |parent| {
+                    parent.min(delegation.max_depth)
+                }),
         }
     });
     let snapshot = protocol::AgentSnapshot {
@@ -160,30 +225,21 @@ fn freeze_planned_policy(
             .map(wire_permission)
             .collect::<Result<Vec<_>, _>>()?,
         delegation,
-        fallback_chain: fallback_chain
-            .iter()
-            .map(wire_binding)
-            .collect::<Result<Vec<_>, _>>()?,
-        selected_suffix_start,
+        fallback_chain: bindings.clone(),
+        selected_suffix_start: 0,
     };
-    let selected_suffix_wire = selected_suffix
-        .iter()
-        .map(wire_binding)
-        .collect::<Result<Vec<_>, _>>()?;
+    let run_selection = protocol::RunSelection {
+        agent: document.id.clone(),
+        model: selection.clone(),
+    };
     snapshot
-        .validate_selected_suffix(
-            &RunSelection {
-                agent: document.id.clone(),
-                model: selection.clone(),
-            },
-            &selected_suffix_wire,
-        )
-        .map_err(|error| model_error(error.to_string()))?;
+        .validate_selected_suffix(&run_selection, &bindings)
+        .map_err(|_| EngineError::NoRunnableModel)?;
     Ok(FrozenRunPolicy {
         agent: snapshot,
-        selected_suffix,
-        selected_suffix_wire,
-        model_snapshot,
+        selected_suffix: bindings.clone(),
+        selected_suffix_wire: bindings,
+        runtime,
         registry,
         result_limits,
     })
@@ -192,31 +248,26 @@ fn freeze_planned_policy(
 pub(crate) fn policy_for_session_selection(
     mut agent: protocol::AgentSnapshot,
     registry: Arc<AgentRegistry>,
-    model_snapshot: Arc<models::ModelSnapshot>,
-    selection: &RunSelection,
+    runtime: Arc<PublishedRuntime>,
+    selection: &protocol::RunSelection,
     tool_output_max_lines: usize,
     tool_output_max_bytes: usize,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if selection.agent != agent.agent {
-        return Err(model_error(
-            "run selection does not match the session agent",
-        ));
+        return Err(EngineError::NoRunnableModel);
     }
     let index = agent
         .fallback_chain
         .iter()
-        .position(|binding| binding.resolved.selection == selection.model)
-        .ok_or_else(|| model_error("selected model/variant is not in the frozen agent suffix"))?;
+        .position(|binding| binding.selection == selection.model)
+        .ok_or(EngineError::NoRunnableModel)?;
     agent.selected_suffix_start = index as u32;
     let suffix = agent.fallback_chain[index..].to_vec();
-    agent
-        .validate_selected_suffix(selection, &suffix)
-        .map_err(|error| model_error(error.to_string()))?;
     policy_from_snapshot(
         agent,
         suffix,
         registry,
-        model_snapshot,
+        runtime,
         tool_output_max_lines,
         tool_output_max_bytes,
     )
@@ -224,33 +275,20 @@ pub(crate) fn policy_for_session_selection(
 
 pub(crate) fn policy_from_snapshot(
     agent: protocol::AgentSnapshot,
-    selected_suffix_wire: Vec<protocol::FrozenModelBinding>,
+    selected_suffix: Vec<protocol::FrozenModelBinding>,
     registry: Arc<AgentRegistry>,
-    model_snapshot: Arc<models::ModelSnapshot>,
+    runtime: Arc<PublishedRuntime>,
     tool_output_max_lines: usize,
     tool_output_max_bytes: usize,
 ) -> Result<FrozenRunPolicy, EngineError> {
-    let model_set = model_snapshot.model_set();
-    let selected_suffix = selected_suffix_wire
-        .iter()
-        .map(|binding| {
-            let current = model_set
-                .freeze(&binding.resolved.selection)
-                .map_err(model_set_error)?;
-            if wire_binding(&current)? != *binding {
-                return Err(model_error("obsolete_model_fingerprint"));
-            }
-            Ok(current)
-        })
-        .collect::<Result<Vec<_>, EngineError>>()?;
     if selected_suffix.is_empty() {
-        return Err(model_error("frozen selected suffix is empty"));
+        return Err(EngineError::NoRunnableModel);
     }
     Ok(FrozenRunPolicy {
         agent,
-        selected_suffix,
-        selected_suffix_wire,
-        model_snapshot,
+        selected_suffix: selected_suffix.clone(),
+        selected_suffix_wire: selected_suffix,
+        runtime,
         registry,
         result_limits: ResultLimits {
             tool_output_max_lines,
@@ -259,121 +297,41 @@ pub(crate) fn policy_from_snapshot(
     })
 }
 
-pub(crate) fn wire_binding(
-    binding: &models::FrozenModelBinding,
-) -> Result<protocol::FrozenModelBinding, EngineError> {
-    let adapter_id = wire_adapter(binding.resolved.adapter_id);
-    let selection_fingerprint = wire_digest(&binding.resolved.selection_fingerprint)?;
-    let behavior_fingerprint = wire_digest(&binding.behavior_fingerprint)?;
-    let value = protocol::FrozenModelBinding {
-        resolved: protocol::ResolvedModelRef {
-            selection: binding.resolved.selection.clone(),
-            provider_id: binding.resolved.provider_id.clone(),
-            model_id: binding.resolved.model_id.clone(),
-            adapter_id,
-            selection_fingerprint,
-        },
-        descriptor: binding.descriptor.clone(),
-        defaults: wire_defaults(&binding.defaults)?,
-        provider_options: wire_provider_options(
-            binding.resolved.adapter_id,
-            &binding.provider_options,
-        )?,
-        behavior_fingerprint,
-    };
-    value
-        .validate()
-        .map_err(|error| model_error(error.to_string()))?;
-    Ok(value)
+pub(crate) fn wire_resolved(binding: &protocol::FrozenModelBinding) -> protocol::ResolvedModelRef {
+    let adapter_id = wire_adapter(binding.protocol_recipe.as_str());
+    protocol::ResolvedModelRef {
+        selection: binding.selection.clone(),
+        provider_id: binding.selection.model.provider_id(),
+        model_id: binding.selection.model.model_id(),
+        adapter_id,
+        selection_fingerprint: binding.selection_fingerprint.clone(),
+    }
 }
 
-pub(crate) fn wire_resolved(
-    binding: &models::FrozenModelBinding,
-) -> Result<protocol::ResolvedModelRef, EngineError> {
-    Ok(wire_binding(binding)?.resolved)
-}
+pub(crate) type ResolvedRuntimeModel = cookie_agent_models::ResolvedExecutableModel;
 
-fn wire_digest(value: &models::Sha256Digest) -> Result<protocol::Sha256Digest, EngineError> {
-    protocol::Sha256Digest::new(value.as_str()).map_err(|error| model_error(error.to_string()))
-}
-
-fn wire_defaults(
-    defaults: &models::ResolvedRequestDefaults,
-) -> Result<protocol::ResolvedRequestDefaults, EngineError> {
-    let json = serde_json::to_value(defaults).map_err(|error| model_error(error.to_string()))?;
-    serde_json::from_value(json).map_err(|error| model_error(error.to_string()))
-}
-
-fn wire_provider_options(
-    adapter: models::AdaptorId,
-    options: &models::ProviderOptions,
-) -> Result<protocol::ProviderOptions, EngineError> {
-    let missing = |field: &str| model_error(format!("frozen provider option `{field}` is missing"));
-    Ok(match adapter {
-        models::AdaptorId::Anthropic => protocol::ProviderOptions::Anthropic {
-            api_version: options.api_version.clone(),
-            beta: options.beta.clone(),
-        },
-        models::AdaptorId::OpenaiChat => protocol::ProviderOptions::OpenAiChat {
-            organization: options.organization.clone(),
-            project: options.project.clone(),
-        },
-        models::AdaptorId::OpenaiResponses => protocol::ProviderOptions::OpenAiResponses {
-            organization: options.organization.clone(),
-            project: options.project.clone(),
-            store: options.store,
-        },
-        models::AdaptorId::OpenaiCompatible => protocol::ProviderOptions::OpenAiCompatible {
-            api_path: options.api_path.clone(),
-        },
-        models::AdaptorId::GoogleGemini => protocol::ProviderOptions::GoogleGemini {
-            api_version: options.api_version.clone(),
-        },
-        models::AdaptorId::GoogleVertexGemini => protocol::ProviderOptions::GoogleVertexGemini {
-            project: options.project.clone().ok_or_else(|| missing("project"))?,
-            location: options
-                .location
-                .clone()
-                .ok_or_else(|| missing("location"))?,
-        },
-        models::AdaptorId::AwsBedrockConverse => protocol::ProviderOptions::AwsBedrockConverse {
-            region: options.region.clone().ok_or_else(|| missing("region"))?,
-        },
-        models::AdaptorId::AzureOpenaiChat => protocol::ProviderOptions::AzureOpenAiChat {
-            deployment: options
-                .deployment
-                .clone()
-                .ok_or_else(|| missing("deployment"))?,
-            api_version: options
-                .api_version
-                .clone()
-                .ok_or_else(|| missing("api_version"))?,
-        },
-        models::AdaptorId::AzureOpenaiResponses => {
-            protocol::ProviderOptions::AzureOpenAiResponses {
-                deployment: options
-                    .deployment
-                    .clone()
-                    .ok_or_else(|| missing("deployment"))?,
-                api_version: options
-                    .api_version
-                    .clone()
-                    .ok_or_else(|| missing("api_version"))?,
-            }
-        }
-        models::AdaptorId::CohereV2Chat => protocol::ProviderOptions::CohereV2Chat {
-            api_version: options.api_version.clone(),
-        },
-        models::AdaptorId::OpenResponses => protocol::ProviderOptions::OpenResponses {
-            protocol_mode: match options
-                .protocol_mode
-                .unwrap_or(models::OpenResponsesMode::Standard)
-            {
-                models::OpenResponsesMode::Standard => protocol::OpenResponsesMode::Standard,
-                models::OpenResponsesMode::Compact => protocol::OpenResponsesMode::Compact,
-            },
-        },
-    })
+pub(crate) fn resolve_model(
+    binding: &protocol::FrozenModelBinding,
+    runtime: &PublishedRuntime,
+) -> Result<ResolvedRuntimeModel, EngineError> {
+    let rehydrated = runtime
+        .manifests
+        .rehydrate(
+            binding,
+            runtime.models.authored(),
+            runtime.models.store(),
+            cookie_agent_models::safe_definition_fingerprint,
+        )
+        .map_err(EngineError::SnapshotRehydration)?;
+    let resolved = runtime
+        .models
+        .resolve_frozen(binding, &rehydrated.blueprint)?;
+    if resolved.behavior_fingerprint().as_str() != binding.behavior_fingerprint.as_str() {
+        return Err(EngineError::SnapshotRehydration(
+            cookie_agent_models::manifests::RehydrationError::SnapshotRehydrationMismatch,
+        ));
+    }
+    Ok(resolved)
 }
 
 fn wire_permission(
@@ -381,7 +339,7 @@ fn wire_permission(
 ) -> Result<protocol::PermissionRule, EngineError> {
     Ok(protocol::PermissionRule {
         id: protocol::SafeCode::new(rule.id.as_str())
-            .map_err(|error| model_error(error.to_string()))?,
+            .map_err(|_| EngineError::RuntimeCompileFailed)?,
         action: match rule.action {
             cookie_agent_config::PermissionAction::Read => protocol::PermissionAction::Read,
             cookie_agent_config::PermissionAction::Write => protocol::PermissionAction::Write,
@@ -394,7 +352,7 @@ fn wire_permission(
             }
         },
         resource: protocol::WildcardPattern::new(rule.resource.as_str())
-            .map_err(|error| model_error(error.to_string()))?,
+            .map_err(|_| EngineError::RuntimeCompileFailed)?,
         effect: match rule.effect {
             cookie_agent_config::PermissionEffect::Allow => protocol::PermissionEffect::Allow,
             cookie_agent_config::PermissionEffect::Ask => protocol::PermissionEffect::Ask,
@@ -445,103 +403,54 @@ pub(crate) const fn tool_name(tool: protocol::ToolName) -> &'static str {
     }
 }
 
-fn wire_adapter(adapter: models::AdaptorId) -> protocol::AdaptorId {
-    match adapter {
-        models::AdaptorId::Anthropic => protocol::AdaptorId::Anthropic,
-        models::AdaptorId::OpenaiChat => protocol::AdaptorId::OpenaiChat,
-        models::AdaptorId::OpenaiResponses => protocol::AdaptorId::OpenaiResponses,
-        models::AdaptorId::OpenaiCompatible => protocol::AdaptorId::OpenaiCompatible,
-        models::AdaptorId::GoogleGemini => protocol::AdaptorId::GoogleGemini,
-        models::AdaptorId::GoogleVertexGemini => protocol::AdaptorId::GoogleVertexGemini,
-        models::AdaptorId::AwsBedrockConverse => protocol::AdaptorId::AwsBedrockConverse,
-        models::AdaptorId::AzureOpenaiChat => protocol::AdaptorId::AzureOpenaiChat,
-        models::AdaptorId::AzureOpenaiResponses => protocol::AdaptorId::AzureOpenaiResponses,
-        models::AdaptorId::CohereV2Chat => protocol::AdaptorId::CohereV2Chat,
-        models::AdaptorId::OpenResponses => protocol::AdaptorId::OpenResponses,
-    }
-}
-
-fn model_set_error(error: models::ModelSetError) -> EngineError {
-    model_error(error.to_string())
-}
-
-fn config_error(error: cookie_agent_config::ConfigError) -> EngineError {
-    EngineError::Config(Box::new(error))
-}
-
-fn model_error(message: impl Into<String>) -> EngineError {
-    EngineError::from(ModelError::invalid_request(message.into()))
+fn wire_digest(
+    value: &cookie_agent_models::Sha256Digest,
+) -> Result<protocol::Sha256Digest, EngineError> {
+    protocol::Sha256Digest::new(value.as_str()).map_err(|_| EngineError::RuntimeCompileFailed)
 }
 
 pub(crate) fn resolve_agent<'a>(
     registry: &'a AgentRegistry,
-    id: &AgentId,
+    id: &protocol::AgentId,
 ) -> Result<&'a ResolvedAgent, EngineError> {
     registry
         .get(id)
-        .ok_or_else(|| model_error(format!("unknown agent `{id}`")))
+        .ok_or_else(|| EngineError::InvalidRuntimeAgent(id.clone()))
 }
 
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use cookie_agent_config::AgentRegistry;
-    use cookie_agent_protocol::{AgentId, RunSelection, VariantId};
-
-    use super::{policy_for_session_selection, wire_binding};
-    use crate::test_support::{agent_snapshot, model_set, model_snapshot, other_model_selection};
-
-    #[test]
-    fn delegated_selection_uses_an_exact_frozen_suffix_entry() {
-        let models = model_set();
-        let mut agent = agent_snapshot("primary", cookie_agent_protocol::AgentMode::Primary);
-        let selected = other_model_selection();
-        agent.fallback_chain.push(
-            wire_binding(&models.freeze(&selected).expect("other binding")).expect("wire binding"),
-        );
-        let policy = policy_for_session_selection(
-            agent,
-            Arc::new(AgentRegistry::resolve(Default::default(), &models).expect("empty registry")),
-            model_snapshot(),
-            &RunSelection {
-                agent: AgentId::new("primary").expect("agent"),
-                model: selected.clone(),
-            },
-            100,
-            1_000,
-        )
-        .expect("selected suffix");
-        assert_eq!(policy.agent.selected_suffix_start, 1);
-        assert_eq!(policy.selected_suffix.len(), 1);
-        assert_eq!(policy.selected_suffix[0].resolved.selection, selected);
-    }
-
-    #[test]
-    fn delegated_selection_rejects_catalog_escape_and_variant_override() {
-        let models = model_set();
-        let agent = agent_snapshot("primary", cookie_agent_protocol::AgentMode::Primary);
-        for model in [
-            other_model_selection(),
-            cookie_agent_protocol::ModelSelection {
-                model: crate::test_support::model_selection().model,
-                variant: Some(VariantId::new("fast").expect("variant")),
-            },
-        ] {
-            let result = policy_for_session_selection(
-                agent.clone(),
-                Arc::new(
-                    AgentRegistry::resolve(Default::default(), &models).expect("empty registry"),
-                ),
-                model_snapshot(),
-                &RunSelection {
-                    agent: AgentId::new("primary").expect("agent"),
-                    model,
-                },
-                100,
-                1_000,
-            );
-            assert!(result.is_err());
+fn wire_adapter(value: &str) -> protocol::AdaptorId {
+    match cookie_agent_models::adapters::wire_adapter_for_protocol(value)
+        .expect("frozen binding contains a reviewed protocol adapter")
+    {
+        cookie_agent_models::adapters::OvenAdapterFamily::Anthropic => {
+            protocol::AdaptorId::Anthropic
+        }
+        cookie_agent_models::adapters::OvenAdapterFamily::OpenaiChat => {
+            protocol::AdaptorId::OpenaiChat
+        }
+        cookie_agent_models::adapters::OvenAdapterFamily::OpenaiResponses => {
+            protocol::AdaptorId::OpenaiResponses
+        }
+        cookie_agent_models::adapters::OvenAdapterFamily::OpenaiCompatible => {
+            protocol::AdaptorId::OpenaiCompatible
+        }
+        cookie_agent_models::adapters::OvenAdapterFamily::GoogleGemini => {
+            protocol::AdaptorId::GoogleGemini
+        }
+        cookie_agent_models::adapters::OvenAdapterFamily::GoogleVertexGemini => {
+            protocol::AdaptorId::GoogleVertexGemini
+        }
+        cookie_agent_models::adapters::OvenAdapterFamily::AwsBedrockConverse => {
+            protocol::AdaptorId::AwsBedrockConverse
+        }
+        cookie_agent_models::adapters::OvenAdapterFamily::AzureOpenaiChat => {
+            protocol::AdaptorId::AzureOpenaiChat
+        }
+        cookie_agent_models::adapters::OvenAdapterFamily::AzureOpenaiResponses => {
+            protocol::AdaptorId::AzureOpenaiResponses
+        }
+        cookie_agent_models::adapters::OvenAdapterFamily::CohereV2Chat => {
+            protocol::AdaptorId::CohereV2Chat
         }
     }
 }

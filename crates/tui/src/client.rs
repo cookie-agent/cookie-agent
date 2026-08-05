@@ -1,5 +1,7 @@
 //! Transport-neutral JSON-RPC client used by the terminal UI.
 
+mod runtime;
+
 use std::{
     collections::{HashMap, HashSet},
     env, fmt, fs,
@@ -14,17 +16,14 @@ use std::{
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    AgentListParams, AgentListResult, ApprovalListParams, ApprovalListResult,
-    ApprovalRespondParams, ApprovalRespondResult, CatalogModelListParams, CatalogModelListResult,
-    CatalogProviderListParams, CatalogProviderListResult, ClientHello, EventPayload,
-    EventSubscriptionMessage, EventsSubscribeParams, EventsSubscribeResult, JsonRpcError,
-    JsonRpcId, ModelListParams, ModelListResult, Notification, OutputDelta, OutputGap,
-    OutputSnapshotEnvelope, OutputStream, ProtocolVersion, ProviderConnectParams,
-    ProviderConnectResult, Response, RunCancelParams, RunCancelResult, RunStartParams,
-    RunStartResult, RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
-    ServerHello, SessionCreateParams, SessionCreateResult, SessionId, SessionListParams,
-    SessionListResult, SessionRenameParams, SessionRenameResult, SessionTreeParams,
-    SessionTreeResult, StoredEvent, ToolCallId,
+    ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
+    ClientHello, EventPayload, EventSubscriptionMessage, EventsSubscribeParams,
+    EventsSubscribeResult, JsonRpcError, JsonRpcId, Notification, OutputDelta, OutputGap,
+    OutputSnapshotEnvelope, OutputStream, ProtocolVersion, Response, RunCancelParams,
+    RunCancelResult, RunStartParams, RunStartResult, RunSteerParams, RunSteerResult,
+    RunToolStdinParams, RunToolStdinResult, ServerHello, SessionCreateParams, SessionCreateResult,
+    SessionId, SessionListParams, SessionListResult, SessionRenameParams, SessionRenameResult,
+    SessionTreeParams, SessionTreeResult, StoredEvent, ToolCallId,
 };
 use cookie_agent_server::{MessageFrame, MessageStream, Server, TransportError, in_process_pair};
 use futures_util::{SinkExt, StreamExt};
@@ -74,6 +73,7 @@ pub enum ClientDelivery {
         session_id: Option<SessionId>,
         error: String,
     },
+    RuntimeChanged(Box<cookie_agent_protocol::RuntimeChangedNotification>),
 }
 
 /// Errors returned by the transport or a JSON-RPC operation.
@@ -126,14 +126,30 @@ impl Drop for SerializedParams {
     }
 }
 
-struct ProviderConnectGuard(ProviderConnectParams);
+pub(in crate::client) struct SensitiveJson(Value);
 
-impl Drop for ProviderConnectGuard {
+impl SensitiveJson {
+    pub(in crate::client) fn object() -> Self {
+        Self(Value::Object(serde_json::Map::new()))
+    }
+
+    pub(in crate::client) fn object_mut(&mut self) -> &mut serde_json::Map<String, Value> {
+        self.0
+            .as_object_mut()
+            .expect("sensitive JSON owner was created as an object")
+    }
+
+    fn take(&mut self) -> Value {
+        std::mem::replace(&mut self.0, Value::Null)
+    }
+}
+
+impl Drop for SensitiveJson {
     fn drop(&mut self) {
-        for credential in self.0.credentials.values.values_mut() {
-            credential.zeroize();
+        if self.0 != Value::Null {
+            zeroize_json(&mut self.0);
+            record_sensitive_serialized_wipe();
         }
-        record_provider_connect_wipe();
     }
 }
 
@@ -358,46 +374,6 @@ impl Client {
         params: SessionRenameParams,
     ) -> Result<SessionRenameResult, ClientError> {
         self.call("session.rename", &params).await
-    }
-
-    pub async fn list_catalog_providers(
-        &self,
-        params: CatalogProviderListParams,
-    ) -> Result<CatalogProviderListResult, ClientError> {
-        self.call("catalog.provider.list", &params).await
-    }
-
-    pub async fn list_catalog_models(
-        &self,
-        params: CatalogModelListParams,
-    ) -> Result<CatalogModelListResult, ClientError> {
-        self.call("catalog.model.list", &params).await
-    }
-
-    pub fn connect_provider(
-        &self,
-        params: ProviderConnectParams,
-    ) -> impl std::future::Future<Output = Result<ProviderConnectResult, ClientError>> + '_ {
-        let params = ProviderConnectGuard(params);
-        async move {
-            let value =
-                send_command(&self.commands, "provider.connect", &params.0, None, true).await?;
-            Ok(serde_json::from_value(value)?)
-        }
-    }
-
-    pub async fn list_agents(
-        &self,
-        params: AgentListParams,
-    ) -> Result<AgentListResult, ClientError> {
-        self.call("agent.list", &params).await
-    }
-
-    pub async fn list_models(
-        &self,
-        params: ModelListParams,
-    ) -> Result<ModelListResult, ClientError> {
-        self.call("model.list", &params).await
     }
 
     pub async fn start_run(&self, params: RunStartParams) -> Result<RunStartResult, ClientError> {
@@ -692,6 +668,30 @@ where
             method: method.to_owned(),
             params,
             replay,
+            response,
+        })
+        .await
+        .map_err(|_| ClientError::Closed)?;
+    receiver.await.map_err(|_| ClientError::Closed)?
+}
+
+pub(in crate::client) async fn send_sensitive_command(
+    commands: &mpsc::Sender<Command>,
+    method: &str,
+    mut params: SensitiveJson,
+) -> Result<Value, ClientError> {
+    let (response, receiver) = oneshot::channel();
+    let id = NEXT_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let params = SerializedParams {
+        value: params.take(),
+        sensitive: true,
+    };
+    commands
+        .send(Command {
+            id,
+            method: method.to_owned(),
+            params,
+            replay: None,
             response,
         })
         .await
@@ -1091,6 +1091,10 @@ async fn handle_frame(
             )
             .await;
         }
+        cookie_agent_protocol::RUNTIME_CHANGED_METHOD => {
+            let changed = serde_json::from_value(params)?;
+            let _ = deliveries.send(ClientDelivery::RuntimeChanged(Box::new(changed)));
+        }
         _ => {}
     }
     Ok(())
@@ -1455,6 +1459,36 @@ mod tests {
         )
     }
 
+    fn runtime_snapshot_json(digit: &str) -> Value {
+        let revision = format!("sha256:{}", digit.repeat(64 / digit.len()));
+        serde_json::json!({
+            "snapshot_schema_version": 1,
+            "recipe_registry_revision": revision,
+            "catalog_revision": revision,
+            "catalog_source": "bootstrap",
+            "catalog_state": {
+                "stale": true,
+                "provider_quarantine_count": 0,
+                "model_quarantine_count": 0,
+                "quarantine_digest": digit.repeat(64 / digit.len()),
+                "last_error": null
+            },
+            "provider_state_revision": revision,
+            "provider_store_generation": 1,
+            "model_revision": revision,
+            "agent_revision": revision,
+            "runtime_revision": revision,
+            "providers": [],
+            "models": [],
+            "agents": []
+        })
+    }
+
+    fn credential_values(secret: &str) -> cookie_agent_protocol::ProviderCredentialValues {
+        let serialized = Zeroizing::new(format!(r#"{{"api_key":"{secret}"}}"#).into_bytes());
+        serde_json::from_slice(&serialized).expect("credential values")
+    }
+
     #[test]
     fn websocket_auth_uses_a_bearer_header_without_url_credentials() {
         let token = "A".repeat(43);
@@ -1734,39 +1768,32 @@ mod tests {
                 .expect("late response");
         }
 
-        let list = tokio::spawn({
+        let snapshot = tokio::spawn({
             let client = client.clone();
-            async move { client.list_agents(AgentListParams::default()).await }
+            async move { client.runtime_snapshot().await }
         });
         let MessageFrame::Value(request) =
             tokio::time::timeout(Duration::from_secs(1), sent_rx.recv())
                 .await
-                .expect("agent.list request timeout")
+                .expect("runtime snapshot request timeout")
                 .expect("connection open")
         else {
             panic!("expected value request");
         };
-        assert_eq!(request["method"], "agent.list");
+        assert_eq!(request["method"], "runtime.snapshot.get");
         incoming
             .send(MessageFrame::Value(serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": request["id"],
-                "result": {
-                    "revision": cookie_agent_protocol::SnapshotRevision::new(
-                        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-                    ).expect("snapshot revision"),
-                    "model_revision": cookie_agent_protocol::SnapshotRevision::new(
-                        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-                    ).expect("snapshot revision"),
-                    "generated_at": jiff::Timestamp::now(),
-                    "agents": []
-                },
+                "result": { "snapshot": runtime_snapshot_json("0") },
             })))
-            .expect("agent.list response");
+            .expect("runtime snapshot response");
         assert!(
-            list.await
-                .expect("list task")
-                .expect("agent.list result")
+            snapshot
+                .await
+                .expect("snapshot task")
+                .expect("runtime snapshot result")
+                .snapshot
                 .agents
                 .is_empty()
         );
@@ -1778,6 +1805,48 @@ mod tests {
         .await
         .expect("completed request remained pending");
         assert_eq!(client.pending_command_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn runtime_changed_notifications_reach_the_ui_in_transport_order() {
+        let (incoming, incoming_rx) = mpsc::unbounded_channel();
+        let (sent, _sent_rx) = mpsc::unbounded_channel();
+        let client = Client::connect_stream(ScriptedStream {
+            incoming: incoming_rx,
+            sent,
+        });
+        let mut deliveries = client.subscribe_deliveries().expect("delivery receiver");
+        for (previous, digit, reason) in
+            [(None, "1", "startup"), (Some("1"), "2", "config_reloaded")]
+        {
+            let previous_revision = previous.map(|digit| {
+                serde_json::json!(format!("sha256:{}", digit.repeat(64 / digit.len())))
+            });
+            incoming
+                .send(MessageFrame::Value(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "runtime.changed",
+                    "params": {
+                        "previous_revision": previous_revision,
+                        "snapshot": runtime_snapshot_json(digit),
+                        "reasons": [reason]
+                    }
+                })))
+                .expect("runtime notification");
+        }
+        let first = deliveries.recv().await.expect("first delivery");
+        let second = deliveries.recv().await.expect("second delivery");
+        let ClientDelivery::RuntimeChanged(first) = first else {
+            panic!("runtime delivery")
+        };
+        let ClientDelivery::RuntimeChanged(second) = second else {
+            panic!("runtime delivery")
+        };
+        assert_eq!(first.previous_revision, None);
+        assert_eq!(
+            second.previous_revision.as_ref(),
+            Some(&first.snapshot.runtime_revision)
+        );
     }
 
     #[tokio::test]
@@ -1794,21 +1863,21 @@ mod tests {
             let client = client.clone();
             async move {
                 client
-                    .connect_provider(ProviderConnectParams {
+                    .connect_provider(cookie_agent_protocol::ProviderConnectParams {
                         client_connect_id: cookie_agent_protocol::ClientConnectId::new(
                             "connect-test",
                         )
                         .expect("client connect id"),
                         provider_id: cookie_agent_protocol::ProviderId::new("test")
                             .expect("provider id"),
-                        catalog_revision: cookie_agent_protocol::CatalogRevision::current(),
-                        credentials: cookie_agent_protocol::ProviderCredentials {
-                            values: std::collections::BTreeMap::from([(
-                                cookie_agent_protocol::CredentialFieldName::new("API_KEY")
-                                    .expect("credential field"),
-                                "sentinel-secret".into(),
-                            )]),
-                        },
+                        expected_catalog_revision: cookie_agent_protocol::CatalogRevision::new(
+                            format!("sha256:{}", "1".repeat(64)),
+                        )
+                        .expect("catalog revision"),
+                        setup_values: std::collections::BTreeMap::new(),
+                        auth_method: cookie_agent_protocol::AuthMethodId::new("api-key")
+                            .expect("auth method"),
+                        auth_values: credential_values("sentinel-secret"),
                     })
                     .await
             }
@@ -1853,6 +1922,18 @@ mod tests {
     }
 
     #[test]
+    fn secret_json_owner_wipes_its_sentinel_tree_on_drop() {
+        let before = SENSITIVE_SERIALIZED_WIPE_COUNT.load(Ordering::Relaxed);
+        let mut value = SensitiveJson::object();
+        value.object_mut().insert(
+            "auth_values".into(),
+            serde_json::json!({"api_key": "sentinel-secret"}),
+        );
+        drop(value);
+        assert!(SENSITIVE_SERIALIZED_WIPE_COUNT.load(Ordering::Relaxed) > before);
+    }
+
+    #[test]
     fn cancelled_unpolled_sensitive_dispatch_drops_the_wiping_frame() {
         let before = SENSITIVE_FRAME_WIPE_COUNT.load(Ordering::Relaxed);
         let mut stream = ClosingStream;
@@ -1868,21 +1949,47 @@ mod tests {
     async fn unpolled_provider_connect_future_still_wipes_owned_credentials() {
         let source_before = PROVIDER_CONNECT_WIPE_COUNT.load(Ordering::Relaxed);
         let client = Client::connect_stream(ClosingStream);
-        let connect = client.connect_provider(ProviderConnectParams {
+        let connect = client.connect_provider(cookie_agent_protocol::ProviderConnectParams {
             client_connect_id: cookie_agent_protocol::ClientConnectId::new("unpolled")
                 .expect("client connect id"),
             provider_id: cookie_agent_protocol::ProviderId::new("test").expect("provider id"),
-            catalog_revision: cookie_agent_protocol::CatalogRevision::current(),
-            credentials: cookie_agent_protocol::ProviderCredentials {
-                values: std::collections::BTreeMap::from([(
-                    cookie_agent_protocol::CredentialFieldName::new("API_KEY")
-                        .expect("credential field"),
-                    "sentinel-secret".into(),
-                )]),
-            },
+            expected_catalog_revision: cookie_agent_protocol::CatalogRevision::new(format!(
+                "sha256:{}",
+                "1".repeat(64)
+            ))
+            .expect("catalog revision"),
+            setup_values: std::collections::BTreeMap::new(),
+            auth_method: cookie_agent_protocol::AuthMethodId::new("api-key").expect("auth method"),
+            auth_values: credential_values("sentinel-secret"),
         });
         drop(connect);
         assert!(PROVIDER_CONNECT_WIPE_COUNT.load(Ordering::Relaxed) > source_before);
+    }
+
+    #[tokio::test]
+    async fn failed_provider_connect_wipes_source_and_sensitive_json_tree() {
+        let source_before = PROVIDER_CONNECT_WIPE_COUNT.load(Ordering::Relaxed);
+        let serialized_before = SENSITIVE_SERIALIZED_WIPE_COUNT.load(Ordering::Relaxed);
+        let client = Client::connect_stream(ClosingStream);
+        let result = client
+            .connect_provider(cookie_agent_protocol::ProviderConnectParams {
+                client_connect_id: cookie_agent_protocol::ClientConnectId::new("failed-connect")
+                    .expect("client connect id"),
+                provider_id: cookie_agent_protocol::ProviderId::new("test").expect("provider id"),
+                expected_catalog_revision: cookie_agent_protocol::CatalogRevision::new(format!(
+                    "sha256:{}",
+                    "1".repeat(64)
+                ))
+                .expect("catalog revision"),
+                setup_values: std::collections::BTreeMap::new(),
+                auth_method: cookie_agent_protocol::AuthMethodId::new("api-key")
+                    .expect("auth method"),
+                auth_values: credential_values("sentinel-secret"),
+            })
+            .await;
+        assert!(result.is_err());
+        assert!(PROVIDER_CONNECT_WIPE_COUNT.load(Ordering::Relaxed) > source_before);
+        assert!(SENSITIVE_SERIALIZED_WIPE_COUNT.load(Ordering::Relaxed) > serialized_before);
     }
 
     #[tokio::test]

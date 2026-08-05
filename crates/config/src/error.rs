@@ -1,6 +1,6 @@
 use std::{fmt, io};
 
-use cookie_agent_identity::{AgentId, ModelKey};
+use cookie_agent_identity::{AgentId, ModelKey, ProviderId};
 use thiserror::Error;
 
 #[derive(Error)]
@@ -21,8 +21,12 @@ pub enum ConfigError {
     Toml(String),
     #[error("TOML resource limit or unsupported datetime exceeded")]
     TomlLimit,
-    #[error("runtime providers must be nonempty")]
-    EmptyProviders,
+    #[error("provider `{provider}` is invalid")]
+    Provider {
+        provider: ProviderId,
+        #[source]
+        source: cookie_agent_models::authoring::AuthoringError,
+    },
     #[error("runtime settings are invalid")]
     InvalidRuntime,
     #[error("environment interpolation is invalid at `{0}`")]
@@ -59,20 +63,6 @@ pub enum ConfigError {
     IneligibleDelegationTarget { agent: AgentId, target: AgentId },
     #[error("agent `{agent}` repeats fallback model `{model}`")]
     DuplicateFallbackModel { agent: AgentId, model: ModelKey },
-    #[error("agent `{agent}` references unknown or disabled model `{model}`")]
-    UnknownModel { agent: AgentId, model: ModelKey },
-    #[error("agent `{agent}` references unknown variant `{variant}` for `{model}`")]
-    UnknownVariant {
-        agent: AgentId,
-        model: ModelKey,
-        variant: String,
-    },
-    #[error("agent `{0}` is not currently runnable as root")]
-    IneligibleRootAgent(AgentId),
-    #[error("agent `{0}` was resolved against a different model snapshot")]
-    ModelSnapshotMismatch(AgentId),
-    #[error("agent `{agent}` cannot select unavailable or unknown model `{model}`")]
-    InvalidRunSelection { agent: AgentId, model: ModelKey },
     #[error("fingerprint encoding failed")]
     Json(#[source] serde_json::Error),
     #[error("fingerprint construction failed")]

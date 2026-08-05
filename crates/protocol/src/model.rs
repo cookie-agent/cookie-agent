@@ -8,7 +8,13 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{ModelKey, ModelSelection, ProviderId, ProviderModelId, Sha256Digest, VariantId};
+use crate::{
+    CompiledSafeModelBlueprint, FrozenCredentialBinding, FrozenProviderOptions,
+    FrozenProviderSource, FrozenResolvedRequestDefaults, FrozenSetupBinding, HeaderName, ModelKey,
+    ModelSelection, ModelSnapshotRevision, ProtocolRecipeId, ProviderId, ProviderModelId,
+    ProviderRecipeId, ProviderSetupRecipeId, RecipeCompilerVersion, SafeEndpointIdentity,
+    SafeStaticHeaderValue, Sha256Digest, VariantId,
+};
 
 #[derive(
     Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize, TS,
@@ -25,7 +31,6 @@ pub enum AdaptorId {
     AzureOpenaiChat,
     AzureOpenaiResponses,
     CohereV2Chat,
-    OpenResponses,
 }
 
 impl AdaptorId {
@@ -42,7 +47,6 @@ impl AdaptorId {
             Self::AzureOpenaiChat => "azure-openai-chat",
             Self::AzureOpenaiResponses => "azure-openai-responses",
             Self::CohereV2Chat => "cohere-v2-chat",
-            Self::OpenResponses => "open-responses",
         }
     }
 }
@@ -814,8 +818,6 @@ pub enum ProviderOptions {
         )]
         api_version: Option<String>,
     },
-    #[serde(rename = "open-responses")]
-    OpenResponses { protocol_mode: OpenResponsesMode },
 }
 
 impl ProviderOptions {
@@ -832,7 +834,6 @@ impl ProviderOptions {
             Self::AzureOpenAiChat { .. } => AdaptorId::AzureOpenaiChat,
             Self::AzureOpenAiResponses { .. } => AdaptorId::AzureOpenaiResponses,
             Self::CohereV2Chat { .. } => AdaptorId::CohereV2Chat,
-            Self::OpenResponses { .. } => AdaptorId::OpenResponses,
         }
     }
 }
@@ -909,13 +910,6 @@ where
         ));
     }
     Ok(values)
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum OpenResponsesMode {
-    Standard,
-    Compact,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
@@ -1081,57 +1075,99 @@ impl<'de> Deserialize<'de> for ResolvedModelRef {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenModelBinding {
-    pub resolved: ResolvedModelRef,
+    #[ts(type = "ModelSnapshotRevision")]
+    pub manifest_revision: ModelSnapshotRevision,
+    pub blueprint_fingerprint: Sha256Digest,
+    #[ts(type = "ModelSelection")]
+    pub selection: ModelSelection,
+    pub source: FrozenProviderSource,
+    pub config_override_fingerprint: Sha256Digest,
+    pub credential_binding: FrozenCredentialBinding,
+    pub setup_binding: FrozenSetupBinding,
+    pub endpoint_identity: SafeEndpointIdentity,
+    #[ts(type = "ProviderRecipeId")]
+    pub provider_recipe: ProviderRecipeId,
+    #[ts(type = "ProtocolRecipeId")]
+    pub protocol_recipe: ProtocolRecipeId,
+    #[ts(type = "ProviderSetupRecipeId")]
+    pub setup_recipe: ProviderSetupRecipeId,
+    #[ts(type = "RecipeCompilerVersion")]
+    pub compiler_version: RecipeCompilerVersion,
     #[schemars(with = "LanguageModelDescriptorSchema")]
     #[ts(type = "LanguageModelDescriptor")]
     pub descriptor: oven_sdk::LanguageModelDescriptor,
-    pub defaults: ResolvedRequestDefaults,
-    pub provider_options: ProviderOptions,
+    pub defaults: FrozenResolvedRequestDefaults,
+    pub options: FrozenProviderOptions,
+    pub static_headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
     pub behavior_fingerprint: Sha256Digest,
+    pub selection_fingerprint: Sha256Digest,
 }
 
 impl FrozenModelBinding {
-    pub fn expected_selection_fingerprint(
-        selection: &ModelSelection,
-        adapter_id: AdaptorId,
-        descriptor: &oven_sdk::LanguageModelDescriptor,
-        behavior_fingerprint: &Sha256Digest,
-    ) -> Result<Sha256Digest, ModelSchemaError> {
-        use sha2::{Digest as _, Sha256};
-
-        let encoded =
-            serde_json::to_vec(&(selection, adapter_id, descriptor, behavior_fingerprint))
-                .map_err(|_| ModelSchemaError::FingerprintEncoding)?;
-        let mut hasher = Sha256::new();
-        hasher.update(b"cookie-agent/model-selection/v1");
-        hasher.update([0]);
-        hasher.update(encoded);
-        Sha256Digest::new(format!("{:x}", hasher.finalize()))
-            .map_err(|_| ModelSchemaError::FingerprintEncoding)
-    }
-
     pub fn validate(&self) -> Result<(), ModelSchemaError> {
-        self.resolved.validate()?;
-        if self.descriptor.identity.provider_id.as_str() != self.resolved.provider_id.as_str()
-            || self.descriptor.identity.model_id.as_str() != self.resolved.model_id.as_str()
+        if self.descriptor.identity.provider_id.as_str()
+            != self.selection.model.provider_id().as_str()
+            || self.descriptor.identity.model_id.as_str()
+                != self.selection.model.model_id().as_str()
         {
             return Err(ModelSchemaError::DescriptorIdentityMismatch);
         }
-        self.defaults.validate()?;
-        if self.provider_options.adapter_id() != self.resolved.adapter_id {
-            return Err(ModelSchemaError::ProviderOptionsAdapterMismatch);
-        }
-        if self.resolved.selection_fingerprint
-            != Self::expected_selection_fingerprint(
-                &self.resolved.selection,
-                self.resolved.adapter_id,
-                &self.descriptor,
-                &self.behavior_fingerprint,
-            )?
-        {
-            return Err(ModelSchemaError::SelectionFingerprintMismatch);
-        }
+        self.defaults
+            .validate()
+            .map_err(|_| ModelSchemaError::InvalidFrozenDefaults)?;
         Ok(())
+    }
+
+    #[must_use]
+    pub fn matches_blueprint(&self, blueprint: &CompiledSafeModelBlueprint) -> bool {
+        let behavior = self.selection.variant.as_ref().map_or_else(
+            || {
+                Some((
+                    &blueprint.descriptor,
+                    &blueprint.defaults,
+                    &blueprint.options,
+                    &blueprint.behavior_fingerprint,
+                    &blueprint.selection_fingerprint,
+                ))
+            },
+            |variant| {
+                blueprint
+                    .variants
+                    .iter()
+                    .find(|candidate| &candidate.id == variant)
+                    .map(|candidate| {
+                        (
+                            &candidate.descriptor,
+                            &candidate.defaults,
+                            &candidate.options,
+                            &candidate.behavior_fingerprint,
+                            &candidate.selection_fingerprint,
+                        )
+                    })
+            },
+        );
+        let Some((descriptor, defaults, options, behavior_fingerprint, selection_fingerprint)) =
+            behavior
+        else {
+            return false;
+        };
+        self.blueprint_fingerprint == blueprint.blueprint_fingerprint
+            && self.selection.model == blueprint.selection.model
+            && self.source == blueprint.source
+            && self.config_override_fingerprint == blueprint.config_override_fingerprint
+            && self.credential_binding == blueprint.credential_binding
+            && self.setup_binding == blueprint.setup_binding
+            && self.endpoint_identity == blueprint.endpoint_identity
+            && self.provider_recipe == blueprint.provider_recipe
+            && self.protocol_recipe == blueprint.protocol_recipe
+            && self.setup_recipe == blueprint.setup_recipe
+            && self.compiler_version == blueprint.compiler_version
+            && &self.descriptor == descriptor
+            && &self.defaults == defaults
+            && &self.options == options
+            && self.static_headers == blueprint.static_headers
+            && &self.behavior_fingerprint == behavior_fingerprint
+            && &self.selection_fingerprint == selection_fingerprint
     }
 }
 impl<'de> Deserialize<'de> for FrozenModelBinding {
@@ -1142,19 +1178,45 @@ impl<'de> Deserialize<'de> for FrozenModelBinding {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Wire {
-            resolved: ResolvedModelRef,
+            manifest_revision: ModelSnapshotRevision,
+            blueprint_fingerprint: Sha256Digest,
+            selection: ModelSelection,
+            source: FrozenProviderSource,
+            config_override_fingerprint: Sha256Digest,
+            credential_binding: FrozenCredentialBinding,
+            setup_binding: FrozenSetupBinding,
+            endpoint_identity: SafeEndpointIdentity,
+            provider_recipe: ProviderRecipeId,
+            protocol_recipe: ProtocolRecipeId,
+            setup_recipe: ProviderSetupRecipeId,
+            compiler_version: RecipeCompilerVersion,
             descriptor: oven_sdk::LanguageModelDescriptor,
-            defaults: ResolvedRequestDefaults,
-            provider_options: ProviderOptions,
+            defaults: FrozenResolvedRequestDefaults,
+            options: FrozenProviderOptions,
+            static_headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
             behavior_fingerprint: Sha256Digest,
+            selection_fingerprint: Sha256Digest,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
-            resolved: w.resolved,
+            manifest_revision: w.manifest_revision,
+            blueprint_fingerprint: w.blueprint_fingerprint,
+            selection: w.selection,
+            source: w.source,
+            config_override_fingerprint: w.config_override_fingerprint,
+            credential_binding: w.credential_binding,
+            setup_binding: w.setup_binding,
+            endpoint_identity: w.endpoint_identity,
+            provider_recipe: w.provider_recipe,
+            protocol_recipe: w.protocol_recipe,
+            setup_recipe: w.setup_recipe,
+            compiler_version: w.compiler_version,
             descriptor: w.descriptor,
             defaults: w.defaults,
-            provider_options: w.provider_options,
+            options: w.options,
+            static_headers: w.static_headers,
             behavior_fingerprint: w.behavior_fingerprint,
+            selection_fingerprint: w.selection_fingerprint,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -1193,6 +1255,7 @@ pub enum ModelSchemaError {
     InvalidToolName,
     FingerprintEncoding,
     SelectionFingerprintMismatch,
+    InvalidFrozenDefaults,
 }
 impl fmt::Display for ModelSchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1235,6 +1298,7 @@ impl fmt::Display for ModelSchemaError {
             Self::SelectionFingerprintMismatch => {
                 "selection fingerprint does not match the complete frozen model binding"
             }
+            Self::InvalidFrozenDefaults => "invalid frozen request defaults",
         })
     }
 }

@@ -1,359 +1,319 @@
-# Oven model, provider, catalog, and variant conformance
+# Recipe Registry 1 Provider Conformance
 
-This document defines the reviewed provider/adaptor boundary used by
-configuration schema 6. [ARCHITECTURE.md](../ARCHITECTURE.md) is authoritative;
-the complete strict provider and variant contract is in
-[agent-model-variant-redesign.md](agent-model-variant-redesign.md).
+**Registry schema:** 1
 
-`crates/models` constructs published Oven adapters only from strict
-provider-centric definitions and reviewed pinned models.dev recipes. It performs
-no model-name inference, network discovery, build-time download, runtime catalog
-refresh, or provider probe. Runnable identities are direct
-`provider/model-id` keys; model aliases do not exist.
+This document freezes the initial code-owned provider, protocol, non-secret
+setup-schema, auth-method, endpoint, and model-family entries. Catalog data
+supplies claims only. It never supplies a setup schema, credential schema, wire auth, endpoint authority,
+protocol implementation, or Oven constructor.
 
-## Published Oven pins and adaptor IDs
+The claim tables below are covered by both:
 
-The workspace pins exactly:
+- bundled catalog: 3,567,054 bytes, 177 providers, 279 canonical models,
+  `sha256:d65af0b058204954f6b08af537fa13e91f251c618d69d8c20a2d5915731d482a`;
+- independently reviewed test-only live fixture captured from
+  `https://models.dev/catalog.json` on 2026-08-05 at
+  `crates/models/tests/fixtures/models-dev-live-audit-2026-08-05.json`:
+  3,801,566 identity bytes, ETag
+  `"25dd5dd6eb21b2d78044606eeb806d8c"`, 180 providers, 6,131 provider
+  models, 293 canonical models, and
+  `sha256:25dd5dd6eb21b2d78044606eeb806d8cdd38640c8deea071122d5591edb88795`.
 
-| Package | Version |
-|---|---:|
-| `oven-sdk` | 0.4.0 |
-| `oven-sdk-anthropic` | 0.5.0 |
-| `oven-sdk-openai` | 0.4.0 |
-| `oven-sdk-google` | 0.4.0 |
-| `oven-sdk-google-vertex` | 0.4.0 |
-| `oven-sdk-bedrock` | 0.3.0 |
-| `oven-sdk-azure` | 0.3.0 |
-| `oven-sdk-cohere` | 0.2.0 |
-| `oven-sdk-open-responses` | 0.2.0 |
+Those digests are audit evidence only. The reviewed live fixture is test-only;
+neither digest is a runtime pin or runtime acceptance criterion. Runtime still
+validates the selected live/cache/bootstrap bytes.
 
-The accepted explicit adaptor IDs are:
+## 1. Catalog claims versus code-owned setup
+
+For a recipe entry, catalog matching independently checks:
+
+1. exact provider ID;
+2. provider `npm`: `PresentExact(value)`, `PresentOneOf(values)`, or `Absent`;
+3. provider `api`: `PresentExact(value)`, `PresentOneOf(values)`, or `Absent`;
+4. provider `env`: an exact duplicate-free set; array order is ignored;
+5. each model's optional `provider` override object, including exact `npm`,
+   `api`, and `shape` presence/absence and values;
+6. the model's required structural/capability shape.
+
+Expected absence is a claim: an unexpected `npm`, `api`, `shape`, or model
+`provider` object is drift. API comparison uses the recipe's explicit raw
+allowed set, then normalizes only for security/equivalence checks. Environment
+matching never turns catalog strings into credentials.
+
+The registry separately defines provider setup schemas and auth methods. A setup
+schema contains only typed non-secret routing/configuration fields, their
+required/defaulted status, validation, and code-owned endpoint construction. An
+auth method separately contains secret credential fields and wire auth. Catalog
+has neither setup-schema nor auth-method claims.
+
+For an API-key auth method, catalog `env` aliases use **any-of** semantics for that one
+semantic `api_key`: any one listed alias may satisfy optional convenience import,
+but catalog order does not imply precedence. For provider setup and multi-field
+auth, each alias maps only where explicitly stated below. Unmapped expected aliases remain checked
+catalog claims and are not ambient credential sources.
+
+If a known provider's npm/API/env claim drifts, quarantine that provider record
+and all children. If a model provider-override or model-shape claim drifts,
+quarantine only that model. A provider with no registry entry remains visible as
+`no_reviewed_provider_recipe`; that is absence of support, not claim drift.
+
+## 2. Initial provider claim patterns
+
+`model.provider = absent` means the model has no provider override object.
+
+| Recipe entry | Exact provider catalog claims | Allowed model provider claims |
+|---|---|---|
+| `anthropic.messages.v1` | id `anthropic`; npm exact `@ai-sdk/anthropic`; api absent; env exact `{ANTHROPIC_API_KEY}` | `model.provider` absent |
+| `openai.responses.v1` / `openai.chat.v1` | id `openai`; npm exact `@ai-sdk/openai`; api absent; env exact `{OPENAI_API_KEY}` | `model.provider` absent; model ID must match section 4 |
+| `openrouter.chat.v1` | id `openrouter`; npm exact `@openrouter/ai-sdk-provider`; api exact `https://openrouter.ai/api/v1`; env exact `{OPENROUTER_API_KEY}` | `model.provider` absent |
+| `google.gemini.v1` | id `google`; npm exact `@ai-sdk/google`; api absent; env exact `{GOOGLE_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, GEMINI_API_KEY}` | `model.provider` absent; model ID begins `gemini-` |
+| `cohere.chat.v2` | id `cohere`; npm exact `@ai-sdk/cohere`; api absent; env exact `{COHERE_API_KEY}` | absent, except exact `north-mini-code-1-0` override in section 5 |
+| `compatible.groq.v1` | id `groq`; npm exact `@ai-sdk/groq`; api absent; env exact `{GROQ_API_KEY}` | `model.provider` absent |
+| `compatible.togetherai.v1` | id `togetherai`; npm exact `@ai-sdk/togetherai`; api absent; env exact `{TOGETHER_API_KEY}` | `model.provider` absent |
+| `compatible.deepinfra.v1` | id `deepinfra`; npm exact `@ai-sdk/deepinfra`; api absent; env exact `{DEEPINFRA_API_KEY}` | `model.provider` absent |
+| `compatible.fireworks.v1` | id `fireworks-ai`; npm exact `@ai-sdk/openai-compatible`; api exact `https://api.fireworks.ai/inference/v1/`; env exact `{FIREWORKS_API_KEY}` | `model.provider` absent |
+| `google.vertex.gemini.v1` | id `google-vertex`; npm exact `@ai-sdk/google-vertex`; api absent; env exact `{GOOGLE_VERTEX_PROJECT, GOOGLE_VERTEX_LOCATION, GOOGLE_APPLICATION_CREDENTIALS}` | only `model.provider` absent; every Anthropic or OpenAI-compatible override is quarantined |
+| `amazon.bedrock.converse.v1` | id `amazon-bedrock`; npm exact `@ai-sdk/amazon-bedrock`; api absent; env exact `{AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_BEARER_TOKEN_BEDROCK}` | only `model.provider` absent; every `@ai-sdk/amazon-bedrock/mantle` override is quarantined |
+| `azure.openai.v1` | id `azure`; npm exact `@ai-sdk/azure`; api absent; env exact `{AZURE_RESOURCE_NAME, AZURE_API_KEY}` | only `model.provider` absent and OpenAI model families in section 4; Anthropic/OpenAI-compatible overrides are quarantined |
+
+No initial entry expects provider npm absence. Registry schema 1 nevertheless
+supports `npm = Absent`; adding such an entry requires a reviewed code change.
+All initial provider records require top-level `shape` absence. Unless an exact
+model exception below says otherwise, model-level `provider` and standalone
+model `shape` claims are also expected absent.
+
+## 3. Initial code-owned recipes, setup schemas, and auth methods
+
+| Entry | Protocol recipe / Oven `AdapterId` | Code-owned endpoint policy | Separate setup map / auth credentials |
+|---|---|---|---|
+| `anthropic.messages.v1` | `oven.anthropic.messages` / `anthropic` | default `https://api.anthropic.com/v1`; authored HTTPS override allowed with same-definition auth | setup `{}` / `anthropic-api-key-v1 { api_key }` |
+| `openai.responses.v1` | `oven.openai.responses` / `openai-responses` | default `https://api.openai.com/v1`; authored HTTPS override allowed | setup `{}` / `bearer-api-key-v1 { api_key }` |
+| `openai.chat.v1` | `oven.openai.chat` / `openai-chat` | same OpenAI default/override policy | setup `{}` / same API-key auth |
+| `openrouter.chat.v1` | `oven.openai-compatible.chat` / `openai-compatible` | default `https://openrouter.ai/api/v1`; authored HTTPS override allowed | setup `{}` / `bearer-api-key-v1 { api_key }` |
+| `google.gemini.v1` | `oven.google.gemini.generate-content` / `google-gemini` | default `https://generativelanguage.googleapis.com/v1beta`; authored HTTPS override allowed | setup `{}` / `google-api-key-header-v1 { api_key }` |
+| `cohere.chat.v2` | `oven.cohere.chat-v2` / `cohere-v2-chat` | default `https://api.cohere.com/v2`; authored HTTPS override allowed | setup `{}` / `bearer-api-key-v1 { api_key }` |
+| `compatible.groq.v1` | `oven.openai-compatible.chat` / `openai-compatible` | default `https://api.groq.com/openai/v1`; authored HTTPS override allowed | setup `{}` / `bearer-api-key-v1 { api_key }` |
+| `compatible.togetherai.v1` | same compatible recipe/adapter | default `https://api.together.xyz/v1`; authored HTTPS override allowed | setup `{}` / `bearer-api-key-v1 { api_key }` |
+| `compatible.deepinfra.v1` | same compatible recipe/adapter | default `https://api.deepinfra.com/v1/openai`; authored HTTPS override allowed | setup `{}` / `bearer-api-key-v1 { api_key }` |
+| `compatible.fireworks.v1` | same compatible recipe/adapter | default normalized `https://api.fireworks.ai/inference/v1`; authored HTTPS override allowed | setup `{}` / `bearer-api-key-v1 { api_key }` |
+| `google.vertex.gemini.v1` | `oven.google.vertex.generate-content` / `google-vertex-gemini` | code constructs the reviewed Vertex publisher endpoint from setup; authored `base_url` forbidden | setup `{ project, location, resource? = "publishers/google" }` / `oauth-access-token-v1 { access_token }` |
+| `amazon.bedrock.converse.v1` | `oven.bedrock.converse` / `aws-bedrock-converse` | code/Oven constructs the regional Bedrock endpoint from setup; authored `base_url` forbidden | setup `{ region }` / `aws-sigv4-credentials-v1 { access_key_id, secret_access_key, session_token? }` |
+| `azure.openai.v1` | `oven.azure.openai.chat` / `azure-openai-chat`, or `oven.azure.openai.responses` / `azure-openai-responses` by section 4 model routing | code constructs Azure endpoint from setup; authored `base_url` forbidden | setup `{ resource_name, deployment, api_version }` / `azure-api-key-v1 { api_key }` |
+
+Vertex `GOOGLE_VERTEX_PROJECT` and `GOOGLE_VERTEX_LOCATION` are convenience
+aliases for setup fields. Optional setup `resource` is a bounded reviewed
+relative resource path, defaults to `publishers/google`, and never belongs to
+auth. `GOOGLE_APPLICATION_CREDENTIALS` is an exact
+catalog claim but is not consumed: Cookie/Oven registry 1 does not implement ADC
+or ambient credential files. `access_token` must be supplied explicitly.
+
+Bedrock `AWS_REGION` maps only to setup `region`; `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY` map only to auth credentials.
+`AWS_BEARER_TOKEN_BEDROCK` is an expected catalog claim but is not consumed by
+the Converse recipe. `session_token` is optional explicit input. Registry 1 does
+not implement ambient AWS SDK/profile/default chains.
+
+Azure aliases map resource name and API key only. Deployment and API version are
+explicit setup fields. API-key Azure is current Cookie compiler support. Azure
+may use ergonomic `api_key` because setup is separate. Entra/OAuth identity is
+future and must not be inferred from ambient identity.
+
+Every Registry-1 setup field is non-secret behavioral routing/configuration
+metadata: Vertex project/location/resource, Bedrock region, and Azure resource
+name/deployment/API version are included directly in safe canonical behavior and
+config fingerprints. Registry 1 declares no sensitive setup field. API keys,
+access tokens, AWS secret material, and session tokens are auth-only and excluded
+from fingerprints. A future non-auth sensitive setup need requires a future
+schema/recipe version and independent mechanism.
+
+## 4. OpenAI and Azure model routing
+
+Case-sensitive family routing is code-owned:
+
+1. Responses: exact ID or `-`-suffixed descendants of `gpt-5`, `o1`, `o3`, or
+   `o4` (including `o4-mini`).
+2. Chat: exact ID or `-`-suffixed descendants of `gpt-4.1`, `gpt-4o`,
+   `gpt-4-turbo`, or `gpt-3.5-turbo`.
+3. No match quarantines that model as `unreviewed_openai_model_family`.
+4. An ambiguous future match quarantines it as
+   `ambiguous_openai_model_family`.
+
+The Azure entry applies the same routing only to models with no model provider
+override. Azure Anthropic and generic-compatible model overrides are quarantined
+because they are not the Azure OpenAI Chat/Responses recipes.
+
+## 5. Model provider-override exceptions
+
+The bundled and audited live Cohere record `north-mini-code-1-0` has exactly:
 
 ```text
-anthropic
-openai-chat
-openai-responses
-openai-compatible
-google-gemini
-google-vertex-gemini
-aws-bedrock-converse
-azure-openai-chat
-azure-openai-responses
-cohere-v2-chat
-open-responses
+provider.npm = "@ai-sdk/openai-compatible"
+provider.api = "https://api.cohere.ai/compatibility/v1"
+provider.shape = absent
 ```
 
-MiniMax and Claude Platform on AWS are not exposed. Static Anthropic
-construction uses `native_context_discriminator`; Vertex derives
-`google_vertex_native_context_scope`; official OpenAI and Azure Responses
-require explicit compaction settings whenever native compaction is declared.
-No former discriminator/scope field names are accepted.
+Registry 1 maps only that exact override through
+`oven.openai-compatible.chat` / `openai-compatible`, using Cohere's existing
+`api-key` setup and bearer auth. Any changed npm/API/shape or another Cohere
+override quarantines only that model.
 
-The adaptor ID selects only a reviewed constructor and wire protocol. It is
-never inferred from provider or model text. The arbitrary provider model ID is
-sent to that already-selected adaptor and cannot alter construction behavior.
+For Google Vertex, all current `@ai-sdk/google-vertex/anthropic` and
+`@ai-sdk/openai-compatible` model overrides are quarantined; only unoverridden
+Gemini records enter `oven.google.vertex.generate-content`.
 
-`ScriptedModel` remains the deterministic FIFO test implementation, including
-captured requests, streaming delays, cancellation points, native compaction,
-exhaustion, and planned errors.
+For an unoverridden Vertex record, Registry 1 applies this exact reviewed Gemini
+predicate after structural validation:
 
-## Pinned models.dev snapshot
+1. provider model table key equals embedded `id`;
+2. ID contains only lowercase ASCII letters, digits, `.`, `_`, and `-`, starts
+   exactly `gemini-`, contains no `/`, and is not `gemini-embedding-001` or any
+   future `gemini-embedding-` descendant;
+3. `family` is exactly one of `gemini-flash`, `gemini-flash-lite`, or
+   `gemini-pro`;
+4. `modalities.input` contains `text`, `modalities.output` contains `text`,
+   context/output limits are positive, and attachment/reasoning/tool-call and
+   all other required Gemini metadata have the strict expected types;
+5. the complete record compiles losslessly through
+   `oven.google.vertex.generate-content`.
 
-The exact upstream `snapshotPayload` from `anomalyco/models.dev` commit
-`c3057690bbb8bd41cafdefadcd2a7b958e2a4642` is vendored at
-`crates/models/catalog/models-dev.json`:
+Every unoverridden Vertex record failing any family predicate is quarantined as
+`unsupported_vertex_model_family`. In particular,
+`openai/gpt-oss-20b-maas` and `openai/gpt-oss-120b-maas` are explicitly
+quarantined and never routed as Gemini. Future unoverridden non-Gemini families
+also quarantine until Registry 1 is deliberately revised. Provider-level model
+npm/API/shape overrides are evaluated separately first and retain their specific
+drift quarantine reason.
 
-- size: 3,567,054 bytes;
-- SHA-256 and required schema-6 `catalog_revision`:
-  `sha256:d65af0b058204954f6b08af537fa13e91f251c618d69d8c20a2d5915731d482a`;
-- no trailing newline;
-- MIT attribution: copyright 2025 models.dev.
+The exact audited Vertex override claim patterns are:
 
-The authoritative upstream inputs are provider/model TOML, schema, and
-generator. Repository-root `models.json` is not the vendored artifact.
-`scripts/update_models_dev.py --check --source ...` is offline and requires an
-already-prepared pinned checkout. Network cloning/dependency installation is
-isolated behind explicit opt-in `--update`. Cargo builds, tests, and runtime
-never invoke the updater or access the network.
+```text
+npm = "@ai-sdk/google-vertex/anthropic", api absent, shape absent
+npm = "@ai-sdk/openai-compatible"
+api = "https://${GOOGLE_VERTEX_ENDPOINT}/v1/projects/${GOOGLE_VERTEX_PROJECT}/locations/${GOOGLE_VERTEX_LOCATION}/endpoints/openapi"
+shape absent
+```
 
-The parser retains and bounds the complete upstream document, then emits a
-stable secret-free projection in provider/model order. Every schema-6
-`ModelsDevProvider.catalog_revision` must exactly match the compiled snapshot;
-stale or unknown revisions fail before provider construction. Canonical model
-IDs are emitted only for exact metadata keys. Wrapper models are not guessed
-into families.
+For Bedrock, all current `@ai-sdk/amazon-bedrock/mantle` overrides, including
+their `shape = "responses"` claims, are quarantined; only unoverridden Converse
+records enter `oven.bedrock.converse`.
 
-Known, constructible, and configured are distinct states. Catalog presence is
-not support. A model becomes runnable only when it is explicitly listed and
-enabled in one provider's `models` map, has a reviewed recipe, and the complete
-provider candidate validates.
+Their exact audited APIs are
+`https://bedrock-mantle.${AWS_REGION}.api.aws/openai/v1` or
+`https://bedrock-mantle.${AWS_REGION}.api.aws/v1`, with npm
+`@ai-sdk/amazon-bedrock/mantle` and shape exactly `responses`.
 
-`catalog.provider.list` returns only configured models.dev providers whose auth
-is `credential_store`, with the pinned catalog revision and safe provider
-metadata/credential field names; this is the connectable provider picker.
-`catalog.model.list` returns safe pinned catalog model metadata.
-`model.list` returns the independently revisioned configured runnable snapshot;
-it is not a catalog endpoint. `agent.list` is refreshed only after the model
-snapshot publishes, so agent runnability is evaluated against one coherent
-model revision.
+Azure audited overrides are quarantined in two exact current forms:
 
-## Provider construction
+```text
+npm = "@ai-sdk/anthropic"
+api = "https://${AZURE_RESOURCE_NAME}.services.ai.azure.com/anthropic/v1"
+shape absent
 
-A strict schema-6 provider is one of:
+npm = "@ai-sdk/openai-compatible"
+api = "https://${AZURE_RESOURCE_NAME}.services.ai.azure.com/models"
+shape = "completions"
+```
 
-- `source = "models_dev"`: exact catalog revision, reviewed recipe, supported
-  auth shape, optional recipe-permitted endpoint/adaptor override, strict
-  headers, and a nonempty explicit model map;
-- `source = "explicit"`: required endpoint/adaptor/auth and a nonempty
-  explicit model map with complete honest capabilities.
+## 6. Auth family registry
 
-For both forms, `source`, `auth`, and `models` are required and `models` must be
-nonempty. Models.dev additionally requires `catalog_revision`; `endpoint` and
-`adaptor` are optional and default to the reviewed source recipe. Explicit
-providers require `endpoint` and `adaptor`. `headers` is optional and defaults
-to `{}`.
+Registry 1 implements these semantic families:
 
-Unknown fields fail at every level. Provider definitions are atomic layer
-replacements: a workspace provider with the same `ProviderId` replaces the
-entire user provider before validation. Models and variants are not merged
-across layers.
+| Auth method | Safe parameters | Secret credential fields | Owned wire headers/behavior |
+|---|---|---|---|
+| `no-auth-v1` | none | none | emits no auth material; only explicitly allowlisted recipes |
+| `bearer-api-key-v1` | none | required `api_key` | owns `authorization` with Bearer encoding |
+| `api-key-header-v1` | required `header_name`, restricted to the adaptor recipe's allowlist | required `api_key` | owns that canonical case-insensitive header |
+| `anthropic-api-key-v1` | none | required `api_key` | owns `x-api-key`; protocol owns `anthropic-version` and reviewed beta/version headers |
+| `google-api-key-header-v1` | none | required `api_key` | owns `x-goog-api-key`; no credential query |
+| `oauth-access-token-v1` | none | required `access_token` | owns `authorization` with Bearer encoding |
+| `aws-sigv4-credentials-v1` | none | required `access_key_id`, required `secret_access_key`, optional `session_token` | owns `authorization`, `host`, `x-amz-date`, `x-amz-content-sha256`, and `x-amz-security-token` when used |
+| `azure-api-key-v1` | none | required `api_key` | owns `api-key`; resource/deployment/API version are setup-only |
 
-Models.dev providers normally use the recipe endpoint and adaptor. An endpoint
-override is accepted only when the recipe marks it overridable. An adaptor
-override must be one of that recipe's reviewed alternatives. Explicit
-providers require HTTPS except adaptor-declared loopback HTTP. Endpoint
-userinfo, fragments, and credential-bearing query parameters are rejected.
+All catalog/authored endpoint query components remain rejected. Azure's
+code-owned protocol compiler may place the validated `api_version` setup value
+in the provider-required request parameter; no user/catalog URL query is parsed,
+preserved, or forwarded.
 
-Authentication is a strict tagged value: `none`, `credential_store`, `bearer`,
-`api_key`, `basic`, `aws_sdk`, `google_adc`, or adaptor-schema-validated
-`fields`. `credential_store` is models.dev-only and names exactly the recipe
-fields. Missing stored values leave the provider unavailable until connect;
-construction requires all of them.
-Unknown, missing, or extra semantic fields and unsupported auth/adaptor pairs
-fail. Static headers reject invalid values, case-insensitive duplicates,
-transport-owned headers, and auth headers owned by the selected auth form.
-The Phase-1 compiler does not provide ambient SDK credential discovery, so
-`basic`, `aws_sdk`, and `google_adc` are currently rejected by every reviewed
-adaptor. Vertex fields are exactly `access_token`; Bedrock fields are exactly
-`access_key_id` plus `secret_access_key` and optional `session_token`.
-Compatible API-key auth emits the configured header (default `x-api-key`).
+There is no ambient ADC, AWS SDK/profile chain, metadata-service lookup, Entra,
+or filesystem credential discovery in current Registry 1.
 
-Only listed enabled models are constructed. Each included model has:
+For custom providers, initial adaptor allowlists are: `openai-compatible`
+allows `bearer-api-key-v1`, `api-key-header-v1`, and reviewed `no-auth-v1`, with
+API-key header parameters limited to `x-api-key` or `api-key`; `openai-chat` and
+`openai-responses` allow `bearer-api-key-v1` and reviewed `no-auth-v1`;
+`anthropic` allows `anthropic-api-key-v1`; `google-gemini` allows
+`google-api-key-header-v1`; `google-vertex-gemini` allows
+`oauth-access-token-v1`; `aws-bedrock-converse` allows
+`aws-sigv4-credentials-v1`; Azure adapters allow `azure-api-key-v1`; and
+`cohere-v2-chat` allows `bearer-api-key-v1`.
+Any custom auth method not present in the selected adaptor's exact allowlist
+fails the entire custom provider as `unsupported_auth_method`.
 
-- an exact `ModelKey` and display name;
-- explicit/restricted capabilities and limits;
-- normalized ordinary authorable `RequestDefaults` plus internal compiled reasoning;
-- strict typed adaptor/provider options;
-- base behavior, generated and explicit variants, and optional default variant;
-- descriptor, selection, behavior, and provider-snapshot fingerprints.
+`basic` is not contract-supported by any current Registry-1 Oven adaptor and is
+rejected as `unsupported_auth_method`. It may be added only by a future reviewed
+auth method that owns `authorization` and proves adapter support.
 
-For every model, `enabled` is optional and defaults true; `defaults`, `options`,
-and `variants` are optional tables defaulting to `{}`; `default_variant` is an
-optional field. A models.dev display name defaults to the pinned source value;
-an explicit display name is required.
+Custom static headers are never auth. Their names/values are safe behavior
+metadata and cannot interpolate. Every adaptor begins with the forbidden static
+set `authorization`, `host`, `content-length`, `transfer-encoding`, `connection`,
+`proxy-authorization`, `cookie`, `set-cookie`, `accept`, `content-type`, and
+`user-agent`, then adds all protocol/auth-owned headers. Header names use RFC
+field-name token syntax and lowercase canonical identity; values reject controls,
+CR/LF/NUL, and credential interpolation markers. Any case-insensitive duplicate
+or collision is invalid.
 
-Models.dev capabilities are derived completely from the pinned record plus
-reviewed recipe/compiler; a configured capabilities table is an unknown-field
-error. Explicit model capabilities are required and every field must be
-present, including false booleans and an empty media map. Parallel tool calls
-may be true only with tool calling; seed support is a required explicit
-capability; each declared non-text input modality requires exactly one matching
-bounded MIME/media entry, while text-only input requires an empty media map.
-Unsupported normalized defaults, unknown options, duplicated semantics between
-defaults/options, and dishonest capability declarations fail construction.
+## 7. Oven package pins
 
-Authorable ordinary request defaults contain only temperature, top-p, maximum
-output tokens, stop strings, seed, and tool choice; their omission values are
-None/empty. Reasoning is authorable only through
-`VariantDirective.reasoning`. Provider options reject all alternate
-reasoning/effort/thinking/budget fields. The compiler alone creates internal
-resolved request defaults containing compiled reasoning behavior.
+| Oven adapter family | Workspace package/version |
+|---|---|
+| core | `oven-sdk` 0.4.0 |
+| Anthropic | `oven-sdk-anthropic` 0.5.0 |
+| OpenAI and compatible | `oven-sdk-openai` 0.4.0 |
+| Google Gemini | `oven-sdk-google` 0.4.0 |
+| Google Vertex | `oven-sdk-google-vertex` 0.4.0 |
+| Bedrock | `oven-sdk-bedrock` 0.3.0 |
+| Azure | `oven-sdk-azure` 0.3.0 |
+| Cohere | `oven-sdk-cohere` 0.2.0 |
 
-The candidate constructs all adapters and compiles every base/variant before
-publication. Publication atomically replaces the complete provider/model
-snapshot. Failure leaves the old snapshot intact; no partially refreshed
-provider is observable.
-Base and every enabled named variant own a separately constructed exact Oven
-model handle. Freezing records that selection's descriptor, defaults, options,
-behavior fingerprint, and selection fingerprint; rebinding resolves the same
-exact executable rather than applying variant defaults to a shared base model.
+Open Responses (`oven-sdk-open-responses` 0.2.0) remains future registry work.
+Package presence alone never enables a recipe.
 
-## Reviewed models.dev recipe allowlist
+## 8. Quarantine reasons
 
-Initial generated construction support is limited to:
+Known-provider claim drift quarantines the exact record with one of:
 
-- first-party Anthropic Messages;
-- exact hand-reviewed OpenAI model IDs mapped to Responses or Chat;
-- first-party Google `generateContent`;
-- first-party Cohere v2 Chat;
-- OpenRouter's reviewed HTTPS compatible Chat endpoint;
-- effective `@ai-sdk/openai-compatible` models whose endpoint is HTTPS and
-  whose provider declares exactly one credential field.
+```text
+catalog_provider_npm_drift
+catalog_provider_api_drift
+catalog_provider_env_drift
+catalog_provider_shape_drift
+catalog_model_provider_npm_drift
+catalog_model_provider_api_drift
+catalog_model_provider_shape_drift
+catalog_model_shape_drift
+unreviewed_openai_model_family
+ambiguous_openai_model_family
+unsupported_model_capabilities
+unsupported_protocol_feature
+unsupported_vertex_model_family
+```
 
-Vertex, Azure, Bedrock, standardized Open Responses, MiniMax, Claude Platform
-on AWS, ambiguous package reuse, insecure endpoints, deprecated offerings, and
-records requiring unreviewed provider body/header injection remain unsupported
-models.dev recipes. They may be used only through an honestly declared
-supported explicit provider where the selected adaptor can encode them.
+Provider-level drift quarantines the provider and children. Model-level drift
+quarantines only that model. Quarantine descriptors remain safe-visible in
+`/connect` or diagnostics when a unique valid ID is recoverable, but never
+compile or connect.
 
-Recipe-generated descriptors are conservative. They may expose only pinned
-catalog features confirmed by the reviewed adaptor compiler. Pinned attachment
-modalities are mapped through reviewed bounded MIME/count/byte baselines and
-compiled into Oven media descriptors; they are never inferred from a model
-name. Recipes never infer parallel tools, tool-input deltas, top-p, reasoning,
-replay, or native compaction from a model name. Cancellation is local unless
-the adaptor proves a stronger behavior. Default maximum output is
-`min(16_384, catalog_output_limit)` unless a reviewed recipe defines another
-safe value.
+Unknown providers use `no_reviewed_provider_recipe` without pretending a claim
+matched. Removed providers without a retained exact source projection use
+`removed_without_retained_recipe_match`.
 
-Option compilation is lossless: Anthropic accepts only its fixed
-`2023-06-01` API version and emits `beta` values in the Anthropic request
-namespace; Responses accepts only `store = false`; compatible `api_path` must
-end in `/chat/completions` and changes the effective Oven endpoint; Gemini API
-versions replace the endpoint version segment; Cohere accepts only `v2`.
-Vertex project/location, Bedrock region, Azure deployment/API version, OpenAI
-organization/project, and Open Responses protocol mode compile into their
-corresponding concrete Oven settings. Other option/adaptor combinations fail.
+## 9. Conformance validation
 
-## Reasoning options and variants
-
-The catalog compiler recognizes exactly three reasoning-option forms:
-`effort`, `toggle`, and `budget_tokens`.
-
-- Effort accepts only `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
-  `max`, `default`, and `null`. Non-null values produce same-ID variants;
-  the actual null token produces `off` and a string `"null"` is invalid.
-- Toggle produces `off` and `on`; each must compile to an explicit honest wire
-  behavior.
-- Pinned `budget_tokens` accepts only optional `min` and `max`. `min = -1`
-  generates `budget-auto`; finite `min` generates `budget-min`; present finite
-  `max` generates `budget-max`. All other fields are invalid. Missing bounds
-  produce no variants, and no other budget
-  ID is generated.
-
-Any reviewed recipe metadata that defines base request behavior or a provider
-model source default is separate from `reasoning_options.budget_tokens` and
-does not create another generated budget ID.
-
-Multiple catalog options form a deterministic union, not combinations.
-Generated collisions use `effort` over `toggle` over `budget_tokens` only when
-the normalized compiled behavior is identical; otherwise construction fails.
-An explicit config directive has highest precedence: `add` requires an absent
-ID, `replace` requires an existing ID, and `disable` requires and removes an
-existing ID. Base cannot be targeted. The model-level
-`default_variant` is precisely `Option<ConfiguredModelDefault>`: omission/None
-retains the provider model source default, explicit `base`/Some(Base) selects
-exact base, and every other string/Some(Named) selects an enabled final variant.
-The models.dev source default is its explicitly pinned source/recipe default or
-base; an explicit provider's source default is base. Disabling a selected source
-default requires an explicit replacement. Resolution produces exact
-`ModelSelection` before freezing.
-
-Every generated/explicit behavior is compiled by the selected adaptor into
-internal resolved request defaults and typed provider options. If effort, toggle,
-budget, or a combined explicit variant cannot be represented without loss, the
-included model/provider fails atomically. The compiler never approximates,
-renames, silently drops, or advertises an unencodable variant.
-
-Variant identity and behavior fingerprints participate in frozen bindings,
-fallback, replay/native-context scope, persistence, protocol attribution, and
-diagnostics. Base and each variant are distinguishable even when request values
-happen to be equal.
-
-## Credential persistence and redaction
-
-`provider.connect` values are not configuration fields. On Unix they are stored
-at `~/.local/share/cookie_agent/credentials/store-v1.json` with a sibling lock:
-
-- directories are current-user-owned mode 0700;
-- store, lock, and temporary files are current-user-owned regular mode 0600;
-- traversal is anchored at a current-user-owned, non-group/world-writable home
-  or data directory and uses dirfd-relative no-follow opens for every component;
-- symlinks, ancestor replacement, hard links, weak modes, and unexpected object
-  types are rejected;
-- every transaction locks and rereads under the lock;
-- writes use same-directory exclusive temp, file fsync, atomic rename, and
-  parent-directory fsync;
-- malformed, oversized, wrongly owned, or weak-permission state fails closed.
-
-The store contains sorted credentials, connection timestamp, generation UUID,
-catalog revision, a random local HMAC key, and durable idempotency receipts.
-Receipts contain only HMAC-SHA256 over the canonical secret-bearing request.
-Persistent connect remains disabled on platforms without equivalent ownership,
-ACL, no-follow, locking, and atomic-replacement guarantees.
-
-Credential values travel only in the inbound connect request and secret
-containers. They are excluded from events, results, typed error data, debug
-output, generic request/result logging, schema examples, fingerprints, model
-snapshots, session JSONL/meta, delegation journals, artifacts, and TypeScript
-result projections. Auth shape and header names may enter safe fingerprints;
-secret/header values may not.
-
-CLI/TUI owned secret buffers use best-effort zeroization when ownership allows.
-The CLI keeps structured connect parameters and pre-dispatch JSON serialization
-in drop guards/`Zeroizing` buffers and wipes owned source buffers immediately
-after dispatch without cloning credentials. Once a frame is moved into the
-WebSocket/TLS/socket/kernel transport, those transport-owned copies cannot be
-honestly guaranteed to be wiped. This is process hygiene, not a locked-memory
-or forensic-erasure guarantee.
-
-Connect rejects a truly unconfigured provider as `unknown_provider`; an
-explicit provider or configured provider without `credential_store` is
-`unsupported_provider`. Missing required recipe fields are
-`missing_credential` with the exact bounded, sorted
-`missing_credential_fields`; extra or otherwise invalid fields remain
-`invalid_credential`.
-
-Connect reporting remains phase-specific: connect acceptance, model-list
-refresh, agent-list refresh, and optional initial session creation are separate
-outcomes. A configuration with no `runnable_as_root = true` agent is a valid
-setup state and does not create a session. Every primary requires a nonempty
-chain; subagent/all may be empty for delegated inheritance, but any empty-chain
-agent is not root-runnable and an all agent is root-selectable only with its own
-nonempty chain and at least one available selection. Connecting credentials may make a previously
-unavailable enabled nonempty-chain primary/all agent root-runnable; it never
-enables an agent whose document says `enabled: false`.
-
-The checked workspace fixture uses three explicit provider declarations and
-one environment interpolation variable, `COOKIE_TEST_API_KEY`. Its runnable
-keys are `anthropic/kimi-for-coding`, `openai/gpt-5.6-luna`, and
-`quantumcookie.gateway/deepseek-v4-flash`; Anthropic and Responses select the
-named `high` variant, while compatible chat selects base. These are direct
-keys and variants, not aliases or profiles.
-
-## Immutable snapshots and restart resolution
-
-`ModelSetManager` publishes immutable provider/model snapshots through an
-atomic swap and serializes refresh/connect. During one daemon lifetime, exact
-older fingerprints are retained so already-frozen sessions and runs can resolve
-without rebinding to the newly published provider/model behavior. New agent
-listing and session creation use only the current atomically loaded snapshot.
-
-The retained map is process-local and is not persisted. Restart builds only the
-current snapshot from validated schema-6 config, the exact pinned catalog, and
-latest credentials. Persisted frozen bindings remain readable audit data but
-execution fails with `obsolete_model_fingerprint` when the exact fingerprint is
-absent. Resolution never falls back by provider/model key or variant name.
-
-Secret-only credential rotation can preserve safe behavior fingerprints while
-new adapter handles receive current credentials. Revisions include all safe
-behavior-affecting endpoint identity, auth shape, header names, capabilities,
-defaults, options, recipe data, native-context scope inputs, compaction settings,
-and variant behavior.
-
-## Workspace loading authority
-
-Local `cookie` and `cookie daemon` load and validate built-in defaults, user
-schema-6 TOML, exact-cwd workspace schema-6 TOML, and user/workspace Markdown
-agents once before composition. There is no persisted workspace acceptance and
-no upward search. `attach` and `connect` do not inspect cwd configuration.
-
-Config and agent paths use descriptor-relative no-follow loading. Approved
-`${env:NAME}` interpolation is restricted to provider endpoints, auth secret
-fields, and header values. Environment variables never become arbitrary config
-keys. Agent prompts, IDs, capabilities, defaults, options, and variants cannot
-interpolate.
-
-The resulting operation authority is still the frozen agent policy, exact
-approval/tree grant when required, and prepared descriptor-bound capability.
-Provider configuration cannot itself execute a tool operation.
+Tests must compare bundled fixtures and live-response fixtures against every
+exact claim above, including expected absence, env-set equality and any-of alias
+mapping, Cohere/Vertex/Bedrock/Azure model overrides, Groq/Together/DeepInfra npm
+claims, trailing-slash Fireworks API, and provider-versus-model quarantine
+boundaries. Vertex tests explicitly reject both unoverridden `gpt-oss` MaaS IDs,
+embedding/non-Gemini/future families, and override drift. Request golden tests
+cover every current provider setup schema and auth method separately and prove
+that ADC, ambient AWS chains, Bedrock bearer, and Azure Entra remain disabled.

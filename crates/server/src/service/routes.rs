@@ -1,12 +1,12 @@
 use cookie_agent_engine::EngineError;
 use cookie_agent_protocol::{
-    AgentListParams, ApprovalListParams, ApprovalRespondErrorCode, ApprovalRespondParams,
-    CatalogModelListParams, CatalogProviderListParams, ClientHello, EventPayload,
-    EventsSubscribeParams, ModelListParams, RunCancelParams, RunStartParams, RunSteerParams,
-    RunToolStdinParams, SessionChildrenParams, SessionChildrenResult, SessionCreateParams,
-    SessionCreateResult, SessionGetParams, SessionGetResult, SessionListParams, SessionListResult,
-    SessionRenameErrorCode, SessionRenameParams, SessionResumeParams, SessionResumeResult,
-    SessionTreeParams, SessionTreeResult,
+    ApprovalListParams, ApprovalRespondErrorCode, ApprovalRespondParams, ClientHello, EventPayload,
+    EventsSubscribeParams, PROVIDER_CONNECT_METHOD, PROVIDER_DISCONNECT_METHOD,
+    RUNTIME_SNAPSHOT_GET_METHOD, RunCancelParams, RunStartParams, RunSteerParams,
+    RunToolStdinParams, RuntimeSnapshotGetParams, SessionChildrenParams, SessionChildrenResult,
+    SessionCreateParams, SessionCreateResult, SessionGetParams, SessionGetResult,
+    SessionListParams, SessionListResult, SessionRenameErrorCode, SessionRenameParams,
+    SessionResumeParams, SessionResumeResult, SessionTreeParams, SessionTreeResult,
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -185,27 +185,24 @@ impl Server {
                         .list_approvals(request.root_session_id, request.status),
                 )
             }
-            "catalog.provider.list" => {
-                let _: CatalogProviderListParams = params_or_default(params)?;
-                value(self.list_catalog_providers()?)
+            RUNTIME_SNAPSHOT_GET_METHOD => {
+                if !has_request_id {
+                    return Err(RpcFault::request_id_required());
+                }
+                let _: RuntimeSnapshotGetParams = params_or_default(params)?;
+                value(self.engine.runtime_snapshot().map_err(engine_fault)?)
             }
-            "catalog.model.list" => {
-                let request: CatalogModelListParams = params_or_default(params)?;
-                value(self.list_catalog_models(&request)?)
-            }
-            "provider.connect" => {
+            PROVIDER_CONNECT_METHOD => {
                 if !has_request_id {
                     return Err(RpcFault::request_id_required());
                 }
                 value(self.connect_provider(decode_params(params)?)?)
             }
-            "model.list" => {
-                let _: ModelListParams = params_or_default(params)?;
-                value(self.list_models()?)
-            }
-            "agent.list" => {
-                let _: AgentListParams = params_or_default(params)?;
-                value(self.list_agents()?)
+            PROVIDER_DISCONNECT_METHOD => {
+                if !has_request_id {
+                    return Err(RpcFault::request_id_required());
+                }
+                value(self.disconnect_provider(decode_params(params)?)?)
             }
             _ => Err(RpcFault::method_not_found()),
         }

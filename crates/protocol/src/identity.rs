@@ -5,10 +5,6 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-/// Exact pinned models.dev catalog revision used by protocol v7.
-pub const PINNED_CATALOG_REVISION: &str =
-    "sha256:d65af0b058204954f6b08af537fa13e91f251c618d69d8c20a2d5915731d482a";
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WireStringError {
     Empty,
@@ -144,6 +140,11 @@ bounded_control_free_type!(
     "Bounded provider connection idempotency key."
 );
 bounded_control_free_type!(
+    ClientRequestId,
+    256,
+    "Bounded provider mutation idempotency key."
+);
+bounded_control_free_type!(
     ClientRenameId,
     256,
     "Bounded title mutation idempotency key."
@@ -207,90 +208,6 @@ string_wire_impl!(
     }
 );
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
-pub struct CatalogRevision(String);
-
-impl CatalogRevision {
-    pub fn current() -> Self {
-        Self(PINNED_CATALOG_REVISION.to_owned())
-    }
-
-    pub fn new(value: impl Into<String>) -> Result<Self, WireStringError> {
-        let value = value.into();
-        if value == PINNED_CATALOG_REVISION {
-            Ok(Self(value))
-        } else {
-            Err(WireStringError::Invalid(
-                "must equal the pinned models.dev catalog revision",
-            ))
-        }
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for CatalogRevision {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-impl Serialize for CatalogRevision {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0)
-    }
-}
-impl<'de> Deserialize<'de> for CatalogRevision {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
-    }
-}
-impl JsonSchema for CatalogRevision {
-    fn inline_schema() -> bool {
-        true
-    }
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("CatalogRevision")
-    }
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"string","const":PINNED_CATALOG_REVISION})
-    }
-}
-
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
-pub struct SnapshotRevision(String);
-
-string_wire_impl!(
-    SnapshotRevision,
-    71,
-    "^sha256:[0-9a-f]{64}$",
-    "SHA-256 snapshot revision.",
-    |value: &str| {
-        if value.len() == 71
-            && value.starts_with("sha256:")
-            && value[7..]
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            Ok(())
-        } else {
-            Err(WireStringError::Invalid(
-                "must be sha256: followed by 64 lowercase hexadecimal characters",
-            ))
-        }
-    }
-);
-
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(transparent)]
 struct TransparentUuid(Uuid);
@@ -350,6 +267,7 @@ uuid_id!(InternalAgentInvocationId);
 uuid_id!(InternalAgentRunId);
 uuid_id!(ApprovalId);
 uuid_id!(TreeApprovalGrantId);
+uuid_id!(DurableProviderReceiptId);
 
 #[derive(Clone, Eq, Hash, PartialEq, TS)]
 #[ts(type = "string")]

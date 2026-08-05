@@ -4,10 +4,12 @@ use std::{
 };
 
 use crate::{AgentDocumentSource, ConfigError};
+use zeroize::Zeroizing;
 
 pub(crate) struct LayerRoot {
     pub(crate) directory: fs::File,
     pub(crate) source: AgentDocumentSource,
+    pub(crate) path: std::path::PathBuf,
 }
 
 #[cfg(unix)]
@@ -62,15 +64,13 @@ pub(crate) fn open_layer_root(
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(ConfigError::UnsafePath);
     }
-    if source == AgentDocumentSource::User
-        && (metadata.uid() != rustix::process::getuid().as_raw()
-            || metadata.mode() & 0o777 != 0o700)
-    {
+    if metadata.uid() != rustix::process::getuid().as_raw() || metadata.mode() & 0o777 != 0o700 {
         return Err(ConfigError::UnsafePath);
     }
     Ok(Some(LayerRoot {
         directory: current,
         source,
+        path: path.to_path_buf(),
     }))
 }
 
@@ -86,7 +86,7 @@ pub(crate) fn open_layer_root(
 pub(crate) fn open_optional_directory(
     parent: &fs::File,
     name: &str,
-    source: AgentDocumentSource,
+    _source: AgentDocumentSource,
 ) -> Result<Option<fs::File>, ConfigError> {
     use std::os::unix::fs::MetadataExt as _;
     let flags = rustix::fs::OFlags::RDONLY
@@ -100,9 +100,8 @@ pub(crate) fn open_optional_directory(
     };
     let metadata = file.metadata().map_err(ConfigError::Io)?;
     if !metadata.is_dir()
-        || source == AgentDocumentSource::User
-            && (metadata.uid() != rustix::process::getuid().as_raw()
-                || metadata.mode() & 0o777 != 0o700)
+        || metadata.uid() != rustix::process::getuid().as_raw()
+        || metadata.mode() & 0o777 != 0o700
     {
         return Err(ConfigError::UnsafePath);
     }
@@ -123,7 +122,7 @@ pub(crate) fn read_optional_file(
     name: &str,
     limit: u64,
     source: AgentDocumentSource,
-) -> Result<Option<Vec<u8>>, ConfigError> {
+) -> Result<Option<Zeroizing<Vec<u8>>>, ConfigError> {
     match read_file(parent, name, limit, source) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(ConfigError::NotFound) => Ok(None),
@@ -135,7 +134,7 @@ pub(crate) fn read_required_file(
     name: &str,
     limit: u64,
     source: AgentDocumentSource,
-) -> Result<Vec<u8>, ConfigError> {
+) -> Result<Zeroizing<Vec<u8>>, ConfigError> {
     read_file(parent, name, limit, source)
 }
 
@@ -144,8 +143,8 @@ fn read_file(
     parent: &fs::File,
     name: &str,
     limit: u64,
-    source: AgentDocumentSource,
-) -> Result<Vec<u8>, ConfigError> {
+    _source: AgentDocumentSource,
+) -> Result<Zeroizing<Vec<u8>>, ConfigError> {
     use std::{io::Read as _, os::unix::fs::MetadataExt as _};
     let flags = rustix::fs::OFlags::RDONLY
         | rustix::fs::OFlags::NOFOLLOW
@@ -160,16 +159,15 @@ fn read_file(
     if !metadata.is_file()
         || metadata.file_type().is_symlink()
         || metadata.nlink() != 1
-        || source == AgentDocumentSource::User
-            && (metadata.uid() != rustix::process::getuid().as_raw()
-                || metadata.mode() & 0o777 != 0o600)
+        || metadata.uid() != rustix::process::getuid().as_raw()
+        || metadata.mode() & 0o777 != 0o600
     {
         return Err(ConfigError::UnsafePath);
     }
     if metadata.len() > limit {
         return Err(ConfigError::TooLarge(name.to_owned()));
     }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let mut bytes = Zeroizing::new(Vec::with_capacity(metadata.len() as usize));
     file.take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(ConfigError::Io)?;
@@ -185,7 +183,7 @@ fn read_file(
     _name: &str,
     _limit: u64,
     _source: AgentDocumentSource,
-) -> Result<Vec<u8>, ConfigError> {
+) -> Result<Zeroizing<Vec<u8>>, ConfigError> {
     Err(ConfigError::UnsupportedPlatform)
 }
 

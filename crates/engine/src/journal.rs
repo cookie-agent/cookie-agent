@@ -8,70 +8,35 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    AgentSnapshot, DelegationJournalSchemaVersion, FrozenModelBinding, InvocationId, RunId,
-    SessionId, ToolCallId,
+    AgentRevision, AgentSnapshot, CatalogRevision, DelegationJournalRecord,
+    DelegationJournalSchemaVersion, FrozenModelBinding, InvocationId, ModelRevision,
+    ModelSnapshotRevision, ProviderStateRevision, RecipeRegistryRevision, RunId, RuntimeRevision,
+    SessionId, Sha256Digest, StoredDelegationJournalRecord, ToolCallId,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use thiserror::Error;
 
 use crate::events::{EventLogError, append_jsonl, load_jsonl};
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DelegationReservation {
-    pub invocation_id: InvocationId,
-    pub parent_session_id: SessionId,
-    pub parent_run_id: RunId,
-    pub parent_tool_call_id: ToolCallId,
-    pub child_session_id: SessionId,
-}
+pub use cookie_agent_protocol::{DelegateRequestPayload, DelegationReservation};
 
-/// Immutable delegate arguments retained so recovery can reconstruct the
-/// child prompt without depending on a provider retry payload.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DelegateRequestPayload {
-    pub task: String,
-    pub context: Vec<Value>,
-    pub success_criteria: Vec<String>,
-    pub expected_output: Value,
-}
-
-#[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum JournalRecord {
-    DelegationStarted {
-        reservation: DelegationReservation,
-        child_agent: Box<AgentSnapshot>,
-        selected_suffix: Vec<FrozenModelBinding>,
-        request_fingerprint: String,
-        task: String,
-        request: DelegateRequestPayload,
-    },
-    DelegationLinked {
-        invocation_id: InvocationId,
-    },
-    DelegationRunStarted {
-        invocation_id: InvocationId,
-        child_run_id: RunId,
-    },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredJournalRecord {
-    delegation_journal_schema_version: DelegationJournalSchemaVersion,
-    record: JournalRecord,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DelegationRuntimeRevisions {
+    pub manifest_revision: ModelSnapshotRevision,
+    pub runtime_revision: RuntimeRevision,
+    pub catalog_revision: CatalogRevision,
+    pub provider_state_revision: ProviderStateRevision,
+    pub model_revision: ModelRevision,
+    pub agent_revision: AgentRevision,
+    pub recipe_registry_revision: RecipeRegistryRevision,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct JournalEntry {
     pub reservation: DelegationReservation,
     pub child_agent: AgentSnapshot,
+    pub revisions: DelegationRuntimeRevisions,
     pub selected_suffix: Vec<FrozenModelBinding>,
-    pub request_fingerprint: String,
+    pub request_fingerprint: Sha256Digest,
     pub task: String,
     pub request: DelegateRequestPayload,
     pub linked: bool,
@@ -104,8 +69,9 @@ enum JournalCommand {
         parent_run_id: RunId,
         parent_tool_call_id: ToolCallId,
         child_agent: AgentSnapshot,
+        revisions: DelegationRuntimeRevisions,
         selected_suffix: Vec<FrozenModelBinding>,
-        request_fingerprint: String,
+        request_fingerprint: Sha256Digest,
         request: DelegateRequestPayload,
         reply: mpsc::Sender<Result<JournalEntry, JournalError>>,
     },
@@ -144,7 +110,7 @@ pub struct DelegationJournal {
 impl DelegationJournal {
     pub fn open(path: PathBuf) -> Result<Arc<Self>, JournalError> {
         let mut state = JournalState::default();
-        for record in load_jsonl::<StoredJournalRecord>(&path)? {
+        for record in load_jsonl::<StoredDelegationJournalRecord>(&path)? {
             apply(&mut state, record.record)?;
         }
         let (sender, receiver) = mpsc::channel();
@@ -168,8 +134,9 @@ impl DelegationJournal {
         parent_run_id: RunId,
         parent_tool_call_id: ToolCallId,
         child_agent: AgentSnapshot,
+        revisions: DelegationRuntimeRevisions,
         selected_suffix: Vec<FrozenModelBinding>,
-        request_fingerprint: String,
+        request_fingerprint: Sha256Digest,
         request: DelegateRequestPayload,
     ) -> Result<JournalEntry, JournalError> {
         let (reply, receiver) = mpsc::channel();
@@ -180,6 +147,7 @@ impl DelegationJournal {
                 parent_run_id,
                 parent_tool_call_id,
                 child_agent,
+                revisions,
                 selected_suffix,
                 request_fingerprint,
                 request,
@@ -267,6 +235,7 @@ fn run_actor(path: PathBuf, mut state: JournalState, receiver: mpsc::Receiver<Jo
                 parent_run_id,
                 parent_tool_call_id,
                 child_agent,
+                revisions,
                 selected_suffix,
                 request_fingerprint,
                 request,
@@ -283,6 +252,7 @@ fn run_actor(path: PathBuf, mut state: JournalState, receiver: mpsc::Receiver<Jo
                         parent_run_id,
                         parent_tool_call_id,
                         child_agent,
+                        revisions,
                         selected_suffix,
                         request_fingerprint,
                         request,
@@ -342,8 +312,9 @@ fn reserve(
     parent_run_id: RunId,
     parent_tool_call_id: ToolCallId,
     child_agent: AgentSnapshot,
+    revisions: DelegationRuntimeRevisions,
     selected_suffix: Vec<FrozenModelBinding>,
-    request_fingerprint: String,
+    request_fingerprint: Sha256Digest,
     request: DelegateRequestPayload,
 ) -> Result<JournalEntry, JournalError> {
     if let Some(entry) = state.entries.get(&invocation_id) {
@@ -352,6 +323,7 @@ fn reserve(
             && entry.reservation.parent_tool_call_id == parent_tool_call_id
             && entry.request_fingerprint == request_fingerprint
             && entry.child_agent == child_agent
+            && entry.revisions == revisions
             && entry.selected_suffix == selected_suffix
             && entry.request == request;
         return if same_request {
@@ -362,6 +334,9 @@ fn reserve(
     }
     if request.task.is_empty()
         || selected_suffix.is_empty()
+        || selected_suffix
+            .iter()
+            .any(|binding| binding.manifest_revision != revisions.manifest_revision)
         || child_agent
             .validate_selected_suffix(
                 &cookie_agent_protocol::RunSelection {
@@ -369,7 +344,6 @@ fn reserve(
                     model: selected_suffix
                         .first()
                         .expect("checked nonempty")
-                        .resolved
                         .selection
                         .clone(),
                 },
@@ -391,6 +365,7 @@ fn reserve(
     let entry = JournalEntry {
         reservation: reservation.clone(),
         child_agent: child_agent.clone(),
+        revisions: revisions.clone(),
         selected_suffix: selected_suffix.clone(),
         request_fingerprint: request_fingerprint.clone(),
         task: request.task.clone(),
@@ -401,11 +376,18 @@ fn reserve(
     state.entries.insert(invocation_id, entry.clone());
     if let Err(error) = append_jsonl(
         path,
-        &StoredJournalRecord {
+        &StoredDelegationJournalRecord {
             delegation_journal_schema_version: DelegationJournalSchemaVersion::current(),
-            record: JournalRecord::DelegationStarted {
+            record: DelegationJournalRecord::DelegationStarted {
                 reservation,
                 child_agent: Box::new(child_agent),
+                manifest_revision: revisions.manifest_revision,
+                runtime_revision: revisions.runtime_revision,
+                catalog_revision: revisions.catalog_revision,
+                provider_state_revision: revisions.provider_state_revision,
+                model_revision: revisions.model_revision,
+                agent_revision: revisions.agent_revision,
+                recipe_registry_revision: revisions.recipe_registry_revision,
                 selected_suffix,
                 request_fingerprint,
                 task: request.task.clone(),
@@ -432,9 +414,9 @@ fn mark_linked(
     }
     append_jsonl(
         path,
-        &StoredJournalRecord {
+        &StoredDelegationJournalRecord {
             delegation_journal_schema_version: DelegationJournalSchemaVersion::current(),
-            record: JournalRecord::DelegationLinked { invocation_id },
+            record: DelegationJournalRecord::DelegationLinked { invocation_id },
         },
     )?;
     state
@@ -462,9 +444,9 @@ fn mark_run_started(
     }
     append_jsonl(
         path,
-        &StoredJournalRecord {
+        &StoredDelegationJournalRecord {
             delegation_journal_schema_version: DelegationJournalSchemaVersion::current(),
-            record: JournalRecord::DelegationRunStarted {
+            record: DelegationJournalRecord::DelegationRunStarted {
                 invocation_id,
                 child_run_id,
             },
@@ -478,11 +460,18 @@ fn mark_run_started(
     Ok(())
 }
 
-fn apply(state: &mut JournalState, record: JournalRecord) -> Result<(), JournalError> {
+fn apply(state: &mut JournalState, record: DelegationJournalRecord) -> Result<(), JournalError> {
     match record {
-        JournalRecord::DelegationStarted {
+        DelegationJournalRecord::DelegationStarted {
             reservation,
             child_agent,
+            manifest_revision,
+            runtime_revision,
+            catalog_revision,
+            provider_state_revision,
+            model_revision,
+            agent_revision,
+            recipe_registry_revision,
             selected_suffix,
             request_fingerprint,
             task,
@@ -494,11 +483,14 @@ fn apply(state: &mut JournalState, record: JournalRecord) -> Result<(), JournalE
             if task.is_empty()
                 || request.task != task
                 || selected_suffix.is_empty()
+                || selected_suffix
+                    .iter()
+                    .any(|binding| binding.manifest_revision != manifest_revision)
                 || child_agent
                     .validate_selected_suffix(
                         &cookie_agent_protocol::RunSelection {
                             agent: child_agent.agent.clone(),
-                            model: selected_suffix[0].resolved.selection.clone(),
+                            model: selected_suffix[0].selection.clone(),
                         },
                         &selected_suffix,
                     )
@@ -511,6 +503,15 @@ fn apply(state: &mut JournalState, record: JournalRecord) -> Result<(), JournalE
                 JournalEntry {
                     reservation,
                     child_agent: *child_agent,
+                    revisions: DelegationRuntimeRevisions {
+                        manifest_revision,
+                        runtime_revision,
+                        catalog_revision,
+                        provider_state_revision,
+                        model_revision,
+                        agent_revision,
+                        recipe_registry_revision,
+                    },
                     selected_suffix,
                     request_fingerprint,
                     task,
@@ -520,7 +521,7 @@ fn apply(state: &mut JournalState, record: JournalRecord) -> Result<(), JournalE
                 },
             );
         }
-        JournalRecord::DelegationLinked { invocation_id } => {
+        DelegationJournalRecord::DelegationLinked { invocation_id } => {
             let entry = state
                 .entries
                 .get_mut(&invocation_id)
@@ -530,7 +531,7 @@ fn apply(state: &mut JournalState, record: JournalRecord) -> Result<(), JournalE
             }
             entry.linked = true;
         }
-        JournalRecord::DelegationRunStarted {
+        DelegationJournalRecord::DelegationRunStarted {
             invocation_id,
             child_run_id,
         } => {
@@ -551,49 +552,9 @@ fn apply(state: &mut JournalState, record: JournalRecord) -> Result<(), JournalE
 mod tests {
     use std::fs;
 
-    use cookie_agent_protocol::{AgentMode, InvocationId, RunId, SessionId, ToolCallId};
-    use uuid::Uuid;
+    use cookie_agent_protocol::InvocationId;
 
-    use super::{
-        DelegateRequestPayload, DelegationJournal, DelegationReservation, JournalError,
-        JournalRecord, StoredJournalRecord,
-    };
-    use crate::{events::append_jsonl, test_support::agent_snapshot};
-
-    fn invocation() -> InvocationId {
-        InvocationId(Uuid::from_u128(1))
-    }
-
-    fn started() -> JournalRecord {
-        let agent = agent_snapshot("worker", AgentMode::Subagent);
-        JournalRecord::DelegationStarted {
-            reservation: DelegationReservation {
-                invocation_id: invocation(),
-                parent_session_id: SessionId::new_v7(),
-                parent_run_id: RunId::new_v7(),
-                parent_tool_call_id: ToolCallId::new_v7(),
-                child_session_id: SessionId::new_v7(),
-            },
-            selected_suffix: agent.fallback_chain.clone(),
-            child_agent: Box::new(agent),
-            request_fingerprint: "fingerprint".into(),
-            task: "report".into(),
-            request: DelegateRequestPayload {
-                task: "report".into(),
-                context: Vec::new(),
-                success_criteria: Vec::new(),
-                expected_output: serde_json::Value::Null,
-            },
-        }
-    }
-
-    fn stored(record: JournalRecord) -> StoredJournalRecord {
-        StoredJournalRecord {
-            delegation_journal_schema_version:
-                cookie_agent_protocol::DelegationJournalSchemaVersion::current(),
-            record,
-        }
-    }
+    use super::DelegateRequestPayload;
 
     #[test]
     fn delegate_request_payload_is_strict_and_has_no_serde_defaults() {
@@ -618,75 +579,22 @@ mod tests {
     }
 
     #[test]
-    fn journal_replay_rejects_duplicate_and_conflicting_lifecycle_records() {
-        for records in [
-            {
-                let record = started();
-                vec![stored(record.clone()), stored(record)]
-            },
-            vec![
-                stored(started()),
-                stored(JournalRecord::DelegationLinked {
-                    invocation_id: invocation(),
-                }),
-                stored(JournalRecord::DelegationLinked {
-                    invocation_id: invocation(),
-                }),
-            ],
-            {
-                let child_run_id = RunId::new_v7();
-                vec![
-                    stored(started()),
-                    stored(JournalRecord::DelegationRunStarted {
-                        invocation_id: invocation(),
-                        child_run_id,
-                    }),
-                    stored(JournalRecord::DelegationRunStarted {
-                        invocation_id: invocation(),
-                        child_run_id,
-                    }),
-                ]
-            },
-            vec![
-                stored(started()),
-                stored(JournalRecord::DelegationRunStarted {
-                    invocation_id: invocation(),
-                    child_run_id: RunId::new_v7(),
-                }),
-                stored(JournalRecord::DelegationRunStarted {
-                    invocation_id: invocation(),
-                    child_run_id: RunId::new_v7(),
-                }),
-            ],
-        ] {
-            let directory = tempfile::tempdir().expect("directory");
-            let path = directory.path().join("delegation.jsonl");
-            for record in records {
-                append_jsonl(&path, &record).expect("append record");
-            }
-            assert!(matches!(
-                DelegationJournal::open(path),
-                Err(JournalError::Corrupt(found)) if found == invocation()
-            ));
-        }
-    }
-
-    #[test]
-    fn journal_replay_rejects_non_v7_version_and_unknown_fields() {
+    fn journal_replay_accepts_only_schema_eight_and_strict_records() {
+        let invocation_id = InvocationId::new_v7();
         for value in [
             serde_json::json!({
-                "delegation_journal_schema_version":6,
-                "record":{"type":"delegation_linked","invocation_id":invocation()}
+                "delegation_journal_schema_version":7,
+                "record":{"type":"delegation_linked","invocation_id":invocation_id}
             }),
             serde_json::json!({
-                "delegation_journal_schema_version":7,
-                "record":{"type":"delegation_linked","invocation_id":invocation(),"legacy":true}
+                "delegation_journal_schema_version":8,
+                "record":{"type":"delegation_linked","invocation_id":invocation_id,"legacy":true}
             }),
         ] {
             let directory = tempfile::tempdir().expect("directory");
             let path = directory.path().join("delegation.jsonl");
             fs::write(&path, format!("{value}\n")).expect("write journal");
-            assert!(DelegationJournal::open(path).is_err());
+            assert!(super::DelegationJournal::open(path).is_err());
         }
     }
 }

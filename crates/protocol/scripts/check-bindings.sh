@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if (($# > 1)) || (($# == 1)) && [[ "$1" != "--check" ]]; then
+  echo "usage: $0 [--check]" >&2
+  exit 2
+fi
+
 protocol_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 workspace_root="$(cd "${protocol_root}/../.." && pwd)"
 temporary_root="$(mktemp -d)"
@@ -10,7 +15,7 @@ mkdir "${temporary_root}/typescript"
 cp "${protocol_root}/typescript/package.json" "${protocol_root}/typescript/package-lock.json" \
   "${temporary_root}/typescript/"
 npm ci --prefix "${temporary_root}/typescript" --ignore-scripts --no-audit --no-fund
-cargo run --locked --manifest-path "${workspace_root}/Cargo.toml" -p cookie_agent_protocol --example generate -- "${temporary_root}/generated"
+cargo run --locked --manifest-path "${workspace_root}/Cargo.toml" -p cookie_agent_protocol --example generate -- --output "${temporary_root}/generated"
 
 python3 - "${protocol_root}/generated" "${temporary_root}/generated" <<'PY'
 import pathlib

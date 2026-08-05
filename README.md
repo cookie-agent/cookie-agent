@@ -2,159 +2,267 @@
 
 <p align="center"><img src="assets/logo.png" alt="cookie agent logo" width="256"></p>
 
-Subagent-first coding harness
+Subagent-first coding harness.
 
-The accepted future architecture is documented in [ARCHITECTURE.md](ARCHITECTURE.md).
-The strict redesign implementation contract is
-[docs/agent-model-variant-redesign.md](docs/agent-model-variant-redesign.md).
+The authoritative contract is [ARCHITECTURE.md](ARCHITECTURE.md). Exact schema
+and runtime behavior are in
+[docs/agent-model-variant-redesign.md](docs/agent-model-variant-redesign.md), and
+the implemented provider/protocol/auth baseline is frozen in
+[docs/provider-conformance.md](docs/provider-conformance.md).
 
-## Workspace configuration
+## Current-only versions
 
-Cookie Agent uses provider-centric configuration schema 6 and Markdown agent
-document schema 1:
+| Surface | Version |
+|---|---:|
+| Runtime configuration | 7 |
+| Agent document | 1 |
+| Protocol, events, session JSONL/metadata, delegation journal | 8 |
+| Runtime snapshot | 1 |
+| Catalog cache | 1 |
+| Provider store | 2 |
+| Recipe registry | 1 |
+| Project model-snapshot manifest | 1 |
 
-```text
-.cookie-agent/
-  config.toml
-  agents/
-    primary.md
-    worker.md
+Earlier project formats are rejected. There is no schema-6 or protocol-7
+migration.
+
+## Dynamic catalog
+
+Every startup requests exactly `https://models.dev/catalog.json`. Resolution is
+network, validated secure ETag cache, then bundled bootstrap. The selected
+revision is `sha256:<lowercase SHA-256 digest of the exact selected body bytes>`.
+Structurally invalid candidates
+fall through; malformed provider/model records in a bounded structurally valid
+candidate are quarantined independently so valid siblings remain usable.
+
+On Unix, catalog cache schema 1 is fixed below
+`~/.local/share/cookie_agent/catalog/`. Directories are private `0700`; body,
+metadata, lock, and temporary files are current-user-owned `0600` regular
+single-link files handled no-follow and atomically. The metadata records stale/
+fallback state, safe last error, ETag, timestamps, revision, and quarantine
+counts.
+
+## Configuration schema 7
+
+There is one top-level `providers` map; nonempty entries use
+`[providers.<id>]`:
+
+- `source = "models_dev"` uses optional `base_url`, separate typed `setup`,
+  `api_key`, credential-only `auth_override`, and sparse `model_overrides`;
+- `source = "custom"` uses required `endpoint`, `adaptor`, `auth`, and explicit
+  complete `models`, plus separate optional adapter `setup` and `headers`.
+  Custom IDs start with `custom.`.
+
+Same-ID workspace definitions atomically replace user definitions; fields do
+not merge. Managed models are automatic: every reviewed supported,
+non-deprecated text-output model is included unless disabled by a sparse
+override.
+
+Managed providers may author credentials directly in user or workspace config
+with `api_key` or typed `auth_override`. The effective authored credential
+outranks provider-store credentials. Because replacement is atomic, a workspace
+provider does not inherit a same-ID user credential. If authored auth is later
+removed and no authored `base_url` exists, recomposition may use the exact
+eligible provider-store credential. Removing authored setup, auth, and base URL
+allows exact stored setup and auth to become effective. An authored `base_url` without
+same-definition authored auth remains invalid and cannot fall through to store.
+
+`providers` may be omitted or explicitly empty. This is the recommended
+bootstrap configuration:
+
+```toml
+schema_version = 7
+
+[server]
+host = "127.0.0.1"
+port = 17419
+
+[providers]
 ```
 
-Runtime TOML defines providers and included `provider/model-id` models,
-capabilities, defaults, options, and variants. It does not define agents.
-Agents use strict YAML frontmatter plus a required Markdown body that becomes
-the complete system prompt.
+When provider store 2 is also empty and there is no effective authored custom
+provider, it opens the TUI with no models/root-runnable agents and keeps
+`/connect` available. It must not fail with
+`runtime providers must be nonempty`. Because provider store 2 is per-user
+global, empty TOML may still materialize stored managed connections.
 
-Models.dev model capabilities are derived from the pinned catalog and reviewed
-recipe. Explicit models must provide every capability field. Provider headers
-and model defaults/options/variants default empty; model `enabled` defaults
-true. Reasoning is authored only through a variant's `reasoning` field, never
-through ordinary request defaults or provider options.
+The following is a separate nonempty example:
 
-Configuration precedence is built-in runtime defaults, user TOML, then the
-exact cwd's workspace TOML. Same-ID workspace providers and agents replace the
-complete user definition; they are not field-merged. There is no upward search
-and no environment configuration layer. `${env:NAME}` interpolation is allowed
-only in approved provider endpoints, auth secret fields, and header values.
+```toml
+schema_version = 7
 
-The workspace path `.cookie_agent` and old TOML agent/profile/model-alias
-configuration are unsupported and are not inspected or migrated. Protocol,
-event, session JSONL, session metadata, and delegation-journal version 6 are
-also unsupported; the accepted protocol/persistence version is 7.
+[providers.openai]
+source = "models_dev"
+api_key = "${env:COOKIE_AGENT_EXAMPLE_OPENAI_API_KEY}"
 
-Before startup, copy `.env.example` to the gitignored `.env`, set the required
-provider credential variables, export them, and run:
+[providers.google-vertex]
+source = "models_dev"
+setup = { project = "example-project", location = "us-central1", resource = "publishers/google" }
+auth_override = { method = "oauth-access-token-v1", values = { access_token = "${env:COOKIE_AGENT_EXAMPLE_VERTEX_ACCESS_TOKEN}" } }
+
+[providers."custom.example"]
+source = "custom"
+endpoint = "https://api.example.invalid/v1"
+adaptor = "openai-compatible"
+setup = {}
+auth = { method = "bearer-api-key-v1", values = { api_key = "${env:COOKIE_AGENT_EXAMPLE_CUSTOM_API_KEY}" } }
+headers = { "x-example-feature" = "enabled" }
+
+[providers."custom.example".models."example-org/example-text-model"]
+display_name = "Example Custom Text Model"
+defaults = { max_output_tokens = 4096 }
+
+[providers."custom.example".models."example-org/example-text-model".capabilities]
+input = ["text"]
+output = ["text"]
+context_tokens = 32768
+output_tokens = 4096
+tool_calling = true
+parallel_tool_calls = false
+structured_output = false
+reasoning = false
+temperature = true
+top_p = true
+seed = false
+native_replay = "unsupported"
+native_compaction = "unsupported"
+cancellation = "local_only"
+media = {}
+```
+
+The custom model ID contains `/`; its model key splits at the first slash.
+Custom `display_name` and complete `capabilities` are required. `enabled`
+defaults true; `defaults`, adapter `options`, and `variants` default empty; an
+omitted `default_variant` selects exact base. Catalog data is never consulted for
+a custom model.
+
+Custom static headers are public behavior metadata, never credentials. They do
+not support `${env:...}`, are fingerprinted and persisted exactly, and may appear
+in safe diagnostics. Secret-header authentication must use a typed `auth` method
+such as bearer, fixed/provider API-key, `api-key-header-v1`, access token, or AWS
+SigV4 where the selected adaptor allows it. Static headers cannot collide with
+transport-, protocol-, or auth-owned headers.
+
+For example, reviewed compatible header auth uses
+`auth = { method = "api-key-header-v1", parameters = { header_name = "x-api-key" }, values = { api_key = "${env:COOKIE_AGENT_EXAMPLE_CUSTOM_API_KEY}" } }`;
+the secret never belongs in `headers`.
+
+The Vertex example keeps project/location/resource in `setup` and the credential
+in `auth_override`; neither side may duplicate the other's fields.
+All Registry-1 setup values are non-secret behavioral metadata included directly
+in safe fingerprints. Every secret belongs to auth, is excluded from
+fingerprints, and may rotate without changing model behavior identity.
+
+Use `/connect` provider store 2 or `${env:NAME}` interpolation instead of
+plaintext credentials. Interpolation is not available in custom static headers.
+`api_key` is semantic input only; recipe registry 1 owns
+its wire encoding. `auth_override` is exactly
+`{ method = "...", values = { ... } }` and is required when an API-key auth
+method is ambiguous. `api_key` and `auth_override` are mutually exclusive.
+
+Managed auth precedence is exactly same-definition `api_key`, then
+same-definition `auth_override`, then provider store only when no authored
+`base_url` exists, then reviewed no-auth, then unavailable.
+
+Managed setup precedence is complete same-definition `setup`, then stored setup,
+then explicitly defaultable recipe fields, then unavailable. Provider store 2
+stores normalized non-secret setup and secret auth credentials plus policy/
+scope/receipt metadata.
+Setup maps never merge with auth or across layers; custom providers remain fully
+config-only and store-independent.
+
+Managed endpoint precedence is authored `base_url`, then code-owned recipe
+default. Catalog API metadata is only checked. An authored base URL requires
+same-definition authored auth and every required non-defaulted setup field unless
+the recipe is reviewed no-auth. Only explicitly defaultable setup fields may use
+recipe defaults. Stored setup and stored auth never flow to an authored endpoint. All
+endpoint queries, userinfo, and fragments are rejected.
+
+User/workspace config and agent directories must be current-user-owned `0700`;
+their TOML/Markdown files must be `0600` regular single-link files. Secret
+buffers use best-effort zeroization and are redacted from safe state.
+
+## Connect and disconnect
+
+`/connect` lists every current catalog provider plus authored or store-backed
+managed providers removed from the catalog. Unsupported rows remain visible
+with typed reasons. Custom providers never appear and are never
+provider-store-backed.
+
+Managed connect requires catalog revision
+`sha256:<lowercase SHA-256 digest of the exact selected body bytes>`, validates and
+compiles the full candidate before a single durable provider/receipt write, then
+publishes by infallible atomic swap. The result includes durable connection,
+effective auth source, coherent runtime snapshot, and replay status. Authored
+auth remains effective after a stored update.
+
+`/connect` obtains non-secret setup descriptors and secret credential
+descriptors from the code-owned recipe. It renders setup and auth separately,
+validates exact missing/extra fields, and atomically stores normalized setup plus
+credentials. This supports Vertex, Bedrock, Azure, and empty/default setup
+API-key providers without authored provider TOML.
+
+Provider store schema 2 is fixed at
+`~/.local/share/cookie_agent/providers/store-v2.json` with the same private
+ownership/no-follow/atomic guarantees. Disconnect removes managed stored setup
+and credentials; it never edits config or touches custom providers.
+
+Disconnect is revision-bound and idempotent. Same client request ID and payload
+replays its durable receipt/result; conflicting reuse fails. Disconnecting an
+already absent managed provider succeeds as disconnected. The result reports
+post-removal effective auth and one coherent runtime snapshot; authored auth may
+therefore remain effective.
+
+The `/connect` UI always states:
+`Stored setup, connections, and credentials are per-user and shared across workspaces.`
+Stored setup is non-secret and may be projected where the recipe marks it safe;
+stored credential values remain secret and redacted.
+Other daemon processes reconcile the global store generation before discovery,
+session admission, or root-run admission.
+
+## Runtime and sessions
+
+`runtime.snapshot.get` returns runtime snapshot schema 1 containing recipe,
+catalog, provider-state, model, agent, and aggregate runtime revisions plus all
+descriptors. Protocol 8 has no independently racing list-refresh flow. Every
+publication emits `runtime.changed` with a complete snapshot and typed reasons.
+
+Version-8 sessions freeze source kind, config-override fingerprint, exact recipe
+and compiler IDs, endpoint identity, credential source, model behavior, and
+fingerprints. Rehydration never changes credential source: authored config never
+falls to store, managed snapshots require exact recipe/source matching, and
+custom snapshots require the current safe custom-definition fingerprint.
+
+Secret-free compiled model blueprints are retained in project manifest schema 1
+at `.cookie-agent/model-snapshots/<64-lowercase-hex>.json`, where the filename is
+SHA-256 of RFC 8785 JCS payload bytes, with lock
+`model-snapshots-v1.lock`. New root runs use the
+current coherent runtime; delegated sessions remain pinned to their parent's
+accepted manifest; accepted runs never change. Referenced manifests are not
+garbage-collected.
+
+## TUI states
+
+The TUI implements `loading`, `empty`, `ready`, `stale`, `bootstrap`, `unsupported`,
+`disconnected`, `connected-reconnect`, `removed`, and `error-retry`.
+Unsupported Enter opens details only. Stale/bootstrap/error explanations are
+durable global state across navigation, not transient notifications.
+
+In valid empty state, the Message model/draft display is exactly
+`type /connect to continue`. It is not clickable as Model or Variant. Ordinary
+text/run submission is blocked with the same guidance, while `/connect` opens
+all-provider discovery. A coherent refresh that yields a root-runnable
+agent/model replaces the guidance with normal draft selection; otherwise empty
+state remains without fabricating a model.
+
+## Running
+
+Copy `.env.example` to a gitignored `.env`, fill only invented-placeholder
+variables with your own credentials, export them, and run:
 
 ```sh
 set -a; source .env; set +a
 cargo run --locked -p cookie_agent -- daemon
 ```
 
-The checked fixture declares the direct model keys
-`anthropic/kimi-for-coding`, `openai/gpt-5.6-luna`, and
-`quantumcookie.gateway/deepseek-v4-flash`. The first two expose a named `high`
-variant; the compatible-chat fixture uses exact base behavior. Agent documents
-are `primary`, `worker`, `anthropic`, `responses`, and `chat` under
-`.cookie-agent/agents/`.
-
-The completed TUI is included by default. Running `cookie` starts it against an
-in-process server for the current workspace, while `cookie attach` connects it
-to an existing local daemon. The `daemon` and `connect` commands remain
-available in the same binary.
-
-User/workspace configuration and agent documents are loaded descriptor-relative
-with no-follow rules and strict bounds. Provider secrets are redacted and are
-excluded from events, errors, fingerprints, persistence, and generated output.
-
-## Agents, variants, and delegation
-
-Agent fallback chains use direct model keys and optional variants. An omitted
-fallback `variant` uses the provider model's resolved default selection;
-explicit `base` selects exact base; any other value selects that named variant.
-Separately, provider model `default_variant` omission retains its source
-default, explicit `base` selects base, and any other value selects a named
-variant. Both resolve to exact model selections before freezing. Duplicate
-model keys within one chain are invalid.
-
-The public root catalog lists every configured, enabled, currently executable
-model in deterministic `ModelKey` order. Credential-blocked models stay in the
-internal snapshot for authored-agent resolution but are omitted from public
-model descriptors until connected. Exact selections format canonically as
-`provider/model[variant]`: base is `[base]`, and named IDs are preserved exactly,
-including `[default]`; serialization remains the structured model/variant pair.
-
-Every `primary` agent requires a nonempty chain. `subagent` and `all` agents may
-have an empty chain for delegated inheritance, but every empty-chain agent has
-`runnable_as_root = false`. A subagent is never root-selectable; an `all` agent
-is root-selectable only when enabled with its own nonempty chain and at least
-one available selection.
-
-A runnable root agent may select any exact entry from the public root catalog.
-Selecting an authored model produces that exact head plus the available authored
-tail. Selecting a model outside the authored chain produces a synthetic exact
-head plus all available authored fallback entries. Unavailable authored entries
-are skipped. Delegated configured-chain and empty-chain inheritance semantics
-are unchanged.
-
-Delegation is disabled when an agent has no delegation block. Only the
-`delegate` tool creates children, and targets must be listed enabled
-`subagent`/`all` agents. A child with an empty chain inherits the invoking
-parent run's currently active frozen suffix, including its selected variant;
-a child with a configured chain uses its own.
-
-Permissions are ordered, last-match-wins, and Ask by default. Each child uses
-only its own agent permissions. Filesystem tools use prepared descriptor-bound
-resources, and `write` permission governs both write and edit.
-
-## TUI behavior
-
-The Message panel title uses `Agent • provider/model[variant]` with one ASCII
-space on each side of the decorative bullet. Agent and the canonical exact
-model selection are selector regions; the bullet is not clickable, and there
-is no separate variant picker. Visible assistant headers use the same format
-and exact selection from frozen attribution, including `[base]`, with no
-`ASSISTANT` prefix.
-The global model picker renders one row per available model using its resolved
-default (`[base]` or a named variant) plus display name. Variants are changed
-only by clicking `[variant]` in the Message title; variants are never picker
-rows. Changing models selects the shown default, while reselecting the current
-model preserves its exact variant.
-
-Thinking and tool calls render as collapsible children of their owning
-assistant turn, never as standalone `REASONING` or `TOOL` blocks. Compact tool
-rows use safe primary arguments, `…` while running, no success suffix, and a
-concise textual failure/cancellation/interruption marker.
-
-Agents-panel rows are `agent-id:session-title`; child watching preserves the
-tree root, titles patch immediately by monotonic sequence, and panel text height
-is exactly `clamp(visible_tree_row_count, 1, 3)` with borders outside that
-count.
-
-The TUI has an independent strict file at
-`$XDG_CONFIG_HOME/cookie_agent/tui.toml`, falling back to
-`~/.config/cookie_agent/tui.toml`. It has no workspace layer. See
-`docs/tui.toml.example`.
-
-## TUI tree-widget spike
-
-`tui-tree-widget` was evaluated for the TUI tree but not adopted. Its widget
-owns selection/expand interaction as a single row action, while this TUI needs
-separate hit targets: expand-marker clicks only collapse/expand and row clicks
-watch the selected session. The custom tree remains the source of hit-map
-rectangles and per-session collapsed state.
-
-## Distribution
-
-Cookie Agent is an internal application workspace, not a set of crates.io
-packages. Every workspace crate is nonpublishable. Supported release artifacts
-are workspace-built binaries produced from the locked dependency graph:
-
-```sh
-cargo build --release --locked --workspace --all-targets
-```
-
-The executable is `target/release/cookie`. `cargo package`, `cargo publish`, and
-files under `target/package` are not supported distribution paths. The root
-`Cargo.lock` is the only authoritative dependency graph for builds, tests,
-audits, and releases.
+Do not commit `.env` or any credential.

@@ -157,10 +157,36 @@ fn published_oven_dependencies_are_exactly_pinned() {
         "oven-sdk-bedrock = \"=0.3.0\"",
         "oven-sdk-azure = \"=0.3.0\"",
         "oven-sdk-cohere = \"=0.2.0\"",
-        "oven-sdk-open-responses = \"=0.2.0\"",
     ] {
         assert!(manifest.contains(pin), "missing exact pin: {pin}");
     }
+}
+
+#[test]
+fn models_source_and_manifest_have_no_future_open_responses_surface() {
+    let models = workspace().join("crates/models");
+    let source = models.join("src");
+    let mut files = Vec::new();
+    collect_files(&source, &source, &mut files);
+    let markers = [
+        ["Open", "Responses"].concat(),
+        ["open", "_responses"].concat(),
+        ["open", "-responses"].concat(),
+        ["protocol", "_mode"].concat(),
+    ];
+    for relative in files {
+        let path = source.join(relative);
+        let text = fs::read_to_string(&path).unwrap();
+        for marker in &markers {
+            assert!(
+                !text.contains(marker),
+                "future Open Responses marker `{marker}` remains in {}",
+                path.display()
+            );
+        }
+    }
+    let manifest = fs::read_to_string(models.join("Cargo.toml")).unwrap();
+    assert!(!manifest.contains(&["oven-sdk-open", "-responses"].concat()));
 }
 
 #[test]
@@ -581,14 +607,13 @@ fn ci_supply_chain_and_release_gates_are_pinned() {
 }
 
 #[test]
-fn model_package_has_no_registry_discovery_network_fetch_or_unapproved_adapters() {
+fn model_package_catalog_network_is_fixed_and_has_no_unapproved_adapters() {
     let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    let source = [
+    let current_facade_source = [
         "lib.rs",
-        "schema.rs",
-        "catalog.rs",
-        "credentials.rs",
-        "manager.rs",
+        "model_types.rs",
+        "manager/mod.rs",
+        "manifests/mod.rs",
     ]
     .into_iter()
     .map(|file| fs::read_to_string(source_root.join(file)).unwrap())
@@ -603,11 +628,133 @@ fn model_package_has_no_registry_discovery_network_fetch_or_unapproved_adapters(
         "starts_with(\"claude",
         "replay_discriminator",
         "google_vertex_replay_scope",
+    ] {
+        assert!(
+            !current_facade_source.contains(forbidden),
+            "forbidden model-package behavior: {forbidden}"
+        );
+    }
+
+    let catalog_root = source_root.join("catalog");
+    let catalog_source = fs::read_dir(&catalog_root)
+        .unwrap()
+        .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect::<String>();
+    assert!(catalog_source.contains("https://models.dev/catalog.json"));
+    for forbidden in [
         "reqwest::get",
+        "Policy::limited",
+        "Accept-Encoding: gzip",
+        "catalog_url",
+        "MODELS_DEV_LIVE_SHA256",
+        "std::env::var",
+        "std::env::var_os",
+    ] {
+        assert!(
+            !catalog_source.contains(forbidden),
+            "forbidden dynamic catalog behavior: {forbidden}"
+        );
+    }
+    assert!(catalog_source.contains("Policy::none"));
+    assert!(catalog_source.contains("accept_encoding: \"identity\""));
+    assert!(catalog_source.contains("connect_timeout(Duration::from_secs(5))"));
+    assert!(catalog_source.contains("timeout(Duration::from_secs(15))"));
+
+    let manifest = fs::read_to_string(workspace().join("Cargo.toml")).unwrap();
+    assert!(manifest.contains("default-features = false"));
+    assert!(manifest.contains("features = [\"json\", \"stream\", \"rustls-tls\"]"));
+}
+
+#[test]
+fn synthetic_claim_fixture_is_explicitly_unapproved_safe_and_not_a_runtime_pin() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/models-dev-claims-synthetic.json");
+    let metadata_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/models-dev-claims-synthetic.meta.json");
+    let bytes = fs::read(&fixture).unwrap();
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(metadata_path).unwrap()).unwrap();
+    assert_eq!(metadata["byte_length"], bytes.len() as u64);
+    assert_eq!(metadata["sha256"], format!("{:x}", Sha256::digest(&bytes)));
+    assert_eq!(metadata["runtime_pin"], false);
+    assert_eq!(metadata["contains_secrets"], false);
+    assert_eq!(metadata["approved_live_audit"], false);
+    assert_eq!(metadata["fixture_kind"], "invented_claim_edge_cases");
+    assert_no_secret_material(&fixture, &bytes);
+}
+
+#[test]
+fn approved_full_live_catalog_fixture_has_exact_capture_integrity() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let fixture = root.join("models-dev-live-audit-2026-08-05.json");
+    let metadata_path = root.join("models-dev-live-audit-2026-08-05.meta.json");
+    let bytes = fs::read(&fixture).unwrap();
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(metadata_path).unwrap()).unwrap();
+    assert_eq!(bytes.len(), 3_801_566);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&bytes)),
+        "25dd5dd6eb21b2d78044606eeb806d8cdd38640c8deea071122d5591edb88795"
+    );
+    assert_eq!(metadata["schema_version"], 1);
+    assert_eq!(metadata["fixture_kind"], "full_live_catalog_audit");
+    assert_eq!(metadata["review_status"], "approved");
+    assert_eq!(metadata["source_url"], "https://models.dev/catalog.json");
+    assert_eq!(metadata["captured_at"], "2026-08-05T22:11:05Z");
+    assert_eq!(metadata["etag"], "\"25dd5dd6eb21b2d78044606eeb806d8c\"");
+    assert_eq!(metadata["accept_encoding"], "identity");
+    assert_eq!(metadata["byte_length"], 3_801_566);
+    assert_eq!(
+        metadata["sha256"],
+        "25dd5dd6eb21b2d78044606eeb806d8cdd38640c8deea071122d5591edb88795"
+    );
+    assert_eq!(metadata["provider_count"], 180);
+    assert_eq!(metadata["provider_model_count"], 6_131);
+    assert_eq!(metadata["canonical_model_count"], 293);
+    assert_eq!(metadata["test_only"], true);
+    assert_eq!(metadata["runtime_pin"], false);
+    assert_eq!(metadata["contains_secrets"], false);
+
+    let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let providers = document["providers"].as_object().unwrap();
+    assert_eq!(providers.len(), 180);
+    assert_eq!(
+        providers
+            .values()
+            .map(|provider| provider["models"].as_object().unwrap().len())
+            .sum::<usize>(),
+        6_131
+    );
+    assert_eq!(document["models"].as_object().unwrap().len(), 293);
+    assert_no_secret_material(&fixture, &bytes);
+}
+
+#[test]
+fn catalog_cache_source_has_only_the_fixed_persistent_layout() {
+    let catalog = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/catalog");
+    let source = fs::read_dir(catalog)
+        .unwrap()
+        .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect::<String>();
+    for forbidden in [
+        "models-dev-v1.current.json",
+        "CatalogCacheCurrentV1",
+        "generation_file(",
+        ".generation",
     ] {
         assert!(
             !source.contains(forbidden),
-            "forbidden model-package behavior: {forbidden}"
+            "forbidden catalog cache generation layout: {forbidden}"
+        );
+    }
+    for required in [
+        "models-dev-v1.json",
+        "models-dev-v1.meta.json",
+        "models-dev-v1.lock",
+    ] {
+        assert!(
+            source.contains(required),
+            "missing fixed cache path: {required}"
         );
     }
 }

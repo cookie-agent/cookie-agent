@@ -1,9 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use cookie_agent_identity::{
-    AgentId, ConfiguredVariantRef, ModelKey, ModelSelection, SafeCode, WildcardPattern,
-};
-use cookie_agent_models::{ModelSet, Sha256Digest};
+use cookie_agent_identity::{AgentId, ConfiguredVariantRef, ModelKey, SafeCode, WildcardPattern};
 use serde::{Deserialize, Serialize};
 
 use crate::{AgentDocument, ConfigError};
@@ -14,6 +11,7 @@ const MAX_LIST: usize = 256;
 /// Exact schema-1 agent marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct AgentSchemaVersion;
+
 impl<'de> Deserialize<'de> for AgentSchemaVersion {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -103,262 +101,79 @@ pub struct AgentFrontmatter {
     pub delegation: Option<AgentDelegationConfig>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentDescriptor {
-    pub id: AgentId,
-    pub description: String,
-    pub mode: AgentMode,
-    pub enabled: bool,
-    pub runnable_as_root: bool,
-    pub resolved_fallback: Vec<ModelSelection>,
-    pub tools: Vec<ToolName>,
-    pub delegation_targets: Vec<AgentId>,
+/// Validated authored-agent input for downstream runtime materialization.
+///
+/// `root_eligible` covers only authored policy. P7 computes `runnable_as_root`
+/// by additionally requiring at least one available materialized fallback.
+#[derive(Clone, Copy, Debug)]
+pub struct AgentMaterializationInput<'a> {
+    pub document: &'a AgentDocument,
+    pub root_eligible: bool,
 }
 
-#[derive(Clone, Debug)]
-pub struct ResolvedAgent {
-    pub document: AgentDocument,
-    pub resolved_fallback: Vec<ModelSelection>,
-    pub runnable_as_root: bool,
-    model_snapshot_fingerprint: Sha256Digest,
-}
-
-/// Exact executable fallback plan for a public root selection.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootModelPlan {
-    selections: Vec<ModelSelection>,
-}
-
-impl RootModelPlan {
-    #[must_use]
-    pub fn selections(&self) -> &[ModelSelection] {
-        &self.selections
-    }
-
-    #[must_use]
-    pub fn into_selections(self) -> Vec<ModelSelection> {
-        self.selections
-    }
-}
-
-/// Existing chain-only suffix plan used for delegated agents with authored fallback.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DelegatedModelPlan {
-    selections: Vec<ModelSelection>,
-}
-
-impl DelegatedModelPlan {
-    #[must_use]
-    pub fn selections(&self) -> &[ModelSelection] {
-        &self.selections
-    }
-
-    #[must_use]
-    pub fn into_selections(self) -> Vec<ModelSelection> {
-        self.selections
-    }
-}
-
-impl ResolvedAgent {
-    #[must_use]
-    pub fn model_snapshot_fingerprint(&self) -> &Sha256Digest {
-        &self.model_snapshot_fingerprint
-    }
-
-    /// Builds a root plan from one coherent model snapshot.
-    pub fn plan_root_selection(
-        &self,
-        selection: &ModelSelection,
-        models: &ModelSet,
-    ) -> Result<RootModelPlan, ConfigError> {
-        self.validate_model_snapshot(models)?;
-        if !self.runnable_as_root {
-            return Err(ConfigError::IneligibleRootAgent(self.document.id.clone()));
-        }
-        validate_selection(&self.document.id, selection, models)?;
-
-        let authored_start = self
-            .resolved_fallback
-            .iter()
-            .position(|entry| entry.model == selection.model);
-        let authored = authored_start.map_or(self.resolved_fallback.as_slice(), |index| {
-            &self.resolved_fallback[index..]
-        });
-        let mut selections = authored
-            .iter()
-            .filter(|entry| model_is_available(models, &entry.model))
-            .cloned()
-            .collect::<Vec<_>>();
-
-        if authored_start.is_some() {
-            selections[0] = selection.clone();
-        } else {
-            selections.insert(0, selection.clone());
-        }
-        Ok(RootModelPlan { selections })
-    }
-
-    /// Selects the unique authored suffix for delegated planning.
-    pub fn plan_delegated_selection(
-        &self,
-        selection: &ModelSelection,
-        models: &ModelSet,
-    ) -> Result<DelegatedModelPlan, ConfigError> {
-        self.validate_model_snapshot(models)?;
-        let index = self
-            .resolved_fallback
-            .iter()
-            .position(|entry| entry.model == selection.model)
-            .ok_or_else(|| ConfigError::InvalidRunSelection {
-                agent: self.document.id.clone(),
-                model: selection.model.clone(),
-            })?;
-        validate_selection(&self.document.id, selection, models)?;
-        let mut suffix = self.resolved_fallback[index..].to_vec();
-        suffix[0] = selection.clone();
-        Ok(DelegatedModelPlan { selections: suffix })
-    }
-
-    fn validate_model_snapshot(&self, models: &ModelSet) -> Result<(), ConfigError> {
-        if self.model_snapshot_fingerprint == *models.fingerprint() {
-            Ok(())
-        } else {
-            Err(ConfigError::ModelSnapshotMismatch(self.document.id.clone()))
-        }
-    }
-}
-
-fn validate_selection(
-    agent: &AgentId,
-    selection: &ModelSelection,
-    models: &ModelSet,
-) -> Result<(), ConfigError> {
-    let model = models
-        .get(&selection.model)
-        .filter(|model| model.is_available())
-        .ok_or_else(|| ConfigError::InvalidRunSelection {
-            agent: agent.clone(),
-            model: selection.model.clone(),
-        })?;
-    if let Some(variant) = &selection.variant
-        && !model.variants().contains_key(variant)
-    {
-        return Err(ConfigError::UnknownVariant {
-            agent: agent.clone(),
-            model: selection.model.clone(),
-            variant: variant.to_string(),
-        });
-    }
-    Ok(())
-}
-
-fn model_is_available(models: &ModelSet, key: &ModelKey) -> bool {
-    models
-        .get(key)
-        .is_some_and(cookie_agent_models::ModelEntry::is_available)
-}
-
+/// Atomically validated authored agent documents, independent of model execution.
 #[derive(Clone, Debug)]
 pub struct AgentRegistry {
-    agents: BTreeMap<AgentId, ResolvedAgent>,
+    agents: BTreeMap<AgentId, AgentDocument>,
 }
 
 impl AgentRegistry {
-    pub fn resolve(
-        documents: BTreeMap<AgentId, AgentDocument>,
-        models: &ModelSet,
-    ) -> Result<Self, ConfigError> {
-        for document in documents.values() {
-            validate_agent_document(document, &documents)?;
-        }
-        let mut agents = BTreeMap::new();
-        for (id, document) in documents {
-            let mut resolved = Vec::with_capacity(document.frontmatter.model_fallback.len());
-            let mut seen = BTreeSet::new();
-            for fallback in &document.frontmatter.model_fallback {
-                if !seen.insert(fallback.model.clone()) {
-                    return Err(ConfigError::DuplicateFallbackModel {
-                        agent: id.clone(),
-                        model: fallback.model.clone(),
-                    });
-                }
-                let entry =
-                    models
-                        .get(&fallback.model)
-                        .ok_or_else(|| ConfigError::UnknownModel {
-                            agent: id.clone(),
-                            model: fallback.model.clone(),
-                        })?;
-                let variant = match &fallback.variant {
-                    None => entry.default_variant().cloned(),
-                    Some(ConfiguredVariantRef::Base) => None,
-                    Some(ConfiguredVariantRef::Named(variant)) => {
-                        if !entry.variants().contains_key(variant) {
-                            return Err(ConfigError::UnknownVariant {
-                                agent: id.clone(),
-                                model: fallback.model.clone(),
-                                variant: variant.to_string(),
-                            });
-                        }
-                        Some(variant.clone())
-                    }
-                };
-                resolved.push(ModelSelection {
-                    model: fallback.model.clone(),
-                    variant,
-                });
-            }
-            let available = resolved
-                .iter()
-                .any(|selection| model_is_available(models, &selection.model));
-            let runnable_as_root = document.frontmatter.enabled
-                && matches!(
-                    document.frontmatter.mode,
-                    AgentMode::Primary | AgentMode::All
-                )
-                && !resolved.is_empty()
-                && available;
-            agents.insert(
-                id,
-                ResolvedAgent {
-                    document,
-                    resolved_fallback: resolved,
-                    runnable_as_root,
-                    model_snapshot_fingerprint: models.fingerprint().clone(),
-                },
-            );
-        }
+    pub fn validate(agents: BTreeMap<AgentId, AgentDocument>) -> Result<Self, ConfigError> {
+        Self::validate_ref(&agents)?;
         Ok(Self { agents })
     }
 
+    pub(crate) fn validate_ref(
+        agents: &BTreeMap<AgentId, AgentDocument>,
+    ) -> Result<(), ConfigError> {
+        for document in agents.values() {
+            validate_agent_document(document, agents)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn from_validated(agents: BTreeMap<AgentId, AgentDocument>) -> Self {
+        Self { agents }
+    }
+
     #[must_use]
-    pub fn get(&self, id: &AgentId) -> Option<&ResolvedAgent> {
+    pub fn get(&self, id: &AgentId) -> Option<&AgentDocument> {
         self.agents.get(id)
     }
-    pub fn agents(&self) -> impl ExactSizeIterator<Item = (&AgentId, &ResolvedAgent)> {
+
+    pub fn agents(&self) -> impl ExactSizeIterator<Item = (&AgentId, &AgentDocument)> {
         self.agents.iter()
     }
-    pub fn descriptors(&self) -> Vec<AgentDescriptor> {
-        self.agents
-            .iter()
-            .map(|(id, agent)| AgentDescriptor {
-                id: id.clone(),
-                description: agent.document.frontmatter.description.clone(),
-                mode: agent.document.frontmatter.mode,
-                enabled: agent.document.frontmatter.enabled,
-                runnable_as_root: agent.runnable_as_root,
-                resolved_fallback: agent.resolved_fallback.clone(),
-                tools: agent.document.frontmatter.tools.clone(),
-                delegation_targets: agent
-                    .document
-                    .frontmatter
-                    .delegation
-                    .as_ref()
-                    .map_or_else(Vec::new, |delegation| delegation.agents.clone()),
-            })
-            .collect()
+
+    #[must_use]
+    pub fn documents(&self) -> &BTreeMap<AgentId, AgentDocument> {
+        &self.agents
     }
+
+    #[must_use]
+    pub fn into_documents(self) -> BTreeMap<AgentId, AgentDocument> {
+        self.agents
+    }
+
+    pub fn materialization_inputs(
+        &self,
+    ) -> impl ExactSizeIterator<Item = AgentMaterializationInput<'_>> {
+        self.agents
+            .values()
+            .map(|document| AgentMaterializationInput {
+                document,
+                root_eligible: authored_root_eligible(document),
+            })
+    }
+}
+
+fn authored_root_eligible(document: &AgentDocument) -> bool {
+    document.frontmatter.enabled
+        && matches!(
+            document.frontmatter.mode,
+            AgentMode::Primary | AgentMode::All
+        )
+        && !document.frontmatter.model_fallback.is_empty()
 }
 
 fn validate_agent_document(
@@ -385,6 +200,15 @@ fn validate_agent_document(
     ] {
         if length > MAX_LIST {
             return Err(ConfigError::AgentLimit(document.id.clone()));
+        }
+    }
+    let mut fallback_models = BTreeSet::new();
+    for fallback in &frontmatter.model_fallback {
+        if !fallback_models.insert(fallback.model.clone()) {
+            return Err(ConfigError::DuplicateFallbackModel {
+                agent: document.id.clone(),
+                model: fallback.model.clone(),
+            });
         }
     }
     if frontmatter.tools.iter().collect::<BTreeSet<_>>().len() != frontmatter.tools.len() {

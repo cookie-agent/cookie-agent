@@ -31,3 +31,16 @@ fn offline_check_requires_an_explicit_prepared_source_and_never_clones() {
     assert!(stderr.contains("--check requires --source"));
     assert!(stderr.contains("offline mode never clones"));
 }
+
+#[test]
+fn updater_names_the_artifact_as_bootstrap_not_a_runtime_revision_pin() {
+    let source = std::fs::read_to_string(script()).unwrap();
+    assert!(source.contains("BOOTSTRAP_OUTPUT"));
+    assert!(source.contains("LICENSE_OUTPUT"));
+    assert!(source.contains("PROVENANCE_OUTPUT"));
+    assert!(source.contains("INTEGRITY_CONSTANTS"));
+    assert!(source.contains("runtime network selection remains unpinned"));
+    assert!(!source.contains("models-dev-claims-synthetic"));
+    assert!(!source.contains("models-dev-live-audit-2026-08-05"));
+    assert!(!source.contains("required runtime revision"));
+}

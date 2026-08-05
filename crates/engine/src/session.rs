@@ -16,7 +16,7 @@ use std::{
 use cookie_agent_protocol::{
     AgentSnapshot, ChildSummary, ClientRunId, EventPayload, RunId, RunSelection, SessionId,
     SessionMeta, SessionOrigin, SessionRenameRecord, SessionStatus, SessionTitleChange,
-    SessionTree, Sha256Digest, ToolCallId, Usage,
+    SessionTree, ToolCallId, Usage,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -61,7 +61,6 @@ pub struct RunProjection {
 pub struct SessionProjection {
     pub meta: SessionMeta,
     pub creation_agent: AgentSnapshot,
-    pub model_snapshot_fingerprint: Sha256Digest,
     pub status: SessionStatus,
     pub usage: Option<Usage>,
     pub runs: HashMap<RunId, RunProjection>,
@@ -266,33 +265,63 @@ impl SessionStore {
 
 fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
     let events = log.events();
-    let (origin, cwd_identity, creation_selection, creation_agent, model_snapshot_fingerprint) =
-        match &events
-            .first()
-            .expect("creation checked by EventLog")
-            .payload
-        {
-            EventPayload::SessionCreated {
-                origin,
-                cwd_identity,
-                creation_selection,
-                creation_agent,
-                model_snapshot_fingerprint,
-            } => (
-                origin.clone(),
-                cwd_identity.clone(),
-                creation_selection.clone(),
-                creation_agent.as_ref().clone(),
-                model_snapshot_fingerprint.clone(),
-            ),
-            _ => unreachable!(),
-        };
+    let (
+        origin,
+        cwd_identity,
+        creation_selection,
+        creation_agent,
+        runtime_revision,
+        catalog_revision,
+        provider_state_revision,
+        model_revision,
+        agent_revision,
+        recipe_registry_revision,
+        manifest_revision,
+    ) = match &events
+        .first()
+        .expect("creation checked by EventLog")
+        .payload
+    {
+        EventPayload::SessionCreated {
+            origin,
+            cwd_identity,
+            creation_selection,
+            creation_agent,
+            runtime_revision,
+            catalog_revision,
+            provider_state_revision,
+            model_revision,
+            agent_revision,
+            recipe_registry_revision,
+            manifest_revision,
+        } => (
+            origin.clone(),
+            cwd_identity.clone(),
+            creation_selection.clone(),
+            creation_agent.as_ref().clone(),
+            runtime_revision.clone(),
+            catalog_revision.clone(),
+            provider_state_revision.clone(),
+            model_revision.clone(),
+            agent_revision.clone(),
+            recipe_registry_revision.clone(),
+            manifest_revision.clone(),
+        ),
+        _ => unreachable!(),
+    };
     let mut meta = SessionMeta {
         meta_schema_version: cookie_agent_protocol::SessionMetaSchemaVersion::current(),
         session_id: events[0].session_id,
         origin,
         cwd_identity,
         creation_selection,
+        runtime_revision,
+        catalog_revision,
+        provider_state_revision,
+        model_revision,
+        agent_revision,
+        recipe_registry_revision,
+        manifest_revision,
         title: None,
         title_updated_seq: 0,
         last_event_seq: events.last().map_or(1, |event| event.seq),
@@ -425,7 +454,6 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
     Ok(SessionProjection {
         meta,
         creation_agent,
-        model_snapshot_fingerprint,
         status,
         usage,
         runs,

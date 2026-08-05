@@ -7,6 +7,7 @@ use crate::*;
 
 #[derive(Debug)]
 pub enum BindingExportError {
+    Arguments(String),
     Io(std::io::Error),
     Json(serde_json::Error),
     TypeScript(ts_rs::ExportError),
@@ -15,6 +16,9 @@ pub enum BindingExportError {
 impl fmt::Display for BindingExportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Arguments(error) => {
+                write!(formatter, "invalid binding generator arguments: {error}")
+            }
             Self::Io(error) => write!(formatter, "binding output failed: {error}"),
             Self::Json(error) => write!(formatter, "schema encoding failed: {error}"),
             Self::TypeScript(error) => write!(formatter, "TypeScript export failed: {error}"),
@@ -85,19 +89,16 @@ macro_rules! protocol_roots {
             ApprovalRespondError,
             ApprovalListParams,
             ApprovalListResult,
-            CatalogProviderListParams,
-            CatalogProviderListResult,
-            CatalogModelListParams,
-            CatalogModelListResult,
-            CatalogError,
-            ProviderConnectParams,
+            RuntimeSnapshotGetParams,
+            RuntimeSnapshotResult,
+            RuntimeChangedNotification,
             ProviderConnectResult,
             ProviderConnectError,
-            ModelListParams,
-            ModelListResult,
-            ModelListError,
-            AgentListParams,
-            AgentListResult
+            ProviderDisconnectParams,
+            ProviderDisconnectResult,
+            ProviderDisconnectError,
+            ModelSnapshotManifestV1,
+            StoredDelegationJournalRecord
         )
     };
 }
@@ -191,6 +192,21 @@ pub const TYPESCRIPT_GLOBALS: &str = r#"declare global {
   type ProviderModelId = string;
   type ModelKey = string;
   type VariantId = string;
+  type SetupFieldId = string;
+  type AuthFieldName = string;
+  type AuthMethodId = string;
+  type ProviderRecipeId = string;
+  type ProtocolRecipeId = string;
+  type ProviderSetupRecipeId = string;
+  type RecipeCompilerVersion = string;
+  type CatalogRevision = string;
+  type RecipeRegistryRevision = string;
+  type ProviderStoreRevision = string;
+  type ProviderStateRevision = string;
+  type ModelRevision = string;
+  type AgentRevision = string;
+  type RuntimeRevision = string;
+  type ModelSnapshotRevision = string;
   type ModelSelection = { model: ModelKey; variant: VariantId | null };
   type LanguageModelDescriptor = {
     identity: { provider_id: string; model_id: string };
@@ -212,13 +228,13 @@ export {};
 
 pub const TYPESCRIPT_COMPILE_FIXTURE: &str = r#"/// <reference path="./globals.d.ts" />
 import type {
-  AgentListResult,
-  CatalogModelListResult,
-  CatalogProviderListResult,
   ClientHello,
-  ModelListResult,
-  ProviderConnectParams,
+  ModelSnapshotManifestV1,
+  ProviderConnectResult,
+  ProviderDisconnectParams,
   Request,
+  RuntimeChangedNotification,
+  RuntimeSnapshotResult,
   RunStartParams,
   SessionCreateParams,
   StoredEvent,
@@ -230,11 +246,11 @@ const roots: [
   SessionCreateParams,
   RunStartParams,
   StoredEvent,
-  CatalogProviderListResult,
-  CatalogModelListResult,
-  ProviderConnectParams,
-  ModelListResult,
-  AgentListResult,
+  RuntimeSnapshotResult,
+  RuntimeChangedNotification,
+  ProviderConnectResult,
+  ProviderDisconnectParams,
+  ModelSnapshotManifestV1,
 ] | null = null;
 
 export { roots };

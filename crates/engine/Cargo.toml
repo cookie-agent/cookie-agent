@@ -10,10 +10,12 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+arc-swap.workspace = true
 async-trait.workspace = true
 base64 = "0.22"
 bytes.workspace = true
 cookie_agent_config = { version = "=0.1.0", path = "../config" }
+cookie_agent_identity = { version = "=0.1.0", path = "../identity" }
 cookie_agent_models = { version = "=0.1.0", path = "../models" }
 cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
 crc32fast.workspace = true
@@ -39,3 +41,4 @@ flate2.workspace = true
 insta.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+toml.workspace = true

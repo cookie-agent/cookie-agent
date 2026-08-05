@@ -227,7 +227,7 @@ impl AgentSnapshot {
         if !self
             .fallback_chain
             .iter()
-            .all(|binding| models.insert(binding.resolved.selection.model.clone()))
+            .all(|binding| models.insert(binding.selection.model.clone()))
         {
             return Err(AgentSchemaError::DuplicateFallbackModel);
         }
@@ -249,7 +249,7 @@ impl AgentSnapshot {
         self.validate()?;
         let start = self.selected_suffix_start as usize;
         if selection.agent != self.agent
-            || self.fallback_chain[start].resolved.selection.model != selection.model.model
+            || self.fallback_chain[start].selection.model != selection.model.model
         {
             return Err(AgentSchemaError::SelectionMismatch);
         }
@@ -269,15 +269,12 @@ impl AgentSnapshot {
         }
         let selected_head = &selected_suffix[0];
         let fallback_head = &expected[0];
-        if selected_head.resolved.selection != selection.model
-            || selected_head.resolved.provider_id != fallback_head.resolved.provider_id
-            || selected_head.resolved.model_id != fallback_head.resolved.model_id
-            || selected_head.resolved.adapter_id != fallback_head.resolved.adapter_id
+        if selected_head.selection != selection.model
             || selected_head.descriptor != fallback_head.descriptor
         {
             return Err(AgentSchemaError::SelectedSuffixMismatch);
         }
-        if selection.model.variant == fallback_head.resolved.selection.variant
+        if selection.model.variant == fallback_head.selection.variant
             && selected_head != fallback_head
         {
             return Err(AgentSchemaError::SelectedSuffixMismatch);

@@ -7,8 +7,8 @@ impl Engine {
         session: SessionId,
         run: RunId,
         cancellation: &CancellationToken,
-        binding: &cookie_agent_models::FrozenModelBinding,
-        model: &cookie_agent_models::ResolvedModel,
+        binding: &cookie_agent_protocol::FrozenModelBinding,
+        model: &policy::ResolvedRuntimeModel,
         internal_policy: &FrozenInternalAgentPolicy,
         events: Vec<StoredEvent>,
         force: bool,
@@ -141,8 +141,8 @@ impl Engine {
                                 adapter_id: safe_code(result.native_context.adapter_id().as_str()),
                                 selection_fingerprint: wire_model(binding).selection_fingerprint,
                                 scope: cookie_agent_protocol::NativeContextScope {
-                                    provider_id: binding.resolved.provider_id.clone(),
-                                    model_id: binding.resolved.model_id.clone(),
+                                    provider_id: binding.selection.model.provider_id(),
+                                    model_id: binding.selection.model.model_id(),
                                     resource_id: safe_display(
                                         result.native_context.scope().resource_id.as_str(),
                                     ),

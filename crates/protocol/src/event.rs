@@ -97,6 +97,20 @@ pub struct SessionMeta {
     pub origin: SessionOrigin,
     pub cwd_identity: CwdIdentity,
     pub creation_selection: RunSelection,
+    #[ts(type = "RuntimeRevision")]
+    pub runtime_revision: RuntimeRevision,
+    #[ts(type = "CatalogRevision")]
+    pub catalog_revision: CatalogRevision,
+    #[ts(type = "ProviderStateRevision")]
+    pub provider_state_revision: ProviderStateRevision,
+    #[ts(type = "ModelRevision")]
+    pub model_revision: ModelRevision,
+    #[ts(type = "AgentRevision")]
+    pub agent_revision: AgentRevision,
+    #[ts(type = "RecipeRegistryRevision")]
+    pub recipe_registry_revision: RecipeRegistryRevision,
+    #[ts(type = "ModelSnapshotRevision")]
+    pub manifest_revision: ModelSnapshotRevision,
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<SessionTitle>", required)]
     pub title: Option<SessionTitle>,
@@ -126,6 +140,13 @@ impl<'de> Deserialize<'de> for SessionMeta {
             origin: SessionOrigin,
             cwd_identity: CwdIdentity,
             creation_selection: RunSelection,
+            runtime_revision: RuntimeRevision,
+            catalog_revision: CatalogRevision,
+            provider_state_revision: ProviderStateRevision,
+            model_revision: ModelRevision,
+            agent_revision: AgentRevision,
+            recipe_registry_revision: RecipeRegistryRevision,
+            manifest_revision: ModelSnapshotRevision,
             #[serde(deserialize_with = "deserialize_required_option")]
             title: Option<SessionTitle>,
             title_updated_seq: u64,
@@ -139,6 +160,13 @@ impl<'de> Deserialize<'de> for SessionMeta {
             origin: w.origin,
             cwd_identity: w.cwd_identity,
             creation_selection: w.creation_selection,
+            runtime_revision: w.runtime_revision,
+            catalog_revision: w.catalog_revision,
+            provider_state_revision: w.provider_state_revision,
+            model_revision: w.model_revision,
+            agent_revision: w.agent_revision,
+            recipe_registry_revision: w.recipe_registry_revision,
+            manifest_revision: w.manifest_revision,
             title: w.title,
             title_updated_seq: w.title_updated_seq,
             last_event_seq: w.last_event_seq,
@@ -546,10 +574,15 @@ impl NativeReplayArtifact {
         binding
             .validate()
             .map_err(|_| NativeArtifactError::InvalidScope)?;
-        if self.adapter_id.as_str() != binding.descriptor.adapter_id.as_str() {
+        if self.adapter_id.as_str() != binding.descriptor.adapter_id.as_str()
+            || self.selection_fingerprint != binding.blueprint_fingerprint
+            || self.scope != *expected_scope
+            || self.scope.provider_id != binding.selection.model.provider_id()
+            || self.scope.model_id != binding.selection.model.model_id()
+        {
             return Err(NativeArtifactError::InvalidScope);
         }
-        self.validate_for(&binding.resolved, expected_scope)
+        Ok(())
     }
 }
 impl fmt::Debug for NativeReplayArtifact {
@@ -645,10 +678,15 @@ impl NativeContextWindow {
         binding
             .validate()
             .map_err(|_| NativeArtifactError::InvalidScope)?;
-        if self.adapter_id.as_str() != binding.descriptor.adapter_id.as_str() {
+        if self.adapter_id.as_str() != binding.descriptor.adapter_id.as_str()
+            || self.selection_fingerprint != binding.blueprint_fingerprint
+            || self.scope != *expected_scope
+            || self.scope.provider_id != binding.selection.model.provider_id()
+            || self.scope.model_id != binding.selection.model.model_id()
+        {
             return Err(NativeArtifactError::InvalidScope);
         }
-        self.validate_for(&binding.resolved, expected_scope)
+        Ok(())
     }
 }
 impl fmt::Debug for NativeContextWindow {
@@ -723,10 +761,15 @@ impl NativeContextArtifact {
         binding
             .validate()
             .map_err(|_| NativeArtifactError::InvalidScope)?;
-        if self.adapter_id.as_str() != binding.descriptor.adapter_id.as_str() {
+        if self.adapter_id.as_str() != binding.descriptor.adapter_id.as_str()
+            || self.selection_fingerprint != binding.blueprint_fingerprint
+            || self.scope != *expected_scope
+            || self.scope.provider_id != binding.selection.model.provider_id()
+            || self.scope.model_id != binding.selection.model.model_id()
+        {
             return Err(NativeArtifactError::InvalidScope);
         }
-        self.validate_for(&binding.resolved, expected_scope)
+        Ok(())
     }
 }
 impl<'de> Deserialize<'de> for NativeContextArtifact {
@@ -1399,12 +1442,39 @@ pub enum EventPayload {
         cwd_identity: CwdIdentity,
         creation_selection: RunSelection,
         creation_agent: Box<AgentSnapshot>,
-        model_snapshot_fingerprint: Sha256Digest,
+        #[ts(type = "RuntimeRevision")]
+        runtime_revision: RuntimeRevision,
+        #[ts(type = "CatalogRevision")]
+        catalog_revision: CatalogRevision,
+        #[ts(type = "ProviderStateRevision")]
+        provider_state_revision: ProviderStateRevision,
+        #[ts(type = "ModelRevision")]
+        model_revision: ModelRevision,
+        #[ts(type = "AgentRevision")]
+        agent_revision: AgentRevision,
+        #[ts(type = "RecipeRegistryRevision")]
+        recipe_registry_revision: RecipeRegistryRevision,
+        #[ts(type = "ModelSnapshotRevision")]
+        manifest_revision: ModelSnapshotRevision,
     },
     RunStarted {
         client_run_id: ClientRunId,
         selection: RunSelection,
         agent: Box<AgentSnapshot>,
+        #[ts(type = "RuntimeRevision")]
+        runtime_revision: RuntimeRevision,
+        #[ts(type = "CatalogRevision")]
+        catalog_revision: CatalogRevision,
+        #[ts(type = "ProviderStateRevision")]
+        provider_state_revision: ProviderStateRevision,
+        #[ts(type = "ModelRevision")]
+        model_revision: ModelRevision,
+        #[ts(type = "AgentRevision")]
+        agent_revision: AgentRevision,
+        #[ts(type = "RecipeRegistryRevision")]
+        recipe_registry_revision: RecipeRegistryRevision,
+        #[ts(type = "ModelSnapshotRevision")]
+        manifest_revision: ModelSnapshotRevision,
         #[schemars(length(min = 1, max = 256))]
         selected_suffix: Vec<FrozenModelBinding>,
         input_through_seq: u64,

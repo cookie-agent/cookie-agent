@@ -2,16 +2,27 @@ use super::*;
 
 impl Engine {
     pub fn create_session(&self, selection: RunSelection) -> Result<SessionMeta, EngineError> {
-        let snapshot = self.inner.model_manager.current();
-        let agents = self.materialize_agents(snapshot.model_set())?;
+        self.reconcile_provider_store()?;
+        let runtime = self.current_runtime();
+        if runtime.result.snapshot.models.is_empty()
+            || !runtime
+                .result
+                .snapshot
+                .agents
+                .iter()
+                .any(|agent| agent.runnable_as_root)
+        {
+            return Err(EngineError::NoRunnableModel);
+        }
+        let agents = Arc::clone(&runtime.agents);
         let agent = resolve_agent(&agents, &selection.agent)?.clone();
         if !agent.runnable_as_root {
-            return Err(EngineError::IneligibleAgent(selection.agent));
+            return Err(EngineError::NoRunnableModel);
         }
         let policy = freeze_root_agent_policy(
             &agent,
             agents,
-            Arc::clone(&snapshot),
+            Arc::clone(&runtime),
             &selection.model,
             policy::ResultLimits {
                 tool_output_max_lines: self.inner.config.runtime.tool_output.max_lines,
@@ -25,17 +36,23 @@ impl Engine {
             cwd_identity: cwd_identity.clone(),
             creation_selection: selection.clone(),
             creation_agent: Box::new(policy.agent.clone()),
-            model_snapshot_fingerprint: protocol_digest(
-                policy.model_snapshot.model_set().fingerprint(),
-            )?,
+            runtime_revision: runtime.result.snapshot.runtime_revision.clone(),
+            catalog_revision: runtime.result.snapshot.catalog_revision.clone(),
+            provider_state_revision: runtime.result.snapshot.provider_state_revision.clone(),
+            model_revision: runtime.result.snapshot.model_revision.clone(),
+            agent_revision: runtime.result.snapshot.agent_revision.clone(),
+            recipe_registry_revision: runtime.result.snapshot.recipe_registry_revision.clone(),
+            manifest_revision: runtime.current_manifest.revision.clone(),
         };
-        let meta = session_meta(id, SessionOrigin::Root, cwd_identity, selection);
+        let meta = session_meta(
+            id,
+            SessionOrigin::Root,
+            cwd_identity,
+            selection,
+            &runtime.result.snapshot,
+            runtime.current_manifest.revision.clone(),
+        );
         self.inner.store.create(meta.clone(), creation)?;
-        self.inner
-            .session_model_snapshots
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(id, snapshot);
         self.spawn_actor(id);
         Ok(meta)
     }
@@ -161,35 +178,6 @@ impl Engine {
         }
         Ok(result)
     }
-    #[must_use]
-    pub fn list_agents(&self) -> AgentListResult {
-        let snapshot = self.inner.model_manager.current();
-        let agents = self
-            .materialize_agents(snapshot.model_set())
-            .expect("current model snapshot resolves authored agents")
-            .descriptors()
-            .into_iter()
-            .map(wire_agent_descriptor)
-            .collect::<Vec<_>>();
-        let revision = cookie_agent_protocol::SnapshotRevision::new(format!(
-            "sha256:{}",
-            Sha256Digest::of_bytes(
-                &serde_json::to_vec(&agents).expect("agent descriptors serialize")
-            )
-            .as_str()
-        ))
-        .expect("valid agent revision");
-        AgentListResult {
-            revision,
-            model_revision: cookie_agent_protocol::SnapshotRevision::new(snapshot.revision())
-                .expect("model manager revision is validated"),
-            generated_at: snapshot
-                .generated_at()
-                .parse()
-                .expect("model snapshot timestamp is valid"),
-            agents,
-        }
-    }
 }
 
 pub(crate) fn session_meta(
@@ -197,6 +185,8 @@ pub(crate) fn session_meta(
     origin: SessionOrigin,
     cwd_identity: cookie_agent_protocol::CwdIdentity,
     creation_selection: RunSelection,
+    runtime: &cookie_agent_protocol::RuntimeSnapshotV1,
+    manifest_revision: cookie_agent_protocol::ModelSnapshotRevision,
 ) -> SessionMeta {
     SessionMeta {
         meta_schema_version: cookie_agent_protocol::SessionMetaSchemaVersion::current(),
@@ -204,6 +194,13 @@ pub(crate) fn session_meta(
         origin,
         cwd_identity,
         creation_selection,
+        runtime_revision: runtime.runtime_revision.clone(),
+        catalog_revision: runtime.catalog_revision.clone(),
+        provider_state_revision: runtime.provider_state_revision.clone(),
+        model_revision: runtime.model_revision.clone(),
+        agent_revision: runtime.agent_revision.clone(),
+        recipe_registry_revision: runtime.recipe_registry_revision.clone(),
+        manifest_revision,
         title: None,
         title_updated_seq: 0,
         last_event_seq: 1,

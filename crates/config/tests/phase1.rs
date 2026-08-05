@@ -1,748 +1,318 @@
 #![cfg(unix)]
 
 use std::{
-    ffi::CString,
     fs,
-    os::unix::{fs::PermissionsExt as _, net::UnixListener},
+    os::unix::fs::PermissionsExt as _,
     path::Path,
+    sync::{Mutex, OnceLock},
 };
 
-use cookie_agent_config::{
-    AgentRegistry, ConfigError, PermissionAction, PermissionEffect, load_from_roots,
-    simple_wildcard_match,
-};
-use cookie_agent_identity::{AgentId, ModelSelection, ProviderId};
-use cookie_agent_models::{Catalog, MODELS_DEV_ARTIFACT_SHA256, build_model_set};
+use cookie_agent_config::{ConfigError, ConfigLayer, load_from_roots};
+use cookie_agent_identity::ProviderId;
+use cookie_agent_models::ProviderDefinition;
 use tempfile::TempDir;
 
-fn runtime() -> &'static str {
-    r#"schema_version = 6
-
-[providers.test]
-source = "explicit"
-endpoint = "https://example.test/v1"
-adaptor = "openai-compatible"
-auth = { type = "none" }
-
-[providers.test.models."model-one"]
-display_name = "Model One"
-default_variant = "high"
-
-[providers.test.models."model-one".capabilities]
-input = ["text"]
-output = ["text"]
-context_tokens = 16384
-output_tokens = 4096
-tool_calling = true
-parallel_tool_calls = false
-structured_output = false
-reasoning = false
-temperature = true
-top_p = true
-seed = true
-native_replay = "unsupported"
-native_compaction = "unsupported"
-cancellation = "local_only"
-media = {}
-
-[providers.test.models."model-one".variants.high]
-operation = "add"
-defaults = { temperature = 0.4 }
-
-[providers.test.models."model-one".variants.default]
-operation = "add"
-defaults = { temperature = 0.2 }
-"#
+fn private_dir(path: &Path) {
+    fs::create_dir_all(path).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
-fn root_planning_runtime() -> String {
-    format!(
-        r#"{}
-
-[providers.test.models."model-two"]
-display_name = "Model Two"
-
-[providers.test.models."model-two".capabilities]
-input = ["text"]
-output = ["text"]
-context_tokens = 16384
-output_tokens = 4096
-tool_calling = true
-parallel_tool_calls = false
-structured_output = false
-reasoning = false
-temperature = true
-top_p = true
-seed = true
-native_replay = "unsupported"
-native_compaction = "unsupported"
-cancellation = "local_only"
-media = {{}}
-
-[providers.test.models."model-two".variants.default]
-operation = "add"
-defaults = {{ temperature = 0.3 }}
-
-[providers.test.models."model-three"]
-display_name = "Model Three"
-
-[providers.test.models."model-three".capabilities]
-input = ["text"]
-output = ["text"]
-context_tokens = 16384
-output_tokens = 4096
-tool_calling = true
-parallel_tool_calls = false
-structured_output = false
-reasoning = false
-temperature = true
-top_p = true
-seed = true
-native_replay = "unsupported"
-native_compaction = "unsupported"
-cancellation = "local_only"
-media = {{}}
-
-[providers.test.models."model-three".variants.default]
-operation = "add"
-defaults = {{ temperature = 0.1 }}
-
-[providers.openai]
-source = "models_dev"
-catalog_revision = "sha256:{MODELS_DEV_ARTIFACT_SHA256}"
-auth = {{ type = "credential_store" }}
-
-[providers.openai.models."gpt-5.6-sol"]
-"#,
-        runtime()
-    )
+fn write_config(root: &Path, text: &str) {
+    private_dir(root);
+    fs::write(root.join("config.toml"), text).unwrap();
+    fs::set_permissions(root.join("config.toml"), fs::Permissions::from_mode(0o600)).unwrap();
 }
 
-fn agent(mode: &str, fallback: &str, delegation: &str, body: &str) -> String {
-    format!(
-        r#"---
-schema: 1
-description: Test agent
-mode: {mode}
-enabled: true
-model_fallback: {fallback}
-tools: [read, grep, glob]
-permissions:
-  - {{ id: allow-read, action: read, resource: "*", effect: allow }}
-{delegation}---
-{body}
-"#
-    )
-}
-
-fn write_layer(root: &Path, config: &str, agents: &[(&str, String)]) {
-    fs::create_dir_all(root.join("agents")).unwrap();
-    fs::write(root.join("config.toml"), config).unwrap();
-    for (name, contents) in agents {
-        fs::write(root.join("agents").join(name), contents).unwrap();
-    }
-}
-
-#[test]
-fn schema6_and_markdown_agents_resolve_omitted_base_and_named_default_exactly() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join(".cookie-agent");
-    write_layer(
-        &root,
-        runtime(),
-        &[
-            (
-                "primary.md",
-                agent(
-                    "primary",
-                    "[{ model: \"test/model-one\" }]",
-                    "delegation:\n  agents: [worker]\n  max_depth: 2\n",
-                    "Primary prompt.",
-                ),
-            ),
-            (
-                "base.md",
-                agent(
-                    "all",
-                    "[{ model: \"test/model-one\", variant: base }]",
-                    "",
-                    "Base prompt.",
-                ),
-            ),
-            (
-                "named.md",
-                agent(
-                    "all",
-                    "[{ model: \"test/model-one\", variant: default }]",
-                    "",
-                    "Named prompt.",
-                ),
-            ),
-            ("worker.md", agent("subagent", "[]", "", "Worker prompt.")),
-        ],
-    );
-    let loaded = load_from_roots(None, Some(&root)).unwrap();
-    let catalog = Catalog::embedded().unwrap();
-    let models = build_model_set(&loaded.runtime.providers, &catalog, None).unwrap();
-    let registry = loaded.resolve_agents(&models).unwrap();
-    let get = |name: &str| registry.get(&AgentId::new(name).unwrap()).unwrap();
-    assert_eq!(
-        get("primary").resolved_fallback[0]
-            .variant
-            .as_ref()
-            .unwrap()
-            .as_str(),
-        "high"
-    );
-    assert!(get("base").resolved_fallback[0].variant.is_none());
-    assert_eq!(
-        get("named").resolved_fallback[0]
-            .variant
-            .as_ref()
-            .unwrap()
-            .as_str(),
-        "default"
-    );
-    assert!(get("primary").runnable_as_root);
-    assert!(!get("worker").runnable_as_root);
-    assert_eq!(get("primary").document.body, "Primary prompt.\n");
-    assert_ne!(
-        get("primary").document.document_fingerprint,
-        get("primary").document.prompt_fingerprint
-    );
-}
-
-#[test]
-fn provider_and_agent_layers_replace_atomically_by_id() {
-    let temp = TempDir::new().unwrap();
-    let user = temp.path().join("user");
-    let workspace = temp.path().join("workspace");
-    write_layer(
-        &user,
-        runtime(),
-        &[(
-            "primary.md",
-            agent("primary", "[{ model: \"test/model-one\" }]", "", "User."),
-        )],
-    );
-    fs::set_permissions(&user, fs::Permissions::from_mode(0o700)).unwrap();
-    fs::set_permissions(user.join("agents"), fs::Permissions::from_mode(0o700)).unwrap();
-    fs::set_permissions(user.join("config.toml"), fs::Permissions::from_mode(0o600)).unwrap();
+fn write_agent(root: &Path, name: &str, text: &str) {
+    private_dir(&root.join("agents"));
+    fs::write(root.join("agents").join(name), text).unwrap();
     fs::set_permissions(
-        user.join("agents/primary.md"),
+        root.join("agents").join(name),
         fs::Permissions::from_mode(0o600),
     )
     .unwrap();
-    let workspace_runtime =
-        runtime().replace("https://example.test/v1", "https://workspace.test/v1");
-    write_layer(
-        &workspace,
-        &workspace_runtime,
-        &[(
-            "primary.md",
-            agent(
-                "primary",
-                "[{ model: \"test/model-one\" }]",
-                "",
-                "Workspace.",
-            ),
-        )],
+}
+
+fn agent(description: &str, fallback: &str) -> String {
+    format!(
+        "---\nschema: 1\ndescription: {description}\nmode: primary\nenabled: true\nmodel_fallback: {fallback}\ntools: []\npermissions: []\n---\nPrompt.\n"
+    )
+}
+
+const SECRET_SENTINEL: &str = "CONFIG_SECRET_SENTINEL_7f13c4";
+
+fn assert_redacted(error: &ConfigError) {
+    let rendered = format!("{error:?}\n{error}");
+    assert!(
+        !rendered.contains(SECRET_SENTINEL),
+        "secret leaked: {rendered}"
     );
-    let loaded = load_from_roots(Some(&user), Some(&workspace)).unwrap();
-    assert_eq!(
-        loaded.agents[&AgentId::new("primary").unwrap()].body,
-        "Workspace.\n"
-    );
-    let provider = &loaded.runtime.providers[&ProviderId::new("test").unwrap()];
-    assert!(format!("{provider:?}").contains("workspace.test"));
+}
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
+
+fn custom(endpoint: &str) -> String {
+    format!(
+        r#"schema_version = 7
+
+[providers."custom.test"]
+source = "custom"
+endpoint = "{endpoint}"
+adaptor = "openai-compatible"
+auth = {{ method = "no-auth-v1", values = {{}} }}
+
+[providers."custom.test".models."group/model"]
+display_name = "Model"
+
+[providers."custom.test".models."group/model".capabilities]
+input = ["text"]
+output = ["text"]
+context_tokens = 4096
+output_tokens = 1024
+tool_calling = false
+parallel_tool_calls = false
+structured_output = false
+reasoning = false
+temperature = true
+top_p = true
+seed = true
+native_replay = "unsupported"
+native_compaction = "unsupported"
+cancellation = "local_only"
+media = {{}}
+"#
+    )
 }
 
 #[test]
-fn old_top_level_paths_and_unsafe_objects_fail_closed() {
+fn schema7_allows_omitted_and_empty_providers_and_rejects_schema6() {
     let temp = TempDir::new().unwrap();
-    let root = temp.path().join("bad");
-    fs::create_dir(&root).unwrap();
-    fs::write(
-        root.join("config.toml"),
-        "schema_version = 6\nproviders = {}\nagents = {}\n",
-    )
-    .unwrap();
+    let omitted = temp.path().join("omitted");
+    write_config(&omitted, "schema_version = 7\n");
+    let loaded = load_from_roots(None, Some(&omitted)).unwrap();
+    assert!(loaded.runtime.providers.is_empty());
+    assert!(loaded.agents.is_empty());
+    assert_eq!(loaded.agent_registry().agents().len(), 0);
+
+    let empty = temp.path().join("empty");
+    write_config(&empty, "schema_version = 7\nproviders = {}\n");
+    assert!(
+        load_from_roots(None, Some(&empty))
+            .unwrap()
+            .runtime
+            .providers
+            .is_empty()
+    );
+
+    let old = temp.path().join("old");
+    write_config(&old, "schema_version = 6\n");
+    assert!(matches!(
+        load_from_roots(None, Some(&old)),
+        Err(ConfigError::Toml(_))
+    ));
+}
+
+#[test]
+fn authored_agent_registry_retains_slash_model_ids_without_model_compilation() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("agents-only");
+    write_config(&root, "schema_version = 7\n");
+    write_agent(
+        &root,
+        "primary.md",
+        &agent(
+            "Primary",
+            "[{ model: \"custom.test/group/model/deep\", variant: high }]",
+        ),
+    );
+
+    let loaded = load_from_roots(None, Some(&root)).unwrap();
+    let registry = loaded.agent_registry();
+    let input = registry.materialization_inputs().next().unwrap();
+    assert!(input.root_eligible);
+    assert_eq!(
+        input.document.frontmatter.model_fallback[0]
+            .model
+            .model_id()
+            .as_str(),
+        "group/model/deep"
+    );
+    assert!(matches!(
+        input.document.frontmatter.model_fallback[0]
+            .variant
+            .as_ref()
+            .unwrap(),
+        cookie_agent_identity::ConfiguredVariantRef::Named(id) if id.as_str() == "high"
+    ));
+}
+
+#[test]
+fn workspace_agent_replaces_user_agent_before_registry_validation() {
+    let temp = TempDir::new().unwrap();
+    let user = temp.path().join("user-agents");
+    let workspace = temp.path().join("workspace-agents");
+    write_config(&user, "schema_version = 7\n");
+    write_agent(
+        &user,
+        "primary.md",
+        &agent(
+            "Discarded",
+            "[{ model: \"openai/group/model\" }, { model: \"openai/group/model\" }]",
+        ),
+    );
+    write_config(&workspace, "schema_version = 7\n");
+    write_agent(
+        &workspace,
+        "primary.md",
+        &agent("Workspace", "[{ model: \"openai/group/model\" }]"),
+    );
+
+    let loaded = load_from_roots(Some(&user), Some(&workspace)).unwrap();
+    let registry = loaded.agent_registry();
+    let document = registry
+        .get(&cookie_agent_identity::AgentId::new("primary").unwrap())
+        .unwrap();
+    assert_eq!(document.frontmatter.description, "Workspace");
+}
+
+#[test]
+fn explicit_source_has_no_alias_or_compatibility_reader() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("explicit");
+    write_config(
+        &root,
+        "schema_version = 7\n[providers.test]\nsource = \"explicit\"\n",
+    );
     assert!(matches!(
         load_from_roots(None, Some(&root)),
         Err(ConfigError::Toml(_))
     ));
-
-    let linked = temp.path().join("linked");
-    std::os::unix::fs::symlink(&root, &linked).unwrap();
-    assert!(matches!(
-        load_from_roots(None, Some(&linked)),
-        Err(ConfigError::UnsafePath)
-    ));
 }
 
 #[test]
-fn wildcard_grammar_has_terminal_space_star_behavior() {
-    assert!(simple_wildcard_match("git status *", "git status"));
-    assert!(simple_wildcard_match("*", "nested/path"));
-    assert!(simple_wildcard_match("file?.rs", "file1.rs"));
-    assert!(!simple_wildcard_match("file?.rs", "file12.rs"));
-}
-
-#[test]
-fn checked_agent_fixtures_protect_root_and_nested_secret_labels() {
+fn same_id_workspace_provider_replaces_user_before_provider_decode() {
     let temp = TempDir::new().unwrap();
-    let root = temp.path().join(".cookie-agent");
-    fs::create_dir_all(root.join("agents")).unwrap();
-    fs::write(root.join("config.toml"), runtime()).unwrap();
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for name in [
-        "anthropic.md",
-        "chat.md",
-        "primary.md",
-        "responses.md",
-        "worker.md",
-    ] {
-        fs::copy(
-            workspace.join(".cookie-agent/agents").join(name),
-            root.join("agents").join(name),
-        )
-        .unwrap();
-    }
-    let loaded = load_from_roots(None, Some(&root)).unwrap();
-    let effect = |agent: &cookie_agent_config::AgentDocument, resource: &str| {
-        agent
-            .frontmatter
-            .permissions
-            .iter()
-            .rfind(|rule| {
-                rule.action == PermissionAction::Read
-                    && simple_wildcard_match(rule.resource.as_str(), resource)
-            })
-            .map(|rule| rule.effect)
-    };
-    for agent in loaded.agents.values() {
-        for resource in [
-            ".env",
-            "nested/.env",
-            ".env.local",
-            "nested/.env.local",
-            "store-v1.json",
-            "nested/store-v1.json",
-            "token-v1",
-            "nested/token-v1",
-            "id_ed25519",
-            "nested/id_ed25519",
-            ".netrc",
-            "nested/.netrc",
-            "application_default_credentials.json",
-            "nested/application_default_credentials.json",
-        ] {
-            assert_eq!(
-                effect(agent, resource),
-                Some(PermissionEffect::Deny),
-                "{} did not deny {resource}",
-                agent.id
-            );
-        }
-        for resource in [".env.example", "nested/.env.example"] {
-            assert_eq!(
-                effect(agent, resource),
-                Some(PermissionEffect::Allow),
-                "{} did not allow {resource}",
-                agent.id
-            );
-        }
-    }
-}
-
-#[test]
-fn duplicate_model_keys_and_ineligible_delegation_fail_registry_validation() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join("layer");
-    write_layer(
-        &root,
-        runtime(),
-        &[(
-            "primary.md",
-            agent(
-                "primary",
-                "[{ model: \"test/model-one\" }, { model: \"test/model-one\", variant: base }]",
-                "",
-                "Prompt.",
-            ),
-        )],
+    let user = temp.path().join("user");
+    let workspace = temp.path().join("workspace");
+    write_config(
+        &user,
+        "schema_version = 7\n[providers.\"custom.test\"]\nsource = \"custom\"\nunknown = true\n",
     );
-    let loaded = load_from_roots(None, Some(&root)).unwrap();
-    let models = build_model_set(
-        &loaded.runtime.providers,
-        &Catalog::embedded().unwrap(),
-        None,
-    )
-    .unwrap();
+    write_config(&workspace, &custom("https://workspace.example/v1"));
+
+    let loaded = load_from_roots(Some(&user), Some(&workspace)).unwrap();
+    let id = ProviderId::new("custom.test").unwrap();
     assert!(matches!(
-        AgentRegistry::resolve(loaded.agents, &models),
-        Err(ConfigError::DuplicateFallbackModel { .. })
+        loaded.runtime.providers[&id],
+        ProviderDefinition::Custom(_)
+    ));
+    assert_eq!(
+        loaded.provider_provenance[&id].layer,
+        ConfigLayer::Workspace
+    );
+}
+
+#[test]
+fn interpolation_is_limited_and_static_headers_never_interpolate() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("headers");
+    let text = custom("https://example.test/v1").replace(
+        "auth = { method = \"no-auth-v1\", values = {} }",
+        "auth = { method = \"no-auth-v1\", values = {} }\nheaders = { x-safe = \"${env:SECRET}\" }",
+    );
+    write_config(&root, &text);
+    assert!(matches!(
+        load_from_roots(None, Some(&root)),
+        Err(ConfigError::Interpolation(_))
     ));
 }
 
 #[test]
-fn links_hardlinks_private_modes_yaml_aliases_and_agent_interpolation_fail_closed() {
+fn managed_auth_is_mutually_exclusive_and_custom_namespace_is_strict() {
     let temp = TempDir::new().unwrap();
-    let target = temp.path().join("target.toml");
-    fs::write(&target, runtime()).unwrap();
-    let linked_root = temp.path().join("linked-root");
-    fs::create_dir(&linked_root).unwrap();
-    std::os::unix::fs::symlink(&target, linked_root.join("config.toml")).unwrap();
+    let conflict = temp.path().join("conflict");
+    write_config(
+        &conflict,
+        "schema_version = 7\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"a\"\nauth_override = { method = \"bearer-api-key-v1\", values = { api_key = \"b\" } }\n",
+    );
     assert!(matches!(
-        load_from_roots(None, Some(&linked_root)),
-        Err(ConfigError::UnsafePath)
+        load_from_roots(None, Some(&conflict)),
+        Err(ConfigError::Provider { .. })
     ));
 
-    let root = temp.path().join("hardlink-root");
-    write_layer(
-        &root,
-        runtime(),
-        &[(
-            "primary.md",
-            agent("primary", "[{ model: \"test/model-one\" }]", "", "Prompt."),
-        )],
+    let namespace = temp.path().join("namespace");
+    write_config(
+        &namespace,
+        &custom("https://example.test/v1").replace("custom.test", "test"),
     );
-    fs::hard_link(root.join("agents/primary.md"), root.join("agents/copy.bin")).unwrap();
+    assert!(matches!(
+        load_from_roots(None, Some(&namespace)),
+        Err(ConfigError::Provider { .. })
+    ));
+}
+
+#[test]
+fn both_workspace_and_user_roots_files_and_agents_require_private_modes() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("weak");
+    write_config(&root, "schema_version = 7\n");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(matches!(
         load_from_roots(None, Some(&root)),
         Err(ConfigError::UnsafePath)
     ));
-
-    let user = temp.path().join("user-mode");
-    write_layer(&user, runtime(), &[]);
-    fs::set_permissions(&user, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(matches!(
-        load_from_roots(Some(&user), None),
-        Err(ConfigError::UnsafePath)
-    ));
-
-    let yaml = temp.path().join("yaml");
-    write_layer(
-        &yaml,
-        runtime(),
-        &[(
-            "primary.md",
-            agent(
-                "primary",
-                "&chain [{ model: \"test/model-one\" }]",
-                "",
-                "Prompt.",
-            ),
-        )],
-    );
-    assert!(matches!(
-        load_from_roots(None, Some(&yaml)),
-        Err(ConfigError::AgentFrontmatter(_))
-    ));
-
-    let interpolation = temp.path().join("interpolation");
-    write_layer(
-        &interpolation,
-        runtime(),
-        &[(
-            "primary.md",
-            agent(
-                "primary",
-                "[{ model: \"test/model-one\" }]",
-                "",
-                "${env:SECRET}",
-            ),
-        )],
-    );
-    assert!(matches!(
-        load_from_roots(None, Some(&interpolation)),
-        Err(ConfigError::AgentFrontmatter(_))
-    ));
 }
 
 #[test]
-fn delegated_plan_changes_only_the_head_variant_and_never_wraps() {
+fn secret_sentinel_is_redacted_on_parse_interpolation_and_unknown_field_errors() {
     let temp = TempDir::new().unwrap();
-    let root = temp.path().join("selection");
-    write_layer(
-        &root,
-        runtime(),
-        &[(
-            "primary.md",
-            agent("primary", "[{ model: \"test/model-one\" }]", "", "Prompt."),
-        )],
-    );
-    let loaded = load_from_roots(None, Some(&root)).unwrap();
-    let models = build_model_set(
-        &loaded.runtime.providers,
-        &Catalog::embedded().unwrap(),
-        None,
-    )
-    .unwrap();
-    let registry = loaded.resolve_agents(&models).unwrap();
-    let primary = registry.get(&AgentId::new("primary").unwrap()).unwrap();
-    let selection = ModelSelection {
-        model: "test/model-one".parse().unwrap(),
-        variant: None,
-    };
-    let plan = primary
-        .plan_delegated_selection(&selection, &models)
-        .unwrap();
-    assert_eq!(plan.selections(), [selection]);
-}
 
-#[test]
-fn root_plans_cover_in_chain_out_of_chain_unavailable_and_exact_variants() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join("root-plans");
-    write_layer(
-        &root,
-        &root_planning_runtime(),
-        &[
-            (
-                "primary.md",
-                agent(
-                    "primary",
-                    "[{ model: \"test/model-one\" }, { model: \"openai/gpt-5.6-sol\", variant: high }, { model: \"test/model-two\", variant: base }]",
-                    "",
-                    "Prompt.",
-                ),
-            ),
-            (
-                "blocked.md",
-                agent(
-                    "all",
-                    "[{ model: \"openai/gpt-5.6-sol\", variant: high }]",
-                    "",
-                    "Blocked.",
-                ),
-            ),
-        ],
-    );
-    let loaded = load_from_roots(None, Some(&root)).unwrap();
-    let models = build_model_set(
-        &loaded.runtime.providers,
-        &Catalog::embedded().unwrap(),
-        None,
-    )
-    .unwrap();
-    let registry = loaded.resolve_agents(&models).unwrap();
-    let primary = registry.get(&AgentId::new("primary").unwrap()).unwrap();
-
-    let in_chain = ModelSelection {
-        model: "test/model-one".parse().unwrap(),
-        variant: None,
-    };
-    let plan = primary.plan_root_selection(&in_chain, &models).unwrap();
-    assert_eq!(
-        plan.selections()
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        ["test/model-one[base]", "test/model-two[base]"]
-    );
-
-    let tail = ModelSelection {
-        model: "test/model-two".parse().unwrap(),
-        variant: Some("default".parse().unwrap()),
-    };
-    let plan = primary.plan_root_selection(&tail, &models).unwrap();
-    assert_eq!(
-        plan.selections()
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        ["test/model-two[default]"]
-    );
-
-    let synthetic = ModelSelection {
-        model: "test/model-three".parse().unwrap(),
-        variant: Some("default".parse().unwrap()),
-    };
-    let plan = primary.plan_root_selection(&synthetic, &models).unwrap();
-    assert_eq!(
-        plan.selections()
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        [
-            "test/model-three[default]",
-            "test/model-one[high]",
-            "test/model-two[base]"
-        ]
-    );
-
-    let unavailable = ModelSelection {
-        model: "openai/gpt-5.6-sol".parse().unwrap(),
-        variant: Some("high".parse().unwrap()),
-    };
-    assert!(matches!(
-        primary.plan_root_selection(&unavailable, &models),
-        Err(ConfigError::InvalidRunSelection { .. })
-    ));
-    assert!(matches!(
-        primary.plan_root_selection(
-            &ModelSelection {
-                model: "test/model-three".parse().unwrap(),
-                variant: Some("missing".parse().unwrap()),
-            },
-            &models,
+    let parse = temp.path().join("parse-secret");
+    write_config(
+        &parse,
+        &format!(
+            "schema_version = 7\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"{SECRET_SENTINEL}\"\nbroken = [\n"
         ),
-        Err(ConfigError::UnknownVariant { .. })
-    ));
-
-    let blocked = registry.get(&AgentId::new("blocked").unwrap()).unwrap();
-    assert!(!blocked.runnable_as_root);
-    assert!(matches!(
-        blocked.plan_root_selection(&synthetic, &models),
-        Err(ConfigError::IneligibleRootAgent(_))
-    ));
-
-    let delegated = primary
-        .plan_delegated_selection(&in_chain, &models)
-        .unwrap();
-    assert_eq!(
-        delegated
-            .selections()
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        [
-            "test/model-one[base]",
-            "openai/gpt-5.6-sol[high]",
-            "test/model-two[base]"
-        ]
     );
-    assert!(matches!(
-        primary.plan_delegated_selection(&synthetic, &models),
-        Err(ConfigError::InvalidRunSelection { .. })
-    ));
+    assert_redacted(&load_from_roots(None, Some(&parse)).unwrap_err());
 
-    let other_root = temp.path().join("other-snapshot");
-    write_layer(&other_root, runtime(), &[]);
-    let other_loaded = load_from_roots(None, Some(&other_root)).unwrap();
-    let other_models = build_model_set(
-        &other_loaded.runtime.providers,
-        &Catalog::embedded().unwrap(),
-        None,
-    )
-    .unwrap();
-    assert!(matches!(
-        primary.plan_root_selection(&in_chain, &other_models),
-        Err(ConfigError::ModelSnapshotMismatch(_))
-    ));
-}
+    let interpolation = temp.path().join("interpolation-secret");
+    write_config(
+        &interpolation,
+        &format!(
+            "schema_version = 7\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"{SECRET_SENTINEL}-${{env:P1_MISSING_SECRET}}\"\n"
+        ),
+    );
+    let _guard = env_lock();
+    unsafe { std::env::remove_var("P1_MISSING_SECRET") };
+    assert_redacted(&load_from_roots(None, Some(&interpolation)).unwrap_err());
 
-fn assert_unsafe(root: &Path) {
-    assert!(matches!(
-        load_from_roots(None, Some(root)),
-        Err(ConfigError::UnsafePath)
-    ));
-}
-
-fn make_fifo(path: &Path) {
-    let path = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
-    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    let unknown = temp.path().join("unknown-secret");
+    write_config(
+        &unknown,
+        &format!(
+            "schema_version = 7\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"ok\"\nunknown_secret = \"{SECRET_SENTINEL}\"\n"
+        ),
+    );
+    assert_redacted(&load_from_roots(None, Some(&unknown)).unwrap_err());
 }
 
 #[test]
-fn expected_config_fifo_is_rejected_without_blocking() {
+fn interpolated_secret_is_redacted_on_success_and_configuration_drop() {
     let temp = TempDir::new().unwrap();
-    let root = temp.path().join("fifo-config");
-    fs::create_dir(&root).unwrap();
-    make_fifo(&root.join("config.toml"));
-    assert_unsafe(&root);
-}
-
-#[test]
-fn expected_config_socket_is_rejected_deterministically() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join("socket-config");
-    fs::create_dir(&root).unwrap();
-    let _socket = UnixListener::bind(root.join("config.toml")).unwrap();
-    assert_unsafe(&root);
-}
-
-#[test]
-fn expected_config_directory_is_rejected_before_reading() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join("directory-config");
-    fs::create_dir(&root).unwrap();
-    fs::create_dir(root.join("config.toml")).unwrap();
-    assert_unsafe(&root);
-}
-
-#[test]
-fn expected_config_hardlink_is_rejected_before_reading() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join("hardlink-config");
-    fs::create_dir(&root).unwrap();
-    let source = temp.path().join("source.toml");
-    fs::write(&source, runtime()).unwrap();
-    fs::hard_link(source, root.join("config.toml")).unwrap();
-    assert_unsafe(&root);
-}
-
-#[test]
-fn expected_config_device_is_rejected_when_device_creation_is_available() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join("device-config");
-    fs::create_dir(&root).unwrap();
-    let path = CString::new(root.join("config.toml").as_os_str().as_encoded_bytes()).unwrap();
-    let result = unsafe { libc::mknod(path.as_ptr(), libc::S_IFCHR | 0o600, libc::makedev(1, 3)) };
-    if result == 0 {
-        assert_unsafe(&root);
-    } else {
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EPERM)
-        );
+    let root = temp.path().join("success-secret");
+    write_config(
+        &root,
+        "schema_version = 7\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"${env:P1_SUCCESS_SECRET}\"\n",
+    );
+    let _guard = env_lock();
+    unsafe { std::env::set_var("P1_SUCCESS_SECRET", SECRET_SENTINEL) };
+    {
+        let loaded = load_from_roots(None, Some(&root)).unwrap();
+        assert!(!format!("{loaded:?}").contains(SECRET_SENTINEL));
     }
-}
-
-#[test]
-fn enumerated_markdown_fifo_is_rejected_without_blocking() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join("fifo-agent");
-    write_layer(&root, runtime(), &[]);
-    make_fifo(&root.join("agents/fifo.md"));
-    assert_unsafe(&root);
-}
-
-#[test]
-fn enumerated_markdown_socket_is_rejected_deterministically() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join("socket-agent");
-    write_layer(&root, runtime(), &[]);
-    let _socket = UnixListener::bind(root.join("agents/socket.md")).unwrap();
-    assert_unsafe(&root);
-}
-
-#[test]
-fn enumerated_markdown_directory_is_rejected_before_reading() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join("directory-agent");
-    write_layer(&root, runtime(), &[]);
-    fs::create_dir(root.join("agents/directory.md")).unwrap();
-    assert_unsafe(&root);
-}
-
-#[test]
-fn enumerated_non_markdown_fifo_is_rejected_without_blocking() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join("fifo-enum");
-    write_layer(&root, runtime(), &[]);
-    make_fifo(&root.join("agents/ignored.bin"));
-    assert_unsafe(&root);
-}
-
-#[test]
-fn enumerated_non_markdown_hardlink_is_rejected() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join("hardlink-enum");
-    write_layer(&root, runtime(), &[]);
-    let source = root.join("agents/source.bin");
-    fs::write(&source, b"ignored").unwrap();
-    fs::hard_link(&source, root.join("agents/copy.bin")).unwrap();
-    assert_unsafe(&root);
+    unsafe { std::env::remove_var("P1_SUCCESS_SECRET") };
 }

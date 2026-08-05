@@ -69,11 +69,6 @@ impl CredentialInput {
         self.input.move_buffer_end();
     }
 
-    /// Transfers the owned allocation to the provider request without copying.
-    pub(crate) fn take_owned(&mut self) -> String {
-        self.input.take()
-    }
-
     pub(crate) fn wipe(&mut self) {
         let had_value = !self.input.as_str().is_empty();
         self.input.wipe();

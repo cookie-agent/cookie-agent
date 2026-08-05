@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Developer-only offline checker and explicit opt-in catalog updater.
+"""Developer-only offline checker and explicit bootstrap updater.
 
 This script is never invoked by Cargo build scripts, runtime code, or tests.
-It intentionally uses the authoritative upstream Bun generator at the pinned
-commit rather than the repository-root models.json file. ``--check`` is
+It intentionally uses the authoritative upstream Bun generator at the recorded
+bootstrap provenance commit rather than the repository-root models.json file. ``--check`` is
 strictly offline and never clones or installs dependencies. Only ``--update``
 may clone or run ``bun install``.
 """
@@ -14,17 +14,21 @@ import argparse
 import hashlib
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
 
 
 REPOSITORY = "https://github.com/anomalyco/models.dev.git"
-COMMIT = "c3057690bbb8bd41cafdefadcd2a7b958e2a4642"
-EXPECTED_SIZE = 3_567_054
-EXPECTED_SHA256 = "d65af0b058204954f6b08af537fa13e91f251c618d69d8c20a2d5915731d482a"
+BOOTSTRAP_COMMIT = "c3057690bbb8bd41cafdefadcd2a7b958e2a4642"
+EXPECTED_BOOTSTRAP_SIZE = 3_567_054
+EXPECTED_BOOTSTRAP_SHA256 = "d65af0b058204954f6b08af537fa13e91f251c618d69d8c20a2d5915731d482a"
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "crates/models/catalog/models-dev.json"
+BOOTSTRAP_OUTPUT = ROOT / "crates/models/catalog/models-dev.json"
+LICENSE_OUTPUT = ROOT / "crates/models/catalog/LICENSE.models.dev"
+PROVENANCE_OUTPUT = ROOT / "crates/models/catalog/README.md"
+INTEGRITY_CONSTANTS = ROOT / "crates/models/src/catalog/bootstrap.rs"
 
 
 def run(*args: str, cwd: pathlib.Path) -> str:
@@ -41,8 +45,10 @@ def run(*args: str, cwd: pathlib.Path) -> str:
 
 def verify_checkout(source: pathlib.Path) -> None:
     found = run("git", "rev-parse", "HEAD", cwd=source)
-    if found != COMMIT:
-        raise SystemExit(f"models.dev checkout is {found}; expected {COMMIT}")
+    if found != BOOTSTRAP_COMMIT:
+        raise SystemExit(
+            f"models.dev checkout is {found}; expected bootstrap provenance {BOOTSTRAP_COMMIT}"
+        )
 
 
 def dependencies_present(source: pathlib.Path) -> bool:
@@ -100,13 +106,76 @@ def generate(
 
 def verify_payload(payload: bytes) -> None:
     digest = hashlib.sha256(payload).hexdigest()
-    if len(payload) != EXPECTED_SIZE:
-        raise SystemExit(f"generated size is {len(payload)}; expected {EXPECTED_SIZE}")
-    if digest != EXPECTED_SHA256:
-        raise SystemExit(f"generated SHA256 is {digest}; expected {EXPECTED_SHA256}")
+    if len(payload) != EXPECTED_BOOTSTRAP_SIZE:
+        raise SystemExit(
+            f"generated size is {len(payload)}; expected {EXPECTED_BOOTSTRAP_SIZE}"
+        )
+    if digest != EXPECTED_BOOTSTRAP_SHA256:
+        raise SystemExit(
+            f"generated SHA256 is {digest}; expected {EXPECTED_BOOTSTRAP_SHA256}"
+        )
     if payload.endswith(b"\n"):
         raise SystemExit("generated payload unexpectedly has a trailing newline")
     verify_reasoning_options(payload)
+
+
+def source_license(source: pathlib.Path) -> bytes:
+    path = source / "LICENSE"
+    if not path.is_file():
+        raise SystemExit("models.dev checkout has no LICENSE provenance file")
+    payload = path.read_bytes()
+    if b"MIT License" not in payload or b"Copyright" not in payload:
+        raise SystemExit("models.dev LICENSE is not the expected MIT provenance")
+    return payload
+
+
+def verify_recorded_provenance(license_payload: bytes) -> None:
+    if not LICENSE_OUTPUT.is_file() or LICENSE_OUTPUT.read_bytes() != license_payload:
+        raise SystemExit(f"{LICENSE_OUTPUT} does not match the bootstrap source license")
+    constants = INTEGRITY_CONSTANTS.read_text(encoding="utf-8")
+    for required in [
+        BOOTSTRAP_COMMIT,
+        f"pub const MODELS_DEV_BOOTSTRAP_BYTES: usize = {EXPECTED_BOOTSTRAP_SIZE:_};",
+        EXPECTED_BOOTSTRAP_SHA256,
+    ]:
+        if required not in constants:
+            raise SystemExit(f"{INTEGRITY_CONSTANTS} is missing bootstrap integrity provenance")
+    provenance = PROVENANCE_OUTPUT.read_text(encoding="utf-8")
+    if (
+        f"{EXPECTED_BOOTSTRAP_SIZE:,} bytes" not in provenance
+        or f"sha256:{EXPECTED_BOOTSTRAP_SHA256}" not in provenance
+    ):
+        raise SystemExit(f"{PROVENANCE_OUTPUT} is missing bootstrap provenance")
+
+
+def update_recorded_provenance(license_payload: bytes) -> None:
+    LICENSE_OUTPUT.write_bytes(license_payload)
+    constants = INTEGRITY_CONSTANTS.read_text(encoding="utf-8")
+    constants = re.sub(
+        r'pub const MODELS_DEV_BOOTSTRAP_COMMIT: &str = "[0-9a-f]{40}";',
+        f'pub const MODELS_DEV_BOOTSTRAP_COMMIT: &str = "{BOOTSTRAP_COMMIT}";',
+        constants,
+    )
+    constants = re.sub(
+        r"pub const MODELS_DEV_BOOTSTRAP_BYTES: usize = [0-9_]+;",
+        f"pub const MODELS_DEV_BOOTSTRAP_BYTES: usize = {EXPECTED_BOOTSTRAP_SIZE:_};",
+        constants,
+    )
+    constants = re.sub(
+        r'(?s)(pub const MODELS_DEV_BOOTSTRAP_SHA256: &str =\s*)"[0-9a-f]{64}";',
+        rf'\g<1>"{EXPECTED_BOOTSTRAP_SHA256}";',
+        constants,
+    )
+    INTEGRITY_CONSTANTS.write_text(constants, encoding="utf-8")
+    provenance = PROVENANCE_OUTPUT.read_text(encoding="utf-8")
+    provenance = re.sub(
+        r"Bundled artifact facts are [0-9,]+ bytes and\n`sha256:[0-9a-f]{64}`\.",
+        f"Bundled artifact facts are {EXPECTED_BOOTSTRAP_SIZE:,} bytes and\n"
+        f"`sha256:{EXPECTED_BOOTSTRAP_SHA256}`.",
+        provenance,
+    )
+    PROVENANCE_OUTPUT.write_text(provenance, encoding="utf-8")
+    verify_recorded_provenance(license_payload)
 
 
 def verify_reasoning_options(payload: bytes) -> None:
@@ -242,24 +311,33 @@ def main() -> None:
             subprocess.run(
                 ["git", "clone", "--quiet", REPOSITORY, str(source)], check=True
             )
-            run("git", "checkout", "--quiet", COMMIT, cwd=source)
+            run("git", "checkout", "--quiet", BOOTSTRAP_COMMIT, cwd=source)
         else:
             source = args.source.resolve()
         verify_checkout(source)
+        license_payload = source_license(source)
         generated_path = temporary_path / "models-dev.json"
         payload = generate(source, generated_path, allow_install=args.update)
         verify_payload(payload)
 
         if args.check:
-            if not OUTPUT.is_file() or OUTPUT.read_bytes() != payload:
-                raise SystemExit(f"{OUTPUT} is not the pinned canonical payload")
-            print(f"ok: {EXPECTED_SHA256} ({EXPECTED_SIZE} bytes)")
+            if not BOOTSTRAP_OUTPUT.is_file() or BOOTSTRAP_OUTPUT.read_bytes() != payload:
+                raise SystemExit(f"{BOOTSTRAP_OUTPUT} is not the recorded bootstrap payload")
+            verify_recorded_provenance(license_payload)
+            print(
+                f"ok bootstrap: {EXPECTED_BOOTSTRAP_SHA256} "
+                f"({EXPECTED_BOOTSTRAP_SIZE} bytes)"
+            )
             return
 
         assert args.update
-        OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-        OUTPUT.write_bytes(payload)
-        print(f"updated {OUTPUT}: {EXPECTED_SHA256} ({EXPECTED_SIZE} bytes)")
+        BOOTSTRAP_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+        BOOTSTRAP_OUTPUT.write_bytes(payload)
+        update_recorded_provenance(license_payload)
+        print(
+            f"updated bootstrap {BOOTSTRAP_OUTPUT}: {EXPECTED_BOOTSTRAP_SHA256} "
+            f"({EXPECTED_BOOTSTRAP_SIZE} bytes); runtime network selection remains unpinned"
+        )
 
 
 if __name__ == "__main__":

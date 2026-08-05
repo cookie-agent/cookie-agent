@@ -1,4 +1,4 @@
-//! Strict schema-6 runtime configuration and schema-1 Markdown agents.
+//! Strict schema-7 runtime configuration and schema-1 Markdown agents.
 
 mod agent_document;
 mod agents;
@@ -11,12 +11,12 @@ mod wildcard;
 
 pub use agent_document::{AgentDocument, AgentDocumentSource};
 pub use agents::{
-    AgentDelegationConfig, AgentDescriptor, AgentFrontmatter, AgentMode, AgentModelFallback,
-    AgentRegistry, AgentSchemaVersion, DelegatedModelPlan, PermissionAction, PermissionEffect,
-    PermissionRule, ResolvedAgent, RootModelPlan, ToolName,
+    AgentDelegationConfig, AgentFrontmatter, AgentMaterializationInput, AgentMode,
+    AgentModelFallback, AgentRegistry, AgentSchemaVersion, PermissionAction, PermissionEffect,
+    PermissionRule, ToolName,
 };
 pub use error::ConfigError;
-pub use loader::{LoadedConfiguration, load, load_from_roots};
+pub use loader::{ConfigLayer, LoadedConfiguration, ProviderProvenance, load, load_from_roots};
 pub use runtime::{
     ApprovalConfig, ConfigSchemaVersion, ContextCompactionConfig, RuntimeConfig, ServerConfig,
     SessionTitleConfig, ToolOutputConfig,

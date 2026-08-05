@@ -1010,3 +1010,15 @@ fn known_media_extension(path: &Path) -> bool {
 fn malformed_media() -> ToolError {
     ToolError::execution("file extension identifies malformed image or PDF content")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{PDF_DECOMPRESSION_BUDGET_FOR_TESTS, pdf_validation_stats};
+
+    #[test]
+    fn malformed_pdf_is_rejected_within_the_bounded_budget() {
+        let (valid, reserved) = pdf_validation_stats(b"not a PDF");
+        assert!(!valid);
+        assert!(reserved <= PDF_DECOMPRESSION_BUDGET_FOR_TESTS);
+    }
+}

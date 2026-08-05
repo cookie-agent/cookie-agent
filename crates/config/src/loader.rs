@@ -5,19 +5,24 @@ use std::{
 };
 
 use cookie_agent_identity::AgentId;
-use cookie_agent_models::ModelSet;
+use cookie_agent_identity::ProviderId;
+use cookie_agent_models::ProviderDefinition;
+use serde::Deserialize as _;
 
 use crate::{
     AgentDocument, AgentDocumentSource, AgentRegistry, ApprovalConfig, ConfigError,
     ConfigSchemaVersion, ContextCompactionConfig, RuntimeConfig, ServerConfig, SessionTitleConfig,
     ToolOutputConfig,
     agent_document::parse_agent,
-    runtime::{RuntimeLayer, apply_layer, validate_runtime},
+    runtime::{RawRuntimeLayer, apply_settings, validate_runtime},
     secure_fs::{
         LayerRoot, open_layer_root, open_optional_directory, read_optional_file,
         read_required_file, regular_file_at,
     },
-    toml_values::{interpolate_provider_values, reject_toml_datetime, safe_toml_error},
+    toml_values::{
+        SensitiveJsonValue, SensitiveProviderValues, SensitiveTomlValue,
+        interpolate_provider_values, safe_toml_error, validate_toml_value, zeroize_toml_value,
+    },
 };
 
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
@@ -27,11 +32,25 @@ const MAX_AGENT_BYTES: u64 = 256 * 1024;
 pub struct LoadedConfiguration {
     pub runtime: RuntimeConfig,
     pub agents: BTreeMap<AgentId, AgentDocument>,
+    pub provider_provenance: BTreeMap<ProviderId, ProviderProvenance>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigLayer {
+    User,
+    Workspace,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderProvenance {
+    pub layer: ConfigLayer,
+    pub source_path: PathBuf,
 }
 
 impl LoadedConfiguration {
-    pub fn resolve_agents(&self, models: &ModelSet) -> Result<AgentRegistry, ConfigError> {
-        AgentRegistry::resolve(self.agents.clone(), models)
+    #[must_use]
+    pub fn agent_registry(&self) -> AgentRegistry {
+        AgentRegistry::from_validated(self.agents.clone())
     }
 }
 
@@ -65,20 +84,52 @@ pub fn load_from_roots(
         providers: BTreeMap::new(),
     };
     let mut agents = BTreeMap::new();
+    let mut provider_provenance = BTreeMap::new();
+    let mut provider_values = SensitiveProviderValues::new();
     for root in [user.as_ref(), workspace.as_ref()].into_iter().flatten() {
-        if let Some(layer) = root.load_runtime()? {
-            apply_layer(&mut runtime, layer);
+        if let Some(mut layer) = root.load_runtime()? {
+            let config_layer = match root.source {
+                AgentDocumentSource::User => ConfigLayer::User,
+                AgentDocumentSource::Workspace => ConfigLayer::Workspace,
+                AgentDocumentSource::BuiltIn => {
+                    unreachable!("built-in agents are not config roots")
+                }
+            };
+            apply_settings(&mut runtime, &layer);
+            for (id, value) in std::mem::take(&mut layer.providers) {
+                let provenance = ProviderProvenance {
+                    layer: config_layer,
+                    source_path: root.path.join("config.toml"),
+                };
+                provider_provenance.insert(id.clone(), provenance);
+                provider_values.insert(id, value);
+            }
         }
         for (id, document) in root.load_agents()? {
             agents.insert(id, document);
         }
     }
+    for (id, mut value) in provider_values {
+        interpolate_provider_values(
+            value.value_mut(),
+            &mut vec!["providers".to_owned(), id.as_str().to_owned()],
+        )?;
+        let json = SensitiveJsonValue::from_toml(value.take());
+        let provider = ProviderDefinition::deserialize(json.value())
+            .map_err(|_| ConfigError::Toml("configuration TOML is invalid".to_owned()))?;
+        runtime.providers.insert(id, provider);
+    }
+    AgentRegistry::validate_ref(&agents)?;
     validate_runtime(&runtime)?;
-    Ok(LoadedConfiguration { runtime, agents })
+    Ok(LoadedConfiguration {
+        runtime,
+        agents,
+        provider_provenance,
+    })
 }
 
 impl LayerRoot {
-    fn load_runtime(&self) -> Result<Option<RuntimeLayer>, ConfigError> {
+    fn load_runtime(&self) -> Result<Option<RawRuntimeLayer>, ConfigError> {
         let Some(bytes) = read_optional_file(
             &self.directory,
             "config.toml",
@@ -89,17 +140,12 @@ impl LayerRoot {
             return Ok(None);
         };
         let text = std::str::from_utf8(&bytes).map_err(|_| ConfigError::Utf8("config.toml"))?;
-        reject_toml_datetime(text)?;
-        let mut value = text
+        let value = text
             .parse::<toml::Value>()
             .map_err(|error| ConfigError::Toml(safe_toml_error(&error)))?;
-        interpolate_provider_values(&mut value, &mut Vec::new())?;
-        let layer: RuntimeLayer = value
-            .try_into()
-            .map_err(|error| ConfigError::Toml(safe_toml_error(&error)))?;
-        if layer.providers.is_empty() {
-            return Err(ConfigError::EmptyProviders);
-        }
+        let mut value = SensitiveTomlValue::new(value);
+        validate_toml_value(value.value())?;
+        let layer = decode_runtime_layer(value.value_mut())?;
         Ok(Some(layer))
     }
 
@@ -139,6 +185,50 @@ impl LayerRoot {
         }
         Ok(documents)
     }
+}
+
+fn decode_runtime_layer(value: &mut toml::Value) -> Result<RawRuntimeLayer, ConfigError> {
+    const ALLOWED: &[&str] = &[
+        "schema_version",
+        "server",
+        "tool_output",
+        "approval",
+        "context_compaction",
+        "session_title",
+        "providers",
+    ];
+    let table = value
+        .as_table_mut()
+        .ok_or_else(|| ConfigError::Toml("configuration TOML is invalid".to_owned()))?;
+    if table.keys().any(|key| !ALLOWED.contains(&key.as_str())) {
+        return Err(ConfigError::Toml(
+            "configuration TOML is invalid".to_owned(),
+        ));
+    }
+    let providers = match table.remove("providers") {
+        None => SensitiveProviderValues::new(),
+        Some(toml::Value::Table(values)) => values
+            .into_iter()
+            .map(|(id, value)| {
+                let value = SensitiveTomlValue::new(value);
+                ProviderId::new(id)
+                    .map(|id| (id, value))
+                    .map_err(|_| ConfigError::Toml("configuration TOML is invalid".to_owned()))
+            })
+            .collect::<Result<_, _>>()?,
+        Some(mut other) => {
+            zeroize_toml_value(&mut other);
+            return Err(ConfigError::Toml(
+                "configuration TOML is invalid".to_owned(),
+            ));
+        }
+    };
+    let owned = std::mem::replace(value, toml::Value::Table(Default::default()));
+    let json = SensitiveJsonValue::from_toml(owned);
+    let mut layer = RawRuntimeLayer::deserialize(json.value())
+        .map_err(|_| ConfigError::Toml("configuration TOML is invalid".to_owned()))?;
+    layer.providers = providers;
+    Ok(layer)
 }
 
 fn user_root() -> Option<PathBuf> {

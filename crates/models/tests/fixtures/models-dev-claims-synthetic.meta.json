@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "fixture_kind": "invented_claim_edge_cases",
+  "catalog_url": "https://models.dev/catalog.json",
+  "created_at": "2026-08-05T00:00:00Z",
+  "byte_length": 2971,
+  "sha256": "70e9748fed99445488b8293125362ae342cfff71e77c964ca792b2d2bbc9a425",
+  "runtime_pin": false,
+  "contains_secrets": false,
+  "approved_live_audit": false
+}

@@ -1,148 +1,133 @@
-use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
+use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt as _};
 
-use cookie_agent_config::{
-    ApprovalConfig, ConfigSchemaVersion, ContextCompactionConfig, LoadedConfiguration,
-    RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
-};
 use cookie_agent_models::{
-    Catalog, CredentialStore, FrozenModelBinding, ModelSetManager, ProviderDefinition,
-    build_model_set,
+    ModelManager, ProviderDefinition,
+    catalog::{
+        CatalogAgeState, CatalogAvailability, CatalogRuntimeState, CatalogSnapshot, CatalogSource,
+    },
+    manifests::{ModelSnapshotManifestStore, frozen_binding},
+    provider_store::ProviderStore,
 };
 use cookie_agent_protocol::{
-    AgentDocumentSource, AgentId, AgentMode, AgentSchemaVersion, AgentSnapshot, ModelKey,
-    ModelSelection, ProviderId, RunSelection, Sha256Digest,
+    AgentDocumentSource, AgentId, AgentMode, AgentSchemaVersion, AgentSnapshot, CatalogRevision,
+    FrozenModelBinding, ModelSelection, ProviderModelId, RunSelection, Sha256Digest, VariantId,
 };
+use jiff::Timestamp;
+use tempfile::TempDir;
 
-use crate::{Engine, EngineOptions};
+fn bindings_for(model_id: &str) -> (FrozenModelBinding, Option<FrozenModelBinding>) {
+    let temporary = TempDir::new().expect("test model directory");
+    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700))
+        .expect("private test model directory");
+    let mut provider: ProviderDefinition = toml::from_str(
+        r#"source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "openai-responses"
+auth = { method = "bearer-api-key-v1", values = { api_key = "test-secret" } }
 
-fn provider_definition() -> ProviderDefinition {
-    let mut value = serde_json::json!({
-        "source": "explicit",
-        "endpoint": "https://example.test/v1",
-        "adaptor": "openai-compatible",
-        "auth": {"type": "none"},
-        "models": {
-            "arbitrary-model": {
-                "display_name": "Arbitrary Model",
-                "capabilities": {
-                    "input": ["text"],
-                    "output": ["text"],
-                    "context_tokens": 8192,
-                    "output_tokens": 2048,
-                    "tool_calling": true,
-                    "parallel_tool_calls": true,
-                    "structured_output": false,
-                    "reasoning": false,
-                    "temperature": true,
-                    "top_p": true,
-                    "seed": true,
-                    "native_replay": "optional",
-                    "native_compaction": "unsupported",
-                    "cancellation": "local_only",
-                    "media": {}
+[models.test]
+display_name = "Test model"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 8192, output_tokens = 2048, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "optional", native_compaction = "unsupported", cancellation = "local_only", media = {} }
+variants = { fast = { operation = "add", defaults = { temperature = 0.1 } } }
+"#,
+    )
+    .expect("test provider");
+    let ProviderDefinition::Custom(custom) = &mut provider else {
+        unreachable!("test provider is custom")
+    };
+    let test_id = ProviderModelId::new("test").expect("test model ID");
+    let template = custom.models.get(&test_id).expect("test model").clone();
+    for id in ["fallback-zero", "fallback-one", "fallback-two"] {
+        custom.models.insert(
+            ProviderModelId::new(id).expect("fallback model ID"),
+            template.clone(),
+        );
+    }
+    let now = Timestamp::now();
+    let catalog = CatalogSnapshot {
+        revision: CatalogRevision::new(format!("sha256:{}", "0".repeat(64)))
+            .expect("catalog revision"),
+        source: CatalogSource::Bootstrap,
+        state: CatalogRuntimeState {
+            availability: CatalogAvailability::Bootstrap,
+            age: CatalogAgeState::Current,
+            last_error: None,
+        },
+        validated_at: now,
+        last_checked_at: now,
+        etag: None,
+        providers: BTreeMap::new(),
+        canonical_models: BTreeMap::new(),
+        quarantine: Vec::new(),
+    };
+    let manager = ModelManager::new(
+        BTreeMap::from([("custom.test".parse().expect("provider ID"), provider)]),
+        std::sync::Arc::new(catalog),
+        ProviderStore::open(temporary.path().join("provider-store")).expect("provider store"),
+    )
+    .expect("test manager");
+    let runtime = manager.current();
+    let store =
+        ModelSnapshotManifestStore::open_directory(temporary.path().join("model-snapshots"))
+            .expect("manifest store");
+    let manifest = store
+        .write(runtime.manifest_payload().expect("manifest payload"))
+        .expect("manifest");
+    let blueprint = manifest
+        .payload
+        .blueprints
+        .iter()
+        .find(|blueprint| blueprint.selection.model.model_id().as_str() == model_id)
+        .expect("requested test blueprint")
+        .clone();
+    let base_selection = blueprint.selection.clone();
+    let base = frozen_binding(
+        manifest.revision.clone(),
+        &blueprint,
+        base_selection.clone(),
+    )
+    .expect("base binding");
+    let variant = blueprint
+        .variants
+        .iter()
+        .any(|variant| variant.id.as_str() == "fast")
+        .then(|| {
+            frozen_binding(
+                manifest.revision.clone(),
+                &blueprint,
+                ModelSelection {
+                    model: base_selection.model,
+                    variant: Some(VariantId::new("fast").expect("variant ID")),
                 },
-                "variants": {
-                    "fast": {
-                        "operation": "add",
-                        "defaults": {"temperature": 0.1}
-                    }
-                }
-            }
-        }
-    });
-    value["models"]["other-model"] = value["models"]["arbitrary-model"].clone();
-    value["models"]["other-model"]["display_name"] = serde_json::json!("Other Model");
-    serde_json::from_value(value).expect("test provider")
-}
-
-fn providers() -> BTreeMap<ProviderId, ProviderDefinition> {
-    BTreeMap::from([(
-        ProviderId::new("gateway").expect("test provider id"),
-        provider_definition(),
-    )])
+            )
+            .expect("variant binding")
+        });
+    (base, variant)
 }
 
 pub(crate) fn model_binding() -> FrozenModelBinding {
-    model_set()
-        .freeze(&model_selection())
-        .expect("test model binding")
+    bindings_for("test").0
 }
 
-pub(crate) fn model_set() -> cookie_agent_models::ModelSet {
-    build_model_set(
-        &providers(),
-        &Catalog::embedded().expect("embedded catalog"),
-        None,
-    )
-    .expect("test model set")
-}
-
-pub(crate) fn model_snapshot() -> Arc<cookie_agent_models::ModelSnapshot> {
-    let temp = tempfile::tempdir().expect("model snapshot tempdir");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))
-            .expect("private model snapshot tempdir");
-    }
-    ModelSetManager::new(
-        providers(),
-        Arc::new(Catalog::embedded().expect("embedded catalog")),
-        CredentialStore::new(temp.path().join("credentials")),
-    )
-    .expect("model snapshot manager")
-    .current()
+pub(crate) fn model_binding_named(model_id: &str) -> FrozenModelBinding {
+    bindings_for(model_id).0
 }
 
 pub(crate) fn variant_model_binding() -> FrozenModelBinding {
-    let mut selection = model_selection();
-    selection.variant = Some(cookie_agent_protocol::VariantId::new("fast").expect("variant id"));
-    model_set()
-        .freeze(&selection)
-        .expect("variant model binding")
-}
-
-pub(crate) fn model_selection() -> ModelSelection {
-    ModelSelection {
-        model: "gateway/arbitrary-model"
-            .parse::<ModelKey>()
-            .expect("test model key"),
-        variant: None,
-    }
-}
-
-pub(crate) fn other_model_selection() -> ModelSelection {
-    ModelSelection {
-        model: "gateway/other-model"
-            .parse::<ModelKey>()
-            .expect("other test model key"),
-        variant: None,
-    }
+    bindings_for("test").1.expect("test variant")
 }
 
 pub(crate) fn run_selection(agent: &str) -> RunSelection {
     RunSelection {
-        agent: AgentId::new(agent).expect("test agent id"),
-        model: model_selection(),
+        agent: AgentId::new(agent).expect("agent ID"),
+        model: model_binding().selection,
     }
 }
 
 pub(crate) fn agent_snapshot(agent: &str, mode: AgentMode) -> AgentSnapshot {
-    let model_binding = model_binding();
-    assert_eq!(
-        (
-            model_binding.descriptor.identity.provider_id.as_str(),
-            model_binding.descriptor.identity.model_id.as_str(),
-        ),
-        (
-            model_binding.resolved.provider_id.as_str(),
-            model_binding.resolved.model_id.as_str(),
-        ),
-        "test model descriptor identity"
-    );
-    let binding = crate::policy::wire_binding(&model_binding).expect("wire test binding");
+    let binding = model_binding();
     AgentSnapshot {
-        agent: AgentId::new(agent).expect("test agent id"),
+        agent: AgentId::new(agent).expect("agent ID"),
         schema: AgentSchemaVersion::current(),
         mode,
         description: format!("Test {agent} agent"),
@@ -156,38 +141,4 @@ pub(crate) fn agent_snapshot(agent: &str, mode: AgentMode) -> AgentSnapshot {
         fallback_chain: vec![binding],
         selected_suffix_start: 0,
     }
-}
-
-pub(crate) fn engine(root: &Path) -> Engine {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).expect("private test root");
-    }
-    let providers = providers();
-    let manager = ModelSetManager::new(
-        providers.clone(),
-        Arc::new(Catalog::embedded().expect("embedded catalog")),
-        CredentialStore::new(root.join("credentials")),
-    )
-    .expect("model manager");
-    Engine::open(EngineOptions {
-        data_dir: root.join("data"),
-        cwd: root.to_owned(),
-        config: LoadedConfiguration {
-            runtime: RuntimeConfig {
-                schema_version: ConfigSchemaVersion,
-                server: ServerConfig::default(),
-                tool_output: ToolOutputConfig::default(),
-                approval: ApprovalConfig::default(),
-                context_compaction: ContextCompactionConfig::default(),
-                session_title: SessionTitleConfig::default(),
-                providers,
-            },
-            agents: BTreeMap::new(),
-        },
-        model_manager: Arc::new(manager),
-        tools: Vec::new(),
-    })
-    .expect("test engine")
 }

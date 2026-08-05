@@ -34,27 +34,28 @@ impl Engine {
         };
         let run_policy = match &session.meta.origin {
             SessionOrigin::Root => {
-                let model_snapshot = self.inner.model_manager.current();
-                let agents = self.materialize_agents(model_snapshot.model_set())?;
+                self.reconcile_provider_store()?;
+                let runtime = self.current_runtime();
+                let agents = Arc::clone(&runtime.agents);
                 let agent = resolve_agent(&agents, &params.selection.agent)?;
                 if !agent.runnable_as_root {
-                    return Err(EngineError::IneligibleAgent(params.selection.agent));
+                    return Err(EngineError::NoRunnableModel);
                 }
                 freeze_root_agent_policy(
                     agent,
                     Arc::clone(&agents),
-                    model_snapshot,
+                    runtime,
                     &params.selection.model,
                     result_limits,
                 )?
             }
             SessionOrigin::Delegated { .. } => {
-                let model_snapshot = self.session_model_snapshot(&session)?;
-                let agents = self.materialize_agents(model_snapshot.model_set())?;
+                let runtime = self.current_runtime();
+                let agents = Arc::clone(&runtime.agents);
                 policy_for_session_selection(
                     session.creation_agent.clone(),
                     agents,
-                    model_snapshot,
+                    runtime,
                     &params.selection,
                     result_limits.tool_output_max_lines,
                     result_limits.tool_output_max_bytes,
@@ -70,6 +71,23 @@ impl Engine {
                 client_run_id: params.client_run_id.clone(),
                 selection: params.selection.clone(),
                 agent: Box::new(run_policy.agent.clone()),
+                runtime_revision: run_policy.runtime.result.snapshot.runtime_revision.clone(),
+                catalog_revision: run_policy.runtime.result.snapshot.catalog_revision.clone(),
+                provider_state_revision: run_policy
+                    .runtime
+                    .result
+                    .snapshot
+                    .provider_state_revision
+                    .clone(),
+                model_revision: run_policy.runtime.result.snapshot.model_revision.clone(),
+                agent_revision: run_policy.runtime.result.snapshot.agent_revision.clone(),
+                recipe_registry_revision: run_policy
+                    .runtime
+                    .result
+                    .snapshot
+                    .recipe_registry_revision
+                    .clone(),
+                manifest_revision: run_policy.selected_suffix_wire[0].manifest_revision.clone(),
                 selected_suffix: run_policy.selected_suffix_wire.clone(),
                 input_through_seq,
             },
@@ -81,11 +99,6 @@ impl Engine {
                 input: params.input,
             },
         )?;
-        self.inner
-            .run_model_snapshots
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(run_id, Arc::clone(&run_policy.model_snapshot));
         let active = Arc::new(ActiveRun {
             session: params.session_id,
             policy: Arc::new(run_policy),
@@ -412,9 +425,7 @@ impl Engine {
         let mut first_request = true;
         while entry < chain.len() {
             let binding = &chain[entry];
-            let model = policy.model_snapshot.resolve(binding).map_err(|error| {
-                EngineError::from(ModelError::invalid_request(error.to_string()))
-            })?;
+            let model = policy::resolve_model(binding, &policy.runtime)?;
             let mut attempts = 0_u32;
             let mut context_recovery_attempted = false;
             loop {

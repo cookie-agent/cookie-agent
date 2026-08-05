@@ -1,0 +1,1049 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProviderDisconnectResult",
+  "type": "object",
+  "properties": {
+    "disconnected": {
+      "type": "boolean"
+    },
+    "durable_receipt": {
+      "$ref": "#/$defs/DurableProviderReceipt"
+    },
+    "effective_auth_state": {
+      "$ref": "#/$defs/EffectiveAuthState"
+    },
+    "provider_id": {
+      "type": "string",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "replayed": {
+      "type": "boolean"
+    },
+    "runtime": {
+      "$ref": "#/$defs/RuntimeSnapshotResult"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "durable_receipt",
+    "provider_id",
+    "disconnected",
+    "effective_auth_state",
+    "runtime",
+    "replayed"
+  ],
+  "$defs": {
+    "AgentDescriptor": {
+      "type": "object",
+      "properties": {
+        "delegation_targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+          },
+          "maxItems": 256
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^(?=.*\\S)[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+        },
+        "mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "resolved_fallback": {
+          "type": "array",
+          "items": {
+            "description": "One exact base or named-variant model selection.",
+            "type": "object",
+            "properties": {
+              "model": {
+                "type": "string",
+                "maxLength": 512,
+                "minLength": 3,
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
+              },
+              "variant": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "model",
+              "variant"
+            ]
+          },
+          "maxItems": 256
+        },
+        "runnable_as_root": {
+          "type": "boolean"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolName"
+          },
+          "maxItems": 256
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "description",
+        "mode",
+        "enabled",
+        "runnable_as_root",
+        "resolved_fallback",
+        "tools",
+        "delegation_targets"
+      ]
+    },
+    "AgentMode": {
+      "type": "string",
+      "enum": [
+        "primary",
+        "subagent",
+        "all"
+      ]
+    },
+    "AuthCredentialDescriptor": {
+      "type": "object",
+      "properties": {
+        "credential_type": {
+          "$ref": "#/$defs/CredentialFieldType"
+        },
+        "display_name": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "help": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,127}$"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "display_name",
+        "help",
+        "required",
+        "credential_type"
+      ]
+    },
+    "AuthMethodDescriptor": {
+      "type": "object",
+      "properties": {
+        "credentials": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AuthCredentialDescriptor"
+          },
+          "maxItems": 32,
+          "minItems": 1
+        },
+        "display_name": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "display_name",
+        "credentials"
+      ]
+    },
+    "AvailableModelDescriptor": {
+      "type": "object",
+      "properties": {
+        "behavior_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/ModelCapabilities"
+        },
+        "default_variant": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "display_name": {
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^(?=.*\\S)[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "key": {
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AvailableVariantDescriptor"
+          },
+          "maxItems": 256
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "display_name",
+        "capabilities",
+        "variants",
+        "default_variant",
+        "behavior_fingerprint"
+      ]
+    },
+    "AvailableVariantDescriptor": {
+      "type": "object",
+      "properties": {
+        "behavior_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "display_name": {
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^(?=.*\\S)[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "origin": {
+          "$ref": "#/$defs/VariantOrigin"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "display_name",
+        "origin",
+        "behavior_fingerprint"
+      ]
+    },
+    "CancellationCapability": {
+      "type": "string",
+      "enum": [
+        "local_only",
+        "provider"
+      ]
+    },
+    "CatalogRuntimeState": {
+      "type": "object",
+      "properties": {
+        "last_error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CatalogSafeErrorMeta"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model_quarantine_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "provider_quarantine_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "quarantine_digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "stale": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "stale",
+        "provider_quarantine_count",
+        "model_quarantine_count",
+        "quarantine_digest",
+        "last_error"
+      ]
+    },
+    "CatalogSafeErrorMeta": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "message": {
+          "description": "Control-free bounded safe error text.",
+          "type": "string",
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "time": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "time"
+      ]
+    },
+    "CatalogSource": {
+      "type": "string",
+      "enum": [
+        "network",
+        "cache",
+        "bootstrap"
+      ]
+    },
+    "CompactionCapability": {
+      "type": "string",
+      "enum": [
+        "unsupported",
+        "optional",
+        "required"
+      ]
+    },
+    "CredentialFieldType": {
+      "type": "string",
+      "enum": [
+        "api_key",
+        "access_token",
+        "access_key_id",
+        "secret_access_key",
+        "session_token"
+      ]
+    },
+    "DurableConnectionDescriptor": {
+      "type": "object",
+      "properties": {
+        "auth_method": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "connected_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "connection_generation": {
+          "description": "Monotonic provider connection generation.",
+          "type": "integer",
+          "maximum": 9007199254740991,
+          "minimum": 1
+        },
+        "credential_fields": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_]{0,127}$"
+          },
+          "maxItems": 32
+        },
+        "provider_id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "recipe_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "setup_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "setup_values": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,127}$": {
+              "$ref": "#/$defs/SafeSetupValue"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "provider_id",
+        "setup_values",
+        "setup_fingerprint",
+        "recipe_fingerprint",
+        "auth_method",
+        "credential_fields",
+        "connection_generation",
+        "connected_at"
+      ]
+    },
+    "DurableProviderReceipt": {
+      "type": "object",
+      "properties": {
+        "committed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "provider_state_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "receipt_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "store_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "receipt_id",
+        "store_revision",
+        "provider_state_revision",
+        "committed_at"
+      ]
+    },
+    "EffectiveAuthState": {
+      "type": "string",
+      "enum": [
+        "authored_api_key",
+        "authored_override",
+        "provider_store",
+        "no_auth",
+        "unavailable"
+      ]
+    },
+    "MediaCapability": {
+      "type": "object",
+      "properties": {
+        "max_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "max_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1
+        },
+        "mime_types": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 3,
+            "pattern": "^[^/\\s]+/[^/\\s]+$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mime_types",
+        "max_bytes",
+        "max_count"
+      ]
+    },
+    "Modality": {
+      "type": "string",
+      "enum": [
+        "text",
+        "image",
+        "audio",
+        "pdf"
+      ]
+    },
+    "ModelCapabilities": {
+      "type": "object",
+      "properties": {
+        "cancellation": {
+          "$ref": "#/$defs/CancellationCapability"
+        },
+        "context_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Modality"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "media": {
+          "type": "object",
+          "properties": {
+            "audio": {
+              "$ref": "#/$defs/MediaCapability"
+            },
+            "image": {
+              "$ref": "#/$defs/MediaCapability"
+            },
+            "pdf": {
+              "$ref": "#/$defs/MediaCapability"
+            }
+          },
+          "additionalProperties": false
+        },
+        "native_compaction": {
+          "$ref": "#/$defs/CompactionCapability"
+        },
+        "native_replay": {
+          "$ref": "#/$defs/ReplayCapability"
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Modality"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "output_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "parallel_tool_calls": {
+          "type": "boolean"
+        },
+        "reasoning": {
+          "type": "boolean"
+        },
+        "seed": {
+          "type": "boolean"
+        },
+        "structured_output": {
+          "type": "boolean"
+        },
+        "temperature": {
+          "type": "boolean"
+        },
+        "tool_calling": {
+          "type": "boolean"
+        },
+        "top_p": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "input",
+        "output",
+        "context_tokens",
+        "output_tokens",
+        "tool_calling",
+        "parallel_tool_calls",
+        "structured_output",
+        "reasoning",
+        "temperature",
+        "top_p",
+        "seed",
+        "native_replay",
+        "native_compaction",
+        "cancellation",
+        "media"
+      ]
+    },
+    "ProviderConfigurationState": {
+      "type": "string",
+      "enum": [
+        "unconfigured",
+        "authored",
+        "stored",
+        "authored_and_stored"
+      ]
+    },
+    "ProviderDescriptor": {
+      "type": "object",
+      "properties": {
+        "auth_methods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AuthMethodDescriptor"
+          }
+        },
+        "configuration": {
+          "$ref": "#/$defs/ProviderConfigurationState"
+        },
+        "display_name": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "durable_connection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DurableConnectionDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_auth_state": {
+          "$ref": "#/$defs/EffectiveAuthState"
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "presence": {
+          "$ref": "#/$defs/ProviderPresence"
+        },
+        "quarantine": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuarantineDiagnostic"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "setup_fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SetupFieldDescriptor"
+          }
+        },
+        "support": {
+          "$ref": "#/$defs/ProviderSupport"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "display_name",
+        "presence",
+        "support",
+        "setup_fields",
+        "auth_methods",
+        "configuration",
+        "effective_auth_state",
+        "durable_connection",
+        "quarantine"
+      ]
+    },
+    "ProviderPresence": {
+      "type": "string",
+      "enum": [
+        "current",
+        "removed"
+      ]
+    },
+    "ProviderSupport": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "state": {
+          "$ref": "#/$defs/ProviderSupportState"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "reason"
+      ]
+    },
+    "ProviderSupportState": {
+      "type": "string",
+      "enum": [
+        "supported",
+        "unsupported",
+        "quarantined"
+      ]
+    },
+    "QuarantineDiagnostic": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "message": {
+          "description": "Control-free bounded safe error text.",
+          "type": "string",
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "ReplayCapability": {
+      "type": "string",
+      "enum": [
+        "unsupported",
+        "optional",
+        "required"
+      ]
+    },
+    "RuntimeSnapshotResult": {
+      "type": "object",
+      "properties": {
+        "snapshot": {
+          "$ref": "#/$defs/RuntimeSnapshotV1"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "snapshot"
+      ]
+    },
+    "RuntimeSnapshotV1": {
+      "type": "object",
+      "properties": {
+        "agent_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentDescriptor"
+          },
+          "maxItems": 4096
+        },
+        "catalog_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "catalog_source": {
+          "$ref": "#/$defs/CatalogSource"
+        },
+        "catalog_state": {
+          "$ref": "#/$defs/CatalogRuntimeState"
+        },
+        "model_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AvailableModelDescriptor"
+          },
+          "maxItems": 4096
+        },
+        "provider_state_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "provider_store_generation": {
+          "description": "Monotonic provider-store generation.",
+          "type": "integer",
+          "maximum": 9007199254740991,
+          "minimum": 1
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProviderDescriptor"
+          },
+          "maxItems": 4096
+        },
+        "recipe_registry_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "runtime_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "snapshot_schema_version": {
+          "type": "integer",
+          "const": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "snapshot_schema_version",
+        "recipe_registry_revision",
+        "catalog_revision",
+        "catalog_source",
+        "catalog_state",
+        "provider_state_revision",
+        "provider_store_generation",
+        "model_revision",
+        "agent_revision",
+        "runtime_revision",
+        "providers",
+        "models",
+        "agents"
+      ]
+    },
+    "SafeSetupValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "description": "Stable lowercase machine-readable code.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        {
+          "type": "string",
+          "maxLength": 2048,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        }
+      ]
+    },
+    "SetupFieldDescriptor": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SafeSetupValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "display_name": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "help": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,127}$"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "safe_to_project": {
+          "type": "boolean"
+        },
+        "validation": {
+          "$ref": "#/$defs/SetupFieldValidation"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "display_name",
+        "help",
+        "required",
+        "default",
+        "validation",
+        "safe_to_project"
+      ]
+    },
+    "SetupFieldType": {
+      "type": "string",
+      "enum": [
+        "string",
+        "code",
+        "integer",
+        "bool"
+      ]
+    },
+    "SetupFieldValidation": {
+      "type": "object",
+      "properties": {
+        "max_length": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "maximum": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "min_length": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "minimum": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "value_type": {
+          "$ref": "#/$defs/SetupFieldType"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "value_type",
+        "min_length",
+        "max_length",
+        "minimum",
+        "maximum"
+      ]
+    },
+    "ToolName": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "edit",
+        "bash",
+        "grep",
+        "glob"
+      ]
+    },
+    "VariantOrigin": {
+      "type": "string",
+      "enum": [
+        "models_dev_effort",
+        "models_dev_toggle",
+        "models_dev_budget_tokens",
+        "explicit"
+      ]
+    }
+  }
+}

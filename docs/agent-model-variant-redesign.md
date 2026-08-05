@@ -1,169 +1,22 @@
-# Agent, Provider, Model Variant, and Assistant-Turn Redesign
+# Dynamic Provider, Catalog, and Session Contract
 
-**Status:** accepted implementation specification
-**Implementation policy:** current-only; no compatibility readers, aliases,
-migrations, or dual paths
-**Required versions:** config schema 6, agent-document schema 1, protocol 7,
-event schema 7, session JSONL 7, session metadata 7, delegation-journal schema 7
+**Status:** frozen implementation specification
 
-This document is the detailed implementation contract for the accepted future
-architecture described in [ARCHITECTURE.md](../ARCHITECTURE.md). Where this
-document is more specific, its strict types, validation rules, ordering, and
-failure behavior are mandatory.
+**Versions:** config 7; agent document 1; protocol/event/session 8; runtime
+snapshot 1; catalog cache 1; provider store 2; recipe registry 1; project
+model-snapshot manifest 1. Every prior project version is rejected without
+migration or compatibility decoding.
 
-## 1. Required user-visible results
+[ARCHITECTURE.md](../ARCHITECTURE.md) is authoritative. This document fixes the
+exact schema and behavior for implementation.
 
-1. Workspace configuration is `<cwd>/.cookie-agent/`; `.cookie_agent/` is
-   never inspected, migrated, warned about, renamed, or deleted.
-2. `.cookie-agent/config.toml` is provider-centric. It contains providers,
-   included models, model variants, and non-agent runtime settings. It contains
-   no agents, agent prompts, fallback chains, agent tools, permissions, or
-   delegation policy.
-3. Agents are strict Markdown documents at
-   `.cookie-agent/agents/<agent-id>.md`, with YAML frontmatter schema 1 and a
-   required nonempty Markdown body.
-4. Fallback entries use direct `provider/model-id` keys and one of three
-   variant-authoring states: omitted, explicit `base`, or a named variant.
-5. Variants are request-behavior presets beneath one model, not separate
-   models. They can be generated from pinned models.dev reasoning metadata or
-   explicitly added, replaced, disabled, and selected as a model default.
-6. The visible assistant header text is exactly
-   `Agent • provider/model[variant]`, with one ASCII space on each side of the
-   bullet. It identifies the frozen producing agent and exact model selection;
-   base is explicit as `[base]`, and a named variant is preserved exactly,
-   including `[default]`.
-7. The Message panel title uses the same canonical model-selection text. Agent
-   and model selection are separate hit regions, the bullet is decoration and
-   not clickable, and variant is part of the model selection with no separate
-   picker.
+## 1. Config schema 7
 
-In those forms, `Agent` is the exact `AgentId`; `provider/model` is the exact
-`ModelKey`; and the bracketed value is the exact variant or `base`. They are
-placeholders, not literal words. There is no additional textual `ASSISTANT`
-prefix. Rendering never parses identity back from the combined string: each
-portion remains structured data.
-8. Thinking and tool calls are ordered, collapsible child segments inside
-   their owning assistant turn. There are no standalone `REASONING` or `TOOL`
-   transcript blocks.
-9. Compact tool rows show a safe primary argument when available, for example
-   `bash touch README.md`. Running adds `…`; success adds no suffix; failures,
-   cancellation, and interruption use concise textual markers. `COMPLETED` is
-   never rendered.
-10. Agents-panel rows are `agent-id:session-title`, patch immediately from
-    title events, and retain the original hierarchy root while a child is
-    watched. Only the Sessions picker reroots.
-11. Agents-panel text height is exactly
-    `clamp(visible_tree_row_count, 1, 3)`. Borders are outside that text-row
-    count.
-12. Conversation and Message border titles contain no drag-scrollbar or hotkey
-    prose. Existing scrolling, multiline-input, approvals, Markdown rendering,
-    syntax highlighting, diagnostics, and stable-tree behavior otherwise
-    remain.
-
-## 2. Layout, layering, and atomic replacement
-
-```text
-<cwd>/.cookie-agent/
-  config.toml
-  agents/
-    primary.md
-    worker.md
-
-~/.config/cookie_agent/
-  config.toml
-  agents/
-    <agent-id>.md
-```
-
-Precedence is:
-
-```text
-built-in runtime defaults < user config.toml < workspace config.toml
-user agent document < workspace agent document with the same AgentId
-```
-
-There is no upward workspace search: only the process's exact canonical cwd is
-anchored and `<cwd>/.cookie-agent/` is considered. `attach` and `connect` do
-not inspect cwd configuration.
-
-Provider definitions and agent documents are atomic layer replacements. If a
-workspace config defines provider `openai`, it replaces the entire user
-provider `openai`; fields, maps, arrays, model tables, and variant tables are
-not merged across those two definitions. A workspace agent document replaces
-the complete user document with the same ID. Other top-level runtime sections
-follow their declared schema-6 replacement semantics; arrays always replace.
-
-## 3. Shared identities and selections
-
-`crates/identity` owns the strict identities used by config, models, protocol,
-engine, tools, server, CLI, and TUI:
-
-```rust
-pub struct AgentId(String);          // lowercase kebab-case, 1..=64 bytes
-pub struct ProviderId(String);       // lowercase [a-z0-9._-], 1..=128 bytes
-pub struct ProviderModelId(String);  // visible UTF-8, no '/', 1..=384 bytes
-pub struct ModelKey(String);         // ProviderId + '/' + ProviderModelId
-pub struct VariantId(String);        // lowercase [a-z0-9._-], 1..=64 bytes
-
-pub struct ModelSelection {
-    pub model: ModelKey,
-    pub variant: Option<VariantId>, // None is exact base behavior
-}
-
-pub enum ConfiguredVariantRef {
-    Base,
-    Named(VariantId),
-}
-
-pub enum ConfiguredModelDefault {
-    Base,
-    Named(VariantId),
-}
-```
-
-Agent fallback stores `variant` as `Option<ConfiguredVariantRef>` and has three
-document states separate from `ConfiguredModelDefault`:
-
-- `None` means the `variant` field was omitted and selects the provider model's
-  already-resolved default selection;
-- `Some(Base)` comes from `variant: base` and selects exact base;
-- every other valid string, including `default`, is
-  `Some(Named(VariantId(string)))`.
-
-Thus a generated variant whose ID is `default` remains addressable and is not
-confused with omission. `base` is reserved and cannot be a `VariantId`.
-`ModelKey` is at most 512 bytes, splits at the first `/`, and has valid nonempty
-segments. All wire identities are strict, bounded, schema-generating newtypes.
-Canonical `ModelSelection` formatting is `provider/model[variant]`; `None`
-formats as `[base]`, while a named variant formats with its exact ID. Formatting
-does not alter the structured `{ model, variant }` serialization or protocol
-schema.
-
-`ConfiguredModelDefault` is a separate provider-config type and is always held
-as `Option<ConfiguredModelDefault>`:
-
-- `None` means the `default_variant` field was omitted and retains the provider
-  model's source default selection;
-- `Some(Base)` comes only from explicit `default_variant = "base"` and selects
-  exact base behavior;
-- `Some(Named(id))` comes from every other valid string, including `default`,
-  and selects that named variant.
-
-The provider model source default is established before config directives:
-models.dev uses an explicitly declared default from the pinned source/recipe or
-base when none exists; an explicit provider's source default is base. After
-variant directives, `ConfiguredModelDefault` resolves to exact
-`ModelSelection { model, variant: Option<VariantId> }`. No omitted/base/named
-marker remains in frozen state. This type and resolution are independent from
-the agent fallback `ConfiguredVariantRef` states above.
-
-## 4. Provider-centric config schema 6
-
-The only top-level fields are:
+There is exactly one provider map:
 
 ```rust
 pub struct RuntimeConfig {
-    pub schema_version: ConfigSchemaVersion, // exactly 6
+    pub schema_version: ConfigSchemaVersion, // exactly 7
     pub server: ServerConfig,
     pub tool_output: ToolOutputConfig,
     pub approval: ApprovalConfig,
@@ -174,1051 +27,986 @@ pub struct RuntimeConfig {
 
 pub enum ProviderDefinition {
     ModelsDev(ModelsDevProvider), // source = "models_dev"
-    Explicit(ExplicitProvider),   // source = "explicit"
+    Custom(CustomProvider),       // source = "custom"
 }
-```
 
-Top-level `agents`, `models`, `permissions`, `profiles`, and
-`internal_agents` are unknown fields and fail parsing.
-
-`schema_version` and `providers` are required; `providers` must be nonempty.
-`server`, `tool_output`, `approval`, `context_compaction`, and `session_title`
-are optional sections whose omitted values are the documented built-in runtime
-defaults. Therefore the schema-6 example below is complete and valid even
-though it omits those non-provider sections other than `server`.
-
-### 4.1 Common strict provider fields
-
-```rust
 pub struct ModelsDevProvider {
-    pub source: ModelsDevTag, // required, exactly "models_dev"
-    pub catalog_revision: CatalogRevision, // required
-    pub endpoint: Option<EndpointUrl>, // optional, default None/source endpoint
-    pub adaptor: Option<AdaptorId>, // optional, default None/source adaptor
-    pub auth: AuthDefinition, // required
-    pub headers: BTreeMap<HeaderName, SecretString>, // optional, default {}
-    pub models: BTreeMap<ProviderModelId, ModelsDevModelConfig>, // required, nonempty
+    pub source: ModelsDevTag,
+    pub base_url: Option<EndpointUrl>,
+    pub setup: BTreeMap<SetupFieldId, ConfigSetupValue>,
+    pub api_key: Option<SecretString>,
+    pub auth_override: Option<AuthOverride>,
+    pub model_overrides: BTreeMap<ProviderModelId, ManagedModelOverride>,
 }
 
-pub struct ExplicitProvider {
-    pub source: ExplicitTag, // required, exactly "explicit"
-    pub endpoint: EndpointUrl, // required
-    pub adaptor: AdaptorId, // required
-    pub auth: AuthDefinition, // required
-    pub headers: BTreeMap<HeaderName, SecretString>, // optional, default {}
-    pub models: BTreeMap<ProviderModelId, ExplicitModelConfig>, // required, nonempty
+pub struct AuthOverride {
+    pub method: AuthMethodId,
+    pub values: BTreeMap<AuthFieldName, SecretString>,
+}
+
+pub struct CustomProvider {
+    pub source: CustomTag,
+    pub endpoint: EndpointUrl,
+    pub adaptor: AdapterId,
+    pub setup: BTreeMap<SetupFieldId, ConfigSetupValue>,
+    pub auth: AuthDefinition,
+    pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
+    pub models: BTreeMap<ProviderModelId, CustomModelDefinition>,
+}
+
+pub struct AuthDefinition {
+    pub method: AuthMethodId,
+    pub parameters: BTreeMap<AuthParameterId, SafeAuthParameterValue>,
+    pub values: BTreeMap<AuthFieldName, SecretString>,
+}
+
+pub enum SafeSetupValue {
+    String(BoundedSetupString),
+    Code(SafeCode),
+    Integer(i64),
+    Bool(bool),
+}
+
+pub type ConfigSetupValue = SafeSetupValue;
+```
+
+TOML setup values use the separate `setup` map and exact `SafeSetupValue` scalar
+forms. The selected
+code-owned provider setup recipe validates each exact setup field as bounded,
+non-secret behavioral routing/configuration metadata. Registry 1 has no
+sensitive setup field. `auth_override` and custom `auth` own credential fields
+only.
+
+Custom `auth.parameters` defaults to `{}` and contains method-specific safe
+parameters only, such as an allowlisted `header_name` for
+`api-key-header-v1`. Custom `auth.values` contains secret credentials only.
+The selected auth method strictly defines required/optional parameter and
+credential fields; missing, extra, or unknown fields fail.
+
+`schema_version` is required. `providers` is optional, defaults to `{}`, and may
+be explicitly empty. Provider structs deny unknown fields. Managed providers
+have only `source`, `base_url`, `setup`, `api_key`, `auth_override`, and
+`model_overrides`; all except `source` are optional and empty by omission.
+Custom providers have only `source`, `endpoint`, `adaptor`, `setup`, `auth`,
+`headers`, and `models`; `setup`/`headers` default empty and `models` is
+required nonempty. There is no `custom_providers`, `catalog_revision`,
+`catalog_url`, managed `models` inclusion map, `endpoint` on managed providers,
+or `base_url` on custom providers. Empty configuration must not fail with
+`runtime providers must be nonempty` or any equivalent nonempty-map check. It
+yields zero models only when provider store 2 is also empty and no effective
+authored custom provider exists; stored per-user managed connections still apply
+when TOML providers are absent or empty.
+
+Managed provider IDs must not start `custom.`. Custom provider IDs must start
+`custom.`. An ID cannot change source kind through catalog data. A model ID is
+bounded visible UTF-8 and may contain `/`. `ModelKey` splits at the first `/`.
+
+### 1.1 Layering
+
+User and exact-cwd workspace TOML are the only authored layers. A workspace
+provider with the same ID discards the whole user provider before decode and
+validation. Definitions are atomic; no field, auth map, model map, override,
+variant, header, or array merges. Same-ID agent documents are also atomic.
+
+Managed provider credentials are valid authored config fields in either layer.
+The effective atomic definition may contain ergonomic `api_key` or typed
+`auth_override`; that authored credential outranks any provider-store record. A
+workspace same-ID replacement cannot inherit the discarded user definition's
+credential. After reload/recomposition, removing authored auth while leaving
+`base_url` absent permits an exact provider-store credential to become effective.
+Keeping authored `base_url` while removing same-definition auth fails validation
+and never falls through to store credentials.
+
+### 1.2 Managed model overrides
+
+```rust
+pub struct ManagedModelOverride {
+    pub enabled: Option<bool>,
+    pub display_name: Option<String>,
+    pub defaults: PartialRequestDefaults,
+    pub variants: BTreeMap<VariantId, VariantDirective>,
+    pub default_variant: Option<ConfiguredModelDefault>,
 }
 ```
 
-Every struct and tagged enum uses deny-unknown-fields decoding. Duplicate TOML
-keys, duplicate case-insensitive header names, invalid header names/values,
-URL userinfo, URL fragments, and endpoint query credentials are rejected.
-Endpoints must be HTTPS except explicit loopback HTTP accepted by an adaptor
-that declares loopback HTTP support. Transport-controlled headers such as
-`host`, `content-length`, `transfer-encoding`, `connection`, and provider auth
-headers owned by the selected auth form cannot be supplied in `headers`.
+Overrides are sparse and may target only a model present in the selected
+catalog source projection retained for that provider. They cannot invent a
+model or author capabilities, protocol options, package, endpoint, or auth.
+Every reviewed supported non-deprecated text-output model is included unless an
+effective override explicitly disables it.
 
-Supported `AdaptorId` values are the reviewed constructors listed in
-[provider-conformance.md](provider-conformance.md). An adaptor is a wire
-protocol choice, never inferred from a model ID. A models.dev provider normally
-uses the pinned recipe adaptor; an explicit `adaptor` is legal only when it is
-one of that recipe's reviewed alternatives. An endpoint override is legal only
-when the recipe marks the endpoint overridable. Otherwise either field fails
-validation.
+Google Vertex additionally requires the exact Registry-1 unoverridden Gemini
+predicate in [provider-conformance.md](provider-conformance.md). Nonmatching
+records, including `openai/gpt-oss-20b-maas` and
+`openai/gpt-oss-120b-maas`, quarantine as
+`unsupported_vertex_model_family`; they never route through Gemini.
 
-### 4.2 Authentication
+Custom models state complete display, capabilities, defaults, variants, and all
+adaptor-required options. No behavior is inferred from an ID.
 
-```rust
-pub enum AuthDefinition {
-    None,
-    CredentialStore,
-    Bearer { token: SecretString },
-    ApiKey { key: SecretString, header: Option<HeaderName> },
-    Basic { username: SecretString, password: SecretString },
-    AwsSdk,
-    GoogleAdc,
-    Fields { values: BTreeMap<AuthFieldName, SecretString> },
-}
-```
-
-The wire `type` values are `none`, `credential_store`, `bearer`, `api_key`,
-`basic`, `aws_sdk`, `google_adc`, and `fields`. Unknown fields and empty secret
-values fail. `credential_store` is allowed only for models.dev providers and
-uses exactly the credential fields named by the pinned recipe. Missing stored
-credentials leave that provider's configured models unavailable (and dependent
-agents non-runnable) until `provider.connect`; this is the only unresolved-auth
-setup state that does not fail configuration loading. Once construction is
-attempted, every required field must be present.
-`fields` is accepted only when the adaptor declares an exact semantic auth
-field schema; unknown, missing, or extra field names fail. `api_key.header`, if
-omitted, uses the adaptor's documented header and never a model-name heuristic.
-Auth/adaptor combinations not explicitly supported fail startup.
-
-The auth `type` field is always required. `none`, `credential_store`,
-`aws_sdk`, and `google_adc` accept no additional fields. Bearer `token`, API-key
-`key`, both Basic fields, and the complete adaptor-declared `fields.values` map
-are required. Only API-key `header` is optional, with the adaptor header as its
-default. No secret field has an empty or implicit value.
-
-### 4.3 Model inclusion, capabilities, defaults, and options
-
-Only model IDs present in a provider's `models` map are included in the
-runnable model set. The map must be nonempty. `enabled = false` excludes that
-entry without making it selectable. For a models.dev provider, every included
-ID must exist in the exact pinned snapshot and have a reviewed construction
-recipe. For an explicit provider, each model is constructed only through the
-provider's declared adaptor.
+### 1.3 Custom model definition
 
 ```rust
-pub struct ModelsDevModelConfig {
-    pub enabled: bool, // default true
-    pub display_name: Option<String>, // optional, default source display name
-    pub defaults: RequestDefaults, // optional table, default {}
-    pub options: ProviderOptions, // optional table, default {}
-    pub variants: BTreeMap<VariantId, VariantDirective>, // optional, default {}
-    pub default_variant: Option<ConfiguredModelDefault>, // optional field; None = omitted
-}
-
-pub struct ExplicitModelConfig {
+pub struct CustomModelDefinition {
     pub enabled: bool, // default true
     pub display_name: String, // required
-    pub capabilities: ModelCapabilities, // required
-    pub defaults: RequestDefaults, // optional table, default {}
-    pub options: ProviderOptions, // optional table, default {}
-    pub variants: BTreeMap<VariantId, VariantDirective>, // optional, default {}
-    pub default_variant: Option<ConfiguredModelDefault>, // optional field; None = omitted
-}
-
-pub struct ModelCapabilities {
-    pub input: BTreeSet<Modality>,       // text | image | audio | pdf
-    pub output: BTreeSet<Modality>,      // text | image | audio
-    pub context_tokens: u64,
-    pub output_tokens: u64,
-    pub tool_calling: bool,
-    pub parallel_tool_calls: bool,
-    pub structured_output: bool,
-    pub reasoning: bool,
-    pub temperature: bool,
-    pub top_p: bool,
-    pub seed: bool,
-    pub native_replay: ReplayCapability,       // unsupported | optional | required
-    pub native_compaction: CompactionCapability, // unsupported | optional | required
-    pub cancellation: CancellationCapability,  // local_only | provider
-    pub media: BTreeMap<MediaKind, MediaCapability>,
-}
-
-pub struct MediaCapability {
-    pub mime_types: BTreeSet<MimeType>,
-    pub max_bytes: u64,
-    pub max_count: u32,
-}
-
-pub struct RequestDefaults {
-    pub temperature: Option<FiniteF32>,       // 0.0..=2.0
-    pub top_p: Option<FiniteF32>,             // 0.0..=1.0
-    pub max_output_tokens: Option<u64>,       // 1..=capability output_tokens
-    pub stop: Vec<String>,                    // at most 8, each 1..=256 bytes
-    pub seed: Option<i64>,
-    pub tool_choice: Option<ToolChoice>,      // auto | none | required | named
-}
-
-pub enum ReasoningBehavior {
-    Effort { value: ReasoningEffort },
-    Toggle { enabled: bool },
-    BudgetTokens { value: i64 }, // -1 or nonnegative
-}
-
-pub struct ResolvedRequestDefaults {
-    pub request: RequestDefaults,
-    pub reasoning: Option<CompiledReasoningBehavior>,
-}
-
-pub enum ProviderOptions {
-    Anthropic { api_version: Option<String>, beta: Vec<String> },
-    OpenAiChat { organization: Option<String>, project: Option<String> },
-    OpenAiResponses { organization: Option<String>, project: Option<String>, store: Option<bool> },
-    OpenAiCompatible { api_path: Option<String> },
-    GoogleGemini { api_version: Option<String> },
-    GoogleVertexGemini { project: String, location: String },
-    AwsBedrockConverse { region: String },
-    AzureOpenAiChat { deployment: String, api_version: String },
-    AzureOpenAiResponses { deployment: String, api_version: String },
-    CohereV2Chat { api_version: Option<String> },
-    OpenResponses { protocol_mode: OpenResponsesMode },
+    pub capabilities: ModelCapabilities, // required and complete
+    pub defaults: RequestDefaults, // default {}
+    pub options: CustomProviderOptions, // default {}
+    pub variants: BTreeMap<VariantId, VariantDirective>, // default {}
+    pub default_variant: Option<ConfiguredModelDefault>, // omitted = base
 }
 ```
 
-`ModelsDevModelConfig` has no authorable `capabilities` field. Its complete
-capabilities are derived from the exact pinned model record plus reviewed
-recipe/compiler; attempting to add a capabilities table is an unknown-field
-error. `ExplicitModelConfig.capabilities` is required and complete: every field
-shown in `ModelCapabilities`, including every boolean, limit, capability enum,
-and the `media` map, must be written even when false, unsupported, or empty.
-There are no implicit capability booleans.
+Every level denies unknown/duplicate fields. Custom definitions derive nothing
+from either catalog root map. `display_name` is nonblank, control-free UTF-8 of
+1..=512 bytes. `enabled = false` retains validation but excludes selection.
 
-Capability sets must be nonempty, limits positive, and `output_tokens` must not
-exceed `context_tokens`. `parallel_tool_calls = true` requires
-`tool_calling = true`; when tool calling is false it must be explicitly false.
-The required `seed` boolean says whether request seed is supported and is
-independent from an authorable default seed. The required `media` map is empty
-when input is text-only. Each declared non-text input modality (`image`,
-`audio`, or `pdf`) requires exactly one same-kind media entry with a nonempty
-MIME set and positive `max_bytes`/`max_count`; undeclared input modalities and
-all output modalities must not have media entries. Explicit capabilities must
-be honestly implementable by the selected adaptor.
+Complete capabilities require nonempty input/output modality sets, positive
+`context_tokens` and `output_tokens` with output not exceeding context, and
+explicit booleans for tool calling, parallel tool calls, structured output,
+reasoning, temperature, top-p, and seed. They also require explicit
+`native_replay`, `native_compaction`, and `cancellation` enums plus a complete
+media map. Parallel tools require tool calling. Each declared non-text input
+modality requires exactly one matching media entry with nonempty MIME types and
+positive byte/count limits; undeclared modalities and output modalities cannot
+have media entries.
 
-`ReasoningEffort` is exactly `none|minimal|low|medium|high|xhigh|max|default`;
-reasoning off is represented by a supported toggle or the catalog null mapping,
-not an extra effort value. `ToolChoice::Named` contains one validated tool name.
+Defaults must fit limits/capabilities. Tool choice requires tool support.
+Reasoning is authorable only by a variant reasoning directive and must compile
+losslessly. Replay/compaction/cancellation claims must be implemented by the
+selected adaptor; no optimistic declaration is accepted. `options` is the
+strict adapter-specific option type selected by `adaptor`; missing required or
+unknown options fail.
 
-`ProviderOptions` is selected by and must match the provider's `AdaptorId`.
-Every optional string is nonempty and bounded to 512 bytes; `beta` has at most
-32 unique entries; project/location/region/deployment/api-version values are
-bounded to 256 bytes. `api_path` must be an absolute URL path with no query or
-fragment. `OpenResponsesMode` is the adaptor's strict `standard|compact` enum.
-There is no arbitrary JSON/TOML body or unknown option map. Unsupported
-normalized defaults, duplicate semantic settings across defaults/options, and
-capability/default contradictions fail provider construction.
+`ProviderModelId` is 1..=384 bytes of visible UTF-8, has no controls or leading/
+trailing whitespace, may contain `/`, and may not contain `[` or `]`. The model
+key remains bounded to 512 bytes and splits only at its first `/`. `VariantId`
+matches `[a-z0-9][a-z0-9._-]{0,63}`; `base` is reserved. Variant directives are
+strict `add|replace|disable`; base cannot be targeted. Omitted
+`default_variant` means exact base for a custom model, explicit `base` also means
+base, and any other value must name an enabled final variant.
 
-Within an `options` table, Anthropic `api_version`, OpenAI
-organization/project, Responses `store`, compatible `api_path`, Gemini/Cohere
-`api_version` are optional and default to None/adaptor behavior; Anthropic
-`beta` defaults to `[]`. Vertex project/location, Bedrock region, and Azure
-deployment/api-version are required when those adaptors are selected.
-Open Responses `protocol_mode` defaults to `standard`. Because the whole
-`options` table defaults to `{}`, omission is valid only when all options
-required by the selected adaptor can be supplied by a reviewed models.dev
-recipe; otherwise semantic validation reports the missing required option.
+The custom provider `endpoint` and `adaptor` select transport construction.
+Adapter-specific `setup` supplies only typed non-auth fields; `auth` supplies
+only credentials. Setup cannot replace `endpoint`, select another adaptor, or
+inject arbitrary request fields. Endpoint, adaptor, setup, auth, options, and model
+capability mismatch fails the entire atomic custom provider.
 
-For models.dev entries, pinned recipe defaults/options are the baseline.
-Configured `RequestDefaults` replace only fields explicitly present (the stop
-array replaces as a whole); configured options may replace only recipe fields
-marked configurable. For explicit entries, omitted defaults mean no request
-default and every adaptor-required option is mandatory. A variant's final
-behavior starts from the model's final base defaults/options and applies its
-complete directive payload as an overlay; `add`/`replace` refer to variant-map
-identity, not to field-merging with an earlier variant definition.
+### 1.4 Custom static headers
 
-The authorable `RequestDefaults` fields have these omission defaults:
-`temperature = None`, `top_p = None`, `max_output_tokens = None`, `stop = []`,
-`seed = None`, and `tool_choice = None`. Setting a field whose capability is
-false fails. `tool_choice` requires tool calling; a named choice must name an
-exposed tool. The model-level `defaults`, `options`, and `variants` tables and
-provider-level `headers` table default to empty when omitted. Empty provider
-`models` maps are invalid; model `enabled` defaults true; no other boolean has
-an implicit value.
+`CustomProvider.headers` is non-secret static behavior metadata. Header names
+must be nonempty ASCII RFC field-name tokens using letters, digits,
+`!#$%&'*+-.^_`, U+0060 (backtick), or `|~`; they are canonicalized to lowercase ASCII for
+identity, and are unique case-insensitively. `SafeStaticHeaderValue` is bounded
+UTF-8 with no C0/C1 controls, DEL, NUL, CR, or LF. Static headers permit at most
+64 entries, 128 bytes per name, 8192 bytes per value, and 65,536 aggregate
+name/value bytes.
 
-Reasoning has exactly one authorable source: `VariantDirective.reasoning`.
-`RequestDefaults` has no reasoning field, and every adaptor-specific
-`ProviderOptions` schema rejects reasoning/effort/thinking/budget aliases.
-Generated models.dev variants populate the same semantic directive slot.
-After compilation only, `ResolvedRequestDefaults` combines ordinary request
-defaults with `CompiledReasoningBehavior`; it is internal/frozen output and is
-not a config schema. Duplicate or alternate reasoning authoring fails.
+Static header values never interpolate. Any value containing the literal prefix
+`${env:`—whether or not it completes a valid
+`${env:[A-Z_][A-Z0-9_]*}` form—is rejected rather than expanded. Static values
+are never redacted or treated as secrets: they may appear exactly in safe
+snapshots, manifests, and diagnostics, so authors must put every secret in
+`auth`.
 
-`default_variant: Option<ConfiguredModelDefault>` follows section 3 exactly.
-`None` retains the provider model source default; `Some(Base)` explicitly
-selects exact base; `Some(Named(id))` selects an enabled final variant. A source
-or named default removed by directives without an explicit valid replacement
-fails. Resolution produces exact `ModelSelection` before model snapshots,
-fallback entries, fingerprints, or events are frozen.
+Forbidden static names are at least `authorization`, `host`, `content-length`,
+`transfer-encoding`, `connection`, `proxy-authorization`, `cookie`,
+`set-cookie`, `accept`, `content-type`, and `user-agent`. The selected adaptor,
+protocol, and auth compiler extend this set with every owned header, including
+the selected API-key header and provider version headers such as `x-api-key`,
+`x-goog-api-key`, `api-key`, and `anthropic-version` when applicable. Any
+case-insensitive collision with transport-, protocol-, or auth-owned headers
+fails the entire custom provider.
 
-### 4.4 Variants directives and atomic publication
+Canonical custom fingerprints and model blueprints include static headers sorted
+by canonical lowercase name and include each exact safe value. Changing a static
+header changes behavior/config fingerprints and makes an older custom snapshot
+fail exact rehydration. Auth fingerprints include method, safe parameters such as
+owned header name, and credential field names, but exclude credential values;
+secret rotation does not change behavior identity. Managed models.dev provider
+definitions have no `headers` field; an attempted managed static header is an
+unknown-field error unless a future recipe/schema explicitly adds one.
+
+## 2. Endpoint and query rules
+
+Every catalog API claim, managed `base_url`, and custom `endpoint` must be an
+absolute URL no longer than 2048 UTF-8 bytes. Userinfo, fragment, and any query
+component are rejected, including a bare trailing `?` or an empty parsed query.
+HTTPS is required. HTTP is accepted only when the exact selected recipe or
+adaptor policy names loopback hosts `127.0.0.0/8`, `[::1]`, or `localhost` and
+the explicit port/path also satisfy that policy. DNS names resolving to loopback
+do not qualify.
+
+Managed endpoint precedence is exactly:
+
+```text
+same atomic definition base_url > recipe registry 1 default
+```
+
+Provider store and catalog API metadata never provide an endpoint. The catalog
+API value is checked against the recipe's exact/allowed raw claim set and then
+normalized for security/equivalence. A mismatch quarantines the known provider
+as `catalog_provider_api_drift`; a recoverable ID remains safe-visible only as a
+quarantine descriptor.
+
+An authored `base_url` requires same-definition `api_key` or `auth_override`
+unless the selected recipe explicitly declares no-auth. It also requires every
+required non-defaulted setup field in the same definition; recipe defaults may
+fill only setup fields explicitly declared defaultable. A base URL can never
+inherit provider-store setup or auth state from a replaced user definition.
+
+## 3. Authentication
+
+`auth_override` has exactly `method` and `values`; `values` must contain exactly
+the selected method's semantic fields. Unknown, missing, duplicate, or extra
+fields fail. Effective `api_key` and `auth_override` are mutually exclusive.
+
+The ergonomic `api_key` field is accepted only when recipe registry 1 declares
+one default auth method with exactly one required credential field classified
+`api_key`. If multiple auth methods are viable, another credential is required,
+or the sole credential is not classified as an API key, `api_key` is ambiguous and configuration must use
+`auth_override = { method = ..., values = ... }`.
+
+### 3.1 Setup versus auth precedence
+
+Provider setup and auth never share a field. For a managed provider, effective
+setup precedence is complete same-definition authored `setup`, then exact
+provider-store setup, then code-owned defaults for fields explicitly declared
+defaultable, then unavailable. Authored setup never field-merges with store or a
+replaced user definition; it must contain every non-defaulted required field.
+Missing/extra fields fail. Custom setup is authored-only and validated by the
+selected adaptor.
+
+Setup contains endpoint/resource data such as Vertex `project`/`location`,
+Bedrock `region`, Azure `resource_name`/`deployment`/`api_version`, or a reviewed
+provider `workspace`. Auth contains only credentials such as `api_key`,
+`access_token`, `access_key_id`, `secret_access_key`, or `session_token`.
+
+Managed auth precedence is exact:
+
+```text
+same-definition api_key
+> same-definition auth_override
+> exact active provider-store connection only without authored base_url
+> reviewed no-auth
+> unavailable
+```
+
+Store auth is eligible only when neither authored auth nor authored `base_url`
+exists. Its scope must exactly match provider ID, recipe default normalized base
+URL/endpoint identity, canonical safe setup fingerprint, and auth method.
+Authored auth remains effective after any durable connect update. Custom
+providers use only their authored `auth`; they never use the store.
+
+Store setup is eligible only when authored `setup` and authored `base_url` are
+both absent. Removing authored setup, authored auth, and authored `base_url`
+allows exact stored setup and auth to become effective on recomposition. An authored
+`base_url` blocks both store setup and store auth.
+
+Auth method IDs represent semantics, not wire syntax. Recipe registry 1 maps
+semantic fields to bearer, provider header, explicit access-token, SigV4, or
+another reviewed encoder. Catalog has no provider-setup-schema or auth-method
+claim and cannot define either.
+
+## 4. Interpolation, ownership, and secrets
+
+`${env:NAME}` is single-pass and allowed only in managed `base_url`,
+string-valued `setup.*`, managed `api_key`, `auth_override.values.*`, custom `endpoint`,
+and custom `auth.values.*`. Custom static headers never interpolate. `NAME` matches
+`[A-Z_][A-Z0-9_]*`; missing or non-UTF-8
+values fail. No other field interpolates. Prefer interpolation or `/connect`
+over plaintext credentials.
+
+Both `~/.config/cookie_agent` and exact-cwd `.cookie-agent`, including their
+`agents` directories, must be current-user-owned mode `0700`. TOML and Markdown
+files must be current-user-owned mode `0600`, regular, and single-link. All
+opens are descriptor-relative and no-follow. Wrong ownership/mode/type/link,
+replacement races, oversize data, unknown fields, and duplicates fail closed.
+
+Resolved secrets use `SecretString`. Owned source, interpolation, connect,
+serialization, and CLI/TUI input buffers are best-effort zeroized immediately
+after use and on drop. This is process hygiene; transport/kernel copies are not
+claimed erasable. Secret values are excluded from all safe outputs and hashes.
+All Registry-1 setup values are non-secret and enter safe canonical config/
+behavior fingerprints directly where behaviorally relevant. Every secret or
+sensitive value must instead be an auth credential value and is excluded from
+fingerprints, snapshots, and manifests; credential rotation does not change a
+behavior fingerprint. A future non-auth sensitive setup requirement needs a
+future schema/recipe version and independent mechanism.
+
+## 5. Catalog candidate and quarantine boundary
+
+The request URL is exactly `https://models.dev/catalog.json`; redirects,
+cookies, auth, configurable headers, and queries are forbidden. A validated
+cache ETag is the only conditional request value.
+
+The client sends `Accept-Encoding: identity` and accepts only absent or
+`identity` `Content-Encoding`. It checks `Content-Length` before reading and
+rejects values above 16 MiB. Missing or smaller lengths do not authorize
+buffering: bytes are streamed through a hard 16 MiB counter and overflow aborts
+before allocation of the complete body, UTF-8 decoding, or JSON parsing.
+
+After the byte cap, JSON limits are depth 32, at most 4096 providers, at most
+65,536 provider models per provider, at most 65,536 root canonical models, at
+most 1,000,000 total object/array entries, and at most 256 KiB per string before
+narrower identity/URL/field limits.
+
+The strict root is exactly:
+
+```text
+CatalogRoot { providers: Map<ProviderId, RawProviderRecord>,
+              models: Map<CanonicalModelId, RawCanonicalModelRecord> }
+```
+
+Both maps are required, bounded, and nonempty. Unknown root fields are rejected.
+`providers` is limited to 4096 entries and carries provider-scoped executable
+claims and provider model maps. Root `models` is limited to 65,536 entries and
+carries canonical metadata/provenance only. It cannot select endpoint, npm,
+protocol, provider setup schema, auth method, Oven adaptor, model inclusion,
+defaults, or variants.
+
+A **candidate failure** occurs only for invalid UTF-8/JSON, non-object root,
+missing/non-object/empty top-level `providers` or `models`, unknown top-level
+fields, duplicate root keys, exceeded whole-document/depth/container/string
+limits, or another unrecoverable top-level map shape. Candidate failure advances
+to the next source.
+
+After a bounded provider map is recovered, records are isolated:
+
+1. Parse each provider value independently from its bounded raw JSON value.
+2. Provider-local duplicate keys, malformed required shape, invalid ID, or a
+   normalized-ID collision quarantine that provider and all its models.
+3. Within a valid provider, parse each model independently.
+4. Model-local duplicate keys, malformed required shape, invalid ID, or a
+   normalized-ID collision quarantine only that model and all colliding model
+   peers; valid sibling models survive.
+5. For a known registry provider, npm/API/env/provider-shape drift quarantines
+   that provider and all children. Model provider npm/API/shape or model-shape
+   drift quarantines only that model. A recoverable unique ID remains
+   safe-visible with the typed quarantine reason.
+6. A provider with no recipe entry is not claim drift; it remains visible as
+   unsupported `no_reviewed_provider_recipe`.
+
+Each provider-map key must equal its provider record `id`; each provider-model
+key must equal that model record `id`; and each canonical-model key must equal
+its canonical record `id`. Duplicate/ambiguous provider IDs quarantine the
+provider; duplicate/ambiguous provider-model IDs quarantine those models;
+duplicate/ambiguous canonical IDs quarantine only those canonical records.
+Record schemas are strict: an unknown provider field quarantines that provider,
+an unknown provider-model field quarantines that provider model, and an unknown
+canonical-model field quarantines only that canonical record.
+
+When a provider-model key exactly equals a valid root canonical-model key, the
+runtime records an optional provenance cross-reference/digest. The provider
+record remains the only executable claim and may legitimately disagree on name,
+limits, modalities, dates, or capabilities. No exact canonical match is required
+for execution. A missing or quarantined canonical record removes provenance only
+and never invents or invalidates an otherwise valid provider executable record.
+
+Quarantined records never compile or connect. A recoverable uniquely valid
+provider ID may produce an unsupported `/connect` row with
+`invalid_catalog_provider_record`; records without such an ID contribute only
+to safe global quarantine counts.
+
+## 6. Catalog cache schema 1
+
+Unix paths are fixed:
+
+```text
+~/.local/share/cookie_agent/catalog/models-dev-v1.json
+~/.local/share/cookie_agent/catalog/models-dev-v1.meta.json
+~/.local/share/cookie_agent/catalog/models-dev-v1.lock
+```
+
+All ancestor/application/catalog directories are current-user-owned `0700`.
+Body, metadata, lock, and temporary files are current-user-owned `0600`, regular,
+single-link, and opened no-follow. Every write locks/rereads, writes exclusive
+same-directory temps, fsyncs, atomically renames, and parent-fsyncs.
 
 ```rust
-pub enum VariantDirective {
-    Add {
-        display_name: Option<String>, // optional, default ID-derived name
-        defaults: RequestDefaults, // optional table, default {}
-        options: ProviderOptions, // optional table, default {}
-        reasoning: Option<ReasoningBehavior>, // optional, default None
-    },
-    Replace {
-        display_name: Option<String>, // optional, default ID-derived name
-        defaults: RequestDefaults, // optional table, default {}
-        options: ProviderOptions, // optional table, default {}
-        reasoning: Option<ReasoningBehavior>, // optional, default None
-    },
-    Disable,
+pub struct CatalogCacheMetaV1 {
+    pub schema_version: CatalogCacheSchemaVersion, // exactly 1
+    pub url: FixedModelsDevUrl,
+    pub body_revision: CatalogRevision, // sha256:<lowercase SHA-256 digest of the exact selected body bytes>
+    pub etag: Option<String>,
+    pub byte_length: u64,
+    pub validated_at: Rfc3339,
+    pub last_checked_at: Rfc3339,
+    pub selected_source: CatalogSource, // network | cache | bootstrap
+    pub stale: bool,
+    pub provider_quarantine_count: u32,
+    pub model_quarantine_count: u32,
+    pub quarantine_digest: Sha256Digest,
+    pub last_error: Option<CatalogSafeErrorMeta>,
 }
 ```
 
-Wire operations are `add`, `replace`, and `disable`. `add` requires that the ID
-is absent after generation and earlier directives. `replace` requires that the
-ID already exists and replaces it completely; it never field-merges. `disable`
-requires an existing ID, removes it, and permits no other fields. Directives
-are applied in lexicographic `VariantId` order after generation. Base behavior
-cannot be targeted. A default variant is selected by the model-level
-`default_variant`, not a flag repeated inside variant tables.
+`CatalogSafeErrorMeta` contains stable code, bounded redacted message, and time.
+A `200` validates and atomically writes body/meta before selection. A `304`
+revalidates body/meta and records a successful check. Network/HTTP/validation
+failure with cache selection sets `stale = true`, `selected_source = cache`, and
+the exact safe error metadata. Bootstrap selection sets source `bootstrap`,
+`stale = true`, and records why network and cache were unusable. Metadata is
+updated even when selected body bytes do not change. If metadata cannot be
+written safely, the in-memory snapshot reports `cache_metadata_write_failed`;
+unsafe disk state is never trusted.
 
-Every variant table requires `operation`. Add/replace omission defaults are the
-comments above; disable accepts only `operation = "disable"`. Any reasoning
-field outside `VariantDirective.reasoning`, including under defaults or options,
-is rejected as unknown or duplicate semantic authoring.
+## 7. Provider visibility and store 2
 
-The loader constructs and validates an entire provider candidate—including
-auth shape, endpoint, every enabled model, capabilities, base defaults,
-options, generated variants, directives, defaults, concrete adapters, and all
-fingerprints—before publication. Refresh uses one atomic provider-snapshot
-replacement. A failure leaves the previously published provider/model snapshot
-unchanged; partial model publication is forbidden.
+`/connect` is a TUI projection of runtime snapshot providers. It includes:
 
-### 4.5 Example
+- every current catalog provider with a recoverable unique ID, including
+  unsupported/quarantined records;
+- every authored or store-backed managed provider absent from the current
+  catalog, marked `removed`;
+- no custom provider.
 
-```toml
-schema_version = 6
-
-[server]
-host = "127.0.0.1"
-port = 7419
-
-[providers.openai]
-source = "models_dev"
-catalog_revision = "sha256:d65af0b058204954f6b08af537fa13e91f251c618d69d8c20a2d5915731d482a"
-auth = { type = "credential_store" }
-
-[providers.openai.models."gpt-5.6-sol"]
-default_variant = "high"
-
-[providers.openai.models."gpt-5.6-sol".variants.high]
-operation = "replace"
-reasoning = { type = "effort", value = "high" }
-
-[providers.quantumcookie]
-source = "explicit"
-endpoint = "https://llm-api.quantumcookie.xyz/v1"
-adaptor = "openai-compatible"
-auth = { type = "bearer", token = "${env:COOKIE_TEST_API_KEY}" }
-
-[providers.quantumcookie.models."deepseek-v4-flash"]
-display_name = "DeepSeek V4 Flash"
-
-[providers.quantumcookie.models."deepseek-v4-flash".capabilities]
-input = ["text"]
-output = ["text"]
-tool_calling = true
-parallel_tool_calls = true
-structured_output = false
-reasoning = true
-temperature = true
-top_p = true
-seed = true
-native_replay = "unsupported"
-native_compaction = "unsupported"
-cancellation = "local_only"
-context_tokens = 131072
-output_tokens = 16384
-media = {}
-```
-
-## 5. Strict Markdown agent documents
-
-```markdown
----
-schema: 1
-description: General implementation agent
-mode: primary
-enabled: true
-model_fallback:
-  - { model: "anthropic/claude-sonnet-4-6", variant: high }
-  - { model: "openai/gpt-5.6-sol" }
-  - { model: "quantumcookie/deepseek-v4-flash", variant: base }
-tools: [read, grep, glob, write, edit, bash]
-permissions:
-  - { id: allow-read, action: read, resource: "*", effect: allow }
-  - { id: ask-write, action: write, resource: "*", effect: ask }
-  - { id: ask-bash, action: bash, resource: "*", effect: ask }
-delegation:
-  agents: [worker]
-  max_depth: 3
----
-You are the primary implementation agent.
-```
-
-The basename is the `AgentId`; frontmatter has no `id` field.
+Provider store 2 is fixed at
+`~/.local/share/cookie_agent/providers/store-v2.json` with sibling lock. The
+application/providers directories are `0700`; store/lock/temp files are `0600`,
+current-user-owned, regular, single-link, descriptor-relative, no-follow, and
+atomically replaced with lock/reread/fsync/rename/parent-fsync.
 
 ```rust
-pub struct AgentFrontmatter {
-    pub schema: AgentSchemaVersion, // exactly 1
-    pub description: String,
-    pub mode: AgentMode,            // primary | subagent | all
-    pub enabled: bool,
-    pub model_fallback: Vec<AgentModelFallback>,
-    pub tools: Vec<ToolName>,
-    pub permissions: Vec<PermissionRule>,
-    pub delegation: Option<AgentDelegationConfig>,
+pub struct ProviderStoreV2 {
+    pub schema_version: ProviderStoreSchemaVersion, // exactly 2
+    pub generation: ProviderStoreGeneration,
+    pub store_revision: ProviderStoreRevision,
+    pub providers: BTreeMap<ProviderId, StoredManagedConnection>,
+    pub connect_receipts: BTreeMap<ClientConnectId, DurableProviderReceipt>,
+    pub disconnect_receipts: BTreeMap<ClientRequestId, DurableProviderReceipt>,
 }
 
-pub struct AgentModelFallback {
-    pub model: ModelKey,
-    pub variant: Option<ConfiguredVariantRef>, // None = omitted/provider default
-}
-```
-
-The normalized Markdown body is required and must contain at least one
-non-whitespace Unicode scalar. It replaces the generic agent system prompt;
-there is no prepended generic prompt. The engine appends no environment,
-repository, cwd, date, tool, or project metadata to the system prompt in this
-design. Tool schemas are request tools, and delegated task/context is a user
-message, not system-prompt text. Consequently the complete composed prompt is
-exactly the normalized body. The complete prompt and its domain-separated
-SHA-256 fingerprint are frozen and persisted in `AgentSnapshot` before a run
-starts.
-
-Parsing is strict: exact schema 1; unknown and duplicate fields rejected; YAML
-tags, aliases, anchors, merge keys, executable references, includes, and all
-interpolation rejected. Documents are UTF-8, at most 256 KiB; frontmatter is at
-most 128 KiB; body is at most 128 KiB; description is 1..=512 bytes; lists are
-at most 256 entries; nesting is at most 16. Newlines normalize to LF and the
-body has exactly one final LF for fingerprinting.
-
-Every `primary` agent requires a nonempty fallback chain, including a disabled
-primary document. `subagent` and `all` agents may have an empty chain; that
-empty chain means inherit only when the agent is invoked through delegation.
-Any empty-chain agent has `runnable_as_root = false`. A `subagent` is never
-runnable as root. An `all` agent remains root-selectable only when enabled and
-its own configured chain is nonempty. A primary is root-selectable only when
-enabled and at least one selection in its required chain is available.
-
-Every nonempty fallback chain must contain each `ModelKey` at most once.
-Duplicate model keys are a startup error, regardless of differing variant
-references, so model-based suffix selection is unambiguous. Unknown or disabled
-models, variants, tools, actions, rule effects, and delegation targets fail
-startup. A known enabled models.dev model blocked only by missing
-credential-store fields remains a resolved-but-unavailable entry and makes the
-agent non-runnable until connection; it is not treated as unknown.
-
-## 6. Fallback resolution and freezing
-
-Every authored fallback entry resolves before freezing to exactly one
-`ModelSelection`:
-
-- `None`/omitted: use the provider model's resolved default selection, including
-  `variant = None` when that source/configured default is base;
-- `Some(Base)`: use `variant = None` even if the model has a named default;
-- `Some(Named(id))`: require that enabled variant and use
-  `variant = Some(id)`.
-
-No unresolved omitted/base/named marker enters a frozen snapshot, event,
-fingerprint, or request. A run selection is:
-
-```rust
-pub struct RunSelection {
-    pub agent: AgentId,
-    pub model: ModelSelection,
-}
-
-pub struct AvailableVariantDescriptor {
-    pub id: VariantId,
-    pub display_name: String,
-    pub origin: VariantOrigin,
-    pub behavior_fingerprint: Sha256Digest,
-}
-
-pub struct AvailableModelDescriptor {
-    pub key: ModelKey,
-    pub display_name: String,
-    pub capabilities: ModelCapabilities,
-    pub variants: Vec<AvailableVariantDescriptor>,
-    pub default_variant: Option<VariantId>,
-    pub behavior_fingerprint: Sha256Digest,
-}
-
-pub struct AgentDescriptor {
-    pub id: AgentId,
-    pub description: String,
-    pub mode: AgentMode,
-    pub enabled: bool,
-    pub runnable_as_root: bool,
-    pub resolved_fallback: Vec<ModelSelection>,
-    pub tools: Vec<ToolName>,
-    pub delegation_targets: Vec<AgentId>,
-}
-
-pub struct SessionCreateParams {
-    pub selection: RunSelection,
-}
-
-pub struct RunStartParams {
-    pub session_id: SessionId,
-    pub client_run_id: ClientRunId,
-    pub selection: RunSelection,
-    pub input: String,
-}
-```
-
-Root selection uses one coherent model snapshot for catalog publication,
-model/variant validation, authored-entry availability, and plan construction.
-The public root catalog contains every configured, enabled, currently
-executable model in strict `ModelKey` order. Credential-blocked unavailable
-models remain internal resolved entries but are omitted from public model
-descriptors.
-
-The exact selected model/variant may be any public catalog entry. When its
-`ModelKey` occurs in the resolved authored chain, the root plan contains the
-exact requested head followed by the available authored tail after that entry;
-the requested variant never falls back to the authored/default head variant.
-When the selected key is outside the authored chain, the root plan contains a
-synthetic exact head followed by all available authored fallback entries.
-Unavailable authored entries are skipped in both cases. Root eligibility is
-still based on the authored chain being nonempty and containing at least one
-available entry.
-
-Delegated semantics are unchanged: a configured-chain child uses the unique
-authored suffix, replacing only its head with the exact delegated selection and
-preserving its authored tail; fallback advances and never wraps. An empty-chain
-child inherits the parent's active frozen suffix as specified in section 9.
-
-Before `RunStarted`, freeze the complete `AgentSnapshot`: identity, mode,
-description, source/document fingerprint, complete composed prompt and prompt
-fingerprint, tools, ordered permissions, delegation policy, exact resolved
-fallback bindings/defaults/fingerprints, and selected suffix. Retries,
-fallback, tool-loop passes, compaction, title work, approval work, and replay
-reconstruction use that snapshot. Internal engine work inherits the owning
-run's currently active exact frozen suffix unless its documented policy says
-otherwise; it never re-resolves live config.
-
-## 7. Models.dev variant generation and compilation
-
-The only recognized models.dev reasoning-option forms are `effort`, `toggle`,
-and `budget_tokens`. Unknown forms or fields fail an included model. No variant
-is inferred from a model name.
-
-### 7.1 Effort
-
-Effort accepts only the ordered values `none`, `minimal`, `low`, `medium`,
-`high`, `xhigh`, `max`, `default`, and `null`. Each non-null value generates a
-same-ID variant with that exact semantic effort. `null` generates `off` and
-means the actual upstream null token and the adaptor's honest
-reasoning-disabled encoding; a string containing `"null"` is rejected.
-Duplicate values are rejected.
-
-### 7.2 Toggle
-
-Toggle generates `off` and `on`. `off` must compile to an explicit supported
-disabled encoding, not omission when omission means provider default-on. `on`
-must compile to the adaptor's supported enabled/default reasoning encoding.
-
-### 7.3 Budget tokens
-
-Pinned models.dev `budget_tokens` has only optional `min` and `max` fields; any
-other field is unknown and fails. `min` is `-1` (automatic) or a nonnegative token count; `max`, when
-present, is a nonnegative token count. `min = -1` generates only
-`budget-auto`; finite `min` generates `budget-min`; present `max` generates
-`budget-max`. An absent bound generates nothing, and no other budget ID is
-generated. Finite `min > max` fails. Equal finite bounds may produce distinct
-`budget-min` and `budget-max` IDs with identical behavior; IDs remain distinct.
-
-Reviewed recipe metadata may separately define base request behavior or a
-provider model source default. Such recipe metadata is not a
-`reasoning_options.budget_tokens` field and never creates an additional budget
-variant ID.
-
-### 7.4 Multiple options and collisions
-
-Multiple options generate a deterministic union, not a Cartesian product.
-Source options are normalized in snapshot order, but generated-map ordering is
-by `VariantId`. An explicit provider directive has highest precedence and may
-replace or disable any generated ID. Among generated options, ID precedence is
-`effort` over `toggle` over `budget_tokens`; a lower-precedence collision is
-discarded only when its compiled normalized behavior is byte-for-byte equal.
-Different behavior for the same generated ID fails the included model. Equal
-precedence duplicate IDs also fail. Combined behaviors require one explicit
-replacement variant and must be honestly supported by the adaptor.
-
-### 7.5 Honest adapter compiler
-
-Each base model and variant is compiled at provider construction by an
-adaptor-specific compiler into internal `ResolvedRequestDefaults` plus strict
-typed provider options. Compilation must prove that the adaptor can encode every
-requested setting and distinguish it from base behavior. Unsupported effort,
-toggle-off, token budget, conflicting settings, or lossy mapping fails the
-included model/provider atomically. The loader never silently drops a variant,
-renames it, approximates it, or advertises behavior the request encoder cannot
-produce.
-
-`ModelVariant` and `ModelEntry` retain exact behavior fingerprints. Variant
-identity participates in frozen bindings, selection fingerprints, fallback,
-native replay/context scope, persistence, RPCs, diagnostics, and attribution.
-
-## 8. Permissions, guards, exposure, and approvals
-
-```rust
-pub struct PermissionRule {
-    pub id: RuleId,
-    pub action: PermissionAction,
-    pub resource: WildcardPattern,
-    pub effect: PermissionEffect,
-}
-
-pub enum PermissionAction {
-    Read, Write, Bash, Grep, Glob, Delegate, ExternalDirectory,
-}
-
-pub enum PermissionEffect { Allow, Ask, Deny }
-```
-
-Wire values are the lowercase names above. Rules are evaluated in document
-order and the last matching rule wins. No match is `Ask`. Rule IDs are unique
-within one agent and all fields are strict.
-
-The wildcard grammar is not a filesystem glob: `*` matches zero or more of any
-character including `/`; `?` matches exactly one character; there is no escape,
-character class, alternation, or globstar syntax. A terminal literal ` *` is
-optional, so `git status *` also matches `git status`.
-
-Action mapping is exact: `read→read`, `write→write|edit`, `bash→bash`,
-`grep→grep`, `glob→glob`, and `delegate→delegate`. `external_directory` is a
-guard action and never a tool. Bash evaluates each parsed subcommand, falling
-back to the whole command when parsing is unsafe. Matched resources are:
-
-| Action | Exact resource string |
-|---|---|
-| `bash` | each parsed subcommand's normalized source, or the whole normalized command when safe parsing fails |
-| `read`, `write` | canonical workspace-relative path using `/`; outside-workspace paths use canonical absolute form |
-| `grep` | the exact normalized regular-expression string |
-| `glob` | the exact normalized pattern string |
-| `delegate` | target `AgentId` |
-| `external_directory` | canonical absolute directory boundary ending in `/*` |
-
-For a not-yet-existing write target, preparation resolves the nearest existing
-ancestor without following a final link and appends validated remaining
-components. Resource strings are derived from held prepared objects, not from
-later path lookup.
-
-Every tool call follows prepare-once → evaluate → approve if needed → execute
-the held capability. Preparation is descriptor/handle based, no-follow, and
-produces immutable prepared resources plus a domain-separated operation
-fingerprint. Approval authorizes only those prepared resources. Execution never
-reopens a path or substitutes a resource; replacement, lost capability, or
-restart fails closed. Multi-resource aggregation is Deny, then Ask, then Allow.
-
-Built-in guards run before agent rules and cannot be weakened by omission:
-
-- an outside-workspace filesystem resource first evaluates
-  `external_directory`, then its `read` or `write` action;
-- `.env` and `.env.*` reads default to Ask, except `*.example`;
-- prepared paths must remain within the approved canonical boundary;
-- a run that proposes the same operation fingerprint four times without
-  intervening user input or a successful different operation is denied on the
-  fourth proposal as a doom loop and emits `ApprovalDoomLoopDetected`.
-
-Agent rules may make the first two guards stricter or explicitly allow them;
-descriptor binding and the doom-loop guard cannot be bypassed by a rule.
-
-Tool exposure is derived from the frozen agent, not from live config. The
-frontmatter `tools` list accepts only `read`, `write`, `edit`, `bash`, `grep`,
-and `glob`; `delegate` is engine-owned and listing it is a validation error. A
-non-delegate tool is exposed only when listed, registered, and not
-made impossible by a final unconditional `resource: "*"` Deny with no later
-rule for that action. Ask-by-default tools remain exposed and request approval
-at invocation. Section 9 exclusively defines delegate exposure.
-
-An Ask creates a revisioned `ApprovalRequested` for the exact operation
-fingerprint. Internal policy may allow, deny, or escalate. Only
-`ApprovalEscalated` is user-visible/respondable. Responses are
-`approve_once`, `approve_tree`, `reject`, or `cancel`, are idempotent by client
-response ID, and must match session, approval ID, revision, and fingerprint.
-Tree grants are engine-authored and scoped to one delegation root; process-local
-filesystem capabilities do not survive restart. Unattended Ask is Deny.
-
-Each child uses only its own frozen ordered permissions. Parent permissions,
-approvals, and rules are never copied into the child. A narrowly matching
-engine-authored tree grant may apply because it is runtime consent scoped to the
-tree, not inherited configured policy.
-
-## 9. Delegation
-
-```rust
-pub struct AgentDelegationConfig {
-    pub agents: Vec<AgentId>,
-    pub max_depth: u32,
-}
-```
-
-Absence of `delegation` disables delegation. Only the model-visible `delegate`
-tool may create a child; no public session-create, client fan-out, workflow, or
-other tool can create one. `agents` is a nonempty unique list. Targets must be
-enabled agents whose mode is `subagent` or `all`; `primary` targets are invalid.
-
-The root session has depth 0; each child is exactly parent depth + 1.
-`max_depth` is an inclusive maximum child depth relative to that root. A root
-with `max_depth: 0` cannot delegate; `max_depth: 1` may create children at depth
-1 but no descendants. The root's frozen ceiling is authoritative for the whole
-tree. A child with its own delegation block receives effective ceiling
-`min(parent_effective_ceiling, child.max_depth)`; without a block it cannot
-delegate. The engine derives depth/root from durable provenance and rejects
-client/tool-supplied values.
-
-The delegate tool is exposed only when the invoking frozen agent has a
-delegation block, current depth is below its effective ceiling, and at least one
-listed target remains enabled and mode-eligible in the frozen registry. Its
-schema enum and agent-list projection contain only those targets. This is an
-exposure convenience, not authority: immediately before child reservation the
-engine revalidates target membership, enabled/mode eligibility, parent run,
-depth, ceiling, permission result, and idempotency against the same frozen
-registry. Failure creates no child.
-
-If the configured child agent has a nonempty fallback chain, it resolves and
-uses its own chain. If it has an empty chain, the child inherits the invoking
-parent run's currently active frozen fallback suffix at delegate admission,
-including the active head's exact selected variant and all remaining entries.
-It does not inherit the parent's original full chain, entries already exhausted,
-or the parent's authored omitted/default markers. The inherited exact suffix is
-frozen into the child `AgentSnapshot` before its first `RunStarted`.
-
-Delegation retains durable invocation reservation, parent `ToolCallLinked`,
-child provenance, exactly-once child start, cancellation propagation, bounded
-result retention, and restart reconciliation. The delegated task/context is the
-child's initial user message and never changes its system prompt.
-
-## 10. Protocol and event schema 7
-
-Protocol handshake and event schema are exactly 7. Config remains exactly 6
-and agent documents exactly 1. Protocol, event, session JSONL, metadata, or
-delegation-journal version 6 is rejected; there is no decoder or migration.
-
-```rust
-pub struct ResolvedModelRef {
-    pub selection: ModelSelection,
+pub struct StoredManagedConnection {
     pub provider_id: ProviderId,
-    pub model_id: ProviderModelId,
-    pub adapter_id: AdaptorId,
-    pub selection_fingerprint: Sha256Digest,
+    pub setup_values: BTreeMap<SetupFieldId, SafeSetupValue>,
+    pub setup_fingerprint: Sha256Digest,
+    pub auth_method: AuthMethodId,
+    pub auth_values: BTreeMap<AuthFieldName, SecretString>,
+    pub connection_generation: ProviderConnectionGeneration,
+    pub policy: StoredProviderPolicyProjection,
+    pub connected_at: Rfc3339,
+}
+
+pub struct StoredProviderPolicyProjection {
+    pub catalog_revision: CatalogRevision,
+    pub provider_recipe: ProviderRecipeId,
+    pub setup_recipe: ProviderSetupRecipeId,
+    pub protocol_recipe: ProtocolRecipeId,
+    pub compiler_version: RecipeCompilerVersion,
+    pub default_endpoint_identity: SafeEndpointIdentity,
+    pub package_claim: SafePolicyString,
+    pub source_record_digest: Sha256Digest,
+    pub recipe_fingerprint: Sha256Digest,
+    pub model_overrides: BTreeMap<ProviderModelId, StoredModelOverrideProjection>,
+}
+
+pub struct DurableConnectionDescriptor {
+    pub provider_id: ProviderId,
+    pub setup_values: BTreeMap<SetupFieldId, SafeSetupValue>,
+    pub setup_fingerprint: Sha256Digest,
+    pub recipe_fingerprint: Sha256Digest,
+    pub auth_method: AuthMethodId,
+    pub credential_fields: Vec<AuthFieldName>,
+    pub connection_generation: ProviderConnectionGeneration,
+    pub connected_at: Rfc3339,
+}
+```
+
+Each connection retains provider ID, recipe-default endpoint identity, safe
+setup/config scope fingerprint, normalized non-secret setup values, auth method
+and secret credential values, generation, timestamps, and the safe provider
+recipe ID/package, exact source-record digest, and independent recipe fingerprint
+validated at connect time. `source_record_digest` is immutable provenance over
+the exact canonical validated catalog provider record selected at connect time.
+`recipe_fingerprint` is the credential/execution compatibility identity over
+Registry-1 revision/schema, compiler version, complete selected provider/
+protocol/adapter/setup/auth/endpoint recipe, and versioned model-exception
+semantics. Provider store 2 stores managed setup and credentials plus non-secret
+policy, scope, source projection, generation, and idempotency-receipt metadata.
+State revisions, connect payload digests, persisted receipts, and durable runtime
+connection descriptors include `recipe_fingerprint`; schema-2 records missing it
+are rejected without migration. The retained safe source projection allows a
+formerly current provider to remain a configured `removed` row. The store
+contains no custom provider, catalog body, model inclusion pin, or endpoint
+discovered from catalog.
+
+A harmless catalog metadata refresh changes only `source_record_digest` for the
+newly compiled runtime/manifest. If `recipe_fingerprint`, provider identity,
+endpoint policy, normalized setup, and auth shape are unchanged, the existing
+store secret remains eligible. API/environment/package claims, adapter,
+protocol, setup/auth/endpoint policy, compiler/registry, or model-exception drift
+changes or quarantines recipe compatibility and blocks reuse. Source provenance
+is never rewritten to make credentials match.
+
+## 8. Connect and disconnect RPCs
+
+```rust
+pub struct ProviderConnectParams {
+    pub provider_id: ProviderId,
+    pub expected_catalog_revision: CatalogRevision,
+    pub setup_values: BTreeMap<SetupFieldId, SafeSetupValue>,
+    pub auth_method: AuthMethodId,
+    pub auth_values: BTreeMap<AuthFieldName, SecretString>,
+    pub client_connect_id: ClientConnectId,
+}
+
+pub struct ProviderConnectResult {
+    pub durable_connection: DurableConnectionDescriptor,
+    pub effective_auth_source: EffectiveAuthSource,
+    pub runtime: RuntimeSnapshotV1,
+    pub replayed: bool,
+}
+
+pub struct ProviderDisconnectParams {
+    pub provider_id: ProviderId,
+    pub expected_runtime_revision: RuntimeRevision,
+    pub expected_provider_state_revision: ProviderStateRevision,
+    pub expected_connection_generation: Option<ProviderConnectionGeneration>,
+    pub client_request_id: ClientRequestId,
+}
+
+pub struct ProviderDisconnectResult {
+    pub durable_receipt: DurableProviderReceipt,
+    pub provider_id: ProviderId,
+    pub disconnected: bool, // always true on success
+    pub effective_auth_state: EffectiveAuthState,
+    pub runtime: RuntimeSnapshotResult,
+    pub replayed: bool,
+}
+```
+
+The expected revision must exactly equal
+`sha256:<lowercase SHA-256 digest of the exact selected body bytes>`. For HTTP
+`200` these are the exact response body bytes;
+for `304`, cache, or bootstrap they are the exact selected cached/bundled bytes. Connect
+accepts a current supported managed provider or a configured removed managed
+provider whose retained safe source projection exactly matches registry 1. No
+prior store record or authored provider definition is required for a current
+catalog provider; connect creates/upserts the managed store record.
+
+Before durable write, hold the serialized runtime-mutation lock and store lock;
+reread store 2; validate catalog revision/idempotency and exact missing/extra
+recipe-typed setup fields and auth credential fields; normalize safe setup
+values; assign the final
+store revision, connection generation, and receipt; and compile the complete
+provider/model/agent/runtime candidate against exactly that proposed state.
+Then one store transaction writes normalized setup, credentials, policy metadata,
+connection record, and receipt atomically.
+After commit, publishing the precompiled `Arc<RuntimeSnapshotV1>` is an
+infallible atomic swap with no intervening allocation or validation. Response
+serialization failure does not roll back; a retry with the same
+`client_connect_id` returns the durable receipt and `replayed = true`.
+Reusing that ID with different provider, setup-value, or auth-credential payload returns
+`idempotency_conflict`. Secret-bearing equivalence data remains only inside the
+private store receipt and is never hashed into or projected through safe state.
+
+Authored auth remains effective after the stored update and is reported as
+`authored_api_key` or `authored_override`; otherwise the source is
+`provider_store` or `no_auth`.
+`durable_connection` includes normalized setup values only where recipe policy
+marks them safe, setup fingerprint, auth method/field names, and generation; it
+never contains credential values.
+
+The connect descriptor schema comes only from the code-owned provider recipe:
+setup descriptors contain field ID, display/help text, required/defaulted status,
+bounded type/validation, and safe projection policy; auth descriptors contain
+auth method ID and credential field IDs/types. `/connect` renders setup in public
+input controls and credentials in separate secret controls. This supports
+absent-provider upsert for Vertex project/location/resource, Bedrock region,
+Azure resource/deployment/API version, and API-key-only recipes whose setup is
+empty or fully defaulted.
+
+Disconnect idempotency is exact. Under the runtime/store locks, a receipt lookup
+happens first. Reusing `client_request_id` with the same canonical complete
+params returns the stored result with `replayed = true` regardless of later
+runtime revisions. Reusing it with different params returns typed
+`idempotency_conflict`. A new request must match both expected revisions and, when
+a stored connection exists, its exact generation. For an absent record,
+`expected_connection_generation` must be `None`; a supplied generation returns
+`stale_provider_connection_generation`.
+
+The receipt payload digest is SHA-256 over RFC-8785 JCS of all disconnect params;
+the client request ID remains the receipt lookup key.
+
+For a present stored managed provider, build the post-removal store state and
+compile the complete candidate before mutation. For a syntactically valid absent
+managed provider, disconnection is an idempotent success: compile the unchanged
+effective provider candidate with the new durable receipt and return
+`disconnected = true`. A configured custom provider still returns
+`custom_provider_not_store_backed`.
+
+One transaction atomically removes the stored setup and credentials with the
+record when present (or records the absence no-op) and writes the receipt. After
+commit, publication of the already
+compiled snapshot is infallible and emits `runtime.changed` reason
+`ProviderDisconnected`/`provider_disconnected`. First-time absent success also
+publishes the receipt-advanced provider-state/runtime revisions; replay does not
+publish again.
+
+`effective_auth_state` is computed after store removal and is exactly
+`authored_api_key`, `authored_override`, `no_auth`, or `unavailable`. Thus
+authored credentials may keep the provider effective. `RuntimeSnapshotResult`
+contains the complete coherent `RuntimeSnapshotV1`, not independently loaded
+lists. Disconnect never edits config, deletes another provider, or exposes
+secret values.
+
+Required disconnect RPC tests cover present removal, already-absent success,
+authored-auth remaining effective, same-ID/same-payload replay, conflicting
+payload `idempotency_conflict`, stale expected revisions/generation, custom
+provider rejection, one durable removal/no-op-plus-receipt transaction, one
+`ProviderDisconnected` publication, and no publication on replay.
+
+## 9. Runtime snapshot schema 1
+
+```rust
+pub struct RuntimeSnapshotV1 {
+    pub snapshot_schema_version: RuntimeSnapshotSchemaVersion, // exactly 1
+    pub recipe_registry_revision: RecipeRegistryRevision,
+    pub catalog_revision: CatalogRevision,
+    pub catalog_source: CatalogSource,
+    pub catalog_state: CatalogRuntimeState,
+    pub provider_state_revision: ProviderStateRevision,
+    pub provider_store_generation: ProviderStoreGeneration,
+    pub model_revision: ModelRevision,
+    pub agent_revision: AgentRevision,
+    pub runtime_revision: RuntimeRevision,
+    pub providers: Vec<ProviderDescriptor>,
+    pub models: Vec<AvailableModelDescriptor>,
+    pub agents: Vec<AgentDescriptor>,
+}
+
+pub struct RuntimeSnapshotResult {
+    pub snapshot: RuntimeSnapshotV1,
+}
+```
+
+All revisions are opaque, content-derived, deterministic, and secret-free.
+Each store-backed `ProviderDescriptor.durable_connection` carries the same safe
+`recipe_fingerprint` used for compatibility projection; it does not expose
+`source_record_digest` or any secret value.
+`runtime.snapshot.get` is the only discovery RPC. Protocol 8 removes legacy
+catalog/provider/model/agent list RPCs and racing refresh sequences. Connect,
+disconnect, startup, catalog refresh, and config reload return a complete
+snapshot.
+
+Every publication emits:
+
+```rust
+runtime.changed {
+    previous_revision: Option<RuntimeRevision>,
+    snapshot: RuntimeSnapshotV1,
+    reasons: NonEmptySortedSet<RuntimeChangeReason>,
+}
+```
+
+Reasons are exactly `startup`, `catalog_refreshed`, `catalog_fallback`,
+`config_reloaded`, `provider_connected`, `provider_disconnected`,
+`provider_store_changed`, `provider_store_reloaded`, and `agent_reloaded`.
+The corresponding Rust variants include `ProviderConnected`,
+`ProviderDisconnected`, `ProviderStoreChanged`, and `ProviderStoreReloaded`.
+Local connect publishes `ProviderConnected`; local disconnect publishes
+`ProviderDisconnected`. A successfully reconciled external generation change
+publishes both store-change variants.
+
+Before `runtime.snapshot.get` or any discovery RPC, session admission, or root
+run admission, the process locks and rereads provider-store generation. A
+mismatch blocks the operation, recompiles and publishes a coherent runtime with
+both store-change reasons, then retries against that runtime. Reload failure
+returns `provider_store_reload_failed`; accepted runs continue unchanged.
+
+## 10. Project model-snapshot manifest and rehydration
+
+The fixed project directory is:
+
+```text
+<exact-cwd>/.cookie-agent/model-snapshots/
+  <64-lowercase-hex>.json
+  model-snapshots-v1.lock
+```
+
+```rust
+pub struct ModelSnapshotManifestV1 {
+    pub schema_version: ModelSnapshotManifestSchemaVersion, // exactly 1
+    pub revision: ModelSnapshotRevision, // sha256:<payload digest>
+    pub payload: ModelSnapshotPayloadV1,
+}
+
+pub struct ModelSnapshotPayloadV1 {
+    pub catalog_revision: CatalogRevision,
+    pub recipe_registry_revision: RecipeRegistryRevision,
+    pub provider_state_revision: ProviderStateRevision,
+    pub model_revision: ModelRevision,
+    pub blueprints: Vec<CompiledSafeModelBlueprint>,
+}
+
+pub struct CompiledSafeModelBlueprint {
+    pub blueprint_fingerprint: Sha256Digest,
+    pub selection: ModelSelection,
+    pub source: FrozenProviderSource,
+    pub config_override_fingerprint: Sha256Digest,
+    pub setup_binding: FrozenSetupBinding,
+    pub credential_binding: FrozenCredentialBinding,
+    pub endpoint_identity: SafeEndpointIdentity,
+    pub provider_recipe: ProviderRecipeId,
+    pub protocol_recipe: ProtocolRecipeId,
+    pub setup_recipe: ProviderSetupRecipeId,
+    pub auth_method: AuthMethodId,
+    pub compiler_version: RecipeCompilerVersion,
+    pub descriptor: LanguageModelDescriptor,
+    pub defaults: ResolvedRequestDefaults,
+    pub options: FrozenProviderOptions,
+    pub static_headers: BTreeMap<HeaderName, SafeStaticHeaderValue>, // custom only; {} for managed
+    pub variants: Vec<FrozenVariantBlueprint>,
+    pub behavior_fingerprint: Sha256Digest,
+}
+```
+
+Canonical bytes are exactly RFC 8785 JSON Canonicalization Scheme (JCS) applied
+to the self-contained `payload` object only. The envelope's `schema_version` and
+`revision` are excluded, preventing digest self-reference. The filename is
+`<lowercase hex SHA-256(JCS(payload))>.json`; `revision` is the same digest as
+`sha256:<lowercase hex>`. Envelope and payload deny unknown/duplicate keys.
+
+Payload JSON is UTF-8/I-JSON. Maps follow RFC 8785 property ordering. Before JCS,
+semantic collections are projected deterministically: model blueprints sorted by
+`ModelKey`, variants by `VariantId`, setup fields by `SetupFieldId`, credential
+binding names by `AuthFieldName`, and unordered sets by their strict ID/string
+order. Arrays whose order is semantic—fallback suffixes, ordered bindings,
+permission-like sequences, and provider option sequences—are preserved exactly.
+
+JSON numbers are integers only, must fit both their domain bounds and the I-JSON
+safe range `[-(2^53-1), 2^53-1]`; floating JSON numbers are forbidden. Finite decimal request values are
+encoded as their domain type's normalized decimal string. Strings are valid
+UTF-8 scalar sequences and are not NFC/NFKC normalized; exact code points are
+preserved and escaped/ordered by RFC 8785. IDs apply their stricter grammar
+before canonicalization.
+
+Credential binding
+contains only auth source/method and credential field names. Setup binding is
+separate and contains setup recipe, field IDs, and normalized non-secret values
+directly. Custom static header names/values are included in `static_headers` as
+safe behavior metadata. Auth credential values, generated auth-owned header
+values, environment values, raw catalog records, live handles, and
+provider-native private payloads are forbidden.
+
+The directory is current-user-owned `0700`; manifest, exact lock
+`model-snapshots-v1.lock`, and temp files are
+current-user-owned `0600`, regular, single-link, descriptor-relative/no-follow,
+bounded to 4 MiB each and 4096 direct matching files, and atomically written by
+lock/reread, exclusive sibling temp, fsync, rename, and parent fsync. A manifest
+is durable before `SessionCreated` or `RunStarted` references it.
+
+Startup scans direct `<64-lowercase-hex>.json` files in sorted byte order and validates
+strict schema, RFC-8785 reserialization, filename/revision/payload digest equality, bounded unique
+blueprints, and safe identities. Unsafe objects or malformed matching files fail
+project open with `invalid_model_snapshot_manifest` or
+`model_snapshot_digest_mismatch`; no partial acceptance or filename fallback is
+allowed. Every version-8 session/journal reference must resolve. Referenced
+manifests are never garbage-collected; Registry 1 performs no automatic manifest
+GC.
+
+```rust
+pub enum FrozenProviderSource {
+    Managed {
+        provider_recipe: ProviderRecipeId,
+        source_record_digest: Sha256Digest,
+        recipe_fingerprint: Sha256Digest,
+        package_claim: String,
+    },
+    Custom {
+        safe_definition_fingerprint: Sha256Digest,
+    },
 }
 
 pub struct FrozenModelBinding {
-    pub resolved: ResolvedModelRef,
+    pub manifest_revision: ModelSnapshotRevision,
+    pub blueprint_fingerprint: Sha256Digest,
+    pub selection: ModelSelection,
+    pub source: FrozenProviderSource,
+    pub config_override_fingerprint: Sha256Digest,
+    pub credential_source: FrozenCredentialSource,
+    pub setup_binding: FrozenSetupBinding,
+    pub endpoint_identity: SafeEndpointIdentity,
+    pub protocol_recipe: ProtocolRecipeId,
+    pub setup_recipe: ProviderSetupRecipeId,
+    pub auth_method: AuthMethodId,
+    pub compiler_version: RecipeCompilerVersion,
     pub descriptor: LanguageModelDescriptor,
     pub defaults: ResolvedRequestDefaults,
-    pub provider_options: ProviderOptions,
+    pub options: FrozenProviderOptions,
     pub behavior_fingerprint: Sha256Digest,
 }
-
-pub struct AgentSnapshot {
-    pub agent: AgentId,
-    pub schema: AgentSchemaVersion,
-    pub mode: AgentMode,
-    pub description: String,
-    pub document_source: AgentDocumentSource,
-    pub document_fingerprint: Sha256Digest,
-    pub composed_prompt: String,
-    pub prompt_fingerprint: Sha256Digest,
-    pub tools: Vec<ToolName>,
-    pub permissions: Vec<PermissionRule>,
-    pub delegation: Option<FrozenDelegationPolicy>,
-    pub fallback_chain: Vec<FrozenModelBinding>,
-    pub selected_suffix_start: u32,
-}
-
-pub struct RunSelection {
-    pub agent: AgentId,
-    pub model: ModelSelection,
-}
 ```
 
-`AgentSnapshot` contains no auth values, header values, credential-store data,
-or live adapter handles. `AgentDocumentSource` is the unit enum
-`built_in|user|workspace`; raw filesystem paths are not persisted. The wire
-shape is unchanged. For root runs, `fallback_chain` carries the frozen
-exact root plan described in section 6 and `selected_suffix_start` is zero. For
-delegated configured-chain runs it retains the authored-chain semantics;
-empty-chain children carry their inherited exact suffix.
-`RunStarted.selected_suffix` remains the authoritative executable suffix used
-by attempts and child inheritance.
+`config_override_fingerprint` is domain-separated SHA-256 over the canonical
+effective authored override shape: provider ID and source kind; authored
+endpoint identity when present; setup recipe/field IDs and normalized non-secret
+setup values, auth method/credential names
+but no credential values; and the complete normalized managed `model_overrides` map. No authored
+provider uses the canonical `no-authored-override` marker. The custom
+`safe_definition_fingerprint` covers provider ID/source, normalized endpoint,
+adaptor, setup recipe/field IDs and normalized non-secret setup values, auth
+method, safe auth parameters/owned header names, credential field names, static
+headers sorted by canonical lowercase name with each exact safe value, and
+complete normalized model definitions, defaults, options, and variants; it
+excludes every auth credential value. Credential-only rotation therefore preserves safe
+fingerprints while setup binding, source kind, endpoint, auth shape, or behavior
+changes do not.
 
-Model/variant and agent descriptor vectors are deterministically sorted by
-their strict IDs. Descriptor projections contain no provider secrets or prompt
-body. `AgentDescriptor.runnable_as_root` is true exactly when the agent is
-enabled, its mode is `primary` or `all`, its own configured chain is nonempty,
-and at least one chain selection is available. Root session creation and the root
-Agent selector accept only descriptors with `runnable_as_root = true`.
-Delegated creation is not a public protocol method.
+For managed sources, `source_record_digest` and `recipe_fingerprint` are
+independent required fields. The former pins the exact catalog provider record
+used to compile that blueprint. The latter pins code-owned execution and
+credential compatibility. Blueprint, manifest payload, frozen binding, runtime
+source projection, persisted event/session identity, and delegation journal
+binding descriptions preserve both values. Events and journals carry them only
+through the referenced exact `FrozenModelBinding`; neither value contains a
+secret.
 
-### 10.1 Stored envelope and required events
+`FrozenCredentialSource` is exactly `authored_api_key`, `authored_override`,
+`provider_store`, or `no_auth`. It never changes during rehydration.
 
-```rust
-pub struct StoredEvent {
-    pub event_schema_version: EventSchemaVersion, // exactly 7
-    pub session_id: SessionId,
-    pub run_id: Option<RunId>,
-    pub seq: u64,             // per-session, starts at 1
-    pub timestamp: Rfc3339,
-    pub payload: EventPayload,
-}
-```
+- Authored sources require the current same-ID provider definition, same source
+  kind, same safe config-override fingerprint, and the same authored auth shape.
+  Missing/changed authored config fails; it never falls to store.
+- Store source requires managed source, exact current `recipe_fingerprint`,
+  recipe endpoint policy, setup recipe/fingerprint, exact auth method/shape, and
+  retained store scope/generation-compatible credential. It never substitutes
+  config auth. The durable connection's historical `source_record_digest` need
+  not equal a harmless newly refreshed blueprint's source digest.
+- Managed source reconstructs from the persisted safe source projection only if
+  Registry 1 still reproduces the exact recipe fingerprint, package claim,
+  protocol, auth, and compiler. The binding must exactly match its referenced
+  blueprint's own source-record digest, but source provenance is not credential
+  scope. Current catalog presence is not required.
+- Custom source requires a current custom definition with the exact safe
+  definition fingerprint. Custom never uses store.
+- Recompiled behavior must equal the frozen fingerprint.
 
-The envelope contains ordering/version metadata only. Frozen policy is not
-duplicated in every event: creation policy is in `SessionCreated`, and each
-run's authoritative complete policy is in `RunStarted`.
+A store-backed managed blueprint freezes normalized non-secret setup values and
+their canonical setup fingerprint, plus auth method and credential field names/
+shape, but never credential values. Config-backed managed and custom blueprint
+rules are unchanged; custom remains entirely config-only.
 
-`SessionMeta` is not an `EventPayload`. It is the strict rebuildable
-`meta.json` cache schema:
+Custom provider compilation, fingerprints, and rehydration are entirely
+config-only and never open or depend on provider store 2.
 
-```text
-SessionMeta {
-  meta_schema_version: 7, session_id, origin, cwd_identity,
-  creation_selection, title: Option<SessionTitle>, title_updated_seq,
-  last_event_seq, status
-}
-```
+Typed failures are `snapshot_config_mismatch`,
+`snapshot_credentials_unavailable`, `unsupported_snapshot_recipe`, and
+`snapshot_rehydration_mismatch`. History remains readable; no key/name fallback
+or model substitution occurs.
 
-Required `EventPayload` fields are:
+New root runs resolve only from the current coherent runtime and durably
+write/reference its current manifest blueprint. A harmless catalog refresh
+therefore freezes a new source-record digest while reusing credentials through
+the unchanged recipe fingerprint. Previously accepted runs keep their original
+manifest/source provenance and may rehydrate the same store secret through the
+same recipe/auth/setup identity. Delegated sessions use the invoking parent's
+accepted manifest revision and exact frozen suffix even when the current runtime
+changed. Once a run is accepted, later catalog, config, provider-store,
+manifest-directory, or runtime changes do not reinterpret it.
 
-```text
-SessionCreated {
-  origin, cwd_identity, creation_selection: RunSelection,
-  creation_agent: AgentSnapshot, model_snapshot_fingerprint
-}
-RunStarted {
-  client_run_id, selection: RunSelection, agent: AgentSnapshot,
-  selected_suffix: [FrozenModelBinding], input_through_seq
-}
-ModelAttemptStarted {
-  attempt_id, attempt_ordinal, fallback_index, retry_ordinal,
-  resolved_model: ResolvedModelRef, prompt_fingerprint
-}
-ModelReplayEvaluated {
-  attempt_id, resolved_model, ordered_decisions: [ReplayDecision]
-}
-ModelTurnCommitted {
-  attempt_id, model_turn_seq, resolved_model,
-  input_through_seq, turn: PersistedModelTurn, warnings
-}
-ModelFallback {
-  from: ResolvedModelRef, to: ResolvedModelRef,
-  from_fallback_index, to_fallback_index, attempts_on_from, error
-}
-ToolCallStarted {
-  tool_call_id, owner: AssistantToolCallRef,
-  presentation: ToolCallPresentation, operation_fingerprint
-}
-ToolCallTerminated {
-  tool_call_id, owner: AssistantToolCallRef,
-  outcome: completed | failed | cancelled | interrupted,
-  result: Option<PersistedToolResult>, error: Option<SafeToolError>
-}
-SessionTitleCommitted {
-  change: SessionTitleChange, input_through_seq
-}
-```
+## 11. Normative startup order
 
-`SessionOrigin` is exactly `root` or
-`delegated { root_session_id, parent_session_id, parent_run_id,
-parent_tool_call_id, invocation_id, depth }`; every delegated field is derived
-or verified by the engine. `SessionMeta.status` is
-`idle|running|completed|failed|cancelled|interrupted`. `SessionCreated` is
-sequence 1 with envelope `run_id = None`. Every run-scoped payload has the same
-non-null envelope `run_id` as its referenced run; `RunStarted` is that run's
-first run-scoped event.
+1. **Schema 7 and agents:** securely load recipe registry 1, atomic config 7,
+   and agent documents.
+2. **Catalog:** securely open cache 1, perform bounded network acquisition, then
+   resolve network, validated cache, or bootstrap and quarantine records.
+3. **Provider store:** lock/load provider store 2 and its generation.
+4. **Effective providers:** resolve authored/stored managed and authored custom
+   providers.
+5. **Coherent runtime:** compile all providers/models/agents into runtime
+   snapshot 1; an empty effective set is valid.
+6. **Project manifests:** scan/validate model-snapshot manifests 1 and rehydrate
+   referenced safe blueprints.
+7. **Engine:** open/reconcile version-8 sessions/events/delegation against the
+   manifest index.
+8. **Service:** publish runtime, then open server/TUI and emit startup
+   notification.
 
-`ModelAttemptStarted` is persisted before any text/reasoning delta for that
-attempt, so streaming attribution is exact even if the attempt never commits.
-Every delta carries `attempt_id`. `model_turn_seq` is a stable per-session turn
-sequence, distinct from event `seq`.
+Nothing serves before step 8. Provider-store generation reconciliation runs
+again before discovery, session admission, and root-run admission.
 
-`AssistantToolCallRef` contains `model_turn_seq`, `content_index`,
-`model_call_id`, and optional `provider_item_id`. A tool call begins only after
-the owning `ModelTurnCommitted` is durable. Validation checks session, run,
-content index, tool-call content, IDs, and uniqueness. `ToolCallTerminated`
-must repeat the exact owner and is the sole terminal tool event; progress and
-ephemeral output remain nonterminal. `ToolCallStarted` does not duplicate tool
-name or raw arguments; those remain in the referenced committed turn. For a
-completed termination, `result` is present and `error` absent. For failed,
-cancelled, or interrupted termination, `error` is present and any `result` is a
-strictly bounded safe partial result.
+## 12. TUI state machine
 
-Replay dispositions include replayed, no artifact, discarded foreign adapter,
-discarded foreign model selection (including
-`DiscardedForeignVariant`), discarded invalid payload, and reconstructed
-normalized history. Native state is never reused across selection fingerprints.
+The TUI consumes one runtime snapshot and notifications. It implements exactly:
 
-The title sequence is the `StoredEvent.seq` of the latest valid
-`SessionTitleCommitted`. `SessionMeta.title_updated_seq` equals it (or 0 when
-none). Tree/list patches apply only a strictly newer sequence, so stale tree
-responses cannot overwrite a title event.
+| State | Required behavior |
+|---|---|
+| `loading` | No snapshot; selectors and ordinary submission disabled. |
+| `empty` | Valid coherent snapshot with zero models or zero root-runnable agents after authored providers and global store records are applied. Message model/draft display is exactly `type /connect to continue`; no Model/Variant hit target; ordinary text/run blocked with the same guidance; `/connect` accepted. |
+| `ready` | Live or 304-validated catalog; normal actions. |
+| `stale` | Cache selected after error; usable rows plus durable global error/time explanation. |
+| `bootstrap` | Bootstrap selected; durable global fallback explanation. |
+| `unsupported` | Typed row reason; Enter opens details only, never connect. |
+| `disconnected` | Supported managed provider lacks complete effective setup and/or auth; Enter opens separate public setup and secret credential forms from recipe descriptors. |
+| `connected-reconnect` | Effective stored state exists; Enter opens reconnect/update with stored public setup prefilled and credential controls secret/blank; disconnect removes both stored setup and credentials. |
+| `removed` | Configured managed provider or retained session model absent from current catalog; details state available action. |
+| `error-retry` | No usable snapshot or operation failed; explicit retry action. |
 
-`SessionTitleChange` is a strict tagged enum:
+Global stale/bootstrap/error explanations are durable application state across
+navigation, not transient toasts. A newer snapshot explicitly clears or
+replaces them. Unsupported Enter is details-only. Active frozen runs are never
+changed by catalog, connect, disconnect, or picker actions.
 
-```text
-user_set { title, client_rename_id }
-user_clear { client_rename_id }
-user_reset { client_rename_id }
-internal_agent_set { title, invocation_id }
-fallback_set { title }
-```
+The `/connect` view always renders the exact copy
+`Stored setup, connections, and credentials are per-user and shared across workspaces.`
+Normalized setup is non-secret and projected only where its recipe descriptor
+marks it safe; credential values are always secret/redacted.
 
-Set titles are nonblank, control-free UTF-8 of at most 512 bytes. A
-`client_rename_id` is required only for user changes, is nonempty and at most
-256 bytes, and is replay-indexed for idempotency. Reusing it with a different
-change is `idempotency_conflict`. Clear keeps an intentional untitled override;
-reset removes that override so automatic generation may run again.
+`loading` means no runtime snapshot exists. `empty` means a valid snapshot exists
+but cannot form a root draft. `error-retry` means startup or an explicit
+operation has no usable result. These states must never reuse one another's
+display or actions. Empty state cannot project a persisted, removed, stale, or
+placeholder model as the draft.
 
-### 10.2 Persistence and restart
+After `provider.connect` and its coherent runtime publication produce at least
+one root-runnable agent/model selection, the TUI initializes the normal
+structured draft, removes `type /connect to continue`, and restores Model and
+Variant hit regions. If the durable connection produces no root-runnable
+selection, the snapshot remains valid `empty` and the guidance remains; this is
+preferable to fabricating a model.
 
-Each `events.jsonl` line is one strict `StoredEvent` v7. `meta.json` is strict
-metadata schema 7 and a rebuildable cache. The delegation journal is strict
-schema 7. Unknown fields, invalid sequence continuity, wrong session IDs,
-wrong first event, invalid ownership references, and non-tail corruption fail
-closed. A partial final JSONL line may be truncated to the last complete newline.
+### 12.1 Required actual-buffer and RPC tests
 
-Restart reconstructs `SessionMeta`, run state, title sequence, attempt/turn
-attribution, tool ownership, approvals, delegation edges, and replay decisions
-only from valid v7 events/journal. Nonterminal runs become interrupted; prepared
-OS capabilities are never reconstructed or re-executed. The cache is rewritten
-atomically after reconstruction.
+Tests use the real input/message buffer, renderer, hit map, command dispatcher,
+and protocol client:
 
-Frozen bindings resolve only through an in-process model snapshot with the
-exact selection and behavior fingerprints. If a persisted fingerprint is no
-longer retained after restart, the session stays readable but execution/resume
-fails with typed `obsolete_model_fingerprint`; it never falls back by model key
-or variant name.
+1. Omitted `providers` and explicit empty `[providers]` both parse as schema 7.
+2. With empty provider store and no effective custom provider, startup publishes
+   snapshot 1 with `models = []` and no root-runnable agents, opens the TUI, and
+   never emits `runtime providers must be nonempty`.
+3. Empty/omitted TOML plus a valid global stored managed connection materializes
+   its models and does not show empty guidance when a root draft is available.
+4. The actual Message model/draft buffer equals the UTF-8 bytes
+   `type /connect to continue`; rendered hit maps contain no Model or Variant
+   target for it.
+5. Submitting ordinary text does not invoke session-create or run-start RPC and
+   returns/displays exactly `type /connect to continue`. Direct run RPC in the
+   same state returns typed `no_runnable_model` with that safe guidance.
+6. Submitting `/connect` through the actual input buffer remains accepted and
+   opens all-provider discovery from the coherent runtime snapshot.
+7. A successful connect plus `runtime.changed` carrying a root-runnable draft
+   replaces the guidance with normal structured agent/model selection. A
+   connection yielding no root-runnable agent preserves empty state.
+8. Cross-process store-generation change before discovery/session/root admission
+   publishes `provider_store_changed` plus `provider_store_reloaded`, or blocks
+   with `provider_store_reload_failed`.
+9. Connect forms come only from separate recipe setup descriptors and auth
+   credential descriptors, render setup as
+   public inputs and credentials as secret inputs, and apply explicit defaults.
+10. Missing/extra setup or auth fields fail before any durable write or publish.
+11. Reconnect atomically replaces stored setup and credentials; another workspace
+    observes both after provider-store generation reconciliation.
+12. Disconnect removes both stored setup and credentials, while custom providers
+    remain absent from all store-backed actions.
 
-Assistant attribution on live streaming and replay is derived from the frozen
-`RunStarted` plus `ModelAttemptStarted`/`ModelTurnCommitted`, never from the
-current picker, live agent files, current provider config, or an inferred model
-name. The visible header projects the exact canonical
-`Agent • provider/model[variant]` selection, including `[base]`.
+## 13. Current-only protocol and persistence
 
-## 11. Inline assistant children and selectors
-
-```rust
-pub enum TranscriptItem {
-    User { /* ... */ },
-    Assistant {
-        attribution: FrozenAssistantAttribution,
-        committed_turn_seq: Option<u64>,
-        children: Vec<AssistantChild>,
-    },
-    Event { /* diagnostic */ },
-}
-
-pub enum AssistantChild {
-    Text(TextSegment),
-    Thinking(ThinkingSegment),
-    Tool(ToolSegment),
-}
-```
-
-Each attempt/committed model turn has one visible header:
-`<agent-id> • <provider>/<model-id>[<variant>]`. Text,
-thinking, and tools remain in model-content order beneath it. Thinking has one
-`▸`/`▾` chevron, plain wrapped text, independent expansion/cache state, and no
-standalone header. Tools are ordered by owning committed model content, not
-completion timing, and retain arguments, output, truncation, attachments, and
-artifact references when expanded. Expanded read output keeps syntax
-highlighting.
-
-`ToolCallPresentation.primary_argument` is persisted only after control
-sanitization, secret redaction, and bounding. Known primary arguments are bash
-command; read/write/edit path; grep/glob pattern; and delegate target plus task
-excerpt.
-
-Message title uses `Agent • provider/model[variant]` and represents the draft
-selection; the bullet is decorative and not clickable. Changing it does not
-mutate an active run. The root Agent selector
-lists only agents with `runnable_as_root = true`; therefore an empty-chain `all`
-agent is not selectable as a root. The root model-selection picker uses the
-complete current public model catalog with exactly one row per globally
-available model. Each row shows the model's canonical resolved default as
-`provider/model[base]` or `provider/model[named]` plus its display name, and
-changing to that model initializes that default; reselecting the current model
-retains its current exact variant. Exact variant changes occur only by clicking
-the dedicated `[variant]` region in the Message title, which cycles base then
-named variants lexicographically. There are no variant rows and no Variant
-modal.
-
-The Agents tree has a stable root, rows exactly
-`agent-id:session-title`, immediate monotonic title patching, and text height
-`clamp(visible_tree_row_count, 1, 3)` with borders outside the count.
-
-## 12. Security and bounded loading
-
-User and workspace config roots are opened from trusted descriptors: the user
-root is anchored below the current user's config home; the workspace root is
-anchored at the exact cwd descriptor. Every component and final open is
-descriptor-relative and no-follow. Symlinks, magic links, FIFOs, sockets,
-devices, directories where files are expected, files where directories are
-expected, and final files with link count other than one are rejected.
-
-User config directories and agent directories must be current-user-owned and
-mode 0700; user TOML/Markdown files must be current-user-owned regular files,
-single-link, and mode 0600. Workspace directories/files may use repository
-modes and ownership but must not be symlinks, must have expected type, and
-agent/config files must be single-link regular files. Files are read from the
-validated held descriptor, never reopened by pathname after validation.
-
-Agent enumeration reads only direct regular `*.md` children of the exact
-`agents` directory, in sorted filename-byte order; it does not recurse. Invalid
-filenames fail. Two files in one layer that normalize to the same `AgentId`
-fail. User/workspace duplicate IDs are the intentional atomic replacement from
-section 2. Unexpected entries are ignored only when they are regular files
-whose names do not end in `.md`; unexpected directories or links fail so they
-cannot hide agent documents.
-
-Config TOML is UTF-8 and at most 1 MiB, with nesting at most 32, at most 4096
-table/array entries per container, and strings at most 256 KiB unless a smaller
-field bound applies. Duplicate keys, unknown fields, nonfinite numbers, and
-unsupported TOML date/time values fail. Agent YAML/body bounds are in section
-5. Error messages identify logical path and field but never include file
-contents or resolved secret values.
-
-Interpolation is single-pass and allowed only in provider endpoint strings,
-approved auth secret fields, and provider header values. The only form is
-`${env:NAME}` with `NAME` matching `[A-Z_][A-Z0-9_]*`; `$$` is a literal dollar.
-Missing/non-UTF-8 variables fail. Interpolation is forbidden in model IDs,
-adaptor IDs, capabilities, defaults, options, variant IDs/behavior, agent
-documents, prompts, tools, permissions, and delegation.
-
-Resolved auth values, credential-store values, header values, HMAC keys, and
-other values held as `SecretString` are excluded from events, errors, debug
-output, logs, generated schemas/examples, fingerprints, model snapshots,
-session JSONL/meta, delegation journals, artifacts, and TUI projections.
-Fingerprints retain only non-secret auth shape and header names. Secret-bearing
-provider requests are redacted at generic transport/logging boundaries.
-
-## 13. Migration, phases, and ownership
-
-Implementation deletes `.cookie_agent/config.toml` and adds the current-only
-fixture:
-
-```text
-.cookie-agent/config.toml
-.cookie-agent/agents/primary.md
-.cookie-agent/agents/worker.md
-.cookie-agent/agents/anthropic.md
-.cookie-agent/agents/responses.md
-.cookie-agent/agents/chat.md
-```
-
-No old path, `[agents]`, `[models]`, aliases, profile terminology, old agent
-TOML, protocol/event/storage v6, or dual parser remains.
-
-| Phase | Owner | Required owned surface |
-|---|---|---|
-| 1 identities/config/models | Config-model owner | `crates/identity/**`, `crates/config/**`, `crates/models/**`, models.dev updater/catalog compiler |
-| 2 protocol/event v7 | Protocol owner | `crates/protocol/**`, JSON Schemas, TypeScript bindings, protocol/event golden snapshots |
-| 3 engine/tools | Runtime owner | `crates/engine/**`, `crates/tools/**`, prompt/policy freezing, fallback, permissions, delegation, ownership, restart |
-| 4 server/CLI | Service owner | `crates/server/**`, `crates/cookie_agent/**`, routing, composition, list/select/connect methods |
-| 5 TUI | TUI owner | `crates/tui/**`, selectors, titles, stable tree, exact panel height, attribution, inline thinking/tools |
-| Integration | Integration owner | root `Cargo.toml`, root `Cargo.lock`, workspace manifests, `ARCHITECTURE.md`, `README.md`, `docs/**`, checked `.cookie-agent/**` fixtures, cross-crate integration fixtures, generated schema/binding/snapshot aggregation, final current-only and stale-claim review |
-
-Generated artifacts are committed only by their assigned owner and reviewed by
-the integration owner. The integration owner resolves cross-phase type changes
-and is accountable for one coherent locked workspace; individual phases do not
-silently edit another owner's generated outputs.
-
-## 14. Required validation
-
-Each phase adds focused unit, strict-decoding, security, and snapshot tests.
-Final validation includes formatting, locked workspace build/check/clippy/test,
-rustdoc, Rust 1.88 equivalents, audit/deny, protocol/schema/binding regeneration
-checks, functional E2E, adversarial config/filesystem tests, restart/replay, and
-TUI render/hit-region snapshots.
-
-The final stale-claim review must find no accepted text describing
-`.cookie_agent`, schema-v5 config, protocol/event/storage v6 as runnable,
-TOML-agent profiles, model aliases, global permissions, a standalone reasoning
-or tool block, a hidden assistant variant, a separate variant picker, inherited
-parent permissions, inheritance of the parent's original full fallback chain,
-unversioned variant behavior, stale title refresh, or a compatibility decoder.
+Protocol handshake, events, session JSONL, metadata, and delegation journal are
+exactly version 8. Every run admission records runtime snapshot schema 1 revision
+and complete frozen safe bindings. Version 7 input and config schema 6 are
+rejected; no migration tool exists. Provider store 1 and unversioned cache/store
+files are rejected rather than renamed or imported. Project model-snapshot
+manifests are exactly schema 1; unknown versions are rejected.

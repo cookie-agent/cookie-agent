@@ -5,12 +5,14 @@ use cookie_agent_models::ProviderDefinition;
 use serde::{Deserialize, Serialize};
 
 use crate::ConfigError;
+use crate::toml_values::{SensitiveProviderValues, zeroize_toml_value};
+use zeroize::Zeroize;
 
-const CONFIG_SCHEMA: u32 = 6;
+const CONFIG_SCHEMA: u32 = 7;
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 7419;
 
-/// Exact schema-6 marker.
+/// Exact schema-7 marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConfigSchemaVersion;
 
@@ -31,7 +33,7 @@ impl<'de> Deserialize<'de> for ConfigSchemaVersion {
         if value == CONFIG_SCHEMA {
             Ok(Self)
         } else {
-            Err(serde::de::Error::custom("schema_version must be exactly 6"))
+            Err(serde::de::Error::custom("schema_version must be exactly 7"))
         }
     }
 }
@@ -50,19 +52,32 @@ pub struct RuntimeConfig {
     pub context_compaction: ContextCompactionConfig,
     #[serde(default)]
     pub session_title: SessionTitleConfig,
+    #[serde(default)]
     pub providers: BTreeMap<ProviderId, ProviderDefinition>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RuntimeLayer {
+pub(crate) struct RawRuntimeLayer {
     pub(crate) schema_version: ConfigSchemaVersion,
     pub(crate) server: Option<ServerConfig>,
     pub(crate) tool_output: Option<ToolOutputConfig>,
     pub(crate) approval: Option<ApprovalConfig>,
     pub(crate) context_compaction: Option<ContextCompactionConfig>,
     pub(crate) session_title: Option<SessionTitleConfig>,
-    pub(crate) providers: BTreeMap<ProviderId, ProviderDefinition>,
+    #[serde(default)]
+    pub(crate) providers: SensitiveProviderValues,
+}
+
+impl Drop for RawRuntimeLayer {
+    fn drop(&mut self) {
+        if let Some(server) = &mut self.server {
+            server.host.zeroize();
+        }
+        for value in self.providers.values_mut() {
+            zeroize_toml_value(value.value_mut());
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -201,32 +216,26 @@ const fn yes() -> bool {
     true
 }
 
-pub(crate) fn apply_layer(runtime: &mut RuntimeConfig, layer: RuntimeLayer) {
+pub(crate) fn apply_settings(runtime: &mut RuntimeConfig, layer: &RawRuntimeLayer) {
     runtime.schema_version = layer.schema_version;
-    if let Some(value) = layer.server {
-        runtime.server = value;
+    if let Some(value) = &layer.server {
+        runtime.server = value.clone();
     }
-    if let Some(value) = layer.tool_output {
-        runtime.tool_output = value;
+    if let Some(value) = &layer.tool_output {
+        runtime.tool_output = value.clone();
     }
-    if let Some(value) = layer.approval {
-        runtime.approval = value;
+    if let Some(value) = &layer.approval {
+        runtime.approval = value.clone();
     }
-    if let Some(value) = layer.context_compaction {
-        runtime.context_compaction = value;
+    if let Some(value) = &layer.context_compaction {
+        runtime.context_compaction = value.clone();
     }
-    if let Some(value) = layer.session_title {
-        runtime.session_title = value;
-    }
-    for (id, provider) in layer.providers {
-        runtime.providers.insert(id, provider);
+    if let Some(value) = &layer.session_title {
+        runtime.session_title = value.clone();
     }
 }
 
 pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigError> {
-    if runtime.providers.is_empty() {
-        return Err(ConfigError::EmptyProviders);
-    }
     if runtime.server.host.is_empty()
         || runtime.server.host.len() > 255
         || runtime.tool_output.max_lines == 0
@@ -248,6 +257,14 @@ pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigErro
     }
     if runtime.session_title.max_chars == 0 || runtime.session_title.max_input_messages == 0 {
         return Err(ConfigError::InvalidRuntime);
+    }
+    for (id, provider) in &runtime.providers {
+        provider
+            .validate_for(id)
+            .map_err(|source| ConfigError::Provider {
+                provider: id.clone(),
+                source,
+            })?;
     }
     Ok(())
 }

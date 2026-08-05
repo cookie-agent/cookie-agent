@@ -1471,22 +1471,44 @@ pub(super) fn block_hit(
 mod tests {
     use std::{
         collections::BTreeMap,
+        fs,
         sync::{Arc, Mutex},
+        time::Duration,
     };
 
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
+
     use super::*;
+    use cookie_agent_config::{
+        ApprovalConfig, ConfigSchemaVersion, ContextCompactionConfig, LoadedConfiguration,
+        RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
+    };
+    use cookie_agent_engine::{Engine, EngineOptions};
+    use cookie_agent_models::{
+        ModelManager,
+        catalog::{
+            CatalogAgeState, CatalogAvailability, CatalogClaim, CatalogLimits, CatalogModalities,
+            CatalogModelEntry, CatalogModelRecord, CatalogModelStatus, CatalogProviderClaims,
+            CatalogProviderEntry, CatalogProviderRecord, CatalogRuntimeState, CatalogSnapshot,
+            CatalogSource,
+        },
+        provider_store::{
+            ClientConnectId as StoreClientConnectId, ConnectMutation, ConnectProposal,
+            ProviderAuthValues, ProviderStore, SafePolicyString, StoredProviderPolicyProjection,
+        },
+    };
     use cookie_agent_protocol::{
         AgentId, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
         ApprovalId, ApprovalRecord, ApprovalRequest, ApprovalResourceSource, ApprovalStatus,
-        ApprovalTrigger, AssistantToolCallRef, AttemptId, CatalogIdentifier, CatalogProvider,
-        CatalogText, CredentialFieldName, DecisionTrace, EventPayload, EventSchemaVersion,
-        ModelCallId, ModelKey, ModelSelection, OperationFingerprint, OutputDelta, OutputStream,
-        PermissionAction, PermissionEffect, PreparedApprovalResource, PreparedBindingLifetime,
-        PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
-        PreparedResourceIdentity, ProviderId, RunId, RunSelection, SafeCode, SafeDisplayText,
-        SafeErrorMessage, SessionId, SessionMeta, SessionMetaSchemaVersion, SessionOrigin,
-        SessionStatus, SessionTitle, SessionTree, Sha256Digest, StoredEvent, ToolCallId,
-        ToolCallStart, Usage,
+        ApprovalTrigger, AssistantToolCallRef, AttemptId, DecisionTrace, EventPayload,
+        EventSchemaVersion, ModelCallId, ModelKey, ModelSelection, OperationFingerprint,
+        OutputDelta, OutputStream, PermissionAction, PermissionEffect, PreparedApprovalResource,
+        PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
+        PreparedResourceDigest, PreparedResourceIdentity, ProviderId, RunId, RunSelection,
+        SafeCode, SafeDisplayText, SafeErrorMessage, SessionId, SessionMeta,
+        SessionMetaSchemaVersion, SessionOrigin, SessionStatus, SessionTitle, SessionTree,
+        Sha256Digest, StoredEvent, ToolCallId, ToolCallStart, Usage,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use jiff::Timestamp;
@@ -1501,7 +1523,8 @@ mod tests {
     use crate::theme::{ColorLevel, ThemeKind};
     use crate::ui::app::*;
     use crate::ui::events::{RenderScheduler, TerminalCleanup, TerminalRestore};
-    use crate::ui::input::{CredentialInput, credential_wipe_count};
+    use crate::ui::input::credential_wipe_count;
+    use crate::ui::provider::{ProviderAction, ProviderForm, ProviderOperation};
     use crate::ui::slash::{
         BlockCommand, InputMode, ScrollCommand, SlashCommand, Submission, command_allowed_in_mode,
         command_help, command_spec, parse_submission,
@@ -1510,7 +1533,7 @@ mod tests {
 
     use async_trait::async_trait;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
-    use cookie_agent_server::{MessageFrame, MessageStream, TransportError};
+    use cookie_agent_server::{MessageFrame, MessageStream, Server, TransportError};
     use serde_json::Value;
 
     // ------------------------------------------------------------------
@@ -1519,6 +1542,220 @@ mod tests {
 
     const AGENT: &str = "primary";
     const MODEL: &str = "gateway/arbitrary-model";
+
+    struct ProductionProviderHarness {
+        _directory: tempfile::TempDir,
+        engine: Engine,
+        server: Arc<Server>,
+    }
+
+    fn production_provider_harness(
+        catalog: Arc<CatalogSnapshot>,
+        prepare_store: impl FnOnce(&ProviderStore),
+    ) -> ProductionProviderHarness {
+        let directory = tempfile::tempdir().expect("production provider test directory");
+        #[cfg(unix)]
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private test directory");
+        let provider_store_path = directory.path().join("provider-store");
+        fs::create_dir(&provider_store_path).expect("provider store directory");
+        #[cfg(unix)]
+        fs::set_permissions(&provider_store_path, fs::Permissions::from_mode(0o700))
+            .expect("private provider store");
+        let store = ProviderStore::open(&provider_store_path).expect("provider store");
+        prepare_store(&store);
+        let manager = Arc::new(
+            ModelManager::new(BTreeMap::new(), catalog, store).expect("production model manager"),
+        );
+        let config = LoadedConfiguration {
+            runtime: RuntimeConfig {
+                schema_version: ConfigSchemaVersion,
+                server: ServerConfig::default(),
+                tool_output: ToolOutputConfig::default(),
+                approval: ApprovalConfig::default(),
+                context_compaction: ContextCompactionConfig::default(),
+                session_title: SessionTitleConfig::default(),
+                providers: BTreeMap::new(),
+            },
+            agents: BTreeMap::new(),
+            provider_provenance: BTreeMap::new(),
+        };
+        let engine = Engine::open(EngineOptions {
+            data_dir: directory.path().join("data"),
+            cwd: directory.path().to_owned(),
+            config,
+            model_manager: manager,
+            tools: Vec::new(),
+        })
+        .expect("production engine");
+        let server = Arc::new(Server::new(engine.clone()));
+        ProductionProviderHarness {
+            _directory: directory,
+            engine,
+            server,
+        }
+    }
+
+    fn production_openai_catalog(label: char, quarantined: bool) -> Arc<CatalogSnapshot> {
+        let provider_id = ProviderId::new("openai").expect("provider ID");
+        let model_id = cookie_agent_protocol::ProviderModelId::new("gpt-5-mini").expect("model ID");
+        let environment = vec!["OPENAI_API_KEY".to_owned()];
+        let model = CatalogModelRecord {
+            id: model_id.clone(),
+            name: "GPT-5 mini".to_owned(),
+            description: "TUI production projection test".to_owned(),
+            family: None,
+            attachment: false,
+            reasoning: false,
+            tool_call: true,
+            structured_output: Some(true),
+            temperature: Some(true),
+            open_weights: false,
+            status: CatalogModelStatus::Stable,
+            release_date: "2026-01-01".to_owned(),
+            last_updated: "2026-01-01".to_owned(),
+            modalities: CatalogModalities {
+                input: vec!["text".to_owned()],
+                output: vec!["text".to_owned()],
+            },
+            limits: CatalogLimits {
+                context: 128_000,
+                input: None,
+                output: 16_384,
+            },
+            shape: None,
+            provider: None,
+            reasoning_options: Vec::new(),
+            canonical_provenance: None,
+        };
+        let shape = quarantined.then(|| "unexpected".to_owned());
+        let record = CatalogProviderRecord {
+            id: provider_id.clone(),
+            name: "OpenAI".to_owned(),
+            environment: environment.clone(),
+            npm: "@ai-sdk/openai".to_owned(),
+            api: None,
+            shape: shape.clone(),
+            claims: CatalogProviderClaims {
+                environment: CatalogClaim::Present(environment),
+                npm: CatalogClaim::Present("@ai-sdk/openai".to_owned()),
+                api: CatalogClaim::Absent,
+                shape: shape.map_or(CatalogClaim::Absent, CatalogClaim::Present),
+            },
+            documentation_url: "https://example.test/openai".to_owned(),
+            models: BTreeMap::from([(
+                model_id.clone(),
+                CatalogModelEntry {
+                    id: model_id,
+                    record: Some(model),
+                    quarantine: None,
+                },
+            )]),
+        };
+        let now = Timestamp::now();
+        Arc::new(CatalogSnapshot {
+            revision: cookie_agent_protocol::CatalogRevision::new(format!(
+                "sha256:{}",
+                label.to_string().repeat(64)
+            ))
+            .expect("catalog revision"),
+            source: CatalogSource::Network,
+            state: CatalogRuntimeState {
+                availability: CatalogAvailability::Ready,
+                age: CatalogAgeState::Current,
+                last_error: None,
+            },
+            validated_at: now,
+            last_checked_at: now,
+            etag: None,
+            providers: BTreeMap::from([(
+                provider_id.clone(),
+                CatalogProviderEntry {
+                    id: provider_id,
+                    record: Some(record),
+                    quarantine: None,
+                },
+            )]),
+            canonical_models: BTreeMap::new(),
+            quarantine: Vec::new(),
+        })
+    }
+
+    fn production_empty_catalog(label: char) -> Arc<CatalogSnapshot> {
+        let now = Timestamp::now();
+        Arc::new(CatalogSnapshot {
+            revision: cookie_agent_protocol::CatalogRevision::new(format!(
+                "sha256:{}",
+                label.to_string().repeat(64)
+            ))
+            .expect("catalog revision"),
+            source: CatalogSource::Network,
+            state: CatalogRuntimeState {
+                availability: CatalogAvailability::Ready,
+                age: CatalogAgeState::Current,
+                last_error: None,
+            },
+            validated_at: now,
+            last_checked_at: now,
+            etag: None,
+            providers: BTreeMap::new(),
+            canonical_models: BTreeMap::new(),
+            quarantine: Vec::new(),
+        })
+    }
+
+    fn install_unmatched_openai_connection(store: &ProviderStore, catalog: &CatalogSnapshot) {
+        let transaction = store.begin_transaction().expect("provider transaction");
+        let snapshot = transaction.snapshot();
+        let mutation = ConnectMutation {
+            client_connect_id: StoreClientConnectId::new("tui-unmatched-retained")
+                .expect("connect ID"),
+            provider_id: ProviderId::new("openai").expect("provider ID"),
+            expected_catalog_revision: catalog.revision.clone(),
+            expectation: snapshot.expectation(),
+            setup_values: BTreeMap::new(),
+            auth_method: cookie_agent_protocol::AuthMethodId::new("bearer-api-key-v1")
+                .expect("auth method"),
+            auth_values: ProviderAuthValues::new(BTreeMap::from([(
+                cookie_agent_protocol::AuthFieldName::new("api_key").expect("auth field"),
+                "stored-secret".to_owned(),
+            )]))
+            .expect("auth values"),
+            policy: StoredProviderPolicyProjection {
+                catalog_revision: catalog.revision.clone(),
+                provider_recipe: cookie_agent_protocol::ProviderRecipeId::new(
+                    "openai.responses.v1",
+                )
+                .expect("provider recipe"),
+                setup_recipe: cookie_agent_protocol::ProviderSetupRecipeId::new("no-setup-v1")
+                    .expect("setup recipe"),
+                protocol_recipe: cookie_agent_protocol::ProtocolRecipeId::new(
+                    "oven.openai.responses",
+                )
+                .expect("protocol recipe"),
+                compiler_version: cookie_agent_protocol::RecipeCompilerVersion::new(
+                    "registry1-compiler-v1",
+                )
+                .expect("compiler version"),
+                default_endpoint_identity: SafePolicyString::new("https://api.openai.com/v1")
+                    .expect("endpoint"),
+                package_claim: SafePolicyString::new("@ai-sdk/openai-forged")
+                    .expect("mismatched package"),
+                source_record_digest: cookie_agent_models::Sha256Digest::new("d".repeat(64))
+                    .expect("source digest"),
+                recipe_fingerprint: cookie_agent_models::Sha256Digest::new("e".repeat(64))
+                    .expect("recipe fingerprint"),
+                model_overrides: BTreeMap::new(),
+            },
+        };
+        let ConnectProposal::Proposed(proposal) = transaction
+            .propose_connect(&mutation, &catalog.revision)
+            .expect("connect proposal")
+        else {
+            panic!("unmatched retained policy unexpectedly replayed")
+        };
+        transaction.commit(*proposal).expect("connect commit");
+    }
 
     fn agent_id() -> AgentId {
         AgentId::new(AGENT).expect("agent id")
@@ -1543,6 +1780,80 @@ mod tests {
                 format!("selection:{selection:?}").as_bytes(),
             ),
             selection,
+        }
+    }
+
+    fn protocol_revision<T>(digit: &str) -> T
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        serde_json::from_value(serde_json::json!(format!(
+            "sha256:{}",
+            digit.repeat(64 / digit.len())
+        )))
+        .expect("protocol revision")
+    }
+
+    fn frozen_binding(
+        resolved: cookie_agent_protocol::ResolvedModelRef,
+    ) -> cookie_agent_protocol::FrozenModelBinding {
+        cookie_agent_protocol::FrozenModelBinding {
+            manifest_revision: protocol_revision("a"),
+            blueprint_fingerprint: Sha256Digest::of_bytes(b"blueprint"),
+            selection: resolved.selection.clone(),
+            source: cookie_agent_protocol::FrozenProviderSource::Custom {
+                safe_definition_fingerprint: Sha256Digest::of_bytes(b"definition"),
+            },
+            config_override_fingerprint: Sha256Digest::of_bytes(b"override"),
+            credential_binding: cookie_agent_protocol::FrozenCredentialBinding {
+                source: cookie_agent_protocol::FrozenCredentialSource::NoAuth,
+                auth_method: cookie_agent_protocol::AuthMethodId::new("no-auth")
+                    .expect("auth method"),
+                fields: Vec::new(),
+                parameters: BTreeMap::new(),
+                owned_headers: Vec::new(),
+            },
+            setup_binding: cookie_agent_protocol::FrozenSetupBinding {
+                setup_recipe: cookie_agent_protocol::ProviderSetupRecipeId::new("custom-setup")
+                    .expect("setup recipe"),
+                values: BTreeMap::new(),
+                setup_fingerprint: Sha256Digest::of_bytes(b"setup"),
+            },
+            endpoint_identity: cookie_agent_protocol::SafeEndpointIdentity::new(
+                "https://example.test/v1",
+            )
+            .expect("endpoint"),
+            provider_recipe: cookie_agent_protocol::ProviderRecipeId::new("custom-provider")
+                .expect("provider recipe"),
+            protocol_recipe: cookie_agent_protocol::ProtocolRecipeId::new("custom-protocol")
+                .expect("protocol recipe"),
+            setup_recipe: cookie_agent_protocol::ProviderSetupRecipeId::new("custom-setup")
+                .expect("setup recipe"),
+            compiler_version: cookie_agent_protocol::RecipeCompilerVersion::new("compiler-v1")
+                .expect("compiler version"),
+            descriptor: serde_json::from_value(serde_json::json!({
+                "identity": {"provider_id": "gateway", "model_id": "arbitrary-model"},
+                "adapter_id": "openai-compatible",
+                "capabilities": {
+                    "features": [],
+                    "limits": {"context": 8192, "input": null, "output": 2048},
+                    "modalities": {"input": ["text"], "output": ["text"]},
+                    "media": {"input": {}},
+                    "cancellation": "local_only",
+                    "compaction": "unsupported",
+                    "replay": {"policy": "never", "capability": "unsupported", "reasoning": false}
+                },
+                "provider_metadata": {}
+            }))
+            .expect("test descriptor"),
+            defaults: cookie_agent_protocol::FrozenResolvedRequestDefaults {
+                request: cookie_agent_protocol::FrozenRequestDefaults::default(),
+                reasoning: None,
+            },
+            options: cookie_agent_protocol::ProviderOptions::OpenAiCompatible { api_path: None },
+            static_headers: BTreeMap::new(),
+            behavior_fingerprint: resolved.selection_fingerprint.clone(),
+            selection_fingerprint: resolved.selection_fingerprint,
         }
     }
 
@@ -1607,35 +1918,7 @@ mod tests {
             agent: AgentId::new(agent).expect("agent id"),
             model: chain[suffix_start as usize].selection.clone(),
         };
-        let chain = chain
-            .into_iter()
-            .map(|resolved| cookie_agent_protocol::FrozenModelBinding {
-                behavior_fingerprint: resolved.selection_fingerprint.clone(),
-                resolved,
-                descriptor: serde_json::from_value(serde_json::json!({
-                    "identity": {"provider_id": "gateway", "model_id": "arbitrary-model"},
-                    "adapter_id": "openai-compatible",
-                    "capabilities": {
-                        "features": [],
-                        "limits": {"context": 8192, "input": null, "output": 2048},
-                        "modalities": {"input": ["text"], "output": ["text"]},
-                        "media": {"input": {}},
-                        "cancellation": "local_only",
-                        "compaction": "unsupported",
-                        "replay": {"policy": "never", "capability": "unsupported", "reasoning": false}
-                    },
-                    "provider_metadata": {}
-                }))
-                .expect("test descriptor"),
-                defaults: cookie_agent_protocol::ResolvedRequestDefaults {
-                    request: cookie_agent_protocol::RequestDefaults::default(),
-                    reasoning: None,
-                },
-                provider_options: cookie_agent_protocol::ProviderOptions::OpenAiCompatible {
-                    api_path: None,
-                },
-            })
-            .collect::<Vec<_>>();
+        let chain = chain.into_iter().map(frozen_binding).collect::<Vec<_>>();
         session_created_from_bindings(session_id, seq, selection, chain, suffix_start)
     }
 
@@ -1671,7 +1954,13 @@ mod tests {
                     fallback_chain: chain,
                     selected_suffix_start: suffix_start,
                 }),
-                model_snapshot_fingerprint: Sha256Digest::of_bytes(b"snapshot"),
+                runtime_revision: protocol_revision("1"),
+                catalog_revision: protocol_revision("2"),
+                provider_state_revision: protocol_revision("3"),
+                model_revision: protocol_revision("4"),
+                agent_revision: protocol_revision("5"),
+                recipe_registry_revision: protocol_revision("6"),
+                manifest_revision: protocol_revision("7"),
             },
         }
     }
@@ -1712,7 +2001,7 @@ mod tests {
         )
     }
 
-    // Test fixtures stay explicit about each v7 turn field; grouping them
+    // Test fixtures stay explicit about each protocol-8 turn field; grouping them
     // would obscure the event shape without reducing call-site complexity.
     #[allow(clippy::too_many_arguments)]
     fn turn_committed(
@@ -1795,7 +2084,7 @@ mod tests {
         )
     }
 
-    // Fixture mirrors the exact v7 ownership/presentation fields; grouping
+    // Fixture mirrors the exact protocol-8 ownership/presentation fields; grouping
     // them would obscure the event shape.
     #[allow(clippy::too_many_arguments)]
     fn tool_started_at(
@@ -1888,6 +2177,13 @@ mod tests {
                     variant: None,
                 },
             },
+            runtime_revision: protocol_revision("1"),
+            catalog_revision: protocol_revision("2"),
+            provider_state_revision: protocol_revision("3"),
+            model_revision: protocol_revision("4"),
+            agent_revision: protocol_revision("5"),
+            recipe_registry_revision: protocol_revision("6"),
+            manifest_revision: protocol_revision("7"),
             title: None,
             title_updated_seq: 0,
             last_event_seq: 1,
@@ -2025,6 +2321,88 @@ mod tests {
         }
     }
 
+    fn provider_descriptor(
+        id: &str,
+        support: &str,
+        presence: &str,
+        connected: bool,
+    ) -> cookie_agent_protocol::ProviderDescriptor {
+        let reason = (support != "supported").then_some("unsupported_environment");
+        let durable = connected.then(|| {
+            serde_json::json!({
+                "provider_id": id,
+                "setup_values": {"region": "us-east-1"},
+                "setup_fingerprint": Sha256Digest::of_bytes(b"setup"),
+                "recipe_fingerprint": Sha256Digest::of_bytes(b"recipe"),
+                "auth_method": "api-key",
+                "credential_fields": ["api_key"],
+                "connection_generation": 1,
+                "connected_at": Timestamp::now()
+            })
+        });
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "display_name": format!("{id} provider"),
+            "presence": presence,
+            "support": {"state": support, "reason": reason},
+            "setup_fields": [{
+                "id": "region",
+                "display_name": "Region",
+                "help": "Public service region",
+                "required": true,
+                "default": "us-west-2",
+                "validation": {"value_type": "string", "min_length": 2, "max_length": 32, "minimum": null, "maximum": null},
+                "safe_to_project": true
+            }],
+            "auth_methods": [{
+                "id": "api-key",
+                "display_name": "API key",
+                "credentials": [{
+                    "id": "api_key",
+                    "display_name": "API key",
+                    "help": "Secret API credential",
+                    "required": true,
+                    "credential_type": "api_key"
+                }]
+            }],
+            "configuration": if connected {"stored"} else {"unconfigured"},
+            "effective_auth_state": if connected {"provider_store"} else {"unavailable"},
+            "durable_connection": durable,
+            "quarantine": null
+        }))
+        .expect("provider descriptor")
+    }
+
+    fn runtime_snapshot(
+        digit: &str,
+        providers: Vec<cookie_agent_protocol::ProviderDescriptor>,
+        models: Vec<cookie_agent_protocol::AvailableModelDescriptor>,
+        agents: Vec<cookie_agent_protocol::AgentDescriptor>,
+    ) -> cookie_agent_protocol::RuntimeSnapshotV1 {
+        cookie_agent_protocol::RuntimeSnapshotV1 {
+            snapshot_schema_version: cookie_agent_protocol::RuntimeSnapshotSchemaVersion::current(),
+            recipe_registry_revision: protocol_revision(digit),
+            catalog_revision: protocol_revision(digit),
+            catalog_source: cookie_agent_protocol::CatalogSource::Network,
+            catalog_state: cookie_agent_protocol::CatalogRuntimeState {
+                stale: false,
+                provider_quarantine_count: 0,
+                model_quarantine_count: 0,
+                quarantine_digest: Sha256Digest::of_bytes(b"quarantine"),
+                last_error: None,
+            },
+            provider_state_revision: protocol_revision(digit),
+            provider_store_generation: cookie_agent_protocol::ProviderStoreGeneration::new(1)
+                .expect("store generation"),
+            model_revision: protocol_revision(digit),
+            agent_revision: protocol_revision(digit),
+            runtime_revision: protocol_revision(digit),
+            providers,
+            models,
+            agents,
+        }
+    }
+
     fn catalog_model(
         key: &str,
         variants: &[&str],
@@ -2073,7 +2451,14 @@ mod tests {
 
     async fn test_app() -> App {
         let (client, _requests) = recording_client();
-        App::new(client).await.expect("test app")
+        let mut app = App::new(client).await.expect("test app");
+        app.install_initial_runtime(runtime_snapshot(
+            "1",
+            Vec::new(),
+            vec![model_descriptor()],
+            vec![descriptor("primary", true)],
+        ));
+        app
     }
 
     // Recording client plumbing (no server): records outbound requests and
@@ -2143,6 +2528,15 @@ mod tests {
             recorded,
             incoming,
         )
+    }
+
+    fn recorded_method_count(recorded: &Arc<Mutex<Vec<Value>>>, method: &str) -> usize {
+        recorded
+            .lock()
+            .expect("recorded")
+            .iter()
+            .filter(|value| value["method"].as_str() == Some(method))
+            .count()
     }
 
     fn assistant_state(children: Vec<AssistantChild>) -> SessionState {
@@ -2526,7 +2920,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Streaming reduction against v7 events
+    // Streaming reduction against protocol-8 events
     // ------------------------------------------------------------------
 
     #[test]
@@ -3627,18 +4021,8 @@ mod tests {
         let mut app = test_app().await;
         // Revision coherence: agent and model snapshot revisions travel
         // together in selector presentation.
-        app.agent_revision = Some(
-            cookie_agent_protocol::SnapshotRevision::new(
-                "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-            )
-            .expect("revision"),
-        );
-        app.model_revision = Some(
-            cookie_agent_protocol::SnapshotRevision::new(
-                "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-            )
-            .expect("revision"),
-        );
+        app.agent_revision = Some(protocol_revision("1"));
+        app.model_revision = Some(protocol_revision("2"));
         let label = app.descriptor_revisions_label();
         assert!(label.contains("agent revision sha256:1111"));
         assert!(label.contains("model revision sha256:2222"));
@@ -3821,32 +4205,8 @@ mod tests {
     ) -> StoredEvent {
         let snapshot_chain = suffix
             .iter()
-            .map(|resolved| cookie_agent_protocol::FrozenModelBinding {
-                behavior_fingerprint: resolved.selection_fingerprint.clone(),
-                resolved: resolved.clone(),
-                descriptor: serde_json::from_value(serde_json::json!({
-                    "identity": {"provider_id": "gateway", "model_id": "arbitrary-model"},
-                    "adapter_id": "openai-compatible",
-                    "capabilities": {
-                        "features": [],
-                        "limits": {"context": 8192, "input": null, "output": 2048},
-                        "modalities": {"input": ["text"], "output": ["text"]},
-                        "media": {"input": {}},
-                        "cancellation": "local_only",
-                        "compaction": "unsupported",
-                        "replay": {"policy": "never", "capability": "unsupported", "reasoning": false}
-                    },
-                    "provider_metadata": {}
-                }))
-                .expect("test descriptor"),
-                defaults: cookie_agent_protocol::ResolvedRequestDefaults {
-                    request: cookie_agent_protocol::RequestDefaults::default(),
-                    reasoning: None,
-                },
-                provider_options: cookie_agent_protocol::ProviderOptions::OpenAiCompatible {
-                    api_path: None,
-                },
-            })
+            .cloned()
+            .map(frozen_binding)
             .collect::<Vec<_>>();
         let selection = RunSelection {
             agent: agent_id(),
@@ -3874,6 +4234,13 @@ mod tests {
                     fallback_chain: snapshot_chain.clone(),
                     selected_suffix_start: 0,
                 }),
+                runtime_revision: protocol_revision("1"),
+                catalog_revision: protocol_revision("2"),
+                provider_state_revision: protocol_revision("3"),
+                model_revision: protocol_revision("4"),
+                agent_revision: protocol_revision("5"),
+                recipe_registry_revision: protocol_revision("6"),
+                manifest_revision: protocol_revision("7"),
                 selected_suffix: snapshot_chain,
                 input_through_seq: seq,
             },
@@ -3955,7 +4322,6 @@ mod tests {
             .expect("persisted selected suffix");
         assert_eq!(
             suffix[0]
-                .resolved
                 .selection
                 .variant
                 .as_ref()
@@ -4017,177 +4383,6 @@ mod tests {
         assert_eq!(after, before);
         app.cycle_draft_variant();
         assert_eq!(app.draft_variants(), before);
-    }
-
-    #[tokio::test]
-    async fn connect_refreshed_installs_coherent_pair_with_both_revision_labels() {
-        let mut app = test_app().await;
-        let revision = cookie_agent_protocol::SnapshotRevision::new(
-            "sha256:7777777777777777777777777777777777777777777777777777777777777777",
-        )
-        .expect("revision");
-        let models = cookie_agent_protocol::ModelListResult {
-            revision: revision.clone(),
-            generated_at: jiff::Timestamp::now(),
-            catalog_revision: cookie_agent_protocol::CatalogRevision::current(),
-            models: vec![model_descriptor()],
-        };
-        let agents = cookie_agent_protocol::AgentListResult {
-            revision: revision.clone(),
-            model_revision: revision.clone(),
-            generated_at: jiff::Timestamp::now(),
-            agents: vec![descriptor("primary", true)],
-        };
-        app.apply_connect_outcome(ConnectOutcome::Connected {
-            provider_id: cookie_agent_protocol::ProviderId::new("acme").expect("provider"),
-            receipt_model_revision: revision.clone(),
-            follow_up: Box::new(ConnectFollowUp::Refreshed {
-                models: Box::new(models),
-                agents: Box::new(agents),
-                created: None,
-            }),
-        });
-        assert_eq!(app.model_revision.as_ref(), Some(&revision));
-        assert_eq!(app.agent_revision.as_ref(), Some(&revision));
-        assert_eq!(app.models.len(), 1);
-        assert_eq!(app.models[0].variants.len(), 2);
-        assert_eq!(app.agents.len(), 1);
-        assert!(app.status.contains("agents are ready"));
-
-        // Mismatch: the bounded retry failed coherence, so the whole pair
-        // is discarded before any side effect; both labels and the prior
-        // pair stay authoritative and no session is created.
-        let stale = cookie_agent_protocol::SnapshotRevision::new(
-            "sha256:8888888888888888888888888888888888888888888888888888888888888888",
-        )
-        .expect("revision");
-        let sessions_before = app.sessions.len();
-        app.apply_connect_outcome(ConnectOutcome::Connected {
-            provider_id: cookie_agent_protocol::ProviderId::new("acme").expect("provider"),
-            receipt_model_revision: revision.clone(),
-            follow_up: Box::new(ConnectFollowUp::Incoherent {
-                model_revision: stale,
-                agent_model_revision: revision.clone(),
-            }),
-        });
-        assert_eq!(app.model_revision.as_ref(), Some(&revision));
-        assert_eq!(app.agent_revision.as_ref(), Some(&revision));
-        assert_eq!(app.models.len(), 1);
-        assert_eq!(app.agents.len(), 1);
-        assert_eq!(app.sessions.len(), sessions_before);
-        assert!(app.status.contains("incoherent"));
-        assert!(app.status.contains("No session was created"));
-    }
-
-    #[tokio::test]
-    async fn invalid_connect_initial_selection_installs_pair_and_reports_fail_closed_status() {
-        let mut app = test_app().await;
-        let revision = revision("77");
-        app.apply_connect_outcome(ConnectOutcome::Connected {
-            provider_id: cookie_agent_protocol::ProviderId::new("acme").expect("provider"),
-            receipt_model_revision: revision.clone(),
-            follow_up: Box::new(ConnectFollowUp::InvalidInitialSelection {
-                models: Box::new(cookie_agent_protocol::ModelListResult {
-                    revision: revision.clone(),
-                    generated_at: jiff::Timestamp::now(),
-                    catalog_revision: cookie_agent_protocol::CatalogRevision::current(),
-                    models: vec![model_descriptor()],
-                }),
-                agents: Box::new(cookie_agent_protocol::AgentListResult {
-                    revision: revision.clone(),
-                    model_revision: revision,
-                    generated_at: jiff::Timestamp::now(),
-                    agents: vec![descriptor("primary", true)],
-                }),
-                agent: agent_id(),
-            }),
-        });
-        assert!(app.status.contains("no authored fallback selection"));
-        assert!(app.status.contains("No session was created"));
-        assert!(app.sessions.is_empty());
-        assert_eq!(app.models.len(), 1);
-        assert_eq!(app.agents.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn coherent_pair_install_success_failure_and_mismatch() {
-        // Success path is covered by refresh at startup; here the revision
-        // guard semantics: matching revisions install atomically.
-        let mut app = test_app().await;
-        let revision = cookie_agent_protocol::SnapshotRevision::new(
-            "sha256:5555555555555555555555555555555555555555555555555555555555555555",
-        )
-        .expect("revision");
-        let models = cookie_agent_protocol::ModelListResult {
-            revision: revision.clone(),
-            generated_at: jiff::Timestamp::now(),
-            catalog_revision: cookie_agent_protocol::CatalogRevision::current(),
-            models: vec![model_descriptor()],
-        };
-        let agents = cookie_agent_protocol::AgentListResult {
-            revision: revision.clone(),
-            model_revision: revision.clone(),
-            generated_at: jiff::Timestamp::now(),
-            agents: vec![descriptor("primary", true)],
-        };
-        app.install_coherent_pair(models, agents);
-        assert_eq!(app.model_revision.as_ref(), Some(&revision));
-        assert_eq!(app.agent_revision.as_ref(), Some(&revision));
-        assert_eq!(app.models.len(), 1);
-        assert_eq!(app.models[0].variants.len(), 2);
-        assert_eq!(app.agents.len(), 1);
-
-        // Mismatch: nothing is installed; the prior pair and both labels
-        // stay authoritative.
-        let stale_models = cookie_agent_protocol::ModelListResult {
-            revision: cookie_agent_protocol::SnapshotRevision::new(
-                "sha256:6666666666666666666666666666666666666666666666666666666666666666",
-            )
-            .expect("revision"),
-            generated_at: jiff::Timestamp::now(),
-            catalog_revision: cookie_agent_protocol::CatalogRevision::current(),
-            models: Vec::new(),
-        };
-        let mismatched_agents_revision = app
-            .model_revision
-            .clone()
-            .expect("installed model revision");
-        assert_ne!(
-            mismatched_agents_revision, stale_models.revision,
-            "a mismatched pair is never installed"
-        );
-        assert_eq!(app.models.len(), 1);
-        assert_eq!(app.agents.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn incoherent_descriptor_pairs_are_retried_then_discarded_whole() {
-        let mut app = test_app().await;
-        app.agents = vec![descriptor("primary", true)];
-        app.models = vec![model_descriptor()];
-        let revision = cookie_agent_protocol::SnapshotRevision::new(
-            "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-        )
-        .expect("revision");
-        app.agent_revision = Some(revision.clone());
-        app.model_revision = Some(revision);
-        let agents_before = app.agents.clone();
-        let models_before = app.models.clone();
-        // Simulated mismatched pair handling: a mismatched revision pair is
-        // never applied (unit-level mirror of the refresh guard).
-        let mismatched_model_revision = cookie_agent_protocol::SnapshotRevision::new(
-            "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-        )
-        .expect("revision");
-        let coherent = app.model_revision.as_ref() == Some(&mismatched_model_revision);
-        assert!(!coherent);
-        assert_eq!(app.agents.len(), agents_before.len());
-        assert_eq!(app.models.len(), models_before.len());
-        assert_eq!(
-            app.models[0].variants.len(),
-            2,
-            "variants stay with the previous coherent model snapshot"
-        );
     }
 
     // ------------------------------------------------------------------
@@ -4577,6 +4772,7 @@ mod tests {
         let mut app = test_app().await;
         let (client, recorded, incoming_guard) = live_recording_client();
         app.client = client;
+        app.agents.clear();
         type_input(&mut app, "/ne").await;
         rendered_frame(&mut app, 100, 30);
         let row = app
@@ -5000,15 +5196,8 @@ mod tests {
     // Connect flow
     // ------------------------------------------------------------------
 
-    fn catalog_provider() -> CatalogProvider {
-        CatalogProvider {
-            id: CatalogIdentifier::new("acme-ai").expect("id"),
-            name: CatalogText::new("Acme AI").expect("name"),
-            credential_fields: vec![CredentialFieldName::new("ACME_API_KEY").expect("field")],
-            npm: CatalogText::new("@acme/ai").expect("npm"),
-            api: Some(CatalogText::new("https://api.acme.example").expect("api")),
-            documentation_url: CatalogText::new("https://docs.acme.example").expect("docs"),
-        }
+    fn catalog_provider() -> cookie_agent_protocol::ProviderDescriptor {
+        provider_descriptor("acme-ai", "supported", "current", false)
     }
 
     async fn type_input(app: &mut App, text: &str) {
@@ -5043,7 +5232,7 @@ mod tests {
         assert!(app.input.as_str().is_empty());
         let rendered = rendered_frame(&mut app, 100, 30);
         assert!(rendered.contains("Connect provider — type to filter"));
-        assert!(rendered.contains("No catalog providers are available."));
+        assert!(rendered.contains("No providers are available in the runtime snapshot."));
         assert!(app.hit_map.picker.is_some());
         assert!(app.hit_map.picker_rows.is_empty());
         tokio::task::yield_now().await;
@@ -5068,11 +5257,12 @@ mod tests {
             .await;
 
         assert_eq!(app.modal, Modal::ConnectProviders);
-        type_input(&mut app, "acme_api").await;
-        assert_eq!(app.picker_query, "acme_api");
+        type_input(&mut app, "api_key").await;
+        assert_eq!(app.picker_query, "api_key");
         let rendered = rendered_frame(&mut app, 100, 30);
-        assert!(rendered.contains("Connect provider — filter: acme_api"));
-        assert!(rendered.contains("Acme AI (acme-ai) · field: ACME_API_KEY"));
+        assert!(rendered.contains("Connect provider — filter: api_key"));
+        assert!(rendered.contains("acme-ai provider (acme-ai)"));
+        assert!(rendered.contains("credential: API key"));
         assert!(app.hit_map.picker.is_some());
         assert_eq!(app.hit_map.picker_rows.len(), 1);
 
@@ -5091,16 +5281,13 @@ mod tests {
         let before = credential_wipe_count();
         {
             let mut app = test_app().await;
+            app.begin_provider_form(catalog_provider());
             app.modal = Modal::ConnectCredentials;
-            app.connect_fields = vec![(
-                CredentialFieldName::new("API_KEY").expect("field"),
-                CredentialInput::default(),
-            )];
-            app.connect_fields[0]
-                .1
+            app.provider_form.as_mut().expect("provider form").secrets[0]
+                .input
                 .insert_owned("sentinel-secret".to_owned());
             app.clear_connect_secrets();
-            assert!(app.connect_fields.is_empty());
+            assert!(app.provider_form.is_none());
         }
         assert!(credential_wipe_count() > before);
     }
@@ -5109,10 +5296,730 @@ mod tests {
     async fn provider_picker_filter_matches_credential_labels() {
         let mut app = test_app().await;
         app.providers = vec![catalog_provider()];
-        app.picker_query = "acme_api".into();
+        app.picker_query = "api_key".into();
         assert_eq!(app.filtered_providers().len(), 1);
         app.picker_query = "unknown".into();
         assert!(app.filtered_providers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_runtime_uses_exact_message_buffer_has_no_title_hits_and_blocks_rpcs() {
+        let mut app = test_app().await;
+        app.runtime = crate::state::RuntimeState::default();
+        app.install_initial_runtime(runtime_snapshot(
+            "2",
+            vec![catalog_provider()],
+            Vec::new(),
+            Vec::new(),
+        ));
+        let (client, recorded, incoming_guard) = live_recording_client();
+        app.client = client;
+        app.selected = Some(SessionId::new_v7());
+
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains(crate::state::EMPTY_RUNTIME_GUIDANCE));
+        assert!(app.hit_map.title_segments.is_empty());
+
+        type_input(&mut app, "ordinary text").await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.status, crate::state::EMPTY_RUNTIME_GUIDANCE);
+        settle_recording().await;
+        for method in ["session.create", "run.start", "run.steer"] {
+            assert_eq!(recorded_method_count(&recorded, method), 0, "{method}");
+        }
+
+        type_input(&mut app, "/connect").await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectProviders);
+        let rendered = rendered_frame(&mut app, 160, 30);
+        assert!(rendered.contains(crate::ui::provider::DURABLE_PROVIDER_COPY));
+        drop(incoming_guard);
+    }
+
+    #[tokio::test]
+    async fn provider_picker_renders_all_required_row_states() {
+        let mut app = test_app().await;
+        let unsupported = provider_descriptor("a-unsupported", "unsupported", "current", false);
+        let disconnected = provider_descriptor("b-disconnected", "supported", "current", false);
+        let connected = provider_descriptor("c-connected", "supported", "current", true);
+        let removed = provider_descriptor("d-removed", "supported", "removed", true);
+        let error = provider_descriptor("e-error", "supported", "current", false);
+        let progress = provider_descriptor("f-progress", "supported", "current", false);
+        let mut authored = provider_descriptor("g-authored", "supported", "current", false);
+        authored.configuration = cookie_agent_protocol::ProviderConfigurationState::Authored;
+        authored.effective_auth_state = cookie_agent_protocol::EffectiveAuthState::AuthoredApiKey;
+        let mut quarantined = provider_descriptor("h-quarantined", "supported", "current", false);
+        quarantined.support.state = cookie_agent_protocol::ProviderSupportState::Quarantined;
+        quarantined.support.reason = Some(SafeCode::new("invalid_recipe").expect("reason"));
+        quarantined.quarantine = Some(cookie_agent_protocol::QuarantineDiagnostic {
+            code: SafeCode::new("invalid_recipe").expect("code"),
+            message: SafeErrorMessage::new("recipe was quarantined").expect("message"),
+        });
+        app.providers = vec![
+            unsupported,
+            disconnected,
+            connected,
+            removed,
+            error.clone(),
+            progress.clone(),
+            authored,
+            quarantined,
+        ];
+        app.provider_operations.insert(
+            error.id.clone(),
+            ProviderOperation::Error {
+                action: ProviderAction::Connect,
+                message: "retryable".into(),
+            },
+        );
+        app.provider_operations.insert(
+            progress.id.clone(),
+            ProviderOperation::InProgress(ProviderAction::Connect),
+        );
+        app.modal = Modal::ConnectProviders;
+        let rendered = rendered_frame(&mut app, 220, 40);
+        for text in [
+            "unsupported: unsupported_environment",
+            "disconnected",
+            "connected · Enter: reconnect/update",
+            "removed from current catalog",
+            "error · Enter: retry · retryable",
+            "connect in progress",
+            "g-authored provider (g-authored) — disconnected",
+            "quarantined: invalid_recipe",
+        ] {
+            assert!(rendered.contains(text), "missing {text}: {rendered}");
+        }
+        assert!(rendered.contains(crate::ui::provider::DURABLE_PROVIDER_COPY));
+    }
+
+    #[tokio::test]
+    async fn reconnect_prefills_public_setup_but_keeps_secret_fields_blank() {
+        let mut app = test_app().await;
+        app.begin_provider_form(provider_descriptor(
+            "connected-provider",
+            "supported",
+            "current",
+            true,
+        ));
+        let form = app.provider_form.as_ref().expect("provider form");
+        assert!(form.reconnect);
+        assert_eq!(form.setup[0].input.as_str(), "us-east-1");
+        assert!(form.secrets[0].input.as_str().is_empty());
+
+        let public = rendered_frame(&mut app, 100, 30);
+        assert!(public.contains("PUBLIC SETUP"));
+        assert!(public.contains("us-east-1"));
+        app.modal = Modal::ConnectCredentials;
+        let secret = rendered_frame(&mut app, 100, 30);
+        assert!(secret.contains("SECRET CREDENTIALS"));
+        assert!(secret.contains("reconnect fields are always blank"));
+        assert!(!secret.contains("us-east-1"));
+    }
+
+    #[tokio::test]
+    async fn setup_and_secret_validation_fail_before_provider_rpc() {
+        let mut app = test_app().await;
+        let (client, recorded, incoming_guard) = live_recording_client();
+        app.client = client;
+        app.begin_provider_form(catalog_provider());
+        let form = app.provider_form.as_mut().expect("provider form");
+        form.setup[0].input.set_buffer("x".into());
+        form.secrets[0].input.insert_owned("secret".into());
+        app.dispatch_provider_connect();
+        assert!(app.status.contains("Invalid public setup"));
+        settle_recording().await;
+        assert_eq!(recorded_method_count(&recorded, "provider.connect"), 0);
+
+        app.begin_provider_form(catalog_provider());
+        app.dispatch_provider_connect();
+        assert!(app.status.contains("Invalid credentials"));
+        settle_recording().await;
+        assert_eq!(recorded_method_count(&recorded, "provider.connect"), 0);
+        drop(incoming_guard);
+    }
+
+    #[tokio::test]
+    async fn unsupported_enter_is_details_only_and_never_connects() {
+        let mut app = test_app().await;
+        let (client, recorded, incoming_guard) = live_recording_client();
+        app.client = client;
+        app.providers = vec![provider_descriptor(
+            "unsupported-provider",
+            "unsupported",
+            "current",
+            false,
+        )];
+        app.modal = Modal::ConnectProviders;
+        app.picker_state.select(Some(0));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectDetails);
+        let details = rendered_frame(&mut app, 100, 30);
+        assert!(details.contains("Typed reason: unsupported_environment"));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectDetails);
+        settle_recording().await;
+        assert_eq!(recorded_method_count(&recorded, "provider.connect"), 0);
+        drop(incoming_guard);
+    }
+
+    #[tokio::test]
+    async fn supported_removed_provider_reconnects_through_setup_and_secret_workflow() {
+        let current_catalog = production_openai_catalog('a', false);
+        let harness = production_provider_harness(Arc::clone(&current_catalog), |_| {});
+        let client = Client::connect_in_process(Arc::clone(&harness.server));
+        client.handshake().await.expect("production handshake");
+        let current = client.runtime_snapshot().await.expect("current runtime");
+        let mut initial_form = ProviderForm::new(current.snapshot.providers[0].clone(), false)
+            .expect("initial provider form");
+        initial_form.secrets[0]
+            .input
+            .insert_owned("stored-secret".to_owned());
+        client
+            .connect_provider(cookie_agent_protocol::ProviderConnectParams {
+                provider_id: ProviderId::new("openai").expect("provider ID"),
+                expected_catalog_revision: current.snapshot.catalog_revision,
+                setup_values: initial_form.setup_values().expect("initial setup"),
+                auth_method: initial_form.auth_method.clone(),
+                auth_values: initial_form.auth_values().expect("initial credentials"),
+                client_connect_id: cookie_agent_protocol::ClientConnectId::new(
+                    "tui-connect-before-removal",
+                )
+                .expect("connect ID"),
+            })
+            .await
+            .expect("initial provider connect");
+        initial_form.wipe_secrets();
+        let removed_catalog = production_empty_catalog('b');
+        harness
+            .engine
+            .refresh_catalog(Arc::clone(&removed_catalog))
+            .expect("catalog churn");
+        let removed = client.runtime_snapshot().await.expect("removed runtime");
+        let projected = &removed.snapshot.providers[0];
+        assert_eq!(
+            projected.presence,
+            cookie_agent_protocol::ProviderPresence::Removed
+        );
+        assert_eq!(
+            projected.support.state,
+            cookie_agent_protocol::ProviderSupportState::Supported
+        );
+        assert!(projected.durable_connection.is_some());
+        let generation_before = removed.snapshot.provider_store_generation;
+
+        let mut app = test_app().await;
+        app.client = client.clone();
+        app.runtime = crate::state::RuntimeState::default();
+        app.install_initial_runtime(removed.snapshot);
+        type_input(&mut app, "/connect").await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectProviders);
+        app.picker_state.select(Some(0));
+
+        let picker = rendered_frame(&mut app, 160, 36);
+        assert!(picker.contains("removed from current catalog · Enter: reconnect/update"));
+        assert!(picker.contains(crate::ui::provider::DURABLE_PROVIDER_COPY));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectCredentials);
+        let credentials = rendered_frame(&mut app, 160, 36);
+        assert!(credentials.contains("SECRET CREDENTIALS"));
+        assert!(credentials.contains(crate::ui::provider::DURABLE_PROVIDER_COPY));
+        type_input(&mut app, "removed-secret").await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectConfirm);
+        let confirm = rendered_frame(&mut app, 140, 32);
+        assert!(confirm.contains("Action: reconnect/update"));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
+            .await
+            .expect("reconnect update timeout")
+            .expect("reconnect update");
+        app.handle_rpc_update(update);
+        let reconnected = client
+            .runtime_snapshot()
+            .await
+            .expect("reconnected runtime");
+        assert!(reconnected.snapshot.provider_store_generation > generation_before);
+        let projected = &reconnected.snapshot.providers[0];
+        assert_eq!(
+            projected.presence,
+            cookie_agent_protocol::ProviderPresence::Removed
+        );
+        assert_eq!(
+            projected.support.state,
+            cookie_agent_protocol::ProviderSupportState::Supported
+        );
+        assert_eq!(
+            projected.effective_auth_state,
+            cookie_agent_protocol::EffectiveAuthState::ProviderStore
+        );
+        app.abort_connect_work();
+    }
+
+    #[tokio::test]
+    async fn unsupported_removed_provider_is_typed_details_only() {
+        let catalog = production_empty_catalog('c');
+        let store_catalog = Arc::clone(&catalog);
+        let harness = production_provider_harness(Arc::clone(&catalog), move |store| {
+            install_unmatched_openai_connection(store, &store_catalog);
+        });
+        let client = Client::connect_in_process(Arc::clone(&harness.server));
+        client.handshake().await.expect("production handshake");
+        let runtime = client.runtime_snapshot().await.expect("unmatched runtime");
+        let projected = &runtime.snapshot.providers[0];
+        assert_eq!(
+            projected.presence,
+            cookie_agent_protocol::ProviderPresence::Removed
+        );
+        assert_eq!(
+            projected.support.state,
+            cookie_agent_protocol::ProviderSupportState::Unsupported
+        );
+        assert_eq!(
+            projected.support.reason.as_ref().map(SafeCode::as_str),
+            Some("removed_without_retained_recipe_match")
+        );
+        let generation_before = runtime.snapshot.provider_store_generation;
+
+        let mut app = test_app().await;
+        app.client = client.clone();
+        app.runtime = crate::state::RuntimeState::default();
+        app.install_initial_runtime(runtime.snapshot);
+        app.modal = Modal::ConnectProviders;
+        app.picker_state.select(Some(0));
+        let picker = rendered_frame(&mut app, 140, 32);
+        assert!(picker.contains("removed · unsupported: removed_without_retained_recipe_match"));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectDetails);
+        let details = rendered_frame(&mut app, 140, 32);
+        assert!(details.contains("Presence: Removed"));
+        assert!(details.contains("Typed reason: removed_without_retained_recipe_match"));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectDetails);
+        let after = client.runtime_snapshot().await.expect("unchanged runtime");
+        assert_eq!(after.snapshot.provider_store_generation, generation_before);
+    }
+
+    #[tokio::test]
+    async fn server_quarantined_descriptor_is_typed_and_details_only() {
+        let catalog = production_openai_catalog('e', true);
+        let harness = production_provider_harness(catalog, |_| {});
+        let client = Client::connect_in_process(Arc::clone(&harness.server));
+        client.handshake().await.expect("production handshake");
+        let runtime = client
+            .runtime_snapshot()
+            .await
+            .expect("quarantined runtime");
+        let projected = &runtime.snapshot.providers[0];
+        assert_eq!(
+            projected.support.state,
+            cookie_agent_protocol::ProviderSupportState::Quarantined
+        );
+        assert_eq!(
+            projected.support.reason.as_ref().map(SafeCode::as_str),
+            Some("catalog_provider_shape_drift")
+        );
+
+        let mut app = test_app().await;
+        app.client = client.clone();
+        app.runtime = crate::state::RuntimeState::default();
+        app.install_initial_runtime(runtime.snapshot);
+        app.modal = Modal::ConnectProviders;
+        app.picker_state.select(Some(0));
+        let picker = rendered_frame(&mut app, 140, 32);
+        assert!(picker.contains("quarantined: catalog_provider_shape_drift"));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectDetails);
+        let details = rendered_frame(&mut app, 160, 32);
+        assert!(details.contains("Support: Quarantined"));
+        assert!(details.contains("Typed reason: catalog_provider_shape_drift"));
+        assert!(
+            details
+                .contains("catalog_provider_shape_drift: catalog provider record is quarantined")
+        );
+        let after = client.runtime_snapshot().await.expect("unchanged runtime");
+        assert_eq!(
+            after.snapshot.provider_store_generation,
+            app.runtime
+                .snapshot()
+                .expect("installed runtime")
+                .provider_store_generation
+        );
+    }
+
+    #[tokio::test]
+    async fn authored_incomplete_provider_is_disconnected_and_opens_public_setup() {
+        let mut app = test_app().await;
+        let mut provider =
+            provider_descriptor("authored-incomplete", "supported", "current", false);
+        provider.configuration = cookie_agent_protocol::ProviderConfigurationState::Authored;
+        provider.effective_auth_state = cookie_agent_protocol::EffectiveAuthState::AuthoredApiKey;
+        provider.setup_fields[0].default = None;
+        app.providers = vec![provider];
+        app.modal = Modal::ConnectProviders;
+        app.picker_state.select(Some(0));
+        let picker = rendered_frame(&mut app, 140, 32);
+        assert!(
+            picker.contains("authored-incomplete provider (authored-incomplete) — disconnected")
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectSetup);
+        let setup = rendered_frame(&mut app, 160, 32);
+        assert!(setup.contains("Provider public setup"));
+        assert!(setup.contains(crate::ui::provider::DURABLE_PROVIDER_COPY));
+        assert!(
+            app.provider_form
+                .as_ref()
+                .is_some_and(|form| form.setup[0].input.as_str().is_empty())
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_authored_override_is_disconnected_and_can_create_global_connection() {
+        let mut app = test_app().await;
+        let (client, recorded, incoming_guard) = live_recording_client();
+        app.client = client;
+        let mut provider = provider_descriptor("gateway", "supported", "current", false);
+        provider.configuration = cookie_agent_protocol::ProviderConfigurationState::Authored;
+        provider.effective_auth_state = cookie_agent_protocol::EffectiveAuthState::AuthoredOverride;
+        provider.setup_fields[0].default = None;
+        app.providers = vec![provider];
+        app.modal = Modal::ConnectProviders;
+        app.picker_state.select(Some(0));
+        let picker = rendered_frame(&mut app, 220, 32);
+        assert!(picker.contains(
+            "gateway provider (gateway) — disconnected · config override active · Enter: create global stored connection"
+        ));
+        assert!(!picker.contains("https://"));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectSetup);
+        let form = app.provider_form.as_ref().expect("form");
+        assert!(!form.reconnect);
+        assert!(!form.can_disconnect);
+        let setup = rendered_frame(&mut app, 140, 32);
+        assert!(!setup.contains("Ctrl-D disconnect"));
+        assert!(!setup.contains("https://"));
+        type_input(&mut app, "us-east-1").await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectCredentials);
+        type_input(&mut app, "rotated-authored-secret").await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectConfirm);
+        let confirm = rendered_frame(&mut app, 140, 32);
+        assert!(confirm.contains("Action: connect"));
+        assert!(!confirm.contains("Action: reconnect/update"));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        settle_recording().await;
+        assert_eq!(recorded_method_count(&recorded, "provider.connect"), 1);
+        assert_eq!(recorded_method_count(&recorded, "provider.disconnect"), 0);
+        let request = recorded
+            .lock()
+            .expect("recorded")
+            .iter()
+            .find(|value| value["method"] == "provider.connect")
+            .cloned()
+            .expect("connect request");
+        assert_eq!(request["params"]["provider_id"], "gateway");
+        assert_eq!(request["params"]["setup_values"]["region"], "us-east-1");
+        assert_eq!(
+            request["params"]["auth_values"]["api_key"],
+            "rotated-authored-secret"
+        );
+        app.abort_connect_work();
+        drop(incoming_guard);
+    }
+
+    #[tokio::test]
+    async fn reconnect_and_disconnect_emit_only_protocol8_provider_methods() {
+        let mut app = test_app().await;
+        let (client, recorded, incoming_guard) = live_recording_client();
+        app.client = client;
+        let provider = provider_descriptor("connected-provider", "supported", "current", true);
+        app.begin_provider_form(provider.clone());
+        app.provider_form.as_mut().expect("form").secrets[0]
+            .input
+            .insert_owned("sentinel-secret".into());
+        app.dispatch_provider_connect();
+        settle_recording().await;
+        assert_eq!(recorded_method_count(&recorded, "provider.connect"), 1);
+        let connect = recorded
+            .lock()
+            .expect("recorded")
+            .iter()
+            .find(|value| value["method"] == "provider.connect")
+            .cloned()
+            .expect("connect request");
+        assert_eq!(connect["params"]["setup_values"]["region"], "us-east-1");
+        assert_eq!(
+            connect["params"]["auth_values"]["api_key"],
+            "sentinel-secret"
+        );
+        app.abort_connect_work();
+
+        app.provider_operations.remove(&provider.id);
+        app.providers = vec![provider];
+        app.modal = Modal::ConnectProviders;
+        app.picker_state.select(Some(0));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectSetup);
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+            .await;
+        assert_eq!(app.modal, Modal::DisconnectConfirm);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        settle_recording().await;
+        assert_eq!(recorded_method_count(&recorded, "provider.disconnect"), 1);
+        for legacy in [
+            "model.list",
+            "agent.list",
+            "catalog.provider.list",
+            "catalog.model.list",
+        ] {
+            assert_eq!(recorded_method_count(&recorded, legacy), 0, "{legacy}");
+        }
+        app.abort_connect_work();
+        drop(incoming_guard);
+    }
+
+    #[tokio::test]
+    async fn runtime_notifications_are_predecessor_monotonic_and_keep_active_runs_frozen() {
+        let mut app = test_app().await;
+        let initial = app.runtime.revision().cloned().expect("initial runtime");
+        let session = SessionId::new_v7();
+        let run = run_id();
+        app.selected = Some(session);
+        app.store.sessions.insert(
+            session,
+            SessionState {
+                active_run: Some(run),
+                run_agent: Some(agent_id()),
+                ..SessionState::default()
+            },
+        );
+        let newer = runtime_snapshot(
+            "2",
+            vec![catalog_provider()],
+            vec![model_descriptor()],
+            vec![descriptor("reviewer", true)],
+        );
+        assert!(app.install_runtime_notification(
+            cookie_agent_protocol::RuntimeChangedNotification {
+                previous_revision: Some(initial),
+                snapshot: newer.clone(),
+                reasons: vec![cookie_agent_protocol::RuntimeChangeReason::ConfigReloaded],
+            }
+        ));
+        let installed = app.runtime.revision().cloned().expect("new runtime");
+        let stale = runtime_snapshot("3", Vec::new(), Vec::new(), Vec::new());
+        assert!(!app.install_runtime_notification(
+            cookie_agent_protocol::RuntimeChangedNotification {
+                previous_revision: None,
+                snapshot: stale,
+                reasons: vec![cookie_agent_protocol::RuntimeChangeReason::Startup],
+            }
+        ));
+        assert_eq!(app.runtime.revision(), Some(&installed));
+        assert_eq!(app.active_run_agent().map(AgentId::as_str), Some("primary"));
+    }
+
+    #[tokio::test]
+    async fn catalog_refresh_and_fallback_notifications_update_durable_state_monotonically() {
+        let mut app = test_app().await;
+        let ready_revision = app.runtime.revision().cloned().expect("ready runtime");
+        let mut stale = runtime_snapshot(
+            "9",
+            Vec::new(),
+            vec![model_descriptor()],
+            vec![descriptor("primary", true)],
+        );
+        stale.catalog_source = cookie_agent_protocol::CatalogSource::Cache;
+        stale.catalog_state.stale = true;
+        stale.catalog_state.last_error = Some(cookie_agent_protocol::CatalogSafeErrorMeta {
+            code: SafeCode::new("network_unavailable").expect("code"),
+            message: SafeErrorMessage::new("catalog refresh failed").expect("message"),
+            time: Timestamp::now(),
+        });
+        assert!(app.install_runtime_notification(
+            cookie_agent_protocol::RuntimeChangedNotification {
+                previous_revision: Some(ready_revision.clone()),
+                snapshot: stale,
+                reasons: vec![cookie_agent_protocol::RuntimeChangeReason::CatalogFallback],
+            }
+        ));
+        assert_eq!(app.runtime.phase(), crate::state::RuntimePhase::Stale);
+        let stale_revision = app.runtime.revision().cloned().expect("stale runtime");
+        let stale_buffer = rendered_frame(&mut app, 160, 30);
+        assert!(stale_buffer.contains("Using stale catalog cache"));
+
+        let refreshed = runtime_snapshot(
+            "a",
+            Vec::new(),
+            vec![model_descriptor()],
+            vec![descriptor("primary", true)],
+        );
+        assert!(app.install_runtime_notification(
+            cookie_agent_protocol::RuntimeChangedNotification {
+                previous_revision: Some(stale_revision),
+                snapshot: refreshed,
+                reasons: vec![cookie_agent_protocol::RuntimeChangeReason::CatalogRefreshed],
+            }
+        ));
+        assert_eq!(app.runtime.phase(), crate::state::RuntimePhase::Ready);
+        assert!(app.runtime.durable_explanation().is_none());
+        let refreshed_revision = app.runtime.revision().cloned().expect("refreshed runtime");
+
+        let mut old_fallback = runtime_snapshot(
+            "b",
+            Vec::new(),
+            vec![model_descriptor()],
+            vec![descriptor("primary", true)],
+        );
+        old_fallback.catalog_source = cookie_agent_protocol::CatalogSource::Cache;
+        old_fallback.catalog_state.stale = true;
+        assert!(!app.install_runtime_notification(
+            cookie_agent_protocol::RuntimeChangedNotification {
+                previous_revision: Some(ready_revision),
+                snapshot: old_fallback,
+                reasons: vec![cookie_agent_protocol::RuntimeChangeReason::CatalogFallback],
+            }
+        ));
+        assert_eq!(app.runtime.revision(), Some(&refreshed_revision));
+        assert_eq!(app.runtime.phase(), crate::state::RuntimePhase::Ready);
+
+        let mut bootstrap = runtime_snapshot(
+            "c",
+            Vec::new(),
+            vec![model_descriptor()],
+            vec![descriptor("primary", true)],
+        );
+        bootstrap.catalog_source = cookie_agent_protocol::CatalogSource::Bootstrap;
+        bootstrap.catalog_state.stale = true;
+        assert!(app.install_runtime_notification(
+            cookie_agent_protocol::RuntimeChangedNotification {
+                previous_revision: Some(refreshed_revision),
+                snapshot: bootstrap,
+                reasons: vec![cookie_agent_protocol::RuntimeChangeReason::CatalogFallback],
+            }
+        ));
+        assert_eq!(app.runtime.phase(), crate::state::RuntimePhase::Bootstrap);
+        let bootstrap_buffer = rendered_frame(&mut app, 160, 30);
+        assert!(bootstrap_buffer.contains("Using bundled bootstrap catalog"));
+    }
+
+    #[tokio::test]
+    async fn coherent_connect_runtime_restores_draft_or_preserves_empty_exactly() {
+        let mut app = test_app().await;
+        app.runtime = crate::state::RuntimeState::default();
+        app.install_initial_runtime(runtime_snapshot(
+            "4",
+            vec![catalog_provider()],
+            Vec::new(),
+            Vec::new(),
+        ));
+        let baseline = app.runtime.revision().cloned();
+        app.apply_provider_mutation_outcome(ProviderMutationOutcome::Connected {
+            provider_id: cookie_agent_protocol::ProviderId::new("acme-ai").expect("provider"),
+            baseline,
+            runtime: Box::new(runtime_snapshot(
+                "5",
+                vec![provider_descriptor("acme-ai", "supported", "current", true)],
+                vec![model_descriptor()],
+                vec![descriptor("primary", true)],
+            )),
+        });
+        assert!(app.draft.is_some());
+        let ready = rendered_frame(&mut app, 100, 30);
+        assert!(ready.contains("primary • gateway/arbitrary-model[base]"));
+        assert_eq!(app.hit_map.title_segments.len(), 3);
+
+        let baseline = app.runtime.revision().cloned();
+        app.apply_provider_mutation_outcome(ProviderMutationOutcome::Connected {
+            provider_id: cookie_agent_protocol::ProviderId::new("acme-ai").expect("provider"),
+            baseline,
+            runtime: Box::new(runtime_snapshot(
+                "6",
+                vec![provider_descriptor("acme-ai", "supported", "current", true)],
+                Vec::new(),
+                Vec::new(),
+            )),
+        });
+        assert!(app.runtime.is_empty());
+        assert!(app.draft.is_none());
+        assert_eq!(app.status, crate::state::EMPTY_RUNTIME_GUIDANCE);
+        let empty = rendered_frame(&mut app, 100, 30);
+        assert!(empty.contains(crate::state::EMPTY_RUNTIME_GUIDANCE));
+        assert!(app.hit_map.title_segments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn loading_stale_bootstrap_and_error_retry_have_distinct_durable_ui() {
+        let mut app = test_app().await;
+        app.runtime = crate::state::RuntimeState::default();
+        app.draft = None;
+        let loading = rendered_frame(&mut app, 100, 30);
+        assert!(loading.contains("loading runtime snapshot"));
+        assert!(app.hit_map.title_segments.is_empty());
+
+        let mut stale = runtime_snapshot(
+            "7",
+            Vec::new(),
+            vec![model_descriptor()],
+            vec![descriptor("primary", true)],
+        );
+        stale.catalog_source = cookie_agent_protocol::CatalogSource::Cache;
+        stale.catalog_state.stale = true;
+        stale.catalog_state.last_error = Some(cookie_agent_protocol::CatalogSafeErrorMeta {
+            code: SafeCode::new("network_unavailable").expect("code"),
+            message: SafeErrorMessage::new("catalog refresh failed").expect("message"),
+            time: Timestamp::now(),
+        });
+        app.install_initial_runtime(stale);
+        assert_eq!(app.runtime.phase(), crate::state::RuntimePhase::Stale);
+        let stale_ui = rendered_frame(&mut app, 160, 30);
+        assert!(stale_ui.contains("Using stale catalog cache"));
+        app.modal = Modal::Models;
+        let stale_modal = rendered_frame(&mut app, 160, 30);
+        assert!(stale_modal.contains("Using stale catalog cache"));
+
+        app.runtime = crate::state::RuntimeState::default();
+        let mut bootstrap = runtime_snapshot(
+            "8",
+            Vec::new(),
+            vec![model_descriptor()],
+            vec![descriptor("primary", true)],
+        );
+        bootstrap.catalog_source = cookie_agent_protocol::CatalogSource::Bootstrap;
+        bootstrap.catalog_state.stale = true;
+        app.install_initial_runtime(bootstrap);
+        assert_eq!(app.runtime.phase(), crate::state::RuntimePhase::Bootstrap);
+        let bootstrap_ui = rendered_frame(&mut app, 160, 30);
+        assert!(bootstrap_ui.contains("Using bundled bootstrap catalog"));
+
+        app.runtime = crate::state::RuntimeState::default();
+        app.runtime.set_error("runtime unavailable");
+        app.draft = None;
+        app.modal = Modal::None;
+        let error = rendered_frame(&mut app, 100, 30);
+        assert!(error.contains("runtime error — retry"));
+        assert!(error.contains("runtime unavailable"));
     }
 
     // ------------------------------------------------------------------
@@ -5809,335 +6716,6 @@ mod tests {
         assert!(rendered.contains("▸ bash make interrupted"));
         assert!(!rendered.contains("failed"));
         assert!(!rendered.contains("COMPLETED"));
-    }
-
-    // ------------------------------------------------------------------
-    // Connect coherence gate at the RPC boundary
-    // ------------------------------------------------------------------
-
-    /// A scripted daemon: answers provider.connect, model.list, agent.list,
-    /// and session.create with configurable descriptor revisions while
-    /// recording every outbound client request.
-    struct ConnectScript {
-        model_revision: cookie_agent_protocol::SnapshotRevision,
-        /// The model revision agent.list currently reports; switchable
-        /// between startup and the connect follow-up.
-        agent_model_revision: Arc<std::sync::Mutex<cookie_agent_protocol::SnapshotRevision>>,
-        /// Optional (call-count, revision) flip for delayed-coherent
-        /// scenarios.
-        flip: Option<(usize, cookie_agent_protocol::SnapshotRevision)>,
-        models: Vec<cookie_agent_protocol::AvailableModelDescriptor>,
-        fallbacks: Vec<ModelSelection>,
-        recorded: Arc<Mutex<Vec<Value>>>,
-    }
-
-    impl ConnectScript {
-        fn client(self) -> Client {
-            let (incoming_tx, incoming_rx) = tokio::sync::mpsc::unbounded_channel();
-            let (sent, mut sent_rx) = tokio::sync::mpsc::unbounded_channel();
-            let recorded = self.recorded.clone();
-            let model_revision = self.model_revision.clone();
-            let agent_revision_cell = self.agent_model_revision;
-            let flip = self.flip;
-            let models = self.models;
-            let fallbacks = self.fallbacks;
-            let mut agent_list_calls = 0usize;
-            tokio::spawn(async move {
-                while let Some(frame) = sent_rx.recv().await {
-                    let value = match frame {
-                        MessageFrame::Value(value) => value,
-                        MessageFrame::Text(text) => {
-                            serde_json::from_str(&text).unwrap_or(Value::Null)
-                        }
-                    };
-                    recorded.lock().expect("recorded").push(value.clone());
-                    let method = value["method"].as_str().unwrap_or_default().to_owned();
-                    let id = value["id"].clone();
-                    let result = match method.as_str() {
-                        "provider.connect" => serde_json::json!({
-                            "client_connect_id": value["params"]["client_connect_id"],
-                            "connection": {
-                                "provider_id": "acme",
-                                "credential_fields": ["API_KEY"],
-                                "connected_at": jiff::Timestamp::now(),
-                                "catalog_revision": cookie_agent_protocol::CatalogRevision::current(),
-                            },
-                            "model_revision": model_revision,
-                        }),
-                        "model.list" => serde_json::json!({
-                            "revision": model_revision,
-                            "generated_at": jiff::Timestamp::now(),
-                            "catalog_revision": cookie_agent_protocol::CatalogRevision::current(),
-                            "models": models,
-                        }),
-                        "agent.list" => {
-                            agent_list_calls += 1;
-                            let revision = if let Some((flip_after, coherent)) = &flip {
-                                if agent_list_calls > *flip_after {
-                                    coherent.clone()
-                                } else {
-                                    agent_revision_cell.lock().expect("revision").clone()
-                                }
-                            } else {
-                                agent_revision_cell.lock().expect("revision").clone()
-                            };
-                            serde_json::json!({
-                                "revision": revision,
-                                "model_revision": revision,
-                                "generated_at": jiff::Timestamp::now(),
-                                "agents": [{
-                                    "id": "primary",
-                                    "description": "Primary",
-                                    "mode": "primary",
-                                    "enabled": true,
-                                    "runnable_as_root": true,
-                                    "resolved_fallback": fallbacks,
-                                    "tools": [],
-                                    "delegation_targets": []
-                                }],
-                            })
-                        }
-                        "session.create" => serde_json::json!({
-                            "session": {
-                                "meta_schema_version": 7,
-                                "session_id": SessionId::new_v7(),
-                                "origin": {"type": "root"},
-                                "cwd_identity": "/workspace",
-                                "creation_selection": value["params"]["selection"],
-                                "title": null,
-                                "title_updated_seq": 0,
-                                "last_event_seq": 1,
-                                "status": "idle",
-                            }
-                        }),
-                        _ => Value::Null,
-                    };
-                    let _ = incoming_tx.send(MessageFrame::Value(serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "result": result,
-                    })));
-                }
-            });
-            Client::connect_stream(ScriptedStream {
-                incoming: incoming_rx,
-                sent,
-            })
-        }
-    }
-
-    fn revision(digit: &str) -> cookie_agent_protocol::SnapshotRevision {
-        cookie_agent_protocol::SnapshotRevision::new(format!(
-            "sha256:{}",
-            digit.repeat(64 / digit.len())
-        ))
-        .expect("revision")
-    }
-
-    fn recorded_method_count(recorded: &Arc<Mutex<Vec<Value>>>, method: &str) -> usize {
-        recorded
-            .lock()
-            .expect("recorded")
-            .iter()
-            .filter(|value| value["method"].as_str() == Some(method))
-            .count()
-    }
-
-    async fn drive_connect(
-        startup_agent_revision: cookie_agent_protocol::SnapshotRevision,
-        post_startup_agent_revision: Option<cookie_agent_protocol::SnapshotRevision>,
-        model_revision: cookie_agent_protocol::SnapshotRevision,
-        flip_after: Option<(usize, cookie_agent_protocol::SnapshotRevision)>,
-    ) -> (Arc<Mutex<Vec<Value>>>, tokio::task::JoinHandle<()>) {
-        drive_connect_with_catalog(
-            startup_agent_revision,
-            post_startup_agent_revision,
-            model_revision,
-            flip_after,
-            vec![model_descriptor()],
-            vec![ModelSelection {
-                model: model_key(),
-                variant: None,
-            }],
-        )
-        .await
-    }
-
-    async fn drive_connect_with_catalog(
-        startup_agent_revision: cookie_agent_protocol::SnapshotRevision,
-        post_startup_agent_revision: Option<cookie_agent_protocol::SnapshotRevision>,
-        model_revision: cookie_agent_protocol::SnapshotRevision,
-        flip_after: Option<(usize, cookie_agent_protocol::SnapshotRevision)>,
-        models: Vec<cookie_agent_protocol::AvailableModelDescriptor>,
-        fallbacks: Vec<ModelSelection>,
-    ) -> (Arc<Mutex<Vec<Value>>>, tokio::task::JoinHandle<()>) {
-        let recorded = Arc::new(Mutex::new(Vec::new()));
-        let script_revision = Arc::new(std::sync::Mutex::new(startup_agent_revision));
-        let script = ConnectScript {
-            model_revision,
-            agent_model_revision: script_revision.clone(),
-            flip: flip_after,
-            models,
-            fallbacks,
-            recorded: recorded.clone(),
-        };
-        let client = script.client();
-        let mut app = App::new(client.clone()).await.expect("app");
-        let provider = CatalogProvider {
-            id: CatalogIdentifier::new("acme").expect("id"),
-            name: CatalogText::new("Acme").expect("name"),
-            credential_fields: vec![CredentialFieldName::new("API_KEY").expect("field")],
-            npm: CatalogText::new("@acme/ai").expect("npm"),
-            api: None,
-            documentation_url: CatalogText::new("https://docs.acme.example").expect("docs"),
-        };
-        app.providers = vec![provider.clone()];
-        app.catalog_revision = Some(cookie_agent_protocol::CatalogRevision::current());
-        app.connect_provider = Some(provider);
-        app.connect_fields = vec![(CredentialFieldName::new("API_KEY").expect("field"), {
-            let mut input = CredentialInput::default();
-            input.insert_owned("secret".to_owned());
-            input
-        })];
-        // Simulate the empty-startup path: the follow-up may create the
-        // initial session.
-        app.selected = None;
-        app.sessions.clear();
-        // Only requests issued by the connect follow-up count; startup
-        // refreshes are drained from the record first.
-        recorded.lock().expect("recorded").clear();
-        if let Some(switch) = post_startup_agent_revision {
-            *script_revision.lock().expect("revision") = switch;
-        }
-        app.dispatch_provider_connect();
-        let handle = app.connect_task.take().expect("connect task");
-        (recorded, handle)
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn incoherent_connect_pair_creates_zero_sessions_after_bounded_retry() {
-        // Startup is coherent; the connect phase reports a stale model
-        // revision on every attempt, so the bounded retry fails coherence.
-        let (recorded, handle) =
-            drive_connect(revision("aa"), Some(revision("bb")), revision("aa"), None).await;
-        handle.await.expect("connect task");
-        assert_eq!(
-            recorded_method_count(&recorded, "session.create"),
-            0,
-            "no session.create on incoherence"
-        );
-        assert_eq!(
-            recorded_method_count(&recorded, "agent.list"),
-            2,
-            "exactly one bounded retry"
-        );
-        assert_eq!(recorded_method_count(&recorded, "model.list"), 1);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn coherent_connect_pair_creates_exactly_one_session_without_orphans() {
-        let (recorded, handle) = drive_connect(revision("aa"), None, revision("aa"), None).await;
-        handle.await.expect("connect task");
-        assert_eq!(
-            recorded_method_count(&recorded, "session.create"),
-            1,
-            "one session.create on coherent success"
-        );
-        assert_eq!(recorded_method_count(&recorded, "agent.list"), 1);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn delayed_coherent_retry_creates_one_session_from_the_coherent_pair() {
-        // First agent.list of the connect phase is stale, the retry is
-        // coherent: creation proceeds only after the verified pair.
-        let (recorded, handle) = drive_connect(
-            revision("aa"),
-            Some(revision("bb")),
-            revision("aa"),
-            Some((2, revision("aa"))),
-        )
-        .await;
-        handle.await.expect("connect task");
-        assert_eq!(recorded_method_count(&recorded, "agent.list"), 2);
-        assert_eq!(
-            recorded_method_count(&recorded, "session.create"),
-            1,
-            "one session.create after the coherent retry"
-        );
-        // The created session selection comes from the coherent agent
-        // snapshot.
-        let creations = recorded
-            .lock()
-            .expect("recorded")
-            .iter()
-            .filter(|value| value["method"].as_str() == Some("session.create"))
-            .cloned()
-            .collect::<Vec<_>>();
-        assert_eq!(creations.len(), 1);
-        assert_eq!(creations[0]["params"]["selection"]["agent"], "primary");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn connect_uses_later_authored_fallback_when_first_is_not_publicly_available() {
-        let later = catalog_model("other/later-model", &["high"], None);
-        let (recorded, handle) = drive_connect_with_catalog(
-            revision("aa"),
-            None,
-            revision("aa"),
-            None,
-            vec![later.clone()],
-            vec![
-                ModelSelection {
-                    model: "missing/unavailable".parse().expect("model"),
-                    variant: None,
-                },
-                ModelSelection {
-                    model: later.key,
-                    variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
-                },
-            ],
-        )
-        .await;
-        handle.await.expect("connect task");
-        let creations = recorded
-            .lock()
-            .expect("recorded")
-            .iter()
-            .filter(|value| value["method"].as_str() == Some("session.create"))
-            .cloned()
-            .collect::<Vec<_>>();
-        assert_eq!(creations.len(), 1);
-        assert_eq!(
-            creations[0]["params"]["selection"]["model"],
-            serde_json::json!({"model": "other/later-model", "variant": "high"})
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn connect_creates_no_session_when_no_authored_fallback_is_catalog_valid() {
-        let only = catalog_model("other/only-model", &["high"], None);
-        let (recorded, handle) = drive_connect_with_catalog(
-            revision("aa"),
-            None,
-            revision("aa"),
-            None,
-            vec![only.clone()],
-            vec![
-                ModelSelection {
-                    model: "missing/unavailable".parse().expect("model"),
-                    variant: None,
-                },
-                ModelSelection {
-                    model: only.key,
-                    variant: Some(
-                        cookie_agent_protocol::VariantId::new("removed").expect("variant"),
-                    ),
-                },
-            ],
-        )
-        .await;
-        handle.await.expect("connect task");
-        assert_eq!(recorded_method_count(&recorded, "session.create"), 0);
     }
 
     // ------------------------------------------------------------------

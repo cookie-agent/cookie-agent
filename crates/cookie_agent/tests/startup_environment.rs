@@ -58,25 +58,24 @@ fn run_cookie(arguments: &[&str], extra_environment: &[(&str, &str)]) -> Output 
 }
 
 #[test]
-fn checked_schema6_fixture_composes_without_ambient_config_overrides() {
+fn checked_schema7_fixture_rejects_ambient_config_overrides_before_cli_secret_input() {
     let output = run_cookie(
-        &[],
+        &["connect"],
         &[
             ("COOKIE_AGENT_THEME", "ignored-theme"),
             ("COOKIE_AGENT_CONFIG__SERVER__PORT", "ignored-port"),
             ("COOKIE_AGENT_FOO", "ignored-runtime-value"),
         ],
     );
-    assert!(!output.status.success(), "non-TTY TUI startup must fail");
+    assert!(!output.status.success(), "non-TTY connect must fail");
     let report = format!(
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(report.contains("enable terminal raw mode"), "{report}");
-    assert!(!report.contains("built without TUI support"), "{report}");
+    assert!(report.contains("interactive TTY"), "{report}");
     assert!(
-        !report.contains("load schema-6 workspace configuration"),
+        !report.contains("load schema-7 workspace configuration"),
         "{report}"
     );
     for secret in [
@@ -93,6 +92,20 @@ fn checked_schema6_fixture_composes_without_ambient_config_overrides() {
 }
 
 #[test]
+fn disconnect_is_cwd_independent_and_rejects_non_tty() {
+    let output = run_cookie(&["disconnect", "openai"], &[]);
+    assert!(!output.status.success());
+    let report = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(report.contains("interactive TTY"), "{report}");
+    assert!(!report.contains("workspace configuration"), "{report}");
+}
+
+#[test]
+#[cfg(feature = "tui")]
 fn attach_uses_the_tui_entry_point_without_a_workspace() {
     let output = run_cookie(&["attach"], &[]);
     assert!(!output.status.success());

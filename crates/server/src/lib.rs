@@ -1,7 +1,7 @@
-//! Transport-neutral protocol-v7 JSON-RPC service.
+//! Transport-neutral protocol-8 JSON-RPC service.
 
 mod auth_token;
-mod catalog;
+mod providers;
 mod rpc;
 mod service;
 mod transport;

@@ -1,7 +1,7 @@
 {
-  "delegation_journal_schema_version": 7,
-  "event_schema_version": 7,
-  "protocol_version": 7,
+  "delegation_journal_schema_version": 8,
+  "event_schema_version": 8,
+  "protocol_version": 8,
   "schemas": [
     "ClientHello.schema.json",
     "ServerHello.schema.json",
@@ -45,20 +45,17 @@
     "ApprovalRespondError.schema.json",
     "ApprovalListParams.schema.json",
     "ApprovalListResult.schema.json",
-    "CatalogProviderListParams.schema.json",
-    "CatalogProviderListResult.schema.json",
-    "CatalogModelListParams.schema.json",
-    "CatalogModelListResult.schema.json",
-    "CatalogError.schema.json",
-    "ProviderConnectParams.schema.json",
+    "RuntimeSnapshotGetParams.schema.json",
+    "RuntimeSnapshotResult.schema.json",
+    "RuntimeChangedNotification.schema.json",
     "ProviderConnectResult.schema.json",
     "ProviderConnectError.schema.json",
-    "ModelListParams.schema.json",
-    "ModelListResult.schema.json",
-    "ModelListError.schema.json",
-    "AgentListParams.schema.json",
-    "AgentListResult.schema.json"
+    "ProviderDisconnectParams.schema.json",
+    "ProviderDisconnectResult.schema.json",
+    "ProviderDisconnectError.schema.json",
+    "ModelSnapshotManifestV1.schema.json",
+    "StoredDelegationJournalRecord.schema.json"
   ],
-  "session_jsonl_schema_version": 7,
-  "session_meta_schema_version": 7
+  "session_jsonl_schema_version": 8,
+  "session_meta_schema_version": 8
 }

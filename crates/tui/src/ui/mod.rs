@@ -4,6 +4,7 @@ mod app;
 mod events;
 mod input;
 mod pickers;
+mod provider;
 mod slash;
 mod transcript;
 

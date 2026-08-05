@@ -1,12 +1,12 @@
 use cookie_agent_engine::{ApprovalRespondFailure, EngineError};
 use cookie_agent_protocol::{
-    ApprovalRespondError, ApprovalRespondErrorCode, ApprovalRespondParams, CatalogError,
-    CatalogErrorCode, CatalogRevision, ClientConnectId, ClientRenameId, ClientResponseId,
-    CredentialFieldName, ErrorResponse, JsonRpcError, JsonRpcId, JsonRpcVersion, ModelListError,
-    ModelListErrorCode, Notification, ProviderConnectError, ProviderConnectErrorCode, ProviderId,
-    Request as RpcRequest, Response as RpcResponse, RunStartConflict, RunStartConflictCode,
-    RunStartParams, SessionId, SessionRenameChange, SessionRenameError, SessionRenameErrorCode,
-    SessionRenameParams, SessionTitle, SuccessResponse,
+    ApprovalRespondError, ApprovalRespondErrorCode, ApprovalRespondParams, ClientRenameId,
+    ClientResponseId, ErrorResponse, JsonRpcError, JsonRpcId, JsonRpcVersion, Notification,
+    ProviderConnectError, ProviderConnectErrorCode, ProviderConnectParams, ProviderDisconnectError,
+    ProviderDisconnectErrorCode, ProviderDisconnectParams, Request as RpcRequest,
+    Response as RpcResponse, RunStartConflict, RunStartConflictCode, RunStartParams, SessionId,
+    SessionRenameChange, SessionRenameError, SessionRenameErrorCode, SessionRenameParams,
+    SessionTitle, SuccessResponse,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -116,37 +116,72 @@ impl RpcFault {
         }
     }
 
-    pub(crate) fn catalog(code: CatalogErrorCode, revision: Option<CatalogRevision>) -> Self {
-        Self {
-            code: -32010,
-            message: "catalog error",
-            data: typed_error_data(CatalogError { code, revision }),
-        }
-    }
-
-    pub(crate) fn provider_connect_parts(
-        provider_id: &ProviderId,
-        client_connect_id: &ClientConnectId,
-        code: ProviderConnectErrorCode,
-        missing_credential_fields: Vec<CredentialFieldName>,
-    ) -> Self {
+    pub(crate) fn provider_connect(request: &ProviderConnectParams, error: EngineError) -> Self {
+        let code = match error {
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::UnknownProvider) => {
+                ProviderConnectErrorCode::UnknownProvider
+            }
+            EngineError::ModelManager(
+                cookie_agent_models::ModelManagerError::UnsupportedProvider,
+            ) => ProviderConnectErrorCode::UnsupportedProvider,
+            EngineError::ModelManager(
+                cookie_agent_models::ModelManagerError::QuarantinedProvider(_),
+            ) => ProviderConnectErrorCode::QuarantinedProvider,
+            EngineError::ModelManager(
+                cookie_agent_models::ModelManagerError::RemovedWithoutRetainedRecipeMatch,
+            ) => ProviderConnectErrorCode::RemovedWithoutRetainedRecipeMatch,
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::InvalidSetup) => {
+                ProviderConnectErrorCode::InvalidSetupField
+            }
+            EngineError::ModelManager(
+                cookie_agent_models::ModelManagerError::UnsupportedAuthMethod,
+            ) => ProviderConnectErrorCode::UnsupportedAuthMethod,
+            EngineError::ModelManager(
+                cookie_agent_models::ModelManagerError::InvalidCredentials,
+            ) => ProviderConnectErrorCode::InvalidCredential,
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(
+                cookie_agent_models::provider_store::ProviderStoreError::CatalogRevisionConflict,
+            )) => ProviderConnectErrorCode::CatalogRevisionConflict,
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(
+                cookie_agent_models::provider_store::ProviderStoreError::IdempotencyConflict,
+            )) => ProviderConnectErrorCode::IdempotencyConflict,
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(_)) => {
+                ProviderConnectErrorCode::ProviderStoreWriteFailed
+            }
+            _ => ProviderConnectErrorCode::RuntimeCompileFailed,
+        };
         Self {
             code: -32011,
             message: "provider connect error",
             data: typed_error_data(ProviderConnectError {
                 code,
-                provider_id: provider_id.clone(),
-                client_connect_id: client_connect_id.clone(),
-                missing_credential_fields,
+                provider_id: request.provider_id.clone(),
+                client_connect_id: request.client_connect_id.clone(),
             }),
         }
     }
 
-    pub(crate) fn model_list(code: ModelListErrorCode) -> Self {
+    pub(crate) fn provider_disconnect(
+        request: &ProviderDisconnectParams,
+        error: EngineError,
+    ) -> Self {
+        let code = match error {
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::CustomProviderNotStoreBacked) => ProviderDisconnectErrorCode::CustomProviderNotStoreBacked,
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(cookie_agent_models::provider_store::ProviderStoreError::RuntimeRevisionConflict)) => ProviderDisconnectErrorCode::RuntimeRevisionConflict,
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(cookie_agent_models::provider_store::ProviderStoreError::ProviderStateRevisionConflict)) => ProviderDisconnectErrorCode::ProviderStateRevisionConflict,
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(cookie_agent_models::provider_store::ProviderStoreError::StaleConnectionGeneration)) => ProviderDisconnectErrorCode::StaleProviderConnectionGeneration,
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(cookie_agent_models::provider_store::ProviderStoreError::IdempotencyConflict)) => ProviderDisconnectErrorCode::IdempotencyConflict,
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(_)) => ProviderDisconnectErrorCode::ProviderStoreWriteFailed,
+            _ => ProviderDisconnectErrorCode::RuntimeCompileFailed,
+        };
         Self {
             code: -32012,
-            message: "model list error",
-            data: typed_error_data(ModelListError { code }),
+            message: "provider disconnect error",
+            data: typed_error_data(ProviderDisconnectError {
+                code,
+                provider_id: request.provider_id.clone(),
+                client_request_id: request.client_request_id.clone(),
+            }),
         }
     }
 
@@ -221,8 +256,23 @@ fn typed_error_data(error: impl Serialize) -> Option<Value> {
     serde_json::to_value(error).ok()
 }
 
-pub(crate) fn engine_fault(_: EngineError) -> RpcFault {
-    RpcFault::engine()
+pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
+    match error {
+        EngineError::NoRunnableModel => RpcFault {
+            code: -32020,
+            message: "no runnable model",
+            data: Some(json!({
+                "code": "no_runnable_model",
+                "message": "type /connect to continue"
+            })),
+        },
+        EngineError::ProviderStoreReloadFailed => RpcFault {
+            code: -32021,
+            message: "provider store reload failed",
+            data: Some(json!({ "code": "provider_store_reload_failed" })),
+        },
+        _ => RpcFault::engine(),
+    }
 }
 
 pub(crate) fn parse_incoming(frame: MessageFrame) -> Result<Value, RpcFault> {

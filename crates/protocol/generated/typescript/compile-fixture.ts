@@ -1,12 +1,12 @@
 /// <reference path="./globals.d.ts" />
 import type {
-  AgentListResult,
-  CatalogModelListResult,
-  CatalogProviderListResult,
   ClientHello,
-  ModelListResult,
-  ProviderConnectParams,
+  ModelSnapshotManifestV1,
+  ProviderConnectResult,
+  ProviderDisconnectParams,
   Request,
+  RuntimeChangedNotification,
+  RuntimeSnapshotResult,
   RunStartParams,
   SessionCreateParams,
   StoredEvent,
@@ -18,11 +18,11 @@ const roots: [
   SessionCreateParams,
   RunStartParams,
   StoredEvent,
-  CatalogProviderListResult,
-  CatalogModelListResult,
-  ProviderConnectParams,
-  ModelListResult,
-  AgentListResult,
+  RuntimeSnapshotResult,
+  RuntimeChangedNotification,
+  ProviderConnectResult,
+  ProviderDisconnectParams,
+  ModelSnapshotManifestV1,
 ] | null = null;
 
 export { roots };
