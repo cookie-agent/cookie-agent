@@ -4,7 +4,7 @@ description: Primary agent pinned to the Anthropic-wire model and high variant
 mode: primary
 enabled: true
 model_fallback:
-  - { model: "anthropic/kimi-for-coding", variant: high }
+  - { model: "kimi-for-coding/kimi-for-coding", variant: base }
 tools: [read, grep, glob, write, edit, bash]
 permissions:
   - { id: allow-workspace-read, action: read, resource: "*", effect: allow }
