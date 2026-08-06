@@ -50,7 +50,10 @@ impl ModelSnapshotManifestStore {
     /// Opens the fixed project directory below an exact cwd.
     pub fn open(cwd: impl AsRef<Path>) -> Result<Self, ManifestError> {
         Ok(Self {
-            directory: SecureDirectory::open_in(cwd, MODEL_SNAPSHOT_DIRECTORY)?,
+            directory: SecureDirectory::open_in_untrusted_project_anchor(
+                cwd,
+                MODEL_SNAPSHOT_DIRECTORY,
+            )?,
         })
     }
 

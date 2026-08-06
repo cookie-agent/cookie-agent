@@ -65,6 +65,33 @@ impl SecureDirectory {
         }
     }
 
+    /// Opens a private path below an existing, potentially shared project anchor.
+    ///
+    /// The anchor itself need not be owned by the current user or non-writable by
+    /// collaborators. Such collaborators may therefore deny service by removing
+    /// or replacing project entries, but cannot inject accepted storage objects:
+    /// every created/opened descendant remains current-user-owned mode 0700 and
+    /// all file operations retain the private, single-link, no-follow checks.
+    pub(crate) fn open_in_untrusted_project_anchor(
+        anchor: impl AsRef<Path>,
+        relative: impl AsRef<Path>,
+    ) -> Result<Self, SecureStoreError> {
+        #[cfg(unix)]
+        {
+            let anchor_path = anchor.as_ref().to_path_buf();
+            let anchor =
+                open_absolute_directory(&anchor_path, DirectoryPolicy::UntrustedProjectAnchor)?;
+            let mut directory = Self::open_private_in(&anchor, relative.as_ref())?;
+            directory.path = anchor_path.join(relative.as_ref());
+            Ok(directory)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (anchor, relative);
+            Err(SecureStoreError::UnsupportedPlatform)
+        }
+    }
+
     /// Opens or creates an absolute private directory.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SecureStoreError> {
         let path = path.as_ref();
@@ -329,6 +356,7 @@ pub enum SecureStoreError {
 #[derive(Clone, Copy)]
 enum DirectoryPolicy {
     SafeAnchor,
+    UntrustedProjectAnchor,
     Private,
 }
 
@@ -543,8 +571,10 @@ fn validate_directory(
     let mode = metadata.mode() & 0o777;
     let mode_ok = match policy {
         DirectoryPolicy::SafeAnchor => mode & 0o022 == 0,
+        DirectoryPolicy::UntrustedProjectAnchor => true,
         DirectoryPolicy::Private => mode == PRIVATE_DIRECTORY_MODE,
     };
+    let owner_ok = matches!(policy, DirectoryPolicy::UntrustedProjectAnchor) || owner_ok;
     if owner_ok && mode_ok {
         Ok(())
     } else {

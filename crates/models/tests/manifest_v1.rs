@@ -2,7 +2,7 @@
 
 use std::{
     fs,
-    os::unix::fs::{PermissionsExt as _, symlink},
+    os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink},
 };
 
 use cookie_agent_identity::{
@@ -67,6 +67,99 @@ fn directory_fingerprint(path: &std::path::Path) -> Vec<(String, u32, u64, Strin
         .collect::<Vec<_>>();
     entries.sort();
     entries
+}
+
+#[test]
+fn shared_project_anchor_modes_create_and_reopen_private_storage() {
+    for mode in [0o775, 0o777] {
+        let temporary = TempDir::new().unwrap();
+        fs::set_permissions(temporary.path(), fs::Permissions::from_mode(mode)).unwrap();
+
+        let manifest = ModelSnapshotManifestStore::open(temporary.path())
+            .unwrap()
+            .write(payload())
+            .unwrap();
+        let project = temporary.path().join(".cookie-agent");
+        let snapshots = project.join("model-snapshots");
+        assert_eq!(fs::metadata(&project).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(fs::metadata(&snapshots).unwrap().mode() & 0o777, 0o700);
+
+        let reopened = ModelSnapshotManifestStore::open(temporary.path()).unwrap();
+        assert!(reopened.scan().unwrap().get(&manifest.revision).is_some());
+        for entry in fs::read_dir(&snapshots).unwrap() {
+            let metadata = entry.unwrap().metadata().unwrap();
+            assert_eq!(metadata.mode() & 0o777, 0o600);
+            assert_eq!(metadata.nlink(), 1);
+        }
+    }
+}
+
+#[test]
+fn symlink_anchors_and_storage_children_remain_rejected() {
+    let temporary = TempDir::new().unwrap();
+    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o777)).unwrap();
+    let actual = temporary.path().join("actual");
+    fs::create_dir(&actual).unwrap();
+    fs::set_permissions(&actual, fs::Permissions::from_mode(0o777)).unwrap();
+    let linked = temporary.path().join("linked");
+    symlink(&actual, &linked).unwrap();
+    assert!(matches!(
+        ModelSnapshotManifestStore::open(&linked),
+        Err(ManifestError::Storage(_))
+    ));
+
+    let target = temporary.path().join("target");
+    fs::create_dir(&target).unwrap();
+    symlink(&target, actual.join(".cookie-agent")).unwrap();
+    assert!(matches!(
+        ModelSnapshotManifestStore::open(&actual),
+        Err(ManifestError::Storage(_))
+    ));
+
+    fs::remove_file(actual.join(".cookie-agent")).unwrap();
+    fs::write(actual.join(".cookie-agent"), b"not a directory").unwrap();
+    assert!(matches!(
+        ModelSnapshotManifestStore::open(&actual),
+        Err(ManifestError::Storage(_))
+    ));
+}
+
+#[test]
+fn non_private_or_wrong_owner_storage_children_remain_rejected() {
+    let temporary = TempDir::new().unwrap();
+    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o777)).unwrap();
+    let project = temporary.path().join(".cookie-agent");
+    fs::create_dir(&project).unwrap();
+    fs::set_permissions(&project, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(
+        ModelSnapshotManifestStore::open(temporary.path()),
+        Err(ManifestError::Storage(_))
+    ));
+
+    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).unwrap();
+    if unsafe { libc::geteuid() } == 0 {
+        let path = std::ffi::CString::new(project.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::chown(path.as_ptr(), 1, 1) }, 0);
+        assert!(matches!(
+            ModelSnapshotManifestStore::open(temporary.path()),
+            Err(ManifestError::Storage(_))
+        ));
+    }
+}
+
+#[test]
+fn non_owned_project_anchor_is_accepted_when_simulation_is_available() {
+    let temporary = TempDir::new().unwrap();
+    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o777)).unwrap();
+    if unsafe { libc::geteuid() } == 0 {
+        let path = std::ffi::CString::new(temporary.path().as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::chown(path.as_ptr(), 1, 1) }, 0);
+        let store = ModelSnapshotManifestStore::open(temporary.path()).unwrap();
+        assert_eq!(store.scan().unwrap().len(), 0);
+        assert_eq!(fs::metadata(store.path()).unwrap().uid(), unsafe {
+            libc::geteuid()
+        });
+    }
 }
 
 #[test]

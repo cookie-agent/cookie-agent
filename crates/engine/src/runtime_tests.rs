@@ -610,6 +610,61 @@ fn empty_startup_is_coherent_and_rejects_fabricated_sessions() {
 }
 
 #[test]
+fn shared_project_cwd_creates_and_reopens_model_manifests() {
+    let fixture = fixture();
+    let workspace = fixture._directory.path().join("shared-workspace");
+    fs::create_dir(&workspace).expect("shared workspace");
+    fs::set_permissions(&workspace, fs::Permissions::from_mode(0o775))
+        .expect("shared workspace mode");
+    let data_dir = fixture._directory.path().join("shared-data");
+
+    let engine = Engine::open(EngineOptions {
+        data_dir: data_dir.clone(),
+        cwd: workspace.clone(),
+        config: fixture.config.clone(),
+        model_manager: Arc::clone(&fixture.manager),
+        tools: Vec::new(),
+    })
+    .expect("engine in shared workspace");
+    let revision = engine
+        .runtime_snapshot()
+        .expect("runtime snapshot")
+        .snapshot
+        .model_revision;
+    drop(engine);
+
+    let snapshots = workspace.join(".cookie-agent/model-snapshots");
+    assert_eq!(
+        fs::metadata(&snapshots).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert!(fs::read_dir(&snapshots).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".json")
+    }));
+
+    let reopened = Engine::open(EngineOptions {
+        data_dir,
+        cwd: workspace,
+        config: fixture.config.clone(),
+        model_manager: Arc::clone(&fixture.manager),
+        tools: Vec::new(),
+    })
+    .expect("reopened engine in shared workspace");
+    assert_eq!(
+        reopened
+            .runtime_snapshot()
+            .expect("reopened runtime snapshot")
+            .snapshot
+            .model_revision,
+        revision
+    );
+}
+
+#[test]
 fn absent_disconnect_commits_once_and_replay_publishes_nothing() {
     let fixture = fixture();
     let initial = fixture

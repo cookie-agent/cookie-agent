@@ -236,7 +236,9 @@ custom snapshots require the current safe custom-definition fingerprint.
 Secret-free compiled model blueprints are retained in project manifest schema 1
 at `.cookie-agent/model-snapshots/<64-lowercase-hex>.json`, where the filename is
 SHA-256 of RFC 8785 JCS payload bytes, with lock
-`model-snapshots-v1.lock`. New root runs use the
+`model-snapshots-v1.lock`. The project cwd may be shared or group-writable; the
+storage subtree remains current-user-owned mode `0700` and its files mode `0600`
+with descriptor-relative no-follow validation. New root runs use the
 current coherent runtime; delegated sessions remain pinned to their parent's
 accepted manifest; accepted runs never change. Referenced manifests are not
 garbage-collected.

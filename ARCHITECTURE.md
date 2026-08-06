@@ -138,7 +138,7 @@ On Unix, runtime user data is fixed below:
   sessions/
 ```
 
-Each project may additionally contain the private runtime directory:
+Each project may additionally contain the private runtime subtree:
 
 ```text
 <exact-cwd>/.cookie-agent/model-snapshots/
@@ -146,12 +146,16 @@ Each project may additionally contain the private runtime directory:
   model-snapshots-v1.lock
 ```
 
-The `cookie_agent`, `catalog`, `providers`, and session directories are
-current-user-owned mode `0700`. Cache/store/body/meta/lock/temp files are
-current-user-owned mode `0600`, regular, and single-link. Traversal is
-descriptor-relative and no-follow. Every mutation locks and rereads, writes an
-exclusive same-directory temporary file, fsyncs it, atomically renames it, and
-fsyncs the parent. Unsafe state fails closed; no permissive fallback path exists.
+The project cwd anchor may be an ordinary shared or worktree directory with any
+owner-write/group-write mode. Its `.cookie-agent/model-snapshots` storage subtree,
+like the global `cookie_agent`, `catalog`, `providers`, and session directories,
+is current-user-owned mode `0700`. Cache/store/body/meta/manifest/lock/temp files
+are current-user-owned mode `0600`, regular, and single-link. Traversal is
+descriptor-relative and no-follow. A writable project anchor permits
+collaborators to remove the private subtree and deny service, but not to inject
+accepted storage objects. Every mutation locks and rereads, writes an exclusive
+same-directory temporary file, fsyncs it, atomically renames it, and fsyncs the
+parent. Unsafe private state fails closed; no permissive fallback path exists.
 
 ## 4. Configuration layering
 
@@ -457,13 +461,14 @@ behavior metadata. Auth credential values, generated auth-owned header values,
 environment values, live handles, raw catalog records, and provider-native
 private payloads are forbidden.
 
-The directory is current-user-owned `0700`; manifests/lock/temp files are
-current-user-owned `0600`, regular, single-link, descriptor-relative/no-follow,
-bounded, and atomically written by lock/reread, exclusive sibling temp, fsync,
-rename, and parent fsync. A manifest is durable before any version-8 event may
-reference its revision. Referenced manifests are retained for the lifetime of
-their sessions and delegation journals and are never garbage-collected; Registry
-1 performs no automatic manifest GC.
+The cwd anchor need only be an actual directory and may be shared or writable;
+the `.cookie-agent/model-snapshots` subtree is current-user-owned `0700` and
+manifests/lock/temp files are current-user-owned `0600`, regular, single-link,
+descriptor-relative/no-follow, bounded, and atomically written by lock/reread,
+exclusive sibling temp, fsync, rename, and parent fsync. A manifest is durable
+before any version-8 event may reference its revision. Referenced manifests are
+retained for the lifetime of their sessions and delegation journals and are
+never garbage-collected; Registry 1 performs no automatic manifest GC.
 
 Startup scans direct matching filenames in sorted byte order, validates filename
 digest, strict schema, RFC-8785 reserialization/payload digest, unique blueprint
