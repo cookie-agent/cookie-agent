@@ -330,6 +330,9 @@ pub struct SessionState {
     pub generation: u64,
     pub last_seq: u64,
     pub active_run: Option<RunId>,
+    pub cwd_identity: Option<cookie_agent_protocol::CwdIdentity>,
+    /// Full prompt context sent by the latest committed model turn.
+    pub context_input_tokens: Option<u64>,
     /// Frozen producing agent of the latest accepted `RunStarted`.
     pub run_agent: Option<AgentId>,
     /// The complete frozen creation snapshot from `SessionCreated`,
@@ -1096,6 +1099,7 @@ fn reduce_event(
             ..
         } => {
             close_open_assistant(state);
+            state.context_input_tokens = turn.usage.input_tokens;
             // The committed turn is the canonical boundary: every
             // text/thinking/tool child is rebuilt in exact
             // `PersistedModelTurn.content` order, preserving multiple
@@ -1497,12 +1501,17 @@ fn reduce_event(
             push_event(state, EventLevel::Info, render_title_commit(&change));
         }
         EventPayload::UserInputApplied { .. } => close_open_assistant(state),
-        EventPayload::SessionCreated { creation_agent, .. } => {
+        EventPayload::SessionCreated {
+            cwd_identity,
+            creation_agent,
+            ..
+        } => {
             // Before any run starts, attempts (for example title generation)
             // attribute to the creation agent's frozen identity.
             if state.run_agent.is_none() {
                 state.run_agent = Some(creation_agent.agent.clone());
             }
+            state.cwd_identity = Some(cwd_identity);
             state.creation_agent = Some(creation_agent);
         }
         EventPayload::ToolStdinSubmitted { .. } | EventPayload::ToolCallLinked { .. } => {}

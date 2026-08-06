@@ -36,6 +36,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListState, Paragraph, Wrap},
 };
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -153,6 +154,10 @@ pub(super) struct UiHitMap {
     pub(super) approval_actions: Vec<ApprovalHit>,
     pub(super) approval: Option<Rect>,
     pub(super) title_segments: Vec<TitleSegmentHit>,
+}
+
+struct BottomBarRender {
+    line: Line<'static>,
 }
 
 fn is_printable_key(key: KeyEvent) -> bool {
@@ -1391,6 +1396,8 @@ impl App {
                 }
             }
             RpcUpdate::ApprovalList { .. } => {}
+                self.status = format!("permission mode update failed: {error}");
+            }
         }
     }
 
@@ -2213,6 +2220,13 @@ impl App {
         if is_newline_key(key) {
             self.input_focused = true;
             self.input.insert_newline();
+            return;
+        }
+        if key.code == KeyCode::Char('p') && key.modifiers == KeyModifiers::CONTROL {
+            self.input_focused = true;
+            self.input.set_buffer("/".into());
+            self.palette_dismissed = false;
+            self.palette_state.select(Some(0));
             return;
         }
         if !self.input_focused {
@@ -3466,6 +3480,8 @@ impl App {
             Paragraph::new(status).style(self.theme.muted()),
             layout.status,
         );
+        let bottom_bar = self.bottom_bar_line(layout.bar.width);
+        frame.render_widget(Paragraph::new(bottom_bar.line), layout.bar);
         if let Some(approval) = self.current_approval().cloned() {
             let area = centered(frame.area(), 76, 40);
             self.hit_map.approval = Some(area);
@@ -3620,6 +3636,74 @@ impl App {
         }
         if self.command_palette_visible() {
             self.render_command_palette(frame, centered(frame.area(), 68, 60));
+        }
+    }
+
+    fn bottom_bar_line(&self, width: u16) -> BottomBarRender {
+        let width = usize::from(width);
+        if width == 0 {
+            return BottomBarRender {
+                line: Line::default(),
+            };
+        }
+
+        let cwd = self
+            .selected_session_meta()
+            .map(|meta| meta.cwd_identity.as_str())
+            .or_else(|| {
+                self.selected
+                    .and_then(|session_id| self.store.sessions.get(&session_id))
+                    .and_then(|state| state.cwd_identity.as_ref())
+                    .map(cookie_agent_protocol::CwdIdentity::as_str)
+            })
+            .map(shorten_home)
+            .unwrap_or_else(|| "—".into());
+
+        let state = self
+            .selected
+            .and_then(|session_id| self.store.sessions.get(&session_id));
+        let input_tokens = state.and_then(|state| state.context_input_tokens);
+        let context = input_tokens.map_or_else(
+            || "ctx —".to_owned(),
+            |tokens| format!("ctx {}", format_token_count(tokens)),
+        );
+        let context_limit = self
+            .draft
+            .as_ref()
+            .and_then(|draft| self.model_descriptor(&draft.model.model))
+            .or_else(|| {
+                state
+                    .and_then(latest_resolved_model_key)
+                    .and_then(|key| self.model_descriptor(key))
+            })
+            .map(|descriptor| descriptor.capabilities.context_tokens);
+        let context_with_percentage = match (input_tokens, context_limit) {
+            (Some(input), Some(limit)) => {
+                let percentage = input.saturating_mul(100).saturating_add(limit / 2) / limit;
+                format!("{context} ({percentage}%)")
+            }
+            _ => context.clone(),
+        };
+        let hint = "`ctrl+p` commands";
+        let candidates = [
+            format!("{context_with_percentage}    {hint}"),
+            context_with_percentage.clone(),
+            context.clone(),
+        ];
+        let right = candidates
+            .into_iter()
+            .find(|candidate| UnicodeWidthStr::width(candidate.as_str()) <= width)
+            .unwrap_or_else(|| truncate_with_ellipsis(&context, width));
+        let right_width = UnicodeWidthStr::width(right.as_str()).min(width);
+        let right_start = width.saturating_sub(right_width);
+        let left_width = right_start.saturating_sub(4);
+        let left = truncate_with_ellipsis(&cwd, left_width);
+        let padding = right_start.saturating_sub(UnicodeWidthStr::width(left.as_str()));
+        BottomBarRender {
+            line: Line::from(vec![
+                Span::styled(format!("{left}{}", " ".repeat(padding)), self.theme.muted()),
+                Span::styled(right, self.theme.muted()),
+            ]),
         }
     }
 
@@ -4125,6 +4209,80 @@ impl App {
                 .map(|(rect, index)| PaletteRowHit { rect, index })
                 .collect();
     }
+}
+
+fn latest_resolved_model_key(state: &crate::state::SessionState) -> Option<&ModelKey> {
+    state.transcript.iter().rev().find_map(|item| {
+        let TranscriptItem::Assistant {
+            attribution,
+            children,
+            ..
+        } = item
+        else {
+            return None;
+        };
+        children
+            .iter()
+            .rev()
+            .find_map(|child| match child {
+                crate::state::AssistantChild::Attribution { resolved_model } => {
+                    Some(&resolved_model.selection.model)
+                }
+                _ => None,
+            })
+            .or(Some(&attribution.resolved_model.selection.model))
+    })
+}
+
+fn shorten_home(cwd: &str) -> String {
+    let Some(home) = std::env::var_os("HOME") else {
+        return cwd.to_owned();
+    };
+    let home = home.to_string_lossy();
+    if cwd == home {
+        "~".into()
+    } else if let Some(suffix) = cwd
+        .strip_prefix(home.as_ref())
+        .filter(|suffix| suffix.starts_with('/'))
+    {
+        format!("~{suffix}")
+    } else {
+        cwd.to_owned()
+    }
+}
+
+fn format_token_count(tokens: u64) -> String {
+    if tokens < 1_000 {
+        tokens.to_string()
+    } else {
+        format!("{:.1}K", tokens as f64 / 1_000.0)
+    }
+}
+
+fn truncate_with_ellipsis(value: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(value) <= width {
+        return value.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let ellipsis = "…";
+    let ellipsis_width = UnicodeWidthStr::width(ellipsis);
+    if width <= ellipsis_width {
+        return ellipsis.into();
+    }
+    let mut truncated = String::new();
+    let content_width = width - ellipsis_width;
+    for grapheme in value.graphemes(true) {
+        if UnicodeWidthStr::width(truncated.as_str()) + UnicodeWidthStr::width(grapheme)
+            > content_width
+        {
+            break;
+        }
+        truncated.push_str(grapheme);
+    }
+    truncated.push_str(ellipsis);
+    truncated
 }
 
 impl Drop for App {

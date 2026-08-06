@@ -7642,4 +7642,53 @@ mod tests {
             unicode_width::UnicodeWidthStr::width(line.to_string().as_str()) <= usize::from(width)
         }));
     }
+
+    #[test]
+    fn model_turn_committed_updates_latest_context_input_tokens() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let first_attempt = AttemptId::new_v7();
+        let second_attempt = AttemptId::new_v7();
+        let with_input_tokens = |mut event: StoredEvent, input_tokens| {
+            let EventPayload::ModelTurnCommitted { turn, .. } = &mut event.payload else {
+                panic!("expected committed turn");
+            };
+            turn.usage.input_tokens = Some(input_tokens);
+            event
+        };
+        let events = vec![
+            session_created(session, 1),
+            attempt_started(session, 2, run, first_attempt, None),
+            with_input_tokens(
+                turn_committed(
+                    session,
+                    3,
+                    run,
+                    first_attempt,
+                    1,
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                ),
+                1_200,
+            ),
+            attempt_started(session, 4, run, second_attempt, None),
+            with_input_tokens(
+                turn_committed(
+                    session,
+                    5,
+                    run,
+                    second_attempt,
+                    2,
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                ),
+                48_200,
+            ),
+        ];
+        let mut store = StateStore::default();
+        assert!(store.rebuild_session(session, 1, events));
+        assert_eq!(store.sessions[&session].context_input_tokens, Some(48_200));
+    }
 }
