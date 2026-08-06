@@ -385,6 +385,7 @@
         "model_requested",
         "internal_agent_allowed",
         "internal_agent_denied",
+        "yolo_approved",
         "tree_grant_matched",
         "user_approved_once",
         "user_approved_tree",

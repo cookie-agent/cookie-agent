@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionSetPermissionModeParams",
+  "type": "object",
+  "properties": {
+    "mode": {
+      "$ref": "#/$defs/PermissionMode"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "mode"
+  ],
+  "$defs": {
+    "PermissionMode": {
+      "type": "string",
+      "enum": [
+        "auto_approve",
+        "ask",
+        "yolo"
+      ]
+    }
+  }
+}

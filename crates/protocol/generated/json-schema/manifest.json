@@ -26,6 +26,8 @@
     "SessionTreeResult.schema.json",
     "SessionResumeParams.schema.json",
     "SessionResumeResult.schema.json",
+    "SessionSetPermissionModeParams.schema.json",
+    "SessionSetPermissionModeResult.schema.json",
     "RunStartParams.schema.json",
     "RunStartResult.schema.json",
     "RunStartConflict.schema.json",

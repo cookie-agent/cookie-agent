@@ -677,8 +677,41 @@ formatting includes the RPC code/message and only scalar `data.code` and
 Connect/disconnect changes become visible to other workspace daemons through
 provider-store generation reconciliation.
 
-## 14. Validation ownership
+### 13.1 Live per-session permission mode
 
+Every session has a live permission mode, defaulting to `auto_approve` when no
+explicit value has been set. `auto_approve` preserves the normal approval-agent
+evaluation and escalates only when that agent asks. `ask` skips the internal
+approval agent and routes every policy-ask or model-requested approval through
+the durable escalation transaction and user modal. `yolo` skips both the
+internal agent and escalation, durably appends `ApprovalEvaluated { allow,
+source: policy, reason_code: yolo_approved }` followed by
+`ApprovalFinalized { approved, source: policy, reason_code: yolo_approved }`,
+and resolves the operation immediately. `policy` is the decision source because
+the mode is a live policy override rather than an internal-agent or user
+decision; protocol coherence permits `yolo_approved` only for policy-sourced
+Allow/Approved decisions.
+
+The mode short-circuit occurs inside `Engine::await_user_approval` only after
+the doom-loop guard, prior tree-grant lookup, and hard policy-deny evaluation.
+Consequently deny rules and doom-loop rejection take precedence under every
+mode. Existing pending user escalations are unaffected by a later mode change;
+the new value applies to subsequent approval evaluations immediately. Modes are
+keyed by the approval's own session ID. A delegated session therefore uses its
+own default or explicitly set mode, and a root session's mode never cascades.
+
+The JSON-RPC method `session.set_permission_mode` accepts
+`{ session_id, mode }`, where `mode` is `auto_approve`, `ask`, or `yolo`, and
+returns an empty success object. The engine validates that the session exists
+before updating its live in-memory mode. The TUI mirrors values per session for
+display while the engine remains authoritative. Its bottom bar renders the
+clickable mode immediately left of context usage, for example
+"auto-approve    ctx 48.2K (24%)    `ctrl+p` commands", and clicking cycles
+`auto-approve → ask → yolo → auto-approve`. Narrow layouts remove the command
+hint, percentage, and context value in that order while retaining the mode
+control; the working-directory field truncates into the remaining left space.
+
+## 14. Validation ownership
 
 Required validation covers every version rejection, secure file mode/ownership/
 link attack, exact startup order, identity-only streamed 16 MiB acquisition,

@@ -233,6 +233,64 @@ fn model_ask_decision_is_coherent() {
 }
 
 #[test]
+fn permission_mode_uses_snake_case_wire_values() {
+    assert_eq!(
+        serde_json::to_value(PermissionMode::AutoApprove).unwrap(),
+        json!("auto_approve")
+    );
+    assert_eq!(
+        serde_json::to_value(PermissionMode::Ask).unwrap(),
+        json!("ask")
+    );
+    assert_eq!(
+        serde_json::to_value(PermissionMode::Yolo).unwrap(),
+        json!("yolo")
+    );
+    assert_eq!(
+        serde_json::from_value::<PermissionMode>(json!("auto_approve")).unwrap(),
+        PermissionMode::AutoApprove
+    );
+}
+
+#[test]
+fn yolo_approved_is_coherent_only_for_policy_allow_and_approved() {
+    assert!(
+        internal_approval_decision(
+            ApprovalInternalDecisionKind::Allow,
+            ApprovalDecisionSource::Policy,
+            ApprovalReasonCode::YoloApproved,
+        )
+        .validate()
+        .is_ok()
+    );
+    assert_eq!(
+        internal_approval_decision(
+            ApprovalInternalDecisionKind::Deny,
+            ApprovalDecisionSource::Policy,
+            ApprovalReasonCode::YoloApproved,
+        )
+        .validate(),
+        Err(ApprovalSchemaError::ContradictoryDecision)
+    );
+    let approved = ApprovalFinalDecision {
+        outcome: ApprovalFinalOutcome::Approved,
+        source: ApprovalDecisionSource::Policy,
+        reason_code: ApprovalReasonCode::YoloApproved,
+        feedback: None,
+        tree_grant_id: None,
+    };
+    assert!(approved.validate().is_ok());
+    assert_eq!(
+        ApprovalFinalDecision {
+            outcome: ApprovalFinalOutcome::Rejected,
+            ..approved
+        }
+        .validate(),
+        Err(ApprovalSchemaError::ContradictoryDecision)
+    );
+}
+
+#[test]
 fn runtime_snapshot_is_strict_and_source_coherent() {
     let mut value = serde_json::to_value(runtime()).unwrap();
     value["unknown"] = json!(true);

@@ -7691,4 +7691,121 @@ mod tests {
         assert!(store.rebuild_session(session, 1, events));
         assert_eq!(store.sessions[&session].context_input_tokens, Some(48_200));
     }
+
+    fn rendered_row(app: &mut App, width: u16, height: u16, row: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| app.draw_for_test(frame))
+            .expect("app render");
+        let buffer = terminal.backend().buffer();
+        (0..width)
+            .map(|x| buffer[(x, row)].symbol())
+            .collect::<String>()
+    }
+
+    #[tokio::test]
+    async fn bottom_bar_renders_cwd_context_and_narrow_degradation_order() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        app.selected = Some(session);
+        app.sessions = vec![session_meta(session)];
+        app.store.sessions.insert(
+            session,
+            SessionState {
+                context_input_tokens: Some(48_200),
+                ..SessionState::default()
+            },
+        );
+        let mut descriptor = model_descriptor();
+        descriptor.capabilities.context_tokens = 200_000;
+        app.models = vec![descriptor];
+        app.draft = Some(RunSelection {
+            agent: agent_id(),
+            model: ModelSelection {
+                model: model_key(),
+                variant: None,
+            },
+        });
+
+        let wide = rendered_row(&mut app, 100, 24, 23);
+        assert!(wide.contains("/workspace"));
+        assert!(wide.contains("auto-approve    ctx 48.2K (24%)    `ctrl+p` commands"));
+
+        let without_hint = rendered_row(&mut app, 40, 24, 23);
+        assert!(without_hint.contains("auto-approve    ctx 48.2K (24%)"));
+        assert!(!without_hint.contains("ctrl+p"));
+
+        let without_percentage = rendered_row(&mut app, 30, 24, 23);
+        assert!(without_percentage.contains("auto-approve    ctx 48.2K"));
+        assert!(!without_percentage.contains("24%"));
+
+        let mode_only = rendered_row(&mut app, 18, 24, 23);
+        assert!(mode_only.contains("auto-approve"));
+        assert!(!mode_only.contains("ctx"));
+    }
+
+    #[tokio::test]
+    async fn bottom_bar_permission_mode_is_per_session_and_click_cycles_with_rpc() {
+        let (client, _startup_requests) = recording_client();
+        let mut app = App::new(client).await.expect("test app");
+        let (client, requests, _incoming) = live_recording_client();
+        app.client = client;
+        let first = SessionId::new_v7();
+        let second = SessionId::new_v7();
+        app.sessions = vec![session_meta(first), session_meta(second)];
+        app.selected = Some(first);
+        app.permission_modes
+            .insert(second, cookie_agent_protocol::PermissionMode::Yolo);
+        requests.lock().expect("requests lock").clear();
+
+        let first_row = rendered_row(&mut app, 80, 24, 23);
+        assert!(first_row.contains("auto-approve    ctx"));
+        let hit = app.hit_map.permission_mode.expect("permission mode hit");
+        app.handle_click(hit.x, hit.y).await;
+        assert_eq!(
+            app.permission_modes[&first],
+            cookie_agent_protocol::PermissionMode::Ask
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if requests
+                    .lock()
+                    .expect("requests lock")
+                    .iter()
+                    .any(|request| {
+                        request["method"] == "session.set_permission_mode"
+                            && request["params"]["session_id"] == serde_json::json!(first)
+                            && request["params"]["mode"] == "ask"
+                    })
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("permission mode RPC");
+        assert!(
+            requests
+                .lock()
+                .expect("requests lock")
+                .iter()
+                .any(|request| {
+                    request["method"] == "session.set_permission_mode"
+                        && request["params"]["session_id"] == serde_json::json!(first)
+                        && request["params"]["mode"] == "ask"
+                })
+        );
+
+        app.selected = Some(second);
+        let second_row = rendered_row(&mut app, 80, 24, 23);
+        assert!(second_row.contains("yolo    ctx"));
+        let hit = app.hit_map.permission_mode.expect("permission mode hit");
+        app.handle_click(hit.x, hit.y).await;
+        assert_eq!(
+            app.permission_modes[&second],
+            cookie_agent_protocol::PermissionMode::AutoApprove
+        );
+    }
 }

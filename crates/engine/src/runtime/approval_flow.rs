@@ -171,59 +171,109 @@ impl Engine {
             });
         }
 
-        let safe_resources = approval_evaluations(&request)
-            .iter()
-            .map(|evaluation| evaluation.trace.normalized_resource.clone())
-            .collect::<Vec<_>>();
-        let safe_operations = request
-            .operation()
-            .capabilities()
-            .iter()
-            .map(|capability| capability.operation.as_str())
-            .collect::<Vec<_>>();
-        let prompt = serde_json::to_string(&serde_json::json!({
-            "instruction": "Return strict JSON only: {\"decision\":\"allow\"|\"deny\"|\"ask\"}.",
-            "cwd_identity": session.meta.cwd_identity,
-            "operations": safe_operations,
-            "resource_labels": safe_resources,
-        }))
-        .expect("safe approval prompt serializes");
-        #[cfg(test)]
-        let hook = {
-            self.inner
-                .approval_evaluation_hook
-                .lock()
-                .expect("approval evaluation hook lock poisoned")
-                .take()
-        };
-        #[cfg(test)]
-        if let Some(hook) = hook {
-            if let Some(reached) = hook
-                .reached
-                .lock()
-                .expect("approval evaluation reached lock poisoned")
-                .take()
-            {
-                let _ = reached.send(());
-            }
-            hook.release.notified().await;
-        }
-        let approval_policy = self.active_internal_policy(active, InternalAgentKind::Approval);
-        let internal_kind = match self
-            .run_internal_text_agent(
+        let permission_mode = self
+            .inner
+            .permission_modes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&active.session)
+            .copied()
+            .unwrap_or_default();
+        if permission_mode == PermissionMode::Yolo {
+            self.append(
                 active.session,
                 Some(run),
-                InternalAgentKind::Approval,
-                &approval_policy,
-                prompt,
-                &active.cancellation,
+                Event::ApprovalEvaluated {
+                    approval_id,
+                    decision: ApprovalInternalDecision {
+                        decision: ApprovalInternalDecisionKind::Allow,
+                        source: ApprovalDecisionSource::Policy,
+                        reason_code: ApprovalReasonCode::YoloApproved,
+                        evaluations: approval_evaluations(&request),
+                    },
+                },
             )
-            .await
-        {
-            Ok(result) => {
-                parse_internal_approval(&result.text).unwrap_or(ApprovalInternalDecisionKind::Ask)
+            .await?;
+            self.append(
+                active.session,
+                Some(run),
+                Event::ApprovalFinalized {
+                    approval_id,
+                    decision: ApprovalFinalDecision {
+                        outcome: ApprovalFinalOutcome::Approved,
+                        source: ApprovalDecisionSource::Policy,
+                        reason_code: ApprovalReasonCode::YoloApproved,
+                        feedback: None,
+                        tree_grant_id: None,
+                    },
+                },
+            )
+            .await?;
+            return Ok(ApprovalOutcome {
+                approved: true,
+                feedback: None,
+            });
+        }
+
+        let internal_kind = match permission_mode {
+            PermissionMode::Ask => ApprovalInternalDecisionKind::Ask,
+            PermissionMode::AutoApprove => {
+                let safe_resources = approval_evaluations(&request)
+                    .iter()
+                    .map(|evaluation| evaluation.trace.normalized_resource.clone())
+                    .collect::<Vec<_>>();
+                let safe_operations = request
+                    .operation()
+                    .capabilities()
+                    .iter()
+                    .map(|capability| capability.operation.as_str())
+                    .collect::<Vec<_>>();
+                let prompt = serde_json::to_string(&serde_json::json!({
+                    "instruction": "Return strict JSON only: {\"decision\":\"allow\"|\"deny\"|\"ask\"}.",
+                    "cwd_identity": session.meta.cwd_identity,
+                    "operations": safe_operations,
+                    "resource_labels": safe_resources,
+                }))
+                .expect("safe approval prompt serializes");
+                #[cfg(test)]
+                let hook = {
+                    self.inner
+                        .approval_evaluation_hook
+                        .lock()
+                        .expect("approval evaluation hook lock poisoned")
+                        .take()
+                };
+                #[cfg(test)]
+                if let Some(hook) = hook {
+                    if let Some(reached) = hook
+                        .reached
+                        .lock()
+                        .expect("approval evaluation reached lock poisoned")
+                        .take()
+                    {
+                        let _ = reached.send(());
+                    }
+                    hook.release.notified().await;
+                }
+                let approval_policy =
+                    self.active_internal_policy(active, InternalAgentKind::Approval);
+                match self
+                    .run_internal_text_agent(
+                        active.session,
+                        Some(run),
+                        InternalAgentKind::Approval,
+                        &approval_policy,
+                        prompt,
+                        &active.cancellation,
+                    )
+                    .await
+                {
+                    Ok(result) => parse_internal_approval(&result.text)
+                        .unwrap_or(ApprovalInternalDecisionKind::Ask),
+                    Err(_) => ApprovalInternalDecisionKind::Ask,
+                }
             }
-            Err(_) => ApprovalInternalDecisionKind::Ask,
+            PermissionMode::Yolo => unreachable!("yolo approvals resolve before prompting"),
         };
         let transition = self
             .request(active.session, |reply| {

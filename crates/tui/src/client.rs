@@ -23,7 +23,8 @@ use cookie_agent_protocol::{
     RunCancelResult, RunStartParams, RunStartResult, RunSteerParams, RunSteerResult,
     RunToolStdinParams, RunToolStdinResult, ServerHello, SessionCreateParams, SessionCreateResult,
     SessionId, SessionListParams, SessionListResult, SessionRenameParams, SessionRenameResult,
-    SessionTreeParams, SessionTreeResult, StoredEvent, ToolCallId,
+    SessionSetPermissionModeParams, SessionSetPermissionModeResult, SessionTreeParams,
+    SessionTreeResult, StoredEvent, ToolCallId,
 };
 use cookie_agent_server::{MessageFrame, MessageStream, Server, TransportError, in_process_pair};
 use futures_util::{SinkExt, StreamExt};
@@ -374,6 +375,13 @@ impl Client {
         params: SessionRenameParams,
     ) -> Result<SessionRenameResult, ClientError> {
         self.call("session.rename", &params).await
+    }
+
+    pub async fn set_permission_mode(
+        &self,
+        params: SessionSetPermissionModeParams,
+    ) -> Result<SessionSetPermissionModeResult, ClientError> {
+        self.call("session.set_permission_mode", &params).await
     }
 
     pub async fn start_run(&self, params: RunStartParams) -> Result<RunStartResult, ClientError> {

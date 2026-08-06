@@ -163,6 +163,19 @@ impl Engine {
         self.request(id, |reply| SessionCommand::Resume { reply })
             .await
     }
+    pub fn set_permission_mode(
+        &self,
+        session_id: SessionId,
+        mode: PermissionMode,
+    ) -> Result<(), EngineError> {
+        self.inner.store.get(session_id)?;
+        self.inner
+            .permission_modes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(session_id, mode);
+        Ok(())
+    }
     pub async fn rename_session(
         &self,
         params: SessionRenameParams,

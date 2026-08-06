@@ -14,10 +14,11 @@ use cookie_agent_protocol::{
     AgentDescriptor, AgentId, ApprovalListParams, ApprovalListResult, ApprovalRespondError,
     ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision,
     AvailableModelDescriptor, ClientConnectId, ClientRequestId, ClientResponseId, ClientRunId,
-    EventPayload, ModelKey, ModelSelection, ProviderConnectParams, ProviderDescriptor,
-    ProviderDisconnectParams, RunCancelParams, RunSelection, RunStartParams, RunSteerParams,
-    RunToolStdinParams, SessionCreateParams, SessionId, SessionListParams, SessionMeta,
-    SessionTitle, SessionTitleChange, SessionTree, SessionTreeParams, VariantId,
+    EventPayload, ModelKey, ModelSelection, PermissionMode, ProviderConnectParams,
+    ProviderDescriptor, ProviderDisconnectParams, RunCancelParams, RunSelection, RunStartParams,
+    RunSteerParams, RunToolStdinParams, SessionCreateParams, SessionId, SessionListParams,
+    SessionMeta, SessionSetPermissionModeParams, SessionTitle, SessionTitleChange, SessionTree,
+    SessionTreeParams, VariantId,
 };
 use crossterm::{
     event::{
@@ -154,10 +155,12 @@ pub(super) struct UiHitMap {
     pub(super) approval_actions: Vec<ApprovalHit>,
     pub(super) approval: Option<Rect>,
     pub(super) title_segments: Vec<TitleSegmentHit>,
+    pub(super) permission_mode: Option<Rect>,
 }
 
 struct BottomBarRender {
     line: Line<'static>,
+    mode_span: Option<usize>,
 }
 
 fn is_printable_key(key: KeyEvent) -> bool {
@@ -232,6 +235,7 @@ pub struct App {
     pub(super) tree_viewport_height: usize,
     pub(super) collapsed_sessions: HashSet<SessionId>,
     pub(super) expanded_blocks: HashMap<SessionId, HashSet<BlockId>>,
+    pub(super) permission_modes: HashMap<SessionId, PermissionMode>,
     pub(super) conversation_scroll: ConversationScroll,
     pub(super) scrollbar_geometry: Option<ScrollbarGeometry>,
     pub(super) scrollbar_drag: Option<ScrollbarDrag>,
@@ -294,6 +298,12 @@ pub(super) enum RpcUpdate {
         generation: u64,
         request_id: u64,
         result: Result<ApprovalListResult, String>,
+    },
+    PermissionModeFailed {
+        session_id: SessionId,
+        previous: PermissionMode,
+        attempted: PermissionMode,
+        error: String,
     },
 }
 
@@ -428,6 +438,7 @@ impl App {
             tree_viewport_height: 0,
             collapsed_sessions: HashSet::new(),
             expanded_blocks: HashMap::new(),
+            permission_modes: HashMap::new(),
             conversation_scroll: ConversationScroll::default(),
             scrollbar_geometry: None,
             scrollbar_drag: None,
@@ -1082,6 +1093,45 @@ impl App {
         self.set_draft_variant(variants[(index + 1) % variants.len()].clone());
     }
 
+    fn permission_mode(&self, session_id: SessionId) -> PermissionMode {
+        self.permission_modes
+            .get(&session_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn cycle_permission_mode(&mut self) {
+        let Some(session_id) = self.selected else {
+            return;
+        };
+        let previous = self.permission_mode(session_id);
+        let mode = match previous {
+            PermissionMode::AutoApprove => PermissionMode::Ask,
+            PermissionMode::Ask => PermissionMode::Yolo,
+            PermissionMode::Yolo => PermissionMode::AutoApprove,
+        };
+        self.permission_modes.insert(session_id, mode);
+        self.status = format!(
+            "Permission mode: {} — applies to subsequent approvals in this session",
+            permission_mode_label(mode)
+        );
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            if let Err(error) = client
+                .set_permission_mode(SessionSetPermissionModeParams { session_id, mode })
+                .await
+            {
+                let _ = updates.send(RpcUpdate::PermissionModeFailed {
+                    session_id,
+                    previous,
+                    attempted: mode,
+                    error: error.to_string(),
+                });
+            }
+        });
+    }
+
     /// The coherent descriptor revision label projected from one runtime snapshot.
     pub(super) fn descriptor_revisions_label(&self) -> String {
         match (&self.agent_revision, &self.model_revision) {
@@ -1396,6 +1446,21 @@ impl App {
                 }
             }
             RpcUpdate::ApprovalList { .. } => {}
+            RpcUpdate::PermissionModeFailed {
+                session_id,
+                previous,
+                attempted,
+                error,
+            } => {
+                if self
+                    .permission_modes
+                    .get(&session_id)
+                    .copied()
+                    .unwrap_or_default()
+                    == attempted
+                {
+                    self.permission_modes.insert(session_id, previous);
+                }
                 self.status = format!("permission mode update failed: {error}");
             }
         }
@@ -1978,6 +2043,14 @@ impl App {
             {
                 self.answer_approval(hit.decision).await;
             }
+            return;
+        }
+        if self
+            .hit_map
+            .permission_mode
+            .is_some_and(|rect| contains(rect, column, row))
+        {
+            self.cycle_permission_mode();
             return;
         }
         // Agent and model title segments open selectors. The bracketed variant
@@ -3481,6 +3554,24 @@ impl App {
             layout.status,
         );
         let bottom_bar = self.bottom_bar_line(layout.bar.width);
+        self.hit_map.permission_mode = bottom_bar.mode_span.and_then(|mode_span| {
+            let mut column = layout.bar.x;
+            for (index, span) in bottom_bar.line.spans.iter().enumerate() {
+                let width =
+                    UnicodeWidthStr::width(span.content.as_ref()).min(usize::from(u16::MAX)) as u16;
+                if index == mode_span {
+                    let visible = layout
+                        .bar
+                        .x
+                        .saturating_add(layout.bar.width)
+                        .saturating_sub(column)
+                        .min(width);
+                    return (visible > 0).then(|| Rect::new(column, layout.bar.y, visible, 1));
+                }
+                column = column.saturating_add(width);
+            }
+            None
+        });
         frame.render_widget(Paragraph::new(bottom_bar.line), layout.bar);
         if let Some(approval) = self.current_approval().cloned() {
             let area = centered(frame.area(), 76, 40);
@@ -3644,6 +3735,7 @@ impl App {
         if width == 0 {
             return BottomBarRender {
                 line: Line::default(),
+                mode_span: None,
             };
         }
 
@@ -3684,26 +3776,45 @@ impl App {
             }
             _ => context.clone(),
         };
+        let mode = self
+            .selected
+            .map(|session_id| self.permission_mode(session_id))
+            .unwrap_or_default();
+        let mode = permission_mode_label(mode);
         let hint = "`ctrl+p` commands";
         let candidates = [
-            format!("{context_with_percentage}    {hint}"),
-            context_with_percentage.clone(),
-            context.clone(),
+            format!("{mode}    {context_with_percentage}    {hint}"),
+            format!("{mode}    {context_with_percentage}"),
+            format!("{mode}    {context}"),
+            mode.to_owned(),
         ];
         let right = candidates
             .into_iter()
             .find(|candidate| UnicodeWidthStr::width(candidate.as_str()) <= width)
-            .unwrap_or_else(|| truncate_with_ellipsis(&context, width));
+            .unwrap_or_else(|| truncate_with_ellipsis(mode, width));
         let right_width = UnicodeWidthStr::width(right.as_str()).min(width);
         let right_start = width.saturating_sub(right_width);
         let left_width = right_start.saturating_sub(4);
         let left = truncate_with_ellipsis(&cwd, left_width);
         let padding = right_start.saturating_sub(UnicodeWidthStr::width(left.as_str()));
+        let full_mode_visible = right.starts_with(mode);
+        let (mode_text, suffix) = if full_mode_visible {
+            (mode.to_owned(), right[mode.len()..].to_owned())
+        } else {
+            (right, String::new())
+        };
+        let mut spans = vec![Span::styled(
+            format!("{left}{}", " ".repeat(padding)),
+            self.theme.muted(),
+        )];
+        let mode_span = (!mode_text.is_empty()).then_some(spans.len());
+        spans.push(Span::styled(mode_text, self.theme.link()));
+        if !suffix.is_empty() {
+            spans.push(Span::styled(suffix, self.theme.muted()));
+        }
         BottomBarRender {
-            line: Line::from(vec![
-                Span::styled(format!("{left}{}", " ".repeat(padding)), self.theme.muted()),
-                Span::styled(right, self.theme.muted()),
-            ]),
+            line: Line::from(spans),
+            mode_span,
         }
     }
 
@@ -4256,6 +4367,14 @@ fn format_token_count(tokens: u64) -> String {
         tokens.to_string()
     } else {
         format!("{:.1}K", tokens as f64 / 1_000.0)
+    }
+}
+
+const fn permission_mode_label(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::AutoApprove => "auto-approve",
+        PermissionMode::Ask => "ask",
+        PermissionMode::Yolo => "yolo",
     }
 }
 

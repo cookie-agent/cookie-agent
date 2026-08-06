@@ -273,6 +273,16 @@ pub struct SessionResumeResult {
     pub session: SessionMeta,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSetPermissionModeParams {
+    pub session_id: SessionId,
+    pub mode: PermissionMode,
+}
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSetPermissionModeResult {}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionRenameChange {

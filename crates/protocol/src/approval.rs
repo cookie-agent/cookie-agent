@@ -212,6 +212,17 @@ pub enum ApprovalTrigger {
     InternalAgent,
     DoomLoop,
 }
+
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    #[default]
+    AutoApprove,
+    Ask,
+    Yolo,
+}
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalCapability {
@@ -354,6 +365,7 @@ pub enum ApprovalReasonCode {
     ModelRequested,
     InternalAgentAllowed,
     InternalAgentDenied,
+    YoloApproved,
     TreeGrantMatched,
     UserApprovedOnce,
     UserApprovedTree,
@@ -424,6 +436,7 @@ impl ApprovalInternalDecision {
                 self.reason_code,
                 ApprovalReasonCode::PolicyAllowed
                     | ApprovalReasonCode::InternalAgentAllowed
+                    | ApprovalReasonCode::YoloApproved
                     | ApprovalReasonCode::TreeGrantMatched
             ),
             ApprovalInternalDecisionKind::Deny => matches!(
@@ -449,9 +462,8 @@ impl ApprovalInternalDecision {
         let source_coherent = match self.reason_code {
             ApprovalReasonCode::PolicyAllowed
             | ApprovalReasonCode::PolicyDenied
-            | ApprovalReasonCode::PolicyRequiresApproval => {
-                self.source == ApprovalDecisionSource::Policy
-            }
+            | ApprovalReasonCode::PolicyRequiresApproval
+            | ApprovalReasonCode::YoloApproved => self.source == ApprovalDecisionSource::Policy,
             ApprovalReasonCode::ModelRequested => self.source == ApprovalDecisionSource::Model,
             ApprovalReasonCode::InternalAgentAllowed | ApprovalReasonCode::InternalAgentDenied => {
                 self.source == ApprovalDecisionSource::InternalAgent
@@ -537,6 +549,7 @@ impl ApprovalFinalDecision {
                 self.reason_code,
                 ApprovalReasonCode::PolicyAllowed
                     | ApprovalReasonCode::InternalAgentAllowed
+                    | ApprovalReasonCode::YoloApproved
                     | ApprovalReasonCode::TreeGrantMatched
                     | ApprovalReasonCode::UserApprovedOnce
                     | ApprovalReasonCode::UserApprovedTree
@@ -568,9 +581,9 @@ impl ApprovalFinalDecision {
             | ApprovalReasonCode::UserApprovedTree
             | ApprovalReasonCode::UserRejected
             | ApprovalReasonCode::UserCancelled => self.source == ApprovalDecisionSource::User,
-            ApprovalReasonCode::PolicyAllowed | ApprovalReasonCode::PolicyDenied => {
-                self.source == ApprovalDecisionSource::Policy
-            }
+            ApprovalReasonCode::PolicyAllowed
+            | ApprovalReasonCode::PolicyDenied
+            | ApprovalReasonCode::YoloApproved => self.source == ApprovalDecisionSource::Policy,
             ApprovalReasonCode::InternalAgentAllowed | ApprovalReasonCode::InternalAgentDenied => {
                 self.source == ApprovalDecisionSource::InternalAgent
             }

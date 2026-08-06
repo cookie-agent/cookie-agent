@@ -6,7 +6,8 @@ use cookie_agent_protocol::{
     RunToolStdinParams, RuntimeSnapshotGetParams, SessionChildrenParams, SessionChildrenResult,
     SessionCreateParams, SessionCreateResult, SessionGetParams, SessionGetResult,
     SessionListParams, SessionListResult, SessionRenameErrorCode, SessionRenameParams,
-    SessionResumeParams, SessionResumeResult, SessionTreeParams, SessionTreeResult,
+    SessionResumeParams, SessionResumeResult, SessionSetPermissionModeParams,
+    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult,
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -117,6 +118,13 @@ impl Server {
                     .await
                     .map_err(|error| rename_fault(&request, error))?;
                 value(result)
+            }
+            "session.set_permission_mode" => {
+                let request: SessionSetPermissionModeParams = decode_params(params)?;
+                self.engine
+                    .set_permission_mode(request.session_id, request.mode)
+                    .map_err(engine_fault)?;
+                value(SessionSetPermissionModeResult {})
             }
             "run.start" => {
                 let request: RunStartParams = decode_params(params)?;

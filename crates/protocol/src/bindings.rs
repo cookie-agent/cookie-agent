@@ -70,6 +70,8 @@ macro_rules! protocol_roots {
             SessionTreeResult,
             SessionResumeParams,
             SessionResumeResult,
+            SessionSetPermissionModeParams,
+            SessionSetPermissionModeResult,
             RunStartParams,
             RunStartResult,
             RunStartConflict,
