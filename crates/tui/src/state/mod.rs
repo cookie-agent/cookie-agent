@@ -2290,7 +2290,6 @@ impl OrderedOutput {
 mod tests {
     use super::*;
 
-
     #[test]
     fn thinking_delta_after_committed_child_renumbering_appends_without_duplicate() {
         let item_id = 1;
@@ -2422,8 +2421,6 @@ mod tests {
             "Bash\nstdout:\nonce\n\nstderr:\n"
         );
     }
-
-
 
     #[test]
     fn approval_escalation_is_info_while_rejected_and_expired_keep_existing_levels() {

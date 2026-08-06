@@ -4,12 +4,12 @@ expression: rendered
 ---
 ╭─ primary • gateway/arbitrary-model[base]
 │ launching both
-│ ▾ bash sleep 2 …
+│ 🔨 ▾ bash sleep 2 …
 │ arguments: {"command":"sleep 2"}
 │ model call: call-a
-│ ▾ thinking
+│ 💭 ▾ thinking
 │ ┆ waiting on both
-│ ▾ read src/lib.rs
+│ 🔨 ▾ read src/lib.rs
 │ arguments: {"path":"src/lib.rs"}
 │ ran true
 │ done
