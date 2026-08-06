@@ -1,169 +1,81 @@
 use std::{
-    fs, io,
-    path::{Component, Path},
+    fs,
+    io::Read as _,
+    path::{Path, PathBuf},
 };
 
 use crate::{AgentDocumentSource, ConfigError};
 use zeroize::Zeroizing;
 
 pub(crate) struct LayerRoot {
-    pub(crate) directory: fs::File,
     pub(crate) source: AgentDocumentSource,
-    pub(crate) path: std::path::PathBuf,
+    pub(crate) path: PathBuf,
 }
 
-#[cfg(unix)]
-pub(crate) fn regular_file_at(parent: &fs::File, name: &str) -> Result<bool, ConfigError> {
-    use std::os::unix::fs::MetadataExt as _;
-    let flags = rustix::fs::OFlags::RDONLY
-        | rustix::fs::OFlags::NOFOLLOW
-        | rustix::fs::OFlags::NONBLOCK
-        | rustix::fs::OFlags::CLOEXEC;
-    let file = fs::File::from(
-        rustix::fs::openat(parent, name, flags, rustix::fs::Mode::empty()).map_err(path_error)?,
-    );
-    let metadata = file.metadata().map_err(ConfigError::Io)?;
-    Ok(metadata.is_file() && !metadata.file_type().is_symlink() && metadata.nlink() == 1)
+pub(crate) fn regular_file_at(parent: &Path, name: &str) -> Result<bool, ConfigError> {
+    fs::metadata(parent.join(name))
+        .map(|metadata| metadata.is_file())
+        .map_err(ConfigError::Io)
 }
 
-#[cfg(not(unix))]
-pub(crate) fn regular_file_at(_parent: &fs::File, _name: &str) -> Result<bool, ConfigError> {
-    Err(ConfigError::UnsupportedPlatform)
-}
-
-#[cfg(unix)]
 pub(crate) fn open_layer_root(
     path: &Path,
     source: AgentDocumentSource,
 ) -> Result<Option<LayerRoot>, ConfigError> {
-    use std::os::unix::fs::MetadataExt as _;
-    if !path.is_absolute() {
-        return Err(ConfigError::UnsafePath);
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Ok(Some(LayerRoot {
+            source,
+            path: path.to_path_buf(),
+        })),
+        Ok(_) => Err(ConfigError::UnsafePath),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(ConfigError::Io(error)),
     }
-    let flags = rustix::fs::OFlags::RDONLY
-        | rustix::fs::OFlags::DIRECTORY
-        | rustix::fs::OFlags::NOFOLLOW
-        | rustix::fs::OFlags::CLOEXEC;
-    let mut current = fs::File::from(
-        rustix::fs::open("/", flags, rustix::fs::Mode::empty()).map_err(path_error)?,
-    );
-    for component in path.components() {
-        match component {
-            Component::RootDir => {}
-            Component::Normal(name) => {
-                match rustix::fs::openat(&current, name, flags, rustix::fs::Mode::empty()) {
-                    Ok(fd) => current = fs::File::from(fd),
-                    Err(error) if error == rustix::io::Errno::NOENT => return Ok(None),
-                    Err(error) => return Err(path_error(error)),
-                }
-            }
-            _ => return Err(ConfigError::UnsafePath),
-        }
-    }
-    let metadata = current.metadata().map_err(ConfigError::Io)?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(ConfigError::UnsafePath);
-    }
-    if metadata.uid() != rustix::process::getuid().as_raw() || metadata.mode() & 0o777 != 0o700 {
-        return Err(ConfigError::UnsafePath);
-    }
-    Ok(Some(LayerRoot {
-        directory: current,
-        source,
-        path: path.to_path_buf(),
-    }))
 }
 
-#[cfg(not(unix))]
-pub(crate) fn open_layer_root(
-    _path: &Path,
-    _source: AgentDocumentSource,
-) -> Result<Option<LayerRoot>, ConfigError> {
-    Err(ConfigError::UnsupportedPlatform)
-}
-
-#[cfg(unix)]
 pub(crate) fn open_optional_directory(
-    parent: &fs::File,
+    parent: &Path,
     name: &str,
-    _source: AgentDocumentSource,
-) -> Result<Option<fs::File>, ConfigError> {
-    use std::os::unix::fs::MetadataExt as _;
-    let flags = rustix::fs::OFlags::RDONLY
-        | rustix::fs::OFlags::DIRECTORY
-        | rustix::fs::OFlags::NOFOLLOW
-        | rustix::fs::OFlags::CLOEXEC;
-    let file = match rustix::fs::openat(parent, name, flags, rustix::fs::Mode::empty()) {
-        Ok(fd) => fs::File::from(fd),
-        Err(error) if error == rustix::io::Errno::NOENT => return Ok(None),
-        Err(error) => return Err(path_error(error)),
-    };
-    let metadata = file.metadata().map_err(ConfigError::Io)?;
-    if !metadata.is_dir()
-        || metadata.uid() != rustix::process::getuid().as_raw()
-        || metadata.mode() & 0o777 != 0o700
-    {
-        return Err(ConfigError::UnsafePath);
+) -> Result<Option<PathBuf>, ConfigError> {
+    let path = parent.join(name);
+    match fs::metadata(&path) {
+        Ok(metadata) if metadata.is_dir() => Ok(Some(path)),
+        Ok(_) => Err(ConfigError::UnsafePath),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(ConfigError::Io(error)),
     }
-    Ok(Some(file))
-}
-
-#[cfg(not(unix))]
-pub(crate) fn open_optional_directory(
-    _parent: &fs::File,
-    _name: &str,
-    _source: AgentDocumentSource,
-) -> Result<Option<fs::File>, ConfigError> {
-    Err(ConfigError::UnsupportedPlatform)
 }
 
 pub(crate) fn read_optional_file(
-    parent: &fs::File,
+    parent: &Path,
     name: &str,
     limit: u64,
-    source: AgentDocumentSource,
 ) -> Result<Option<Zeroizing<Vec<u8>>>, ConfigError> {
-    match read_file(parent, name, limit, source) {
+    match read_file(parent, name, limit) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(ConfigError::NotFound) => Ok(None),
         Err(error) => Err(error),
     }
 }
+
 pub(crate) fn read_required_file(
-    parent: &fs::File,
+    parent: &Path,
     name: &str,
     limit: u64,
-    source: AgentDocumentSource,
 ) -> Result<Zeroizing<Vec<u8>>, ConfigError> {
-    read_file(parent, name, limit, source)
+    read_file(parent, name, limit)
 }
 
-#[cfg(unix)]
-fn read_file(
-    parent: &fs::File,
-    name: &str,
-    limit: u64,
-    _source: AgentDocumentSource,
-) -> Result<Zeroizing<Vec<u8>>, ConfigError> {
-    use std::{io::Read as _, os::unix::fs::MetadataExt as _};
-    let flags = rustix::fs::OFlags::RDONLY
-        | rustix::fs::OFlags::NOFOLLOW
-        | rustix::fs::OFlags::NONBLOCK
-        | rustix::fs::OFlags::CLOEXEC;
-    let file = match rustix::fs::openat(parent, name, flags, rustix::fs::Mode::empty()) {
-        Ok(fd) => fs::File::from(fd),
-        Err(error) if error == rustix::io::Errno::NOENT => return Err(ConfigError::NotFound),
-        Err(error) => return Err(path_error(error)),
+fn read_file(parent: &Path, name: &str, limit: u64) -> Result<Zeroizing<Vec<u8>>, ConfigError> {
+    let path = parent.join(name);
+    let file = match fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ConfigError::NotFound);
+        }
+        Err(error) => return Err(ConfigError::Io(error)),
     };
     let metadata = file.metadata().map_err(ConfigError::Io)?;
-    if !metadata.is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.nlink() != 1
-        || metadata.uid() != rustix::process::getuid().as_raw()
-        || metadata.mode() & 0o777 != 0o600
-    {
-        return Err(ConfigError::UnsafePath);
-    }
     if metadata.len() > limit {
         return Err(ConfigError::TooLarge(name.to_owned()));
     }
@@ -175,35 +87,4 @@ fn read_file(
         return Err(ConfigError::TooLarge(name.to_owned()));
     }
     Ok(bytes)
-}
-
-#[cfg(not(unix))]
-fn read_file(
-    _parent: &fs::File,
-    _name: &str,
-    _limit: u64,
-    _source: AgentDocumentSource,
-) -> Result<Zeroizing<Vec<u8>>, ConfigError> {
-    Err(ConfigError::UnsupportedPlatform)
-}
-
-#[cfg(unix)]
-fn path_error(error: rustix::io::Errno) -> ConfigError {
-    let error: io::Error = error.into();
-    if matches!(
-        error.raw_os_error(),
-        Some(code)
-            if matches!(
-                code,
-                libc::ELOOP
-                    | libc::ENOTDIR
-                    | libc::ENXIO
-                    | libc::ENODEV
-                    | libc::EOPNOTSUPP
-            )
-    ) {
-        ConfigError::UnsafePath
-    } else {
-        ConfigError::Io(error)
-    }
 }

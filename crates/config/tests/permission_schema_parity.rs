@@ -1,6 +1,4 @@
-#![cfg(unix)]
-
-use std::{fs, os::unix::fs::PermissionsExt as _};
+use std::fs;
 
 use cookie_agent_config::{AgentFrontmatter, ConfigError, PermissionRule, load_from_roots};
 use tempfile::TempDir;
@@ -70,19 +68,11 @@ fn invalid_safe_code_rule_id_fails_during_configuration_load() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join(".cookie-agent");
     fs::create_dir_all(root.join("agents")).unwrap();
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    fs::set_permissions(root.join("agents"), fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(
         root.join("agents/worker.md"),
         "---\nschema: 1\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  - { id: Invalid, action: read, resource: \"*\", effect: allow }\n---\nWorker.\n",
     )
     .unwrap();
-    fs::set_permissions(
-        root.join("agents/worker.md"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
-
     assert!(matches!(
         load_from_roots(None, Some(&root)),
         Err(ConfigError::AgentFrontmatter(_))

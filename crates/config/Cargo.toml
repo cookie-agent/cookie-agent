@@ -12,8 +12,6 @@ workspace = true
 [dependencies]
 cookie_agent_identity = { version = "=0.1.0", path = "../identity" }
 cookie_agent_models = { version = "=0.1.0", path = "../models" }
-libc.workspace = true
-rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

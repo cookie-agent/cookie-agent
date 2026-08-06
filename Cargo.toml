@@ -9,9 +9,8 @@ members = [
     "crates/server",
     "crates/tui",
     "crates/cookie_agent",
-    "vendor/bincode-compat",
 ]
-exclude = ["vendor/bincode-reloaded", "vendor/syntect"]
+exclude = ["vendor/syntect"]
 resolver = "2"
 
 [workspace.package]
@@ -31,7 +30,6 @@ bytes = "1.12.1"
 clap = { version = "4.6.4", features = ["derive"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 crc32fast = "1.5.0"
-figment = { version = "0.10.19", features = ["toml"] }
 flate2 = "1.1.9"
 futures-util = "0.3.33"
 ignore = "0.4.31"

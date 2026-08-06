@@ -207,7 +207,6 @@ fn fixture() -> Fixture {
             providers: BTreeMap::new(),
         },
         agents: BTreeMap::new(),
-        provider_provenance: BTreeMap::new(),
     };
     let engine = Engine::open(EngineOptions {
         data_dir: directory.path().join("data"),
@@ -1279,7 +1278,7 @@ fn external_store_generation_is_reloaded_before_discovery() {
 }
 
 #[test]
-fn protocol_seven_event_persistence_is_rejected_explicitly() {
+fn protocol_seven_event_persistence_fails_deserialization() {
     let directory = TempDir::new().expect("temp directory");
     let path = directory.path().join("events.jsonl");
     fs::write(
@@ -1288,14 +1287,7 @@ fn protocol_seven_event_persistence_is_rejected_explicitly() {
     )
     .expect("legacy event");
     let error = EventLog::open(path, SessionId::new_v7()).expect_err("version 7 rejected");
-    assert!(matches!(
-        error,
-        EventLogError::UnsupportedSchemaVersion {
-            found: 7,
-            expected: 8,
-            ..
-        }
-    ));
+    assert!(matches!(error, EventLogError::Json { .. }));
 }
 
 #[test]

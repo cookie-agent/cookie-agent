@@ -173,10 +173,8 @@ path = "benches/parsing.rs"
 harness = false
 
 [dependencies.bincode]
-version = "=0.1.0"
+version = "1.3.3"
 optional = true
-package = "syntect-bincode-compat"
-path = "../bincode-compat"
 
 [dependencies.fancy-regex]
 version = "0.16.2"

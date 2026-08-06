@@ -32,19 +32,6 @@ const MAX_AGENT_BYTES: u64 = 256 * 1024;
 pub struct LoadedConfiguration {
     pub runtime: RuntimeConfig,
     pub agents: BTreeMap<AgentId, AgentDocument>,
-    pub provider_provenance: BTreeMap<ProviderId, ProviderProvenance>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ConfigLayer {
-    User,
-    Workspace,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProviderProvenance {
-    pub layer: ConfigLayer,
-    pub source_path: PathBuf,
 }
 
 impl LoadedConfiguration {
@@ -84,24 +71,11 @@ pub fn load_from_roots(
         providers: BTreeMap::new(),
     };
     let mut agents = BTreeMap::new();
-    let mut provider_provenance = BTreeMap::new();
     let mut provider_values = SensitiveProviderValues::new();
     for root in [user.as_ref(), workspace.as_ref()].into_iter().flatten() {
         if let Some(mut layer) = root.load_runtime()? {
-            let config_layer = match root.source {
-                AgentDocumentSource::User => ConfigLayer::User,
-                AgentDocumentSource::Workspace => ConfigLayer::Workspace,
-                AgentDocumentSource::BuiltIn => {
-                    unreachable!("built-in agents are not config roots")
-                }
-            };
             apply_settings(&mut runtime, &layer);
             for (id, value) in std::mem::take(&mut layer.providers) {
-                let provenance = ProviderProvenance {
-                    layer: config_layer,
-                    source_path: root.path.join("config.toml"),
-                };
-                provider_provenance.insert(id.clone(), provenance);
                 provider_values.insert(id, value);
             }
         }
@@ -121,22 +95,12 @@ pub fn load_from_roots(
     }
     AgentRegistry::validate_ref(&agents)?;
     validate_runtime(&runtime)?;
-    Ok(LoadedConfiguration {
-        runtime,
-        agents,
-        provider_provenance,
-    })
+    Ok(LoadedConfiguration { runtime, agents })
 }
 
 impl LayerRoot {
     fn load_runtime(&self) -> Result<Option<RawRuntimeLayer>, ConfigError> {
-        let Some(bytes) = read_optional_file(
-            &self.directory,
-            "config.toml",
-            MAX_CONFIG_BYTES,
-            self.source,
-        )?
-        else {
+        let Some(bytes) = read_optional_file(&self.path, "config.toml", MAX_CONFIG_BYTES)? else {
             return Ok(None);
         };
         let text = std::str::from_utf8(&bytes).map_err(|_| ConfigError::Utf8("config.toml"))?;
@@ -150,22 +114,16 @@ impl LayerRoot {
     }
 
     fn load_agents(&self) -> Result<BTreeMap<AgentId, AgentDocument>, ConfigError> {
-        let Some(directory) = open_optional_directory(&self.directory, "agents", self.source)?
-        else {
+        let Some(directory) = open_optional_directory(&self.path, "agents")? else {
             return Ok(BTreeMap::new());
         };
         let mut names = Vec::new();
-        let mut stream = rustix::fs::Dir::read_from(&directory)
-            .map_err(|error| ConfigError::Io(error.into()))?;
-        for entry in &mut stream {
-            let entry = entry.map_err(|error| ConfigError::Io(error.into()))?;
-            let bytes = entry.file_name().to_bytes();
-            if matches!(bytes, b"." | b"..") {
-                continue;
-            }
-            let name = std::str::from_utf8(bytes)
-                .map_err(|_| ConfigError::UnsafePath)?
-                .to_owned();
+        for entry in std::fs::read_dir(&directory).map_err(ConfigError::Io)? {
+            let entry = entry.map_err(ConfigError::Io)?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| ConfigError::UnsafePath)?;
             if name.ends_with(".md") {
                 names.push(name);
             } else if !regular_file_at(&directory, &name)? {
@@ -177,7 +135,7 @@ impl LayerRoot {
         for name in names {
             let stem = name.strip_suffix(".md").expect("suffix checked");
             let id = AgentId::new(stem).map_err(|_| ConfigError::AgentFilename(name.clone()))?;
-            let bytes = read_required_file(&directory, &name, MAX_AGENT_BYTES, self.source)?;
+            let bytes = read_required_file(&directory, &name, MAX_AGENT_BYTES)?;
             let document = parse_agent(id.clone(), &bytes, self.source)?;
             if documents.insert(id.clone(), document).is_some() {
                 return Err(ConfigError::DuplicateAgent(id));

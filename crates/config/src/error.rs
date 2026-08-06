@@ -9,8 +9,6 @@ pub enum ConfigError {
     Io(#[source] io::Error),
     #[error("configuration path is unsafe")]
     UnsafePath,
-    #[error("configuration loading is unsupported on this platform")]
-    UnsupportedPlatform,
     #[error("required file was not found")]
     NotFound,
     #[error("{0} exceeds its byte limit")]
@@ -63,10 +61,6 @@ pub enum ConfigError {
     IneligibleDelegationTarget { agent: AgentId, target: AgentId },
     #[error("agent `{agent}` repeats fallback model `{model}`")]
     DuplicateFallbackModel { agent: AgentId, model: ModelKey },
-    #[error("fingerprint encoding failed")]
-    Json(#[source] serde_json::Error),
-    #[error("fingerprint construction failed")]
-    Fingerprint,
 }
 
 impl fmt::Debug for ConfigError {

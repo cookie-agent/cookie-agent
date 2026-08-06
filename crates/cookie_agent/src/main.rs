@@ -226,7 +226,7 @@ impl RpcClient<WebSocketRpcTransport> {
 
 impl<T: RpcTransport> RpcClient<T> {
     async fn handshake(&mut self) -> anyhow::Result<()> {
-        let hello: cookie_agent_protocol::ServerHello = self
+        let _: cookie_agent_protocol::ServerHello = self
             .call(
                 "handshake",
                 &ClientHello {
@@ -234,9 +234,6 @@ impl<T: RpcTransport> RpcClient<T> {
                 },
             )
             .await?;
-        if hello.protocol_version != ProtocolVersion::current() {
-            anyhow::bail!("daemon protocol version is not 8");
-        }
         Ok(())
     }
 

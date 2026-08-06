@@ -56,7 +56,6 @@ const WORKSPACE_MANIFESTS: &[&str] = &[
     "crates/tools/Cargo.toml",
     "crates/tui/Cargo.toml",
 ];
-const SHIM_MANIFEST: &str = "vendor/bincode-compat/Cargo.toml";
 const PHASE1_MANIFESTS: &[&str] = &[
     "crates/identity/Cargo.toml",
     "crates/config/Cargo.toml",
@@ -214,53 +213,19 @@ fn syntect_patch_is_exactly_pinned_and_declared() {
     let vendored_manifest = fs::read_to_string(vendor.join("Cargo.toml")).unwrap();
     for declaration in [
         "[dependencies.bincode]",
-        "version = \"=0.1.0\"",
+        "version = \"1.3.3\"",
         "optional = true",
-        "package = \"syntect-bincode-compat\"",
-        "path = \"../bincode-compat\"",
     ] {
         assert!(
             vendored_manifest.contains(declaration),
-            "missing vendored codec declaration: {declaration}"
-        );
-    }
-
-    let shim = workspace().join("vendor/bincode-compat");
-    let shim_manifest = fs::read_to_string(shim.join("Cargo.toml")).unwrap();
-    for declaration in [
-        "name = \"syntect-bincode-compat\"",
-        "name = \"bincode\"",
-        "version = \"=3.1.15\"",
-        "path = \"../bincode-reloaded\"",
-        "default-features = false",
-        "features = [\"std\", \"serde\"]",
-    ] {
-        assert!(
-            shim_manifest.contains(declaration),
-            "missing shim declaration: {declaration}"
-        );
-    }
-    let shim_source = fs::read_to_string(shim.join("src/lib.rs")).unwrap();
-    for compatibility in [
-        "pub type Result<T> = std::result::Result<T, Error>",
-        "pub type Error = Box<ErrorKind>",
-        "config::legacy()",
-        "impl From<EncodeError> for Error",
-        "impl From<DecodeError> for Error",
-        "impl From<io::Error> for Error",
-        "impl serde::ser::Error for Error",
-        "impl serde::de::Error for Error",
-    ] {
-        assert!(
-            shim_source.contains(compatibility),
-            "missing shim compatibility surface: {compatibility}"
+            "missing bincode declaration: {declaration}"
         );
     }
 
     let lock = fs::read_to_string(workspace().join("Cargo.lock")).unwrap();
-    assert!(!lock.contains("name = \"bincode\"\n"));
-    assert!(lock.contains("name = \"syntect-bincode-compat\"\n"));
-    assert!(lock.contains("name = \"bincode_reloaded\"\n"));
+    assert!(lock.contains("name = \"bincode\"\n"));
+    assert!(!lock.contains("name = \"syntect-bincode-compat\"\n"));
+    assert!(!lock.contains("name = \"bincode_reloaded\"\n"));
 }
 
 #[test]
@@ -282,7 +247,7 @@ fn vendored_syntect_matches_declared_upstream_delta() {
 
     assert_eq!(
         sha256(vendor.join("Cargo.toml")),
-        "abcbbb84b2d2e65b016cc18094ff7646f0dd84175d9fb41b674bf9df9e3ecc11"
+        "f2e94171e18e8dc4bd510f0481248bd88ea651b8f925e31520f321957a771ec9"
     );
     assert!(!vendor.join("Cargo.lock").exists());
     assert_eq!(
@@ -332,42 +297,6 @@ fn vendored_syntect_matches_declared_upstream_delta() {
             "15fd18cb2fb1441f3773b6ed900f656a89dc4a72c4ea6248d6a702574eac4e63".to_owned()
         )
     );
-
-    let reloaded = workspace().join("vendor/bincode-reloaded");
-    assert_eq!(
-        sha256(reloaded.join("Cargo.toml")),
-        "cece534ba1e7cd8edae14dcf3fc55afc76751e575fcadb6de1ffd87ac8296e76"
-    );
-    assert!(!reloaded.join("Cargo.lock").exists());
-    assert_eq!(
-        tree_sha256(&reloaded, &["Cargo.toml", "README.cookie-agent.md"]),
-        (
-            73,
-            "a492cb0139a4fc0864da8cb93a94d545653086da4f6e9c6fe40d47a20d1e6bf6".to_owned()
-        )
-    );
-
-    let shim = workspace().join("vendor/bincode-compat");
-    assert!(!shim.join("Cargo.lock").exists());
-    let shim_provenance = fs::read_to_string(shim.join("README.md")).unwrap();
-    for required in [
-        "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad",
-        "2e4ac690d35463a65215a28cbc1a0de736a2ed299113874f1a8cdf5d5adc231e",
-        "The local shim is MIT licensed",
-        "No package named `bincode` is introduced into Cargo.lock.",
-    ] {
-        assert!(
-            shim_provenance.contains(required),
-            "missing shim provenance: {required}"
-        );
-    }
-    assert_eq!(
-        tree_sha256(&shim, &["README.md"]),
-        (
-            3,
-            "3ee8e7fff21fc93b36eda6debba78c7c16ade35a5121c5dd1d79f7aee1de44fc".to_owned()
-        )
-    );
 }
 
 #[test]
@@ -375,7 +304,7 @@ fn every_internal_path_dependency_has_its_exact_package_version() {
     for manifest in PHASE1_MANIFESTS
         .iter()
         .copied()
-        .chain([SHIM_MANIFEST, "vendor/syntect/Cargo.toml"])
+        .chain(["vendor/syntect/Cargo.toml"])
     {
         let manifest_path = workspace().join(manifest);
         let document = fs::read_to_string(&manifest_path)
@@ -428,7 +357,7 @@ fn workspace_metadata_marks_every_cookie_crate_nonpublishable_and_uses_vendored_
         .iter()
         .filter(|package| members.contains(package["id"].as_str().unwrap()))
         .collect::<Vec<_>>();
-    assert_eq!(workspace_packages.len(), WORKSPACE_MANIFESTS.len() + 1);
+    assert_eq!(workspace_packages.len(), WORKSPACE_MANIFESTS.len());
     for package in &workspace_packages {
         assert_eq!(package["publish"].as_array().map(Vec::len), Some(0));
     }
@@ -442,43 +371,25 @@ fn workspace_metadata_marks_every_cookie_crate_nonpublishable_and_uses_vendored_
             .count(),
         WORKSPACE_MANIFESTS.len()
     );
-    assert!(workspace_packages.iter().any(|package| {
-        package["name"] == "syntect-bincode-compat"
-            && package["manifest_path"]
-                .as_str()
-                .unwrap()
-                .ends_with("/vendor/bincode-compat/Cargo.toml")
-    }));
-
-    for (name, expected_manifest) in [
-        ("syntect", "/vendor/syntect/Cargo.toml"),
-        (
-            "syntect-bincode-compat",
-            "/vendor/bincode-compat/Cargo.toml",
-        ),
-        ("bincode_reloaded", "/vendor/bincode-reloaded/Cargo.toml"),
-    ] {
-        let package = packages
-            .iter()
-            .find(|package| package["name"] == name)
-            .unwrap();
-        assert!(
-            package["source"].is_null(),
-            "{name} resolved from a registry"
-        );
-        assert!(
-            package["manifest_path"]
-                .as_str()
-                .unwrap()
-                .ends_with(expected_manifest),
-            "{name} resolved from the wrong path"
-        );
-    }
-
     let syntect_package = packages
         .iter()
         .find(|package| package["name"] == "syntect")
         .unwrap();
+    assert!(syntect_package["source"].is_null());
+    assert!(
+        syntect_package["manifest_path"]
+            .as_str()
+            .unwrap()
+            .ends_with("/vendor/syntect/Cargo.toml")
+    );
+    let bincode_package = packages
+        .iter()
+        .find(|package| package["name"] == "bincode")
+        .unwrap();
+    assert_eq!(bincode_package["version"].as_str(), Some("1.3.3"));
+    assert!(bincode_package["source"].as_str().is_some_and(|source| {
+        source.starts_with("registry+https://github.com/rust-lang/crates.io-index")
+    }));
     let syntect_node = metadata["resolve"]["nodes"]
         .as_array()
         .unwrap()

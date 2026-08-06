@@ -83,7 +83,6 @@ fn harness() -> Harness {
             providers: BTreeMap::new(),
         },
         agents: BTreeMap::new(),
-        provider_provenance: BTreeMap::new(),
     };
     let engine = Engine::open(EngineOptions {
         data_dir: directory.path().join("data"),
@@ -230,7 +229,6 @@ fn harness_with_catalog(
             providers: BTreeMap::new(),
         },
         agents: BTreeMap::new(),
-        provider_provenance: BTreeMap::new(),
     };
     let engine = Engine::open(EngineOptions {
         data_dir: directory.path().join("data"),

@@ -63,8 +63,8 @@ pub(crate) fn parse_agent(
     let document_fingerprint = hash(
         "cookie-agent/agent-document/v1",
         &(id.as_str(), yaml, &body),
-    )?;
-    let prompt_fingerprint = hash("cookie-agent/system-prompt/v1", &body)?;
+    );
+    let prompt_fingerprint = hash("cookie-agent/system-prompt/v1", &body);
     Ok(AgentDocument {
         id,
         frontmatter,
@@ -144,10 +144,11 @@ fn validate_yaml_limits(value: &serde_yaml::Value, depth: usize) -> Result<(), C
     Ok(())
 }
 
-fn hash(domain: &str, value: &impl Serialize) -> Result<Sha256Digest, ConfigError> {
+fn hash(domain: &str, value: &impl Serialize) -> Sha256Digest {
     let mut hasher = Sha256::new();
     hasher.update(domain.as_bytes());
     hasher.update([0]);
-    hasher.update(serde_json::to_vec(value).map_err(ConfigError::Json)?);
-    Sha256Digest::new(format!("{:x}", hasher.finalize())).map_err(|_| ConfigError::Fingerprint)
+    hasher.update(serde_json::to_vec(value).expect("strings always serialize to JSON"));
+    Sha256Digest::new(format!("{:x}", hasher.finalize()))
+        .expect("SHA-256 output is always a valid digest")
 }

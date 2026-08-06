@@ -116,13 +116,10 @@ User configuration is only:
     <agent-id>.md
 ```
 
-There is no upward search. User and workspace config roots and `agents`
-directories must be current-user-owned mode `0700`. Every config and agent file
-must be a current-user-owned, mode-`0600`, regular, single-link file. Every path
-component is opened descriptor-relative with no-follow behavior. Symlinks,
-magic links, multiply linked files, wrong ownership, weak modes, replacement
-races, wrong object types, oversize content, duplicate keys, and unknown fields
-fail closed. Files are read from held descriptors and never reopened by path.
+There is no upward search. User and workspace configuration uses ordinary
+filesystem reads. Config and agent files may be reached through symlinks and do
+not have owner, mode, or hard-link restrictions. Wrong object types, oversize
+content, duplicate keys, and unknown fields still fail closed.
 
 On Unix, runtime user data is fixed below:
 

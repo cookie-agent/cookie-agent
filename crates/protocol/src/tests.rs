@@ -145,7 +145,6 @@ fn exact_versions_are_current_only() {
     assert_eq!(EVENT_SCHEMA_VERSION, 8);
     assert_eq!(SESSION_META_SCHEMA_VERSION, 8);
     assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 8);
-    assert!(!supports_protocol_version(7));
     assert!(serde_json::from_value::<ProtocolVersion>(json!(7)).is_err());
     assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(2)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());

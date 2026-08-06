@@ -37,12 +37,6 @@ pub enum EventLogError {
     MissingCreation(PathBuf),
     #[error("corrupt event log at {path}: {message}")]
     Corrupt { path: PathBuf, message: String },
-    #[error("event log {path} uses unsupported schema version {found}; expected {expected}")]
-    UnsupportedSchemaVersion {
-        path: PathBuf,
-        found: u32,
-        expected: u32,
-    },
 }
 
 #[derive(Debug)]
@@ -71,7 +65,6 @@ impl EventLog {
     }
 
     pub fn open(path: PathBuf, session_id: SessionId) -> Result<Arc<Self>, EventLogError> {
-        reject_legacy_event_schema(&path)?;
         let records = load_jsonl::<StoredEvent>(&path)?;
         if !matches!(
             records.first().map(|record| &record.payload),
@@ -137,44 +130,6 @@ impl EventLog {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
-    }
-}
-
-fn reject_legacy_event_schema(path: &Path) -> Result<(), EventLogError> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(source) => {
-            return Err(EventLogError::Io {
-                path: path.to_owned(),
-                source,
-            });
-        }
-    };
-    let Some(line) = bytes
-        .split(|byte| *byte == b'\n')
-        .find(|line| !line.is_empty())
-    else {
-        return Ok(());
-    };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
-        return Ok(());
-    };
-    let Some(found) = value
-        .get("event_schema_version")
-        .and_then(serde_json::Value::as_u64)
-    else {
-        return Ok(());
-    };
-    let expected = u64::from(EventSchemaVersion::current().value());
-    if found == expected {
-        Ok(())
-    } else {
-        Err(EventLogError::UnsupportedSchemaVersion {
-            path: path.to_owned(),
-            found: u32::try_from(found).unwrap_or(u32::MAX),
-            expected: expected as u32,
-        })
     }
 }
 

@@ -1,7 +1,7 @@
 # syntect 5.3.0 provenance
 
 This directory is the exact source payload published as `syntect` 5.3.0, with
-the codec-only local patch declared below.
+the dependency-only local patch declared below.
 
 - Upstream repository: <https://github.com/trishume/syntect>
 - Upstream tag: [`v5.3.0`](https://github.com/trishume/syntect/tree/v5.3.0)
@@ -14,10 +14,8 @@ the codec-only local patch declared below.
 
 The upstream payload has these declared graph-control changes:
 
-- `Cargo.toml`: the optional dependency key remains `bincode`, but its package
-  is changed from `bincode` 1.x to the exact local
-  `syntect-bincode-compat` 0.1.0 package. That package's library crate remains
-  named `bincode`, preserving `bincode::error::Result<T>` in public signatures.
+- `Cargo.toml`: the optional `bincode` dependency is pinned to crates.io
+  `bincode` 1.3.3.
 - `Cargo.lock` is removed. Vendored Syntect is a library dependency, not an
   independently released application, so a separately resolved default/all-
   feature graph would be stale and unsupported.
@@ -25,13 +23,12 @@ The upstream payload has these declared graph-control changes:
 This provenance README is the only added file. `Cargo.toml.orig`,
 `src/dumps.rs`, all other source and test files, the public-API snapshot, and
 all embedded assets are unchanged. The `.packdump` and `.themedump` files were
-not regenerated. Codec implementation and error conversion live entirely in
-the sibling `vendor/bincode-compat` crate.
+not regenerated.
 
 The root workspace `Cargo.lock` is the only authoritative graph. Cookie builds
 Syntect with exactly `default-features = false` and the requested features
 `default-syntaxes`, `default-themes`, and `regex-fancy`. Root workspace tests
-exercise the codec shim, compressed and uncompressed published dumps, themes,
+exercise compressed and uncompressed published dumps, themes,
 syntaxes, rendering, and static upstream API/source integrity. The standalone
 upstream public-API test source and snapshot remain unchanged for provenance,
 but no standalone Syntect dependency universe is executed.
@@ -39,7 +36,7 @@ but no standalone Syntect dependency universe is executed.
 ## Integrity values
 
 - Upstream `Cargo.toml` SHA-256: `5e684bef35f74140214f024f4d781bb9a6abd896f73b8525ff59cf0a74417d73`
-- Local `Cargo.toml` SHA-256: `abcbbb84b2d2e65b016cc18094ff7646f0dd84175d9fb41b674bf9df9e3ecc11`
+- Local `Cargo.toml` SHA-256: `f2e94171e18e8dc4bd510f0481248bd88ea651b8f925e31520f321957a771ec9`
 - Removed upstream `Cargo.lock` SHA-256: `cc63f342a34d83c29b90a72644558c69b30e6bdd1ea2ecfd3ad6092d66085e48`
 - Upstream `src/dumps.rs` SHA-256: `237719802be45db966a6e2e5de2f58baa970ac84f83fb375dbdd90592e704e91`
 - Local `src/dumps.rs` SHA-256: `237719802be45db966a6e2e5de2f58baa970ac84f83fb375dbdd90592e704e91`

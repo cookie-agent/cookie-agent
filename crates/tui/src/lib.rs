@@ -208,7 +208,6 @@ mod tests {
                 providers,
             },
             agents: BTreeMap::from([(agent_id.clone(), test_agent_document(&agent_id))]),
-            provider_provenance: BTreeMap::new(),
         };
         let engine = Engine::open(EngineOptions {
             data_dir: directory.path().join("data"),

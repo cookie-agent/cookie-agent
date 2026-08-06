@@ -1,36 +1,26 @@
-#![cfg(unix)]
-
 use std::{
     fs,
-    os::unix::fs::PermissionsExt as _,
     path::Path,
     sync::{Mutex, OnceLock},
 };
 
-use cookie_agent_config::{ConfigError, ConfigLayer, load_from_roots};
+use cookie_agent_config::{ConfigError, load_from_roots};
 use cookie_agent_identity::ProviderId;
 use cookie_agent_models::ProviderDefinition;
 use tempfile::TempDir;
 
-fn private_dir(path: &Path) {
+fn create_dir(path: &Path) {
     fs::create_dir_all(path).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
 fn write_config(root: &Path, text: &str) {
-    private_dir(root);
+    create_dir(root);
     fs::write(root.join("config.toml"), text).unwrap();
-    fs::set_permissions(root.join("config.toml"), fs::Permissions::from_mode(0o600)).unwrap();
 }
 
 fn write_agent(root: &Path, name: &str, text: &str) {
-    private_dir(&root.join("agents"));
+    create_dir(&root.join("agents"));
     fs::write(root.join("agents").join(name), text).unwrap();
-    fs::set_permissions(
-        root.join("agents").join(name),
-        fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
 }
 
 fn agent(description: &str, fallback: &str) -> String {
@@ -209,10 +199,6 @@ fn same_id_workspace_provider_replaces_user_before_provider_decode() {
         loaded.runtime.providers[&id],
         ProviderDefinition::Custom(_)
     ));
-    assert_eq!(
-        loaded.provider_provenance[&id].layer,
-        ConfigLayer::Workspace
-    );
 }
 
 #[test]
@@ -251,18 +237,6 @@ fn managed_auth_is_mutually_exclusive_and_custom_namespace_is_strict() {
     assert!(matches!(
         load_from_roots(None, Some(&namespace)),
         Err(ConfigError::Provider { .. })
-    ));
-}
-
-#[test]
-fn both_workspace_and_user_roots_files_and_agents_require_private_modes() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join("weak");
-    write_config(&root, "schema_version = 7\n");
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(matches!(
-        load_from_roots(None, Some(&root)),
-        Err(ConfigError::UnsafePath)
     ));
 }
 

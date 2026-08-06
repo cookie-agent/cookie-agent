@@ -16,7 +16,7 @@ pub use agents::{
     PermissionRule, ToolName,
 };
 pub use error::ConfigError;
-pub use loader::{ConfigLayer, LoadedConfiguration, ProviderProvenance, load, load_from_roots};
+pub use loader::{LoadedConfiguration, load, load_from_roots};
 pub use runtime::{
     ApprovalConfig, ConfigSchemaVersion, ContextCompactionConfig, RuntimeConfig, ServerConfig,
     SessionTitleConfig, ToolOutputConfig,

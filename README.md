@@ -178,9 +178,9 @@ the recipe is reviewed no-auth. Only explicitly defaultable setup fields may use
 recipe defaults. Stored setup and stored auth never flow to an authored endpoint. All
 endpoint queries, userinfo, and fragments are rejected.
 
-User/workspace config and agent directories must be current-user-owned `0700`;
-their TOML/Markdown files must be `0600` regular single-link files. Secret
-buffers use best-effort zeroization and are redacted from safe state.
+User/workspace configuration uses ordinary filesystem reads without owner,
+mode, symlink, or hard-link restrictions. Secret buffers use best-effort
+zeroization and are redacted from safe state.
 
 ## Connect and disconnect
 

@@ -139,26 +139,6 @@ pub fn typescript_config() -> ts_rs::Config {
     ts_rs::Config::default().with_large_int("number")
 }
 
-#[must_use]
-pub const fn supports_protocol_version(version: u32) -> bool {
-    version == PROTOCOL_VERSION
-}
-
-#[must_use]
-pub const fn supports_event_schema_version(version: u32) -> bool {
-    version == EVENT_SCHEMA_VERSION
-}
-
-#[must_use]
-pub const fn supports_session_meta_schema_version(version: u32) -> bool {
-    version == SESSION_META_SCHEMA_VERSION
-}
-
-#[must_use]
-pub const fn supports_delegation_journal_schema_version(version: u32) -> bool {
-    version == DELEGATION_JOURNAL_SCHEMA_VERSION
-}
-
 macro_rules! exact_numeric_wire_type {
     ($name:ident, $value:expr, $ts:literal, $description:literal) => {
         #[doc = $description]

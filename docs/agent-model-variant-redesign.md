@@ -319,10 +319,9 @@ values fail. No other field interpolates. Prefer interpolation or `/connect`
 over plaintext credentials.
 
 Both `~/.config/cookie_agent` and exact-cwd `.cookie-agent`, including their
-`agents` directories, must be current-user-owned mode `0700`. TOML and Markdown
-files must be current-user-owned mode `0600`, regular, and single-link. All
-opens are descriptor-relative and no-follow. Wrong ownership/mode/type/link,
-replacement races, oversize data, unknown fields, and duplicates fail closed.
+`agents` directories, use ordinary filesystem reads. Owner, mode, symlink, and
+hard-link restrictions are not enforced. Wrong object types, oversize data,
+unknown fields, and duplicates still fail closed.
 
 Resolved secrets use `SecretString`. Owned source, interpolation, connect,
 serialization, and CLI/TUI input buffers are best-effort zeroized immediately
