@@ -135,13 +135,6 @@ impl Theme {
         )
     }
 
-    /// Selected thinking-toggle row: same hue with an added underline so a
-    /// selected block is distinct without any extra glyph — important for
-    /// mono/no-color terminals where color is unavailable.
-    pub fn thinking_selected(&self) -> Style {
-        self.thinking().add_modifier(Modifier::UNDERLINED)
-    }
-
     pub fn tool(&self) -> Style {
         self.semantic(
             (245, 190, 80),

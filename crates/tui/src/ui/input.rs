@@ -201,14 +201,6 @@ impl InputState {
         self.move_vertical(false);
     }
 
-    pub(crate) fn move_page_up(&mut self) {
-        self.move_visual_rows(true, usize::from(self.layout_height));
-    }
-
-    pub(crate) fn move_page_down(&mut self) {
-        self.move_visual_rows(false, usize::from(self.layout_height));
-    }
-
     pub(crate) fn move_wheel(&mut self, up: bool) {
         self.move_visual_rows(up, 3);
     }
@@ -931,38 +923,6 @@ mod tests {
     }
 
     #[test]
-    fn page_movement_uses_visual_rows_and_preserves_the_preferred_column() {
-        let mut input = InputState::default();
-        input.set_buffer("000\n111\n222\n1界z\n444\n555\nabx".into());
-        let mut terminal = Terminal::new(TestBackend::new(6, 5)).expect("terminal");
-        terminal
-            .draw(|frame| {
-                render(
-                    frame,
-                    frame.area(),
-                    &mut input,
-                    true,
-                    "Message",
-                    &Theme::default(),
-                );
-            })
-            .expect("render");
-        input.move_left();
-        assert_eq!(input.cursor_visual_position(4), (6, 2));
-
-        input.move_page_up();
-        assert_eq!(input.cursor_visual_position(4), (3, 1));
-        assert_eq!(input.viewport_row(), 3);
-        input.move_page_up();
-        assert_eq!(input.cursor_visual_position(4), (0, 2));
-        assert_eq!(input.viewport_row(), 0);
-        input.move_page_down();
-        input.move_page_down();
-        assert_eq!(input.cursor_visual_position(4), (6, 2));
-        assert_eq!(input.viewport_row(), 4);
-    }
-
-    #[test]
     fn edits_navigation_set_buffer_click_and_take_keep_viewport_consistent() {
         let mut input = InputState::default();
         let mut terminal = Terminal::new(TestBackend::new(8, 5)).expect("terminal");
@@ -981,7 +941,9 @@ mod tests {
 
         input.set_buffer("zero\none\ntwo\nthree\nfour".into());
         assert_eq!(input.viewport_row(), 2);
-        input.move_page_up();
+        input.move_up();
+        input.move_up();
+        input.move_up();
         assert_eq!(input.viewport_row(), 1);
         input.set_cursor_from_display_position(0, 0);
         assert_eq!(input.cursor_visual_position(6).0, 1);
@@ -1041,7 +1003,9 @@ mod tests {
         assert!(top.contains("Input ↑2 ↓0 · Message"));
         assert_eq!(terminal.backend().buffer()[(1, 1)].symbol(), "t");
 
-        input.move_page_up();
+        input.move_up();
+        input.move_up();
+        input.move_up();
         terminal
             .draw(|frame| {
                 render(

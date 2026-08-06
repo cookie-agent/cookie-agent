@@ -62,8 +62,8 @@ use super::provider::{
     ProviderRowState, action_name, row_label, row_state,
 };
 use super::slash::{
-    CommandSpec, InputMode, ScrollCommand, SlashCommand, Submission, command_allowed_in_mode,
-    command_help, command_mode_name, command_name, move_selection, parse_submission,
+    CommandSpec, InputMode, SlashCommand, Submission, command_allowed_in_mode, command_help,
+    command_mode_name, command_name, move_selection, parse_submission,
 };
 use super::transcript::{
     BlockHit, BlockId, ConversationScroll, LayoutCache, ScrollbarGeometry, wrapped_line,
@@ -227,8 +227,6 @@ pub struct App {
     pub(super) tree_viewport_height: usize,
     pub(super) collapsed_sessions: HashSet<SessionId>,
     pub(super) expanded_blocks: HashMap<SessionId, HashSet<BlockId>>,
-    pub(super) selected_block: Option<BlockId>,
-    pub(super) reveal_selected_block: bool,
     pub(super) conversation_scroll: ConversationScroll,
     pub(super) scrollbar_geometry: Option<ScrollbarGeometry>,
     pub(super) scrollbar_drag: Option<ScrollbarDrag>,
@@ -425,8 +423,6 @@ impl App {
             tree_viewport_height: 0,
             collapsed_sessions: HashSet::new(),
             expanded_blocks: HashMap::new(),
-            selected_block: None,
-            reveal_selected_block: false,
             conversation_scroll: ConversationScroll::default(),
             scrollbar_geometry: None,
             scrollbar_drag: None,
@@ -1499,8 +1495,6 @@ impl App {
             self.conversation_scroll = ConversationScroll::default();
             self.scrollbar_geometry = None;
             self.scrollbar_drag = None;
-            self.selected_block = None;
-            self.reveal_selected_block = false;
         }
         self.selected = Some(session_id);
         self.rebind_draft_to_selected_session();
@@ -2039,7 +2033,6 @@ impl App {
             .find(|hit| contains(hit.rect, column, row))
             .copied()
         {
-            self.selected_block = Some(hit.id);
             self.toggle_block(hit.id);
             return;
         }
@@ -2260,8 +2253,20 @@ impl App {
             KeyCode::Right => self.input.move_right(),
             KeyCode::Up => self.input.move_up(),
             KeyCode::Down => self.input.move_down(),
-            KeyCode::PageUp => self.input.move_page_up(),
-            KeyCode::PageDown => self.input.move_page_down(),
+            KeyCode::PageUp => {
+                let page = self
+                    .hit_map
+                    .conversation
+                    .map_or(1, |rect| rect.height.max(1));
+                self.conversation_scroll.up(usize::from(page));
+            }
+            KeyCode::PageDown => {
+                let page = self
+                    .hit_map
+                    .conversation
+                    .map_or(1, |rect| rect.height.max(1));
+                self.conversation_scroll.down(usize::from(page));
+            }
             KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.move_buffer_home();
             }
@@ -3018,13 +3023,6 @@ impl App {
                 }
             }
             SlashCommand::Approve(decision) => self.answer_approval(decision).await,
-            SlashCommand::Scroll(command) => match command {
-                ScrollCommand::Up(lines) => self.conversation_scroll.up(lines),
-                ScrollCommand::Down(lines) => self.conversation_scroll.down(lines),
-                ScrollCommand::Top => self.conversation_scroll.top(),
-                ScrollCommand::Bottom => self.conversation_scroll.bottom(),
-            },
-            SlashCommand::Block(command) => self.run_block_command(command),
             SlashCommand::Events(level) => {
                 // View-only threshold change: the TOML is not rewritten and
                 // hidden rows stay in the session projection.

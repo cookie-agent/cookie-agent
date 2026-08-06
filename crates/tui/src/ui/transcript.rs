@@ -19,7 +19,6 @@ use crate::{
 };
 
 use super::app::App;
-use super::slash::BlockCommand;
 
 /// Scrollbar geometry over the total rendered line height.
 ///
@@ -113,17 +112,19 @@ impl ScrollbarGeometry {
 }
 
 #[derive(Debug)]
-pub(super) struct ConversationScroll {
+pub struct ConversationScroll {
     pub(super) offset: usize,
     pub(super) following: bool,
 }
 
 impl Default for ConversationScroll {
     fn default() -> Self {
-        Self {
+        let mut scroll = Self {
             offset: 0,
-            following: true,
-        }
+            following: false,
+        };
+        scroll.bottom();
+        scroll
     }
 }
 
@@ -147,28 +148,39 @@ impl ConversationScroll {
     }
 
     pub(super) fn up(&mut self, lines: usize) {
-        self.following = false;
-        self.offset = self.offset.saturating_sub(lines);
+        let target = self.offset.saturating_sub(lines);
+        self.reveal(
+            BlockRegion {
+                id: BlockId::Thinking(0),
+                start_line: target,
+                end_line: target,
+            },
+            1,
+        );
     }
     pub(super) fn down(&mut self, lines: usize) {
         self.following = false;
         self.offset = self.offset.saturating_add(lines);
     }
-    pub(super) fn top(&mut self) {
+    pub fn top(&mut self) {
         self.following = false;
         self.offset = 0;
     }
-    pub(super) fn bottom(&mut self) {
+    pub fn bottom(&mut self) {
         self.following = true;
     }
 
     /// Absolute top offset from a scrollbar thumb/track gesture.
     pub(super) fn scroll_to(&mut self, offset: usize) {
+        if offset == 0 {
+            self.top();
+            return;
+        }
         self.following = false;
         self.offset = offset;
     }
 
-    fn reveal(&mut self, region: BlockRegion, viewport_height: u16) {
+    pub fn reveal(&mut self, region: BlockRegion, viewport_height: u16) {
         let height = usize::from(viewport_height.max(1));
         self.following = false;
         if region.start_line < self.offset {
@@ -190,7 +202,7 @@ pub(super) enum BlockId {
 /// Stage 4 mouse handling can translate a y coordinate to a logical line by
 /// adding the conversation scroll offset, then find the containing region.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct BlockRegion {
+pub struct BlockRegion {
     pub(super) id: BlockId,
     pub(super) start_line: usize,
     pub(super) end_line: usize,
@@ -227,7 +239,7 @@ pub(super) struct LayoutCache {
 struct ItemLayoutKey {
     id: u64,
     version: u64,
-    interaction: Vec<(BlockId, bool, bool)>,
+    interaction: Vec<(BlockId, bool)>,
 }
 
 #[derive(Clone, Default)]
@@ -246,7 +258,6 @@ struct CachedItemLayout {
 struct AssistantPartLayoutKey {
     version: u64,
     expanded: bool,
-    selected: bool,
     streaming: bool,
 }
 
@@ -258,7 +269,6 @@ struct CachedAssistantPartLayout {
 
 struct TranscriptRenderContext<'a> {
     expanded: Option<&'a HashSet<BlockId>>,
-    selected_block: Option<BlockId>,
     width: u16,
     theme: &'a Theme,
     highlighter: &'a dyn Highlighter,
@@ -281,7 +291,6 @@ pub(super) fn ensure_cached_transcript_layout(
     session_id: SessionId,
     state: &SessionState,
     expanded: Option<&HashSet<BlockId>>,
-    selected_block: Option<BlockId>,
     width: u16,
     theme: &Theme,
     highlighter: &dyn Highlighter,
@@ -305,7 +314,7 @@ pub(super) fn ensure_cached_transcript_layout(
         let item_key = ItemLayoutKey {
             id: item.id(),
             version: item.version(),
-            interaction: item_interaction(item, expanded, selected_block),
+            interaction: item_interaction(item, expanded),
         };
         let layout = if cache
             .items
@@ -320,7 +329,6 @@ pub(super) fn ensure_cached_transcript_layout(
                 item,
                 &mut TranscriptRenderContext {
                     expanded,
-                    selected_block,
                     width,
                     theme,
                     highlighter,
@@ -393,7 +401,6 @@ impl App {
                 session_id,
                 state,
                 self.expanded_blocks.get(&session_id),
-                self.selected_block,
                 width,
                 &self.theme,
                 self.highlighter.as_ref(),
@@ -451,25 +458,6 @@ impl App {
             )
         });
         let content_height = layout.lines.len() + notice_lines.len();
-        if self
-            .selected_block
-            .is_some_and(|selected| !layout.regions.iter().any(|region| region.id == selected))
-        {
-            self.selected_block = None;
-            self.reveal_selected_block = false;
-        }
-        if self.reveal_selected_block {
-            if let Some(region) = self.selected_block.and_then(|selected| {
-                layout
-                    .regions
-                    .iter()
-                    .find(|region| region.id == selected)
-                    .copied()
-            }) {
-                self.conversation_scroll.reveal(region, viewport.height);
-            }
-            self.reveal_selected_block = false;
-        }
         self.conversation_scroll
             .clamp(content_height, viewport.height);
         self.hit_map.conversation = Some(viewport);
@@ -514,65 +502,6 @@ impl App {
             expanded.remove(&block_id);
         }
     }
-
-    pub(super) fn run_block_command(&mut self, command: BlockCommand) {
-        match command {
-            BlockCommand::Next => self.select_block(true),
-            BlockCommand::Previous => self.select_block(false),
-            BlockCommand::Toggle => {
-                if let Some(block_id) = self.selected_block {
-                    self.toggle_block(block_id);
-                    self.status = format!("Toggled {}", block_label(block_id));
-                } else {
-                    self.status = "no thinking or tool block selected".into();
-                }
-            }
-            BlockCommand::Clear => {
-                self.selected_block = None;
-                self.reveal_selected_block = false;
-                self.status = "transcript block selection cleared".into();
-            }
-        }
-    }
-
-    fn select_block(&mut self, forward: bool) {
-        let Some(state) = self
-            .selected
-            .and_then(|session_id| self.store.sessions.get(&session_id))
-        else {
-            self.selected_block = None;
-            self.status = "no transcript blocks available".into();
-            return;
-        };
-        let blocks = state
-            .transcript
-            .iter()
-            .flat_map(item_block_ids)
-            .collect::<Vec<_>>();
-        if blocks.is_empty() {
-            self.selected_block = None;
-            self.status = "no thinking or tool blocks available".into();
-            return;
-        }
-        let selected_index = self
-            .selected_block
-            .and_then(|selected| blocks.iter().position(|block| *block == selected));
-        let next_index = match (selected_index, forward) {
-            (Some(index), true) => (index + 1) % blocks.len(),
-            (Some(index), false) => (index + blocks.len() - 1) % blocks.len(),
-            (None, true) => 0,
-            (None, false) => blocks.len() - 1,
-        };
-        let block_id = blocks[next_index];
-        self.selected_block = Some(block_id);
-        self.reveal_selected_block = true;
-        self.status = format!(
-            "Selected {} ({}/{}) · click or /block toggle to expand",
-            block_label(block_id),
-            next_index + 1,
-            blocks.len()
-        );
-    }
 }
 
 /// Render the reserved scrollbar column: a subdued track with a distinct
@@ -595,13 +524,6 @@ fn render_scrollbar_track(frame: &mut ratatui::Frame, geometry: ScrollbarGeometr
         let cell = &mut frame.buffer_mut()[(geometry.thumb.x, y)];
         cell.set_symbol("█");
         cell.set_style(theme.assistant());
-    }
-}
-
-fn block_label(block_id: BlockId) -> &'static str {
-    match block_id {
-        BlockId::Thinking(_) => "thinking block",
-        BlockId::Tool(_) | BlockId::CommittedTool(_) => "tool block",
     }
 }
 
@@ -656,7 +578,6 @@ fn transcript_layout_with_level(
             item,
             &mut TranscriptRenderContext {
                 expanded,
-                selected_block: None,
                 width,
                 theme,
                 highlighter,
@@ -709,17 +630,10 @@ fn item_block_ids(item: &TranscriptItem) -> Vec<BlockId> {
 fn item_interaction(
     item: &TranscriptItem,
     expanded: Option<&HashSet<BlockId>>,
-    selected_block: Option<BlockId>,
-) -> Vec<(BlockId, bool, bool)> {
+) -> Vec<(BlockId, bool)> {
     item_block_ids(item)
         .into_iter()
-        .map(|id| {
-            (
-                id,
-                expanded.is_some_and(|blocks| blocks.contains(&id)),
-                selected_block == Some(id),
-            )
-        })
+        .map(|id| (id, expanded.is_some_and(|blocks| blocks.contains(&id))))
         .collect()
 }
 
@@ -799,7 +713,6 @@ fn assistant_item_layout(
                     expanded: block_id.is_some_and(|id| {
                         context.expanded.is_some_and(|blocks| blocks.contains(&id))
                     }),
-                    selected: block_id.is_some_and(|id| context.selected_block == Some(id)),
                     streaming: matches!(child, AssistantChild::Thinking { id, .. } if state.is_open_thinking(item_id, *id)),
                 };
                 let part_layout = if context
@@ -914,13 +827,11 @@ fn assistant_child_layout(
             if key.streaming {
                 label.push_str(" …");
             }
-            let label_style = if key.selected {
-                theme.thinking_selected()
-            } else {
-                theme.thinking()
-            };
-            let mut lines =
-                assistant_body_line(Line::from(Span::styled(label, label_style)), width, theme);
+            let mut lines = assistant_body_line(
+                Line::from(Span::styled(label, theme.thinking())),
+                width,
+                theme,
+            );
             if key.expanded {
                 lines.extend(body);
             }
@@ -962,18 +873,16 @@ fn tool_child_layout(
             content_index,
         },
     };
-    let selected = context.selected_block == Some(block_id);
     let is_expanded = context
         .expanded
         .is_some_and(|blocks| blocks.contains(&block_id));
     let tool = call_id.and_then(|call_id| state.tools.get(&call_id));
     let Some(tool) = tool else {
-        let lines = role_block_selected(
+        let lines = role_block(
             Role::Error,
             vec![Line::from("tool: unavailable payload".to_owned())],
             context.width,
             context.theme,
-            selected,
         );
         return ItemLayout {
             regions: vec![BlockRegion {
@@ -1019,7 +928,7 @@ fn tool_child_layout(
             }
         }
     }
-    let lines = tool_block_lines(role, body, context.width, context.theme, selected);
+    let lines = tool_block_lines(role, body, context.width, context.theme);
     ItemLayout {
         regions: vec![BlockRegion {
             id: block_id,
@@ -1092,27 +1001,6 @@ fn read_path_extension(arguments: &str) -> Option<&str> {
         .map(|(_, extension)| extension)
 }
 
-fn attribution_line(
-    resolved_model: &cookie_agent_protocol::ResolvedModelRef,
-    width: u16,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    let variant = resolved_model
-        .selection
-        .variant
-        .as_ref()
-        .map_or_else(|| "base".to_owned(), ToString::to_string);
-    let prefix = (width >= 4).then(|| vec![Span::styled("├─ ", theme.muted())]);
-    repeated_prefixed_wrapped_line(
-        prefix.unwrap_or_default(),
-        Line::from(Span::styled(
-            format!("now using {}[{variant}]", resolved_model.selection.model),
-            theme.muted(),
-        )),
-        width,
-    )
-}
-
 /// Split reduced `read` detail into the file content and trailing
 /// engine-authored metadata lines (truncation retention references,
 /// attachment descriptors). Only the content is highlighted; metadata lines
@@ -1175,6 +1063,27 @@ fn assistant_header(attribution: &str, width: u16, theme: &Theme) -> Vec<Line<'s
     .collect()
 }
 
+fn attribution_line(
+    resolved_model: &cookie_agent_protocol::ResolvedModelRef,
+    width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let variant = resolved_model
+        .selection
+        .variant
+        .as_ref()
+        .map_or_else(|| "base".to_owned(), ToString::to_string);
+    let prefix = (width >= 4).then(|| vec![Span::styled("├─ ", theme.muted())]);
+    repeated_prefixed_wrapped_line(
+        prefix.unwrap_or_default(),
+        Line::from(Span::styled(
+            format!("now using {}[{variant}]", resolved_model.selection.model),
+            theme.muted(),
+        )),
+        width,
+    )
+}
+
 fn assistant_body_line(line: Line<'static>, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     let prefix = (width >= 3).then(|| vec![Span::styled("│ ", theme.assistant())]);
     repeated_prefixed_wrapped_line(prefix.unwrap_or_default(), line, width)
@@ -1208,7 +1117,7 @@ fn role_block(
     width: u16,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    role_block_selected(role, body, width, theme, false)
+    role_block_lines(role, body, width, theme)
 }
 
 /// Tool children render inside the assistant item without a standalone
@@ -1219,18 +1128,12 @@ fn tool_block_lines(
     body: Vec<Line<'static>>,
     width: u16,
     theme: &Theme,
-    selected: bool,
 ) -> Vec<Line<'static>> {
     let style = match role {
         Role::ToolRunning => theme.tool_running(),
         Role::ToolSuccess => theme.tool_success(),
         Role::ToolFailure => theme.tool_failure(),
         _ => theme.tool(),
-    };
-    let style = if selected {
-        style.add_modifier(ratatui::style::Modifier::UNDERLINED)
-    } else {
-        style
     };
     if width < 8 {
         let short = match role {
@@ -1269,12 +1172,11 @@ fn tool_block_lines(
     lines
 }
 
-fn role_block_selected(
+fn role_block_lines(
     role: Role,
     body: Vec<Line<'static>>,
     width: u16,
     theme: &Theme,
-    selected: bool,
 ) -> Vec<Line<'static>> {
     let (label, marker, gutter, style) = match role {
         Role::User => ("USER", "┌─", "│ ", theme.user()),
@@ -1285,13 +1187,6 @@ fn role_block_selected(
         Role::Warning => ("WARNING [W]", "⚠─", "│ ", theme.warning()),
         Role::Error => ("ERROR [E]", "!!", "! ", theme.error()),
         Role::Internal => ("EVENT [I]", "--", "· ", theme.internal()),
-    };
-    // Selection adds an underline/reversed emphasis on top of the role style;
-    // it never adds a glyph, so toggle rows keep exactly one chevron.
-    let style = if selected {
-        style.add_modifier(ratatui::style::Modifier::UNDERLINED)
-    } else {
-        style
     };
     if width < 8 {
         let short = match role {

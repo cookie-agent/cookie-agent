@@ -28,26 +28,8 @@ pub(crate) enum SlashCommand {
     TreeDown,
     TreeToggle,
     Approve(ApprovalUserDecision),
-    Scroll(ScrollCommand),
-    Block(BlockCommand),
     Events(crate::state::EventLevel),
     Help,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ScrollCommand {
-    Up(usize),
-    Down(usize),
-    Top,
-    Bottom,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BlockCommand {
-    Next,
-    Previous,
-    Toggle,
-    Clear,
 }
 
 pub(crate) struct CommandSpec {
@@ -137,20 +119,6 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         requires_arguments: true,
     },
     CommandSpec {
-        name: "scroll",
-        aliases: &[],
-        usage: "/scroll up|down [n]|top|bottom",
-        description: "scroll the conversation",
-        requires_arguments: true,
-    },
-    CommandSpec {
-        name: "block",
-        aliases: &[],
-        usage: "/block next|previous|toggle|clear",
-        description: "navigate thinking and tool blocks",
-        requires_arguments: true,
-    },
-    CommandSpec {
         name: "events",
         aliases: &[],
         usage: "/events debug|info|warning|error",
@@ -232,20 +200,6 @@ pub(crate) fn parse_submission(input: &str) -> Result<Submission, String> {
         ["approve", "tree"] => SlashCommand::Approve(ApprovalUserDecision::ApproveTree),
         ["approve", "reject"] => SlashCommand::Approve(ApprovalUserDecision::Reject),
         ["approve", "cancel"] => SlashCommand::Approve(ApprovalUserDecision::Cancel),
-        ["scroll", "up"] => SlashCommand::Scroll(ScrollCommand::Up(1)),
-        ["scroll", "down"] => SlashCommand::Scroll(ScrollCommand::Down(1)),
-        ["scroll", "top"] => SlashCommand::Scroll(ScrollCommand::Top),
-        ["scroll", "bottom"] => SlashCommand::Scroll(ScrollCommand::Bottom),
-        ["scroll", "up", count] => {
-            SlashCommand::Scroll(ScrollCommand::Up(parse_scroll_count(count)?))
-        }
-        ["scroll", "down", count] => {
-            SlashCommand::Scroll(ScrollCommand::Down(parse_scroll_count(count)?))
-        }
-        ["block", "next"] => SlashCommand::Block(BlockCommand::Next),
-        ["block", "previous" | "prev"] => SlashCommand::Block(BlockCommand::Previous),
-        ["block", "toggle"] => SlashCommand::Block(BlockCommand::Toggle),
-        ["block", "clear"] => SlashCommand::Block(BlockCommand::Clear),
         ["events", "debug"] => SlashCommand::Events(crate::state::EventLevel::Debug),
         ["events", "info"] => SlashCommand::Events(crate::state::EventLevel::Info),
         ["events", "warning"] => SlashCommand::Events(crate::state::EventLevel::Warning),
@@ -254,14 +208,6 @@ pub(crate) fn parse_submission(input: &str) -> Result<Submission, String> {
         _ => return Err(format!("invalid command: /{command_line}")),
     };
     Ok(Submission::Command(command))
-}
-
-fn parse_scroll_count(count: &str) -> Result<usize, String> {
-    count
-        .parse::<usize>()
-        .ok()
-        .filter(|count| *count > 0)
-        .ok_or_else(|| format!("scroll count must be a positive integer: {count}"))
 }
 
 pub(crate) fn command_allowed_in_mode(command: SlashCommand, mode: InputMode) -> bool {
@@ -291,8 +237,6 @@ pub(crate) fn command_name(command: SlashCommand) -> &'static str {
         SlashCommand::Approve(ApprovalUserDecision::ApproveTree) => "approve tree",
         SlashCommand::Approve(ApprovalUserDecision::Reject) => "approve reject",
         SlashCommand::Approve(ApprovalUserDecision::Cancel) => "approve cancel",
-        SlashCommand::Scroll(_) => "scroll",
-        SlashCommand::Block(_) => "block",
         SlashCommand::Events(crate::state::EventLevel::Debug) => "events debug",
         SlashCommand::Events(crate::state::EventLevel::Info) => "events info",
         SlashCommand::Events(crate::state::EventLevel::Warning) => "events warning",
