@@ -11,7 +11,7 @@ use cookie_agent_protocol::{
 use serde::{Serialize, ser::SerializeMap as _};
 use zeroize::Zeroizing;
 
-use super::input::{CredentialInput, InputState};
+use super::input::CredentialInput;
 
 pub(crate) const DURABLE_PROVIDER_COPY: &str =
     "Stored setup, connections, and credentials are per-user and shared across workspaces.";
@@ -43,7 +43,7 @@ pub(crate) enum ProviderOperation {
 
 pub(crate) struct SetupInput {
     pub(crate) descriptor: SetupFieldDescriptor,
-    pub(crate) input: InputState,
+    pub(crate) input: CredentialInput,
 }
 
 pub(crate) struct SecretInput {
@@ -57,8 +57,17 @@ pub(crate) struct ProviderForm {
     pub(crate) setup: Vec<SetupInput>,
     pub(crate) secrets: Vec<SecretInput>,
     pub(crate) field_index: usize,
+    pub(crate) error: Option<String>,
     pub(crate) reconnect: bool,
     pub(crate) can_disconnect: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProviderFormFocus {
+    AuthMethod,
+    Credential(usize),
+    Setup(usize),
+    Submit,
 }
 
 impl ProviderForm {
@@ -94,7 +103,7 @@ impl ProviderForm {
                     .or(descriptor.default.as_ref())
                     .map(setup_value_text)
                     .unwrap_or_default();
-                let mut input = InputState::default();
+                let mut input = CredentialInput::default();
                 input.set_buffer(value);
                 SetupInput { descriptor, input }
             })
@@ -114,15 +123,110 @@ impl ProviderForm {
             setup,
             secrets,
             field_index: 0,
+            error: None,
             reconnect,
             can_disconnect,
         })
     }
 
     pub(crate) fn wipe_secrets(&mut self) {
+        for field in &mut self.setup {
+            field.input.wipe();
+        }
         for secret in &mut self.secrets {
             secret.input.wipe();
         }
+    }
+
+    pub(crate) fn wipe_sensitive_values(&mut self) {
+        for field in &mut self.setup {
+            if !field.descriptor.safe_to_project {
+                field.input.wipe();
+            }
+        }
+        for secret in &mut self.secrets {
+            secret.input.wipe();
+        }
+    }
+
+    pub(crate) fn focus(&self) -> ProviderFormFocus {
+        let mut index = self.field_index;
+        if self.has_auth_selector() {
+            if index == 0 {
+                return ProviderFormFocus::AuthMethod;
+            }
+            index -= 1;
+        }
+        if index < self.secrets.len() {
+            return ProviderFormFocus::Credential(index);
+        }
+        index -= self.secrets.len();
+        if index < self.setup.len() {
+            return ProviderFormFocus::Setup(index);
+        }
+        ProviderFormFocus::Submit
+    }
+
+    pub(crate) fn move_focus(&mut self, backward: bool) {
+        let last = self.focus_count().saturating_sub(1);
+        self.field_index = if backward {
+            self.field_index.saturating_sub(1)
+        } else {
+            (self.field_index + 1).min(last)
+        };
+    }
+
+    pub(crate) fn has_auth_selector(&self) -> bool {
+        self.provider.auth_methods.len() > 1
+    }
+
+    pub(crate) fn selected_auth(&self) -> Option<&cookie_agent_protocol::AuthMethodDescriptor> {
+        self.provider
+            .auth_methods
+            .iter()
+            .find(|method| method.id == self.auth_method)
+    }
+
+    pub(crate) fn cycle_auth_method(&mut self, backward: bool) {
+        if !self.has_auth_selector() {
+            return;
+        }
+        let len = self.provider.auth_methods.len();
+        let current = self
+            .provider
+            .auth_methods
+            .iter()
+            .position(|method| method.id == self.auth_method)
+            .unwrap_or(0);
+        let next = if backward {
+            (current + len - 1) % len
+        } else {
+            (current + 1) % len
+        };
+        self.wipe_auth_values();
+        let method = &self.provider.auth_methods[next];
+        self.auth_method = method.id.clone();
+        self.secrets = method
+            .credentials
+            .iter()
+            .cloned()
+            .map(|descriptor| SecretInput {
+                descriptor,
+                input: CredentialInput::default(),
+            })
+            .collect();
+        self.field_index = 0;
+    }
+
+    fn focus_count(&self) -> usize {
+        usize::from(self.has_auth_selector()) + self.secrets.len() + self.setup.len() + 1
+    }
+
+    fn wipe_auth_values(&mut self) {
+        for secret in &mut self.secrets {
+            secret.input.wipe();
+        }
+        self.secrets.clear();
     }
 
     pub(crate) fn setup_values(&self) -> Result<BTreeMap<SetupFieldId, SafeSetupValue>, String> {

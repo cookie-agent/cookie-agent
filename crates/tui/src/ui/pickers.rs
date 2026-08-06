@@ -12,67 +12,81 @@ use ratatui::{
 
 use crate::theme::Theme;
 
-/// A provider row that matched the picker query, plus a subdued annotation
-/// naming the non-name field that produced the match.
-pub(crate) struct ProviderMatch<'a> {
-    pub(crate) provider: &'a ProviderDescriptor,
-    pub(crate) label: String,
+use super::input::{self, InputState, RenderedInput};
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum SearchPickerFocus {
+    #[default]
+    Input,
+    List,
 }
 
-/// Case-insensitive substring matching over provider identity and public
-/// setup/auth descriptor labels.
-pub(crate) fn provider_matches<'a>(
-    provider: &'a ProviderDescriptor,
-    query: &str,
-) -> Option<ProviderMatch<'a>> {
+/// Reusable single-line search state for picker panels.
+#[derive(Default)]
+pub(crate) struct SearchPickerState {
+    input: InputState,
+    focus: SearchPickerFocus,
+}
+
+impl SearchPickerState {
+    pub(crate) fn query(&self) -> &str {
+        self.input.as_str()
+    }
+
+    pub(crate) fn input_mut(&mut self) -> &mut InputState {
+        &mut self.input
+    }
+
+    pub(crate) fn focus(&self) -> SearchPickerFocus {
+        self.focus
+    }
+
+    pub(crate) fn focus_input(&mut self) {
+        self.focus = SearchPickerFocus::Input;
+    }
+
+    pub(crate) fn focus_list(&mut self) {
+        self.focus = SearchPickerFocus::List;
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.input.set_buffer(String::new());
+        self.focus_input();
+    }
+}
+
+pub(crate) fn render_search_input(
+    frame: &mut Frame,
+    area: Rect,
+    state: &mut SearchPickerState,
+    theme: &Theme,
+) -> RenderedInput {
+    let title = match state.focus {
+        SearchPickerFocus::Input => "Search · Down/Tab/Enter: results",
+        SearchPickerFocus::List => "Search · Esc/BackTab: edit",
+    };
+    input::render(
+        frame,
+        area,
+        &mut state.input,
+        state.focus == SearchPickerFocus::Input,
+        title,
+        theme,
+    )
+}
+
+/// Case-insensitive substring matching over provider ID and display name.
+pub(crate) fn provider_matches(provider: &ProviderDescriptor, query: &str) -> bool {
     if query.trim().is_empty() {
-        return Some(ProviderMatch {
-            provider,
-            label: String::new(),
-        });
+        return true;
     }
     let query = query.trim().to_lowercase();
-    if provider
+    provider
         .display_name
         .as_str()
         .to_lowercase()
         .contains(&query)
         || provider.id.as_str().to_lowercase().contains(&query)
-    {
-        return Some(ProviderMatch {
-            provider,
-            label: String::new(),
-        });
-    }
-    if let Some(field) = provider.setup_fields.iter().find(|field| {
-        field.id.as_str().to_lowercase().contains(&query)
-            || field.display_name.as_str().to_lowercase().contains(&query)
-            || field.help.as_str().to_lowercase().contains(&query)
-    }) {
-        return Some(ProviderMatch {
-            provider,
-            label: format!(" · setup: {}", field.display_name),
-        });
-    }
-    for method in &provider.auth_methods {
-        if method.display_name.as_str().to_lowercase().contains(&query) {
-            return Some(ProviderMatch {
-                provider,
-                label: format!(" · auth: {}", method.display_name),
-            });
-        }
-        if let Some(field) = method.credentials.iter().find(|field| {
-            field.id.as_str().to_lowercase().contains(&query)
-                || field.display_name.as_str().to_lowercase().contains(&query)
-                || field.help.as_str().to_lowercase().contains(&query)
-        }) {
-            return Some(ProviderMatch {
-                provider,
-                label: format!(" · credential: {}", field.display_name),
-            });
-        }
-    }
-    None
 }
 
 /// Session picker matching over title, agent ID, and full session ID.
@@ -159,7 +173,7 @@ pub(crate) fn render(
 
 pub(crate) fn move_selection(state: &mut ListState, len: usize, up: bool) {
     if len == 0 {
-        state.select(Some(0));
+        state.select(None);
         return;
     }
     let selected = state.selected().unwrap_or(0);
@@ -172,7 +186,7 @@ pub(crate) fn move_selection(state: &mut ListState, len: usize, up: bool) {
 
 pub(crate) fn cycle_selection(state: &mut ListState, len: usize, backward: bool) {
     if len == 0 {
-        state.select(Some(0));
+        state.select(None);
         return;
     }
     let selected = state.selected().unwrap_or(0) % len;
@@ -239,7 +253,12 @@ mod tests {
         SessionMetaSchemaVersion, SessionOrigin, SessionStatus,
     };
 
-    use super::{clamp_tree_view, provider_matches, session_matches, short_id};
+    use ratatui::widgets::ListState;
+
+    use super::{
+        clamp_tree_view, cycle_selection, move_selection, provider_matches, session_matches,
+        short_id,
+    };
 
     fn provider() -> ProviderDescriptor {
         serde_json::from_value(serde_json::json!({
@@ -312,24 +331,27 @@ mod tests {
     }
 
     #[test]
-    fn provider_filter_matches_identity_setup_and_credential_labels() {
+    fn provider_filter_matches_id_and_display_name_case_insensitively() {
         let provider = provider();
-        for query in [
-            "acme", "ACME-AI", "region", "endpoint", "api_key", "ACME_API",
-        ] {
-            assert!(
-                provider_matches(&provider, query).is_some(),
-                "query {query}"
-            );
+        for query in ["acme", "ACME-AI", "me aI"] {
+            assert!(provider_matches(&provider, query), "query {query}");
         }
-        assert!(provider_matches(&provider, "other-vendor").is_none());
-        assert_eq!(
-            provider_matches(&provider, "api_key")
-                .expect("field match")
-                .label,
-            " · credential: Acme API Key"
-        );
-        assert_eq!(provider_matches(&provider, "").expect("empty").label, "");
+        assert!(!provider_matches(&provider, "other-vendor"));
+        assert!(!provider_matches(&provider, "region"));
+        assert!(!provider_matches(&provider, "api_key"));
+        assert!(provider_matches(&provider, ""));
+    }
+
+    #[test]
+    fn empty_picker_navigation_keeps_selection_absent() {
+        let mut state = ListState::default().with_selected(Some(0));
+
+        move_selection(&mut state, 0, false);
+        assert_eq!(state.selected(), None);
+
+        state.select(Some(0));
+        cycle_selection(&mut state, 0, false);
+        assert_eq!(state.selected(), None);
     }
 
     #[test]

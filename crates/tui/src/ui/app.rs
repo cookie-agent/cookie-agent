@@ -52,14 +52,14 @@ use crate::{
 };
 
 use super::events::{RenderScheduler, TerminalRestore};
-use super::input::InputState;
+use super::input::{self, InputState};
 use super::pickers::{
-    ProviderMatch, cycle_selection, flatten_tree, move_selection as move_picker_selection,
-    provider_matches, session_matches, short_id,
+    SearchPickerFocus, SearchPickerState, cycle_selection, flatten_tree,
+    move_selection as move_picker_selection, provider_matches, session_matches, short_id,
 };
 use super::provider::{
-    DURABLE_PROVIDER_COPY, ProviderAction, ProviderForm, ProviderOperation, ProviderRowState,
-    action_name, row_label, row_state,
+    DURABLE_PROVIDER_COPY, ProviderAction, ProviderForm, ProviderFormFocus, ProviderOperation,
+    ProviderRowState, action_name, row_label, row_state,
 };
 use super::slash::{
     CommandSpec, InputMode, ScrollCommand, SlashCommand, Submission, command_allowed_in_mode,
@@ -78,8 +78,7 @@ pub(super) enum Modal {
     ConnectProviders,
     ConnectDetails,
     ConnectSetup,
-    ConnectCredentials,
-    ConnectConfirm,
+    ConnectError,
     DisconnectConfirm,
 }
 
@@ -145,6 +144,7 @@ pub(super) struct UiHitMap {
     pub(super) scrollbar: Option<Rect>,
     pub(super) tree: Option<Rect>,
     pub(super) picker: Option<Rect>,
+    pub(super) picker_input: Option<InputHit>,
     pub(super) palette: Option<Rect>,
     pub(super) blocks: Vec<BlockHit>,
     pub(super) tree_rows: Vec<TreeRowHit>,
@@ -157,6 +157,20 @@ pub(super) struct UiHitMap {
 
 fn is_printable_key(key: KeyEvent) -> bool {
     key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT
+}
+
+fn edit_credential_input(input: &mut input::CredentialInput, key: KeyEvent) {
+    match key.code {
+        KeyCode::Backspace => input.backspace(),
+        KeyCode::Delete => input.delete(),
+        KeyCode::Left => input.move_left(),
+        KeyCode::Right => input.move_right(),
+        KeyCode::Home => input.move_buffer_home(),
+        KeyCode::End => input.move_buffer_end(),
+        KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => input.wipe(),
+        KeyCode::Char(character) if is_printable_key(key) => input.insert(character),
+        _ => {}
+    }
 }
 
 fn is_newline_key(key: KeyEvent) -> bool {
@@ -233,6 +247,7 @@ pub struct App {
     pub(super) transient_notices: Vec<String>,
     pub(super) picker_state: ListState,
     pub(super) picker_query: String,
+    pub(super) provider_search: SearchPickerState,
     pub(super) palette_state: ListState,
     pub(super) palette_dismissed: bool,
     pub(super) last_escape: Option<Instant>,
@@ -430,6 +445,7 @@ impl App {
             transient_notices: Vec::new(),
             picker_state: ListState::default().with_selected(Some(0)),
             picker_query: String::new(),
+            provider_search: SearchPickerState::default(),
             palette_state: ListState::default().with_selected(Some(0)),
             palette_dismissed: false,
             last_escape: None,
@@ -1410,10 +1426,19 @@ impl App {
                         message: error.clone(),
                     },
                 );
-                self.status = format!(
-                    "Provider {} failed: {error}. Enter the row to retry.",
-                    action_name(action)
-                );
+                if matches!(action, ProviderAction::Connect | ProviderAction::Reconnect)
+                    && let Some(form) = &mut self.provider_form
+                    && form.provider.id == provider_id
+                {
+                    form.error = Some(error.clone());
+                    self.modal = Modal::ConnectError;
+                    self.status = format!("Provider {} failed: {error}", action_name(action));
+                } else {
+                    self.status = format!(
+                        "Provider {} failed: {error}. Enter the row to retry.",
+                        action_name(action)
+                    );
+                }
             }
             ProviderMutationOutcome::Connected {
                 provider_id,
@@ -1422,6 +1447,8 @@ impl App {
             } => {
                 self.provider_operations.remove(&provider_id);
                 self.install_runtime_response(baseline.as_ref(), *runtime);
+                self.clear_connect_secrets();
+                self.modal = Modal::None;
                 self.status = if self.runtime.is_empty() {
                     EMPTY_RUNTIME_GUIDANCE.into()
                 } else {
@@ -1649,8 +1676,7 @@ impl App {
             Modal::ConnectProviders => self.handle_connect_provider_key(key),
             Modal::ConnectDetails => self.handle_connect_details_key(key),
             Modal::ConnectSetup => self.handle_connect_setup_key(key),
-            Modal::ConnectCredentials => self.handle_connect_credentials_key(key),
-            Modal::ConnectConfirm => self.handle_connect_confirm_key(key),
+            Modal::ConnectError => self.handle_connect_error_key(key),
             Modal::DisconnectConfirm => self.handle_disconnect_confirm_key(key),
             Modal::None
                 if self.current_approval().is_none()
@@ -1734,12 +1760,11 @@ impl App {
             .collect()
     }
 
-    /// Providers matching the current picker query by name, ID, documentation,
-    /// endpoint, or credential field label.
-    pub(super) fn filtered_providers(&self) -> Vec<ProviderMatch<'_>> {
+    /// Providers matching the current picker query by display name or ID.
+    pub(super) fn filtered_providers(&self) -> Vec<&ProviderDescriptor> {
         self.providers
             .iter()
-            .filter_map(|provider| provider_matches(provider, &self.picker_query))
+            .filter(|provider| provider_matches(provider, self.provider_search.query()))
             .collect()
     }
 
@@ -1751,8 +1776,7 @@ impl App {
             Modal::ConnectProviders => self.filtered_providers().len(),
             Modal::ConnectDetails
             | Modal::ConnectSetup
-            | Modal::ConnectCredentials
-            | Modal::ConnectConfirm
+            | Modal::ConnectError
             | Modal::DisconnectConfirm
             | Modal::None => 0,
         }
@@ -1789,6 +1813,18 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    fn provider_search_changed(&mut self) {
+        self.picker_state.select(Some(0));
+        self.clamp_picker_selection();
+    }
+
+    fn close_provider_picker(&mut self) {
+        self.clear_connect_secrets();
+        self.provider_search.reset();
+        self.modal = Modal::None;
+        self.status = "Provider connection cancelled.".into();
     }
 
     pub(super) fn register_escape(&mut self, now: Instant) -> bool {
@@ -1903,6 +1939,23 @@ impl App {
             return;
         }
         if self.hit_map.modal_open {
+            if let Some(hit) = self
+                .hit_map
+                .picker_input
+                .filter(|hit| contains(hit.rect, column, row))
+            {
+                self.provider_search.focus_input();
+                self.provider_search
+                    .input_mut()
+                    .set_cursor_from_display_position(
+                        row.saturating_sub(hit.text_rect.y)
+                            .min(hit.text_rect.height.saturating_sub(1)),
+                        column
+                            .saturating_sub(hit.text_rect.x)
+                            .min(hit.text_rect.width),
+                    );
+                return;
+            }
             if let Some(hit) = self
                 .hit_map
                 .picker_rows
@@ -2041,8 +2094,7 @@ impl App {
                     Modal::ConnectProviders => self.filtered_providers().len(),
                     Modal::ConnectDetails
                     | Modal::ConnectSetup
-                    | Modal::ConnectCredentials
-                    | Modal::ConnectConfirm
+                    | Modal::ConnectError
                     | Modal::DisconnectConfirm
                     | Modal::None => 0,
                 };
@@ -2231,21 +2283,25 @@ impl App {
     }
 
     pub(super) fn handle_paste(&mut self, text: &str) {
-        if self.modal == Modal::ConnectSetup {
+        if self.modal == Modal::ConnectProviders {
             let sanitized = text.replace(['\r', '\n'], "");
-            if let Some(form) = &mut self.provider_form
-                && let Some(field) = form.setup.get_mut(form.field_index)
-            {
-                field.input.insert_text(&sanitized);
-            }
+            self.provider_search.focus_input();
+            self.provider_search.input_mut().insert_text(&sanitized);
+            self.provider_search_changed();
             return;
         }
-        if self.modal == Modal::ConnectCredentials {
+        if self.modal == Modal::ConnectSetup {
             let mut sanitized = Zeroizing::new(text.replace(['\r', '\n'], ""));
-            if let Some(form) = &mut self.provider_form
-                && let Some(field) = form.secrets.get_mut(form.field_index)
-            {
-                field.input.insert_owned(std::mem::take(&mut *sanitized));
+            if let Some(form) = &mut self.provider_form {
+                match form.focus() {
+                    ProviderFormFocus::Credential(index) => form.secrets[index]
+                        .input
+                        .insert_owned(std::mem::take(&mut *sanitized)),
+                    ProviderFormFocus::Setup(index) => form.setup[index]
+                        .input
+                        .insert_owned(std::mem::take(&mut *sanitized)),
+                    ProviderFormFocus::AuthMethod | ProviderFormFocus::Submit => {}
+                }
             }
             return;
         }
@@ -2302,24 +2358,63 @@ impl App {
 
     fn handle_connect_provider_key(&mut self, key: KeyEvent) {
         let count = self.filtered_providers().len();
+        if self.provider_search.focus() == SearchPickerFocus::Input {
+            match key.code {
+                KeyCode::Esc => self.close_provider_picker(),
+                KeyCode::Down | KeyCode::Tab | KeyCode::Enter if count > 0 => {
+                    self.provider_search.focus_list();
+                    self.clamp_picker_selection();
+                }
+                KeyCode::Backspace => {
+                    self.provider_search.input_mut().backspace();
+                    self.provider_search_changed();
+                }
+                KeyCode::Delete => {
+                    self.provider_search.input_mut().delete();
+                    self.provider_search_changed();
+                }
+                KeyCode::Left => self.provider_search.input_mut().move_left(),
+                KeyCode::Right => self.provider_search.input_mut().move_right(),
+                KeyCode::Home | KeyCode::Char('a')
+                    if key.code == KeyCode::Home || key.modifiers == KeyModifiers::CONTROL =>
+                {
+                    self.provider_search.input_mut().move_buffer_home();
+                }
+                KeyCode::End | KeyCode::Char('e')
+                    if key.code == KeyCode::End || key.modifiers == KeyModifiers::CONTROL =>
+                {
+                    self.provider_search.input_mut().move_buffer_end();
+                }
+                KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                    self.provider_search.input_mut().set_buffer(String::new());
+                    self.provider_search_changed();
+                }
+                KeyCode::Char(character) if is_printable_key(key) => {
+                    self.provider_search.input_mut().insert(character);
+                    self.provider_search_changed();
+                }
+                _ => {}
+            }
+            return;
+        }
         match key.code {
             KeyCode::Esc => {
-                self.clear_connect_secrets();
-                self.picker_query.clear();
-                self.modal = Modal::None;
-                self.status = "Provider connection cancelled.".into();
+                self.provider_search.focus_input();
+            }
+            KeyCode::Up if self.picker_state.selected().unwrap_or(0) == 0 => {
+                self.provider_search.focus_input();
             }
             KeyCode::Up => move_picker_selection(&mut self.picker_state, count, true),
             KeyCode::Down | KeyCode::Tab => {
                 move_picker_selection(&mut self.picker_state, count, false)
             }
-            KeyCode::BackTab => move_picker_selection(&mut self.picker_state, count, true),
+            KeyCode::BackTab => self.provider_search.focus_input(),
             KeyCode::Enter => {
                 let index = self.picker_state.selected().unwrap_or(0);
                 if let Some(provider) = self
                     .filtered_providers()
                     .get(index)
-                    .map(|matched| (*matched.provider).clone())
+                    .map(|provider| (*provider).clone())
                 {
                     if matches!(
                         self.provider_operations.get(&provider.id),
@@ -2336,7 +2431,7 @@ impl App {
                     match state {
                         ProviderRowState::Unsupported => {
                             self.connect_provider = Some(provider);
-                            self.picker_query.clear();
+                            self.provider_search.reset();
                             self.modal = Modal::ConnectDetails;
                         }
                         ProviderRowState::Disconnected
@@ -2360,9 +2455,16 @@ impl App {
                     }
                 }
             }
-            _ => {
-                self.handle_picker_query_key(key);
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                self.provider_search.reset();
+                self.provider_search_changed();
             }
+            KeyCode::Char(character) if is_printable_key(key) => {
+                self.provider_search.focus_input();
+                self.provider_search.input_mut().insert(character);
+                self.provider_search_changed();
+            }
+            _ => {}
         }
     }
 
@@ -2376,15 +2478,9 @@ impl App {
             self.status = "This provider has no store-backed authentication form.".into();
             return;
         };
-        self.modal = if !form.setup.is_empty() {
-            Modal::ConnectSetup
-        } else if !form.secrets.is_empty() {
-            Modal::ConnectCredentials
-        } else {
-            Modal::ConnectConfirm
-        };
+        self.modal = Modal::ConnectSetup;
         self.provider_form = Some(form);
-        self.picker_query.clear();
+        self.provider_search.reset();
     }
 
     fn handle_connect_details_key(&mut self, key: KeyEvent) {
@@ -2445,165 +2541,81 @@ impl App {
             self.modal = Modal::None;
             return;
         };
-        let count = form.setup.len();
         match key.code {
-            KeyCode::Up | KeyCode::BackTab => {
-                form.field_index = form.field_index.saturating_sub(1);
-            }
-            KeyCode::Down | KeyCode::Tab | KeyCode::Enter => {
-                if form.field_index + 1 < count {
-                    form.field_index += 1;
-                } else {
-                    form.field_index = 0;
-                    self.modal = if form.secrets.is_empty() {
-                        Modal::ConnectConfirm
-                    } else {
-                        Modal::ConnectCredentials
-                    };
+            KeyCode::Up | KeyCode::BackTab => form.move_focus(true),
+            KeyCode::Down | KeyCode::Tab => form.move_focus(false),
+            KeyCode::Enter => match form.focus() {
+                ProviderFormFocus::AuthMethod => form.cycle_auth_method(false),
+                ProviderFormFocus::Submit => self.dispatch_provider_connect(),
+                ProviderFormFocus::Credential(_) | ProviderFormFocus::Setup(_) => {
+                    form.move_focus(false);
                 }
+            },
+            KeyCode::Left if form.focus() == ProviderFormFocus::AuthMethod => {
+                form.cycle_auth_method(true);
             }
-            _ => {
-                let Some(field) = form.setup.get_mut(form.field_index) else {
-                    return;
-                };
-                match key.code {
-                    KeyCode::Backspace => field.input.backspace(),
-                    KeyCode::Delete => field.input.delete(),
-                    KeyCode::Left => field.input.move_left(),
-                    KeyCode::Right => field.input.move_right(),
-                    KeyCode::Home => field.input.move_buffer_home(),
-                    KeyCode::End => field.input.move_buffer_end(),
-                    KeyCode::Char(character) if is_printable_key(key) => {
-                        field.input.insert(character);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fn handle_connect_credentials_key(&mut self, key: KeyEvent) {
-        if key.code == KeyCode::Esc {
-            self.clear_connect_secrets();
-            self.modal = Modal::None;
-            self.status = "Provider connection cancelled; credentials were cleared.".into();
-            return;
-        }
-        if key.code == KeyCode::Char('d')
-            && key.modifiers == KeyModifiers::CONTROL
-            && self
-                .provider_form
-                .as_ref()
-                .is_some_and(|form| form.can_disconnect)
-        {
-            self.connect_provider = self
-                .provider_form
-                .as_ref()
-                .map(|form| form.provider.clone());
-            self.modal = Modal::DisconnectConfirm;
-            return;
-        }
-        let Some(form) = &mut self.provider_form else {
-            self.modal = Modal::None;
-            return;
-        };
-        let field_count = form.secrets.len();
-        match key.code {
-            KeyCode::Up | KeyCode::BackTab => {
-                form.field_index = form.field_index.saturating_sub(1);
-            }
-            KeyCode::Down | KeyCode::Tab => {
-                form.field_index = (form.field_index + 1).min(field_count);
-                if form.field_index == field_count {
-                    self.modal = Modal::ConnectConfirm;
-                }
-            }
-            KeyCode::Enter => {
-                if form.field_index + 1 < field_count {
-                    form.field_index += 1;
-                } else {
-                    self.modal = Modal::ConnectConfirm;
-                }
-            }
-            _ => {
-                let Some(field) = form.secrets.get_mut(form.field_index) else {
-                    return;
-                };
-                match key.code {
-                    KeyCode::Backspace => field.input.backspace(),
-                    KeyCode::Delete => field.input.delete(),
-                    KeyCode::Left => field.input.move_left(),
-                    KeyCode::Right => field.input.move_right(),
-                    KeyCode::Home => field.input.move_buffer_home(),
-                    KeyCode::End => field.input.move_buffer_end(),
-                    KeyCode::Char(character) if is_printable_key(key) => {
-                        field.input.insert(character);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fn handle_connect_confirm_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('n' | 'N') => {
-                self.clear_connect_secrets();
-                self.modal = Modal::None;
-                self.status = "Provider connection cancelled; credentials were cleared.".into();
-            }
-            KeyCode::Enter | KeyCode::Char('y' | 'Y') => self.dispatch_provider_connect(),
-            KeyCode::Char('d' | 'D')
-                if self
-                    .provider_form
-                    .as_ref()
-                    .is_some_and(|form| form.can_disconnect) =>
+            KeyCode::Right | KeyCode::Char(' ')
+                if form.focus() == ProviderFormFocus::AuthMethod =>
             {
-                self.connect_provider = self
-                    .provider_form
-                    .as_ref()
-                    .map(|form| form.provider.clone());
-                self.modal = Modal::DisconnectConfirm;
+                form.cycle_auth_method(false);
             }
-            KeyCode::BackTab => {
-                if let Some(form) = &mut self.provider_form {
-                    if form.secrets.is_empty() {
-                        form.field_index = form.setup.len().saturating_sub(1);
-                        self.modal = Modal::ConnectSetup;
-                    } else {
-                        form.field_index = form.secrets.len().saturating_sub(1);
-                        self.modal = Modal::ConnectCredentials;
-                    }
+            _ => match form.focus() {
+                ProviderFormFocus::Credential(index) => {
+                    edit_credential_input(&mut form.secrets[index].input, key);
                 }
-            }
-            _ => {}
+                ProviderFormFocus::Setup(index) => {
+                    edit_credential_input(&mut form.setup[index].input, key);
+                }
+                ProviderFormFocus::AuthMethod | ProviderFormFocus::Submit => {}
+            },
+        }
+    }
+
+    fn handle_connect_error_key(&mut self, key: KeyEvent) {
+        if key.code != KeyCode::Esc {
+            return;
+        }
+        if let Some(form) = &mut self.provider_form {
+            form.error = None;
+            self.modal = Modal::ConnectSetup;
+            self.status = "Connect error dismissed; edit the form and submit to retry.".into();
+        } else {
+            self.modal = Modal::None;
         }
     }
 
     pub(super) fn dispatch_provider_connect(&mut self) {
-        let Some(form) = self.provider_form.as_ref() else {
+        let Some(form) = self.provider_form.as_mut() else {
             self.clear_connect_secrets();
             self.modal = Modal::None;
             return;
         };
+        form.error = None;
         let provider = form.provider.clone();
         let Some(catalog_revision) = self.catalog_revision.clone() else {
-            self.clear_connect_secrets();
-            self.modal = Modal::None;
-            self.status = "Catalog revision is unavailable.".into();
+            let error = "Catalog revision is unavailable.".to_owned();
+            form.error = Some(error.clone());
+            self.modal = Modal::ConnectError;
+            self.status = error;
             return;
         };
         let setup_values = match form.setup_values() {
             Ok(values) => values,
             Err(error) => {
-                self.status = format!("Invalid public setup: {error}");
+                let error = format!("Invalid public setup: {error}");
+                form.error = Some(error.clone());
+                self.modal = Modal::ConnectError;
+                self.status = error;
                 return;
             }
         };
         let auth_values = match form.auth_values() {
             Ok(values) => values,
             Err(error) => {
-                self.status = format!("Invalid credentials: {error}");
+                let error = format!("Invalid credentials: {error}");
+                form.error = Some(error.clone());
+                self.modal = Modal::ConnectError;
+                self.status = error;
                 return;
             }
         };
@@ -2614,8 +2626,7 @@ impl App {
             ProviderAction::Connect
         };
         let baseline = self.runtime.revision().cloned();
-        self.clear_connect_secrets();
-        self.modal = Modal::None;
+        form.wipe_sensitive_values();
         self.provider_operations
             .insert(provider.id.clone(), ProviderOperation::InProgress(action));
         self.status = format!("{} provider {}…", action_name(action), provider.id);
@@ -2781,12 +2792,12 @@ impl App {
             }
             Modal::ConnectProviders => {
                 self.picker_state.select(Some(index));
+                self.provider_search.focus_list();
                 self.handle_connect_provider_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
             }
             Modal::ConnectDetails
             | Modal::ConnectSetup
-            | Modal::ConnectCredentials
-            | Modal::ConnectConfirm
+            | Modal::ConnectError
             | Modal::DisconnectConfirm => {}
             Modal::None => {}
         }
@@ -2947,13 +2958,12 @@ impl App {
             SlashCommand::Connect => {
                 self.clear_connect_secrets();
                 self.modal = Modal::ConnectProviders;
-                self.picker_query.clear();
+                self.provider_search.reset();
                 self.picker_state.select(Some(0));
                 if self.providers.is_empty() {
                     self.status = "No providers are available in the runtime snapshot.".into();
                 } else {
-                    self.status =
-                        "Select a provider to connect. Type to filter; Enter: details.".into();
+                    self.status = "Search providers, then press Down or Tab to choose one.".into();
                 }
             }
             SlashCommand::Sessions => {
@@ -3531,14 +3541,32 @@ impl App {
                 centered(frame.area(), 56, 44),
             ),
             Modal::ConnectProviders => {
-                let title = if self.picker_query.is_empty() {
-                    "Connect provider — type to filter · Enter: details".to_owned()
-                } else {
-                    format!("Connect provider — filter: {}", self.picker_query)
-                };
+                let match_count = self.filtered_providers().len();
+                let provider_count = self.providers.len();
+                let title =
+                    format!("Connect provider ({match_count}/{provider_count}) · Enter: details");
                 let area = centered(frame.area(), 78, 64);
-                let copy_height = 3.min(area.height);
-                let copy = Rect::new(area.x, area.y, area.width, copy_height);
+                frame.render_widget(Clear, area);
+                let input_height = 3.min(area.height);
+                let input_area = Rect::new(area.x, area.y, area.width, input_height);
+                let rendered_input = super::pickers::render_search_input(
+                    frame,
+                    input_area,
+                    &mut self.provider_search,
+                    &self.theme,
+                );
+                self.hit_map.picker_input = Some(InputHit {
+                    rect: input_area,
+                    text_rect: rendered_input.text_rect,
+                });
+                let remaining = Rect::new(
+                    area.x,
+                    area.y.saturating_add(input_height),
+                    area.width,
+                    area.height.saturating_sub(input_height),
+                );
+                let copy_height = 3.min(remaining.height);
+                let copy = Rect::new(remaining.x, remaining.y, remaining.width, copy_height);
                 frame.render_widget(
                     Paragraph::new(DURABLE_PROVIDER_COPY)
                         .wrap(Wrap { trim: false })
@@ -3550,31 +3578,31 @@ impl App {
                     copy,
                 );
                 let picker = Rect::new(
-                    area.x,
-                    area.y.saturating_add(copy_height),
-                    area.width,
-                    area.height.saturating_sub(copy_height),
+                    remaining.x,
+                    remaining.y.saturating_add(copy_height),
+                    remaining.width,
+                    remaining.height.saturating_sub(copy_height),
                 );
                 self.render_picker(
                     frame,
                     &title,
                     self.filtered_providers()
                         .iter()
-                        .map(|matched| {
-                            format!(
-                                "{}{}",
-                                row_label(
-                                    matched.provider,
-                                    &self.models,
-                                    self.provider_operations.get(&matched.provider.id)
-                                ),
-                                matched.label
+                        .map(|provider| {
+                            row_label(
+                                provider,
+                                &self.models,
+                                self.provider_operations.get(&provider.id),
                             )
                         })
                         .collect(),
-                    self.providers
-                        .is_empty()
-                        .then_some("No providers are available in the runtime snapshot."),
+                    if self.providers.is_empty() {
+                        Some("No providers are available in the runtime snapshot.")
+                    } else if match_count == 0 {
+                        Some("No providers match the filter.")
+                    } else {
+                        None
+                    },
                     picker,
                 );
             }
@@ -3582,13 +3610,10 @@ impl App {
                 self.render_connect_details(frame, centered(frame.area(), 80, 62));
             }
             Modal::ConnectSetup => {
-                self.render_connect_setup(frame, centered(frame.area(), 80, 70));
+                self.render_connect_setup(frame, centered(frame.area(), 86, 86));
             }
-            Modal::ConnectCredentials => {
-                self.render_connect_credentials(frame, centered(frame.area(), 80, 70));
-            }
-            Modal::ConnectConfirm => {
-                self.render_connect_confirm(frame, centered(frame.area(), 80, 60));
+            Modal::ConnectError => {
+                self.render_connect_error(frame, centered(frame.area(), 86, 80));
             }
             Modal::DisconnectConfirm => {
                 self.render_disconnect_confirm(frame, centered(frame.area(), 72, 42));
@@ -3899,26 +3924,62 @@ impl App {
 
     fn render_connect_setup(&mut self, frame: &mut ratatui::Frame, area: Rect) {
         frame.render_widget(Clear, area);
-        let Some(form) = self.provider_form.as_ref() else {
+        let Some(form) = self.provider_form.as_mut() else {
             return;
         };
-        let mut lines = vec![
-            DURABLE_PROVIDER_COPY.to_owned(),
-            format!(
-                "Provider: {} ({})",
+        let outer = Block::default()
+            .borders(Borders::ALL)
+            .title("Connect provider");
+        let inner = outer.inner(area);
+        frame.render_widget(outer, area);
+        let auth_label = form.selected_auth().map_or_else(
+            || form.auth_method.to_string(),
+            |method| format!("{} ({})", method.display_name, method.id),
+        );
+        let focus = form.focus();
+        let instructions = if form.can_disconnect {
+            "Tab/Down: next · Shift-Tab/Up: previous · Enter: advance/submit · Esc: cancel · Ctrl-D: disconnect"
+        } else {
+            "Tab/Down: next · Shift-Tab/Up: previous · Enter: advance/submit · Esc: cancel"
+        };
+        let header_height = 4.min(inner.height);
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{DURABLE_PROVIDER_COPY}\nProvider: {} ({})\n{instructions}",
                 form.provider.display_name, form.provider.id
-            ),
-            format!("Auth method: {}", form.auth_method),
-            if form.can_disconnect {
-                "PUBLIC SETUP (non-secret) · defaults/prefill shown · Enter advances · Ctrl-D disconnect".into()
-            } else {
-                "PUBLIC SETUP (non-secret) · defaults/prefill shown · Enter advances".into()
-            },
-        ];
-        for (index, field) in form.setup.iter().enumerate() {
-            let marker = if index == form.field_index { ">" } else { " " };
-            lines.push(format!(
-                "{marker} {} [{}]{}: {}",
+            ))
+            .wrap(Wrap { trim: false }),
+            Rect::new(inner.x, inner.y, inner.width, header_height),
+        );
+        let mut y = inner.y.saturating_add(header_height);
+        if form.has_auth_selector() {
+            let auth_area = Rect::new(inner.x, y, inner.width, 3.min(inner.bottom() - y));
+            frame.render_widget(
+                Paragraph::new(format!("← {auth_label} →")).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(
+                            self.theme
+                                .input_border(focus == ProviderFormFocus::AuthMethod),
+                        )
+                        .title("Authentication method · Left/Right/Space/Enter: change"),
+                ),
+                auth_area,
+            );
+            y = y.saturating_add(3);
+        } else {
+            let height = 1.min(inner.bottom() - y);
+            frame.render_widget(
+                Paragraph::new(format!("Authentication method: {auth_label} · read-only")),
+                Rect::new(inner.x, y, inner.width, height),
+            );
+            y = y.saturating_add(height);
+        }
+        for (index, field) in form.secrets.iter_mut().enumerate() {
+            let height = 3.min(inner.bottom().saturating_sub(y));
+            let field_area = Rect::new(inner.x, y, inner.width, height);
+            let title = format!(
+                "Credential: {} [{}]{} · {}",
                 field.descriptor.display_name,
                 field.descriptor.id,
                 if field.descriptor.required {
@@ -3926,47 +3987,35 @@ impl App {
                 } else {
                     ""
                 },
-                field.input.as_str()
-            ));
-            lines.push(format!("    {}", field.descriptor.help));
-        }
-        frame.render_widget(
-            Paragraph::new(lines.join("\n"))
-                .wrap(Wrap { trim: false })
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Provider public setup"),
+                field.descriptor.help
+            );
+            input::render_masked(
+                frame,
+                field_area,
+                &mut field.input,
+                focus == ProviderFormFocus::Credential(index),
+                &title,
+                &self.theme,
+            );
+            y = y.saturating_add(height);
+            let helper_height = 1.min(inner.bottom().saturating_sub(y));
+            frame.render_widget(
+                Paragraph::new("Credentials are verified on first use."),
+                Rect::new(
+                    inner.x.saturating_add(1),
+                    y,
+                    inner.width.saturating_sub(1),
+                    helper_height,
                 ),
-            area,
-        );
-    }
-
-    fn render_connect_credentials(&mut self, frame: &mut ratatui::Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-        let Some(form) = self.provider_form.as_ref() else {
-            return;
-        };
-        let mut lines = vec![
-            DURABLE_PROVIDER_COPY.to_owned(),
-            format!(
-                "Provider: {} ({})",
-                form.provider.display_name, form.provider.id
-            ),
-            format!("Auth method: {}", form.auth_method),
-            if form.can_disconnect {
-                "SECRET CREDENTIALS · reconnect fields are always blank · Enter advances · Ctrl-D disconnect".into()
-            } else if form.reconnect {
-                "SECRET CREDENTIALS · reconnect fields are always blank · Enter advances".into()
-            } else {
-                "SECRET CREDENTIALS · Enter advances".into()
-            },
-        ];
-        for (index, field) in form.secrets.iter().enumerate() {
-            let marker = if index == form.field_index { ">" } else { " " };
-            let masked = "•".repeat(field.input.as_str().chars().count());
-            lines.push(format!(
-                "{marker} {} [{}]{}: {masked}",
+            );
+            y = y.saturating_add(helper_height);
+        }
+        for (index, field) in form.setup.iter_mut().enumerate() {
+            let height = 3.min(inner.bottom().saturating_sub(y));
+            let field_area = Rect::new(inner.x, y, inner.width, height);
+            let secret = !field.descriptor.safe_to_project;
+            let title = format!(
+                "Setup: {} [{}]{}{} · {}",
                 field.descriptor.display_name,
                 field.descriptor.id,
                 if field.descriptor.required {
@@ -3974,69 +4023,71 @@ impl App {
                 } else {
                     ""
                 },
-            ));
-            lines.push(format!("    {}", field.descriptor.help));
+                if secret { " secret" } else { "" },
+                field.descriptor.help
+            );
+            let focused = focus == ProviderFormFocus::Setup(index);
+            if secret {
+                input::render_masked(
+                    frame,
+                    field_area,
+                    &mut field.input,
+                    focused,
+                    &title,
+                    &self.theme,
+                );
+            } else {
+                input::render(
+                    frame,
+                    field_area,
+                    field.input.state_mut(),
+                    focused,
+                    &title,
+                    &self.theme,
+                );
+            }
+            y = y.saturating_add(height);
         }
+        let submit_area = Rect::new(
+            inner.x,
+            y,
+            inner.width,
+            3.min(inner.bottom().saturating_sub(y)),
+        );
         frame.render_widget(
-            Paragraph::new(lines.join("\n"))
-                .wrap(Wrap { trim: false })
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Provider secret credentials"),
-                ),
-            area,
+            Paragraph::new(format!(
+                "Enter to {} with {auth_label}",
+                if form.reconnect {
+                    "reconnect/update"
+                } else {
+                    "connect"
+                }
+            ))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(self.theme.input_border(focus == ProviderFormFocus::Submit))
+                    .title("Submit"),
+            ),
+            submit_area,
         );
     }
 
-    fn render_connect_confirm(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+    fn render_connect_error(&mut self, frame: &mut ratatui::Frame, area: Rect) {
         frame.render_widget(Clear, area);
         let Some(form) = self.provider_form.as_ref() else {
             return;
         };
-        let populated = form
-            .secrets
-            .iter()
-            .filter(|field| !field.input.as_str().is_empty())
-            .map(|field| field.descriptor.id.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let setup = form
-            .setup
-            .iter()
-            .map(|field| format!("{}={}", field.descriptor.id, field.input.as_str()))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let error = form.error.as_deref().unwrap_or("Unknown connect error.");
         let content = format!(
-            "{DURABLE_PROVIDER_COPY}\n\nProvider ID: {}\nName: {}\nAction: {}\nAuth method: {}\nCatalog revision: {}\nPublic setup: {}\nSecret fields supplied: {}\n\nPress Enter/Y to continue, BackTab to edit, Esc/N to cancel and clear{}.",
-            form.provider.id,
-            form.provider.display_name,
-            if form.reconnect {
-                "reconnect/update"
-            } else {
-                "connect"
-            },
-            form.auth_method,
-            self.catalog_revision
-                .as_ref()
-                .map_or("unavailable", |revision| revision.as_str()),
-            if setup.is_empty() { "none" } else { &setup },
-            if populated.is_empty() {
-                "none"
-            } else {
-                &populated
-            },
-            if form.can_disconnect {
-                ", or D to disconnect"
-            } else {
-                ""
-            },
+            "{DURABLE_PROVIDER_COPY}\n\nProvider: {} ({})\nAuthentication method: {}\n\nConnect failed:\n{error}\n\nNo credentials were verified. Credentials are verified on first use.\n\nPress Esc to return to the form, edit values, and retry.",
+            form.provider.display_name, form.provider.id, form.auth_method
         );
         frame.render_widget(
             Paragraph::new(content).wrap(Wrap { trim: false }).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Confirm provider connection"),
+                    .title("Provider connection error"),
             ),
             area,
         );

@@ -45,6 +45,11 @@ impl CredentialInput {
         self.input.insert_owned(text);
     }
 
+    pub(crate) fn set_buffer(&mut self, buffer: String) {
+        self.wipe();
+        self.input.set_buffer(buffer);
+    }
+
     pub(crate) fn backspace(&mut self) {
         self.input.backspace();
     }
@@ -67,6 +72,10 @@ impl CredentialInput {
 
     pub(crate) fn move_buffer_end(&mut self) {
         self.input.move_buffer_end();
+    }
+
+    pub(crate) fn state_mut(&mut self) -> &mut InputState {
+        &mut self.input
     }
 
     pub(crate) fn wipe(&mut self) {
@@ -479,6 +488,26 @@ pub(crate) fn render(
         text_rect: inner,
         title_rect,
     }
+}
+
+pub(crate) fn render_masked(
+    frame: &mut Frame,
+    area: Rect,
+    input: &mut CredentialInput,
+    focused: bool,
+    title: &str,
+    theme: &Theme,
+) -> RenderedInput {
+    let cursor_graphemes = input.input.value[..input.input.cursor]
+        .graphemes(true)
+        .count();
+    let grapheme_count = input.input.value.graphemes(true).count();
+    let mut masked = InputState {
+        value: "•".repeat(grapheme_count),
+        cursor: cursor_graphemes.saturating_mul('•'.len_utf8()),
+        ..InputState::default()
+    };
+    render(frame, area, &mut masked, focused, title, theme)
 }
 
 struct OverflowTitle {

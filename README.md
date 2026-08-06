@@ -189,6 +189,16 @@ managed providers removed from the catalog. Unsupported rows remain visible
 with typed reasons. Custom providers never appear and are never
 provider-store-backed.
 
+The provider picker opens with a focused `Search` input above the provider
+list. It accepts Unicode typing and paste, and filters by case-insensitive
+substring over provider display names and IDs. Left/Right and Home/End move the
+cursor, Backspace/Delete edit at the cursor, and Ctrl-U clears the query. Down,
+Tab, or Enter moves from search to results; Up from the first result, BackTab,
+or Esc returns to search. Enter on a result opens that provider flow, while Esc
+from search closes the picker. The list title shows the match/total count,
+empty results are explicit and retain no selection, and each new `/connect`
+starts unfiltered with search focused.
+
 Managed connect requires catalog revision
 `sha256:<lowercase SHA-256 digest of the exact selected body bytes>`, validates and
 compiles the full candidate before a single durable provider/receipt write, then
@@ -201,6 +211,26 @@ descriptors from the code-owned recipe. It renders setup and auth separately,
 validates exact missing/extra fields, and atomically stores normalized setup plus
 credentials. This supports Vertex, Bedrock, Azure, and empty/default setup
 API-key providers without authored provider TOML.
+
+The connect form is one ordered focus path: a selectable authentication-method
+row when the provider offers more than one method, that method's credential
+boxes, all setup boxes, and Submit. Single-method authentication is read-only.
+Left/Right, Space, or Enter changes a focused method and immediately clears and
+rebuilds its credential fields; Tab/Down and Shift-Tab/Up traverse the form,
+Enter advances fields and submits only from Submit, and Esc cancels and clears
+secret-bearing buffers. Every credential and setup value uses the shared
+Unicode/paste-capable input editor with cursor movement, Backspace/Delete, and
+Ctrl-U. Credentials and setup fields marked unsafe to project (including
+derived KEY/TOKEN/SECRET placeholders) render as bullets.
+
+Connect is store-and-go: the form does not contact the provider or test
+credentials. Credentials are verified on first use when a conversation invokes
+the provider. If the connect RPC itself fails, the complete error remains in a
+dedicated error view until Esc returns to the form; public setup values are
+retained for correction and retry, while secret-bearing inputs are cleared.
+JSON-RPC failures show the transport-level code and message plus only the
+whitelisted scalar `data.code` and `data.message` application details; all
+other error data remains redacted.
 
 Provider store schema 3 is fixed at
 `~/.local/share/cookie_agent/providers/store-v3.json` with the same private

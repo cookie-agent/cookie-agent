@@ -1523,7 +1523,8 @@ mod tests {
     use crate::ui::app::*;
     use crate::ui::events::{RenderScheduler, TerminalCleanup, TerminalRestore};
     use crate::ui::input::credential_wipe_count;
-    use crate::ui::provider::{ProviderAction, ProviderForm, ProviderOperation};
+    use crate::ui::pickers::SearchPickerFocus;
+    use crate::ui::provider::{ProviderAction, ProviderForm, ProviderFormFocus, ProviderOperation};
     use crate::ui::slash::{
         BlockCommand, InputMode, ScrollCommand, SlashCommand, Submission, command_allowed_in_mode,
         command_help, command_spec, parse_submission,
@@ -2360,6 +2361,61 @@ mod tests {
         .expect("provider descriptor")
     }
 
+    fn multi_auth_provider() -> cookie_agent_protocol::ProviderDescriptor {
+        let mut value = serde_json::to_value(provider_descriptor(
+            "multi-auth",
+            "supported",
+            "current",
+            false,
+        ))
+        .expect("serialize provider");
+        value["auth_methods"] = serde_json::json!([
+            {
+                "id": "api-key",
+                "display_name": "API key",
+                "credentials": [{
+                    "id": "api_key",
+                    "display_name": "API key",
+                    "help": "Secret API credential",
+                    "required": true,
+                    "credential_type": "api_key"
+                }]
+            },
+            {
+                "id": "bearer",
+                "display_name": "Bearer token",
+                "credentials": [{
+                    "id": "access_token",
+                    "display_name": "Access token",
+                    "help": "Secret bearer credential",
+                    "required": true,
+                    "credential_type": "access_token"
+                }]
+            }
+        ]);
+        value["setup_fields"] = serde_json::json!([
+            {
+                "id": "region",
+                "display_name": "Region",
+                "help": "Public service region",
+                "required": true,
+                "default": null,
+                "validation": {"value_type": "string", "min_length": 1, "max_length": 32, "minimum": null, "maximum": null},
+                "safe_to_project": true
+            },
+            {
+                "id": "service_token",
+                "display_name": "Service token",
+                "help": "Derived secret setup placeholder",
+                "required": true,
+                "default": null,
+                "validation": {"value_type": "string", "min_length": 1, "max_length": 64, "minimum": null, "maximum": null},
+                "safe_to_project": false
+            }
+        ]);
+        serde_json::from_value(value).expect("multi-auth provider")
+    }
+
     fn runtime_snapshot(
         digit: &str,
         providers: Vec<cookie_agent_protocol::ProviderDescriptor>,
@@ -2549,6 +2605,15 @@ mod tests {
         (0..buffer.area.height)
             .flat_map(|y| (0..buffer.area.width).map(move |x| buffer[(x, y)].symbol().to_owned()))
             .collect::<String>()
+    }
+
+    fn rendered_cursor_visible(app: &mut App, width: u16, height: u16) -> bool {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| app.draw_for_test(frame))
+            .expect("app render");
+        terminal.backend().cursor_visible()
     }
 
     fn rendered_agent_rows(app: &mut App, width: u16) -> Vec<String> {
@@ -5217,10 +5282,14 @@ mod tests {
 
         assert_eq!(app.modal, Modal::ConnectProviders);
         assert!(app.input.as_str().is_empty());
+        assert_eq!(app.provider_search.focus(), SearchPickerFocus::Input);
         let rendered = rendered_frame(&mut app, 100, 30);
-        assert!(rendered.contains("Connect provider — type to filter"));
+        assert!(rendered.contains("Search · Down/Tab/Enter: results"));
+        assert!(rendered.contains("Connect provider (0/0) · Enter: details"));
         assert!(rendered.contains("No providers are available in the runtime snapshot."));
+        assert!(rendered_cursor_visible(&mut app, 100, 30));
         assert!(app.hit_map.picker.is_some());
+        assert!(app.hit_map.picker_input.is_some());
         assert!(app.hit_map.picker_rows.is_empty());
         tokio::task::yield_now().await;
         assert_eq!(recorded_method_count(&recorded, "run.start"), 0);
@@ -5229,27 +5298,36 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
             .await;
-        assert_eq!(app.picker_query, "x");
+        assert_eq!(app.provider_search.query(), "x");
+        assert_eq!(app.picker_state.selected(), None);
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.picker_state.selected(), None);
+        assert_eq!(app.provider_search.focus(), SearchPickerFocus::Input);
         let rendered = rendered_frame(&mut app, 100, 30);
-        assert!(rendered.contains("Connect provider — filter: x"));
+        assert!(rendered.contains("Connect provider (0/0) · Enter: details"));
+        assert!(rendered.contains('x'));
     }
 
     #[tokio::test]
-    async fn connect_palette_submission_opens_and_focuses_provider_search() {
+    async fn provider_search_accepts_non_ascii_typing_and_paste() {
         let mut app = test_app().await;
-        app.providers = vec![catalog_provider()];
+        let mut provider = catalog_provider();
+        provider.display_name = SafeDisplayText::new("阿里云").expect("provider display name");
+        app.providers = vec![provider];
 
         type_input(&mut app, "/connect").await;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
 
         assert_eq!(app.modal, Modal::ConnectProviders);
-        type_input(&mut app, "api_key").await;
-        assert_eq!(app.picker_query, "api_key");
+        type_input(&mut app, "阿里").await;
+        app.handle_paste("云");
+        assert_eq!(app.provider_search.query(), "阿里云");
+        assert_eq!(app.filtered_providers().len(), 1);
         let rendered = rendered_frame(&mut app, 100, 30);
-        assert!(rendered.contains("Connect provider — filter: api_key"));
-        assert!(rendered.contains("acme-ai provider (acme-ai)"));
-        assert!(rendered.contains("credential: API key"));
+        assert!(rendered.contains("Connect provider (1/1) · Enter: details"));
+        assert!(rendered.contains("阿 里 云"));
         assert!(app.hit_map.picker.is_some());
         assert_eq!(app.hit_map.picker_rows.len(), 1);
 
@@ -5257,10 +5335,93 @@ mod tests {
             .await;
         type_input(&mut app, "missing").await;
         let rendered = rendered_frame(&mut app, 100, 30);
-        assert!(rendered.contains("Connect provider — filter: missing"));
-        assert!(rendered.contains("No matches."));
+        assert!(rendered.contains("Connect provider (0/1) · Enter: details"));
+        assert!(rendered.contains("No providers match the filter."));
         assert!(app.hit_map.picker.is_some());
         assert!(app.hit_map.picker_rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn provider_search_edits_at_the_cursor_and_transitions_focus() {
+        let mut app = test_app().await;
+        app.providers = vec![catalog_provider()];
+        app.run_command(SlashCommand::Connect).await;
+
+        type_input(&mut app, "aXcme").await;
+        app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.provider_search.query(), "acme");
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.provider_search.query(), "ace");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
+            .await;
+        assert!(app.provider_search.query().is_empty());
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.provider_search.focus(), SearchPickerFocus::List);
+        assert!(!rendered_cursor_visible(&mut app, 100, 30));
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.provider_search.focus(), SearchPickerFocus::Input);
+        assert!(rendered_cursor_visible(&mut app, 100, 30));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectProviders);
+        assert_eq!(app.provider_search.focus(), SearchPickerFocus::Input);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::None);
+        assert!(app.provider_search.query().is_empty());
+
+        app.run_command(SlashCommand::Connect).await;
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectSetup);
+    }
+
+    #[tokio::test]
+    async fn provider_search_arrows_and_enter_select_a_filtered_provider() {
+        let mut app = test_app().await;
+        app.providers = vec![
+            provider_descriptor("match-first", "supported", "current", false),
+            provider_descriptor("excluded", "supported", "current", false),
+            provider_descriptor("match-second", "supported", "current", false),
+        ];
+        app.run_command(SlashCommand::Connect).await;
+        type_input(&mut app, "match").await;
+
+        assert_eq!(app.filtered_providers().len(), 2);
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.provider_search.focus(), SearchPickerFocus::List);
+        assert_eq!(app.picker_state.selected(), Some(0));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.picker_state.selected(), Some(1));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(app.modal, Modal::ConnectSetup);
+        assert_eq!(
+            app.connect_provider
+                .as_ref()
+                .map(|provider| provider.id.as_str()),
+            Some("match-second")
+        );
     }
 
     #[tokio::test]
@@ -5269,7 +5430,7 @@ mod tests {
         {
             let mut app = test_app().await;
             app.begin_provider_form(catalog_provider());
-            app.modal = Modal::ConnectCredentials;
+            app.modal = Modal::ConnectSetup;
             app.provider_form.as_mut().expect("provider form").secrets[0]
                 .input
                 .insert_owned("sentinel-secret".to_owned());
@@ -5280,13 +5441,208 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_picker_filter_matches_credential_labels() {
+    async fn connect_form_cycles_auth_masks_secrets_traverses_and_submits_selected_method() {
+        let mut app = test_app().await;
+        let (client, recorded, incoming_guard) = live_recording_client();
+        app.client = client;
+        app.begin_provider_form(multi_auth_provider());
+
+        let form = app.provider_form.as_ref().expect("form");
+        assert_eq!(form.focus(), ProviderFormFocus::AuthMethod);
+        assert_eq!(form.auth_method.as_str(), "api-key");
+        assert_eq!(form.secrets[0].descriptor.id.as_str(), "api_key");
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        type_input(&mut app, "stale-secret").await;
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE))
+            .await;
+        let form = app.provider_form.as_ref().expect("form");
+        assert_eq!(form.focus(), ProviderFormFocus::AuthMethod);
+        assert_eq!(form.auth_method.as_str(), "bearer");
+        assert_eq!(form.secrets[0].descriptor.id.as_str(), "access_token");
+        assert!(form.secrets[0].input.as_str().is_empty());
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        type_input(&mut app, "bearer-secret").await;
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        app.handle_paste("東京");
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        type_input(&mut app, "derived-secret").await;
+
+        let rendered = rendered_frame(&mut app, 160, 42);
+        assert!(rendered.contains("Authentication method"));
+        assert!(rendered.contains("Bearer token (bearer)"));
+        assert!(rendered.contains("Credential:"));
+        assert!(rendered.contains("Credentials are verified on first use."));
+        assert!(rendered.contains("Setup:"));
+        assert!(rendered.contains("service_token"));
+        assert!(rendered.contains('•'));
+        assert!(!rendered.contains("bearer-secret"));
+        assert!(!rendered.contains("derived-secret"));
+        assert_eq!(
+            app.provider_form.as_ref().expect("form").setup[0]
+                .input
+                .as_str(),
+            "東京"
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        assert_eq!(
+            app.provider_form.as_ref().expect("form").focus(),
+            ProviderFormFocus::Submit
+        );
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
+            .await;
+        assert_eq!(
+            app.provider_form.as_ref().expect("form").focus(),
+            ProviderFormFocus::Setup(1)
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        settle_recording().await;
+        assert_eq!(recorded_method_count(&recorded, "provider.connect"), 1);
+        let request = recorded
+            .lock()
+            .expect("recorded")
+            .iter()
+            .find(|value| value["method"] == "provider.connect")
+            .cloned()
+            .expect("connect request");
+        assert_eq!(request["params"]["auth_method"], "bearer");
+        assert_eq!(
+            request["params"]["auth_values"]["access_token"],
+            "bearer-secret"
+        );
+        assert!(request["params"]["auth_values"].get("api_key").is_none());
+        assert_eq!(request["params"]["setup_values"]["region"], "東京");
+        assert_eq!(
+            request["params"]["setup_values"]["service_token"],
+            "derived-secret"
+        );
+        app.abort_connect_work();
+        drop(incoming_guard);
+    }
+
+    #[tokio::test]
+    async fn connect_form_escape_cancels_and_clears_values() {
+        let before = credential_wipe_count();
+        let mut app = test_app().await;
+        app.begin_provider_form(multi_auth_provider());
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        type_input(&mut app, "cancelled-secret").await;
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(app.modal, Modal::None);
+        assert!(app.provider_form.is_none());
+        assert!(credential_wipe_count() > before);
+    }
+
+    #[tokio::test]
+    async fn connect_rpc_error_is_persistent_and_preserves_public_setup_for_retry() {
+        let mut app = test_app().await;
+        app.begin_provider_form(multi_auth_provider());
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        type_input(&mut app, "temporary-secret").await;
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        type_input(&mut app, "東京").await;
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        type_input(&mut app, "temporary-setup-secret").await;
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        let form = app.provider_form.as_ref().expect("form retained in flight");
+        assert_eq!(form.setup[0].input.as_str(), "東京");
+        assert!(form.setup[1].input.as_str().is_empty());
+        assert!(form.secrets[0].input.as_str().is_empty());
+        app.abort_connect_work();
+
+        let full_error = "JSON-RPC -32011: catalog_revision_conflict (provider connect error)";
+        app.handle_rpc_update(RpcUpdate::ProviderMutationFinished {
+            outcome: ProviderMutationOutcome::Failed {
+                provider_id: ProviderId::new("multi-auth").expect("provider ID"),
+                action: ProviderAction::Connect,
+                error: full_error.into(),
+            },
+        });
+
+        assert_eq!(app.modal, Modal::ConnectError);
+        assert_eq!(
+            app.provider_form.as_ref().expect("form").setup[0]
+                .input
+                .as_str(),
+            "東京"
+        );
+        assert!(app.transient_notices.is_empty());
+        let first = rendered_frame(&mut app, 160, 36);
+        let second = rendered_frame(&mut app, 160, 36);
+        assert!(first.contains(full_error));
+        assert!(second.contains(full_error));
+        assert!(first.contains("catalog_revision_conflict"));
+        assert!(first.contains("No credentials were verified"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectSetup);
+        assert_eq!(
+            app.provider_form.as_ref().expect("form").setup[0]
+                .input
+                .as_str(),
+            "東京"
+        );
+        assert!(app.provider_form.as_ref().expect("form").error.is_none());
+    }
+
+    #[tokio::test]
+    async fn provider_picker_filter_matches_id_and_name_only() {
         let mut app = test_app().await;
         app.providers = vec![catalog_provider()];
-        app.picker_query = "api_key".into();
+        app.provider_search.input_mut().set_buffer("ACME-AI".into());
         assert_eq!(app.filtered_providers().len(), 1);
-        app.picker_query = "unknown".into();
+        app.provider_search
+            .input_mut()
+            .set_buffer("provider".into());
+        assert_eq!(app.filtered_providers().len(), 1);
+        app.provider_search.input_mut().set_buffer("api_key".into());
         assert!(app.filtered_providers().is_empty());
+        app.provider_search.input_mut().set_buffer("unknown".into());
+        assert!(app.filtered_providers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn new_connect_session_resets_provider_filter() {
+        let mut app = test_app().await;
+        app.providers = vec![catalog_provider()];
+        app.provider_search
+            .input_mut()
+            .set_buffer("stale filter".into());
+        app.provider_search.focus_list();
+        app.picker_state.select(None);
+
+        app.run_command(SlashCommand::Connect).await;
+
+        assert_eq!(app.modal, Modal::ConnectProviders);
+        assert!(app.provider_search.query().is_empty());
+        assert_eq!(app.provider_search.focus(), SearchPickerFocus::Input);
+        assert_eq!(app.filtered_providers().len(), 1);
+        assert_eq!(app.picker_state.selected(), Some(0));
     }
 
     #[tokio::test]
@@ -5397,13 +5753,12 @@ mod tests {
         assert!(form.secrets[0].input.as_str().is_empty());
 
         let public = rendered_frame(&mut app, 100, 30);
-        assert!(public.contains("PUBLIC SETUP"));
+        assert!(public.contains("Setup:"));
         assert!(public.contains("us-east-1"));
-        app.modal = Modal::ConnectCredentials;
         let secret = rendered_frame(&mut app, 100, 30);
-        assert!(secret.contains("SECRET CREDENTIALS"));
-        assert!(secret.contains("reconnect fields are always blank"));
-        assert!(!secret.contains("us-east-1"));
+        assert!(secret.contains("Credential:"));
+        assert!(secret.contains("Setup:"));
+        assert!(secret.contains("us-east-1"));
     }
 
     #[tokio::test]
@@ -5441,6 +5796,7 @@ mod tests {
         )];
         app.modal = Modal::ConnectProviders;
         app.picker_state.select(Some(0));
+        app.provider_search.focus_list();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
         assert_eq!(app.modal, Modal::ConnectDetails);
@@ -5512,18 +5868,18 @@ mod tests {
         let picker = rendered_frame(&mut app, 160, 36);
         assert!(picker.contains("removed from current catalog · Enter: reconnect/update"));
         assert!(picker.contains(crate::ui::provider::DURABLE_PROVIDER_COPY));
+        app.provider_search.focus_list();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
-        assert_eq!(app.modal, Modal::ConnectCredentials);
+        assert_eq!(app.modal, Modal::ConnectSetup);
         let credentials = rendered_frame(&mut app, 160, 36);
-        assert!(credentials.contains("SECRET CREDENTIALS"));
+        assert!(credentials.contains("Credential:"));
         assert!(credentials.contains(crate::ui::provider::DURABLE_PROVIDER_COPY));
         type_input(&mut app, "removed-secret").await;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
-        assert_eq!(app.modal, Modal::ConnectConfirm);
-        let confirm = rendered_frame(&mut app, 140, 32);
-        assert!(confirm.contains("Action: reconnect/update"));
+        let submit = rendered_frame(&mut app, 140, 32);
+        assert!(submit.contains("reconnect/update"));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
         let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
@@ -5583,6 +5939,7 @@ mod tests {
         app.install_initial_runtime(runtime.snapshot);
         app.modal = Modal::ConnectProviders;
         app.picker_state.select(Some(0));
+        app.provider_search.focus_list();
         let picker = rendered_frame(&mut app, 140, 32);
         assert!(picker.contains("removed · unsupported: removed_without_retained_recipe_match"));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -5621,11 +5978,12 @@ mod tests {
         app.install_initial_runtime(runtime.snapshot);
         app.modal = Modal::ConnectProviders;
         app.picker_state.select(Some(0));
+        app.provider_search.focus_list();
         let picker = rendered_frame(&mut app, 140, 32);
         assert!(picker.contains("disconnected"));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
-        assert_eq!(app.modal, Modal::ConnectCredentials);
+        assert_eq!(app.modal, Modal::ConnectSetup);
         let after = client.runtime_snapshot().await.expect("unchanged runtime");
         assert_eq!(
             after.snapshot.provider_store_generation,
@@ -5647,6 +6005,7 @@ mod tests {
         app.providers = vec![provider];
         app.modal = Modal::ConnectProviders;
         app.picker_state.select(Some(0));
+        app.provider_search.focus_list();
         let picker = rendered_frame(&mut app, 140, 32);
         assert!(
             picker.contains("authored-incomplete provider (authored-incomplete) — disconnected")
@@ -5655,7 +6014,7 @@ mod tests {
             .await;
         assert_eq!(app.modal, Modal::ConnectSetup);
         let setup = rendered_frame(&mut app, 160, 32);
-        assert!(setup.contains("Provider public setup"));
+        assert!(setup.contains("Connect provider"));
         assert!(setup.contains(crate::ui::provider::DURABLE_PROVIDER_COPY));
         assert!(
             app.provider_form
@@ -5676,6 +6035,7 @@ mod tests {
         app.providers = vec![provider];
         app.modal = Modal::ConnectProviders;
         app.picker_state.select(Some(0));
+        app.provider_search.focus_list();
         let picker = rendered_frame(&mut app, 220, 32);
         assert!(picker.contains(
             "gateway provider (gateway) — disconnected · config override active · Enter: create global stored connection"
@@ -5690,17 +6050,15 @@ mod tests {
         let setup = rendered_frame(&mut app, 140, 32);
         assert!(!setup.contains("Ctrl-D disconnect"));
         assert!(!setup.contains("https://"));
-        type_input(&mut app, "us-east-1").await;
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
-            .await;
-        assert_eq!(app.modal, Modal::ConnectCredentials);
         type_input(&mut app, "rotated-authored-secret").await;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
-        assert_eq!(app.modal, Modal::ConnectConfirm);
-        let confirm = rendered_frame(&mut app, 140, 32);
-        assert!(confirm.contains("Action: connect"));
-        assert!(!confirm.contains("Action: reconnect/update"));
+        type_input(&mut app, "us-east-1").await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        let submit = rendered_frame(&mut app, 140, 32);
+        assert!(submit.contains("Enter to connect"));
+        assert!(!submit.contains("Enter to reconnect/update"));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
         settle_recording().await;
@@ -5754,6 +6112,7 @@ mod tests {
         app.providers = vec![provider];
         app.modal = Modal::ConnectProviders;
         app.picker_state.select(Some(0));
+        app.provider_search.focus_list();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
         assert_eq!(app.modal, Modal::ConnectSetup);

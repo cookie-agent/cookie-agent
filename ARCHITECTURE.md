@@ -612,6 +612,37 @@ the valid `empty` state and guidance remain; no model is fabricated.
 `Stored setup, connections, and credentials are per-user and shared across workspaces.`
 Stored setup is non-secret and projected only where recipe policy permits;
 credential values remain secret/redacted.
+The provider picker renders a reusable, focused single-line `Search` input
+above the provider list and filters every visible provider state by
+case-insensitive substring over display name and provider ID. The input accepts
+Unicode key and paste events; Left/Right and Home/End move its grapheme-safe
+cursor, Backspace/Delete edit at the cursor, and Ctrl-U clears it. Down, Tab,
+or Enter transfers focus from input to results; Up from the first result,
+BackTab, or Esc transfers focus back to input. Enter activates only a focused
+matching result, and Esc from the input closes the picker and clears the query.
+The list title shows filtered/total count, a new `/connect` always starts with
+the full unfiltered list and input focus, and an empty result is rendered
+explicitly with no selected row.
+The provider connect form has one focus order: a selectable auth-method row
+when multiple descriptor methods exist, the selected method's credential input
+boxes, every projected setup input box, and Submit. A sole auth method is
+displayed read-only. Left/Right, Space, or Enter cycles a focused method and
+best-effort wipes/rebuilds its credential buffers so values never cross method
+boundaries. Tab/Down and Shift-Tab/Up traverse the form; Enter advances from an
+input and dispatches only from Submit; Esc cancels and wipes secret-bearing
+buffers. All boxes use the shared grapheme-safe input state and accept Unicode
+typing and paste, cursor movement, Backspace/Delete, and Ctrl-U. Credential
+values and setup descriptors with `safe_to_project = false` are bullet-masked;
+the latter includes recipe-projected KEY/TOKEN/SECRET placeholder fields.
+Connect is store-and-go and performs no TUI-side provider request or credential
+test. The form states `Credentials are verified on first use.` because validity
+is exercised only when a conversation invokes the provider. A failed connect
+RPC opens a persistent full-message error state rather than a transient notice;
+Esc returns to the retained form for correction and retry. Public setup inputs
+remain populated, while credential and secret-classified setup inputs are
+best-effort wiped when the request is dispatched. User-facing JSON-RPC error
+formatting includes the RPC code/message and only scalar `data.code` and
+`data.message` fields; arbitrary error data remains redacted.
 Connect/disconnect changes become visible to other workspace daemons through
 provider-store generation reconciliation.
 
@@ -635,7 +666,10 @@ effective custom provider; nonempty store with empty TOML; zero-model snapshot;
 byte-exact guidance; no Model/Variant target; blocked ordinary submission with
 no run RPC; accepted `/connect`; all-provider discovery RPC; and guidance removal
 after a coherent runnable refresh. Connect tests must cover recipe-derived setup
-and auth descriptors, public/secret controls, defaults, missing/extra rejection,
+and auth descriptors, multi-method selection and per-method credential resets,
+boxed public/secret controls, masking, Unicode input, focus traversal, submit and
+cancel behavior, persistent full connect errors with public-value retry state,
+first-use verification copy, defaults, missing/extra rejection,
 absent-provider upsert, reconnect replacement, cross-workspace setup persistence,
 and disconnect removal of setup plus credentials. Server tests must prove empty startup and
 typed run rejection without `runtime providers must be nonempty`.
