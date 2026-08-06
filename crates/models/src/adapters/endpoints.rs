@@ -39,6 +39,7 @@ pub const fn custom_endpoint_policy(family: OvenAdapterFamily) -> BaseUrlOverrid
     BaseUrlOverridePolicy::CustomHttpsOrReviewedLoopback {
         path: match family {
             OvenAdapterFamily::Anthropic
+            | OvenAdapterFamily::AnthropicCompatible
             | OvenAdapterFamily::OpenaiChat
             | OvenAdapterFamily::OpenaiResponses
             | OvenAdapterFamily::OpenaiCompatible

@@ -1,9 +1,9 @@
 use std::{collections::BTreeMap, fmt};
 
 use cookie_agent_identity::{
-    AuthFieldName, AuthMethodId, CatalogRevision, ProtocolRecipeId, ProviderId, ProviderModelId,
-    ProviderRecipeId, ProviderSetupRecipeId, ProviderStateRevision, ProviderStoreRevision,
-    RecipeCompilerVersion, SafeCode, SetupFieldId,
+    AuthFieldName, AuthMethodId, CatalogRevision, ProviderId, ProviderModelId,
+    ProviderSetupRecipeId, ProviderStateRevision, ProviderStoreRevision, RecipeCompilerVersion,
+    SafeCode, SetupFieldId,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -210,9 +210,9 @@ pub struct StoredModelOverrideProjection {
 #[serde(deny_unknown_fields)]
 pub struct StoredProviderPolicyProjection {
     pub catalog_revision: CatalogRevision,
-    pub provider_recipe: ProviderRecipeId,
+    pub family_id: SafePolicyString,
     pub setup_recipe: ProviderSetupRecipeId,
-    pub protocol_recipe: ProtocolRecipeId,
+    pub adapter_id: SafePolicyString,
     pub compiler_version: RecipeCompilerVersion,
     pub default_endpoint_identity: SafePolicyString,
     pub package_claim: SafePolicyString,

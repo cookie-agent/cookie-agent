@@ -9,9 +9,8 @@ use std::{
 };
 
 use cookie_agent_identity::{
-    AuthFieldName, AuthMethodId, CatalogRevision, ProtocolRecipeId, ProviderId, ProviderModelId,
-    ProviderRecipeId, ProviderSetupRecipeId, RecipeCompilerVersion, RuntimeRevision, SafeCode,
-    SetupFieldId,
+    AuthFieldName, AuthMethodId, CatalogRevision, ProviderId, ProviderModelId,
+    ProviderSetupRecipeId, RecipeCompilerVersion, RuntimeRevision, SafeCode, SetupFieldId,
 };
 use cookie_agent_models::{
     SafeSetupValue, Sha256Digest,
@@ -52,7 +51,7 @@ fn private_store(temporary: &TempDir) -> ProviderStore {
 }
 
 fn read_store(store: &ProviderStore) -> Value {
-    serde_json::from_slice(&fs::read(store.path().join("store-v2.json")).unwrap()).unwrap()
+    serde_json::from_slice(&fs::read(store.path().join("store-v3.json")).unwrap()).unwrap()
 }
 
 fn digest_jcs(value: &Value) -> String {
@@ -137,10 +136,10 @@ fn remove_receipt_revisions(result: &mut Value) {
 fn policy(catalog_revision: &CatalogRevision, provider: &str) -> StoredProviderPolicyProjection {
     StoredProviderPolicyProjection {
         catalog_revision: catalog_revision.clone(),
-        provider_recipe: ProviderRecipeId::new(format!("{provider}.v1")).unwrap(),
+        family_id: SafePolicyString::new(format!("{provider}.v1")).unwrap(),
         setup_recipe: ProviderSetupRecipeId::new(format!("{provider}.setup.v1")).unwrap(),
-        protocol_recipe: ProtocolRecipeId::new(format!("{provider}.protocol.v1")).unwrap(),
-        compiler_version: RecipeCompilerVersion::new("registry1.v1").unwrap(),
+        adapter_id: SafePolicyString::new(format!("{provider}.protocol.v1")).unwrap(),
+        compiler_version: RecipeCompilerVersion::new("family-registry.v1").unwrap(),
         default_endpoint_identity: SafePolicyString::new(format!("https://{provider}.example/v1"))
             .unwrap(),
         package_claim: SafePolicyString::new(format!("@reviewed/{provider}")).unwrap(),
@@ -249,7 +248,7 @@ fn connect_upserts_rotates_replays_and_redacts_secrets() {
         fs::metadata(store.path()).unwrap().permissions().mode() & 0o777,
         0o700
     );
-    for name in ["store-v2.lock", "store-v2.json"] {
+    for name in ["store-v3.lock", "store-v3.json"] {
         assert_eq!(
             fs::metadata(store.path().join(name))
                 .unwrap()
@@ -587,9 +586,9 @@ fn revision_is_deterministic_jcs_of_the_exact_durable_projection() {
         serde_json::to_string(&object["disconnect_receipts"]).unwrap(),
         serde_json::to_string(&object["connect_receipts"]).unwrap(),
     );
-    fs::write(store.path().join("store-v2.json"), reordered).unwrap();
+    fs::write(store.path().join("store-v3.json"), reordered).unwrap();
     fs::set_permissions(
-        store.path().join("store-v2.json"),
+        store.path().join("store-v3.json"),
         fs::Permissions::from_mode(0o600),
     )
     .unwrap();
@@ -599,7 +598,7 @@ fn revision_is_deterministic_jcs_of_the_exact_durable_projection() {
     tampered["providers"]["openai"]["auth_values"]["api_key"] =
         Value::String("tampered-secret".into());
     fs::write(
-        store.path().join("store-v2.json"),
+        store.path().join("store-v3.json"),
         serde_json::to_vec(&tampered).unwrap(),
     )
     .unwrap();
@@ -657,7 +656,7 @@ fn adversarial_payloads_do_not_alias_and_jcs_uses_utf16_property_order() {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(digests.len(), 4);
 
-    let bytes = fs::read_to_string(store.path().join("store-v2.json")).unwrap();
+    let bytes = fs::read_to_string(store.path().join("store-v3.json")).unwrap();
     assert!(bytes.find('\u{10000}').unwrap() < bytes.find('\u{e000}').unwrap());
 
     let current = store.load().unwrap();
@@ -799,16 +798,17 @@ fn concurrent_independent_transactions_retry_without_lost_updates() {
 }
 
 #[test]
-fn partial_duplicate_unversioned_and_store1_state_are_rejected() {
+fn partial_duplicate_unversioned_and_prior_store_state_are_rejected() {
     let cases = [
-        ("store-v2.json", b"{".as_slice(), "invalid"),
+        ("store-v3.json", b"{".as_slice(), "invalid"),
         (
-            "store-v2.json",
-            br#"{"schema_version":2,"schema_version":2}"#,
+            "store-v3.json",
+            br#"{"schema_version":3,"schema_version":3}"#,
             "invalid",
         ),
-        ("store-v2.json", br#"{"providers":{}}"#, "unversioned"),
-        ("store-v2.json", br#"{"schema_version":1}"#, "legacy"),
+        ("store-v3.json", br#"{"providers":{}}"#, "unversioned"),
+        ("store-v3.json", br#"{"schema_version":2}"#, "legacy"),
+        ("store-v2.json", b"x".as_slice(), "legacy"),
         ("store-v1.json", b"x".as_slice(), "legacy"),
         ("store.json", b"x".as_slice(), "unversioned"),
     ];
@@ -828,7 +828,7 @@ fn partial_duplicate_unversioned_and_store1_state_are_rejected() {
 }
 
 #[test]
-fn recipe_fingerprint_is_required_and_revision_protected_in_schema2() {
+fn recipe_fingerprint_is_required_and_revision_protected_in_schema3() {
     for remove in [true, false] {
         let temporary = TempDir::new().unwrap();
         let store = private_store(&temporary);
@@ -855,7 +855,7 @@ fn recipe_fingerprint_is_required_and_revision_protected_in_schema2() {
                 Value::String("f".repeat(64)),
             );
         }
-        let path = store.path().join("store-v2.json");
+        let path = store.path().join("store-v3.json");
         fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(matches!(
@@ -882,13 +882,13 @@ fn lock_replacement_race_prevents_proposal_commit() {
         ConnectProposal::Replay(_) => unreachable!(),
     };
     fs::rename(
-        store.path().join("store-v2.lock"),
+        store.path().join("store-v3.lock"),
         store.path().join("displaced.lock"),
     )
     .unwrap();
-    fs::write(store.path().join("store-v2.lock"), b"").unwrap();
+    fs::write(store.path().join("store-v3.lock"), b"").unwrap();
     fs::set_permissions(
-        store.path().join("store-v2.lock"),
+        store.path().join("store-v3.lock"),
         fs::Permissions::from_mode(0o600),
     )
     .unwrap();
@@ -896,7 +896,7 @@ fn lock_replacement_race_prevents_proposal_commit() {
         transaction.commit(*proposal),
         Err(ProviderStoreError::Storage(_))
     ));
-    assert!(!store.path().join("store-v2.json").exists());
+    assert!(!store.path().join("store-v3.json").exists());
 }
 
 #[test]

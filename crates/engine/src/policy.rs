@@ -422,7 +422,8 @@ fn wire_adapter(value: &str) -> protocol::AdaptorId {
     match cookie_agent_models::adapters::wire_adapter_for_protocol(value)
         .expect("frozen binding contains a reviewed protocol adapter")
     {
-        cookie_agent_models::adapters::OvenAdapterFamily::Anthropic => {
+        cookie_agent_models::adapters::OvenAdapterFamily::Anthropic
+        | cookie_agent_models::adapters::OvenAdapterFamily::AnthropicCompatible => {
             protocol::AdaptorId::Anthropic
         }
         cookie_agent_models::adapters::OvenAdapterFamily::OpenaiChat => {

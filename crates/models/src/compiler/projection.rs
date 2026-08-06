@@ -13,15 +13,14 @@ use crate::{
 
 pub(crate) fn capabilities_from_catalog(
     model: &CatalogModelRecord,
-    family: OvenAdapterFamily,
+    _family: OvenAdapterFamily,
 ) -> Result<ModelCapabilities, serde_json::Error> {
     let input = model
         .modalities
         .input
         .iter()
         .filter(|value| {
-            value.as_str() == "text"
-                || model.attachment && matches!(value.as_str(), "image" | "audio" | "pdf")
+            value.as_str() == "text" || matches!(value.as_str(), "image" | "audio" | "pdf")
         })
         .cloned()
         .collect::<BTreeSet<_>>();
@@ -78,11 +77,7 @@ pub(crate) fn capabilities_from_catalog(
         "temperature": model.temperature.unwrap_or(false),
         "top_p": false,
         "seed": false,
-        "native_replay": if model.reasoning && family == OvenAdapterFamily::OpenaiResponses {
-            "required"
-        } else {
-            "unsupported"
-        },
+        "native_replay": "unsupported",
         "native_compaction": "unsupported",
         "cancellation": "local_only",
         "media": media

@@ -36,32 +36,6 @@ pub fn validate_capability_ceiling(
     if capabilities.native_replay != ReplayCapability::Unsupported && !replay_supported {
         return Err(AdapterCapabilityError::Unsupported);
     }
-    for modality in &capabilities.input {
-        let supported = match modality {
-            Modality::Text => true,
-            Modality::Image => !matches!(family, OvenAdapterFamily::CohereV2Chat),
-            Modality::Audio => matches!(
-                family,
-                OvenAdapterFamily::OpenaiChat
-                    | OvenAdapterFamily::OpenaiResponses
-                    | OvenAdapterFamily::OpenaiCompatible
-                    | OvenAdapterFamily::GoogleGemini
-                    | OvenAdapterFamily::GoogleVertexGemini
-                    | OvenAdapterFamily::AzureOpenaiChat
-                    | OvenAdapterFamily::AzureOpenaiResponses
-            ),
-            Modality::Pdf => matches!(
-                family,
-                OvenAdapterFamily::Anthropic
-                    | OvenAdapterFamily::GoogleGemini
-                    | OvenAdapterFamily::GoogleVertexGemini
-                    | OvenAdapterFamily::AwsBedrockConverse
-            ),
-        };
-        if !supported {
-            return Err(AdapterCapabilityError::Unsupported);
-        }
-    }
     for (kind, media) in &capabilities.media {
         let modality = match kind {
             MediaKind::Image => Modality::Image,

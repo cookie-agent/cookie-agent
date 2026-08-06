@@ -49,7 +49,7 @@ pub struct CatalogSafeErrorMeta {
     pub occurred_at: Timestamp,
 }
 
-/// Structural quarantine reason. Recipe claim drift extends this list later.
+/// Structural quarantine reason for independently recoverable catalog records.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CatalogQuarantineReason {
@@ -106,46 +106,7 @@ pub struct CatalogProviderEntry {
     pub quarantine: Option<CatalogQuarantineReason>,
 }
 
-/// Presence-preserving raw catalog claim for Registry-1 drift matching.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "presence", content = "value", rename_all = "snake_case")]
-pub enum CatalogClaim<T> {
-    Absent,
-    Present(T),
-}
-
-impl<T> CatalogClaim<T> {
-    #[must_use]
-    pub const fn is_present(&self) -> bool {
-        matches!(self, Self::Present(_))
-    }
-
-    #[must_use]
-    pub const fn as_ref(&self) -> CatalogClaim<&T> {
-        match self {
-            Self::Absent => CatalogClaim::Absent,
-            Self::Present(value) => CatalogClaim::Present(value),
-        }
-    }
-
-    #[must_use]
-    pub const fn as_option(&self) -> Option<&T> {
-        match self {
-            Self::Absent => None,
-            Self::Present(value) => Some(value),
-        }
-    }
-
-    #[must_use]
-    pub fn into_option(self) -> Option<T> {
-        match self {
-            Self::Absent => None,
-            Self::Present(value) => Some(value),
-        }
-    }
-}
-
-/// Strict provider-scoped catalog claims.
+/// Strict provider-scoped catalog metadata.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogProviderRecord {
@@ -155,22 +116,11 @@ pub struct CatalogProviderRecord {
     pub npm: String,
     pub api: Option<String>,
     pub shape: Option<String>,
-    pub claims: CatalogProviderClaims,
     pub documentation_url: String,
     pub models: BTreeMap<ProviderModelId, CatalogModelEntry>,
 }
 
-/// Presence-complete provider claims consumed by Registry 1.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CatalogProviderClaims {
-    pub environment: CatalogClaim<Vec<String>>,
-    pub npm: CatalogClaim<String>,
-    pub api: CatalogClaim<String>,
-    pub shape: CatalogClaim<String>,
-}
-
-/// A provider-model row with executable claims isolated from canonical metadata.
+/// A provider-model row with executable metadata isolated from canonical metadata.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogModelEntry {
@@ -179,7 +129,7 @@ pub struct CatalogModelEntry {
     pub quarantine: Option<CatalogQuarantineReason>,
 }
 
-/// Provider-scoped model claims. Only later recipe code may compile these.
+/// Provider-scoped model metadata compiled by the family registry.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogModelRecord {
@@ -199,9 +149,18 @@ pub struct CatalogModelRecord {
     pub modalities: CatalogModalities,
     pub limits: CatalogLimits,
     pub shape: Option<String>,
-    pub provider: Option<CatalogModelProviderClaims>,
+    pub provider: Option<CatalogModelProviderMetadata>,
     pub reasoning_options: Vec<CatalogReasoningOption>,
+    pub interleaved: Option<CatalogInterleaved>,
     pub canonical_provenance: Option<CanonicalModelProvenance>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogInterleaved {
+    Default,
+    ReasoningContent,
+    Reasoning,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -230,7 +189,7 @@ pub struct CatalogLimits {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct CatalogModelProviderClaims {
+pub struct CatalogModelProviderMetadata {
     pub npm: Option<String>,
     pub api: Option<String>,
     pub shape: Option<String>,

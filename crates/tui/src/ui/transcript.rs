@@ -1488,10 +1488,9 @@ mod tests {
     use cookie_agent_models::{
         ModelManager,
         catalog::{
-            CatalogAgeState, CatalogAvailability, CatalogClaim, CatalogLimits, CatalogModalities,
-            CatalogModelEntry, CatalogModelRecord, CatalogModelStatus, CatalogProviderClaims,
-            CatalogProviderEntry, CatalogProviderRecord, CatalogRuntimeState, CatalogSnapshot,
-            CatalogSource,
+            CatalogAgeState, CatalogAvailability, CatalogLimits, CatalogModalities,
+            CatalogModelEntry, CatalogModelRecord, CatalogModelStatus, CatalogProviderEntry,
+            CatalogProviderRecord, CatalogRuntimeState, CatalogSnapshot, CatalogSource,
         },
         provider_store::{
             ClientConnectId as StoreClientConnectId, ConnectMutation, ConnectProposal,
@@ -1625,6 +1624,7 @@ mod tests {
             shape: None,
             provider: None,
             reasoning_options: Vec::new(),
+            interleaved: None,
             canonical_provenance: None,
         };
         let shape = quarantined.then(|| "unexpected".to_owned());
@@ -1635,12 +1635,6 @@ mod tests {
             npm: "@ai-sdk/openai".to_owned(),
             api: None,
             shape: shape.clone(),
-            claims: CatalogProviderClaims {
-                environment: CatalogClaim::Present(environment),
-                npm: CatalogClaim::Present("@ai-sdk/openai".to_owned()),
-                api: CatalogClaim::Absent,
-                shape: shape.map_or(CatalogClaim::Absent, CatalogClaim::Present),
-            },
             documentation_url: "https://example.test/openai".to_owned(),
             models: BTreeMap::from([(
                 model_id.clone(),
@@ -1722,18 +1716,12 @@ mod tests {
             .expect("auth values"),
             policy: StoredProviderPolicyProjection {
                 catalog_revision: catalog.revision.clone(),
-                provider_recipe: cookie_agent_protocol::ProviderRecipeId::new(
-                    "openai.responses.v1",
-                )
-                .expect("provider recipe"),
+                family_id: SafePolicyString::new("openai").expect("family ID"),
                 setup_recipe: cookie_agent_protocol::ProviderSetupRecipeId::new("no-setup-v1")
                     .expect("setup recipe"),
-                protocol_recipe: cookie_agent_protocol::ProtocolRecipeId::new(
-                    "oven.openai.responses",
-                )
-                .expect("protocol recipe"),
+                adapter_id: SafePolicyString::new("openai").expect("adapter ID"),
                 compiler_version: cookie_agent_protocol::RecipeCompilerVersion::new(
-                    "registry1-compiler-v1",
+                    "family-registry-compiler-v1",
                 )
                 .expect("compiler version"),
                 default_endpoint_identity: SafePolicyString::new("https://api.openai.com/v1")
@@ -5611,23 +5599,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn server_quarantined_descriptor_is_typed_and_details_only() {
+    async fn catalog_shape_does_not_quarantine_provider() {
         let catalog = production_openai_catalog('e', true);
         let harness = production_provider_harness(catalog, |_| {});
         let client = Client::connect_in_process(Arc::clone(&harness.server));
         client.handshake().await.expect("production handshake");
-        let runtime = client
-            .runtime_snapshot()
-            .await
-            .expect("quarantined runtime");
+        let runtime = client.runtime_snapshot().await.expect("family runtime");
         let projected = &runtime.snapshot.providers[0];
         assert_eq!(
             projected.support.state,
-            cookie_agent_protocol::ProviderSupportState::Quarantined
+            cookie_agent_protocol::ProviderSupportState::Supported
         );
         assert_eq!(
             projected.support.reason.as_ref().map(SafeCode::as_str),
-            Some("catalog_provider_shape_drift")
+            None
         );
 
         let mut app = test_app().await;
@@ -5637,17 +5622,10 @@ mod tests {
         app.modal = Modal::ConnectProviders;
         app.picker_state.select(Some(0));
         let picker = rendered_frame(&mut app, 140, 32);
-        assert!(picker.contains("quarantined: catalog_provider_shape_drift"));
+        assert!(picker.contains("disconnected"));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
-        assert_eq!(app.modal, Modal::ConnectDetails);
-        let details = rendered_frame(&mut app, 160, 32);
-        assert!(details.contains("Support: Quarantined"));
-        assert!(details.contains("Typed reason: catalog_provider_shape_drift"));
-        assert!(
-            details
-                .contains("catalog_provider_shape_drift: catalog provider record is quarantined")
-        );
+        assert_eq!(app.modal, Modal::ConnectCredentials);
         let after = client.runtime_snapshot().await.expect("unchanged runtime");
         assert_eq!(
             after.snapshot.provider_store_generation,

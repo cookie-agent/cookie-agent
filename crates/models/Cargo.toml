@@ -27,6 +27,7 @@ oven-sdk-google-vertex.workspace = true
 oven-sdk-bedrock.workspace = true
 oven-sdk-azure.workspace = true
 oven-sdk-cohere.workspace = true
+oven-sdk-open-responses.workspace = true
 reqwest-oven.workspace = true
 rustix.workspace = true
 serde.workspace = true

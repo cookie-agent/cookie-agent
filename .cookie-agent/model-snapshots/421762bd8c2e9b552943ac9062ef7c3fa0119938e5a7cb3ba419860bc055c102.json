@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "revision": "sha256:421762bd8c2e9b552943ac9062ef7c3fa0119938e5a7cb3ba419860bc055c102",
+  "payload": {
+    "catalog_revision": "sha256:10717d0063d090644357835ddf620b1b0a035a3a9b29789b8819873e14c14505",
+    "recipe_registry_revision": "sha256:2149ea34a05fe5b3a3260de8a2452b4c8a6c48c3270e5d8d9da218d43de7978e",
+    "provider_state_revision": "sha256:50e302a8c66a297396d357a441b091d0613059776c6f67534a4e087b23cf5240",
+    "model_revision": "sha256:0356f11db98376e23b74dde9d5927cbfe3f36b1a92538477464c4d8b3d57b779",
+    "blueprints": []
+  }
+}

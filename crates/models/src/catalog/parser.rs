@@ -12,10 +12,10 @@ use serde::{
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    CanonicalModelProvenance, CanonicalModelRecord, CatalogCacheMetaV1, CatalogClaim, CatalogError,
-    CatalogLimits, CatalogModalities, CatalogModelEntry, CatalogModelProviderClaims,
-    CatalogModelRecord, CatalogModelStatus, CatalogProviderClaims, CatalogProviderEntry,
-    CatalogProviderRecord, CatalogQuarantineEntry, CatalogQuarantineReason, CatalogReasoningOption,
+    CanonicalModelProvenance, CanonicalModelRecord, CatalogCacheMeta, CatalogError, CatalogLimits,
+    CatalogModalities, CatalogModelEntry, CatalogModelProviderMetadata, CatalogModelRecord,
+    CatalogModelStatus, CatalogProviderEntry, CatalogProviderRecord, CatalogQuarantineEntry,
+    CatalogQuarantineReason, CatalogReasoningOption,
 };
 
 const MAX_DEPTH: usize = 32;
@@ -97,7 +97,7 @@ pub(crate) fn parse_catalog(bytes: &[u8]) -> Result<ParsedCatalog, CatalogError>
     })
 }
 
-pub(crate) fn parse_cache_meta(bytes: &[u8]) -> Result<CatalogCacheMetaV1, CatalogError> {
+pub(crate) fn parse_cache_meta(bytes: &[u8]) -> Result<CatalogCacheMeta, CatalogError> {
     parse_cache_document(bytes, "catalog cache metadata")
 }
 
@@ -230,21 +230,21 @@ fn parse_provider(
         Err(_) => return Ok(Err(CatalogQuarantineReason::InvalidCatalogProviderRecord)),
     };
     let environment = match fields.get("env") {
-        Some(value) => match claim_string_array(value, MAX_ENV_FIELDS) {
-            Some(value) => CatalogClaim::Present(value),
+        Some(value) => match metadata_string_array(value, MAX_ENV_FIELDS) {
+            Some(value) => value,
             None => return Ok(Err(CatalogQuarantineReason::InvalidCatalogProviderRecord)),
         },
-        None => CatalogClaim::Absent,
+        None => Vec::new(),
     };
-    let npm = match text_claim(&fields, "npm") {
+    let npm = match optional_text(&fields, "npm") {
+        Ok(value) => value.unwrap_or_default(),
+        Err(_) => return Ok(Err(CatalogQuarantineReason::InvalidCatalogProviderRecord)),
+    };
+    let api = match optional_text(&fields, "api") {
         Ok(value) => value,
         Err(_) => return Ok(Err(CatalogQuarantineReason::InvalidCatalogProviderRecord)),
     };
-    let api = match text_claim(&fields, "api") {
-        Ok(value) => value,
-        Err(_) => return Ok(Err(CatalogQuarantineReason::InvalidCatalogProviderRecord)),
-    };
-    let shape = match text_claim(&fields, "shape") {
+    let shape = match optional_text(&fields, "shape") {
         Ok(value) => value,
         Err(_) => return Ok(Err(CatalogQuarantineReason::InvalidCatalogProviderRecord)),
     };
@@ -261,35 +261,13 @@ fn parse_provider(
         return Err(candidate("catalog provider model map exceeds its limit"));
     }
     let models = parse_provider_models(key, raw_models, canonical, quarantine);
-    let projected_environment = match &environment {
-        CatalogClaim::Absent => Vec::new(),
-        CatalogClaim::Present(value) => value.clone(),
-    };
-    let projected_npm = match &npm {
-        CatalogClaim::Absent => String::new(),
-        CatalogClaim::Present(value) => value.clone(),
-    };
-    let projected_api = match &api {
-        CatalogClaim::Absent => None,
-        CatalogClaim::Present(value) => Some(value.clone()),
-    };
-    let projected_shape = match &shape {
-        CatalogClaim::Absent => None,
-        CatalogClaim::Present(value) => Some(value.clone()),
-    };
     Ok(Ok(CatalogProviderRecord {
         id,
         name,
-        environment: projected_environment,
-        npm: projected_npm,
-        api: projected_api,
-        shape: projected_shape,
-        claims: CatalogProviderClaims {
-            environment,
-            npm,
-            api,
-            shape,
-        },
+        environment,
+        npm,
+        api,
+        shape,
         documentation_url,
         models,
     }))
@@ -441,13 +419,17 @@ fn parse_model(
     let shape = optional_text(&fields, "shape")?;
     let provider = fields
         .get("provider")
-        .map(|value| parse_provider_claims(value))
+        .map(|value| parse_model_provider_metadata(value))
         .transpose()?;
     let reasoning_options = fields
         .get("reasoning_options")
         .map(|value| parse_reasoning_options(value))
         .transpose()?
         .unwrap_or_default();
+    let interleaved = fields
+        .get("interleaved")
+        .map(|value| parse_interleaved(value))
+        .transpose()?;
     if reasoning != fields.contains_key("reasoning_options") {
         return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
     }
@@ -475,6 +457,7 @@ fn parse_model(
         shape,
         provider,
         reasoning_options,
+        interleaved,
         canonical_provenance,
     })
 }
@@ -678,9 +661,9 @@ fn validate_canonical_limits(value: &JsonValue) -> Result<(), CatalogQuarantineR
     }
 }
 
-fn parse_provider_claims(
+fn parse_model_provider_metadata(
     value: &JsonValue,
-) -> Result<CatalogModelProviderClaims, CatalogQuarantineReason> {
+) -> Result<CatalogModelProviderMetadata, CatalogQuarantineReason> {
     let object = value
         .as_object()
         .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
@@ -704,7 +687,7 @@ fn parse_provider_claims(
     {
         return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
     }
-    Ok(CatalogModelProviderClaims {
+    Ok(CatalogModelProviderMetadata {
         npm: optional_text(&fields, "npm")?,
         api: optional_text(&fields, "api")?,
         shape,
@@ -953,25 +936,29 @@ fn validate_base_cost(fields: &BTreeMap<&str, &JsonValue>) -> Result<(), Catalog
     Ok(())
 }
 
-fn validate_interleaved(value: &JsonValue) -> Result<(), CatalogQuarantineReason> {
+fn parse_interleaved(
+    value: &JsonValue,
+) -> Result<crate::catalog::CatalogInterleaved, CatalogQuarantineReason> {
     if value.as_bool() == Some(true) {
-        return Ok(());
+        return Ok(crate::catalog::CatalogInterleaved::Default);
     }
     let object = value
         .as_object()
         .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
     let fields =
         unique_fields(object).map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    if exact_fields(&fields, &["field"], &["field"])
-        && matches!(
-            fields["field"].as_str(),
-            Some("reasoning_content" | "reasoning_details")
-        )
-    {
-        Ok(())
-    } else {
-        Err(CatalogQuarantineReason::InvalidCatalogModelRecord)
+    if !exact_fields(&fields, &["field"], &["field"]) {
+        return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
     }
+    match fields["field"].as_str() {
+        Some("reasoning_content") => Ok(crate::catalog::CatalogInterleaved::ReasoningContent),
+        Some("reasoning_details") => Ok(crate::catalog::CatalogInterleaved::Reasoning),
+        _ => Err(CatalogQuarantineReason::InvalidCatalogModelRecord),
+    }
+}
+
+fn validate_interleaved(value: &JsonValue) -> Result<(), CatalogQuarantineReason> {
+    parse_interleaved(value).map(|_| ())
 }
 
 fn validate_experimental(value: &JsonValue) -> Result<(), CatalogQuarantineReason> {
@@ -1255,18 +1242,6 @@ fn optional_text(
         .transpose()
 }
 
-fn text_claim(
-    fields: &BTreeMap<&str, &JsonValue>,
-    name: &str,
-) -> Result<CatalogClaim<String>, CatalogQuarantineReason> {
-    match fields.get(name) {
-        Some(value) => bounded_text(value)
-            .map(CatalogClaim::Present)
-            .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord),
-        None => Ok(CatalogClaim::Absent),
-    }
-}
-
 fn date_text(value: &JsonValue) -> Result<String, CatalogQuarantineReason> {
     let value = bounded_text(value).ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
     let parts = value.split('-').collect::<Vec<_>>();
@@ -1342,7 +1317,7 @@ fn string_array(value: &JsonValue, maximum: usize, require_unique: bool) -> Opti
     }
 }
 
-fn claim_string_array(value: &JsonValue, maximum: usize) -> Option<Vec<String>> {
+fn metadata_string_array(value: &JsonValue, maximum: usize) -> Option<Vec<String>> {
     let values = value.as_array()?;
     if values.len() > maximum {
         return None;

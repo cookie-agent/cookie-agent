@@ -7,7 +7,7 @@ Subagent-first coding harness.
 The authoritative contract is [ARCHITECTURE.md](ARCHITECTURE.md). Exact schema
 and runtime behavior are in
 [docs/agent-model-variant-redesign.md](docs/agent-model-variant-redesign.md), and
-the implemented provider/protocol/auth baseline is frozen in
+the implemented npm-family/provider/auth baseline is described in
 [docs/provider-conformance.md](docs/provider-conformance.md).
 
 ## Current-only versions
@@ -18,9 +18,9 @@ the implemented provider/protocol/auth baseline is frozen in
 | Agent document | 1 |
 | Protocol, events, session JSONL/metadata, delegation journal | 8 |
 | Runtime snapshot | 1 |
-| Catalog cache | 1 |
-| Provider store | 2 |
-| Recipe registry | 1 |
+| Catalog cache | 2 |
+| Provider store | 3 |
+| Family recipe registry | 1 |
 | Project model-snapshot manifest | 1 |
 
 Earlier project formats are rejected. There is no schema-6 or protocol-7
@@ -35,7 +35,7 @@ Structurally invalid candidates
 fall through; malformed provider/model records in a bounded structurally valid
 candidate are quarantined independently so valid siblings remain usable.
 
-On Unix, catalog cache schema 1 is fixed below
+On Unix, catalog cache schema 2 is fixed below
 `~/.local/share/cookie_agent/catalog/`. Directories are private `0700`; body,
 metadata, lock, and temporary files are current-user-owned `0600` regular
 single-link files handled no-follow and atomically. The metadata records stale/
@@ -54,7 +54,7 @@ There is one top-level `providers` map; nonempty entries use
   Custom IDs start with `custom.`.
 
 Same-ID workspace definitions atomically replace user definitions; fields do
-not merge. Managed models are automatic: every reviewed supported,
+not merge. Managed models are automatic: every family-supported,
 non-deprecated text-output model is included unless disabled by a sparse
 override.
 
@@ -80,10 +80,10 @@ port = 17419
 [providers]
 ```
 
-When provider store 2 is also empty and there is no effective authored custom
+When provider store 3 is also empty and there is no effective authored custom
 provider, it opens the TUI with no models/root-runnable agents and keeps
 `/connect` available. It must not fail with
-`runtime providers must be nonempty`. Because provider store 2 is per-user
+`runtime providers must be nonempty`. Because provider store 3 is per-user
 global, empty TOML may still materialize stored managed connections.
 
 The following is a separate nonempty example:
@@ -149,13 +149,13 @@ the secret never belongs in `headers`.
 
 The Vertex example keeps project/location/resource in `setup` and the credential
 in `auth_override`; neither side may duplicate the other's fields.
-All Registry-1 setup values are non-secret behavioral metadata included directly
+All family-registry setup values are non-secret behavioral metadata included directly
 in safe fingerprints. Every secret belongs to auth, is excluded from
 fingerprints, and may rotate without changing model behavior identity.
 
-Use `/connect` provider store 2 or `${env:NAME}` interpolation instead of
+Use `/connect` provider store 3 or `${env:NAME}` interpolation instead of
 plaintext credentials. Interpolation is not available in custom static headers.
-`api_key` is semantic input only; recipe registry 1 owns
+`api_key` is semantic input only; family registry 1 owns
 its wire encoding. `auth_override` is exactly
 `{ method = "...", values = { ... } }` and is required when an API-key auth
 method is ambiguous. `api_key` and `auth_override` are mutually exclusive.
@@ -165,14 +165,14 @@ same-definition `auth_override`, then provider store only when no authored
 `base_url` exists, then reviewed no-auth, then unavailable.
 
 Managed setup precedence is complete same-definition `setup`, then stored setup,
-then explicitly defaultable recipe fields, then unavailable. Provider store 2
+then explicitly defaultable family fields, then unavailable. Provider store 3
 stores normalized non-secret setup and secret auth credentials plus policy/
 scope/receipt metadata.
 Setup maps never merge with auth or across layers; custom providers remain fully
 config-only and store-independent.
 
-Managed endpoint precedence is authored `base_url`, then code-owned recipe
-default. Catalog API metadata is only checked. An authored base URL requires
+Managed endpoint precedence is authored `base_url`, then catalog `api`, then the
+npm-family default. Catalog API metadata is endpoint authority. An authored base URL requires
 same-definition authored auth and every required non-defaulted setup field unless
 the recipe is reviewed no-auth. Only explicitly defaultable setup fields may use
 recipe defaults. Stored setup and stored auth never flow to an authored endpoint. All
@@ -202,8 +202,8 @@ validates exact missing/extra fields, and atomically stores normalized setup plu
 credentials. This supports Vertex, Bedrock, Azure, and empty/default setup
 API-key providers without authored provider TOML.
 
-Provider store schema 2 is fixed at
-`~/.local/share/cookie_agent/providers/store-v2.json` with the same private
+Provider store schema 3 is fixed at
+`~/.local/share/cookie_agent/providers/store-v3.json` with the same private
 ownership/no-follow/atomic guarantees. Disconnect removes managed stored setup
 and credentials; it never edits config or touches custom providers.
 

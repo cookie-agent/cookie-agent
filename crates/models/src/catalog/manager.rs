@@ -11,7 +11,7 @@ use crate::secure_store::{SecureDirectory, SecureDirectoryLock, SecureStoreError
 
 use super::{
     CATALOG_BODY_FILE, CATALOG_CACHE_SCHEMA_VERSION, CATALOG_LOCK_FILE, CATALOG_MAX_BYTES,
-    CATALOG_META_FILE, CatalogAgeState, CatalogAvailability, CatalogCacheMetaV1, CatalogRequest,
+    CATALOG_META_FILE, CatalogAgeState, CatalogAvailability, CatalogCacheMeta, CatalogRequest,
     CatalogRuntimeState, CatalogSafeErrorMeta, CatalogSnapshot, CatalogSource, CatalogTransport,
     CatalogTransportError, CatalogTransportResponse, MODELS_DEV_CATALOG_URL, parse_cache_meta,
     parse_catalog, validated_bootstrap,
@@ -23,10 +23,10 @@ const MAX_ETAG_BYTES: usize = 1_024;
 const MAX_SAFE_MESSAGE_BYTES: usize = 512;
 const SEVEN_DAYS_SECONDS: i64 = 7 * 24 * 60 * 60;
 const THIRTY_DAYS_SECONDS: i64 = 30 * 24 * 60 * 60;
-const BODY_NEXT_FILE: &str = ".models-dev-v1.json.next";
-const META_NEXT_FILE: &str = ".models-dev-v1.meta.json.next";
-const BODY_BACKUP_FILE: &str = ".models-dev-v1.json.backup";
-const META_BACKUP_FILE: &str = ".models-dev-v1.meta.json.backup";
+const BODY_NEXT_FILE: &str = ".models-dev-v2.json.next";
+const META_NEXT_FILE: &str = ".models-dev-v2.meta.json.next";
+const BODY_BACKUP_FILE: &str = ".models-dev-v2.json.backup";
+const META_BACKUP_FILE: &str = ".models-dev-v2.meta.json.backup";
 
 /// Dynamic network/cache/bootstrap catalog manager.
 pub struct CatalogManager<T> {
@@ -324,7 +324,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
         Ok(ValidatedCache { parsed, meta })
     }
 
-    fn commit_cache(&self, body: &[u8], meta: &CatalogCacheMetaV1) -> Result<(), CatalogError> {
+    fn commit_cache(&self, body: &[u8], meta: &CatalogCacheMeta) -> Result<(), CatalogError> {
         let directory = self.cache.as_ref().map_err(Clone::clone)?;
         let lock = directory
             .lock(CATALOG_LOCK_FILE)
@@ -770,7 +770,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
 
 struct ValidatedCache {
     parsed: super::ParsedCatalog,
-    meta: CatalogCacheMetaV1,
+    meta: CatalogCacheMeta,
 }
 
 fn metadata_for(
@@ -781,14 +781,8 @@ fn metadata_for(
     checked_at: Timestamp,
     etag: Option<String>,
     last_error: Option<CatalogSafeErrorMeta>,
-) -> CatalogCacheMetaV1 {
-    let provider_quarantine_count = parsed
-        .quarantine
-        .iter()
-        .filter(|entry| entry.provider_id.is_some() && entry.model_id.is_none())
-        .count() as u32;
-    let model_quarantine_count = parsed.quarantine.len() as u32 - provider_quarantine_count;
-    CatalogCacheMetaV1 {
+) -> CatalogCacheMeta {
+    CatalogCacheMeta {
         schema_version: CATALOG_CACHE_SCHEMA_VERSION,
         url: MODELS_DEV_CATALOG_URL.to_owned(),
         body_revision: parsed.revision.as_str().to_owned(),
@@ -798,14 +792,11 @@ fn metadata_for(
         last_checked_at: checked_at,
         selected_source: source,
         stale,
-        provider_quarantine_count,
-        model_quarantine_count,
-        quarantine_digest: quarantine_digest(&parsed.quarantine),
         last_error,
     }
 }
 
-fn validate_meta(meta: &CatalogCacheMetaV1, body: &[u8]) -> Result<(), CatalogError> {
+fn validate_meta(meta: &CatalogCacheMeta, body: &[u8]) -> Result<(), CatalogError> {
     if meta.schema_version != CATALOG_CACHE_SCHEMA_VERSION
         || meta.url != MODELS_DEV_CATALOG_URL
         || meta.byte_length != body.len() as u64
@@ -821,18 +812,10 @@ fn validate_meta(meta: &CatalogCacheMetaV1, body: &[u8]) -> Result<(), CatalogEr
 }
 
 fn validate_parsed_meta(
-    meta: &CatalogCacheMetaV1,
+    meta: &CatalogCacheMeta,
     parsed: &super::ParsedCatalog,
 ) -> Result<(), CatalogError> {
-    let expected = metadata_for(
-        parsed,
-        meta.selected_source,
-        meta.stale,
-        meta.validated_at,
-        meta.last_checked_at,
-        meta.etag.clone(),
-        meta.last_error.clone(),
-    );
+    let _ = parsed;
     let error_valid = meta.last_error.as_ref().is_none_or(|error| {
         !error.code.is_empty()
             && error.code.len() <= 128
@@ -844,11 +827,7 @@ fn validate_parsed_meta(
             && error.safe_message.len() <= MAX_SAFE_MESSAGE_BYTES
             && !error.safe_message.chars().any(char::is_control)
     });
-    if meta.provider_quarantine_count != expected.provider_quarantine_count
-        || meta.model_quarantine_count != expected.model_quarantine_count
-        || meta.quarantine_digest != expected.quarantine_digest
-        || !error_valid
-    {
+    if !error_valid {
         Err(CatalogError::new(
             "invalid_catalog_cache_metadata",
             "catalog cache metadata quarantine state is invalid",
@@ -861,13 +840,6 @@ fn validate_parsed_meta(
 fn revision(body: &[u8]) -> CatalogRevision {
     CatalogRevision::new(format!("sha256:{:x}", Sha256::digest(body)))
         .expect("SHA-256 revision is valid")
-}
-
-fn quarantine_digest(value: &impl Serialize) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"cookie-agent/catalog-quarantine/v1\0");
-    hasher.update(serde_json::to_vec(value).expect("safe quarantine is serializable"));
-    format!("sha256:{:x}", hasher.finalize())
 }
 
 fn snapshot_from_parsed(

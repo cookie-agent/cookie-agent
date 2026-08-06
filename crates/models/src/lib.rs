@@ -27,8 +27,8 @@ pub use authoring::{
 };
 pub use authoring::{
     AuthOverride, BoundedSetupString, ConfigSetupValue, CustomModelDefinition, CustomProvider,
-    EndpointUrl, ManagedModelOverride, PartialRequestDefaults, SafeAuthParameterValue,
-    SafeSetupValue, SafeStaticHeaderValue,
+    EndpointUrl, ManagedModelOverride, ManagedModelShape, PartialRequestDefaults,
+    SafeAuthParameterValue, SafeSetupValue, SafeStaticHeaderValue,
 };
 pub use manager::{
     CompiledModelRuntime, CompiledProviderState, CompiledRuntimeModel, EffectiveCredentialSource,

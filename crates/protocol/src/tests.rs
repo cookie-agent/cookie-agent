@@ -80,7 +80,7 @@ fn frozen_binding() -> FrozenModelBinding {
         provider_recipe: ProviderRecipeId::new("openai.responses.v1").unwrap(),
         protocol_recipe: ProtocolRecipeId::new("oven.openai.responses").unwrap(),
         setup_recipe: ProviderSetupRecipeId::new("empty-setup-v1").unwrap(),
-        compiler_version: RecipeCompilerVersion::new("registry1").unwrap(),
+        compiler_version: RecipeCompilerVersion::new("family-registry").unwrap(),
         descriptor,
         defaults: FrozenResolvedRequestDefaults {
             request: FrozenRequestDefaults::default(),

@@ -597,6 +597,7 @@ dependencies = [
  "oven-sdk-cohere",
  "oven-sdk-google",
  "oven-sdk-google-vertex",
+ "oven-sdk-open-responses",
  "oven-sdk-openai",
  "reqwest",
  "rustix",
@@ -1034,7 +1035,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2104,14 +2105,16 @@ dependencies = [
 
 [[package]]
 name = "oven-sdk"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9893bdd3b93b39776f98e9348681e4a48930823bad89fd411da249aadd74c5f8"
+checksum = "87c155094c230dc1b14cf57d773fcab95caf6e5a1a52bc9a0ec9143b4229ff1b"
 dependencies = [
  "bitflags 2.13.1",
  "bytes",
  "futures-core",
+ "futures-util",
  "http",
+ "httpdate",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -2120,9 +2123,9 @@ dependencies = [
 
 [[package]]
 name = "oven-sdk-anthropic"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98cf97e15a9ee36472434bbc50bab44f328d639e557076c4f579071cbdcf5729"
+checksum = "95512fbe9105b39ba1353de0fce4ff866dd8f03643b3911d9762a11057ecde14"
 dependencies = [
  "base64",
  "bytes",
@@ -2130,7 +2133,6 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
- "httpdate",
  "oven-sdk",
  "reqwest",
  "serde",
@@ -2143,15 +2145,14 @@ dependencies = [
 
 [[package]]
 name = "oven-sdk-azure"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "769b383e4b52732f4556f7fad000bf08722a541621d502df47d55ac3b338df01"
+checksum = "19c29c0817d5b763abf5982f637c14c921b67f34431145bc3a73d248a03088f9"
 dependencies = [
  "base64",
  "bytes",
  "futures-core",
  "futures-util",
- "httpdate",
  "oven-sdk",
  "reqwest",
  "serde",
@@ -2163,9 +2164,9 @@ dependencies = [
 
 [[package]]
 name = "oven-sdk-bedrock"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c0fc53b506ffa2d5426e6e4b962411d253f5573d202fcff4664497dba86825a"
+checksum = "b070fc38e8a2ee270c1364ada7290cba458f665b7226dc15e48ecd394fa1a8e0"
 dependencies = [
  "base64",
  "bytes",
@@ -2174,7 +2175,6 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
- "httpdate",
  "oven-sdk",
  "reqwest",
  "serde",
@@ -2187,15 +2187,14 @@ dependencies = [
 
 [[package]]
 name = "oven-sdk-cohere"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1f7bced3864340601ceb3e04d31599b92d0e51f8a9e9cfea242751b03873bc3"
+checksum = "b060f33d211e437a26fc7d9d9c4e5672b0320eca627579851e9bf115381d3994"
 dependencies = [
  "base64",
  "bytes",
  "futures-core",
  "futures-util",
- "httpdate",
  "oven-sdk",
  "reqwest",
  "serde",
@@ -2207,16 +2206,15 @@ dependencies = [
 
 [[package]]
 name = "oven-sdk-google"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "730f7b068d4131f4f78742d16987a7703b0748190a2fc097f3652caf30747f6e"
+checksum = "959ae307a1f9a10d114ee0e3bf3101e6f5ccd865d75aac1a529c25f321436e6b"
 dependencies = [
  "base64",
  "bytes",
  "futures-core",
  "futures-util",
  "hex",
- "httpdate",
  "oven-sdk",
  "reqwest",
  "serde",
@@ -2228,15 +2226,14 @@ dependencies = [
 
 [[package]]
 name = "oven-sdk-google-vertex"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b28f896ba6b97e8b43eeb2625bcea1252d9b2a573e8ce3813582ccf298af501"
+checksum = "ae782dd737b871cdb17bcc0e3b034d159d6d2c999454a0dbadac033def5e4b40"
 dependencies = [
  "base64",
  "bytes",
  "futures-core",
  "futures-util",
- "httpdate",
  "oven-sdk",
  "reqwest",
  "serde",
@@ -2246,16 +2243,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "oven-sdk-openai"
-version = "0.4.0"
+name = "oven-sdk-open-responses"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38b7fffa569b39a144f194fb2f97ac628f61f8c82771c36b75fa76d10b8119a0"
+checksum = "53b10ba34a427f59f7a70a5e5336e6f8ef0cedb8392404e4f66b9e29f5f921c7"
 dependencies = [
  "base64",
  "bytes",
  "futures-core",
  "futures-util",
- "httpdate",
+ "oven-sdk",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "oven-sdk-openai"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e666d327faed1bc74890f5b3408c860946fe3acc7c4f5c80aecf55d273b2192"
+dependencies = [
+ "base64",
+ "bytes",
+ "futures-core",
+ "futures-util",
  "oven-sdk",
  "reqwest",
  "serde",
@@ -2577,7 +2592,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2916,7 +2931,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3380,10 +3395,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4259,7 +4274,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

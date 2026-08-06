@@ -1,4 +1,4 @@
-//! Fixed models.dev acquisition, cache schema 1, bootstrap, and quarantine.
+//! Fixed models.dev acquisition, cache schema 2, bootstrap, and structural validation.
 
 mod bootstrap;
 mod cache;
@@ -13,13 +13,13 @@ pub use bootstrap::{
 };
 pub use cache::{
     CATALOG_BODY_FILE, CATALOG_CACHE_SCHEMA_VERSION, CATALOG_LOCK_FILE, CATALOG_META_FILE,
-    CatalogCacheMetaV1,
+    CatalogCacheMeta,
 };
 pub use manager::{CatalogError, CatalogManager};
 pub use records::{
     CanonicalModelProvenance, CanonicalModelRecord, CatalogAgeState, CatalogAvailability,
-    CatalogClaim, CatalogLimits, CatalogModalities, CatalogModelEntry, CatalogModelProviderClaims,
-    CatalogModelRecord, CatalogModelStatus, CatalogProviderClaims, CatalogProviderEntry,
+    CatalogInterleaved, CatalogLimits, CatalogModalities, CatalogModelEntry,
+    CatalogModelProviderMetadata, CatalogModelRecord, CatalogModelStatus, CatalogProviderEntry,
     CatalogProviderRecord, CatalogQuarantineEntry, CatalogQuarantineReason, CatalogReasoningOption,
     CatalogRuntimeState, CatalogSafeErrorMeta, CatalogSnapshot, CatalogSource,
 };

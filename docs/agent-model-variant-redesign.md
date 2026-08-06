@@ -3,7 +3,7 @@
 **Status:** frozen implementation specification
 
 **Versions:** config 7; agent document 1; protocol/event/session 8; runtime
-snapshot 1; catalog cache 1; provider store 2; recipe registry 1; project
+snapshot 1; catalog cache 2; provider store 3; family registry 1; project
 model-snapshot manifest 1. Every prior project version is rejected without
 migration or compatibility decoding.
 
@@ -73,7 +73,7 @@ pub type ConfigSetupValue = SafeSetupValue;
 TOML setup values use the separate `setup` map and exact `SafeSetupValue` scalar
 forms. The selected
 code-owned provider setup recipe validates each exact setup field as bounded,
-non-secret behavioral routing/configuration metadata. Registry 1 has no
+non-secret behavioral routing/configuration metadata. Family registry 1 has no
 sensitive setup field. `auth_override` and custom `auth` own credential fields
 only.
 
@@ -93,7 +93,7 @@ required nonempty. There is no `custom_providers`, `catalog_revision`,
 `catalog_url`, managed `models` inclusion map, `endpoint` on managed providers,
 or `base_url` on custom providers. Empty configuration must not fail with
 `runtime providers must be nonempty` or any equivalent nonempty-map check. It
-yields zero models only when provider store 2 is also empty and no effective
+yields zero models only when provider store 3 is also empty and no effective
 authored custom provider exists; stored per-user managed connections still apply
 when TOML providers are absent or empty.
 
@@ -174,7 +174,7 @@ have media entries.
 
 Defaults must fit limits/capabilities. Tool choice requires tool support.
 Reasoning is authorable only by a variant reasoning directive and must compile
-losslessly. Replay/compaction/cancellation claims must be implemented by the
+losslessly. Replay/compaction/cancellation capabilities must be implemented by the
 selected adaptor; no optimistic declaration is accepted. `options` is the
 strict adapter-specific option type selected by `adaptor`; missing required or
 unknown options fail.
@@ -230,7 +230,7 @@ unknown-field error unless a future recipe/schema explicitly adds one.
 
 ## 2. Endpoint and query rules
 
-Every catalog API claim, managed `base_url`, and custom `endpoint` must be an
+Every catalog API template, managed `base_url`, and custom `endpoint` must be an
 absolute URL no longer than 2048 UTF-8 bytes. Userinfo, fragment, and any query
 component are rejected, including a bare trailing `?` or an empty parsed query.
 HTTPS is required. HTTP is accepted only when the exact selected recipe or
@@ -241,14 +241,16 @@ do not qualify.
 Managed endpoint precedence is exactly:
 
 ```text
-same atomic definition base_url > recipe registry 1 default
+same atomic definition base_url
+> nested model provider.api
+> catalog provider api
+> Family registry 1 default
 ```
 
-Provider store and catalog API metadata never provide an endpoint. The catalog
-API value is checked against the recipe's exact/allowed raw claim set and then
-normalized for security/equivalence. A mismatch quarantines the known provider
-as `catalog_provider_api_drift`; a recoverable ID remains safe-visible only as a
-quarantine descriptor.
+Provider-store state never provides an endpoint. Catalog provider/model API
+templates are family metadata: nested model metadata overrides provider metadata,
+`${VAR}` placeholders derive typed setup fields, and the resolved endpoint is
+normalized under the selected family's endpoint policy.
 
 An authored `base_url` requires same-definition `api_key` or `auth_override`
 unless the selected recipe explicitly declares no-auth. It also requires every
@@ -262,7 +264,7 @@ inherit provider-store setup or auth state from a replaced user definition.
 the selected method's semantic fields. Unknown, missing, duplicate, or extra
 fields fail. Effective `api_key` and `auth_override` are mutually exclusive.
 
-The ergonomic `api_key` field is accepted only when recipe registry 1 declares
+The ergonomic `api_key` field is accepted only when Family registry 1 declares
 one default auth method with exactly one required credential field classified
 `api_key`. If multiple auth methods are viable, another credential is required,
 or the sole credential is not classified as an API key, `api_key` is ambiguous and configuration must use
@@ -295,7 +297,11 @@ same-definition api_key
 
 Store auth is eligible only when neither authored auth nor authored `base_url`
 exists. Its scope must exactly match provider ID, recipe default normalized base
-URL/endpoint identity, canonical safe setup fingerprint, and auth method.
+URL/endpoint identity, canonical safe setup fingerprint, and an allowed auth
+method. A nested npm family may map a compatible source method and semantic
+credential field to its effective method (for example API-key to bearer
+API-key, or OAuth `access_token` to bearer `api_key`); unrelated methods and
+field shapes remain ineligible.
 Authored auth remains effective after any durable connect update. Custom
 providers use only their authored `auth`; they never use the store.
 
@@ -304,10 +310,10 @@ both absent. Removing authored setup, authored auth, and authored `base_url`
 allows exact stored setup and auth to become effective on recomposition. An authored
 `base_url` blocks both store setup and store auth.
 
-Auth method IDs represent semantics, not wire syntax. Recipe registry 1 maps
+Auth method IDs represent semantics, not wire syntax. Family registry 1 maps
 semantic fields to bearer, provider header, explicit access-token, SigV4, or
-another reviewed encoder. Catalog has no provider-setup-schema or auth-method
-claim and cannot define either.
+another reviewed encoder. Catalog does not define provider setup schemas or auth
+methods.
 
 ## 4. Interpolation, ownership, and secrets
 
@@ -326,7 +332,7 @@ unknown fields, and duplicates still fail closed.
 Resolved secrets use `SecretString`. Owned source, interpolation, connect,
 serialization, and CLI/TUI input buffers are best-effort zeroized immediately
 after use and on drop. This is process hygiene; transport/kernel copies are not
-claimed erasable. Secret values are excluded from all safe outputs and hashes.
+marked erasable. Secret values are excluded from all safe outputs and hashes.
 All Registry-1 setup values are non-secret and enter safe canonical config/
 behavior fingerprints directly where behaviorally relevant. Every secret or
 sensitive value must instead be an auth credential value and is excluded from
@@ -360,7 +366,7 @@ CatalogRoot { providers: Map<ProviderId, RawProviderRecord>,
 
 Both maps are required, bounded, and nonempty. Unknown root fields are rejected.
 `providers` is limited to 4096 entries and carries provider-scoped executable
-claims and provider model maps. Root `models` is limited to 65,536 entries and
+metadata and provider model maps. Root `models` is limited to 65,536 entries and
 carries canonical metadata/provenance only. It cannot select endpoint, npm,
 protocol, provider setup schema, auth method, Oven adaptor, model inclusion,
 defaults, or variants.
@@ -380,12 +386,9 @@ After a bounded provider map is recovered, records are isolated:
 4. Model-local duplicate keys, malformed required shape, invalid ID, or a
    normalized-ID collision quarantine only that model and all colliding model
    peers; valid sibling models survive.
-5. For a known registry provider, npm/API/env/provider-shape drift quarantines
-   that provider and all children. Model provider npm/API/shape or model-shape
-   drift quarantines only that model. A recoverable unique ID remains
-   safe-visible with the typed quarantine reason.
-6. A provider with no recipe entry is not claim drift; it remains visible as
-   unsupported `no_reviewed_provider_recipe`.
+5. Structurally valid npm/API/shape metadata is classified through Family
+   registry 1. An unknown provider family leaves the provider visible but
+   unsupported; an unknown nested model family makes only that model unsupported.
 
 Each provider-map key must equal its provider record `id`; each provider-model
 key must equal that model record `id`; and each canonical-model key must equal
@@ -398,7 +401,7 @@ canonical-model field quarantines only that canonical record.
 
 When a provider-model key exactly equals a valid root canonical-model key, the
 runtime records an optional provenance cross-reference/digest. The provider
-record remains the only executable claim and may legitimately disagree on name,
+record remains the only executable metadata and may legitimately disagree on name,
 limits, modalities, dates, or capabilities. No exact canonical match is required
 for execution. A missing or quarantined canonical record removes provenance only
 and never invents or invalidates an otherwise valid provider executable record.
@@ -408,14 +411,14 @@ provider ID may produce an unsupported `/connect` row with
 `invalid_catalog_provider_record`; records without such an ID contribute only
 to safe global quarantine counts.
 
-## 6. Catalog cache schema 1
+## 6. Catalog cache schema 2
 
 Unix paths are fixed:
 
 ```text
-~/.local/share/cookie_agent/catalog/models-dev-v1.json
-~/.local/share/cookie_agent/catalog/models-dev-v1.meta.json
-~/.local/share/cookie_agent/catalog/models-dev-v1.lock
+~/.local/share/cookie_agent/catalog/models-dev-v2.json
+~/.local/share/cookie_agent/catalog/models-dev-v2.meta.json
+~/.local/share/cookie_agent/catalog/models-dev-v2.lock
 ```
 
 All ancestor/application/catalog directories are current-user-owned `0700`.
@@ -424,8 +427,8 @@ single-link, and opened no-follow. Every write locks/rereads, writes exclusive
 same-directory temps, fsyncs, atomically renames, and parent-fsyncs.
 
 ```rust
-pub struct CatalogCacheMetaV1 {
-    pub schema_version: CatalogCacheSchemaVersion, // exactly 1
+pub struct CatalogCacheMeta {
+    pub schema_version: CatalogCacheSchemaVersion, // exactly 2
     pub url: FixedModelsDevUrl,
     pub body_revision: CatalogRevision, // sha256:<lowercase SHA-256 digest of the exact selected body bytes>
     pub etag: Option<String>,
@@ -451,7 +454,7 @@ updated even when selected body bytes do not change. If metadata cannot be
 written safely, the in-memory snapshot reports `cache_metadata_write_failed`;
 unsafe disk state is never trusted.
 
-## 7. Provider visibility and store 2
+## 7. Provider visibility and store 3
 
 `/connect` is a TUI projection of runtime snapshot providers. It includes:
 
@@ -461,15 +464,15 @@ unsafe disk state is never trusted.
   catalog, marked `removed`;
 - no custom provider.
 
-Provider store 2 is fixed at
-`~/.local/share/cookie_agent/providers/store-v2.json` with sibling lock. The
+Provider store 3 is fixed at
+`~/.local/share/cookie_agent/providers/store-v3.json` with sibling lock. The
 application/providers directories are `0700`; store/lock/temp files are `0600`,
 current-user-owned, regular, single-link, descriptor-relative, no-follow, and
 atomically replaced with lock/reread/fsync/rename/parent-fsync.
 
 ```rust
-pub struct ProviderStoreV2 {
-    pub schema_version: ProviderStoreSchemaVersion, // exactly 2
+pub struct ProviderStoreSnapshot {
+    pub schema_version: ProviderStoreSchemaVersion, // exactly 3
     pub generation: ProviderStoreGeneration,
     pub store_revision: ProviderStoreRevision,
     pub providers: BTreeMap<ProviderId, StoredManagedConnection>,
@@ -490,9 +493,9 @@ pub struct StoredManagedConnection {
 
 pub struct StoredProviderPolicyProjection {
     pub catalog_revision: CatalogRevision,
-    pub provider_recipe: ProviderRecipeId,
+    pub family_id: SafePolicyString,
     pub setup_recipe: ProviderSetupRecipeId,
-    pub protocol_recipe: ProtocolRecipeId,
+    pub adapter_id: SafePolicyString,
     pub compiler_version: RecipeCompilerVersion,
     pub default_endpoint_identity: SafeEndpointIdentity,
     pub package_claim: SafePolicyString,
@@ -513,20 +516,28 @@ pub struct DurableConnectionDescriptor {
 }
 ```
 
+Azure Foundry Anthropic models classified as `@ai-sdk/anthropic` retain the
+package's API-key wire behavior: `x-api-key`. Foundry accepts `x-api-key` for
+API-key authentication; Entra access tokens instead use Authorization bearer.
+Amazon Bedrock Mantle Responses models require a Bedrock API key as bearer
+material (`AWS_BEARER_TOKEN_BEDROCK`) for the OpenAI Responses adapter. SigV4
+credentials remain applicable to Bedrock Converse models but are not passed to
+the OpenAI adapter.
+
 Each connection retains provider ID, recipe-default endpoint identity, safe
 setup/config scope fingerprint, normalized non-secret setup values, auth method
-and secret credential values, generation, timestamps, and the safe provider
-recipe ID/package, exact source-record digest, and independent recipe fingerprint
+and secret credential values, generation, timestamps, family/adapter IDs and
+package, exact source-record digest, and independent recipe fingerprint
 validated at connect time. `source_record_digest` is immutable provenance over
 the exact canonical validated catalog provider record selected at connect time.
 `recipe_fingerprint` is the credential/execution compatibility identity over
 Registry-1 revision/schema, compiler version, complete selected provider/
 protocol/adapter/setup/auth/endpoint recipe, and versioned model-exception
-semantics. Provider store 2 stores managed setup and credentials plus non-secret
+semantics. Provider store 3 stores managed setup and credentials plus non-secret
 policy, scope, source projection, generation, and idempotency-receipt metadata.
 State revisions, connect payload digests, persisted receipts, and durable runtime
-connection descriptors include `recipe_fingerprint`; schema-2 records missing it
-are rejected without migration. The retained safe source projection allows a
+connection descriptors include `recipe_fingerprint`; every non-schema-3 store,
+including `store-v2.json`, is rejected without migration. The retained safe source projection allows a
 formerly current provider to remain a configured `removed` row. The store
 contains no custom provider, catalog body, model inclusion pin, or endpoint
 discovered from catalog.
@@ -534,7 +545,7 @@ discovered from catalog.
 A harmless catalog metadata refresh changes only `source_record_digest` for the
 newly compiled runtime/manifest. If `recipe_fingerprint`, provider identity,
 endpoint policy, normalized setup, and auth shape are unchanged, the existing
-store secret remains eligible. API/environment/package claims, adapter,
+store secret remains eligible. API/environment/package metadata, adapter,
 protocol, setup/auth/endpoint policy, compiler/registry, or model-exception drift
 changes or quarantines recipe compatibility and blocks reuse. Source provenance
 is never rewritten to make credentials match.
@@ -586,7 +597,7 @@ prior store record or authored provider definition is required for a current
 catalog provider; connect creates/upserts the managed store record.
 
 Before durable write, hold the serialized runtime-mutation lock and store lock;
-reread store 2; validate catalog revision/idempotency and exact missing/extra
+reread store 3; validate catalog revision/idempotency and exact missing/extra
 recipe-typed setup fields and auth credential fields; normalize safe setup
 values; assign the final
 store revision, connection generation, and receipt; and compile the complete
@@ -803,7 +814,7 @@ blueprints, and safe identities. Unsafe objects or malformed matching files fail
 project open with `invalid_model_snapshot_manifest` or
 `model_snapshot_digest_mismatch`; no partial acceptance or filename fallback is
 allowed. Every version-8 session/journal reference must resolve. Referenced
-manifests are never garbage-collected; Registry 1 performs no automatic manifest
+manifests are never garbage-collected; Family registry 1 performs no automatic manifest
 GC.
 
 ```rust
@@ -875,7 +886,8 @@ secret.
   config auth. The durable connection's historical `source_record_digest` need
   not equal a harmless newly refreshed blueprint's source digest.
 - Managed source reconstructs from the persisted safe source projection only if
-  Registry 1 still reproduces the exact recipe fingerprint, package claim,
+  Family registry 1 still reproduces the exact recipe fingerprint, frozen
+  `package_claim`,
   protocol, auth, and compiler. The binding must exactly match its referenced
   blueprint's own source-record digest, but source provenance is not credential
   scope. Current catalog presence is not required.
@@ -889,7 +901,7 @@ shape, but never credential values. Config-backed managed and custom blueprint
 rules are unchanged; custom remains entirely config-only.
 
 Custom provider compilation, fingerprints, and rehydration are entirely
-config-only and never open or depend on provider store 2.
+config-only and never open or depend on provider store 3.
 
 Typed failures are `snapshot_config_mismatch`,
 `snapshot_credentials_unavailable`, `unsupported_snapshot_recipe`, and
@@ -910,9 +922,9 @@ manifest-directory, or runtime changes do not reinterpret it.
 
 1. **Schema 7 and agents:** securely load recipe registry 1, atomic config 7,
    and agent documents.
-2. **Catalog:** securely open cache 1, perform bounded network acquisition, then
+2. **Catalog:** securely open cache 2, perform bounded network acquisition, then
    resolve network, validated cache, or bootstrap and quarantine records.
-3. **Provider store:** lock/load provider store 2 and its generation.
+3. **Provider store:** lock/load provider store 3 and its generation.
 4. **Effective providers:** resolve authored/stored managed and authored custom
    providers.
 5. **Coherent runtime:** compile all providers/models/agents into runtime

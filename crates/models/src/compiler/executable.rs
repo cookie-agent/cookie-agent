@@ -87,7 +87,7 @@ pub(crate) fn compile_executable(
             compiled,
             executable_provider_id(provider_id, model.adapter),
             &executable_model_id(model),
-            &model.protocol_recipe,
+            &model.adapter_id,
             concrete_capabilities,
         );
     }
@@ -97,6 +97,7 @@ pub(crate) fn compile_executable(
 fn executable_provider_id(provider_id: &str, family: OvenAdapterFamily) -> &str {
     match family {
         OvenAdapterFamily::Anthropic => "anthropic",
+        OvenAdapterFamily::AnthropicCompatible => provider_id,
         OvenAdapterFamily::OpenaiChat | OvenAdapterFamily::OpenaiResponses => "openai",
         OvenAdapterFamily::GoogleGemini => "google",
         OvenAdapterFamily::GoogleVertexGemini => "google-vertex",
@@ -204,6 +205,21 @@ fn adapter_config(
             },
             "options": anthropic_options(options, reasoning)
         }),
+        OvenAdapterFamily::AnthropicCompatible => json!({
+            "adaptor": "anthropic-compatible",
+            "settings": {
+                "adapter_id": model.adapter_id,
+                "thinking": if model.capabilities.reasoning { "both" } else { "none" },
+                "thinking_default_active": false,
+                "thinking_disable_allowed": model.capabilities.reasoning,
+                "thinking_disable_forbidden_efforts": [],
+                "effort": model.capabilities.reasoning,
+                "assistant_prefill": false,
+                "reject_non_default_sampling": !model.capabilities.temperature,
+                "native_context_discriminator": Value::Null
+            },
+            "options": anthropic_options(options, reasoning)
+        }),
         OvenAdapterFamily::OpenaiChat if model.auth.method == "no-auth-v1" => json!({
             "adaptor": "openai-compatible",
             "settings": {
@@ -243,12 +259,12 @@ fn adapter_config(
         OvenAdapterFamily::OpenaiCompatible => json!({
             "adaptor": "openai-compatible",
             "settings": {
-                "adapter_id": model.protocol_recipe,
+                "adapter_id": model.adapter_id,
                 "system_message_role": "system",
                 "max_tokens_field": "max_tokens",
                 "stream_usage": false,
                 "structured_output": structured,
-                "reasoning_field": reasoning_field,
+                "reasoning_field": if model.capabilities.reasoning { model.reasoning_field.as_str() } else { "none" },
                 "routing_discriminator": (model.auth.method == "api-key-header-v1")
                     .then(|| format!("header:{}", model.auth.safe_parameters.get("header_name").map_or("api-key", String::as_str)))
             },
@@ -270,7 +286,7 @@ fn adapter_config(
             "settings": {
                 "project": setup(model, "project")?,
                 "location": setup(model, "location")?,
-                "resource": { "type": "publisher_model", "publisher": "google", "model": model.id.as_str() },
+                "resource": { "type": "publisher_model", "publisher": if model.family_id == "vertex-anthropic" { "anthropic" } else { "google" }, "model": model.id.as_str() },
                 "thinking": vertex_thinking(reasoning),
                 "provider_tools": false,
                 "mixed_client_and_provider_tools": false,
@@ -285,7 +301,7 @@ fn adapter_config(
             "settings": {
                 "region": setup(model, "region")?,
                 "reasoning_wire_format": if model.capabilities.reasoning { "bedrock_reasoning_config" } else { "unsupported" },
-                "signed_reasoning": model.capabilities.reasoning,
+                "signed_reasoning": false,
                 "structured_output": if model.capabilities.structured_output { "json_schema" } else { "unsupported" },
                 "max_event_message_bytes": 16 * 1024 * 1024
             },
@@ -294,7 +310,7 @@ fn adapter_config(
         OvenAdapterFamily::AzureOpenaiChat => json!({
             "adaptor": "azure-chat",
             "settings": {
-                "route": { "kind": "dated", "version": setup(model, "api_version")? },
+                "route": { "kind": "v1" },
                 "revision": Value::Null,
                 "system_role": "developer",
                 "max_tokens_field": if model.capabilities.reasoning { "max_completion_tokens" } else { "max_tokens" },
@@ -308,7 +324,7 @@ fn adapter_config(
         OvenAdapterFamily::AzureOpenaiResponses => json!({
             "adaptor": "azure-responses",
             "settings": {
-                "route": { "kind": "dated", "version": setup(model, "api_version")? },
+                "route": { "kind": "v1" },
                 "revision": Value::Null
             },
             "options": { "reasoning_mode": reasoning.and_then(reasoning_effort) }
@@ -485,6 +501,9 @@ fn vertex_media() -> Value {
 
 fn bedrock_options(reasoning: Option<&ReasoningBehavior>) -> Value {
     match reasoning {
+        Some(ReasoningBehavior::Toggle { enabled }) => json!({
+            "reasoning_type": if *enabled { "enabled" } else { "disabled" }
+        }),
         Some(ReasoningBehavior::BudgetTokens { value }) if *value > 0 => json!({
             "reasoning_type": "enabled",
             "reasoning_budget_tokens": value

@@ -56,7 +56,9 @@ pub fn validate_static_headers(
 
 fn protocol_headers(family: OvenAdapterFamily) -> &'static [&'static str] {
     match family {
-        OvenAdapterFamily::Anthropic => &["anthropic-version", "anthropic-beta", "x-api-key"],
+        OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible => {
+            &["anthropic-version", "anthropic-beta", "x-api-key"]
+        }
         OvenAdapterFamily::GoogleGemini => &["x-goog-api-key"],
         OvenAdapterFamily::AwsBedrockConverse => &[
             "authorization",

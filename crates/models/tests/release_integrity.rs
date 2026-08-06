@@ -148,21 +148,22 @@ fn owned_source_files() -> Vec<PathBuf> {
 fn published_oven_dependencies_are_exactly_pinned() {
     let manifest = fs::read_to_string(workspace().join("Cargo.toml")).unwrap();
     for pin in [
-        "oven-sdk = \"=0.4.0\"",
-        "oven-sdk-anthropic = \"=0.5.0\"",
-        "oven-sdk-openai = \"=0.4.0\"",
-        "oven-sdk-google = \"=0.4.0\"",
-        "oven-sdk-google-vertex = \"=0.4.0\"",
-        "oven-sdk-bedrock = \"=0.3.0\"",
-        "oven-sdk-azure = \"=0.3.0\"",
-        "oven-sdk-cohere = \"=0.2.0\"",
+        "oven-sdk = \"=0.5.0\"",
+        "oven-sdk-anthropic = \"=0.6.0\"",
+        "oven-sdk-openai = \"=0.5.0\"",
+        "oven-sdk-google = \"=0.5.0\"",
+        "oven-sdk-google-vertex = \"=0.5.0\"",
+        "oven-sdk-bedrock = \"=0.4.0\"",
+        "oven-sdk-azure = \"=0.4.0\"",
+        "oven-sdk-cohere = \"=0.3.0\"",
+        "oven-sdk-open-responses = \"=0.3.0\"",
     ] {
         assert!(manifest.contains(pin), "missing exact pin: {pin}");
     }
 }
 
 #[test]
-fn models_source_and_manifest_have_no_future_open_responses_surface() {
+fn models_source_has_no_unapproved_open_responses_adapter_surface() {
     let models = workspace().join("crates/models");
     let source = models.join("src");
     let mut files = Vec::new();
@@ -185,7 +186,7 @@ fn models_source_and_manifest_have_no_future_open_responses_surface() {
         }
     }
     let manifest = fs::read_to_string(models.join("Cargo.toml")).unwrap();
-    assert!(!manifest.contains(&["oven-sdk-open", "-responses"].concat()));
+    assert!(manifest.contains(&["oven-sdk-open", "-responses.workspace = true"].concat()));
 }
 
 #[test]
@@ -577,11 +578,11 @@ fn model_package_catalog_network_is_fixed_and_has_no_unapproved_adapters() {
 }
 
 #[test]
-fn synthetic_claim_fixture_is_explicitly_unapproved_safe_and_not_a_runtime_pin() {
+fn synthetic_metadata_fixture_is_explicitly_unapproved_safe_and_not_a_runtime_pin() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/models-dev-claims-synthetic.json");
+        .join("tests/fixtures/models-dev-metadata-synthetic.json");
     let metadata_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/models-dev-claims-synthetic.meta.json");
+        .join("tests/fixtures/models-dev-metadata-synthetic.meta.json");
     let bytes = fs::read(&fixture).unwrap();
     let metadata: serde_json::Value =
         serde_json::from_slice(&fs::read(metadata_path).unwrap()).unwrap();
@@ -590,7 +591,7 @@ fn synthetic_claim_fixture_is_explicitly_unapproved_safe_and_not_a_runtime_pin()
     assert_eq!(metadata["runtime_pin"], false);
     assert_eq!(metadata["contains_secrets"], false);
     assert_eq!(metadata["approved_live_audit"], false);
-    assert_eq!(metadata["fixture_kind"], "invented_claim_edge_cases");
+    assert_eq!(metadata["fixture_kind"], "invented_metadata_edge_cases");
     assert_no_secret_material(&fixture, &bytes);
 }
 
@@ -659,9 +660,9 @@ fn catalog_cache_source_has_only_the_fixed_persistent_layout() {
         );
     }
     for required in [
-        "models-dev-v1.json",
-        "models-dev-v1.meta.json",
-        "models-dev-v1.lock",
+        "models-dev-v2.json",
+        "models-dev-v2.meta.json",
+        "models-dev-v2.lock",
     ] {
         assert!(
             source.contains(required),

@@ -11,7 +11,8 @@ use oven_sdk::{
     ProviderId, ResourceId, SecretString,
 };
 use oven_sdk_anthropic::{
-    AnthropicAuth, AnthropicCacheControl, AnthropicCacheTtl, AnthropicModel,
+    AnthropicAuth, AnthropicCacheControl, AnthropicCacheTtl, AnthropicCompatibleAuth,
+    AnthropicCompatibleModel, AnthropicCompatibleSettings, AnthropicModel,
     AnthropicProtocolSettings, AnthropicRequestOptions, AnthropicSettings, AnthropicThinking,
     AnthropicThinkingSupport, AnthropicTimeouts,
 };
@@ -110,6 +111,14 @@ impl ConcreteModel {
                 AdapterConfig::Anthropic { settings, options } => (
                     Arc::new(AnthropicModel::new(ModelConfig::new(
                         provider.with_auth(self.anthropic_auth()?),
+                        declaration,
+                        settings.to_oven()?,
+                    ))?),
+                    namespace("anthropic", options.to_oven())?,
+                ),
+                AdapterConfig::AnthropicCompatible { settings, options } => (
+                    Arc::new(AnthropicCompatibleModel::new(ModelConfig::new(
+                        provider.with_auth(self.anthropic_compatible_auth()?),
                         declaration,
                         settings.to_oven()?,
                     ))?),
@@ -219,6 +228,18 @@ impl ConcreteModel {
         }
     }
 
+    fn anthropic_compatible_auth(&self) -> Result<AnthropicCompatibleAuth, ModelBuildError> {
+        match &self.auth {
+            AuthConfig::None => Ok(AnthropicCompatibleAuth::None),
+            AuthConfig::ApiKey { value } => Ok(AnthropicCompatibleAuth::ApiKey(secret(value))),
+            AuthConfig::Bearer { token } => Ok(AnthropicCompatibleAuth::Bearer(secret(token))),
+            _ => Err(wrong_auth(
+                "Anthropic-compatible",
+                "none, api_key, or bearer",
+            )),
+        }
+    }
+
     fn openai_auth(&self) -> Result<OpenAiAuth, ModelBuildError> {
         match &self.auth {
             AuthConfig::Openai {
@@ -283,7 +304,14 @@ impl ConcreteModel {
     fn azure_auth(&self) -> Result<AzureOpenAiAuth, ModelBuildError> {
         match &self.auth {
             AuthConfig::ApiKey { value } => Ok(AzureOpenAiAuth::ApiKey(secret(value))),
-            _ => Err(wrong_auth("Azure OpenAI", "api_key")),
+            AuthConfig::Bearer { token } => {
+                let token = token.clone();
+                Ok(AzureOpenAiAuth::Entra(Arc::new(move || {
+                    let token = token.clone();
+                    Box::pin(async move { Ok(token) })
+                })))
+            }
+            _ => Err(wrong_auth("Azure OpenAI", "api_key or bearer")),
         }
     }
 
@@ -402,6 +430,11 @@ pub struct CommonDefaults {
 pub enum AdapterConfig {
     Anthropic {
         settings: AnthropicSettingsConfig,
+        #[serde(default)]
+        options: AnthropicOptionsConfig,
+    },
+    AnthropicCompatible {
+        settings: AnthropicCompatibleSettingsConfig,
         #[serde(default)]
         options: AnthropicOptionsConfig,
     },
@@ -667,6 +700,27 @@ impl AnthropicSettingsConfig {
                 .as_ref()
                 .map(|value| ResourceId::new(value.clone()).map_err(ModelBuildError::from))
                 .transpose()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnthropicCompatibleSettingsConfig {
+    pub adapter_id: String,
+    #[serde(flatten)]
+    pub protocol: AnthropicSettingsConfig,
+}
+
+impl AnthropicCompatibleSettingsConfig {
+    fn to_oven(&self) -> Result<AnthropicCompatibleSettings, ModelBuildError> {
+        let settings = self.protocol.to_oven()?;
+        Ok(AnthropicCompatibleSettings {
+            adapter_id: AdapterId::new(self.adapter_id.clone()),
+            client: settings.client,
+            timeouts: settings.timeouts,
+            protocol: settings.protocol,
+            native_context_discriminator: settings.native_context_discriminator,
         })
     }
 }

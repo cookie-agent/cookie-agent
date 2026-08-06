@@ -8,15 +8,15 @@ use cookie_agent_identity::{
 };
 use cookie_agent_models::{
     BoundedSetupString, ProviderDefinition, SafeSetupValue,
+    adapters::OvenAdapterFamily,
     catalog::{
-        CatalogAgeState, CatalogAvailability, CatalogClaim, CatalogLimits, CatalogModalities,
-        CatalogModelEntry, CatalogModelRecord, CatalogModelStatus, CatalogProviderClaims,
-        CatalogProviderEntry, CatalogProviderRecord, CatalogRuntimeState, CatalogSnapshot,
-        CatalogSource,
+        CatalogAgeState, CatalogAvailability, CatalogLimits, CatalogModalities, CatalogModelEntry,
+        CatalogModelRecord, CatalogModelStatus, CatalogProviderEntry, CatalogProviderRecord,
+        CatalogRuntimeState, CatalogSnapshot, CatalogSource,
     },
     manager::{
         EffectiveCredentialSource, ModelManager, ModelManagerError, ProviderConnectRequest,
-        ProviderDisconnectRequest, RetainedProviderRecipeMatch, retained_provider_recipe_match,
+        ProviderDisconnectRequest, RetainedFamilyMatch, retained_family_match,
         safe_definition_fingerprint,
     },
     manifests::{
@@ -67,6 +67,7 @@ fn catalog() -> Arc<CatalogSnapshot> {
         shape: None,
         provider: None,
         reasoning_options: Vec::new(),
+        interleaved: None,
         canonical_provenance: None,
     };
     let record = CatalogProviderRecord {
@@ -76,12 +77,6 @@ fn catalog() -> Arc<CatalogSnapshot> {
         npm: "@ai-sdk/openai".to_owned(),
         api: None,
         shape: None,
-        claims: CatalogProviderClaims {
-            environment: CatalogClaim::Present(vec!["OPENAI_API_KEY".to_owned()]),
-            npm: CatalogClaim::Present("@ai-sdk/openai".to_owned()),
-            api: CatalogClaim::Absent,
-            shape: CatalogClaim::Absent,
-        },
         documentation_url: "https://example.test/openai".to_owned(),
         models: BTreeMap::from([(
             model_id.clone(),
@@ -156,6 +151,7 @@ fn cloud_catalog(
         shape: None,
         provider: None,
         reasoning_options: Vec::new(),
+        interleaved: None,
         canonical_provenance: None,
     };
     let record = CatalogProviderRecord {
@@ -165,12 +161,6 @@ fn cloud_catalog(
         npm: npm.to_owned(),
         api: None,
         shape: None,
-        claims: CatalogProviderClaims {
-            environment: CatalogClaim::Present(environment),
-            npm: CatalogClaim::Present(npm.to_owned()),
-            api: CatalogClaim::Absent,
-            shape: CatalogClaim::Absent,
-        },
         documentation_url: "https://example.test/cloud".to_owned(),
         models: BTreeMap::from([(
             model_id.clone(),
@@ -218,6 +208,51 @@ fn setup_values(values: &[(&str, &str)]) -> BTreeMap<SetupFieldId, SafeSetupValu
         .collect()
 }
 
+#[test]
+fn stored_alternative_bearer_auth_is_effective_for_anthropic_and_azure() {
+    for (provider, npm, environment, setup) in [
+        (
+            "anthropic",
+            "@ai-sdk/anthropic",
+            vec!["ANTHROPIC_API_KEY"],
+            Vec::new(),
+        ),
+        (
+            "azure",
+            "@ai-sdk/azure",
+            vec!["AZURE_API_KEY", "AZURE_RESOURCE_NAME"],
+            vec![("resource_name", "example")],
+        ),
+    ] {
+        let temporary = TempDir::new().unwrap();
+        let catalog = cloud_catalog(provider, npm, &environment, "model-1", None);
+        let manager =
+            ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
+        manager
+            .connect(
+                ProviderConnectRequest {
+                    provider_id: ProviderId::new(provider).unwrap(),
+                    expected_catalog_revision: catalog.revision.clone(),
+                    setup_values: setup_values(&setup),
+                    auth_method: AuthMethodId::new("bearer-api-key-v1").unwrap(),
+                    auth_values: auth_values(&[("api_key", "secret")]),
+                    client_connect_id: ClientConnectId::new(format!("{provider}-bearer")).unwrap(),
+                },
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        let runtime = manager.current();
+        assert_eq!(
+            runtime.providers()[0].effective_auth,
+            EffectiveCredentialSource::ProviderStore
+        );
+        assert!(runtime.models().values().all(|model| {
+            model.model.status == cookie_agent_models::compiler::CompiledModelStatus::Available
+                && model.model.auth.method == "bearer-api-key-v1"
+        }));
+    }
+}
+
 fn auth_values(values: &[(&str, &str)]) -> ProviderAuthValues {
     ProviderAuthValues::new(
         values
@@ -234,7 +269,7 @@ fn store(temporary: &TempDir) -> ProviderStore {
 }
 
 #[test]
-fn runtime_provider_projection_preserves_registry_claim_drift_code() {
+fn runtime_provider_projection_preserves_catalog_drift_code() {
     let temporary = TempDir::new().unwrap();
     let mut snapshot = (*catalog()).clone();
     let provider_id = ProviderId::new("openai").unwrap();
@@ -246,22 +281,17 @@ fn runtime_provider_projection_preserves_registry_claim_drift_code() {
         .as_mut()
         .unwrap();
     record.shape = Some("responses".to_owned());
-    record.claims.shape = CatalogClaim::Present("responses".to_owned());
     let manager =
         ModelManager::new(BTreeMap::new(), Arc::new(snapshot), store(&temporary)).unwrap();
-    assert_eq!(
-        manager.current().providers()[0].support_reason.as_deref(),
-        Some("catalog_provider_shape_drift")
+    assert_eq!(manager.current().providers()[0].support_reason, None);
+    assert!(
+        manager
+            .connect(
+                connect_request("quarantined", "secret", manager.current().catalog()),
+                |_, _| Ok(())
+            )
+            .is_ok()
     );
-    assert!(matches!(
-        manager.connect(
-            connect_request("quarantined", "secret", manager.current().catalog()),
-            |_, _| Ok(())
-        ),
-        Err(ModelManagerError::QuarantinedProvider(
-            cookie_agent_models::recipes::RecipeQuarantineReason::CatalogProviderShapeDrift
-        ))
-    ));
 }
 
 fn empty_catalog() -> Arc<CatalogSnapshot> {
@@ -309,6 +339,49 @@ async fn mock_sse_server(body: String) -> (String, tokio::task::JoinHandle<Strin
         String::from_utf8_lossy(&request).into_owned()
     });
     (format!("http://{address}/v1"), task)
+}
+
+async fn capture_http_request() -> (String, tokio::task::JoinHandle<String>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        let mut expected = None;
+        loop {
+            let read = socket.read(&mut buffer).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if expected.is_none()
+                && let Some(header_end) =
+                    request.windows(4).position(|window| window == b"\r\n\r\n")
+            {
+                let header_end = header_end + 4;
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                expected = Some(header_end + content_length);
+            }
+            if expected.is_some_and(|expected| request.len() >= expected) {
+                break;
+            }
+        }
+        socket
+            .write_all(b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&request).into_owned()
+    });
+    (format!("http://{address}"), task)
 }
 
 fn connect_request(id: &str, secret: &str, catalog: &CatalogSnapshot) -> ProviderConnectRequest {
@@ -432,7 +505,7 @@ fn same_id_replays_and_secret_rotation_preserves_safe_model_revision_and_snapsho
 }
 
 #[test]
-fn retained_recipe_match_rejects_each_persisted_policy_field_drift() {
+fn retained_family_match_rejects_each_persisted_policy_field_drift() {
     let temporary = TempDir::new().unwrap();
     let catalog = catalog();
     let manager =
@@ -451,24 +524,24 @@ fn retained_recipe_match_rejects_each_persisted_policy_field_drift() {
         .unwrap()
         .clone();
     assert_eq!(
-        retained_provider_recipe_match(&provider_id, &connection),
-        RetainedProviderRecipeMatch::SupportedRemoved
+        retained_family_match(&provider_id, &connection),
+        RetainedFamilyMatch::SupportedRemoved
     );
 
     let rejected = |connection| {
         assert_eq!(
-            retained_provider_recipe_match(&provider_id, &connection),
-            RetainedProviderRecipeMatch::RemovedWithoutRetainedRecipeMatch
+            retained_family_match(&provider_id, &connection),
+            RetainedFamilyMatch::RemovedWithoutRetainedFamilyMatch
         );
     };
     let mut drift = connection.clone();
     drift.provider_id = ProviderId::new("anthropic").unwrap();
     rejected(drift);
     let mut drift = connection.clone();
-    drift.policy.provider_recipe = ProviderRecipeId::new("openai.chat.v1").unwrap();
+    drift.policy.family_id = SafePolicyString::new("openai-chat").unwrap();
     rejected(drift);
     let mut drift = connection.clone();
-    drift.policy.protocol_recipe = ProtocolRecipeId::new("oven.openai.chat").unwrap();
+    drift.policy.adapter_id = SafePolicyString::new("oven.openai.chat").unwrap();
     assert_eq!(
         drift.policy.source_record_digest,
         connection.policy.source_record_digest
@@ -478,7 +551,8 @@ fn retained_recipe_match_rejects_each_persisted_policy_field_drift() {
     drift.policy.setup_recipe = ProviderSetupRecipeId::new("vertex-setup-v1").unwrap();
     rejected(drift);
     let mut drift = connection.clone();
-    drift.policy.compiler_version = RecipeCompilerVersion::new("registry1-compiler-v2").unwrap();
+    drift.policy.compiler_version =
+        RecipeCompilerVersion::new("family-registry-compiler-v2").unwrap();
     rejected(drift);
     let mut drift = connection.clone();
     drift.auth_method = AuthMethodId::new("no-auth-v1").unwrap();
@@ -563,11 +637,11 @@ fn source_record_digest_tracks_exact_catalog_record_independently_of_recipe_iden
     assert_eq!(first_connection.policy.recipe_fingerprint, second_recipe);
 
     let mut recipe_drift = first_connection;
-    recipe_drift.policy.protocol_recipe = ProtocolRecipeId::new("oven.openai.chat").unwrap();
+    recipe_drift.policy.adapter_id = SafePolicyString::new("oven.openai.chat").unwrap();
     assert_eq!(recipe_drift.policy.source_record_digest, first_source);
     assert_eq!(
-        retained_provider_recipe_match(&provider_id, &recipe_drift),
-        RetainedProviderRecipeMatch::RemovedWithoutRetainedRecipeMatch
+        retained_family_match(&provider_id, &recipe_drift),
+        RetainedFamilyMatch::RemovedWithoutRetainedFamilyMatch
     );
 }
 
@@ -715,7 +789,7 @@ fn removed_provider_without_exact_retained_match_cannot_rotate_credentials() {
 
     let removed_catalog = empty_catalog();
     policy.catalog_revision = removed_catalog.revision.clone();
-    policy.protocol_recipe = ProtocolRecipeId::new("oven.openai.chat").unwrap();
+    policy.adapter_id = SafePolicyString::new("oven.openai.chat").unwrap();
     let target = TempDir::new().unwrap();
     let target_store = store(&target);
     let transaction = target_store.begin_transaction().unwrap();
@@ -742,8 +816,8 @@ fn removed_provider_without_exact_retained_match_cannot_rotate_credentials() {
     let current = manager.current();
     let state = &current.providers()[0];
     assert_eq!(
-        state.retained_recipe_match,
-        Some(RetainedProviderRecipeMatch::RemovedWithoutRetainedRecipeMatch)
+        state.retained_family_match,
+        Some(RetainedFamilyMatch::RemovedWithoutRetainedFamilyMatch)
     );
     assert_eq!(
         state.support_reason.as_deref(),
@@ -939,6 +1013,60 @@ capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, ou
     }
 }
 
+#[tokio::test]
+async fn bedrock_toggle_variants_emit_distinct_reasoning_config_payloads() {
+    let mut payloads = Vec::new();
+    for (label, enabled) in [("enabled", true), ("disabled", false)] {
+        let temporary = TempDir::new().unwrap();
+        let (endpoint, captured) = capture_http_request().await;
+        let definition = format!(
+            r#"source = "custom"
+endpoint = "{endpoint}"
+adaptor = "aws-bedrock-converse"
+setup = {{ region = "us-east-1" }}
+auth = {{ method = "aws-sigv4-credentials-v1", values = {{ access_key_id = "access-key", secret_access_key = "secret-key" }} }}
+
+[models.test]
+display_name = "Bedrock"
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = true, temperature = false, top_p = false, seed = false, native_replay = "unsupported", native_compaction = "unsupported", cancellation = "local_only", media = {{}} }}
+variants = {{ toggle = {{ operation = "add", reasoning = {{ type = "toggle", enabled = {enabled} }} }} }}
+"#
+        );
+        let manager = ModelManager::new(
+            BTreeMap::from([(
+                ProviderId::new(format!("custom.{label}")).unwrap(),
+                toml::from_str::<ProviderDefinition>(&definition).unwrap(),
+            )]),
+            empty_catalog(),
+            store(&temporary),
+        )
+        .unwrap();
+        let resolved = manager
+            .current()
+            .resolve(&cookie_agent_identity::ModelSelection {
+                model: format!("custom.{label}/test").parse().unwrap(),
+                variant: Some(cookie_agent_identity::VariantId::new("toggle").unwrap()),
+            })
+            .unwrap();
+        let request = oven_sdk::Request::new(vec![oven_sdk::HistoryTurn::user(
+            oven_sdk::UserMessage::new(vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
+                "hello",
+            ))]),
+        )]);
+        let _ = resolved
+            .model()
+            .complete(
+                resolved.prepare_request(request),
+                oven_sdk::AbortSignal::default(),
+            )
+            .await;
+        payloads.push(captured.await.unwrap());
+    }
+    assert!(payloads[0].contains(r#""reasoningConfig":{"type":"enabled"}"#));
+    assert!(payloads[1].contains(r#""reasoningConfig":{"type":"disabled"}"#));
+    assert_ne!(payloads[0], payloads[1]);
+}
+
 #[test]
 fn global_cloud_connections_are_executable_cross_workspace_and_disconnect_cleanly() {
     struct Case<'a> {
@@ -1033,17 +1161,7 @@ fn global_cloud_connections_are_executable_cross_workspace_and_disconnect_cleanl
             .store()
             .provider(&ProviderId::new(case.provider).unwrap())
             .unwrap();
-        let recipe = cookie_agent_models::recipes::registry1()
-            .recipe(stored_connection.policy.provider_recipe.as_str())
-            .unwrap();
-        let validated = cookie_agent_models::recipes::validate_setup(
-            recipe.setup,
-            &stored_connection.setup_values,
-        )
-        .unwrap();
-        let rebuilt_endpoint =
-            cookie_agent_models::adapters::build_endpoint(recipe.endpoint, None, &validated)
-                .unwrap();
+        let rebuilt_endpoint = stored_connection.policy.default_endpoint_identity.as_str();
         assert_eq!(
             connected.effective_auth,
             EffectiveCredentialSource::ProviderStore,
@@ -1280,8 +1398,8 @@ fn retained_store_blueprint_rehydrates_without_current_catalog_and_fails_after_r
     let removed_runtime = restarted.current();
     assert!(removed_runtime.model(&blueprint.selection.model).is_none());
     assert_eq!(
-        removed_runtime.providers()[0].retained_recipe_match,
-        Some(RetainedProviderRecipeMatch::SupportedRemoved)
+        removed_runtime.providers()[0].retained_family_match,
+        Some(RetainedFamilyMatch::SupportedRemoved)
     );
     assert_eq!(removed_runtime.providers()[0].support_reason, None);
     assert_eq!(
@@ -1338,6 +1456,153 @@ fn retained_store_blueprint_rehydrates_without_current_catalog_and_fails_after_r
             .unwrap_err(),
         RehydrationError::SnapshotCredentialsUnavailable
     );
+}
+
+#[test]
+fn nested_family_snapshot_persists_effective_npm_and_rehydrates_store_auth() {
+    let temporary = TempDir::new().unwrap();
+    let mut catalog = (*cloud_catalog(
+        "azure",
+        "@ai-sdk/azure",
+        &["AZURE_API_KEY", "AZURE_RESOURCE_NAME"],
+        "claude-model",
+        None,
+    ))
+    .clone();
+    let provider = catalog
+        .providers
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap();
+    provider
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .provider = Some(cookie_agent_models::catalog::CatalogModelProviderMetadata {
+        npm: Some("@ai-sdk/anthropic".to_owned()),
+        api: Some("https://${AZURE_RESOURCE_NAME}.services.ai.azure.com/anthropic/v1".to_owned()),
+        shape: None,
+    });
+    let catalog = Arc::new(catalog);
+    let manager =
+        ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
+    manager
+        .connect(
+            ProviderConnectRequest {
+                provider_id: ProviderId::new("azure").unwrap(),
+                expected_catalog_revision: catalog.revision.clone(),
+                setup_values: setup_values(&[("resource_name", "example")]),
+                auth_method: AuthMethodId::new("azure-api-key-v1").unwrap(),
+                auth_values: auth_values(&[("api_key", "secret")]),
+                client_connect_id: ClientConnectId::new("nested-family").unwrap(),
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap();
+    let runtime = manager.current();
+    let manifest_store =
+        ModelSnapshotManifestStore::open_directory(temporary.path().join("nested-snapshots"))
+            .unwrap();
+    let manifest = manifest_store
+        .write(runtime.manifest_payload().unwrap())
+        .unwrap();
+    let blueprint = &manifest.payload.blueprints[0];
+    let FrozenProviderSource::Managed { package_claim, .. } = &blueprint.source else {
+        panic!("expected managed source")
+    };
+    assert_eq!(package_claim, "@ai-sdk/anthropic");
+    assert_eq!(blueprint.auth_method.as_str(), "anthropic-api-key-v1");
+    let binding = frozen_binding(
+        manifest.revision.clone(),
+        blueprint,
+        blueprint.selection.clone(),
+    )
+    .unwrap();
+    drop(runtime);
+    drop(manager);
+    let reopened_store = store(&temporary);
+    let reopened_snapshot = reopened_store.load().unwrap();
+    manifest_store
+        .scan()
+        .unwrap()
+        .rehydrate(
+            &binding,
+            &BTreeMap::new(),
+            &reopened_snapshot,
+            safe_definition_fingerprint,
+        )
+        .unwrap();
+}
+
+#[test]
+fn bedrock_mantle_bearer_connection_constructs_responses_executable() {
+    let temporary = TempDir::new().unwrap();
+    let mut catalog = (*cloud_catalog(
+        "amazon-bedrock",
+        "@ai-sdk/amazon-bedrock",
+        &[
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_REGION",
+            "AWS_BEARER_TOKEN_BEDROCK",
+        ],
+        "openai.gpt-5.4",
+        None,
+    ))
+    .clone();
+    catalog
+        .providers
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .provider = Some(cookie_agent_models::catalog::CatalogModelProviderMetadata {
+        npm: Some("@ai-sdk/amazon-bedrock/mantle".to_owned()),
+        api: Some("https://bedrock-mantle.${AWS_REGION}.api.aws/openai/v1".to_owned()),
+        shape: Some("responses".to_owned()),
+    });
+    let catalog = Arc::new(catalog);
+    let manager =
+        ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
+    manager
+        .connect(
+            ProviderConnectRequest {
+                provider_id: ProviderId::new("amazon-bedrock").unwrap(),
+                expected_catalog_revision: catalog.revision.clone(),
+                setup_values: setup_values(&[("region", "us-east-1")]),
+                auth_method: AuthMethodId::new("bearer-api-key-v1").unwrap(),
+                auth_values: auth_values(&[("api_key", "bedrock-api-key")]),
+                client_connect_id: ClientConnectId::new("bedrock-mantle-bearer").unwrap(),
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap();
+    let runtime = manager.current();
+    let model = runtime.models().values().next().unwrap();
+    assert_eq!(model.model.auth.method, "bearer-api-key-v1");
+    assert_eq!(model.model.adapter, OvenAdapterFamily::OpenaiResponses);
+    runtime
+        .resolve(&cookie_agent_identity::ModelSelection {
+            model: model.key.clone(),
+            variant: None,
+        })
+        .unwrap();
 }
 
 #[test]
@@ -1409,7 +1674,8 @@ fn managed_rehydration_rejects_each_recipe_identity_drift() {
         blueprint.protocol_recipe = ProtocolRecipeId::new("oven.openai.chat").unwrap();
     });
     reject_drift!("compiler", |blueprint| {
-        blueprint.compiler_version = RecipeCompilerVersion::new("registry1-compiler-v2").unwrap();
+        blueprint.compiler_version =
+            RecipeCompilerVersion::new("family-registry-compiler-v2").unwrap();
     });
     reject_drift!("recipe-fingerprint", |blueprint| {
         let FrozenProviderSource::Managed {

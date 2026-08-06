@@ -8,9 +8,8 @@ use std::{
 use cookie_agent_identity::{ProviderId, ProviderModelId};
 use cookie_agent_models::catalog::{
     CATALOG_BODY_FILE, CATALOG_LOCK_FILE, CATALOG_MAX_BYTES, CATALOG_META_FILE, CatalogAgeState,
-    CatalogAvailability, CatalogClaim, CatalogRequest, CatalogSource, CatalogTransport,
-    CatalogTransportError, CatalogTransportFuture, CatalogTransportResponse,
-    MODELS_DEV_CATALOG_URL,
+    CatalogAvailability, CatalogRequest, CatalogSource, CatalogTransport, CatalogTransportError,
+    CatalogTransportFuture, CatalogTransportResponse, MODELS_DEV_CATALOG_URL,
 };
 use cookie_agent_models::{catalog::CatalogManager, secure_store::SecureDirectory};
 use futures_util::stream;
@@ -376,19 +375,17 @@ async fn validated_bootstrap_is_the_final_offline_source() {
         .record
         .as_ref()
         .unwrap();
-    assert!(
-        matches!(openai.claims.npm, CatalogClaim::Present(ref value) if value == "@ai-sdk/openai")
-    );
-    assert!(matches!(openai.claims.api, CatalogClaim::Absent));
-    assert!(matches!(openai.claims.shape, CatalogClaim::Absent));
+    assert_eq!(openai.npm, "@ai-sdk/openai");
+    assert_eq!(openai.api, None);
+    assert_eq!(openai.shape, None);
 }
 
 #[tokio::test]
-async fn synthetic_claim_fixture_retains_presence_and_quarantines_only_bad_sibling() {
+async fn synthetic_metadata_fixture_retains_presence_and_quarantines_only_bad_sibling() {
     let temporary = tempfile::tempdir().unwrap();
-    let bytes = include_bytes!("fixtures/models-dev-claims-synthetic.json").to_vec();
+    let bytes = include_bytes!("fixtures/models-dev-metadata-synthetic.json").to_vec();
     let metadata: serde_json::Value = serde_json::from_slice(include_bytes!(
-        "fixtures/models-dev-claims-synthetic.meta.json"
+        "fixtures/models-dev-metadata-synthetic.meta.json"
     ))
     .unwrap();
     assert_eq!(metadata["runtime_pin"], false);
@@ -410,29 +407,25 @@ async fn synthetic_claim_fixture_retains_presence_and_quarantines_only_bad_sibli
         .record
         .as_ref()
         .unwrap();
-    assert!(
-        matches!(openai.claims.environment, CatalogClaim::Present(ref value) if value == &["OPENAI_API_KEY"])
-    );
-    assert!(
-        matches!(openai.claims.npm, CatalogClaim::Present(ref value) if value == "@ai-sdk/openai")
-    );
-    assert!(matches!(openai.claims.api, CatalogClaim::Absent));
-    assert!(matches!(openai.claims.shape, CatalogClaim::Absent));
+    assert_eq!(openai.environment, ["OPENAI_API_KEY"]);
+    assert_eq!(openai.npm, "@ai-sdk/openai");
+    assert_eq!(openai.api, None);
+    assert_eq!(openai.shape, None);
     let overridden = openai.models[&ProviderModelId::new("compat/audit").unwrap()]
         .record
         .as_ref()
         .unwrap();
     assert_eq!(overridden.shape.as_deref(), Some("responses"));
-    let override_claims = overridden.provider.as_ref().unwrap();
+    let override_metadata = overridden.provider.as_ref().unwrap();
     assert_eq!(
-        override_claims.npm.as_deref(),
+        override_metadata.npm.as_deref(),
         Some("@ai-sdk/openai-compatible")
     );
     assert_eq!(
-        override_claims.api.as_deref(),
+        override_metadata.api.as_deref(),
         Some("https://example.invalid/v1")
     );
-    assert_eq!(override_claims.shape.as_deref(), Some("completions"));
+    assert_eq!(override_metadata.shape.as_deref(), Some("completions"));
 
     let shape_audit = snapshot
         .provider(&ProviderId::new("shape-audit").unwrap())
@@ -440,15 +433,10 @@ async fn synthetic_claim_fixture_retains_presence_and_quarantines_only_bad_sibli
         .record
         .as_ref()
         .unwrap();
-    assert!(matches!(
-        shape_audit.claims.environment,
-        CatalogClaim::Absent
-    ));
-    assert!(matches!(shape_audit.claims.npm, CatalogClaim::Absent));
-    assert!(matches!(shape_audit.claims.api, CatalogClaim::Absent));
-    assert!(
-        matches!(shape_audit.claims.shape, CatalogClaim::Present(ref value) if value == "provider-shape-v1")
-    );
+    assert!(shape_audit.environment.is_empty());
+    assert!(shape_audit.npm.is_empty());
+    assert_eq!(shape_audit.api, None);
+    assert_eq!(shape_audit.shape.as_deref(), Some("provider-shape-v1"));
     assert!(
         shape_audit.models[&ProviderModelId::new("sibling-good").unwrap()]
             .record

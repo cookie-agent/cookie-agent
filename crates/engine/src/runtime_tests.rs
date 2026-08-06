@@ -8,10 +8,10 @@ use cookie_agent_config::{
 use cookie_agent_models::{
     ModelManager,
     catalog::{
-        CatalogAgeState, CatalogAvailability, CatalogClaim, CatalogLimits, CatalogModalities,
-        CatalogModelEntry, CatalogModelRecord, CatalogModelStatus, CatalogProviderClaims,
-        CatalogProviderEntry, CatalogProviderRecord, CatalogQuarantineEntry,
-        CatalogQuarantineReason, CatalogRuntimeState, CatalogSnapshot, CatalogSource,
+        CatalogAgeState, CatalogAvailability, CatalogLimits, CatalogModalities, CatalogModelEntry,
+        CatalogModelRecord, CatalogModelStatus, CatalogProviderEntry, CatalogProviderRecord,
+        CatalogQuarantineEntry, CatalogQuarantineReason, CatalogRuntimeState, CatalogSnapshot,
+        CatalogSource,
     },
     provider_store::{ClientRequestId as StoreClientRequestId, ProviderStore},
 };
@@ -263,6 +263,7 @@ fn bedrock_catalog() -> Arc<CatalogSnapshot> {
         shape: None,
         provider: None,
         reasoning_options: Vec::new(),
+        interleaved: None,
         canonical_provenance: None,
     };
     let record = CatalogProviderRecord {
@@ -272,12 +273,6 @@ fn bedrock_catalog() -> Arc<CatalogSnapshot> {
         npm: "@ai-sdk/amazon-bedrock".to_owned(),
         api: None,
         shape: None,
-        claims: CatalogProviderClaims {
-            environment: CatalogClaim::Present(environment),
-            npm: CatalogClaim::Present("@ai-sdk/amazon-bedrock".to_owned()),
-            api: CatalogClaim::Absent,
-            shape: CatalogClaim::Absent,
-        },
         documentation_url: "https://example.test/bedrock".to_owned(),
         models: BTreeMap::from([(
             model_id.clone(),
@@ -987,17 +982,16 @@ fn registry_provider_drift_counts_but_unsupported_provider_does_not() {
         .as_mut()
         .expect("Bedrock record");
     provider.shape = Some("unexpected".to_owned());
-    provider.claims.shape = CatalogClaim::Present("unexpected".to_owned());
     let drifted = fixture
         .engine
         .refresh_catalog(Arc::new(drifted))
         .expect("provider drift refresh")
         .snapshot;
-    assert_eq!(drifted.catalog_state.provider_quarantine_count, 1);
+    assert_eq!(drifted.catalog_state.provider_quarantine_count, 0);
     assert_eq!(drifted.catalog_state.model_quarantine_count, 0);
     assert_eq!(
         drifted.providers[0].support.state,
-        cookie_agent_protocol::ProviderSupportState::Quarantined
+        cookie_agent_protocol::ProviderSupportState::Supported
     );
     assert_eq!(
         drifted.providers[0]
@@ -1005,7 +999,7 @@ fn registry_provider_drift_counts_but_unsupported_provider_does_not() {
             .reason
             .as_ref()
             .map(cookie_agent_protocol::SafeCode::as_str),
-        Some("catalog_provider_shape_drift")
+        None
     );
 
     let mut unsupported = (*bedrock_catalog()).clone();
@@ -1021,9 +1015,7 @@ fn registry_provider_drift_counts_but_unsupported_provider_does_not() {
     let record = entry.record.as_mut().expect("provider record");
     record.id = unknown_id.clone();
     record.npm = "@example/unknown-provider".to_owned();
-    record.claims.npm = CatalogClaim::Present(record.npm.clone());
     record.environment.clear();
-    record.claims.environment = CatalogClaim::Present(Vec::new());
     unsupported.providers.insert(unknown_id, entry);
     let unsupported = fixture
         .engine
@@ -1066,8 +1058,43 @@ fn registry_model_shape_drift_is_counted_with_exact_model_identity() {
         .expect("model drift refresh")
         .snapshot;
     assert_eq!(snapshot.catalog_state.provider_quarantine_count, 0);
-    assert_eq!(snapshot.catalog_state.model_quarantine_count, 1);
+    assert_eq!(snapshot.catalog_state.model_quarantine_count, 0);
     assert!(snapshot.models.is_empty());
+}
+
+#[test]
+fn nested_endpoint_placeholders_project_setup_and_secret_classification() {
+    let fixture = fixture();
+    let mut catalog = (*bedrock_catalog()).clone();
+    let provider = catalog
+        .providers
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap();
+    provider.models.values_mut().next().unwrap().record.as_mut().unwrap().provider = Some(
+        cookie_agent_models::catalog::CatalogModelProviderMetadata {
+            npm: Some("@ai-sdk/anthropic".to_owned()),
+            api: Some("https://${AZURE_COGNITIVE_SERVICES_RESOURCE_NAME}.example/${SERVICE_TOKEN}/anthropic/v1".to_owned()),
+            shape: None,
+        },
+    );
+    let snapshot = fixture
+        .engine
+        .refresh_catalog(Arc::new(catalog))
+        .expect("nested placeholder refresh")
+        .snapshot;
+    let fields = &snapshot.providers[0].setup_fields;
+    assert!(fields.iter().any(|field| {
+        field.id.as_str() == "azure_cognitive_services_resource_name" && field.safe_to_project
+    }));
+    assert!(
+        fields
+            .iter()
+            .any(|field| { field.id.as_str() == "service_token" && !field.safe_to_project })
+    );
 }
 
 #[test]
@@ -1129,7 +1156,7 @@ fn combined_quarantine_digest_is_order_independent_and_notifications_are_coheren
     let first_notification = notifications.try_recv().expect("first notification");
     assert_eq!(first_notification.snapshot, first);
     assert_eq!(first.catalog_state.provider_quarantine_count, 1);
-    assert_eq!(first.catalog_state.model_quarantine_count, 3);
+    assert_eq!(first.catalog_state.model_quarantine_count, 2);
 
     catalog.revision =
         CatalogRevision::new(format!("sha256:{}", "6".repeat(64))).expect("catalog revision");

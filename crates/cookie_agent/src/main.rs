@@ -384,7 +384,7 @@ async fn compose_with<T: CatalogTransport + 'static>(
             .await
             .context("refresh fixed models.dev catalog")?,
     );
-    let provider_store = open_provider_store().context("open provider store 2")?;
+    let provider_store = open_provider_store().context("open provider store 3")?;
     let model_manager = Arc::new(
         ModelManager::new(
             configuration.runtime.providers.clone(),
@@ -1458,6 +1458,7 @@ mod tests {
                 )]),
                 api_key: None,
                 auth_override: None,
+                shape: None,
                 model_overrides: BTreeMap::new(),
             },
         );
@@ -1760,10 +1761,16 @@ mod tests {
             .unwrap()
             .snapshot
             .providers;
-        for (provider_id, state) in [
-            ("test", ProviderSupportState::Unsupported),
-            ("broken", ProviderSupportState::Quarantined),
-        ] {
+        assert_eq!(
+            blocked
+                .iter()
+                .find(|provider| provider.id.as_str() == "test")
+                .unwrap()
+                .support
+                .state,
+            ProviderSupportState::Supported
+        );
+        for (provider_id, state) in [("broken", ProviderSupportState::Quarantined)] {
             let descriptor = blocked
                 .iter()
                 .find(|provider| provider.id.as_str() == provider_id)

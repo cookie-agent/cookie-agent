@@ -8,10 +8,9 @@ use cookie_agent_engine::{Engine, EngineOptions};
 use cookie_agent_models::{
     ModelManager,
     catalog::{
-        CatalogAgeState, CatalogAvailability, CatalogClaim, CatalogLimits, CatalogModalities,
-        CatalogModelEntry, CatalogModelRecord, CatalogModelStatus, CatalogProviderClaims,
-        CatalogProviderEntry, CatalogProviderRecord, CatalogRuntimeState, CatalogSnapshot,
-        CatalogSource,
+        CatalogAgeState, CatalogAvailability, CatalogLimits, CatalogModalities, CatalogModelEntry,
+        CatalogModelRecord, CatalogModelStatus, CatalogProviderEntry, CatalogProviderRecord,
+        CatalogRuntimeState, CatalogSnapshot, CatalogSource,
     },
     provider_store::{
         ClientConnectId as StoreClientConnectId, ConnectMutation, ConnectProposal,
@@ -19,8 +18,8 @@ use cookie_agent_models::{
     },
 };
 use cookie_agent_protocol::{
-    AuthFieldName, AuthMethodId, CatalogRevision, ProtocolRecipeId, ProviderId, ProviderRecipeId,
-    ProviderSetupRecipeId, RUNTIME_CHANGED_METHOD, RecipeCompilerVersion,
+    AuthFieldName, AuthMethodId, CatalogRevision, ProviderId, ProviderSetupRecipeId,
+    RUNTIME_CHANGED_METHOD, RecipeCompilerVersion,
 };
 use jiff::Timestamp;
 use serde_json::{Value, json};
@@ -149,6 +148,7 @@ fn openai_catalog() -> Arc<CatalogSnapshot> {
         shape: None,
         provider: None,
         reasoning_options: Vec::new(),
+        interleaved: None,
         canonical_provenance: None,
     };
     let record = CatalogProviderRecord {
@@ -158,12 +158,6 @@ fn openai_catalog() -> Arc<CatalogSnapshot> {
         npm: "@ai-sdk/openai".to_owned(),
         api: None,
         shape: None,
-        claims: CatalogProviderClaims {
-            environment: CatalogClaim::Present(environment),
-            npm: CatalogClaim::Present("@ai-sdk/openai".to_owned()),
-            api: CatalogClaim::Absent,
-            shape: CatalogClaim::Absent,
-        },
         documentation_url: "https://example.test/openai".to_owned(),
         models: BTreeMap::from([(
             model_id.clone(),
@@ -500,12 +494,10 @@ async fn unmatched_retained_policy_is_unsupported_and_reconnect_is_blocked() {
             .expect("auth values"),
             policy: StoredProviderPolicyProjection {
                 catalog_revision: revision.clone(),
-                provider_recipe: ProviderRecipeId::new("openai.responses.v1")
-                    .expect("provider recipe"),
+                family_id: SafePolicyString::new("openai").expect("family ID"),
                 setup_recipe: ProviderSetupRecipeId::new("no-setup-v1").expect("setup recipe"),
-                protocol_recipe: ProtocolRecipeId::new("oven.openai.responses")
-                    .expect("protocol recipe"),
-                compiler_version: RecipeCompilerVersion::new("registry1-compiler-v1")
+                adapter_id: SafePolicyString::new("openai").expect("adapter ID"),
+                compiler_version: RecipeCompilerVersion::new("family-registry-compiler-v1")
                     .expect("compiler version"),
                 default_endpoint_identity: SafePolicyString::new("https://api.openai.com/v1")
                     .expect("endpoint"),
@@ -556,7 +548,7 @@ async fn unmatched_retained_policy_is_unsupported_and_reconnect_is_blocked() {
 }
 
 #[tokio::test]
-async fn quarantined_provider_connect_has_the_exact_typed_fault() {
+async fn catalog_shape_is_compiled_without_provider_quarantine() {
     let mut catalog = (*openai_catalog()).clone();
     let provider = catalog
         .providers
@@ -566,7 +558,6 @@ async fn quarantined_provider_connect_has_the_exact_typed_fault() {
         .as_mut()
         .expect("provider record");
     provider.shape = Some("unexpected".to_owned());
-    provider.claims.shape = CatalogClaim::Present("unexpected".to_owned());
     let catalog = Arc::new(catalog);
     let harness = harness_with_catalog(Arc::clone(&catalog), |_| {});
     let mut client = connect(Arc::clone(&harness.server)).await;
@@ -584,7 +575,7 @@ async fn quarantined_provider_connect_has_the_exact_typed_fault() {
         }),
     )
     .await;
-    assert_eq!(response["error"]["data"]["code"], "quarantined_provider");
+    assert!(response.get("result").is_some(), "{response}");
 }
 
 #[tokio::test]

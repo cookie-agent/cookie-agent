@@ -8,7 +8,7 @@ mod variants;
 
 pub use dynamic::{
     AuthSourceCategory, CompiledAuthShape, CompiledDynamicModel, CompiledDynamicProvider,
-    CompiledModelStatus, DynamicCompileError, DynamicCompiler, ModelQuarantine,
+    CompiledModelStatus, DynamicCompileError, DynamicCompiler, UnsupportedModel,
 };
 pub use variants::{CompiledVariant, CompiledVariantOrigin};
 

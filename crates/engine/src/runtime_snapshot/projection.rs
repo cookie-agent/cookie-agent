@@ -4,11 +4,8 @@ use cookie_agent_models::{
     CompiledModelRuntime, EffectiveCredentialSource, ProviderPresence as ModelProviderPresence,
     catalog::CatalogQuarantineReason,
     compiler::{CompiledModelStatus, CompiledVariantOrigin},
-    manager::RetainedProviderRecipeMatch,
-    recipes::{
-        CatalogModelClaimInput, CatalogProviderClaimInput, CredentialKind, ModelRecipeMatch,
-        ProviderRecipeMatch, RecipeQuarantineReason, auth_method, registry1,
-    },
+    manager::RetainedFamilyMatch,
+    recipes::{CredentialKind, auth_method, family_registry, placeholders, setup_field_name},
 };
 use cookie_agent_protocol as protocol;
 use serde::Serialize;
@@ -39,7 +36,7 @@ pub(crate) fn build_runtime_snapshot(
         protocol::AgentRevision::new,
     )?;
     let runtime_revision = runtime_revision(
-        &registry1().revision(),
+        &family_registry().revision(),
         &models.catalog().revision,
         &models.provider_state_revision(),
         models.model_revision(),
@@ -63,7 +60,7 @@ pub(crate) fn build_runtime_snapshot(
         .transpose()?;
     let snapshot = protocol::RuntimeSnapshotV1 {
         snapshot_schema_version: protocol::RuntimeSnapshotSchemaVersion::current(),
-        recipe_registry_revision: registry1().revision(),
+        recipe_registry_revision: family_registry().revision(),
         catalog_revision: catalog.revision.clone(),
         catalog_source: match catalog.source {
             cookie_agent_models::catalog::CatalogSource::Network => {
@@ -106,7 +103,6 @@ pub(crate) fn build_runtime_snapshot(
 #[serde(tag = "source", content = "reason", rename_all = "snake_case")]
 enum RuntimeQuarantineReason {
     Parser(CatalogQuarantineReason),
-    Registry1(RecipeQuarantineReason),
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -127,7 +123,7 @@ fn quarantine_summary(
     runtime: &CompiledModelRuntime,
 ) -> Result<RuntimeQuarantineSummary, EngineError> {
     let catalog = runtime.catalog();
-    let mut entries = catalog
+    let entries = catalog
         .quarantine
         .iter()
         .map(|entry| RuntimeQuarantineEntry {
@@ -137,44 +133,6 @@ fn quarantine_summary(
             reason: RuntimeQuarantineReason::Parser(entry.reason.clone()),
         })
         .collect::<BTreeSet<_>>();
-    let registry = registry1();
-    for provider in runtime.providers() {
-        let Some(record) = catalog
-            .provider(&provider.id)
-            .and_then(|entry| entry.record.as_ref())
-        else {
-            continue;
-        };
-        match registry.match_provider(&CatalogProviderClaimInput::from_record(record)) {
-            ProviderRecipeMatch::Supported(_) => {}
-            ProviderRecipeMatch::Quarantined(reason) => {
-                entries.insert(RuntimeQuarantineEntry {
-                    provider_id: Some(provider.id.to_string()),
-                    model_id: None,
-                    canonical_model_id: None,
-                    reason: RuntimeQuarantineReason::Registry1(reason),
-                });
-                continue;
-            }
-            ProviderRecipeMatch::Unsupported(_) => continue,
-        }
-        for (model_id, model_entry) in &record.models {
-            let Some(model) = model_entry.record.as_ref() else {
-                continue;
-            };
-            if let ModelRecipeMatch::Quarantined(reason) = registry.match_model(
-                provider.id.as_str(),
-                &CatalogModelClaimInput::from_record(model_id.as_str(), model),
-            ) {
-                entries.insert(RuntimeQuarantineEntry {
-                    provider_id: Some(provider.id.to_string()),
-                    model_id: Some(model_id.to_string()),
-                    canonical_model_id: None,
-                    reason: RuntimeQuarantineReason::Registry1(reason),
-                });
-            }
-        }
-    }
     let provider_count = entries
         .iter()
         .filter(|entry| entry.model_id.is_none() && entry.canonical_model_id.is_none())
@@ -217,30 +175,13 @@ fn provider_descriptor(
     provider: &cookie_agent_models::CompiledProviderState,
 ) -> Result<protocol::ProviderDescriptor, EngineError> {
     let catalog_entry = runtime.catalog().provider(&provider.id);
-    let recipe_quarantine = catalog_entry
-        .and_then(|entry| entry.record.as_ref())
-        .and_then(|record| {
-            match registry1().match_provider(&CatalogProviderClaimInput::from_record(record)) {
-                ProviderRecipeMatch::Quarantined(reason) => Some(reason),
-                ProviderRecipeMatch::Supported(_) | ProviderRecipeMatch::Unsupported(_) => None,
-            }
-        });
-    let quarantined = catalog_entry.is_some_and(|entry| entry.quarantine.is_some())
-        || recipe_quarantine.is_some();
-    let quarantine_code = if let Some(reason) = recipe_quarantine {
-        let value = serde_json::to_value(reason).map_err(|_| EngineError::RuntimeCompileFailed)?;
-        value
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| "invalid_catalog_provider_record".to_owned())
-    } else {
-        catalog_entry
-            .and_then(|entry| entry.quarantine.as_ref())
-            .map_or_else(
-                || "invalid_catalog_provider_record".to_owned(),
-                |reason| reason.code().to_owned(),
-            )
-    };
+    let quarantined = catalog_entry.is_some_and(|entry| entry.quarantine.is_some());
+    let quarantine_code = catalog_entry
+        .and_then(|entry| entry.quarantine.as_ref())
+        .map_or_else(
+            || "invalid_catalog_provider_record".to_owned(),
+            |reason| reason.code().to_owned(),
+        );
     let support_reason = provider
         .support_reason
         .as_deref()
@@ -251,14 +192,13 @@ fn provider_descriptor(
             state: protocol::ProviderSupportState::Quarantined,
             reason: Some(safe_code(&quarantine_code)?),
         }
-    } else if provider.retained_recipe_match == Some(RetainedProviderRecipeMatch::SupportedRemoved)
-    {
+    } else if provider.retained_family_match == Some(RetainedFamilyMatch::SupportedRemoved) {
         protocol::ProviderSupport {
             state: protocol::ProviderSupportState::Supported,
             reason: None,
         }
-    } else if provider.retained_recipe_match
-        == Some(RetainedProviderRecipeMatch::RemovedWithoutRetainedRecipeMatch)
+    } else if provider.retained_family_match
+        == Some(RetainedFamilyMatch::RemovedWithoutRetainedFamilyMatch)
     {
         protocol::ProviderSupport {
             state: protocol::ProviderSupportState::Unsupported,
@@ -275,20 +215,65 @@ fn provider_descriptor(
             reason: None,
         }
     };
-    let recipe = registry1()
-        .provider_recipes(provider.id.as_str())
-        .into_iter()
-        .next();
-    let mut setup_fields = if let Some(recipe) = recipe {
-        recipe
-            .setup
-            .fields
-            .iter()
-            .map(setup_descriptor)
-            .collect::<Result<Vec<_>, EngineError>>()?
-    } else {
-        Vec::new()
+    let record = catalog_entry.and_then(|entry| entry.record.as_ref());
+    let recipe = record
+        .and_then(|record| family_registry().classify(record))
+        .or_else(|| {
+            runtime
+                .store()
+                .provider(&provider.id)
+                .and_then(|connection| {
+                    family_registry().by_npm(connection.policy.package_claim.as_str())
+                })
+        });
+    let mut setup_ids = BTreeMap::<String, bool>::new();
+    let mut add_template = |template: &str| {
+        for name in placeholders(template) {
+            let secret = placeholder_is_secret(&name);
+            setup_ids
+                .entry(setup_field_name(&name))
+                .and_modify(|value| *value |= secret)
+                .or_insert(secret);
+        }
     };
+    if let Some(record) = record {
+        if let Some(api) = record.api.as_deref() {
+            add_template(api);
+        }
+        for model in record
+            .models
+            .values()
+            .filter_map(|entry| entry.record.as_ref())
+        {
+            if let Some(api) = model
+                .provider
+                .as_ref()
+                .and_then(|provider| provider.api.as_deref())
+            {
+                add_template(api);
+            }
+        }
+    }
+    if let Some(recipe) = recipe {
+        match recipe.family {
+            cookie_agent_models::recipes::FamilyKind::Vertex
+            | cookie_agent_models::recipes::FamilyKind::VertexAnthropic => {
+                setup_ids.insert("project".to_owned(), false);
+                setup_ids.insert("location".to_owned(), false);
+            }
+            cookie_agent_models::recipes::FamilyKind::Bedrock => {
+                setup_ids.insert("region".to_owned(), false);
+            }
+            cookie_agent_models::recipes::FamilyKind::Azure => {
+                setup_ids.insert("resource_name".to_owned(), false);
+            }
+            _ => {}
+        }
+    }
+    let mut setup_fields = setup_ids
+        .iter()
+        .map(|(id, secret)| setup_descriptor(id, *secret))
+        .collect::<Result<Vec<_>, EngineError>>()?;
     setup_fields.sort_by(|left, right| left.id.cmp(&right.id));
     let mut auth_methods = if let Some(recipe) = recipe {
         recipe
@@ -332,26 +317,24 @@ fn provider_descriptor(
     })
 }
 
+fn placeholder_is_secret(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    name.contains("KEY") || name.contains("TOKEN") || name.contains("SECRET")
+}
+
 fn setup_descriptor(
-    field: &cookie_agent_models::recipes::SetupFieldRecipe,
+    field: &str,
+    secret: bool,
 ) -> Result<protocol::SetupFieldDescriptor, EngineError> {
-    let id =
-        protocol::SetupFieldId::new(field.id).map_err(|_| EngineError::RuntimeCompileFailed)?;
+    let id = protocol::SetupFieldId::new(field).map_err(|_| EngineError::RuntimeCompileFailed)?;
     Ok(protocol::SetupFieldDescriptor {
         id,
-        display_name: protocol::SafeDisplayText::new(field.id.replace('_', " "))
+        display_name: protocol::SafeDisplayText::new(field.replace('_', " "))
             .map_err(|_| EngineError::RuntimeCompileFailed)?,
-        help: protocol::SafeDisplayText::new(format!("Provider setup field `{}`", field.id))
+        help: protocol::SafeDisplayText::new(format!("Provider setup field `{field}`"))
             .map_err(|_| EngineError::RuntimeCompileFailed)?,
-        required: field.required,
-        default: field
-            .default
-            .map(|value| {
-                protocol::BoundedSetupString::new(value.to_owned())
-                    .map(protocol::SafeSetupValue::String)
-                    .map_err(|_| EngineError::RuntimeCompileFailed)
-            })
-            .transpose()?,
+        required: true,
+        default: None,
         validation: protocol::SetupFieldValidation {
             value_type: protocol::SetupFieldType::String,
             min_length: Some(1),
@@ -359,7 +342,7 @@ fn setup_descriptor(
             minimum: None,
             maximum: None,
         },
-        safe_to_project: true,
+        safe_to_project: !secret,
     })
 }
 

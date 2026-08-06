@@ -240,11 +240,16 @@ impl ModelSnapshotManifestIndex {
             provider_recipe, ..
         } = &blueprint.source
         {
-            let recipe = crate::recipes::registry1()
-                .recipe(provider_recipe.as_str())
+            let recipe = crate::recipes::family_registry()
+                .by_npm(match &blueprint.source {
+                    FrozenProviderSource::Managed { package_claim, .. } => package_claim,
+                    FrozenProviderSource::Custom { .. } => unreachable!(),
+                })
                 .filter(|recipe| managed_recipe_matches_blueprint(recipe, &provider_id, &blueprint))
                 .ok_or(RehydrationError::UnsupportedSnapshotRecipe)?;
-            if recipe.id != blueprint.provider_recipe.as_str() {
+            if recipe.family.id() != provider_recipe.as_str()
+                || recipe.family.id() != blueprint.provider_recipe.as_str()
+            {
                 return Err(RehydrationError::UnsupportedSnapshotRecipe);
             }
         }
@@ -280,39 +285,23 @@ impl ModelSnapshotManifestIndex {
                     return Err(RehydrationError::SnapshotConfigMismatch);
                 }
             }
-            (
-                FrozenProviderSource::Managed {
-                    provider_recipe,
-                    recipe_fingerprint,
-                    package_claim,
-                    ..
-                },
-                FrozenCredentialSource::ProviderStore,
-            ) => {
+            (FrozenProviderSource::Managed { .. }, FrozenCredentialSource::ProviderStore) => {
                 let connection = store
                     .provider(&provider_id)
                     .ok_or(RehydrationError::SnapshotCredentialsUnavailable)?;
-                if crate::manager::retained_provider_recipe_match(&provider_id, connection)
-                    != crate::manager::RetainedProviderRecipeMatch::SupportedRemoved
-                    || connection.policy.provider_recipe != *provider_recipe
-                    || connection.policy.recipe_fingerprint.as_str() != recipe_fingerprint.as_str()
-                    || connection.policy.package_claim.as_str() != package_claim
-                    || connection.policy.protocol_recipe != blueprint.protocol_recipe
+                if crate::manager::retained_family_match(&provider_id, connection)
+                    != crate::manager::RetainedFamilyMatch::SupportedRemoved
                     || connection.policy.compiler_version != blueprint.compiler_version
                     || connection.policy.setup_recipe != blueprint.setup_recipe
                     || connection.setup_fingerprint.as_str()
                         != blueprint.setup_binding.setup_fingerprint.as_str()
-                    || connection.auth_method != blueprint.auth_method
-                    || connection.policy.default_endpoint_identity.as_str()
-                        != blueprint.endpoint_identity.as_str()
-                    || connection
-                        .credential_fields()
-                        .map(cookie_agent_identity::AuthFieldName::as_str)
-                        .ne(blueprint
-                            .credential_binding
-                            .fields
-                            .iter()
-                            .map(cookie_agent_identity::AuthFieldName::as_str))
+                    || !managed_source_auth_matches(
+                        connection.auth_method.as_str(),
+                        connection
+                            .credential_fields()
+                            .map(cookie_agent_identity::AuthFieldName::as_str),
+                        &blueprint,
+                    )
                 {
                     return Err(RehydrationError::SnapshotCredentialsUnavailable);
                 }
@@ -350,8 +339,8 @@ impl ModelSnapshotManifestIndex {
 }
 
 fn managed_recipe_matches_blueprint(
-    recipe: &crate::recipes::ProviderRecipe,
-    provider_id: &ProviderId,
+    recipe: &crate::recipes::FamilyRecipe,
+    _provider_id: &ProviderId,
     blueprint: &CompiledSafeModelBlueprint,
 ) -> bool {
     let FrozenProviderSource::Managed {
@@ -363,58 +352,14 @@ fn managed_recipe_matches_blueprint(
     else {
         return false;
     };
-    let Some(expected_package) = crate::manager::retained_recipe_package(recipe) else {
-        return false;
-    };
-    let setup_values = blueprint
-        .setup_binding
-        .values
-        .iter()
-        .map(|(id, value)| {
-            let value = match value {
-                cookie_agent_protocol::SafeSetupValue::String(value) => {
-                    crate::SafeSetupValue::String(
-                        crate::BoundedSetupString::new(value.as_str()).ok()?,
-                    )
-                }
-                cookie_agent_protocol::SafeSetupValue::Code(value) => crate::SafeSetupValue::Code(
-                    cookie_agent_identity::SafeCode::new(value.as_str()).ok()?,
-                ),
-                cookie_agent_protocol::SafeSetupValue::Integer(_)
-                | cookie_agent_protocol::SafeSetupValue::Bool(_) => return None,
-            };
-            Some((id.clone(), value))
-        })
-        .collect::<Option<BTreeMap<_, _>>>();
-    let Some(setup_values) = setup_values else {
-        return false;
-    };
-    let Ok(validated_setup) = crate::recipes::validate_setup(recipe.setup, &setup_values) else {
-        return false;
-    };
-    let normalized_setup_matches = validated_setup.values.len() == setup_values.len()
-        && validated_setup.values.iter().all(|(id, expected)| {
-            setup_values.iter().any(|(actual_id, actual)| {
-                actual_id.as_str() == id
-                    && match actual {
-                        crate::SafeSetupValue::String(value) => value.as_str() == expected,
-                        crate::SafeSetupValue::Code(value) => value.as_str() == expected,
-                        crate::SafeSetupValue::Integer(_) | crate::SafeSetupValue::Bool(_) => false,
-                    }
-            })
-        });
-    let endpoint_matches = crate::adapters::build_endpoint(recipe.endpoint, None, &validated_setup)
-        .is_ok_and(|endpoint| endpoint == blueprint.endpoint_identity.as_str());
+    let expected_package = recipe.npm;
     let current_recipe_fingerprint =
         crate::manager::retained_recipe_fingerprint(recipe, blueprint.auth_method.as_str()).ok();
-    recipe.provider_id == provider_id.as_str()
-        && provider_recipe.as_str() == recipe.id
-        && blueprint.provider_recipe.as_str() == recipe.id
-        && blueprint.protocol_recipe.as_str() == recipe.protocol_recipe
-        && blueprint.options.adapter_id().as_str() == recipe.adapter_id
-        && blueprint.descriptor.adapter_id.as_str() == recipe.protocol_recipe
-        && blueprint.setup_recipe.as_str() == recipe.setup.id
-        && blueprint.setup_binding.setup_recipe.as_str() == recipe.setup.id
+    provider_recipe.as_str() == recipe.family.id()
+        && blueprint.provider_recipe.as_str() == recipe.family.id()
+        && blueprint.setup_recipe.as_str() == "family-derived-setup-v1"
+        && blueprint.setup_binding.setup_recipe.as_str() == "family-derived-setup-v1"
+        && blueprint.protocol_recipe.as_str() == blueprint.descriptor.adapter_id.as_str()
         && recipe
             .allowed_auth_methods
             .contains(&blueprint.auth_method.as_str())
@@ -424,10 +369,6 @@ fn managed_recipe_matches_blueprint(
         && current_recipe_fingerprint
             .is_some_and(|fingerprint| fingerprint.as_str() == recipe_fingerprint.as_str())
         && blueprint.static_headers.is_empty()
-        && normalized_setup_matches
-        && blueprint.setup_binding.setup_fingerprint.as_str()
-            == crate::manager::setup_fingerprint(&setup_values).as_str()
-        && endpoint_matches
 }
 
 fn credential_shape_is_supported(blueprint: &CompiledSafeModelBlueprint) -> bool {
@@ -524,20 +465,40 @@ fn authored_shape_matches(
         }
         FrozenCredentialSource::AuthoredOverride => {
             provider.auth_override.as_ref().is_some_and(|auth| {
-                auth.method == blueprint.auth_method
-                    && auth
-                        .values
+                managed_source_auth_matches(
+                    auth.method.as_str(),
+                    auth.values
                         .keys()
-                        .map(cookie_agent_identity::AuthFieldName::as_str)
-                        .eq(blueprint
-                            .credential_binding
-                            .fields
-                            .iter()
-                            .map(cookie_agent_identity::AuthFieldName::as_str))
+                        .map(cookie_agent_identity::AuthFieldName::as_str),
+                    blueprint,
+                )
             })
         }
         FrozenCredentialSource::ProviderStore | FrozenCredentialSource::NoAuth => false,
     }
+}
+
+fn managed_source_auth_matches<'a>(
+    source_method: &str,
+    source_fields: impl Iterator<Item = &'a str>,
+    blueprint: &CompiledSafeModelBlueprint,
+) -> bool {
+    let FrozenProviderSource::Managed { package_claim, .. } = &blueprint.source else {
+        return false;
+    };
+    let Some(recipe) = crate::recipes::family_registry().by_npm(package_claim) else {
+        return false;
+    };
+    if crate::recipes::compatible_auth_method(source_method, recipe)
+        != Some(blueprint.auth_method.as_str())
+    {
+        return false;
+    }
+    let source_fields = source_fields.collect::<BTreeSet<_>>();
+    blueprint.credential_binding.fields.iter().all(|target| {
+        crate::recipes::compatible_credential_field(source_method, target.as_str())
+            .is_some_and(|source| source_fields.contains(source))
+    })
 }
 
 /// Returns exact RFC-8785 JCS bytes for an integer-only payload.

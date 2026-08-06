@@ -125,9 +125,6 @@ impl RpcFault {
                 cookie_agent_models::ModelManagerError::UnsupportedProvider,
             ) => ProviderConnectErrorCode::UnsupportedProvider,
             EngineError::ModelManager(
-                cookie_agent_models::ModelManagerError::QuarantinedProvider(_),
-            ) => ProviderConnectErrorCode::QuarantinedProvider,
-            EngineError::ModelManager(
                 cookie_agent_models::ModelManagerError::RemovedWithoutRetainedRecipeMatch,
             ) => ProviderConnectErrorCode::RemovedWithoutRetainedRecipeMatch,
             EngineError::ModelManager(cookie_agent_models::ModelManagerError::InvalidSetup) => {

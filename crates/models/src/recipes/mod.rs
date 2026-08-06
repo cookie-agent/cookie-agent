@@ -1,20 +1,18 @@
 //! Code-owned recipe registry schema 1.
 
 mod auth;
-mod claims;
-mod providers;
+mod families;
 mod setup;
 
 pub use auth::{
     AuthCredential, AuthMethodRecipe, AuthValidationError, CredentialKind, WireAuth, auth_method,
     auth_methods, validate_auth_definition, validate_auth_override,
 };
-pub use claims::{
-    CatalogClaim, CatalogModelClaimInput, CatalogProviderClaimInput, ClaimPresence,
-    ModelRecipeMatch, ProviderRecipeMatch, RecipeQuarantineReason,
-};
-pub use providers::{
-    COMPILER_VERSION, ProviderRecipe, RecipeRegistry, registry1, route_openai_model,
+pub use families::{
+    COMPILER_VERSION, FamilyKind, FamilyRecipe, FamilyRecipeRegistry, FamilyResolutionError,
+    ResolvedFamilyModel, ResolvedShape, compatible_auth_method, compatible_credential_field,
+    environment_aliases, family_registry, placeholders, resolve_model, setup_field_name,
+    substitute_placeholders,
 };
 pub use setup::{
     EndpointPolicy, SetupFieldRecipe, SetupFieldType, SetupRecipe, SetupValidationError,

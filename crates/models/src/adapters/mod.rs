@@ -4,7 +4,6 @@ mod attribution;
 mod capabilities;
 mod endpoints;
 mod headers;
-mod mapping;
 pub(crate) mod no_auth_responses;
 pub(crate) mod oven;
 
@@ -15,17 +14,47 @@ pub use endpoints::{
     managed_base_url_policy, validate_custom_endpoint, validate_managed_base_url,
 };
 pub use headers::{StaticHeaderError, validate_static_headers};
-pub use mapping::{
-    WireAdapterMapping, wire_adapter_for_custom, wire_adapter_for_protocol, wire_adapter_for_recipe,
-};
 
 use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct WireAdapterSelection {
+    pub family_id: &'static str,
+    pub adapter_id: &'static str,
+    pub family: OvenAdapterFamily,
+}
+
+#[must_use]
+pub fn wire_adapter_for_protocol(adapter_id: &str) -> Option<OvenAdapterFamily> {
+    families()
+        .find(|family| family.protocol_recipe() == adapter_id)
+        .or_else(|| {
+            adapter_id
+                .starts_with("oven.openai-compatible.chat.")
+                .then_some(OvenAdapterFamily::OpenaiCompatible)
+        })
+        .or_else(|| {
+            adapter_id
+                .starts_with("oven.anthropic-compatible.messages.")
+                .then_some(OvenAdapterFamily::AnthropicCompatible)
+        })
+}
+
+#[must_use]
+pub const fn wire_adapter_for_custom(family: OvenAdapterFamily) -> WireAdapterSelection {
+    WireAdapterSelection {
+        family_id: "custom",
+        adapter_id: family.protocol_recipe(),
+        family,
+    }
+}
 
 /// Exact current Oven constructor family. Package presence does not add entries.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OvenAdapterFamily {
     Anthropic,
+    AnthropicCompatible,
     OpenaiChat,
     OpenaiResponses,
     OpenaiCompatible,
@@ -42,6 +71,7 @@ impl OvenAdapterFamily {
     pub const fn id(self) -> &'static str {
         match self {
             Self::Anthropic => "anthropic",
+            Self::AnthropicCompatible => "anthropic-compatible",
             Self::OpenaiChat => "openai-chat",
             Self::OpenaiResponses => "openai-responses",
             Self::OpenaiCompatible => "openai-compatible",
@@ -63,6 +93,7 @@ impl OvenAdapterFamily {
     pub const fn protocol_recipe(self) -> &'static str {
         match self {
             Self::Anthropic => "oven.anthropic.messages",
+            Self::AnthropicCompatible => "oven.anthropic-compatible.messages",
             Self::OpenaiChat => "oven.openai.chat",
             Self::OpenaiResponses => "oven.openai.responses",
             Self::OpenaiCompatible => "oven.openai-compatible.chat",
@@ -81,6 +112,9 @@ impl OvenAdapterFamily {
             Self::OpenaiCompatible => &["bearer-api-key-v1", "api-key-header-v1", "no-auth-v1"],
             Self::OpenaiChat | Self::OpenaiResponses => &["bearer-api-key-v1", "no-auth-v1"],
             Self::Anthropic => &["anthropic-api-key-v1"],
+            Self::AnthropicCompatible => {
+                &["anthropic-api-key-v1", "bearer-api-key-v1", "no-auth-v1"]
+            }
             Self::GoogleGemini => &["google-api-key-header-v1"],
             Self::GoogleVertexGemini => &["oauth-access-token-v1"],
             Self::AwsBedrockConverse => &["aws-sigv4-credentials-v1"],
@@ -178,6 +212,7 @@ pub const fn custom_setup_recipe(
             &AZURE_CUSTOM_SETUP
         }
         OvenAdapterFamily::Anthropic
+        | OvenAdapterFamily::AnthropicCompatible
         | OvenAdapterFamily::OpenaiChat
         | OvenAdapterFamily::OpenaiResponses
         | OvenAdapterFamily::OpenaiCompatible

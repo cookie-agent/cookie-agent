@@ -244,6 +244,8 @@ fn validate_reasoning(
         ReasoningBehavior::Toggle { .. } | ReasoningBehavior::BudgetTokens { .. } => matches!(
             family,
             OvenAdapterFamily::Anthropic
+                | OvenAdapterFamily::AnthropicCompatible
+                | OvenAdapterFamily::AwsBedrockConverse
                 | OvenAdapterFamily::GoogleGemini
                 | OvenAdapterFamily::GoogleVertexGemini
                 | OvenAdapterFamily::CohereV2Chat

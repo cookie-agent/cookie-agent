@@ -1,7 +1,7 @@
 # Bundled models.dev bootstrap catalog
 
 The artifact in this directory is fallback bootstrap input for catalog cache
-schema 1. It is not a configured revision pin and is selected only after the
+schema 2. It is not a configured revision pin and is selected only after the
 fixed network request and validated per-user cache are unusable.
 
 Bundled artifact facts are 3,567,054 bytes and
@@ -17,7 +17,7 @@ acceptance criterion.
 Normative source order is:
 
 1. `https://models.dev/catalog.json` response or ETag `304` cache validation;
-2. independently validated cache schema 1;
+2. independently validated cache schema 2;
 3. independently validated bundled bootstrap.
 
 The network client sends `Accept-Encoding: identity`, rejects compressed
@@ -30,9 +30,9 @@ before narrower field limits.
 On Unix, cache files are fixed at:
 
 ```text
-~/.local/share/cookie_agent/catalog/models-dev-v1.json
-~/.local/share/cookie_agent/catalog/models-dev-v1.meta.json
-~/.local/share/cookie_agent/catalog/models-dev-v1.lock
+~/.local/share/cookie_agent/catalog/models-dev-v2.json
+~/.local/share/cookie_agent/catalog/models-dev-v2.meta.json
+~/.local/share/cookie_agent/catalog/models-dev-v2.lock
 ```
 
 Directories are current-user-owned mode `0700`. Body, metadata, lock, and
@@ -40,27 +40,26 @@ temporary files are current-user-owned mode `0600`, regular, single-link, opened
 descriptor-relative/no-follow, and written by lock/reread, exclusive sibling
 temp, fsync, atomic rename, and parent fsync.
 
-Metadata schema 1 records
+Metadata schema 2 records
 `sha256:<lowercase SHA-256 digest of the exact selected body bytes>`, ETag, size,
-validation/check times, source, stale flag, quarantine counts/digest, and safe
+validation/check times, source, stale flag, structural-record diagnostics, and safe
 last-error code/message/time. Cache or bootstrap fallback explicitly persists
 stale/error metadata when safe atomic writing is available.
 
 Invalid candidate structure rejects that source. Once a bounded root provider
 map is recovered, malformed/ambiguous provider records are quarantined with all
 children and malformed/ambiguous model records are quarantined individually;
-valid siblings survive. For a known recipe, provider npm/API/env/shape drift
-quarantines that provider and model-provider npm/API/shape or model-shape drift
-quarantines only that model. Recoverable IDs remain safe-visible with typed
-quarantine reasons.
+valid siblings survive. Executable behavior is classified directly: provider and
+nested-model npm values select a protocol family, while catalog API, shape,
+capability, modality, and limit values are authoritative.
 
 The strict catalog root has exactly required nonempty `providers` and `models`
-maps. `providers` carries provider-scoped executable claims. Root `models`
+maps. `providers` carries provider-scoped executable metadata. Root `models`
 carries canonical metadata/provenance only and never defines transport, setup,
 auth, adaptor, or executable inclusion. Exact same-key links are optional
 provenance references; provider records remain executable authority. Invalid
 canonical records quarantine only their provenance entries.
 
-Catalog values never define executable endpoints, protocols, auth, headers, or
-request templates. Recipe registry schema 1 owns those decisions. Cargo builds
+Catalog values define managed endpoints and model capabilities. Family registry
+schema 1 owns constructors, auth methods, and settings derivation. Cargo builds
 do not fetch the runtime catalog; daemon startup does.

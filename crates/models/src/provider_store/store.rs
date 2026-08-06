@@ -29,6 +29,7 @@ use super::{
 
 const MAX_STORE_BYTES: u64 = 16 * 1024 * 1024;
 const LEGACY_STORE_FILE: &str = "store-v1.json";
+const PREVIOUS_STORE_FILE: &str = "store-v2.json";
 const UNVERSIONED_STORE_FILE: &str = "store.json";
 
 /// Secure provider-store handle rooted at one private directory.
@@ -630,7 +631,9 @@ fn disconnect_payload_digest(
 }
 
 fn reject_obsolete_files(lock: &SecureDirectoryLock<'_>) -> Result<(), ProviderStoreError> {
-    if lock.read(LEGACY_STORE_FILE, MAX_STORE_BYTES)?.is_some() {
+    if lock.read(LEGACY_STORE_FILE, MAX_STORE_BYTES)?.is_some()
+        || lock.read(PREVIOUS_STORE_FILE, MAX_STORE_BYTES)?.is_some()
+    {
         return Err(ProviderStoreError::LegacyStoreVersion);
     }
     if lock
@@ -1035,7 +1038,11 @@ fn decode_state(bytes: &[u8]) -> Result<StoreState, ProviderStoreError> {
         .ok_or(ProviderStoreError::InvalidStore)?;
     match object.get("schema_version") {
         None => return Err(ProviderStoreError::UnversionedStore),
-        Some(Value::Number(number)) if number.as_u64() == Some(1) => {
+        Some(Value::Number(number))
+            if number.as_u64().is_some_and(|version| {
+                version > 0 && version < u64::from(PROVIDER_STORE_SCHEMA_VERSION)
+            }) =>
+        {
             return Err(ProviderStoreError::LegacyStoreVersion);
         }
         Some(Value::Number(number))

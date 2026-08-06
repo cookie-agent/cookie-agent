@@ -6,9 +6,9 @@ use serde::Serialize;
 use crate::{
     ModelCapabilities, ProviderOptions, Sha256Digest,
     adapters::{
-        OvenAdapterFamily, build_endpoint, custom_setup_recipe, validate_capability_ceiling,
+        OvenAdapterFamily, custom_setup_recipe, validate_capability_ceiling,
         validate_custom_endpoint, validate_managed_base_url, validate_static_headers,
-        wire_adapter_for_custom, wire_adapter_for_recipe,
+        wire_adapter_for_custom,
     },
     authoring::{
         AuthDefinition, CustomProvider, ManagedModelOverride, ModelsDevProvider,
@@ -24,10 +24,9 @@ use crate::{
         variants::{CompiledVariant, custom_variants, managed_variants},
     },
     recipes::{
-        COMPILER_VERSION, CatalogModelClaimInput, CatalogProviderClaimInput, EndpointPolicy,
-        ModelRecipeMatch, ProviderRecipe, ProviderRecipeMatch, RecipeQuarantineReason,
-        RecipeRegistry, SetupRecipe, ValidatedSetup, auth_method, registry1,
-        validate_auth_definition, validate_auth_override, validate_setup,
+        COMPILER_VERSION, FamilyKind, FamilyRecipe, FamilyRecipeRegistry, ValidatedSetup,
+        auth_method, family_registry, placeholders, resolve_model, substitute_placeholders,
+        validate_auth_definition, validate_setup,
     },
 };
 
@@ -61,8 +60,11 @@ pub enum CompiledModelStatus {
 pub struct CompiledDynamicModel {
     pub id: ProviderModelId,
     pub display_name: String,
-    pub provider_recipe: String,
-    pub protocol_recipe: String,
+    pub family_id: String,
+    pub effective_npm: String,
+    pub adapter_id: String,
+    pub resolved_shape: String,
+    pub reasoning_field: String,
     pub adapter: OvenAdapterFamily,
     pub endpoint: Option<String>,
     pub setup: Option<ValidatedSetup>,
@@ -77,26 +79,23 @@ pub struct CompiledDynamicModel {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ModelQuarantine {
+pub struct UnsupportedModel {
     pub id: ProviderModelId,
-    pub reason: RecipeQuarantineReason,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CompiledDynamicProvider {
     pub id: ProviderId,
     pub models: BTreeMap<ProviderModelId, CompiledDynamicModel>,
-    pub quarantined_models: Vec<ModelQuarantine>,
-    pub provider_quarantine: Option<RecipeQuarantineReason>,
+    pub unsupported_models: Vec<UnsupportedModel>,
     pub fingerprint: Sha256Digest,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum DynamicCompileError {
-    #[error("no_reviewed_provider_recipe")]
+    #[error("no_known_protocol_family")]
     UnsupportedProvider,
-    #[error("catalog_provider_claim_drift: {0:?}")]
-    ProviderQuarantined(RecipeQuarantineReason),
     #[error("unknown_model_override")]
     UnknownModelOverride,
     #[error("invalid_setup")]
@@ -119,20 +118,20 @@ pub enum DynamicCompileError {
 
 #[derive(Clone, Copy, Debug)]
 pub struct DynamicCompiler {
-    registry: RecipeRegistry,
+    registry: FamilyRecipeRegistry,
 }
 
 impl Default for DynamicCompiler {
     fn default() -> Self {
-        Self::registry1()
+        Self::family_registry()
     }
 }
 
 impl DynamicCompiler {
     #[must_use]
-    pub const fn registry1() -> Self {
+    pub const fn family_registry() -> Self {
         Self {
-            registry: registry1(),
+            registry: family_registry(),
         }
     }
 
@@ -142,25 +141,20 @@ impl DynamicCompiler {
         record: &CatalogProviderRecord,
         authored: Option<&ModelsDevProvider>,
     ) -> Result<CompiledDynamicProvider, DynamicCompileError> {
-        let input = CatalogProviderClaimInput::from_record(record);
-        match self.registry.match_provider(&input) {
-            ProviderRecipeMatch::Unsupported(_) => {
-                return Err(DynamicCompileError::UnsupportedProvider);
-            }
-            ProviderRecipeMatch::Quarantined(reason) => {
-                return Ok(quarantined_provider(record.id.clone(), reason));
-            }
-            ProviderRecipeMatch::Supported(_) => {}
-        }
-        if let Some(authored) = authored {
-            let recipe = self
-                .registry
-                .provider_recipes(record.id.as_str())
-                .into_iter()
-                .next()
-                .ok_or(DynamicCompileError::UnsupportedProvider)?;
-            validate_managed_base_url(recipe.endpoint, authored.base_url.as_ref())
-                .map_err(|_| DynamicCompileError::Endpoint)?;
+        let family = self
+            .registry
+            .classify(record)
+            .ok_or(DynamicCompileError::UnsupportedProvider)?;
+        if let Some(authored) = authored
+            && let Some(base_url) = authored.base_url.as_ref()
+        {
+            validate_managed_base_url(
+                crate::recipes::EndpointPolicy::DefaultWithAuthoredHttpsOverride {
+                    default: "https://invalid.example",
+                },
+                Some(base_url),
+            )
+            .map_err(|_| DynamicCompileError::Endpoint)?;
         }
         if authored.is_some_and(|value| {
             value.base_url.is_some() && value.api_key.is_none() && value.auth_override.is_none()
@@ -175,40 +169,49 @@ impl DynamicCompiler {
             }
         }
         let mut models = BTreeMap::new();
-        let mut quarantined_models = Vec::new();
+        let mut unsupported_models = Vec::new();
         for (table_id, entry) in &record.models {
             let Some(model) = entry.record.as_ref() else {
                 continue;
             };
-            let claim = CatalogModelClaimInput::from_record(table_id.as_str(), model);
-            let recipe = match self.registry.match_model(record.id.as_str(), &claim) {
-                ModelRecipeMatch::Supported(recipe) => recipe,
-                ModelRecipeMatch::Quarantined(reason) => {
-                    quarantined_models.push(ModelQuarantine {
-                        id: table_id.clone(),
-                        reason,
-                    });
-                    continue;
-                }
-                ModelRecipeMatch::Omitted => continue,
-            };
+            if model.status == crate::catalog::CatalogModelStatus::Deprecated
+                || !model.modalities.output.iter().any(|value| value == "text")
+            {
+                continue;
+            }
             let override_ = authored.and_then(|value| value.model_overrides.get(table_id));
             if override_.and_then(|value| value.enabled) == Some(false) {
                 continue;
             }
+            let resolved = match resolve_model(
+                record,
+                model,
+                authored.and_then(|value| value.shape),
+                override_.and_then(|value| value.shape),
+            ) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    unsupported_models.push(UnsupportedModel {
+                        id: table_id.clone(),
+                        reason: error.to_string(),
+                    });
+                    continue;
+                }
+            };
             match self.compile_managed_model(
                 catalog_revision,
                 &record.id,
                 model,
-                recipe,
+                family,
+                &resolved,
                 authored,
                 override_,
             ) {
                 Ok(compiled) => {
                     models.insert(table_id.clone(), compiled);
                 }
-                Err(ModelLocalError::Quarantine(reason)) => {
-                    quarantined_models.push(ModelQuarantine {
+                Err(ModelLocalError::Unsupported(reason)) => {
+                    unsupported_models.push(UnsupportedModel {
                         id: table_id.clone(),
                         reason,
                     });
@@ -216,7 +219,7 @@ impl DynamicCompiler {
                 Err(ModelLocalError::Provider(error)) => return Err(error),
             }
         }
-        quarantined_models.sort_by(|left, right| left.id.cmp(&right.id));
+        unsupported_models.sort_by(|left, right| left.id.cmp(&right.id));
         let provider_fingerprint = fingerprint(
             "cookie-agent/dynamic-provider/v1",
             &(
@@ -228,14 +231,13 @@ impl DynamicCompiler {
                     .iter()
                     .map(|(id, model)| (id, &model.behavior_fingerprint))
                     .collect::<Vec<_>>(),
-                &quarantined_models,
+                &unsupported_models,
             ),
         );
         Ok(CompiledDynamicProvider {
             id: record.id.clone(),
             models,
-            quarantined_models,
-            provider_quarantine: None,
+            unsupported_models,
             fingerprint: provider_fingerprint,
         })
     }
@@ -246,69 +248,70 @@ impl DynamicCompiler {
         catalog_revision: &str,
         provider_id: &ProviderId,
         model: &CatalogModelRecord,
-        recipe: &'static ProviderRecipe,
+        provider_family: &'static FamilyRecipe,
+        resolved: &crate::recipes::ResolvedFamilyModel,
         authored: Option<&ModelsDevProvider>,
         override_: Option<&ManagedModelOverride>,
     ) -> Result<CompiledDynamicModel, ModelLocalError> {
-        let wire = wire_adapter_for_recipe(recipe.id, model.id.as_str())
-            .map_err(ModelLocalError::Quarantine)?;
-        let adapter = wire.family;
-        let protocol_recipe = wire.adapter_recipe_id;
+        let adapter = resolved.adapter;
+        let adapter_id = match adapter {
+            OvenAdapterFamily::OpenaiCompatible => {
+                format!("oven.openai-compatible.chat.{}", provider_id.as_str())
+            }
+            OvenAdapterFamily::AnthropicCompatible => {
+                format!(
+                    "oven.anthropic-compatible.messages.{}",
+                    provider_id.as_str()
+                )
+            }
+            _ => adapter.protocol_recipe().to_owned(),
+        };
         let capabilities = capabilities_from_catalog(model, adapter).map_err(|_| {
-            ModelLocalError::Quarantine(RecipeQuarantineReason::UnsupportedModelCapabilities)
+            ModelLocalError::Unsupported("unsupported_model_capabilities".to_owned())
         })?;
         if !validate_capability_shape(&capabilities)
             || validate_capability_ceiling(adapter, &capabilities).is_err()
         {
-            return Err(ModelLocalError::Quarantine(
-                RecipeQuarantineReason::UnsupportedModelCapabilities,
+            return Err(ModelLocalError::Unsupported(
+                "unsupported_model_capabilities".to_owned(),
             ));
         }
-        let setup = resolved_managed_setup(recipe.setup, authored)?;
-        let endpoint_policy =
-            if provider_id.as_str() == "cohere" && model.id.as_str() == "north-mini-code-1-0" {
-                EndpointPolicy::DefaultWithAuthoredHttpsOverride {
-                    default: "https://api.cohere.ai/compatibility/v1",
-                }
-            } else {
-                recipe.endpoint
-            };
-        let endpoint = match &setup {
-            Some(setup) => Some(
-                build_endpoint(
-                    endpoint_policy,
-                    authored.and_then(|value| value.base_url.as_ref()),
-                    setup,
-                )
-                .map_err(|_| ModelLocalError::Provider(DynamicCompileError::Endpoint))?,
-            ),
-            None => match endpoint_policy {
-                EndpointPolicy::DefaultWithAuthoredHttpsOverride { default } => Some(
-                    authored
-                        .and_then(|value| value.base_url.as_ref())
-                        .map(crate::authoring::EndpointUrl::as_str)
-                        .unwrap_or(default)
-                        .trim_end_matches('/')
-                        .to_owned(),
-                ),
-                EndpointPolicy::VertexPublisher
-                | EndpointPolicy::BedrockRegional
-                | EndpointPolicy::AzureOpenai => None,
-            },
+        let template = authored
+            .and_then(|value| value.base_url.as_ref())
+            .map(crate::authoring::EndpointUrl::as_str)
+            .map(str::to_owned)
+            .or_else(|| resolved.endpoint_template.clone());
+        let (setup, endpoint) = resolved_managed_setup_and_endpoint(
+            provider_family,
+            resolved.recipe.family,
+            template.as_deref(),
+            authored,
+        )?;
+        let required_auth_method = match adapter {
+            OvenAdapterFamily::AwsBedrockConverse => Some("aws-sigv4-credentials-v1"),
+            OvenAdapterFamily::OpenaiResponses if resolved.recipe.family == FamilyKind::Bedrock => {
+                Some("bearer-api-key-v1")
+            }
+            _ => None,
         };
-        let auth = managed_auth(recipe, authored)?;
+        let auth = managed_auth(
+            provider_family,
+            resolved.recipe,
+            required_auth_method,
+            authored,
+        )?;
         let mut defaults = managed_defaults(model);
         if let Some(override_) = override_ {
             apply_partial_defaults(&mut defaults, &override_.defaults);
         }
         if !validate_defaults(&defaults, &capabilities) {
-            return Err(ModelLocalError::Quarantine(
-                RecipeQuarantineReason::UnsupportedModelCapabilities,
+            return Err(ModelLocalError::Unsupported(
+                "unsupported_model_capabilities".to_owned(),
             ));
         }
         let (variants, default_variant) =
             managed_variants(&model.reasoning_options, override_, adapter).map_err(|_| {
-                ModelLocalError::Quarantine(RecipeQuarantineReason::UnsupportedProtocolFeature)
+                ModelLocalError::Unsupported("unsupported_protocol_feature".to_owned())
             })?;
         if variants
             .values()
@@ -336,8 +339,8 @@ impl DynamicCompiler {
                     catalog_revision,
                     provider_id,
                     &model.id,
-                    recipe.id,
-                    protocol_recipe,
+                    resolved.recipe.family.id(),
+                    &adapter_id,
                     adapter,
                 ),
                 &endpoint,
@@ -354,8 +357,21 @@ impl DynamicCompiler {
         Ok(CompiledDynamicModel {
             id: model.id.clone(),
             display_name,
-            provider_recipe: recipe.id.to_owned(),
-            protocol_recipe: protocol_recipe.to_owned(),
+            family_id: resolved.recipe.family.id().to_owned(),
+            effective_npm: resolved.npm.clone(),
+            adapter_id,
+            resolved_shape: match resolved.shape {
+                crate::recipes::ResolvedShape::Chat => "chat",
+                crate::recipes::ResolvedShape::Responses => "responses",
+            }
+            .to_owned(),
+            reasoning_field: match model.interleaved {
+                Some(crate::catalog::CatalogInterleaved::Reasoning) => "reasoning",
+                Some(crate::catalog::CatalogInterleaved::ReasoningContent)
+                | Some(crate::catalog::CatalogInterleaved::Default)
+                | None => "reasoning_content",
+            }
+            .to_owned(),
             adapter,
             endpoint,
             setup,
@@ -429,7 +445,7 @@ impl DynamicCompiler {
                     COMPILER_VERSION,
                     provider_id,
                     id,
-                    wire.adapter_recipe_id,
+                    wire.adapter_id,
                     adapter,
                     &endpoint,
                     &setup,
@@ -448,8 +464,18 @@ impl DynamicCompiler {
                 CompiledDynamicModel {
                     id: id.clone(),
                     display_name: model.display_name.clone(),
-                    provider_recipe: wire.provider_recipe_id.into(),
-                    protocol_recipe: wire.adapter_recipe_id.into(),
+                    family_id: "custom".into(),
+                    effective_npm: "custom".into(),
+                    adapter_id: wire.adapter_id.into(),
+                    resolved_shape: if adapter == OvenAdapterFamily::OpenaiResponses
+                        || adapter == OvenAdapterFamily::AzureOpenaiResponses
+                    {
+                        "responses"
+                    } else {
+                        "chat"
+                    }
+                    .into(),
+                    reasoning_field: "reasoning_content".into(),
                     adapter,
                     endpoint: Some(endpoint),
                     setup: Some(setup.clone()),
@@ -489,51 +515,94 @@ impl DynamicCompiler {
         Ok(CompiledDynamicProvider {
             id: provider_id.clone(),
             models,
-            quarantined_models: Vec::new(),
-            provider_quarantine: None,
+            unsupported_models: Vec::new(),
             fingerprint: provider_fingerprint,
         })
     }
 }
 
 enum ModelLocalError {
-    Quarantine(RecipeQuarantineReason),
+    Unsupported(String),
     Provider(DynamicCompileError),
 }
 
-fn quarantined_provider(id: ProviderId, reason: RecipeQuarantineReason) -> CompiledDynamicProvider {
-    let provider_fingerprint = fingerprint("cookie-agent/quarantined-provider/v1", &(&id, reason));
-    CompiledDynamicProvider {
-        id,
-        models: BTreeMap::new(),
-        quarantined_models: Vec::new(),
-        provider_quarantine: Some(reason),
-        fingerprint: provider_fingerprint,
-    }
-}
-
-fn resolved_managed_setup(
-    recipe: &'static SetupRecipe,
+fn resolved_managed_setup_and_endpoint(
+    _provider_family: &'static FamilyRecipe,
+    family: FamilyKind,
+    template: Option<&str>,
     authored: Option<&ModelsDevProvider>,
-) -> Result<Option<ValidatedSetup>, ModelLocalError> {
-    let input = authored.map(|value| &value.setup);
-    let required = recipe.fields.iter().any(|field| field.required);
-    if input.is_none_or(BTreeMap::is_empty) && required {
-        return Ok(None);
+) -> Result<(Option<ValidatedSetup>, Option<String>), ModelLocalError> {
+    if template.is_none() && !matches!(family, FamilyKind::Vertex | FamilyKind::VertexAnthropic) {
+        return Ok((None, None));
     }
-    validate_setup(recipe, input.unwrap_or(&BTreeMap::new()))
-        .map(Some)
-        .map_err(|_| ModelLocalError::Provider(DynamicCompileError::Setup))
+    let input = authored
+        .map(|value| &value.setup)
+        .cloned()
+        .unwrap_or_default();
+    let mut values = BTreeMap::new();
+    for (id, value) in &input {
+        let crate::authoring::SafeSetupValue::String(value) = value else {
+            return Err(ModelLocalError::Provider(DynamicCompileError::Setup));
+        };
+        values.insert(id.as_str().to_owned(), value.as_str().to_owned());
+    }
+    let mut required = template
+        .map(placeholders)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|name| crate::recipes::setup_field_name(&name))
+        .collect::<Vec<_>>();
+    match family {
+        FamilyKind::Vertex | FamilyKind::VertexAnthropic => {
+            required.extend(["project".into(), "location".into()])
+        }
+        FamilyKind::Bedrock => required.push("region".into()),
+        FamilyKind::Azure => required.push("resource_name".into()),
+        _ => {}
+    }
+    required.sort();
+    required.dedup();
+    if required.iter().any(|field| !values.contains_key(field)) {
+        return Ok((None, None));
+    }
+    let endpoint = template
+        .and_then(|template| substitute_placeholders(template, &values))
+        .map(|value| value.trim_end_matches('/').to_owned())
+        .or_else(|| match family {
+            FamilyKind::Vertex | FamilyKind::VertexAnthropic => Some(format!(
+                "https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}",
+                values.get("location")?,
+                values.get("project")?,
+                values.get("location")?
+            )),
+            _ => None,
+        });
+    let setup = ValidatedSetup {
+        recipe_id: "family-derived-setup-v1",
+        values,
+    };
+    Ok((Some(setup), endpoint))
 }
 
 fn managed_auth(
-    recipe: &ProviderRecipe,
+    provider_family: &FamilyRecipe,
+    effective_recipe: &FamilyRecipe,
+    required_method: Option<&'static str>,
     authored: Option<&ModelsDevProvider>,
 ) -> Result<CompiledAuthShape, ModelLocalError> {
     if let Some(authored) = authored {
         if authored.api_key.is_some() {
-            let method = auth_method(recipe.default_auth_method)
-                .ok_or(ModelLocalError::Provider(DynamicCompileError::Auth))?;
+            let source_method = provider_family.default_auth_method;
+            let target_method =
+                compatible_model_auth(source_method, effective_recipe, required_method);
+            let Some(method) = target_method.and_then(auth_method) else {
+                return Ok(auth_shape(
+                    auth_method(effective_recipe.default_auth_method)
+                        .ok_or(ModelLocalError::Provider(DynamicCompileError::Auth))?,
+                    BTreeMap::new(),
+                    AuthSourceCategory::Unavailable,
+                ));
+            };
             let required_api_key = method.credentials.len() == 1
                 && method.credentials[0].required
                 && method.credentials[0].name == "api_key";
@@ -547,8 +616,16 @@ fn managed_auth(
             ));
         }
         if let Some(auth) = &authored.auth_override {
-            let method = validate_auth_override(auth, recipe.allowed_auth_methods)
-                .map_err(|_| ModelLocalError::Provider(DynamicCompileError::Auth))?;
+            let target_method =
+                compatible_model_auth(auth.method.as_str(), effective_recipe, required_method);
+            let Some(method) = target_method.and_then(auth_method) else {
+                return Ok(auth_shape(
+                    auth_method(effective_recipe.default_auth_method)
+                        .ok_or(ModelLocalError::Provider(DynamicCompileError::Auth))?,
+                    BTreeMap::new(),
+                    AuthSourceCategory::Unavailable,
+                ));
+            };
             return Ok(auth_shape(
                 method,
                 BTreeMap::new(),
@@ -556,13 +633,24 @@ fn managed_auth(
             ));
         }
     }
-    let method = auth_method(recipe.default_auth_method)
+    let method = auth_method(required_method.unwrap_or(effective_recipe.default_auth_method))
         .ok_or(ModelLocalError::Provider(DynamicCompileError::Auth))?;
     Ok(auth_shape(
         method,
         BTreeMap::new(),
         AuthSourceCategory::Unavailable,
     ))
+}
+
+fn compatible_model_auth(
+    source_method: &str,
+    effective_recipe: &FamilyRecipe,
+    required_method: Option<&'static str>,
+) -> Option<&'static str> {
+    let mapped = crate::recipes::compatible_auth_method(source_method, effective_recipe)?;
+    required_method.map_or(Some(mapped), |required| {
+        (mapped == required).then_some(required)
+    })
 }
 
 fn custom_auth_shape(
@@ -631,7 +719,9 @@ fn validate_custom_options(options: &ProviderOptions, adapter: OvenAdapterFamily
         || options.deployment.is_some();
     !has_setup_leak
         && match adapter {
-            OvenAdapterFamily::Anthropic => !has_openai && !has_compatible,
+            OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible => {
+                !has_openai && !has_compatible
+            }
             OvenAdapterFamily::OpenaiChat | OvenAdapterFamily::OpenaiResponses => {
                 !has_anthropic && !has_compatible
             }
@@ -657,6 +747,8 @@ fn reasoning_supported(
         ) => matches!(
             adapter,
             OvenAdapterFamily::Anthropic
+                | OvenAdapterFamily::AnthropicCompatible
+                | OvenAdapterFamily::AwsBedrockConverse
                 | OvenAdapterFamily::GoogleGemini
                 | OvenAdapterFamily::GoogleVertexGemini
                 | OvenAdapterFamily::CohereV2Chat

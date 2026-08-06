@@ -284,6 +284,14 @@ pub struct ManagedModelOverride {
     #[serde(default)]
     pub variants: BTreeMap<VariantId, VariantDirective>,
     pub default_variant: Option<ConfiguredModelDefault>,
+    pub shape: Option<ManagedModelShape>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ManagedModelShape {
+    Chat,
+    Responses,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -294,6 +302,7 @@ pub struct ModelsDevProvider {
     pub setup: BTreeMap<SetupFieldId, ConfigSetupValue>,
     pub api_key: Option<SecretString>,
     pub auth_override: Option<AuthOverride>,
+    pub shape: Option<ManagedModelShape>,
     #[serde(default)]
     pub model_overrides: BTreeMap<ProviderModelId, ManagedModelOverride>,
 }
@@ -353,7 +362,6 @@ impl ProviderDefinition {
                 {
                     return Err(AuthoringError::BaseUrlWithoutAuth);
                 }
-                validate_managed(provider_id.as_str(), provider)?;
                 validate_display_overrides(provider)?;
             }
             Self::Custom(provider) => {
@@ -396,86 +404,6 @@ fn validate_custom(provider: &CustomProvider) -> Result<(), AuthoringError> {
         }
     }
     Ok(())
-}
-
-fn validate_managed(provider_id: &str, provider: &ModelsDevProvider) -> Result<(), AuthoringError> {
-    let (setup_required, setup_optional, method, base_url_allowed): (&[&str], &[&str], &str, bool) =
-        match provider_id {
-            "anthropic" => (&[], &[], "anthropic-api-key-v1", true),
-            "openai" | "openrouter" | "cohere" | "groq" | "togetherai" | "deepinfra"
-            | "fireworks-ai" => (&[], &[], "bearer-api-key-v1", true),
-            "google" => (&[], &[], "google-api-key-header-v1", true),
-            "google-vertex" => (
-                &["project", "location"],
-                &["resource"],
-                "oauth-access-token-v1",
-                false,
-            ),
-            "amazon-bedrock" => (&["region"], &[], "aws-sigv4-credentials-v1", false),
-            "azure" => (
-                &["resource_name", "deployment", "api_version"],
-                &[],
-                "azure-api-key-v1",
-                false,
-            ),
-            // Recipe-specific validation for catalog providers not in Registry 1 is deferred.
-            _ => return Ok(()),
-        };
-
-    if provider.base_url.is_some() && !base_url_allowed {
-        return Err(AuthoringError::BaseUrlForbidden);
-    }
-    if provider.api_key.is_some()
-        && !matches!(
-            method,
-            "anthropic-api-key-v1"
-                | "bearer-api-key-v1"
-                | "google-api-key-header-v1"
-                | "azure-api-key-v1"
-        )
-    {
-        return Err(AuthoringError::AmbiguousApiKey);
-    }
-    if let Some(auth) = &provider.auth_override
-        && (auth.method.as_str() != method || !valid_credential_fields(method, auth.values.keys()))
-    {
-        return Err(AuthoringError::AuthShape);
-    }
-    if !provider.setup.is_empty() {
-        let actual: BTreeSet<&str> = provider.setup.keys().map(SetupFieldId::as_str).collect();
-        let allowed: BTreeSet<&str> = setup_required
-            .iter()
-            .chain(setup_optional.iter())
-            .copied()
-            .collect();
-        if actual.iter().any(|field| !allowed.contains(field))
-            || setup_required.iter().any(|field| !actual.contains(field))
-        {
-            return Err(AuthoringError::SetupShape);
-        }
-    }
-    Ok(())
-}
-
-fn valid_credential_fields<'a>(
-    method: &str,
-    fields: impl Iterator<Item = &'a AuthFieldName>,
-) -> bool {
-    let fields: BTreeSet<&str> = fields.map(AuthFieldName::as_str).collect();
-    match method {
-        "no-auth-v1" => fields.is_empty(),
-        "bearer-api-key-v1"
-        | "anthropic-api-key-v1"
-        | "google-api-key-header-v1"
-        | "azure-api-key-v1" => fields == BTreeSet::from(["api_key"]),
-        "oauth-access-token-v1" => fields == BTreeSet::from(["access_token"]),
-        "api-key-header-v1" => fields == BTreeSet::from(["api_key"]),
-        "aws-sigv4-credentials-v1" => {
-            fields == BTreeSet::from(["access_key_id", "secret_access_key"])
-                || fields == BTreeSet::from(["access_key_id", "secret_access_key", "session_token"])
-        }
-        _ => false,
-    }
 }
 
 fn validate_display_name(value: &str) -> Result<(), AuthoringError> {

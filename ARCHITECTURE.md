@@ -4,26 +4,26 @@
 
 **Required versions:** configuration schema 7; agent document schema 1;
 protocol 8; event schema 8; session JSONL 8; session metadata 8;
-delegation-journal schema 8; runtime snapshot schema 1; catalog cache schema 1;
-provider store schema 2; recipe registry schema 1; project model-snapshot
+delegation-journal schema 8; runtime snapshot schema 1; catalog cache schema 2;
+provider store schema 3; family recipe registry schema 1; project model-snapshot
 manifest schema 1.
 
 Only those versions are accepted. Configuration schema 6, protocol/event/
-persistence 7, provider store 1, and every unversioned or earlier replacement
+persistence 7, catalog cache 1, provider stores 1/2, and every unversioned or earlier replacement
 are rejected. There are no migrations, compatibility readers, aliases, or dual
 paths.
 
 This file is authoritative. Exact types, ordering, failure behavior, startup,
 RPC, persistence, and TUI semantics are in
 [docs/agent-model-variant-redesign.md](docs/agent-model-variant-redesign.md).
-Recipe registry 1 is frozen in
+Family registry 1 is described in
 [docs/provider-conformance.md](docs/provider-conformance.md).
 
 ## 1. Core invariants
 
 1. The daemon refreshes only `https://models.dev/catalog.json`. The URL is
    code-owned, receives no provider credentials, and never redirects.
-2. Catalog startup selection is exactly network, validated cache schema 1, then
+2. Catalog startup selection is exactly network, validated cache schema 2, then
    bundled bootstrap. A selected body's revision is
    `sha256:<lowercase SHA-256 digest of the exact selected body bytes>`.
 3. Structural candidate failure rejects one network/cache/bootstrap candidate.
@@ -32,15 +32,14 @@ Recipe registry 1 is frozen in
 4. `/connect` lists every valid current catalog provider and every configured
    managed provider removed from the current catalog. “Configured managed” is
    the union of authored `source = "models_dev"` definitions and provider-store
-   records. Custom providers never appear in `/connect` and never use store 2.
+   records. Custom providers never appear in `/connect` and never use store 3.
 5. Runtime TOML has exactly one `[providers.<id>]` namespace. Definitions are
    tagged `source = "models_dev" | "custom"`. Custom IDs begin with `custom.`.
 6. A same-ID user/workspace provider definition is an atomic replacement. No
    provider, model, map, array, auth, or override field merges across layers.
-7. A managed endpoint is an authored `base_url`, otherwise the code-owned recipe
-   default. Catalog API metadata is checked only as a claim. It is never endpoint
-   authority. An authored base URL requires authored auth in that same provider
-   definition unless the selected recipe is reviewed no-auth.
+7. A managed endpoint is an authored `base_url`, otherwise catalog `api`, otherwise
+   the npm-family default. Catalog endpoint metadata is authoritative. An authored
+   base URL requires authored auth in that same provider definition.
 8. Credentials are semantic values. `api_key` is permitted only for an
    unambiguous one-secret default API-key method. `auth_override` is exactly
    `{ method, values }`. A recipe owns the reviewed wire header/signing form;
@@ -50,9 +49,9 @@ Recipe registry 1 is frozen in
    loopback HTTP policy. Query strings are rejected, including empty `?`.
 10. All managed supported, non-deprecated text-output models are automatic.
     Managed TOML has sparse `model_overrides`; it has no inclusion map.
-11. Provider/protocol/auth behavior comes only from recipe registry schema 1.
-    Known-entry npm/API/env/shape/model-override drift quarantines the exact
-    provider or model record with a typed reason; behavior is never guessed.
+11. Provider protocol/auth behavior comes from family registry schema 1, keyed by
+    catalog `npm`. Catalog endpoint, shape, capability, modality, limit, and nested
+    provider override values are compiled directly. Unknown npm families are unsupported.
 12. `provider.connect` and `provider.disconnect` mutate only managed provider
     store state. Connect compiles before a single durable transaction; after a
     successful transaction publication is an infallible in-memory swap.
@@ -65,7 +64,7 @@ Recipe registry 1 is frozen in
 16. Secrets never enter caches, revisions, snapshots, events, errors, logs,
     generated artifacts, session files, or TUI projections.
 17. **Empty setup is valid.** Config schema 7 permits `providers` to be omitted
-    or empty. When provider store 2 is also empty and no effective authored
+    or empty. When provider store 3 is also empty and no effective authored
     custom provider exists, startup publishes zero models/root-runnable agents
     and opens the TUI so `/connect` can bootstrap setup. Empty TOML does not hide
     existing per-user stored managed connections.
@@ -84,14 +83,14 @@ engine ── version-8 events/sessions and frozen run policy
     ▼
 model manager ── atomic RuntimeSnapshot schema 1
     │
-    ├── catalog manager ── fixed HTTPS / cache 1 / bootstrap
-    ├── recipe registry 1 ── provider/protocol/auth compilers
+    ├── catalog manager ── fixed HTTPS / cache 2 / bootstrap
+    ├── family registry 1 ── npm-family/protocol/auth compilers
     ├── config loader ── schema 7 and agent schema 1
-    └── provider store 2 ── managed durable connections only
+    └── provider store 3 ── managed durable connections only
 ```
 
-The catalog manager decides only catalog data and quarantine status. The recipe
-registry decides support, endpoint policy, auth semantics, capability projection,
+The catalog manager validates catalog structure. The family registry classifies npm
+packages and decides protocol/auth semantics; catalog records decide endpoints and capabilities.
 and Oven construction. The model manager compiles a complete candidate runtime
 before one atomic publication. The engine freezes one published snapshot at run
 admission. Clients consume one coherent snapshot and notifications.
@@ -126,12 +125,12 @@ On Unix, runtime user data is fixed below:
 ```text
 ~/.local/share/cookie_agent/
   catalog/
-    models-dev-v1.json
-    models-dev-v1.meta.json
-    models-dev-v1.lock
+    models-dev-v2.json
+    models-dev-v2.meta.json
+    models-dev-v2.lock
   providers/
-    store-v2.json
-    store-v2.lock
+    store-v3.json
+    store-v3.lock
   sessions/
 ```
 
@@ -185,10 +184,10 @@ store input rather than plaintext. Parsed and interpolated secrets live in
 `SecretString`; owned buffers are best-effort zeroized on drop and after
 dispatch. Transport/kernel copies cannot be promised forensic erasure.
 
-## 5. Catalog and quarantine architecture
+## 5. Catalog architecture
 
 The fixed request rejects redirects, cookies, configurable headers, auth,
-userinfo, fragments, and every query. If cache schema 1 has a validated ETag,
+userinfo, fragments, and every query. If cache schema 2 has a validated ETag,
 only `If-None-Match` is added.
 
 The request sends `Accept-Encoding: identity`. Any non-identity
@@ -214,18 +213,17 @@ Candidate boundaries are exact:
 - within a valid provider, each model value is parsed independently; malformed
   model-local shape, duplicate model-local keys, invalid identity, or ambiguous
   normalized model identity quarantines only that model and all colliding peers;
-- for a known recipe entry, provider npm/API/env/shape drift quarantines that
-  provider and all children; model provider npm/API/shape or model-shape drift
-  quarantines only that model. A recoverable ID remains safe-visible with its
-  quarantine reason.
+- executable metadata is classified directly. Provider and nested
+  model `npm` values classify protocol families; `api` and `shape` are authority.
+  Unknown nested npm or shape values make only that model unsupported.
 
-`providers` contains provider-scoped executable claims: provider identity,
-npm/API/env claims, provider model records, and optional model provider
+`providers` contains provider-scoped executable metadata: provider identity,
+npm/API/env values, provider model records, and optional model provider
 overrides. `models` contains canonical metadata/provenance keyed by canonical
 model ID. It never supplies endpoint, protocol, auth, setup, package selection,
 or executable inclusion. Provider model keys/embedded IDs and canonical model
 keys/embedded IDs must agree. An exact provider-model key match to `models` is an
-optional provenance cross-reference only; provider-scoped executable claims win
+optional provenance cross-reference only; provider-scoped executable metadata wins
 on disagreement, absence of a canonical record is allowed, and a malformed
 canonical record quarantines only that canonical record/cross-reference.
 
@@ -233,9 +231,9 @@ Quarantine entries are safe diagnostics and never executable. Valid siblings in
 the same candidate remain eligible. The candidate may publish when at least one
 provider record is valid or safely quarantined with a recoverable unique ID.
 
-Cache metadata schema 1 records the catalog revision exactly as
+Cache metadata schema 2 records the catalog revision exactly as
 `sha256:<lowercase SHA-256 digest of the exact selected body bytes>`, ETag, byte length,
-validation time, last-check time, source, stale flag, quarantine counts/digests,
+validation time, last-check time, source, stale flag, structural diagnostics,
 and `last_error { code, safe_message, occurred_at } | null`. Network/cache/
 bootstrap fallback updates stale/error metadata atomically even when body bytes
 remain unchanged. Errors never contain bodies, URLs with secrets, or credentials.
@@ -244,13 +242,14 @@ remain unchanged. Errors never contain bodies, URLs with secrets, or credentials
 
 All provider definitions live in `[providers.<id>]`:
 
-- `source = "models_dev"`: optional `base_url`, typed `setup`, `api_key`,
-  `auth_override`, and sparse `model_overrides`;
+- `source = "models_dev"`: optional `base_url`, `shape = "chat" | "responses"`,
+  typed `setup`, `api_key`, `auth_override`, and sparse model overrides whose
+  per-model fields may also include `shape`;
 - `source = "custom"`: required `endpoint`, `adaptor`, `auth`, and nonempty
   explicit `models`; optional typed adapter `setup` and strict `headers`.
 
 The top-level `providers` map defaults to `{}` and may be empty. It produces the
-zero-model setup state only when provider store 2 is empty and no effective
+zero-model setup state only when provider store 3 is empty and no effective
 authored custom provider exists; otherwise stored managed connections or
 authored custom providers still materialize. Empty setup is not a configuration
 error and must never produce `runtime providers must be nonempty`. Agent
@@ -258,7 +257,7 @@ fallback references with no current model are retained as unavailable
 descriptors; their agents are not root-runnable.
 
 Custom IDs must begin `custom.`; managed IDs must not. Custom providers are
-config-only, are not `/connect` rows, and never read or write provider store 2.
+config-only, are not `/connect` rows, and never read or write provider store 3.
 
 Custom static headers are non-secret behavior metadata with bounded RFC-token
 names and control/CRLF/NUL-free safe values. They never interpolate and are
@@ -273,14 +272,13 @@ method; static header values are never secret/redacted.
 For managed providers the endpoint precedence is exactly:
 
 ```text
-same-definition authored base_url > recipe-registry default
+same-definition authored base_url > catalog api > npm-family default
 ```
 
-Neither provider store, another config layer's replaced definition, environment
-outside explicit interpolation, nor catalog API metadata supplies an endpoint.
-The catalog API value is compared with the recipe's exact/allowed claim set;
-mismatch quarantines the known provider record with typed
-`catalog_provider_api_drift`.
+Neither provider store, another config layer's replaced definition, nor ambient
+environment values supply an endpoint. Catalog API metadata is authoritative.
+`${VAR}` placeholders derive required setup fields and are substituted before
+endpoint validation.
 
 An authored `base_url` requires `api_key` or `auth_override` in that same atomic
 definition unless the recipe's selected method is reviewed no-auth. It also
@@ -296,7 +294,7 @@ Managed auth precedence is exact:
 ```text
 same-definition api_key mapped by the recipe default method
 > same-definition auth_override
-> exact active provider-store-2 connection only without authored base_url
+> exact active provider-store-3 connection only without authored base_url
 > reviewed no-auth
 > unavailable
 ```
@@ -312,18 +310,25 @@ differently classified credential is ambiguous and requires `auth_override`.
 Provider-store auth is considered only when there is no authored auth and no
 authored `base_url`. Its compatibility scope is provider ID, code-owned
 `recipe_fingerprint`, recipe default normalized base URL/endpoint identity,
-canonical safe setup fingerprint, and auth method/credential shape. No endpoint,
+canonical safe setup fingerprint, and auth method/credential compatibility. For
+nested npm families, compatible methods and semantic fields are mapped explicitly
+(for example API-key to bearer API-key, or OAuth access token to bearer API-key).
+Azure Foundry models classified as `@ai-sdk/anthropic` use the package's
+`x-api-key` API-key behavior. Bedrock Converse uses SigV4 credentials, while
+nested Bedrock Mantle Responses requires a Bedrock API key as bearer material;
+models incompatible with the selected connection auth remain unavailable.
+No endpoint,
 host-family, method, provider-name, or identity fallback exists.
 
 `source_record_digest` and `recipe_fingerprint` are independent secret-free
 identities. `source_record_digest` is immutable provenance: SHA-256 over the
 canonical exact validated catalog provider record selected to compile that
 runtime or manifest. `recipe_fingerprint` is compatibility: a canonical hash of
-Registry 1 revision/schema, compiler version, the selected provider/protocol/
-adapter/setup/auth/endpoint recipe, and versioned model-exception semantics.
-Provider store 2 persists both. A harmless catalog metadata refresh produces a
+Family registry 1 revision/schema, compiler version, selected family/adapter/
+setup/auth/endpoint identity, and catalog-derived model semantics.
+Provider store 3 persists both. A harmless catalog metadata refresh produces a
 new source-record digest but the same recipe fingerprint, so the unchanged
-stored setup and credentials remain eligible. Claim, adapter, protocol, setup,
+stored setup and credentials remain eligible. Family, adapter, protocol, setup,
 auth, endpoint-policy, compiler, registry, or model-exception drift changes or
 quarantines the recipe identity and blocks reuse.
 
@@ -331,13 +336,13 @@ Managed setup precedence is complete same-definition authored `setup`, then
 provider-store setup, then explicitly declared recipe defaults, then
 unavailable. An authored setup map never field-merges with store or the replaced
 user definition; it must supply every non-defaulted field, while recipe defaults
-may fill only fields declared defaultable. Provider store 2 stores normalized
+may fill only fields declared defaultable. Provider store 3 stores normalized
 non-secret setup values and secret auth credentials plus policy/scope, exact
 source-record provenance, recipe compatibility fingerprint, generation, and
 receipt metadata. Store state revisions and connect receipt digests cover both
-fingerprints. Schema-2 records missing either required field are rejected.
+fingerprints. Any non-schema-3 store, including `store-v2.json`, is rejected.
 Custom setup is authored-only and custom compilation/
-fingerprints/rehydration never depend on provider store. Every Registry-1 setup
+fingerprints/rehydration never depend on provider store. Every family-registry setup
 field is non-secret behavioral metadata and its normalized value participates
 directly in safe behavior/config fingerprints where relevant. Every secret or
 sensitive value belongs to auth, is excluded from fingerprints, and may rotate
@@ -352,16 +357,28 @@ inheritance.
 
 ## 8. Providers and models
 
+Managed provider support is `npm`-family based. The static registry is keyed by
+the package values documented in `docs/provider-conformance.md`; unknown package
+families use `no_known_protocol_family`. Each model first applies its nested
+`provider { npm, api, shape }` override. Unknown nested families affect only that
+model. OpenAI defaults to Responses; authored provider/model shape may select
+Chat or Responses, and catalog `responses`/`completions` shapes route likewise.
+
+Capabilities are derived from catalog `tool_call`, `structured_output`,
+`temperature`, `reasoning`, `reasoning_options`, input modalities, and context/
+output limits. Interleaved reasoning metadata selects the compatible reasoning
+field. Deprecated and non-text-output models are omitted.
+
 `/connect` contains every current structurally valid/quarantined catalog provider
 with recoverable ID plus authored or store-backed managed providers absent from
 the current catalog. Removed configured providers use state `removed`; they are
-connectable only when recipe registry 1 still has an exact provider/package/
+connectable only when family registry 1 still has an exact family/package/
 source recipe match retained in a prior durable connection or other validated
 safe source projection. Otherwise they remain visible with
 `removed_without_retained_recipe_match`. Custom providers never appear.
 
 For each supported managed provider, the runtime automatically includes every
-reviewed, non-deprecated, text-output model that compiles honestly. Sparse model
+non-deprecated, text-output model that compiles honestly. Sparse model
 overrides may disable a model or alter only recipe-approved defaults, variants,
 and display text. They cannot invent an absent model, capabilities, protocol,
 auth, package, or endpoint.
@@ -431,7 +448,7 @@ disconnect publishes `ProviderDisconnected`. Detecting another process's newer
 store generation publishes the pair `ProviderStoreChanged` and
 `ProviderStoreReloaded` after successful coherent recompilation.
 
-Provider store 2 is per-user global across workspaces. Before discovery RPCs,
+Provider store 3 is per-user global across workspaces. Before discovery RPCs,
 session admission, or root-run admission, the process locks and rereads the
 store generation. A changed generation blocks admission, recompiles and
 publishes a coherent runtime with both `ProviderStoreChanged` and
@@ -465,7 +482,7 @@ descriptor-relative/no-follow, bounded, and atomically written by lock/reread,
 exclusive sibling temp, fsync, rename, and parent fsync. A manifest is durable
 before any version-8 event may reference its revision. Referenced manifests are
 retained for the lifetime of their sessions and delegation journals and are
-never garbage-collected; Registry 1 performs no automatic manifest GC.
+never garbage-collected; family registry 1 performs no automatic manifest GC.
 
 Startup scans direct matching filenames in sorted byte order, validates filename
 digest, strict schema, RFC-8785 reserialization/payload digest, unique blueprint
@@ -497,7 +514,7 @@ Credential source is frozen as `authored_api_key`, `authored_override`,
   require the store connection's historical `source_record_digest` to equal a
   newly refreshed manifest's source digest;
 - managed bindings reconstruct from persisted safe source projection only when
-  recipe registry 1 still has the exact recipe fingerprint/package/protocol/
+  family registry 1 still has the exact family fingerprint/package/protocol/
   compiler match. The binding and referenced blueprint must retain their own
   exact source-record digest, but source provenance does not scope credential
   compatibility; current catalog presence is unnecessary;
@@ -523,14 +540,14 @@ Typed failures leave history readable and never substitute another model:
 
 Startup order is frozen and must not be reordered:
 
-1. **Schema 7 and agents:** securely open roots, load recipe registry 1, then
+1. **Schema 7 and agents:** securely open roots, load family registry 1, then
    strictly load atomic config schema 7 and agent documents.
-2. **Catalog:** securely open cache schema 1, perform the bounded identity-only
+2. **Catalog:** securely open cache schema 2, perform the bounded identity-only
    network request, then select network, validated cache, or bundled bootstrap
    and apply record quarantine.
-3. **Provider store:** lock and load provider store 2 and its generation.
+3. **Provider store:** lock and load provider store 3 and its generation.
 4. **Effective providers:** combine authored definitions, global stored managed
-   connections, catalog claims, and code-owned recipes.
+   connections, catalog metadata, and code-owned recipes.
 5. **Coherent runtime:** compile all effective providers/models/agents and build
    one runtime snapshot 1; an empty effective set is valid.
 6. **Project manifests:** scan/validate model-snapshot manifests 1 and rehydrate
@@ -599,7 +616,7 @@ Required validation covers every version rejection, secure file mode/ownership/
 link attack, exact startup order, identity-only streamed 16 MiB acquisition,
 ETag and stale/error metadata, candidate versus exact-record quarantine,
 strict root `providers`/`models` roles and cross-references, bundled/live npm/API/
-env/model-override claims, Vertex family rejection, atomic provider replacement,
+env/model-override metadata, Vertex family rejection, atomic provider replacement,
 separate provider setup schemas and auth methods, complete custom-model validation, endpoint/auth
 precedence, all-input-query rejection, connect/disconnect absent/replay/conflict
 transactions, cross-process store-generation reload, infallible publication,

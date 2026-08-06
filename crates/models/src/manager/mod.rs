@@ -28,7 +28,7 @@ use thiserror::Error;
 
 use crate::{
     BoundedSetupString, ProviderDefinition, SafeSetupValue, SecretString, Sha256Digest,
-    adapters::{OvenAdapterFamily, build_endpoint, oven::ModelBuildError},
+    adapters::{OvenAdapterFamily, oven::ModelBuildError},
     authoring::{AuthOverride, ModelsDevProvider},
     catalog::CatalogSnapshot,
     compiler::{
@@ -52,9 +52,8 @@ use crate::{
         StoredProviderPolicyProjection,
     },
     recipes::{
-        COMPILER_VERSION, ClaimPresence, ProviderRecipe, ProviderRecipeMatch,
-        RecipeQuarantineReason, RecipeRegistry, SetupRecipe, auth_method, registry1,
-        validate_setup,
+        COMPILER_VERSION, FamilyRecipe, FamilyRecipeRegistry, SetupRecipe, auth_method,
+        family_registry, validate_setup,
     },
 };
 
@@ -78,17 +77,17 @@ pub enum ProviderPresence {
 
 /// Current Registry-1 verdict for a removed provider's retained store policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RetainedProviderRecipeMatch {
+pub enum RetainedFamilyMatch {
     SupportedRemoved,
-    RemovedWithoutRetainedRecipeMatch,
+    RemovedWithoutRetainedFamilyMatch,
 }
 
-impl RetainedProviderRecipeMatch {
+impl RetainedFamilyMatch {
     #[must_use]
     pub const fn reason(self) -> Option<&'static str> {
         match self {
             Self::SupportedRemoved => None,
-            Self::RemovedWithoutRetainedRecipeMatch => {
+            Self::RemovedWithoutRetainedFamilyMatch => {
                 Some("removed_without_retained_recipe_match")
             }
         }
@@ -102,7 +101,7 @@ pub struct CompiledProviderState {
     pub display_name: String,
     pub presence: ProviderPresence,
     pub support_reason: Option<String>,
-    pub retained_recipe_match: Option<RetainedProviderRecipeMatch>,
+    pub retained_family_match: Option<RetainedFamilyMatch>,
     pub authored: bool,
     pub stored: bool,
     pub effective_auth: EffectiveCredentialSource,
@@ -209,7 +208,7 @@ impl fmt::Debug for CompiledRuntimeModel {
 #[derive(Clone, Debug)]
 pub enum RuntimeProviderSource {
     Managed {
-        provider_recipe: ProviderRecipeId,
+        family_id: ProviderRecipeId,
         source_record_digest: Sha256Digest,
         recipe_fingerprint: Sha256Digest,
         package_claim: String,
@@ -417,12 +416,12 @@ impl CompiledRuntimeModel {
         let provider_id = self.key.provider_id();
         let source = match &self.source {
             RuntimeProviderSource::Managed {
-                provider_recipe,
+                family_id,
                 source_record_digest,
                 recipe_fingerprint,
                 package_claim,
             } => FrozenProviderSource::Managed {
-                provider_recipe: provider_recipe.clone(),
+                provider_recipe: family_id.clone(),
                 source_record_digest: protocol_digest(source_record_digest),
                 recipe_fingerprint: protocol_digest(recipe_fingerprint),
                 package_claim: package_claim.clone(),
@@ -487,9 +486,9 @@ impl CompiledRuntimeModel {
         let setup_recipe = self.setup_recipe.clone();
         let auth_method = AuthMethodId::new(self.model.auth.method.clone())
             .map_err(|_| ModelManagerError::RuntimeCompileFailed)?;
-        let provider_recipe = ProviderRecipeId::new(self.model.provider_recipe.clone())
+        let family_id = ProviderRecipeId::new(self.model.family_id.clone())
             .map_err(|_| ModelManagerError::RuntimeCompileFailed)?;
-        let protocol_recipe = ProtocolRecipeId::new(self.model.protocol_recipe.clone())
+        let protocol_recipe = ProtocolRecipeId::new(self.model.adapter_id.clone())
             .map_err(|_| ModelManagerError::RuntimeCompileFailed)?;
         let compiler_version = RecipeCompilerVersion::new(COMPILER_VERSION)
             .map_err(|_| ModelManagerError::RuntimeCompileFailed)?;
@@ -549,7 +548,7 @@ impl CompiledRuntimeModel {
             },
             endpoint_identity: SafeEndpointIdentity::new(endpoint.clone())
                 .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
-            provider_recipe,
+            provider_recipe: family_id,
             protocol_recipe,
             setup_recipe,
             auth_method,
@@ -831,8 +830,8 @@ fn compile_runtime(
     catalog: Arc<CatalogSnapshot>,
     store: ProviderStoreSnapshot,
 ) -> Result<CompiledModelRuntime, ModelManagerError> {
-    let registry = registry1();
-    let compiler = DynamicCompiler::registry1();
+    let registry = family_registry();
+    let compiler = DynamicCompiler::family_registry();
     let mut provider_ids = catalog.providers.keys().cloned().collect::<BTreeSet<_>>();
     provider_ids.extend(
         authored
@@ -863,7 +862,7 @@ fn compile_runtime(
                 .map_or_else(|| provider_id.to_string(), |record| record.name.clone()),
             presence,
             support_reason: None,
-            retained_recipe_match: None,
+            retained_family_match: None,
             authored: authored_managed.is_some(),
             stored: stored.is_some(),
             effective_auth: EffectiveCredentialSource::Unavailable,
@@ -874,47 +873,31 @@ fn compile_runtime(
                 state.support_reason = Some(reason.code().to_owned());
             } else {
                 let retained_match = stored.map_or(
-                    RetainedProviderRecipeMatch::RemovedWithoutRetainedRecipeMatch,
-                    |connection| retained_provider_recipe_match(&provider_id, connection),
+                    RetainedFamilyMatch::RemovedWithoutRetainedFamilyMatch,
+                    |connection| retained_family_match(&provider_id, connection),
                 );
-                state.retained_recipe_match = Some(retained_match);
+                state.retained_family_match = Some(retained_match);
                 state.support_reason = retained_match.reason().map(str::to_owned);
-                if retained_match == RetainedProviderRecipeMatch::SupportedRemoved {
+                if retained_match == RetainedFamilyMatch::SupportedRemoved {
                     state.effective_auth = EffectiveCredentialSource::ProviderStore;
                 }
             }
             providers.push(state);
             continue;
         };
-        let provider_recipe = match registry.match_provider(
-            &crate::recipes::CatalogProviderClaimInput::from_record(record),
-        ) {
-            ProviderRecipeMatch::Supported(recipe) => recipe,
-            ProviderRecipeMatch::Quarantined(reason) => {
-                state.support_reason = Some(reason.code().to_owned());
-                providers.push(state);
-                continue;
-            }
-            ProviderRecipeMatch::Unsupported(reason) => {
-                state.support_reason = Some(reason.code().to_owned());
-                providers.push(state);
-                continue;
-            }
+        let Some(family) = registry.classify(record) else {
+            state.support_reason = Some("no_known_protocol_family".to_owned());
+            providers.push(state);
+            continue;
         };
-        let effective = effective_managed(
-            &provider_id,
-            record,
-            provider_recipe,
-            authored_managed,
-            stored,
-        )?;
+        let effective = effective_managed(&provider_id, record, family, authored_managed, stored)?;
         state.effective_auth = effective.credential_source;
         let compiled =
             compiler.compile_managed(catalog.revision.as_str(), record, Some(&effective.provider));
         let compiled = match compiled {
             Ok(compiled) => compiled,
             Err(DynamicCompileError::UnsupportedProvider) => {
-                state.support_reason = Some("no_reviewed_provider_recipe".to_owned());
+                state.support_reason = Some("no_known_protocol_family".to_owned());
                 providers.push(state);
                 continue;
             }
@@ -925,34 +908,39 @@ fn compile_runtime(
             }
             Err(error) => return Err(ModelManagerError::DynamicCompile(error)),
         };
-        if let Some(reason) = compiled.provider_quarantine {
-            state.support_reason = Some(reason.code().to_owned());
-        }
         for (model_id, model) in compiled.models {
             let key = ModelKey::new(provider_id.clone(), model_id)
                 .map_err(|_| ModelManagerError::RuntimeCompileFailed)?;
             let model = with_effective_status(model, effective.credential_source);
-            let (executable, variant_executables) = compile_behaviors(
-                &provider_id,
-                &model,
-                &BTreeMap::new(),
-                &effective.credentials,
-            )?;
+            let model_credentials = if model.status == CompiledModelStatus::Available {
+                mapped_credentials(&effective.credentials, &model.auth)?
+            } else {
+                ExecutableCredentialMaterial {
+                    method: model.auth.method.clone(),
+                    values: BTreeMap::new(),
+                }
+            };
+            let (executable, variant_executables) =
+                compile_behaviors(&provider_id, &model, &BTreeMap::new(), &model_credentials)?;
+            let model_recipe = family_registry()
+                .by_npm(&model.effective_npm)
+                .ok_or(ModelManagerError::RuntimeCompileFailed)?;
             let runtime_model = CompiledRuntimeModel {
                 key: key.clone(),
                 source: RuntimeProviderSource::Managed {
-                    provider_recipe: ProviderRecipeId::new(model.provider_recipe.clone())
+                    family_id: ProviderRecipeId::new(model.family_id.clone())
                         .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
                     source_record_digest: effective.source_record_digest.clone(),
-                    recipe_fingerprint: effective.recipe_fingerprint.clone(),
-                    package_claim: retained_recipe_package(provider_recipe)
-                        .ok_or(ModelManagerError::RuntimeCompileFailed)?
-                        .to_owned(),
+                    recipe_fingerprint: retained_recipe_fingerprint(
+                        model_recipe,
+                        &model.auth.method,
+                    )?,
+                    package_claim: model.effective_npm.clone(),
                 },
                 config_override_fingerprint: effective.config_fingerprint.clone(),
                 setup_values: effective.setup_values.clone(),
                 setup_fingerprint: effective.setup_fingerprint.clone(),
-                setup_recipe: ProviderSetupRecipeId::new(provider_recipe.setup.id)
+                setup_recipe: ProviderSetupRecipeId::new("family-derived-setup-v1")
                     .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
                 credential_source: effective.credential_source,
                 static_headers: BTreeMap::new(),
@@ -1065,7 +1053,6 @@ struct EffectiveManaged {
     setup_values: BTreeMap<SetupFieldId, SafeSetupValue>,
     setup_fingerprint: Sha256Digest,
     source_record_digest: Sha256Digest,
-    recipe_fingerprint: Sha256Digest,
     config_fingerprint: Sha256Digest,
     credentials: ExecutableCredentialMaterial,
 }
@@ -1073,7 +1060,7 @@ struct EffectiveManaged {
 fn effective_managed(
     provider_id: &ProviderId,
     record: &crate::catalog::CatalogProviderRecord,
-    recipe: &'static ProviderRecipe,
+    recipe: &'static FamilyRecipe,
     authored: Option<&ModelsDevProvider>,
     stored: Option<&StoredManagedConnection>,
 ) -> Result<EffectiveManaged, ModelManagerError> {
@@ -1088,7 +1075,7 @@ fn effective_managed(
     let store_eligible = authored.is_none_or(|value| value.base_url.is_none())
         && stored.is_some_and(|connection| {
             retained_recipe(connection, provider_id)
-                .is_some_and(|retained| retained.id == recipe.id)
+                .is_some_and(|retained| retained.family == recipe.family)
         });
     let setup_input = authored_setup.map(|value| &value.setup).or_else(|| {
         store_eligible
@@ -1096,11 +1083,7 @@ fn effective_managed(
             .flatten()
             .map(|value| &value.setup_values)
     });
-    let setup_values = match setup_input {
-        Some(values) => normalized_setup_values(recipe.setup, values)?,
-        None if recipe.setup.fields.iter().any(|field| field.required) => BTreeMap::new(),
-        None => normalized_setup_values(recipe.setup, &BTreeMap::new())?,
-    };
+    let setup_values = setup_input.cloned().unwrap_or_default();
     let setup_fingerprint = setup_fingerprint(&setup_values);
 
     let credential_source = if authored.is_some_and(|value| value.api_key.is_some()) {
@@ -1110,7 +1093,9 @@ fn effective_managed(
     } else if store_eligible
         && stored.is_some_and(|connection| {
             connection.setup_fingerprint == setup_fingerprint
-                && connection.auth_method.as_str() == recipe.default_auth_method
+                && recipe
+                    .allowed_auth_methods
+                    .contains(&connection.auth_method.as_str())
         })
     {
         EffectiveCredentialSource::ProviderStore
@@ -1127,6 +1112,7 @@ fn effective_managed(
         setup: BTreeMap::new(),
         api_key: None,
         auth_override: None,
+        shape: None,
         model_overrides: BTreeMap::new(),
     });
     provider.setup = setup_values.clone();
@@ -1207,14 +1193,12 @@ fn effective_managed(
             values: BTreeMap::new(),
         });
     }
-    let recipe_fingerprint = retained_recipe_fingerprint(recipe, &credentials.method)?;
     Ok(EffectiveManaged {
         provider,
         credential_source,
         setup_values,
         setup_fingerprint,
         source_record_digest,
-        recipe_fingerprint,
         config_fingerprint,
         credentials,
     })
@@ -1298,6 +1282,54 @@ fn compile_behaviors(
     Ok((Some(executable), variants))
 }
 
+fn mapped_credentials(
+    source: &ExecutableCredentialMaterial,
+    target: &CompiledAuthShape,
+) -> Result<ExecutableCredentialMaterial, ModelManagerError> {
+    if target.source == AuthSourceCategory::Unavailable {
+        return Ok(ExecutableCredentialMaterial {
+            method: target.method.clone(),
+            values: BTreeMap::new(),
+        });
+    }
+    let values = target
+        .credential_fields
+        .iter()
+        .map(|target_field| {
+            let source_field =
+                crate::recipes::compatible_credential_field(&source.method, target_field)
+                    .ok_or(ModelManagerError::RuntimeCompileFailed)?;
+            let value = source
+                .values
+                .iter()
+                .find(|(field, _)| field.as_str() == source_field)
+                .map(|(_, value)| value.clone());
+            if value.is_none()
+                && auth_method(&target.method).is_some_and(|method| {
+                    method
+                        .credentials
+                        .iter()
+                        .any(|field| field.name == target_field && field.required)
+                })
+            {
+                return Err(ModelManagerError::RuntimeCompileFailed);
+            }
+            value
+                .map(|value| {
+                    AuthFieldName::new(target_field.clone())
+                        .map(|field| (field, value))
+                        .map_err(|_| ModelManagerError::RuntimeCompileFailed)
+                })
+                .transpose()
+        })
+        .filter_map(Result::transpose)
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    Ok(ExecutableCredentialMaterial {
+        method: target.method.clone(),
+        values,
+    })
+}
+
 fn compile_frozen_managed(
     runtime: &CompiledModelRuntime,
     binding: &protocol::FrozenModelBinding,
@@ -1309,8 +1341,13 @@ fn compile_frozen_managed(
         ));
     }
     let provider_id = binding.selection.model.provider_id();
-    let recipe = registry1()
-        .recipe(blueprint.provider_recipe.as_str())
+    family_registry()
+        .by_npm(match &blueprint.source {
+            FrozenProviderSource::Managed { package_claim, .. } => package_claim,
+            FrozenProviderSource::Custom { .. } => {
+                return Err(ModelManagerError::RuntimeCompileFailed);
+            }
+        })
         .ok_or(ModelManagerError::RuntimeCompileFailed)?;
     let adapter = adapter_for_protocol(blueprint.protocol_recipe.as_str())
         .ok_or(ModelManagerError::RuntimeCompileFailed)?;
@@ -1337,12 +1374,26 @@ fn compile_frozen_managed(
     let model = CompiledDynamicModel {
         id: binding.selection.model.model_id(),
         display_name: binding.selection.model.to_string(),
-        provider_recipe: blueprint.provider_recipe.as_str().to_owned(),
-        protocol_recipe: blueprint.protocol_recipe.as_str().to_owned(),
+        family_id: blueprint.provider_recipe.as_str().to_owned(),
+        effective_npm: match &blueprint.source {
+            FrozenProviderSource::Managed { package_claim, .. } => package_claim.clone(),
+            FrozenProviderSource::Custom { .. } => "custom".to_owned(),
+        },
+        adapter_id: blueprint.protocol_recipe.as_str().to_owned(),
+        resolved_shape: if matches!(
+            adapter,
+            OvenAdapterFamily::OpenaiResponses | OvenAdapterFamily::AzureOpenaiResponses
+        ) {
+            "responses"
+        } else {
+            "chat"
+        }
+        .to_owned(),
+        reasoning_field: "reasoning_content".to_owned(),
         adapter,
         endpoint: Some(blueprint.endpoint_identity.as_str().to_owned()),
         setup: Some(crate::recipes::ValidatedSetup {
-            recipe_id: recipe.setup.id,
+            recipe_id: "family-derived-setup-v1",
             values: setup_values,
         }),
         auth: CompiledAuthShape {
@@ -1410,7 +1461,15 @@ fn compile_frozen_managed(
 }
 
 fn adapter_for_protocol(value: &str) -> Option<OvenAdapterFamily> {
-    crate::adapters::wire_adapter_for_protocol(value)
+    crate::adapters::wire_adapter_for_protocol(value).or_else(|| {
+        if value.starts_with("oven.openai-compatible.chat.") {
+            Some(OvenAdapterFamily::OpenaiCompatible)
+        } else if value.starts_with("oven.anthropic-compatible.messages.") {
+            Some(OvenAdapterFamily::AnthropicCompatible)
+        } else {
+            None
+        }
+    })
 }
 
 fn thaw_capabilities(value: &OvenCapabilities) -> crate::ModelCapabilities {
@@ -1504,7 +1563,7 @@ fn frozen_credentials(
     blueprint: &CompiledSafeModelBlueprint,
 ) -> Result<ExecutableCredentialMaterial, ModelManagerError> {
     let provider_id = blueprint.selection.model.provider_id();
-    let values = match blueprint.credential_binding.source {
+    let (source_method, values) = match blueprint.credential_binding.source {
         FrozenCredentialSource::AuthoredApiKey => {
             let ProviderDefinition::ModelsDev(provider) = runtime
                 .authored
@@ -1513,16 +1572,26 @@ fn frozen_credentials(
             else {
                 return Err(ModelManagerError::RuntimeCompileFailed);
             };
-            BTreeMap::from([(
-                AuthFieldName::new("api_key")
-                    .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
-                provider
-                    .api_key
-                    .as_ref()
-                    .ok_or(ModelManagerError::RuntimeCompileFailed)?
-                    .expose()
-                    .to_owned(),
-            )])
+            let method = runtime
+                .catalog
+                .provider(&provider_id)
+                .and_then(|entry| entry.record.as_ref())
+                .and_then(|record| family_registry().classify(record))
+                .map(|recipe| recipe.default_auth_method.to_owned())
+                .ok_or(ModelManagerError::RuntimeCompileFailed)?;
+            (
+                method,
+                BTreeMap::from([(
+                    AuthFieldName::new("api_key")
+                        .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
+                    provider
+                        .api_key
+                        .as_ref()
+                        .ok_or(ModelManagerError::RuntimeCompileFailed)?
+                        .expose()
+                        .to_owned(),
+                )]),
+            )
         }
         FrozenCredentialSource::AuthoredOverride => {
             let ProviderDefinition::ModelsDev(provider) = runtime
@@ -1532,50 +1601,80 @@ fn frozen_credentials(
             else {
                 return Err(ModelManagerError::RuntimeCompileFailed);
             };
-            provider
+            let auth = provider
                 .auth_override
                 .as_ref()
-                .ok_or(ModelManagerError::RuntimeCompileFailed)?
-                .values
-                .iter()
-                .map(|(field, value)| (field.clone(), value.expose().to_owned()))
-                .collect()
+                .ok_or(ModelManagerError::RuntimeCompileFailed)?;
+            (
+                auth.method.as_str().to_owned(),
+                auth.values
+                    .iter()
+                    .map(|(field, value)| (field.clone(), value.expose().to_owned()))
+                    .collect(),
+            )
         }
         FrozenCredentialSource::ProviderStore => {
             let connection = runtime
                 .store
                 .provider(&provider_id)
                 .ok_or(ModelManagerError::RuntimeCompileFailed)?;
-            connection
-                .credential_fields()
-                .map(|field| {
-                    Ok((
-                        field.clone(),
-                        connection
-                            .credential(field)
-                            .ok_or(ModelManagerError::RuntimeCompileFailed)?
-                            .to_owned(),
-                    ))
-                })
-                .collect::<Result<_, ModelManagerError>>()?
+            (
+                connection.auth_method.as_str().to_owned(),
+                connection
+                    .credential_fields()
+                    .map(|field| {
+                        Ok((
+                            field.clone(),
+                            connection
+                                .credential(field)
+                                .ok_or(ModelManagerError::RuntimeCompileFailed)?
+                                .to_owned(),
+                        ))
+                    })
+                    .collect::<Result<_, ModelManagerError>>()?,
+            )
         }
-        FrozenCredentialSource::NoAuth => BTreeMap::new(),
+        FrozenCredentialSource::NoAuth => ("no-auth-v1".to_owned(), BTreeMap::new()),
     };
-    Ok(ExecutableCredentialMaterial {
-        method: blueprint.auth_method.as_str().to_owned(),
-        values,
-    })
+    mapped_credentials(
+        &ExecutableCredentialMaterial {
+            method: source_method,
+            values,
+        },
+        &CompiledAuthShape {
+            method: blueprint.auth_method.as_str().to_owned(),
+            safe_parameters: blueprint
+                .credential_binding
+                .parameters
+                .iter()
+                .map(|(name, value)| (name.as_str().to_owned(), value.as_str().to_owned()))
+                .collect(),
+            credential_fields: blueprint
+                .credential_binding
+                .fields
+                .iter()
+                .map(|field| field.as_str().to_owned())
+                .collect(),
+            owned_headers: blueprint
+                .credential_binding
+                .owned_headers
+                .iter()
+                .map(|header| header.as_str().to_owned())
+                .collect(),
+            source: AuthSourceCategory::AuthoredOverride,
+        },
+    )
 }
 
 #[must_use]
-pub fn retained_provider_recipe_match(
+pub fn retained_family_match(
     provider_id: &ProviderId,
     connection: &StoredManagedConnection,
-) -> RetainedProviderRecipeMatch {
+) -> RetainedFamilyMatch {
     if retained_recipe(connection, provider_id).is_some() {
-        RetainedProviderRecipeMatch::SupportedRemoved
+        RetainedFamilyMatch::SupportedRemoved
     } else {
-        RetainedProviderRecipeMatch::RemovedWithoutRetainedRecipeMatch
+        RetainedFamilyMatch::RemovedWithoutRetainedFamilyMatch
     }
 }
 
@@ -1587,56 +1686,38 @@ pub(crate) fn validated_provider_source_digest(
 }
 
 pub(crate) fn retained_recipe_fingerprint(
-    recipe: &ProviderRecipe,
+    recipe: &FamilyRecipe,
     selected_auth_method: &str,
 ) -> Result<Sha256Digest, ModelManagerError> {
-    let registry = registry1();
+    let registry = family_registry();
     let auth = auth_method(selected_auth_method).ok_or(ModelManagerError::UnsupportedAuthMethod)?;
     canonical_state_fingerprint(
         b"cookie-agent/retained-provider-recipe/v1\0",
         &(
-            registry.schema_version(),
             registry.revision(),
             COMPILER_VERSION,
             recipe,
             auth,
-            model_exception_semantics(recipe.provider_id),
+            "catalog-derived-model-semantics-v1",
         ),
     )
     .map_err(ModelManagerError::from)
 }
 
-fn model_exception_semantics(provider_id: &str) -> &'static [&'static str] {
-    match provider_id {
-        "openai" => &["route_openai_model/v1"],
-        "azure" => &["route_openai_model/v1", "known_azure_override/v1"],
-        "google-vertex" => &["known_vertex_override/v1"],
-        "amazon-bedrock" => &["known_bedrock_override/v1"],
-        "cohere" => &["cohere_compatibility_exception/v1"],
-        _ => &["absent_model_provider_override/v1"],
-    }
-}
-
-pub(crate) fn retained_recipe_package(recipe: &ProviderRecipe) -> Option<&'static str> {
-    match recipe.claim.npm {
-        ClaimPresence::PresentExact(value) => Some(value),
-        ClaimPresence::PresentOneOf(_) | ClaimPresence::Absent => None,
-    }
+pub(crate) fn retained_recipe_package(recipe: &FamilyRecipe) -> Option<&'static str> {
+    Some(recipe.npm)
 }
 
 fn retained_recipe(
     connection: &StoredManagedConnection,
     provider_id: &ProviderId,
-) -> Option<&'static ProviderRecipe> {
+) -> Option<&'static FamilyRecipe> {
     if &connection.provider_id != provider_id {
         return None;
     }
-    let recipe = registry1().recipe(connection.policy.provider_recipe.as_str())?;
-    let package = retained_recipe_package(recipe)?;
-    let normalized_setup = normalized_setup_values(recipe.setup, &connection.setup_values).ok()?;
-    let validated_setup = validate_setup(recipe.setup, &normalized_setup).ok()?;
-    let endpoint = build_endpoint(recipe.endpoint, None, &validated_setup).ok()?;
-    let auth = auth_method(recipe.default_auth_method)?;
+    let package = connection.policy.package_claim.as_str();
+    let recipe = family_registry().by_npm(package)?;
+    let auth = auth_method(connection.auth_method.as_str())?;
     let credential_fields = connection
         .credential_fields()
         .map(AuthFieldName::as_str)
@@ -1648,17 +1729,23 @@ fn retained_recipe(
         .collect::<Vec<_>>();
     let recipe_fingerprint =
         retained_recipe_fingerprint(recipe, connection.auth_method.as_str()).ok()?;
-    (recipe.provider_id == provider_id.as_str()
-        && connection.policy.provider_recipe.as_str() == recipe.id
-        && connection.policy.protocol_recipe.as_str() == recipe.protocol_recipe
-        && connection.policy.setup_recipe.as_str() == recipe.setup.id
+    if recipe.default_endpoint.is_some_and(|endpoint| {
+        !endpoint.contains("${")
+            && connection.policy.default_endpoint_identity.as_str()
+                != endpoint.trim_end_matches('/')
+    }) {
+        return None;
+    }
+    (connection.policy.family_id.as_str() == recipe.family.id()
+        && connection.policy.adapter_id.as_str() == recipe.family.id()
+        && connection.policy.setup_recipe.as_str() == "family-derived-setup-v1"
         && connection.policy.compiler_version.as_str() == COMPILER_VERSION
-        && connection.auth_method.as_str() == recipe.default_auth_method
+        && recipe
+            .allowed_auth_methods
+            .contains(&connection.auth_method.as_str())
         && connection.policy.package_claim.as_str() == package
         && connection.policy.recipe_fingerprint == recipe_fingerprint
-        && connection.setup_values == normalized_setup
-        && connection.setup_fingerprint == setup_fingerprint(&normalized_setup)
-        && connection.policy.default_endpoint_identity.as_str() == endpoint
+        && connection.setup_fingerprint == setup_fingerprint(&connection.setup_values)
         && credential_fields == expected_fields)
         .then_some(recipe)
 }
@@ -1669,7 +1756,9 @@ fn with_effective_status(
 ) -> CompiledDynamicModel {
     if model.setup.is_none() {
         model.status = CompiledModelStatus::SetupUnavailable;
-    } else if source == EffectiveCredentialSource::Unavailable {
+    } else if source == EffectiveCredentialSource::Unavailable
+        || model.auth.source == AuthSourceCategory::Unavailable
+    {
         model.status = CompiledModelStatus::CredentialsUnavailable;
     } else {
         model.status = CompiledModelStatus::Available;
@@ -1677,18 +1766,13 @@ fn with_effective_status(
     model
 }
 
-fn matched_provider_recipe(
-    registry: RecipeRegistry,
+fn matched_family(
+    registry: FamilyRecipeRegistry,
     record: &crate::catalog::CatalogProviderRecord,
-) -> Result<&'static ProviderRecipe, ModelManagerError> {
-    let input = crate::recipes::CatalogProviderClaimInput::from_record(record);
-    match registry.match_provider(&input) {
-        ProviderRecipeMatch::Supported(recipe) => Ok(recipe),
-        ProviderRecipeMatch::Unsupported(_) => Err(ModelManagerError::UnsupportedProvider),
-        ProviderRecipeMatch::Quarantined(reason) => {
-            Err(ModelManagerError::QuarantinedProvider(reason))
-        }
-    }
+) -> Result<&'static FamilyRecipe, ModelManagerError> {
+    registry
+        .classify(record)
+        .ok_or(ModelManagerError::UnsupportedProvider)
 }
 
 fn normalize_connect(
@@ -1705,7 +1789,7 @@ fn normalize_connect(
             .provider(&request.provider_id)
             .and_then(|entry| entry.record.as_ref())
     {
-        let recipe = matched_provider_recipe(registry1(), record)?;
+        let recipe = matched_family(family_registry(), record)?;
         (
             recipe,
             retained_recipe_package(recipe)
@@ -1728,7 +1812,7 @@ fn normalize_connect(
     } else {
         return Err(ModelManagerError::UnknownProvider);
     };
-    let setup_values = normalized_setup_values(recipe.setup, &request.setup_values)?;
+    let setup_values = request.setup_values.clone();
     let method = auth_method(request.auth_method.as_str())
         .filter(|method| recipe.allowed_auth_methods.contains(&method.id))
         .ok_or(ModelManagerError::UnsupportedAuthMethod)?;
@@ -1751,10 +1835,24 @@ fn normalize_connect(
     if !required.is_subset(&actual) || !actual.is_subset(&allowed) {
         return Err(ModelManagerError::InvalidCredentials);
     }
-    let validated =
-        validate_setup(recipe.setup, &setup_values).map_err(|_| ModelManagerError::InvalidSetup)?;
-    let endpoint = build_endpoint(recipe.endpoint, None, &validated)
-        .map_err(|_| ModelManagerError::InvalidSetup)?;
+    let endpoint = if let Some(record) = current
+        .catalog
+        .provider(&request.provider_id)
+        .and_then(|entry| entry.record.as_ref())
+    {
+        resolved_provider_endpoint(record, recipe, &setup_values)?
+    } else {
+        store
+            .provider(&request.provider_id)
+            .map(|connection| {
+                connection
+                    .policy
+                    .default_endpoint_identity
+                    .as_str()
+                    .to_owned()
+            })
+            .ok_or(ModelManagerError::InvalidSetup)?
+    };
     let recipe_fingerprint = retained_recipe_fingerprint(recipe, request.auth_method.as_str())?;
     Ok(ConnectMutation {
         client_connect_id: request.client_connect_id,
@@ -1766,11 +1864,11 @@ fn normalize_connect(
         auth_values: request.auth_values,
         policy: StoredProviderPolicyProjection {
             catalog_revision,
-            provider_recipe: ProviderRecipeId::new(recipe.id)
+            family_id: SafePolicyString::new(recipe.family.id())
                 .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
-            setup_recipe: ProviderSetupRecipeId::new(recipe.setup.id)
+            setup_recipe: ProviderSetupRecipeId::new("family-derived-setup-v1")
                 .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
-            protocol_recipe: ProtocolRecipeId::new(recipe.protocol_recipe)
+            adapter_id: SafePolicyString::new(recipe.family.id())
                 .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
             compiler_version: RecipeCompilerVersion::new(COMPILER_VERSION)
                 .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
@@ -1805,6 +1903,46 @@ fn normalized_setup_values(
         .collect()
 }
 
+fn resolved_provider_endpoint(
+    record: &crate::catalog::CatalogProviderRecord,
+    recipe: &FamilyRecipe,
+    setup: &BTreeMap<SetupFieldId, SafeSetupValue>,
+) -> Result<String, ModelManagerError> {
+    let values = setup
+        .iter()
+        .map(|(id, value)| {
+            let value = match value {
+                SafeSetupValue::String(value) => value.as_str(),
+                SafeSetupValue::Code(value) => value.as_str(),
+                SafeSetupValue::Integer(_) | SafeSetupValue::Bool(_) => {
+                    return Err(ModelManagerError::InvalidSetup);
+                }
+            };
+            Ok((id.as_str().to_owned(), value.to_owned()))
+        })
+        .collect::<Result<BTreeMap<_, _>, ModelManagerError>>()?;
+    let template = record.api.as_deref().or(recipe.default_endpoint);
+    if let Some(template) = template {
+        return crate::recipes::substitute_placeholders(template, &values)
+            .map(|value| value.trim_end_matches('/').to_owned())
+            .ok_or(ModelManagerError::InvalidSetup);
+    }
+    match recipe.family {
+        crate::recipes::FamilyKind::Vertex | crate::recipes::FamilyKind::VertexAnthropic => {
+            let project = values
+                .get("project")
+                .ok_or(ModelManagerError::InvalidSetup)?;
+            let location = values
+                .get("location")
+                .ok_or(ModelManagerError::InvalidSetup)?;
+            Ok(format!(
+                "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}"
+            ))
+        }
+        _ => Err(ModelManagerError::InvalidSetup),
+    }
+}
+
 pub(crate) fn setup_fingerprint(values: &BTreeMap<SetupFieldId, SafeSetupValue>) -> Sha256Digest {
     crate::provider_store::setup_fingerprint(values)
         .expect("normalized setup values have a canonical provider-store fingerprint")
@@ -1825,7 +1963,7 @@ pub fn safe_definition_fingerprint(
             "auth": if provider.api_key.is_some() {
                 json!({
                     "source":"api_key",
-                    "method": registry1().provider_recipes(provider_id.as_str()).first().map(|recipe| recipe.default_auth_method),
+                    "method": "catalog_family_default",
                     "fields":["api_key"]
                 })
             } else if let Some(auth) = &provider.auth_override {
@@ -1839,7 +1977,9 @@ pub fn safe_definition_fingerprint(
                 "defaults": value.defaults,
                 "variants": value.variants,
                 "default_variant": value.default_variant,
+                "shape": value.shape,
             }))).collect::<BTreeMap<_, _>>(),
+            "shape": provider.shape,
         }),
         ProviderDefinition::Custom(provider) => json!({
             "provider_id": provider_id,
@@ -1925,10 +2065,12 @@ fn protocol_options(
             })
     };
     Ok(match model.adapter {
-        OvenAdapterFamily::Anthropic => protocol::ProviderOptions::Anthropic {
-            api_version: model.options.api_version.clone(),
-            beta: model.options.beta.clone(),
-        },
+        OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible => {
+            protocol::ProviderOptions::Anthropic {
+                api_version: model.options.api_version.clone(),
+                beta: model.options.beta.clone(),
+            }
+        }
         OvenAdapterFamily::OpenaiChat => protocol::ProviderOptions::OpenAiChat {
             organization: model.options.organization.clone(),
             project: model.options.project.clone(),
@@ -1952,14 +2094,13 @@ fn protocol_options(
             region: string("region").ok_or(ModelManagerError::RuntimeCompileFailed)?,
         },
         OvenAdapterFamily::AzureOpenaiChat => protocol::ProviderOptions::AzureOpenAiChat {
-            deployment: string("deployment").ok_or(ModelManagerError::RuntimeCompileFailed)?,
-            api_version: string("api_version").ok_or(ModelManagerError::RuntimeCompileFailed)?,
+            deployment: string("deployment").unwrap_or_else(|| model.id.as_str().to_owned()),
+            api_version: string("api_version").unwrap_or_else(|| "v1".to_owned()),
         },
         OvenAdapterFamily::AzureOpenaiResponses => {
             protocol::ProviderOptions::AzureOpenAiResponses {
-                deployment: string("deployment").ok_or(ModelManagerError::RuntimeCompileFailed)?,
-                api_version: string("api_version")
-                    .ok_or(ModelManagerError::RuntimeCompileFailed)?,
+                deployment: string("deployment").unwrap_or_else(|| model.id.as_str().to_owned()),
+                api_version: string("api_version").unwrap_or_else(|| "v1".to_owned()),
             }
         }
         OvenAdapterFamily::CohereV2Chat => protocol::ProviderOptions::CohereV2Chat {
@@ -2050,7 +2191,7 @@ fn safe_descriptor(
             ModelId::new(model.id.as_str()),
         )
         .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
-        AdapterId::new(model.protocol_recipe.clone()),
+        AdapterId::new(model.adapter_id.clone()),
         oven_capabilities(&model.capabilities)?,
     )
     .map_err(|_| ModelManagerError::RuntimeCompileFailed)
@@ -2183,8 +2324,6 @@ pub enum ModelManagerError {
     UnknownProvider,
     #[error("unsupported_provider")]
     UnsupportedProvider,
-    #[error("quarantined_provider")]
-    QuarantinedProvider(RecipeQuarantineReason),
     #[error("removed_without_retained_recipe_match")]
     RemovedWithoutRetainedRecipeMatch,
     #[error("custom_provider_not_store_backed")]
