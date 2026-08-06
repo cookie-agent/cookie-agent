@@ -156,6 +156,7 @@ pub(super) struct UiHitMap {
     pub(super) approval: Option<Rect>,
     pub(super) title_segments: Vec<TitleSegmentHit>,
     pub(super) permission_mode: Option<Rect>,
+    pub(super) event_level_filter: Option<Rect>,
 }
 
 struct BottomBarRender {
@@ -1091,6 +1092,19 @@ impl App {
             .position(|variant| *variant == current)
             .unwrap_or(0);
         self.set_draft_variant(variants[(index + 1) % variants.len()].clone());
+    }
+
+    fn cycle_event_level_filter(&mut self) {
+        self.tui_config.minimum_event_level = match self.tui_config.minimum_event_level {
+            crate::state::EventLevel::Debug => crate::state::EventLevel::Info,
+            crate::state::EventLevel::Info => crate::state::EventLevel::Warning,
+            crate::state::EventLevel::Warning => crate::state::EventLevel::Error,
+            crate::state::EventLevel::Error => crate::state::EventLevel::Debug,
+        };
+        self.status = format!(
+            "Event level: {}",
+            self.tui_config.minimum_event_level.name()
+        );
     }
 
     fn permission_mode(&self, session_id: SessionId) -> PermissionMode {
@@ -2051,6 +2065,14 @@ impl App {
             .is_some_and(|rect| contains(rect, column, row))
         {
             self.cycle_permission_mode();
+            return;
+        }
+        if self
+            .hit_map
+            .event_level_filter
+            .is_some_and(|rect| contains(rect, column, row))
+        {
+            self.cycle_event_level_filter();
             return;
         }
         // Agent and model title segments open selectors. The bracketed variant

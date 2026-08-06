@@ -478,10 +478,40 @@ impl App {
         let filter = self.tui_config.minimum_event_level.name();
         // Conversation and Message border titles carry no instructional
         // drag/hotkey prose.
-        let title = format!("Conversation · events ≥ {filter}");
+        let title_spans = vec![
+            Span::raw("Conversation · "),
+            Span::styled(format!("events ≥ {filter}"), self.theme.link()),
+        ];
+        let filter_span = 1;
+        let title_area = Rect::new(
+            area.x.saturating_add(1),
+            area.y,
+            area.width.saturating_sub(2),
+            u16::from(area.height > 0),
+        );
+        self.hit_map.event_level_filter = {
+            let mut column = title_area.x;
+            title_spans.iter().enumerate().find_map(|(index, span)| {
+                let width =
+                    UnicodeWidthStr::width(span.content.as_ref()).min(usize::from(u16::MAX)) as u16;
+                let hit = (index == filter_span).then(|| {
+                    let visible = title_area
+                        .x
+                        .saturating_add(title_area.width)
+                        .saturating_sub(column)
+                        .min(width);
+                    (visible > 0).then(|| Rect::new(column, title_area.y, visible, 1))
+                });
+                column = column.saturating_add(width);
+                hit.flatten()
+            })
+        };
         frame.render_widget(
-            Paragraph::new(Text::from(visible_lines))
-                .block(Block::default().borders(Borders::ALL).title(title)),
+            Paragraph::new(Text::from(visible_lines)).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(Line::from(title_spans)),
+            ),
             area,
         );
         self.scrollbar_geometry = scrollbar_track.and_then(|track| {
@@ -7807,5 +7837,83 @@ mod tests {
             app.permission_modes[&second],
             cookie_agent_protocol::PermissionMode::AutoApprove
         );
+    }
+
+    #[tokio::test]
+    async fn conversation_event_filter_hit_cycles_all_levels_wraps_and_applies_immediately() {
+        let mut app = test_app().await;
+        let session_id = SessionId::new_v7();
+        app.selected = Some(session_id);
+        app.store.sessions.insert(
+            session_id,
+            SessionState {
+                transcript: [
+                    (crate::state::EventLevel::Debug, "debug row"),
+                    (crate::state::EventLevel::Info, "info row"),
+                    (crate::state::EventLevel::Warning, "warning row"),
+                    (crate::state::EventLevel::Error, "error row"),
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(index, (level, text))| TranscriptItem::Event {
+                    id: index as u64 + 1,
+                    version: 0,
+                    level,
+                    text: text.into(),
+                })
+                .collect(),
+                ..SessionState::default()
+            },
+        );
+        app.tui_config.minimum_event_level = crate::state::EventLevel::Debug;
+
+        for (current, next, visible_after_click, hidden_after_click) in [
+            (
+                crate::state::EventLevel::Debug,
+                crate::state::EventLevel::Info,
+                &["info row", "warning row", "error row"][..],
+                &["debug row"][..],
+            ),
+            (
+                crate::state::EventLevel::Info,
+                crate::state::EventLevel::Warning,
+                &["warning row", "error row"][..],
+                &["debug row", "info row"][..],
+            ),
+            (
+                crate::state::EventLevel::Warning,
+                crate::state::EventLevel::Error,
+                &["error row"][..],
+                &["debug row", "info row", "warning row"][..],
+            ),
+            (
+                crate::state::EventLevel::Error,
+                crate::state::EventLevel::Debug,
+                &["debug row", "info row", "warning row", "error row"][..],
+                &[][..],
+            ),
+        ] {
+            assert_eq!(app.tui_config.minimum_event_level, current);
+            let rows = frame_rows(&mut app, 100, 30);
+            let hit = app.hit_map.event_level_filter.expect("event filter hit");
+            let label = format!("events ≥ {}", current.name());
+            assert_eq!(rect_text(&rows, hit), label);
+            assert_eq!(
+                usize::from(hit.width),
+                UnicodeWidthStr::width(label.as_str())
+            );
+
+            app.handle_click(hit.x, hit.y).await;
+            assert_eq!(app.tui_config.minimum_event_level, next);
+            assert_eq!(app.status, format!("Event level: {}", next.name()));
+
+            let rendered = frame_rows(&mut app, 100, 30).join("\n");
+            for text in visible_after_click {
+                assert!(rendered.contains(text), "{next:?} should show {text}");
+            }
+            for text in hidden_after_click {
+                assert!(!rendered.contains(text), "{next:?} should hide {text}");
+            }
+        }
     }
 }

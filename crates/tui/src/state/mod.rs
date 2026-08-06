@@ -1301,7 +1301,7 @@ fn reduce_event(
             }
             push_event(
                 state,
-                EventLevel::Warning,
+                EventLevel::Info,
                 format!("approval {approval_id} escalated: {reason_code:?}").to_lowercase(),
             );
         }
@@ -2424,4 +2424,67 @@ mod tests {
     }
 
 
+
+    #[test]
+    fn approval_escalation_is_info_while_rejected_and_expired_keep_existing_levels() {
+        let session_id = SessionId::new_v7();
+        let approval_id = ApprovalId::new_v7();
+        let mut state = SessionState::default();
+
+        reduce_event(
+            &mut state,
+            session_id,
+            None,
+            1,
+            EventPayload::ApprovalEscalated {
+                approval_id,
+                reason_code: cookie_agent_protocol::ApprovalReasonCode::Escalated,
+            },
+        );
+        reduce_event(
+            &mut state,
+            session_id,
+            None,
+            2,
+            EventPayload::ApprovalFinalized {
+                approval_id,
+                decision: cookie_agent_protocol::ApprovalFinalDecision {
+                    outcome: ApprovalFinalOutcome::Rejected,
+                    source: cookie_agent_protocol::ApprovalDecisionSource::Policy,
+                    reason_code: cookie_agent_protocol::ApprovalReasonCode::PolicyDenied,
+                    feedback: None,
+                    tree_grant_id: None,
+                },
+            },
+        );
+        reduce_event(
+            &mut state,
+            session_id,
+            None,
+            3,
+            EventPayload::ApprovalFinalized {
+                approval_id,
+                decision: cookie_agent_protocol::ApprovalFinalDecision {
+                    outcome: ApprovalFinalOutcome::Expired,
+                    source: cookie_agent_protocol::ApprovalDecisionSource::System,
+                    reason_code: cookie_agent_protocol::ApprovalReasonCode::ApprovalExpired,
+                    feedback: None,
+                    tree_grant_id: None,
+                },
+            },
+        );
+
+        let levels = state
+            .transcript
+            .iter()
+            .map(|item| match item {
+                TranscriptItem::Event { level, .. } => *level,
+                _ => panic!("approval lifecycle rows must be events"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            levels,
+            vec![EventLevel::Info, EventLevel::Info, EventLevel::Info]
+        );
+    }
 }
