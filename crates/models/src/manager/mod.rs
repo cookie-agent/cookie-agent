@@ -1072,9 +1072,12 @@ fn effective_managed(
         )
     });
     let authored_setup = authored.filter(|value| !value.setup.is_empty());
+    let stored_endpoint = stored
+        .map(|connection| resolved_provider_endpoint(record, recipe, &connection.setup_values))
+        .transpose()?;
     let store_eligible = authored.is_none_or(|value| value.base_url.is_none())
         && stored.is_some_and(|connection| {
-            retained_recipe(connection, provider_id)
+            retained_recipe_for_endpoint(connection, provider_id, stored_endpoint.as_deref())
                 .is_some_and(|retained| retained.family == recipe.family)
         });
     let setup_input = authored_setup.map(|value| &value.setup).or_else(|| {
@@ -1712,6 +1715,14 @@ fn retained_recipe(
     connection: &StoredManagedConnection,
     provider_id: &ProviderId,
 ) -> Option<&'static FamilyRecipe> {
+    retained_recipe_for_endpoint(connection, provider_id, None)
+}
+
+fn retained_recipe_for_endpoint(
+    connection: &StoredManagedConnection,
+    provider_id: &ProviderId,
+    current_endpoint: Option<&str>,
+) -> Option<&'static FamilyRecipe> {
     if &connection.provider_id != provider_id {
         return None;
     }
@@ -1729,11 +1740,14 @@ fn retained_recipe(
         .collect::<Vec<_>>();
     let recipe_fingerprint =
         retained_recipe_fingerprint(recipe, connection.auth_method.as_str()).ok()?;
-    if recipe.default_endpoint.is_some_and(|endpoint| {
-        !endpoint.contains("${")
-            && connection.policy.default_endpoint_identity.as_str()
-                != endpoint.trim_end_matches('/')
-    }) {
+    // Endpoint identity is only enforced when the caller can resolve the
+    // current catalog endpoint. Callers without catalog access (snapshot
+    // rehydration, removed-provider reconnect) cannot perform this check:
+    // comparing against the family default endpoint would falsely reject
+    // nested providers whose catalog endpoint differs from the default.
+    if current_endpoint
+        .is_some_and(|endpoint| connection.policy.default_endpoint_identity.as_str() != endpoint)
+    {
         return None;
     }
     (connection.policy.family_id.as_str() == recipe.family.id()

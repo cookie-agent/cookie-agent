@@ -1,0 +1,84 @@
+{
+  "providers": {
+    "kimi-for-coding": {
+      "id": "kimi-for-coding",
+      "env": ["KIMI_API_KEY"],
+      "npm": "@ai-sdk/anthropic",
+      "api": "https://api.kimi.com/coding/v1",
+      "name": "Kimi for Coding",
+      "doc": "https://www.kimi.com/code/docs/en/",
+      "models": {
+        "k3": {
+          "id": "k3",
+          "name": "Kimi K3",
+          "description": "Kimi K3 coding model",
+          "attachment": false,
+          "reasoning": true,
+          "tool_call": true,
+          "structured_output": true,
+          "temperature": false,
+          "open_weights": false,
+          "release_date": "2026-08-06",
+          "last_updated": "2026-08-06",
+          "modalities": {"input": ["text", "image", "video"], "output": ["text"]},
+          "limit": {"context": 1048576, "output": 131072},
+          "reasoning_options": [
+            {"type": "toggle"},
+            {"type": "effort", "values": ["low", "high", "max"]}
+          ]
+        },
+        "k3-256k": {
+          "id": "k3-256k",
+          "name": "Kimi K3 256K",
+          "description": "Kimi K3 256K coding model",
+          "attachment": false,
+          "reasoning": true,
+          "tool_call": true,
+          "structured_output": true,
+          "temperature": false,
+          "open_weights": false,
+          "release_date": "2026-08-06",
+          "last_updated": "2026-08-06",
+          "modalities": {"input": ["text", "image", "video"], "output": ["text"]},
+          "limit": {"context": 262144, "output": 131072},
+          "reasoning_options": [
+            {"type": "effort", "values": ["low", "high", "max"]}
+          ]
+        },
+        "kimi-for-coding": {
+          "id": "kimi-for-coding",
+          "name": "Kimi for Coding",
+          "description": "Kimi coding model",
+          "attachment": true,
+          "reasoning": true,
+          "tool_call": true,
+          "structured_output": true,
+          "temperature": false,
+          "open_weights": false,
+          "release_date": "2026-08-06",
+          "last_updated": "2026-08-06",
+          "modalities": {"input": ["text", "image", "video"], "output": ["text"]},
+          "limit": {"context": 262144, "output": 32768},
+          "reasoning_options": []
+        },
+        "kimi-for-coding-highspeed": {
+          "id": "kimi-for-coding-highspeed",
+          "name": "Kimi for Coding Highspeed",
+          "description": "Kimi high-speed coding model",
+          "attachment": true,
+          "reasoning": true,
+          "tool_call": true,
+          "structured_output": true,
+          "temperature": false,
+          "open_weights": false,
+          "release_date": "2026-08-06",
+          "last_updated": "2026-08-06",
+          "modalities": {"input": ["text", "image"], "output": ["text"]},
+          "limit": {"context": 262144, "output": 32768},
+          "reasoning_options": []
+        }
+      }
+    }
+  },
+  "models": {}
+}

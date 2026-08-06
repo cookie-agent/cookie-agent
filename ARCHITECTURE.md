@@ -366,7 +366,9 @@ Chat or Responses, and catalog `responses`/`completions` shapes route likewise.
 
 Capabilities are derived from catalog `tool_call`, `structured_output`,
 `temperature`, `reasoning`, `reasoning_options`, input modalities, and context/
-output limits. Interleaved reasoning metadata selects the compatible reasoning
+output limits, plus protocol-required native replay. Anthropic-compatible models
+with reasoning require native replay so signed thinking blocks survive tool-use
+continuations. Interleaved reasoning metadata selects the compatible reasoning
 field. Deprecated and non-text-output models are omitted.
 
 `/connect` contains every current structurally valid/quarantined catalog provider

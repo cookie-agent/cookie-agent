@@ -13,7 +13,7 @@ use crate::{
 
 pub(crate) fn capabilities_from_catalog(
     model: &CatalogModelRecord,
-    _family: OvenAdapterFamily,
+    family: OvenAdapterFamily,
 ) -> Result<ModelCapabilities, serde_json::Error> {
     let input = model
         .modalities
@@ -65,6 +65,11 @@ pub(crate) fn capabilities_from_catalog(
             );
         }
     }
+    let native_replay = if family == OvenAdapterFamily::AnthropicCompatible && model.reasoning {
+        "required"
+    } else {
+        "unsupported"
+    };
     serde_json::from_value(json!({
         "input": input,
         "output": output,
@@ -77,7 +82,7 @@ pub(crate) fn capabilities_from_catalog(
         "temperature": model.temperature.unwrap_or(false),
         "top_p": false,
         "seed": false,
-        "native_replay": "unsupported",
+        "native_replay": native_replay,
         "native_compaction": "unsupported",
         "cancellation": "local_only",
         "media": media

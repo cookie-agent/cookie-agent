@@ -1,6 +1,11 @@
 #![cfg(unix)]
 
-use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt as _, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fs,
+    os::unix::fs::PermissionsExt as _,
+    sync::{Arc, Mutex},
+};
 
 use cookie_agent_identity::{
     AuthFieldName, AuthMethodId, CatalogRevision, ProtocolRecipeId, ProviderId, ProviderModelId,
@@ -12,7 +17,8 @@ use cookie_agent_models::{
     catalog::{
         CatalogAgeState, CatalogAvailability, CatalogLimits, CatalogModalities, CatalogModelEntry,
         CatalogModelRecord, CatalogModelStatus, CatalogProviderEntry, CatalogProviderRecord,
-        CatalogRuntimeState, CatalogSnapshot, CatalogSource,
+        CatalogRequest, CatalogRuntimeState, CatalogSnapshot, CatalogSource, CatalogTransport,
+        CatalogTransportFuture, CatalogTransportResponse,
     },
     manager::{
         EffectiveCredentialSource, ModelManager, ModelManagerError, ProviderConnectRequest,
@@ -266,6 +272,287 @@ fn auth_values(values: &[(&str, &str)]) -> ProviderAuthValues {
 fn store(temporary: &TempDir) -> ProviderStore {
     fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700)).unwrap();
     ProviderStore::open(temporary.path().join("providers")).unwrap()
+}
+
+#[derive(Clone)]
+struct FixtureCatalogTransport {
+    body: Arc<Mutex<Option<Vec<u8>>>>,
+}
+
+impl CatalogTransport for FixtureCatalogTransport {
+    fn fetch(&self, _request: CatalogRequest) -> CatalogTransportFuture<'_> {
+        let body = self.body.lock().unwrap().take().unwrap();
+        Box::pin(async move { Ok(CatalogTransportResponse::from_bytes(200, body)) })
+    }
+}
+
+async fn fixture_catalog(
+    temporary: &TempDir,
+    directory: &str,
+    body: &[u8],
+) -> Arc<CatalogSnapshot> {
+    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let catalog_directory =
+        cookie_agent_models::secure_store::SecureDirectory::open_in(temporary.path(), directory)
+            .unwrap();
+    Arc::new(
+        cookie_agent_models::catalog::CatalogManager::new(
+            FixtureCatalogTransport {
+                body: Arc::new(Mutex::new(Some(body.to_vec()))),
+            },
+            catalog_directory,
+        )
+        .refresh_at("2026-08-06T00:00:00Z".parse().unwrap())
+        .await
+        .unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn kimi_for_coding_catalog_connect_compiles_full_runtime() {
+    let temporary = TempDir::new().unwrap();
+    let catalog = fixture_catalog(
+        &temporary,
+        "catalog",
+        include_bytes!("fixtures/models-dev-kimi-for-coding.json"),
+    )
+    .await;
+    let manager =
+        ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
+    let result = manager.connect(
+        ProviderConnectRequest {
+            provider_id: ProviderId::new("kimi-for-coding").unwrap(),
+            expected_catalog_revision: catalog.revision.clone(),
+            setup_values: BTreeMap::new(),
+            auth_method: AuthMethodId::new("anthropic-api-key-v1").unwrap(),
+            auth_values: auth_values(&[("api_key", "dummy")]),
+            client_connect_id: ClientConnectId::new("kimi-connect").unwrap(),
+        },
+        |_, _| Ok(()),
+    );
+    assert!(result.is_ok(), "{result:?}");
+    let runtime = manager.current();
+    let kimi_models = runtime
+        .models()
+        .values()
+        .filter(|model| model.key.provider_id().as_str() == "kimi-for-coding")
+        .collect::<Vec<_>>();
+    assert_eq!(kimi_models.len(), 4, "runtime={runtime:?}");
+    assert!(kimi_models.iter().all(|model| {
+        model.model.status == cookie_agent_models::compiler::CompiledModelStatus::Available
+    }));
+    assert!(kimi_models.iter().all(|model| {
+        !model.model.capabilities.reasoning
+            || model.model.capabilities.native_replay
+                == cookie_agent_models::ReplayCapability::Required
+    }));
+}
+
+#[tokio::test]
+async fn nested_provider_rehydration_accepts_catalog_endpoint_identity() {
+    let temporary = TempDir::new().unwrap();
+    let catalog = fixture_catalog(
+        &temporary,
+        "catalog",
+        include_bytes!("fixtures/models-dev-kimi-for-coding.json"),
+    )
+    .await;
+    let manager =
+        ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
+    manager
+        .connect(
+            ProviderConnectRequest {
+                provider_id: ProviderId::new("kimi-for-coding").unwrap(),
+                expected_catalog_revision: catalog.revision.clone(),
+                setup_values: BTreeMap::new(),
+                auth_method: AuthMethodId::new("anthropic-api-key-v1").unwrap(),
+                auth_values: auth_values(&[("api_key", "dummy")]),
+                client_connect_id: ClientConnectId::new("kimi-rehydrate").unwrap(),
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap();
+    let runtime = manager.current();
+    let connection = runtime
+        .store()
+        .provider(&ProviderId::new("kimi-for-coding").unwrap())
+        .unwrap();
+    // The stored endpoint identity is the catalog endpoint, which differs
+    // from the anthropic family default endpoint; catalog-less rehydration
+    // must still accept the connection.
+    assert_eq!(
+        connection.policy.default_endpoint_identity.as_str(),
+        "https://api.kimi.com/coding/v1"
+    );
+    let manifest_store =
+        ModelSnapshotManifestStore::open_directory(temporary.path().join("kimi-manifest")).unwrap();
+    let manifest = manifest_store
+        .write(runtime.manifest_payload().unwrap())
+        .unwrap();
+    let index = manifest_store.scan().unwrap();
+    for blueprint in &manifest.payload.blueprints {
+        let binding = frozen_binding(
+            manifest.revision.clone(),
+            blueprint,
+            blueprint.selection.clone(),
+        )
+        .unwrap();
+        index
+            .rehydrate(
+                &binding,
+                runtime.authored(),
+                runtime.store(),
+                safe_definition_fingerprint,
+            )
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn nested_provider_store_rejected_when_catalog_endpoint_drifts() {
+    let temporary = TempDir::new().unwrap();
+    let catalog = fixture_catalog(
+        &temporary,
+        "catalog",
+        include_bytes!("fixtures/models-dev-kimi-for-coding.json"),
+    )
+    .await;
+    let manager =
+        ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
+    manager
+        .connect(
+            ProviderConnectRequest {
+                provider_id: ProviderId::new("kimi-for-coding").unwrap(),
+                expected_catalog_revision: catalog.revision.clone(),
+                setup_values: BTreeMap::new(),
+                auth_method: AuthMethodId::new("anthropic-api-key-v1").unwrap(),
+                auth_values: auth_values(&[("api_key", "dummy")]),
+                client_connect_id: ClientConnectId::new("kimi-drift").unwrap(),
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap();
+    let provider_id = ProviderId::new("kimi-for-coding").unwrap();
+    let mut drifted = (*catalog).clone();
+    let entry = drifted.providers.get_mut(&provider_id).unwrap();
+    entry.record.as_mut().unwrap().api = Some("https://example.invalid/v1".to_owned());
+    let manager = ModelManager::new(BTreeMap::new(), Arc::new(drifted), store(&temporary)).unwrap();
+    let runtime = manager.current();
+    let kimi_models = runtime
+        .models()
+        .values()
+        .filter(|model| model.key.provider_id() == provider_id)
+        .collect::<Vec<_>>();
+    assert_eq!(kimi_models.len(), 4, "runtime={runtime:?}");
+    assert!(kimi_models.iter().all(|model| {
+        model.model.status
+            == cookie_agent_models::compiler::CompiledModelStatus::CredentialsUnavailable
+    }));
+}
+
+#[tokio::test]
+async fn anthropic_family_catalog_endpoints_connect_and_compile() {
+    for (provider, api) in [
+        (
+            "thinkingmachines",
+            "https://tinker.thinkingmachines.dev/services/tinker-prod/anthropic/api/v1",
+        ),
+        ("freemodel", "https://cc.freemodel.dev/v1"),
+        ("minimax", "https://api.minimax.io/anthropic/v1"),
+        ("subconscious", "https://api.subconscious.dev/v1"),
+        ("minimax-coding-plan", "https://api.minimax.io/anthropic/v1"),
+        ("minimax-cn", "https://api.minimaxi.com/anthropic/v1"),
+        (
+            "minimax-cn-coding-plan",
+            "https://api.minimaxi.com/anthropic/v1",
+        ),
+    ] {
+        let temporary = TempDir::new().unwrap();
+        let source = fixture_catalog(
+            &temporary,
+            "catalog",
+            include_bytes!("fixtures/models-dev-kimi-for-coding.json"),
+        )
+        .await;
+        let source_id = ProviderId::new("kimi-for-coding").unwrap();
+        let provider_id = ProviderId::new(provider).unwrap();
+        let mut snapshot = (*source).clone();
+        let mut entry = snapshot.providers.remove(&source_id).unwrap();
+        entry.id = provider_id.clone();
+        let record = entry.record.as_mut().unwrap();
+        record.id = provider_id.clone();
+        record.name = provider.to_owned();
+        record.api = Some(api.to_owned());
+        let (model_id, model) = record.models.first_key_value().unwrap();
+        record.models = BTreeMap::from([(model_id.clone(), model.clone())]);
+        snapshot.providers = BTreeMap::from([(provider_id.clone(), entry)]);
+        let catalog = Arc::new(snapshot);
+        let manager =
+            ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
+        manager
+            .connect(
+                ProviderConnectRequest {
+                    provider_id: provider_id.clone(),
+                    expected_catalog_revision: catalog.revision.clone(),
+                    setup_values: BTreeMap::new(),
+                    auth_method: AuthMethodId::new("anthropic-api-key-v1").unwrap(),
+                    auth_values: auth_values(&[("api_key", "dummy")]),
+                    client_connect_id: ClientConnectId::new(format!("{provider}-connect")).unwrap(),
+                },
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        let runtime = manager.current();
+        assert_eq!(
+            runtime.providers()[0].effective_auth,
+            EffectiveCredentialSource::ProviderStore,
+            "{provider}"
+        );
+        assert!(
+            runtime.models().values().all(|model| {
+                model.model.status == cookie_agent_models::compiler::CompiledModelStatus::Available
+            }),
+            "{provider}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn nested_anthropic_beta_catalog_metadata_compiles_manager_runtime() {
+    let temporary = TempDir::new().unwrap();
+    let catalog = fixture_catalog(
+        &temporary,
+        "catalog",
+        include_bytes!("fixtures/models-dev-live-audit-2026-08-05.json"),
+    )
+    .await;
+    let manager = ModelManager::new(BTreeMap::new(), catalog, store(&temporary)).unwrap();
+    let runtime = manager.current();
+    for provider in [
+        "anyapi",
+        "snowflake-cortex",
+        "github-copilot",
+        "auriko",
+        "orcarouter",
+        "gmicloud",
+        "anthropic",
+        "databricks",
+    ] {
+        let provider_id = ProviderId::new(provider).unwrap();
+        let state = runtime
+            .providers()
+            .iter()
+            .find(|state| state.id == provider_id)
+            .unwrap();
+        assert_eq!(state.support_reason, None, "{provider}");
+        assert!(
+            runtime
+                .models()
+                .keys()
+                .any(|model| model.provider_id() == provider_id),
+            "{provider}"
+        );
+    }
 }
 
 #[test]
@@ -557,10 +844,10 @@ fn retained_family_match_rejects_each_persisted_policy_field_drift() {
     let mut drift = connection.clone();
     drift.auth_method = AuthMethodId::new("no-auth-v1").unwrap();
     rejected(drift);
-    let mut drift = connection.clone();
-    drift.policy.default_endpoint_identity =
-        SafePolicyString::new("https://example.invalid/v1").unwrap();
-    rejected(drift);
+    // Endpoint identity drift is intentionally not rejected here: the
+    // catalog-less retained-family check cannot resolve the current catalog
+    // endpoint, so endpoint enforcement lives in the catalog-aware compile
+    // path (see nested_provider_store_rejected_when_catalog_endpoint_drifts).
     let mut drift = connection.clone();
     drift.policy.package_claim = SafePolicyString::new("@ai-sdk/openai-forged").unwrap();
     rejected(drift);

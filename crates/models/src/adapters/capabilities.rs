@@ -31,7 +31,9 @@ pub fn validate_capability_ceiling(
     }
     let replay_supported = matches!(
         family,
-        OvenAdapterFamily::OpenaiResponses | OvenAdapterFamily::AzureOpenaiResponses
+        OvenAdapterFamily::AnthropicCompatible
+            | OvenAdapterFamily::OpenaiResponses
+            | OvenAdapterFamily::AzureOpenaiResponses
     );
     if capabilities.native_replay != ReplayCapability::Unsupported && !replay_supported {
         return Err(AdapterCapabilityError::Unsupported);
