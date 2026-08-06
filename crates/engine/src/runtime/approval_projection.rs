@@ -42,12 +42,19 @@ impl Engine {
         }
 
         let source = ApprovalDecisionSource::InternalAgent;
-        let reason_code = match decision {
-            ApprovalInternalDecisionKind::Allow => ApprovalReasonCode::InternalAgentAllowed,
-            ApprovalInternalDecisionKind::Deny => ApprovalReasonCode::InternalAgentDenied,
-            ApprovalInternalDecisionKind::Ask | ApprovalInternalDecisionKind::Escalate => {
-                ApprovalReasonCode::Escalated
-            }
+        let (decision, reason_code) = match decision {
+            ApprovalInternalDecisionKind::Allow => (
+                ApprovalInternalDecisionKind::Allow,
+                ApprovalReasonCode::InternalAgentAllowed,
+            ),
+            ApprovalInternalDecisionKind::Deny => (
+                ApprovalInternalDecisionKind::Deny,
+                ApprovalReasonCode::InternalAgentDenied,
+            ),
+            ApprovalInternalDecisionKind::Ask | ApprovalInternalDecisionKind::Escalate => (
+                ApprovalInternalDecisionKind::Escalate,
+                ApprovalReasonCode::Escalated,
+            ),
         };
         self.append_direct(
             session,

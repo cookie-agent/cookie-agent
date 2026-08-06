@@ -1,4 +1,12 @@
-use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt as _, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fs,
+    os::unix::fs::PermissionsExt as _,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use async_trait::async_trait;
 use cookie_agent_config::{
@@ -16,13 +24,15 @@ use cookie_agent_models::{
     provider_store::{ClientRequestId as StoreClientRequestId, ProviderStore},
 };
 use cookie_agent_protocol::{
-    AgentId, ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, CatalogRevision,
-    ClientConnectId, ClientRequestId, EventPayload, InvocationId, ModelSelection, PermissionAction,
-    PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
-    PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity,
-    ProviderConnectParams, ProviderCredentialValues, ProviderDisconnectParams, ProviderId,
-    ProviderModelId, RunSelection, RunStartParams, RuntimeChangeReason, SessionId, SetupFieldId,
-    Sha256Digest, ToolCallId,
+    AgentId, ApprovalBoundary, ApprovalCapability, ApprovalDecisionSource,
+    ApprovalInternalDecisionKind, ApprovalReasonCode, ApprovalResourceSource,
+    ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision, CatalogRevision, ClientConnectId,
+    ClientRequestId, ClientResponseId, EventPayload, InvocationId, ModelSelection,
+    PermissionAction, PreparedApprovalResource, PreparedBindingLifetime,
+    PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
+    PreparedResourceIdentity, ProviderConnectParams, ProviderCredentialValues,
+    ProviderDisconnectParams, ProviderId, ProviderModelId, RunSelection, RunStartParams,
+    RuntimeChangeReason, SessionId, SetupFieldId, Sha256Digest, ToolCallId, ToolTerminationOutcome,
 };
 use jiff::Timestamp;
 use tempfile::TempDir;
@@ -150,6 +160,88 @@ impl PreparedExecutor for TestDelegateExecutor {
             .await_delegate(handle)
             .await
             .map_err(|error| ToolError::execution(error.to_string()))
+    }
+}
+
+#[derive(Clone)]
+struct TestWriteProvider {
+    executed: Arc<AtomicBool>,
+}
+
+struct TestWriteExecutor {
+    executed: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl ToolProvider for TestWriteProvider {
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok(vec![ToolSpec {
+            name: "write".to_owned(),
+            description: "Write a test value".to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+            }),
+        }])
+    }
+
+    async fn prepare(
+        &self,
+        _ctx: ToolPreparationContext,
+        _call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        let label = "approval-test.txt";
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(b"approval test write arguments"),
+            vec![ApprovalCapability {
+                action: PermissionAction::Write,
+                operation: PreparedCapabilityOperation::new("write:file")
+                    .map_err(|error| ToolError::execution(error.to_string()))?,
+            }],
+            vec![PreparedApprovalResource {
+                capability: PermissionAction::Write,
+                canonical: PreparedResourceIdentity::new(label)
+                    .map_err(|error| ToolError::execution(error.to_string()))?,
+                binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
+                    label.as_bytes(),
+                ),
+                binding_lifetime: PreparedBindingLifetime::RestartStable,
+                boundary: ApprovalBoundary::Exact,
+                source: ApprovalResourceSource::PrimaryOperation,
+            }],
+            Sha256Digest::of_bytes(b"approval test execution context"),
+        )
+        .map_err(|error| ToolError::execution(error.to_string()))?;
+        Ok(PreparedTool::new(
+            operation,
+            None,
+            Box::new(TestWriteExecutor {
+                executed: Arc::clone(&self.executed),
+            }),
+        ))
+    }
+}
+
+#[async_trait]
+impl PreparedExecutor for TestWriteExecutor {
+    async fn revalidate(&self) -> Result<(), ToolError> {
+        Ok(())
+    }
+
+    async fn execute(
+        self: Box<Self>,
+        _context: ToolExecutionContext,
+    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
+        self.executed.store(true, Ordering::Release);
+        Ok(cookie_agent_protocol::PersistedToolResult {
+            title: cookie_agent_protocol::SafeDisplayText::new("approval test write")
+                .expect("result title"),
+            output: "executed".to_owned(),
+            metadata: serde_json::Value::Null,
+            truncation: None,
+            attachments: Vec::new(),
+        })
     }
 }
 
@@ -365,6 +457,23 @@ fn custom_fixture() -> (Fixture, RunSelection) {
 }
 
 fn custom_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
+    custom_fixture_with_endpoint_and_primary_agent(
+        endpoint,
+        "---\nschema: 1\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: [{ id: allow-delegate, action: delegate, resource: \"*\", effect: allow }]\ndelegation: { agents: [worker], max_depth: 1 }\n---\nTest prompt.\n",
+    )
+}
+
+fn approval_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
+    custom_fixture_with_endpoint_and_primary_agent(
+        endpoint,
+        "---\nschema: 1\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions: [{ id: ask-write, action: write, resource: \"*\", effect: ask }]\n---\nTest approval flow.\n",
+    )
+}
+
+fn custom_fixture_with_endpoint_and_primary_agent(
+    endpoint: &str,
+    primary_agent: &str,
+) -> (Fixture, RunSelection) {
     let directory = TempDir::new().expect("temp directory");
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
         .expect("private temp directory");
@@ -409,11 +518,7 @@ media = {}
     let agents = project.join("agents");
     fs::create_dir(&agents).expect("agents directory");
     fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
-    fs::write(
-        agents.join("primary.md"),
-        "---\nschema: 1\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: [{ id: allow-delegate, action: delegate, resource: \"*\", effect: allow }]\ndelegation: { agents: [worker], max_depth: 1 }\n---\nTest prompt.\n",
-    )
-    .expect("agent");
+    fs::write(agents.join("primary.md"), primary_agent).expect("agent");
     fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
         .expect("private agent");
     fs::write(
@@ -644,6 +749,122 @@ async fn scripted_delegation_server() -> (String, tokio::task::JoinHandle<Vec<St
         requests
     });
     (format!("http://{address}/v1"), task)
+}
+
+async fn scripted_approval_server(
+    internal_output: &str,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("approval listener");
+    let address = listener.local_addr().expect("listener address");
+    let internal_delta = serde_json::json!({
+        "choices": [{
+            "delta": {"content": internal_output},
+            "finish_reason": null
+        }]
+    });
+    let bodies = [
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"write-call\",\"type\":\"function\",\"function\":{\"name\":\"write\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
+            .to_owned(),
+        format!(
+            "data: {internal_delta}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n"
+        ),
+        "data: {\"choices\":[{\"delta\":{\"content\":\"approval flow complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+            .to_owned(),
+    ];
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for body in bodies {
+            let (mut socket, _) = listener.accept().await.expect("approval accept");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 8192];
+            loop {
+                let read = socket.read(&mut buffer).await.expect("approval read");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("approval response");
+            requests.push(String::from_utf8(request).expect("UTF-8 request"));
+        }
+        requests
+    });
+    (format!("http://{address}/v1"), task)
+}
+
+async fn wait_for_escalated_approval(
+    engine: &Engine,
+    session_id: SessionId,
+) -> cookie_agent_protocol::ApprovalRecord {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let mut approvals = engine
+                .list_approvals(session_id, Some(ApprovalStatus::Escalated))
+                .approvals;
+            if let Some(approval) = approvals.pop()
+                && engine
+                    .inner
+                    .pending_approvals
+                    .lock()
+                    .expect("pending approvals lock")
+                    .contains_key(&(session_id, approval.request.approval_id()))
+            {
+                return approval;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("user-visible escalated approval")
+}
+
+async fn approve_once(
+    engine: &Engine,
+    approval: &cookie_agent_protocol::ApprovalRecord,
+    client_response_id: &str,
+) -> cookie_agent_protocol::ApprovalRespondResult {
+    let request_revision = serde_json::to_value(&approval.request)
+        .expect("approval request JSON")
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .expect("approval request revision");
+    engine
+        .approval_respond(ApprovalRespondParams {
+            session_id: approval.session_id,
+            approval_id: approval.request.approval_id(),
+            request_revision,
+            operation_fingerprint: approval.request.operation_fingerprint().clone(),
+            client_response_id: ClientResponseId::new(client_response_id)
+                .expect("client response ID"),
+            decision: ApprovalUserDecision::ApproveOnce,
+            feedback: None,
+        })
+        .await
+        .expect("approve once")
+}
+
+async fn wait_for_tool_execution(executed: &AtomicBool) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !executed.load(Ordering::Acquire) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("approved tool execution");
 }
 
 fn reopen_engine(fixture: &Fixture) -> Engine {
@@ -1591,6 +1812,213 @@ async fn accepted_root_run_keeps_its_exact_manifest_binding_after_runtime_change
         .expect("frozen suffix after change");
     assert_eq!(frozen, still_frozen);
     assert_eq!(frozen[0].manifest_revision, session.manifest_revision);
+}
+
+#[tokio::test]
+async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval() {
+    let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
+    let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+    let executed = Arc::new(AtomicBool::new(false));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("approval session");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: cookie_agent_protocol::ClientRunId::new("ask-transaction")
+                .expect("run ID"),
+            selection,
+            input: "request the write tool".to_owned(),
+        })
+        .await
+        .expect("accepted approval run");
+
+    let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+    let approval_id = approval.request.approval_id();
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("approval projection")
+        .log
+        .events();
+    let lifecycle = events
+        .iter()
+        .filter(|event| match &event.payload {
+            EventPayload::ApprovalRequested { request } => request.approval_id() == approval_id,
+            EventPayload::ApprovalEvaluated {
+                approval_id: event_approval_id,
+                ..
+            }
+            | EventPayload::ApprovalEscalated {
+                approval_id: event_approval_id,
+                ..
+            } => *event_approval_id == approval_id,
+            _ => false,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(lifecycle.len(), 3);
+    assert!(matches!(
+        lifecycle[0].payload,
+        EventPayload::ApprovalRequested { .. }
+    ));
+    assert!(matches!(
+        &lifecycle[1].payload,
+        EventPayload::ApprovalEvaluated { decision, .. }
+            if decision.decision == ApprovalInternalDecisionKind::Escalate
+                && decision.source == ApprovalDecisionSource::InternalAgent
+                && decision.reason_code == ApprovalReasonCode::Escalated
+    ));
+    assert!(matches!(
+        lifecycle[2].payload,
+        EventPayload::ApprovalEscalated { .. }
+    ));
+    assert!(
+        fixture
+            .engine
+            .inner
+            .pending_approvals
+            .lock()
+            .expect("pending approvals lock")
+            .contains_key(&(session.session_id, approval_id))
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .list_approvals(session.session_id, Some(ApprovalStatus::Escalated))
+            .approvals
+            .len(),
+        1
+    );
+    assert!(!events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolCallTerminated { termination }
+            if termination.outcome == ToolTerminationOutcome::Failed
+    )));
+
+    approve_once(&fixture.engine, &approval, "ask-transaction-approval").await;
+    wait_for_tool_execution(&executed).await;
+    captured.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn malformed_internal_approval_output_falls_back_to_escalation_transaction() {
+    let (endpoint, captured) = scripted_approval_server("not-json").await;
+    let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+    let executed = Arc::new(AtomicBool::new(false));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("approval session");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: cookie_agent_protocol::ClientRunId::new("malformed-approval")
+                .expect("run ID"),
+            selection,
+            input: "request the write tool".to_owned(),
+        })
+        .await
+        .expect("accepted approval run");
+
+    let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("approval projection")
+        .log
+        .events();
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ApprovalEvaluated { approval_id, decision }
+            if *approval_id == approval.request.approval_id()
+                && decision.decision == ApprovalInternalDecisionKind::Escalate
+                && decision.source == ApprovalDecisionSource::InternalAgent
+                && decision.reason_code == ApprovalReasonCode::Escalated
+    )));
+
+    approve_once(&fixture.engine, &approval, "malformed-approval-response").await;
+    wait_for_tool_execution(&executed).await;
+    captured.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn internal_agent_ask_escalates_to_user_approval_then_executes_tool() {
+    let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
+    let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+    let executed = Arc::new(AtomicBool::new(false));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("approval session");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: cookie_agent_protocol::ClientRunId::new("approval-e2e").expect("run ID"),
+            selection,
+            input: "request the write tool".to_owned(),
+        })
+        .await
+        .expect("accepted approval run");
+
+    let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+    let response = approve_once(&fixture.engine, &approval, "approval-e2e-response").await;
+    assert_eq!(response.approval.status, ApprovalStatus::Approved);
+    wait_for_tool_execution(&executed).await;
+
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("completed approval projection")
+        .log
+        .events();
+    let approval_id = approval.request.approval_id();
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ApprovalUserDecisionRecorded { approval_id: event_id, decision, .. }
+            if *event_id == approval_id && *decision == ApprovalUserDecision::ApproveOnce
+    )));
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ApprovalFinalized { approval_id: event_id, decision }
+            if *event_id == approval_id
+                && decision.outcome == cookie_agent_protocol::ApprovalFinalOutcome::Approved
+                && decision.source == ApprovalDecisionSource::User
+                && decision.reason_code == ApprovalReasonCode::UserApprovedOnce
+    )));
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolCallTerminated { termination }
+            if termination.outcome == ToolTerminationOutcome::Completed
+    )));
+    captured.abort();
+    fixture.engine.shutdown().await;
 }
 
 #[tokio::test]

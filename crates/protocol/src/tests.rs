@@ -167,6 +167,71 @@ fn revisions_use_dynamic_sha256_grammar() {
     assert!(schema.get("const").is_none());
 }
 
+fn internal_approval_decision(
+    decision: ApprovalInternalDecisionKind,
+    source: ApprovalDecisionSource,
+    reason_code: ApprovalReasonCode,
+) -> ApprovalInternalDecision {
+    ApprovalInternalDecision {
+        decision,
+        source,
+        reason_code,
+        evaluations: Vec::new(),
+    }
+}
+
+#[test]
+fn internal_agent_escalation_decision_is_coherent() {
+    assert!(
+        internal_approval_decision(
+            ApprovalInternalDecisionKind::Escalate,
+            ApprovalDecisionSource::InternalAgent,
+            ApprovalReasonCode::Escalated,
+        )
+        .validate()
+        .is_ok()
+    );
+}
+
+#[test]
+fn internal_agent_ask_with_escalated_reason_is_rejected() {
+    assert_eq!(
+        internal_approval_decision(
+            ApprovalInternalDecisionKind::Ask,
+            ApprovalDecisionSource::InternalAgent,
+            ApprovalReasonCode::Escalated,
+        )
+        .validate(),
+        Err(ApprovalSchemaError::ContradictoryDecision)
+    );
+}
+
+#[test]
+fn policy_ask_decision_is_coherent() {
+    assert!(
+        internal_approval_decision(
+            ApprovalInternalDecisionKind::Ask,
+            ApprovalDecisionSource::Policy,
+            ApprovalReasonCode::PolicyRequiresApproval,
+        )
+        .validate()
+        .is_ok()
+    );
+}
+
+#[test]
+fn model_ask_decision_is_coherent() {
+    assert!(
+        internal_approval_decision(
+            ApprovalInternalDecisionKind::Ask,
+            ApprovalDecisionSource::Model,
+            ApprovalReasonCode::ModelRequested,
+        )
+        .validate()
+        .is_ok()
+    );
+}
+
 #[test]
 fn runtime_snapshot_is_strict_and_source_coherent() {
     let mut value = serde_json::to_value(runtime()).unwrap();
