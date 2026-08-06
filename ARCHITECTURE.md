@@ -585,6 +585,15 @@ is mandatory again before discovery, session admission, and root-run admission.
 The TUI consumes only runtime snapshot schema 1 and `runtime.changed`. Required
 global/row states are:
 
+Within the transcript, one assistant block spans all model attempts in one run;
+its header is frozen from the first attempt, and a mid-run resolved-model change
+adds a subtle inline `now using …` row. Committed turn content supersedes its
+streamed deltas, while abandoned attempts contribute no durable text or
+thinking content. The TUI state model represents these boundaries with
+`AssistantChild::Attribution`, and committed tool placeholders carry
+`CommittedTool.turn_seq` alongside their content index so tools from different
+turns cannot alias.
+
 - `loading`: no snapshot yet; controls disabled;
 - `empty`: after authored providers and global store records are applied, a valid
   snapshot has zero available models. The
@@ -669,6 +678,7 @@ Connect/disconnect changes become visible to other workspace daemons through
 provider-store generation reconciliation.
 
 ## 14. Validation ownership
+
 
 Required validation covers every version rejection, secure file mode/ownership/
 link attack, exact startup order, identity-only streamed 16 MiB acquisition,

@@ -201,11 +201,16 @@ pub enum AssistantChild {
     Tool {
         call_id: ToolCallId,
     },
+    /// Inline producer change within one run-scoped assistant item.
+    Attribution {
+        resolved_model: ResolvedModelRef,
+    },
     /// A durable tool placeholder from committed turn content, carrying the
     /// exact content index. A started tool replaces its placeholder through
     /// `owner.content_index`; an unstarted placeholder renders its committed
     /// call.
     CommittedTool {
+        turn_seq: u64,
         content_index: u32,
     },
 }
@@ -214,14 +219,14 @@ impl AssistantChild {
     pub fn id(&self) -> u64 {
         match self {
             Self::Text { id, .. } | Self::Thinking { id, .. } => *id,
-            Self::Tool { .. } | Self::CommittedTool { .. } => 0,
+            Self::Tool { .. } | Self::Attribution { .. } | Self::CommittedTool { .. } => 0,
         }
     }
 
     pub fn version(&self) -> u64 {
         match self {
             Self::Text { version, .. } | Self::Thinking { version, .. } => *version,
-            Self::Tool { .. } | Self::CommittedTool { .. } => 0,
+            Self::Tool { .. } | Self::Attribution { .. } | Self::CommittedTool { .. } => 0,
         }
     }
 }
@@ -280,6 +285,15 @@ pub(crate) struct AttemptProjection {
     item_id: u64,
 }
 
+/// The single assistant transcript item accumulating attempts for one run.
+#[derive(Clone, Debug)]
+pub(crate) struct RunAssistantProjection {
+    pub(crate) run_id: RunId,
+    pub(crate) item_id: u64,
+    pub(crate) committed_prefix: usize,
+    pub(crate) current_model: ResolvedModelRef,
+}
+
 /// A tool start buffered until its committed placeholder exists, linked by
 /// the owning turn's exact content index.
 #[derive(Clone, Copy, Debug)]
@@ -332,6 +346,7 @@ pub struct SessionState {
     pub transcript: Vec<TranscriptItem>,
     pub(crate) next_transcript_id: u64,
     pub(crate) open_assistant: Option<OpenAssistantProjection>,
+    pub(crate) open_run_assistant: Option<RunAssistantProjection>,
     pub(crate) attempts: HashMap<AttemptId, AttemptProjection>,
     pub tools: HashMap<ToolCallId, ToolCallState>,
     /// Buffered tool rows awaiting their committed placeholder, keyed by
@@ -965,6 +980,7 @@ fn reduce_event(
             ..
         } => {
             close_open_assistant(state);
+            state.open_run_assistant = None;
             state.active_run = run_id;
             state.run_agent = Some(agent.agent.clone());
             state.run_snapshot = Some(agent);
@@ -991,13 +1007,48 @@ fn reduce_event(
                 .run_agent
                 .clone()
                 .unwrap_or_else(|| AgentId::new("unknown").expect("static agent id"));
-            let item_id = open_assistant_item(
-                state,
-                FrozenAssistantAttribution {
-                    agent,
-                    resolved_model,
-                },
-            );
+            let item_id = if let Some(run_id) = run_id {
+                if let Some(projection) = state
+                    .open_run_assistant
+                    .as_ref()
+                    .filter(|projection| projection.run_id == run_id)
+                {
+                    let item_id = projection.item_id;
+                    let changed = projection.current_model != resolved_model;
+                    if changed {
+                        append_attribution(state, item_id, resolved_model.clone());
+                    }
+                    state
+                        .open_run_assistant
+                        .as_mut()
+                        .expect("run projection remains open")
+                        .current_model = resolved_model;
+                    item_id
+                } else {
+                    let item_id = open_assistant_item(
+                        state,
+                        FrozenAssistantAttribution {
+                            agent,
+                            resolved_model: resolved_model.clone(),
+                        },
+                    );
+                    state.open_run_assistant = Some(RunAssistantProjection {
+                        run_id,
+                        item_id,
+                        committed_prefix: 0,
+                        current_model: resolved_model,
+                    });
+                    item_id
+                }
+            } else {
+                open_assistant_item(
+                    state,
+                    FrozenAssistantAttribution {
+                        agent,
+                        resolved_model,
+                    },
+                )
+            };
             state
                 .attempts
                 .insert(attempt_id, AttemptProjection { item_id });
@@ -1024,7 +1075,16 @@ fn reduce_event(
         }
         EventPayload::AttemptAbandoned { attempt_id } => {
             close_open_assistant(state);
-            state.attempts.remove(&attempt_id);
+            if let Some(attempt) = state.attempts.remove(&attempt_id) {
+                let committed_prefix = state
+                    .open_run_assistant
+                    .as_ref()
+                    .filter(|projection| projection.item_id == attempt.item_id)
+                    .map(|projection| projection.committed_prefix);
+                if let Some(committed_prefix) = committed_prefix {
+                    prune_abandoned_attempt(state, attempt.item_id, committed_prefix);
+                }
+            }
             push_event(state, EventLevel::Warning, "model attempt abandoned".into());
         }
         EventPayload::ModelTurnCommitted {
@@ -1046,7 +1106,7 @@ fn reduce_event(
                 let item_id = projection.item_id;
                 mark_committed(state, item_id, model_turn_seq, &resolved_model);
                 index_turn_tool_content(state, model_turn_seq, &turn);
-                rebuild_committed_children(state, item_id, sequence, &turn);
+                rebuild_committed_children(state, item_id, model_turn_seq, sequence, &turn);
             } else {
                 index_turn_tool_content(state, model_turn_seq, &turn);
             }
@@ -1166,8 +1226,6 @@ fn reduce_event(
             if let Some(tool) = state.tools.get_mut(&tool_call_id) {
                 tool.detail = message.to_string();
             }
-            state.output.remove(&(tool_call_id, false));
-            state.output.remove(&(tool_call_id, true));
             bump_tool_item(state, tool_call_id);
         }
         EventPayload::ToolCallTerminated { termination } => {
@@ -1306,6 +1364,7 @@ fn reduce_event(
         ),
         EventPayload::RunCompleted { .. } => {
             close_open_assistant(state);
+            state.open_run_assistant = None;
             state.active_run = None;
             state.attempts.clear();
             state.pending_tool_rows.clear();
@@ -1314,6 +1373,7 @@ fn reduce_event(
         }
         EventPayload::RunFailed { error } => {
             close_open_assistant(state);
+            state.open_run_assistant = None;
             state.active_run = None;
             state.attempts.clear();
             state.pending_tool_rows.clear();
@@ -1322,6 +1382,7 @@ fn reduce_event(
         }
         EventPayload::RunCancelled { reason } => {
             close_open_assistant(state);
+            state.open_run_assistant = None;
             state.active_run = None;
             state.attempts.clear();
             state.pending_tool_rows.clear();
@@ -1337,6 +1398,7 @@ fn reduce_event(
         }
         EventPayload::RunInterrupted { reason } => {
             close_open_assistant(state);
+            state.open_run_assistant = None;
             state.active_run = None;
             state.attempts.clear();
             state.pending_tool_rows.clear();
@@ -1447,9 +1509,7 @@ fn reduce_event(
     }
 }
 
-/// Open a fresh assistant item for a streaming attempt. Attempt boundaries
-/// are closed before this runs, so each attempt owns one item with ordered
-/// text/thinking/tool children beneath one visible header.
+/// Open a fresh assistant item for a run or run-less streaming attempt.
 fn open_assistant_item(state: &mut SessionState, attribution: FrozenAssistantAttribution) -> u64 {
     state.open_assistant = None;
     push_item(state, |id| TranscriptItem::Assistant {
@@ -1464,6 +1524,36 @@ fn open_assistant_item(state: &mut SessionState, attribution: FrozenAssistantAtt
         .last()
         .expect("assistant item was just pushed")
         .id()
+}
+
+fn append_attribution(state: &mut SessionState, item_id: u64, resolved_model: ResolvedModelRef) {
+    if let Some(TranscriptItem::Assistant {
+        version, children, ..
+    }) = state
+        .transcript
+        .iter_mut()
+        .find(|item| item.id() == item_id)
+    {
+        children.push(AssistantChild::Attribution { resolved_model });
+        *version = version.wrapping_add(1);
+    }
+}
+
+fn prune_abandoned_attempt(state: &mut SessionState, item_id: u64, committed_prefix: usize) {
+    if let Some(TranscriptItem::Assistant {
+        version, children, ..
+    }) = state
+        .transcript
+        .iter_mut()
+        .find(|item| item.id() == item_id)
+    {
+        let tail = children.split_off(committed_prefix.min(children.len()));
+        children.extend(
+            tail.into_iter()
+                .filter(|child| matches!(child, AssistantChild::Attribution { .. })),
+        );
+        *version = version.wrapping_add(1);
+    }
 }
 
 fn mark_committed(
@@ -1482,9 +1572,10 @@ fn mark_committed(
         .iter_mut()
         .find(|item| item.id() == item_id)
     {
-        // The committed turn's exact resolved model is authoritative for the
-        // visible header; streaming attempt attribution is replaced on commit.
-        attribution.resolved_model = resolved_model.clone();
+        // Only the first commit may reconcile the first attempt's header.
+        if committed_turn_seq.is_none() {
+            attribution.resolved_model = resolved_model.clone();
+        }
         *committed_turn_seq = Some(model_turn_seq);
         *version = version.wrapping_add(1);
     }
@@ -1517,6 +1608,7 @@ fn index_turn_tool_content(
 fn rebuild_committed_children(
     state: &mut SessionState,
     item_id: u64,
+    model_turn_seq: u64,
     sequence: u64,
     turn: &PersistedModelTurn,
 ) {
@@ -1545,6 +1637,7 @@ fn rebuild_committed_children(
             }
             cookie_agent_protocol::PersistedAssistantPart::ToolCall { .. } => {
                 children.push(AssistantChild::CommittedTool {
+                    turn_seq: model_turn_seq,
                     content_index: index,
                 });
             }
@@ -1560,7 +1653,9 @@ fn rebuild_committed_children(
             | AssistantChild::Thinking { id: existing, .. } => {
                 *existing = id;
             }
-            AssistantChild::CommittedTool { .. } | AssistantChild::Tool { .. } => {}
+            AssistantChild::Attribution { .. }
+            | AssistantChild::CommittedTool { .. }
+            | AssistantChild::Tool { .. } => {}
         }
     }
     if let Some(TranscriptItem::Assistant {
@@ -1572,8 +1667,26 @@ fn rebuild_committed_children(
         .iter_mut()
         .find(|item| item.id() == item_id)
     {
-        *existing = children;
+        let committed_prefix = state
+            .open_run_assistant
+            .as_ref()
+            .filter(|projection| projection.item_id == item_id)
+            .map_or(0, |projection| projection.committed_prefix)
+            .min(existing.len());
+        let retained_markers = existing
+            .drain(committed_prefix..)
+            .filter(|child| matches!(child, AssistantChild::Attribution { .. }))
+            .collect::<Vec<_>>();
+        existing.extend(retained_markers);
+        existing.extend(children);
         *version = version.wrapping_add(1);
+        if let Some(projection) = state
+            .open_run_assistant
+            .as_mut()
+            .filter(|projection| projection.item_id == item_id)
+        {
+            projection.committed_prefix = existing.len();
+        }
     }
 }
 
@@ -1680,7 +1793,9 @@ fn place_tool_rows(state: &mut SessionState) {
             .turn_items
             .get(&row.turn_seq)
             .copied()
-            .is_some_and(|item_id| link_tool_child(state, item_id, row.content_index, row.call_id));
+            .is_some_and(|item_id| {
+                link_tool_child(state, item_id, row.turn_seq, row.content_index, row.call_id)
+            });
         if !linked {
             deferred.push(row);
         }
@@ -1694,6 +1809,7 @@ fn place_tool_rows(state: &mut SessionState) {
 fn link_tool_child(
     state: &mut SessionState,
     item_id: u64,
+    turn_seq: u64,
     content_index: u32,
     call_id: ToolCallId,
 ) -> bool {
@@ -1714,8 +1830,10 @@ fn link_tool_child(
     }
     for child in children.iter_mut() {
         if let AssistantChild::CommittedTool {
+            turn_seq: placeholder_turn,
             content_index: placeholder,
         } = child
+            && *placeholder_turn == turn_seq
             && *placeholder == content_index
         {
             *child = AssistantChild::Tool { call_id };
@@ -2140,6 +2258,7 @@ impl OrderedOutput {
 mod tests {
     use super::*;
 
+
     #[test]
     fn tool_termination_clears_streamed_output_and_sets_detail() {
         let call_id = ToolCallId::new_v7();
@@ -2203,5 +2322,6 @@ mod tests {
             "Bash\nstdout:\nonce\n\nstderr:\n"
         );
     }
+
 
 }

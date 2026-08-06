@@ -183,7 +183,7 @@ impl ConversationScroll {
 pub(super) enum BlockId {
     Thinking(u64),
     Tool(cookie_agent_protocol::ToolCallId),
-    CommittedTool(u32),
+    CommittedTool { turn_seq: u64, content_index: u32 },
 }
 
 /// A contiguous logical-line range owned by one collapsible transcript block.
@@ -697,7 +697,9 @@ fn item_block_ids(item: &TranscriptItem) -> Vec<BlockId> {
             .filter_map(|child| match child {
                 AssistantChild::Thinking { id, .. } => Some(BlockId::Thinking(*id)),
                 AssistantChild::Tool { call_id } => Some(BlockId::Tool(*call_id)),
-                AssistantChild::Text { .. } | AssistantChild::CommittedTool { .. } => None,
+                AssistantChild::Text { .. }
+                | AssistantChild::Attribution { .. }
+                | AssistantChild::CommittedTool { .. } => None,
             })
             .collect(),
         _ => Vec::new(),
@@ -786,7 +788,9 @@ fn assistant_item_layout(
                 let block_id = match child {
                     AssistantChild::Thinking { id, .. } => Some(BlockId::Thinking(*id)),
                     AssistantChild::Text { .. } => None,
-                    AssistantChild::Tool { .. } | AssistantChild::CommittedTool { .. } => {
+                    AssistantChild::Tool { .. }
+                    | AssistantChild::Attribution { .. }
+                    | AssistantChild::CommittedTool { .. } => {
                         unreachable!()
                     }
                 };
@@ -845,8 +849,26 @@ fn assistant_item_layout(
                         end_line: start_line + region.end_line,
                     }));
             }
-            AssistantChild::CommittedTool { content_index } => {
-                let child_layout = tool_child_layout(state, None, *content_index, context);
+            AssistantChild::Attribution { resolved_model } => {
+                layout.lines.extend(attribution_line(
+                    resolved_model,
+                    context.width,
+                    context.theme,
+                ));
+            }
+            AssistantChild::CommittedTool {
+                turn_seq,
+                content_index,
+            } => {
+                let child_layout = tool_child_layout(
+                    state,
+                    None,
+                    BlockKey::CommittedTool {
+                        turn_seq: *turn_seq,
+                        content_index: *content_index,
+                    },
+                    context,
+                );
                 let start_line = layout.lines.len();
                 layout.lines.extend(child_layout.lines);
                 layout
@@ -911,7 +933,9 @@ fn assistant_child_layout(
                 lines,
             }
         }
-        AssistantChild::Tool { .. } | AssistantChild::CommittedTool { .. } => {
+        AssistantChild::Tool { .. }
+        | AssistantChild::Attribution { .. }
+        | AssistantChild::CommittedTool { .. } => {
             unreachable!("tool children use tool_child_layout")
         }
     }
@@ -930,7 +954,13 @@ fn tool_child_layout(
 ) -> ItemLayout {
     let block_id = match block_key.into() {
         BlockKey::Call(call) => BlockId::Tool(call),
-        BlockKey::ContentIndex(index) => BlockId::CommittedTool(index),
+        BlockKey::CommittedTool {
+            turn_seq,
+            content_index,
+        } => BlockId::CommittedTool {
+            turn_seq,
+            content_index,
+        },
     };
     let selected = context.selected_block == Some(block_id);
     let is_expanded = context
@@ -1003,18 +1033,12 @@ fn tool_child_layout(
 /// Identity for a tool row: a started call or a committed placeholder index.
 enum BlockKey {
     Call(cookie_agent_protocol::ToolCallId),
-    ContentIndex(u32),
+    CommittedTool { turn_seq: u64, content_index: u32 },
 }
 
 impl From<cookie_agent_protocol::ToolCallId> for BlockKey {
     fn from(call_id: cookie_agent_protocol::ToolCallId) -> Self {
         Self::Call(call_id)
-    }
-}
-
-impl From<u32> for BlockKey {
-    fn from(index: u32) -> Self {
-        Self::ContentIndex(index)
     }
 }
 
@@ -1066,6 +1090,27 @@ fn read_path_extension(arguments: &str) -> Option<&str> {
     name.rsplit_once('.')
         .filter(|(stem, extension)| !stem.is_empty() && !extension.is_empty())
         .map(|(_, extension)| extension)
+}
+
+fn attribution_line(
+    resolved_model: &cookie_agent_protocol::ResolvedModelRef,
+    width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let variant = resolved_model
+        .selection
+        .variant
+        .as_ref()
+        .map_or_else(|| "base".to_owned(), ToString::to_string);
+    let prefix = (width >= 4).then(|| vec![Span::styled("├─ ", theme.muted())]);
+    repeated_prefixed_wrapped_line(
+        prefix.unwrap_or_default(),
+        Line::from(Span::styled(
+            format!("now using {}[{variant}]", resolved_model.selection.model),
+            theme.muted(),
+        )),
+        width,
+    )
 }
 
 /// Split reduced `read` detail into the file content and trailing
@@ -7102,5 +7147,565 @@ mod tests {
         assert!(content.contains("git status"));
         let lines = content.lines().count();
         assert!(lines > 20);
+    }
+
+    fn runless_event(session_id: SessionId, seq: u64, payload: EventPayload) -> StoredEvent {
+        StoredEvent {
+            event_schema_version: EventSchemaVersion::current(),
+            session_id,
+            run_id: None,
+            seq,
+            timestamp: Timestamp::now(),
+            payload,
+        }
+    }
+
+    fn text_part(text: &str) -> cookie_agent_protocol::PersistedAssistantPart {
+        cookie_agent_protocol::PersistedAssistantPart::Text {
+            text: text.into(),
+            metadata: None,
+        }
+    }
+
+    fn reasoning_part(text: &str) -> cookie_agent_protocol::PersistedAssistantPart {
+        cookie_agent_protocol::PersistedAssistantPart::Reasoning {
+            text: text.into(),
+            metadata: None,
+        }
+    }
+
+    fn tool_part(call: &str) -> cookie_agent_protocol::PersistedAssistantPart {
+        cookie_agent_protocol::PersistedAssistantPart::ToolCall {
+            id: ModelCallId::new(call).expect("call"),
+            provider_item_id: None,
+            name: SafeCode::new("bash").expect("tool"),
+            input: serde_json::json!({"command": call}),
+            raw_input: None,
+            metadata: None,
+        }
+    }
+
+    fn assistant_projection(state: &SessionState) -> Vec<(String, Option<u64>, Vec<String>)> {
+        state
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Assistant {
+                    attribution,
+                    committed_turn_seq,
+                    children,
+                    ..
+                } => Some((
+                    attribution.header(),
+                    *committed_turn_seq,
+                    children
+                        .iter()
+                        .map(|child| match child {
+                            AssistantChild::Text { markdown, .. } => {
+                                format!("text:{}", markdown.as_str())
+                            }
+                            AssistantChild::Thinking { text, .. } => {
+                                format!("thinking:{text}")
+                            }
+                            AssistantChild::Tool { call_id } => format!("tool:{call_id}"),
+                            AssistantChild::Attribution { resolved_model } => format!(
+                                "attribution:{}:{:?}",
+                                resolved_model.selection.model, resolved_model.selection.variant
+                            ),
+                            AssistantChild::CommittedTool {
+                                turn_seq,
+                                content_index,
+                            } => format!("placeholder:{turn_seq}:{content_index}"),
+                        })
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_turn_assistant_item_renders_one_header() {
+        let state = assistant_state(vec![
+            AssistantChild::Text {
+                id: 10,
+                version: 0,
+                markdown: MarkdownDocument::new("first turn".into()),
+            },
+            AssistantChild::Text {
+                id: 20,
+                version: 0,
+                markdown: MarkdownDocument::new("second turn".into()),
+            },
+        ]);
+        let rendered = snapshot_lines(&transcript_layout(&state, None, 60).lines);
+        assert_eq!(
+            rendered
+                .matches("╭─ primary • gateway/arbitrary-model[base]")
+                .count(),
+            1
+        );
+        assert!(rendered.contains("first turn"));
+        assert!(rendered.contains("second turn"));
+    }
+
+    #[test]
+    fn attribution_marker_renders_without_region_and_is_skipped_by_navigation() {
+        let item = TranscriptItem::Assistant {
+            id: 1,
+            version: 0,
+            attribution: attribution(None),
+            committed_turn_seq: Some(2),
+            children: vec![
+                AssistantChild::Thinking {
+                    id: 10,
+                    version: 0,
+                    text: "thought".into(),
+                },
+                AssistantChild::Attribution {
+                    resolved_model: resolved_model(Some("high")),
+                },
+            ],
+        };
+        let state = SessionState {
+            transcript: vec![item.clone()],
+            ..SessionState::default()
+        };
+        let layout = transcript_layout(&state, None, 60);
+        assert!(
+            snapshot_lines(&layout.lines).contains("├─ now using gateway/arbitrary-model[high]")
+        );
+        assert_eq!(layout.regions.len(), 1);
+        assert_eq!(item_block_ids(&item), vec![BlockId::Thinking(10)]);
+    }
+
+    #[test]
+    fn committed_tool_blocks_from_two_turns_have_distinct_ids() {
+        let state = assistant_state(vec![
+            AssistantChild::CommittedTool {
+                turn_seq: 10,
+                content_index: 0,
+            },
+            AssistantChild::CommittedTool {
+                turn_seq: 11,
+                content_index: 0,
+            },
+        ]);
+        let layout = transcript_layout(&state, None, 60);
+        assert_eq!(
+            layout
+                .regions
+                .iter()
+                .map(|region| region.id)
+                .collect::<Vec<_>>(),
+            vec![
+                BlockId::CommittedTool {
+                    turn_seq: 10,
+                    content_index: 0,
+                },
+                BlockId::CommittedTool {
+                    turn_seq: 11,
+                    content_index: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn narrow_attribution_marker_preserves_its_gutter() {
+        let state = assistant_state(vec![AssistantChild::Attribution {
+            resolved_model: resolved_model(Some("high")),
+        }]);
+        let width = 18;
+        let marker_lines = transcript_layout(&state, None, width)
+            .lines
+            .into_iter()
+            .filter(|line| line.to_string().contains("now") || line.to_string().starts_with("├─ "))
+            .collect::<Vec<_>>();
+        assert!(marker_lines.len() > 1, "marker should wrap at narrow width");
+        assert!(marker_lines.iter().all(|line| {
+            line.spans
+                .first()
+                .is_some_and(|span| span.content.as_ref() == "├─ ")
+        }));
+        assert!(marker_lines.iter().all(|line| {
+            unicode_width::UnicodeWidthStr::width(line.to_string().as_str()) <= usize::from(width)
+        }));
+    }
+
+    #[test]
+    fn same_model_retry_after_abandonment_prunes_partials_without_marker() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let first = AttemptId::new_v7();
+        let second = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            attempt_started(session, 1, run, first, None),
+            text_delta(session, 2, run, first, "partial"),
+            event(
+                session,
+                3,
+                run,
+                EventPayload::AttemptAbandoned { attempt_id: first },
+            ),
+            attempt_started(session, 4, run, second, None),
+            text_delta(session, 5, run, second, "final"),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        let assistants = state
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Assistant { children, .. } => Some(children),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(assistants.len(), 1);
+        assert!(matches!(
+            assistants[0].as_slice(),
+            [AssistantChild::Text { markdown, .. }] if markdown.as_str() == "final"
+        ));
+    }
+
+    #[test]
+    fn model_change_inserts_marker_and_keeps_first_header() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let base = AttemptId::new_v7();
+        let high = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            session_created(session, 1),
+            attempt_started(session, 2, run, base, None),
+            turn_committed(
+                session,
+                3,
+                run,
+                base,
+                1,
+                vec![text_part("base answer")],
+                Vec::new(),
+                None,
+            ),
+            attempt_started(session, 4, run, high, Some("high")),
+            turn_committed(
+                session,
+                5,
+                run,
+                high,
+                2,
+                vec![text_part("high answer")],
+                Vec::new(),
+                Some("high"),
+            ),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        let rendered = transcript_layout(state, None, 60)
+            .lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            rendered
+                .matches("primary • gateway/arbitrary-model[base]")
+                .count(),
+            1
+        );
+        assert_eq!(
+            rendered
+                .matches("├─ now using gateway/arbitrary-model[high]")
+                .count(),
+            1
+        );
+        let assistant = state
+            .transcript
+            .iter()
+            .find_map(|item| match item {
+                TranscriptItem::Assistant {
+                    attribution,
+                    children,
+                    ..
+                } => Some((attribution, children)),
+                _ => None,
+            })
+            .expect("assistant");
+        assert_eq!(assistant.0.variant_label(), "base");
+        assert!(matches!(
+            assistant.1.as_slice(),
+            [
+                AssistantChild::Text { markdown: first, .. },
+                AssistantChild::Attribution { resolved_model },
+                AssistantChild::Text { markdown: second, .. },
+            ] if first.as_str() == "base answer"
+                && resolved_model.selection.variant.as_ref().is_some_and(|variant| variant.as_str() == "high")
+                && second.as_str() == "high answer"
+        ));
+    }
+
+    #[test]
+    fn multi_attempt_run_merges_committed_turns_and_tool_in_order() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let first_attempt = AttemptId::new_v7();
+        let second_attempt = AttemptId::new_v7();
+        let call_id = ToolCallId::new_v7();
+        let events = vec![
+            attempt_started(session, 1, run, first_attempt, None),
+            turn_committed(
+                session,
+                2,
+                run,
+                first_attempt,
+                10,
+                vec![text_part("turn one"), tool_part("call-one")],
+                Vec::new(),
+                None,
+            ),
+            tool_started_at(session, 3, run, call_id, 10, "call-one", 1, "bash", None),
+            attempt_started(session, 4, run, second_attempt, None),
+            turn_committed(
+                session,
+                5,
+                run,
+                second_attempt,
+                11,
+                vec![reasoning_part("turn two thought"), text_part("turn two")],
+                Vec::new(),
+                None,
+            ),
+        ];
+        let mut store = StateStore::default();
+        for event in events {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        assert_eq!(assistant_projection(state).len(), 1);
+        let children = match state
+            .transcript
+            .iter()
+            .find(|item| matches!(item, TranscriptItem::Assistant { .. }))
+            .expect("assistant")
+        {
+            TranscriptItem::Assistant { children, .. } => children,
+            _ => unreachable!(),
+        };
+        assert!(matches!(
+            children.as_slice(),
+            [
+                AssistantChild::Text { markdown: first, .. },
+                AssistantChild::Tool { call_id: linked },
+                AssistantChild::Thinking { text: thought, .. },
+                AssistantChild::Text { markdown: second, .. },
+            ] if first.as_str() == "turn one"
+                && *linked == call_id
+                && thought == "turn two thought"
+                && second.as_str() == "turn two"
+        ));
+    }
+
+    #[test]
+    fn rebuild_session_matches_live_run_assistant_projection() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let first = AttemptId::new_v7();
+        let second = AttemptId::new_v7();
+        let events = vec![
+            attempt_started(session, 1, run, first, None),
+            turn_committed(
+                session,
+                2,
+                run,
+                first,
+                1,
+                vec![text_part("first")],
+                Vec::new(),
+                None,
+            ),
+            attempt_started(session, 3, run, second, Some("high")),
+            text_delta(session, 4, run, second, "partial"),
+        ];
+        let mut live = StateStore::default();
+        for event in events.clone() {
+            assert!(live.apply_event(event));
+        }
+        let mut rebuilt = StateStore::default();
+        assert!(rebuilt.rebuild_session(session, 0, events));
+        assert_eq!(
+            assistant_projection(&live.sessions[&session]),
+            assistant_projection(&rebuilt.sessions[&session])
+        );
+        let live_projection = live.sessions[&session]
+            .open_run_assistant
+            .as_ref()
+            .expect("live run projection");
+        let rebuilt_projection = rebuilt.sessions[&session]
+            .open_run_assistant
+            .as_ref()
+            .expect("rebuilt run projection");
+        assert_eq!(live_projection.run_id, rebuilt_projection.run_id);
+        assert_eq!(
+            live_projection.committed_prefix,
+            rebuilt_projection.committed_prefix
+        );
+        assert_eq!(
+            live_projection.current_model,
+            rebuilt_projection.current_model
+        );
+    }
+
+    #[test]
+    fn a_second_run_starts_a_second_assistant_item() {
+        let session = SessionId::new_v7();
+        let first_run = run_id();
+        let second_run = run_id();
+        let first_attempt = AttemptId::new_v7();
+        let second_attempt = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            run_started_with_suffix(session, 1, first_run, vec![resolved_model(None)]),
+            attempt_started(session, 2, first_run, first_attempt, None),
+            text_delta(session, 3, first_run, first_attempt, "first run"),
+            event(
+                session,
+                4,
+                first_run,
+                EventPayload::RunCompleted { final_text: None },
+            ),
+            run_started_with_suffix(session, 5, second_run, vec![resolved_model(None)]),
+            attempt_started(session, 6, second_run, second_attempt, None),
+            text_delta(session, 7, second_run, second_attempt, "second run"),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        assert_eq!(assistant_projection(&store.sessions[&session]).len(), 2);
+    }
+
+    #[test]
+    fn committed_tools_with_same_content_index_link_to_their_own_turns() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let first_attempt = AttemptId::new_v7();
+        let second_attempt = AttemptId::new_v7();
+        let first_call = ToolCallId::new_v7();
+        let second_call = ToolCallId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            attempt_started(session, 1, run, first_attempt, None),
+            turn_committed(
+                session,
+                2,
+                run,
+                first_attempt,
+                10,
+                vec![tool_part("first-call")],
+                Vec::new(),
+                None,
+            ),
+            attempt_started(session, 3, run, second_attempt, None),
+            turn_committed(
+                session,
+                4,
+                run,
+                second_attempt,
+                11,
+                vec![tool_part("second-call")],
+                Vec::new(),
+                None,
+            ),
+            tool_started(session, 5, run, second_call, 11, "second-call"),
+            tool_started(session, 6, run, first_call, 10, "first-call"),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let projection = assistant_projection(&store.sessions[&session]);
+        assert_eq!(projection.len(), 1);
+        assert_eq!(
+            projection[0].2,
+            vec![format!("tool:{first_call}"), format!("tool:{second_call}")]
+        );
+    }
+
+    #[test]
+    fn runless_attempts_remain_one_item_per_attempt() {
+        let session = SessionId::new_v7();
+        let first = AttemptId::new_v7();
+        let second = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            runless_event(
+                session,
+                1,
+                EventPayload::ModelAttemptStarted {
+                    attempt_id: first,
+                    attempt_ordinal: 1,
+                    fallback_index: 0,
+                    retry_ordinal: 0,
+                    resolved_model: resolved_model(None),
+                    prompt_fingerprint: Sha256Digest::of_bytes(b"first"),
+                },
+            ),
+            runless_event(
+                session,
+                2,
+                EventPayload::TextDelta {
+                    attempt_id: first,
+                    text: "first".into(),
+                },
+            ),
+            runless_event(
+                session,
+                3,
+                EventPayload::ModelAttemptStarted {
+                    attempt_id: second,
+                    attempt_ordinal: 2,
+                    fallback_index: 0,
+                    retry_ordinal: 0,
+                    resolved_model: resolved_model(None),
+                    prompt_fingerprint: Sha256Digest::of_bytes(b"second"),
+                },
+            ),
+            runless_event(
+                session,
+                4,
+                EventPayload::TextDelta {
+                    attempt_id: second,
+                    text: "second".into(),
+                },
+            ),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        assert_eq!(assistant_projection(&store.sessions[&session]).len(), 2);
+    }
+
+    #[test]
+    fn tool_call_only_attempt_adds_no_empty_segments() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            attempt_started(session, 1, run, attempt, None),
+            turn_committed(
+                session,
+                2,
+                run,
+                attempt,
+                9,
+                vec![tool_part("only-call")],
+                Vec::new(),
+                None,
+            ),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let projection = assistant_projection(&store.sessions[&session]);
+        assert_eq!(projection[0].2, vec!["placeholder:9:0"]);
     }
 }
