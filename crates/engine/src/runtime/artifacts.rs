@@ -365,14 +365,10 @@ struct CapturedArtifact {
     byte_length: u64,
 }
 
-pub(super) fn composed_bash_output_lines(
-    base: &str,
-    stdout_newlines: u64,
-    stderr_newlines: u64,
-) -> u64 {
-    // The two fixed delimiters are "\n\nstdout:\n" and "\n\nstderr:\n":
-    // six newline bytes total. split('\n') line count is newline count + one.
-    base.split('\n').count() as u64 + stdout_newlines + stderr_newlines + 6
+pub(super) fn composed_bash_output_lines(stdout_newlines: u64, stderr_newlines: u64) -> u64 {
+    // The fixed labels are "stdout:\n" and "\n\nstderr:\n": four newline
+    // bytes total. split('\n') line count is newline count + one.
+    stdout_newlines + stderr_newlines + 5
 }
 
 impl OutputCapture {
@@ -472,18 +468,14 @@ impl OutputCapture {
                 return Err(error);
             }
         };
-        let base_output_bytes = result.output.len() as u64;
-        let original_lines =
-            composed_bash_output_lines(&result.output, stdout_newlines, stderr_newlines);
-        let preview_budget = max_bytes.saturating_sub(result.output.len()).max(1);
+        let original_lines = composed_bash_output_lines(stdout_newlines, stderr_newlines);
+        let preview_budget = max_bytes.max(1);
         let (stdout_preview, stdout_truncated) =
             self.store.preview(&stdout.sha256, preview_budget)?;
         let (stderr_preview, stderr_truncated) =
             self.store.preview(&stderr.sha256, preview_budget)?;
-        let complete_for_budget = format!(
-            "{}\n\nstdout:\n{}\n\nstderr:\n{}",
-            result.output, stdout_preview, stderr_preview
-        );
+        let complete_for_budget =
+            format!("stdout:\n{}\n\nstderr:\n{}", stdout_preview, stderr_preview);
         let preview = truncate_tool_output(&complete_for_budget, max_lines, max_bytes)
             .map_or(complete_for_budget.clone(), |preview| preview.content);
         let stream_truncated = stdout_truncated || stderr_truncated;
@@ -505,7 +497,7 @@ impl OutputCapture {
             }))?;
             let (retained, _) = self.store.retain(&manifest)?;
             result.truncation = Some(ToolOutputTruncation {
-                original_bytes: base_output_bytes + stdout.byte_length + stderr.byte_length + 20,
+                original_bytes: stdout.byte_length + stderr.byte_length + 18,
                 original_lines,
                 retained,
             });
@@ -690,4 +682,72 @@ pub(super) fn sha256_hex(content: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(output: String) -> ToolResult {
+        ToolResult {
+            title: SafeDisplayText::new("Bash").expect("result title"),
+            output,
+            metadata: serde_json::Value::Null,
+            truncation: None,
+            attachments: Vec::new(),
+        }
+    }
+
+    fn capture() -> (tempfile::TempDir, OutputCapture) {
+        let directory = tempfile::tempdir().expect("temporary artifact root");
+        let store =
+            ArtifactStore::open(directory.path().join("artifacts")).expect("open artifact store");
+        let capture = OutputCapture::new(store).expect("create output capture");
+        (directory, capture)
+    }
+
+    #[test]
+    fn bash_capture_composes_stdout_and_stderr_once() {
+        let (_directory, capture) = capture();
+        let stdout = "stdout-unique\n";
+        let stderr = "stderr-unique\n";
+        capture.write(OutputStream::Stdout, stdout.as_bytes());
+        capture.write(OutputStream::Stderr, stderr.as_bytes());
+
+        let result = capture
+            .finish(result(format!("{stdout}{stderr}")), 100, 4096)
+            .expect("finish capture");
+
+        assert_eq!(
+            result.output,
+            "stdout:\nstdout-unique\n\n\nstderr:\nstderr-unique\n"
+        );
+        assert_eq!(result.output.matches("stdout-unique").count(), 1);
+        assert_eq!(result.output.matches("stderr-unique").count(), 1);
+        assert!(result.truncation.is_none());
+    }
+
+    #[test]
+    fn bash_capture_truncation_counts_composed_streams_without_duplication() {
+        let (_directory, capture) = capture();
+        let stdout = format!("kept-prefix\n{}", "x".repeat(256));
+        let stderr = "stderr-tail\n";
+        capture.write(OutputStream::Stdout, stdout.as_bytes());
+        capture.write(OutputStream::Stderr, stderr.as_bytes());
+
+        let result = capture
+            .finish(result(format!("{stdout}{stderr}")), 100, 80)
+            .expect("finish capture");
+        let truncation = result.truncation.expect("truncation metadata");
+        let complete = format!("stdout:\n{stdout}\n\nstderr:\n{stderr}");
+
+        assert!(result.output.len() <= 80);
+        assert!(result.output.starts_with("stdout:\nkept-prefix\n"));
+        assert_eq!(result.output.matches("kept-prefix").count(), 1);
+        assert_eq!(truncation.original_bytes, complete.len() as u64);
+        assert_eq!(
+            truncation.original_lines,
+            complete.split('\n').count() as u64
+        );
+    }
 }

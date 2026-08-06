@@ -1166,6 +1166,8 @@ fn reduce_event(
             if let Some(tool) = state.tools.get_mut(&tool_call_id) {
                 tool.detail = message.to_string();
             }
+            state.output.remove(&(tool_call_id, false));
+            state.output.remove(&(tool_call_id, true));
             bump_tool_item(state, tool_call_id);
         }
         EventPayload::ToolCallTerminated { termination } => {
@@ -1200,6 +1202,8 @@ fn reduce_event(
                     tool.detail = detail;
                 }
             }
+            state.output.remove(&(tool_call_id, false));
+            state.output.remove(&(tool_call_id, true));
             bump_tool_item(state, tool_call_id);
         }
         EventPayload::ApprovalRequested { request } => {
@@ -2130,4 +2134,74 @@ impl OrderedOutput {
             self.data.extend_from_slice(&bytes);
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_termination_clears_streamed_output_and_sets_detail() {
+        let call_id = ToolCallId::new_v7();
+        let owner = AssistantToolCallRef {
+            model_turn_seq: 1,
+            content_index: 0,
+            model_call_id: cookie_agent_protocol::ModelCallId::new("call").expect("model call id"),
+            provider_item_id: None,
+        };
+        let mut state = SessionState::default();
+        state.tools.insert(
+            call_id,
+            ToolCallState {
+                id: call_id,
+                owner: owner.clone(),
+                presentation: cookie_agent_protocol::ToolCallPresentation {
+                    title: cookie_agent_protocol::SafeDisplayText::new("Bash")
+                        .expect("presentation title"),
+                    primary_argument: None,
+                },
+                arguments: "{}".into(),
+                status: ToolStatus::Running,
+                detail: String::new(),
+            },
+        );
+        state
+            .output
+            .insert((call_id, false), OrderedOutput::default());
+        state
+            .output
+            .insert((call_id, true), OrderedOutput::default());
+
+        reduce_event(
+            &mut state,
+            SessionId::new_v7(),
+            None,
+            1,
+            EventPayload::ToolCallTerminated {
+                termination: cookie_agent_protocol::ToolCallTermination {
+                    tool_call_id: call_id,
+                    owner,
+                    outcome: ToolTerminationOutcome::Completed,
+                    result: Some(cookie_agent_protocol::PersistedToolResult {
+                        title: cookie_agent_protocol::SafeDisplayText::new("Bash")
+                            .expect("result title"),
+                        output: "stdout:\nonce\n\nstderr:\n".into(),
+                        metadata: serde_json::Value::Null,
+                        truncation: None,
+                        attachments: Vec::new(),
+                    }),
+                    error: None,
+                },
+            },
+        );
+
+        assert!(!state.output.contains_key(&(call_id, false)));
+        assert!(!state.output.contains_key(&(call_id, true)));
+        assert_eq!(state.tools[&call_id].status, ToolStatus::Completed);
+        assert_eq!(
+            state.tools[&call_id].detail,
+            "Bash\nstdout:\nonce\n\nstderr:\n"
+        );
+    }
+
 }
