@@ -266,6 +266,9 @@ behavior/config fingerprints and model-snapshot manifests. They reject
 case-insensitive duplicates and transport/protocol/auth-owned names, including at
 least authorization, host, content-length, transfer-encoding, connection,
 proxy-authorization, cookie/set-cookie, accept, content-type, and user-agent.
+Managed and custom model requests use opencode 1.18.2's provider compatibility
+identity, exactly `opencode/1.18.2 ai-sdk/provider-utils/4.0.27
+runtime/bun/1.3.14`, through the transport-owned user-agent header.
 Adaptor recipes extend the owned set. Secret header auth must use a typed auth
 method; static header values are never secret/redacted.
 

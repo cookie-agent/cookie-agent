@@ -9,7 +9,10 @@ use oven_sdk::{
 };
 use serde_json::{Value, json};
 
-use crate::{ConstructedAdapter, adapters::oven::ModelBuildError};
+use crate::{
+    ConstructedAdapter,
+    adapters::oven::{CLIENT_USER_AGENT, ModelBuildError},
+};
 
 const ADAPTER_RECIPE_ID: &str = "oven.openai.responses";
 
@@ -32,6 +35,7 @@ pub(crate) fn build(
         .map_err(|_| ModelError::invalid_request("invalid no-auth Responses endpoint"))?;
     let headers = header_map(headers)?;
     let client = reqwest_oven::Client::builder()
+        .user_agent(CLIENT_USER_AGENT)
         .build()
         .map_err(|_| ModelError::transport("could not construct no-auth Responses client"))?;
     Ok(ConstructedAdapter {

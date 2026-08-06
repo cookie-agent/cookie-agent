@@ -130,6 +130,9 @@ async fn custom_openai_chat_no_auth_emits_no_credential_material() {
     )
     .await;
     assert!(request.starts_with("POST /v1/chat/completions? HTTP/1.1"));
+    assert!(request.to_ascii_lowercase().contains(
+        "\r\nuser-agent: opencode/1.18.2 ai-sdk/provider-utils/4.0.27 runtime/bun/1.3.14\r\n"
+    ));
     assert!(!request.to_ascii_lowercase().contains("authorization:"));
     assert!(!request.contains("no-auth"));
 }

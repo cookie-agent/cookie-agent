@@ -57,6 +57,10 @@ use zeroize::Zeroize as _;
 
 use crate::ConstructedAdapter;
 
+// Compatibility identity used by opencode 1.18.2 for provider-facing requests.
+pub(crate) const CLIENT_USER_AGENT: &str =
+    "opencode/1.18.2 ai-sdk/provider-utils/4.0.27 runtime/bun/1.3.14";
+
 /// Internal fully concrete declaration consumed by one reviewed Oven constructor.
 #[derive(Clone, Serialize)]
 pub struct ConcreteModel {
@@ -536,6 +540,10 @@ fn header_config(values: &BTreeMap<String, String>) -> Result<HeaderConfig, Mode
             HeaderValue::from_str(value).map_err(|_| ModelBuildError::HeaderValue(name.clone()))?;
         headers.insert(parsed_name, parsed_value);
     }
+    headers.insert(
+        http::header::USER_AGENT,
+        HeaderValue::from_static(CLIENT_USER_AGENT),
+    );
     Ok(HeaderConfig {
         static_headers: HeaderOverrides::new(headers),
         dynamic_headers: None,
@@ -682,6 +690,7 @@ impl AnthropicSettingsConfig {
     fn to_oven(&self) -> Result<AnthropicSettings, ModelBuildError> {
         Ok(AnthropicSettings {
             client: reqwest_oven::Client::builder()
+                .user_agent(CLIENT_USER_AGENT)
                 .connect_timeout(Duration::from_secs(self.timeouts.connect_seconds))
                 .build()
                 .map_err(|_| ModelError::transport("could not construct Anthropic HTTP client"))?,
@@ -1814,5 +1823,22 @@ impl CohereOptionsConfig {
             citation_mode: self.citation_mode.clone(),
             image_detail: self.image_detail.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn managed_provider_headers_include_client_identity() {
+        let headers = header_config(&BTreeMap::new()).unwrap();
+        assert_eq!(
+            headers
+                .static_headers
+                .as_map()
+                .get(http::header::USER_AGENT),
+            Some(&HeaderValue::from_static(CLIENT_USER_AGENT))
+        );
     }
 }
