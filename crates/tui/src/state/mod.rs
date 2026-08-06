@@ -1706,34 +1706,49 @@ fn append_assistant_delta(
             .iter_mut()
             .find(|item| item.id() == open.item_id)
     {
-        if open.kind == kind
-            && let Some(part) = children.iter_mut().find(|part| part.id() == open.part_id)
-        {
-            match (part, kind) {
-                (
-                    AssistantChild::Text {
-                        version, markdown, ..
-                    },
-                    AssistantPartKind::Text,
-                ) => {
-                    markdown.append(&text);
-                    *version = version.wrapping_add(1);
+        if open.kind == kind {
+            let part_index = children
+                .iter()
+                .position(|part| part.id() == open.part_id && assistant_part_is_kind(part, kind))
+                .or_else(|| {
+                    children
+                        .iter()
+                        .rposition(|part| assistant_part_is_kind(part, kind))
+                });
+            if let Some(part_index) = part_index {
+                let part = &mut children[part_index];
+                let part_id = part.id();
+                match (part, kind) {
+                    (
+                        AssistantChild::Text {
+                            version, markdown, ..
+                        },
+                        AssistantPartKind::Text,
+                    ) => {
+                        markdown.append(&text);
+                        *version = version.wrapping_add(1);
+                    }
+                    (
+                        AssistantChild::Thinking {
+                            version,
+                            text: existing,
+                            ..
+                        },
+                        AssistantPartKind::Thinking,
+                    ) => {
+                        existing.push_str(&text);
+                        *version = version.wrapping_add(1);
+                    }
+                    _ => unreachable!("open assistant part kind matches its projection"),
                 }
-                (
-                    AssistantChild::Thinking {
-                        version,
-                        text: existing,
-                        ..
-                    },
-                    AssistantPartKind::Thinking,
-                ) => {
-                    existing.push_str(&text);
-                    *version = version.wrapping_add(1);
-                }
-                _ => unreachable!("open assistant part kind matches its projection"),
+                *version = version.wrapping_add(1);
+                state.open_assistant = Some(OpenAssistantProjection {
+                    item_id,
+                    part_id,
+                    kind,
+                });
+                return;
             }
-            *version = version.wrapping_add(1);
-            return;
         }
 
         children.push(new_assistant_part(sequence, text, kind));
@@ -1760,6 +1775,14 @@ fn append_assistant_delta(
             kind,
         });
     }
+}
+
+fn assistant_part_is_kind(part: &AssistantChild, kind: AssistantPartKind) -> bool {
+    matches!(
+        (part, kind),
+        (AssistantChild::Text { .. }, AssistantPartKind::Text)
+            | (AssistantChild::Thinking { .. }, AssistantPartKind::Thinking)
+    )
 }
 
 fn new_assistant_part(sequence: u64, text: String, kind: AssistantPartKind) -> AssistantChild {
@@ -2258,6 +2281,74 @@ impl OrderedOutput {
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn thinking_delta_after_committed_child_renumbering_appends_without_duplicate() {
+        let item_id = 1;
+        let mut state = SessionState {
+            transcript: vec![TranscriptItem::Assistant {
+                id: item_id,
+                version: 0,
+                attribution: FrozenAssistantAttribution {
+                    agent: AgentId::new("test").expect("agent id"),
+                    resolved_model: serde_json::from_value(serde_json::json!({
+                        "provider_id": "test",
+                        "model_id": "test",
+                        "adapter_id": "openai-compatible",
+                        "selection": {"model": "test/test", "variant": null},
+                        "selection_fingerprint": "a".repeat(64)
+                    }))
+                    .expect("resolved model"),
+                },
+                committed_turn_seq: None,
+                children: Vec::new(),
+            }],
+            ..SessionState::default()
+        };
+
+        append_assistant_delta(
+            &mut state,
+            item_id,
+            10,
+            "first".into(),
+            AssistantPartKind::Thinking,
+        );
+        let stale_open = state.open_assistant.expect("open thinking segment");
+        let turn = PersistedModelTurn {
+            content: vec![cookie_agent_protocol::PersistedAssistantPart::Reasoning {
+                text: "first".into(),
+                metadata: None,
+            }],
+            provider_options: BTreeMap::new(),
+            finish_reason: cookie_agent_protocol::ModelFinishReason::Stop,
+            usage: Usage::default(),
+            response_metadata: BTreeMap::new(),
+            provider_metadata: BTreeMap::new(),
+            native_replay: None,
+        };
+        rebuild_committed_children(&mut state, item_id, 1, 20, &turn);
+        state.open_assistant = Some(stale_open);
+
+        append_assistant_delta(
+            &mut state,
+            item_id,
+            21,
+            " second".into(),
+            AssistantPartKind::Thinking,
+        );
+
+        let TranscriptItem::Assistant { children, .. } = &state.transcript[0] else {
+            panic!("assistant item")
+        };
+        let thinking = children
+            .iter()
+            .filter_map(|child| match child {
+                AssistantChild::Thinking { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(thinking, vec!["first second"]);
+    }
 
     #[test]
     fn tool_termination_clears_streamed_output_and_sets_detail() {

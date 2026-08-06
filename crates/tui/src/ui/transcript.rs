@@ -1252,13 +1252,16 @@ fn tool_block_lines(
     }
     let mut lines = Vec::new();
     for line in body {
-        let mut spans = vec![Span::styled("│ ", theme.assistant())];
-        spans.extend(line.spans.into_iter().map(|mut span| {
-            span.style = style.patch(span.style);
-            span
-        }));
+        let spans = line
+            .spans
+            .into_iter()
+            .map(|mut span| {
+                span.style = style.patch(span.style);
+                span
+            })
+            .collect::<Vec<_>>();
         lines.extend(repeated_prefixed_wrapped_line(
-            Vec::new(),
+            vec![Span::styled("│ ", theme.assistant())],
             Line::from(spans),
             width,
         ));
@@ -7707,5 +7710,41 @@ mod tests {
         }
         let projection = assistant_projection(&store.sessions[&session]);
         assert_eq!(projection[0].2, vec!["placeholder:9:0"]);
+    }
+
+    #[test]
+    fn wrapped_tool_arguments_keep_the_assistant_gutter() {
+        let call_id = ToolCallId::new_v7();
+        let mut state = assistant_state(vec![AssistantChild::Tool { call_id }]);
+        state.tools.insert(
+            call_id,
+            ToolCallState {
+                id: call_id,
+                owner: owner(1, "call-1"),
+                presentation: presentation("bash", None),
+                arguments: r#"{"command":"printf a-very-long-single-line-tool-argument"}"#.into(),
+                status: ToolStatus::Running,
+                detail: String::new(),
+            },
+        );
+        let width = 18;
+        let expanded = std::collections::HashSet::from([BlockId::Tool(call_id)]);
+        let layout = transcript_layout(&state, Some(&expanded), width);
+        let region = layout
+            .regions
+            .iter()
+            .find(|region| region.id == BlockId::Tool(call_id))
+            .expect("tool region");
+        let body = &layout.lines[region.start_line..region.end_line];
+
+        assert!(body.len() > 2, "long argument should wrap");
+        assert!(body.iter().all(|line| {
+            line.spans
+                .first()
+                .is_some_and(|span| span.content.as_ref() == "│ ")
+        }));
+        assert!(body.iter().all(|line| {
+            unicode_width::UnicodeWidthStr::width(line.to_string().as_str()) <= usize::from(width)
+        }));
     }
 }
