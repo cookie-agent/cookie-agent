@@ -37,6 +37,8 @@ pub enum ConfigError {
     AgentFilename(String),
     #[error("duplicate agent `{0}`")]
     DuplicateAgent(AgentId),
+    #[error("agent ID `{0}` is reserved for a built-in agent")]
+    ReservedAgentId(AgentId),
     #[error("invalid frontmatter for agent `{0}`")]
     AgentFrontmatter(AgentId),
     #[error("agent YAML resource limit exceeded")]

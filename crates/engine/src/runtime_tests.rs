@@ -480,6 +480,94 @@ media = {}
     )
 }
 
+fn synthetic_default_fixture(authored_agent: Option<&str>) -> Fixture {
+    let directory = TempDir::new().expect("temp directory");
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+        .expect("private temp directory");
+    let project = directory.path().join(".cookie-agent");
+    fs::create_dir(&project).expect("project directory");
+    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
+    fs::write(
+        project.join("config.toml"),
+        r#"schema_version = 7
+
+[providers."custom.test"]
+source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "openai-compatible"
+auth = { method = "no-auth-v1", values = {} }
+
+[providers."custom.test".models."z-model"]
+display_name = "Z Model"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "unsupported", native_compaction = "unsupported", cancellation = "local_only", media = {} }
+
+[providers."custom.test".models."a-model"]
+display_name = "A Model"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "unsupported", native_compaction = "unsupported", cancellation = "local_only", media = {} }
+variants = { precise = { operation = "add", defaults = { temperature = 0.25 } } }
+default_variant = "precise"
+"#,
+    )
+    .expect("config");
+    fs::set_permissions(
+        project.join("config.toml"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .expect("private config");
+    if let Some(agent) = authored_agent {
+        let agents = project.join("agents");
+        fs::create_dir(&agents).expect("agents directory");
+        fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
+        fs::write(agents.join("primary.md"), agent).expect("agent");
+        fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
+            .expect("private agent");
+    }
+    let config = load_from_roots(None, Some(&project)).expect("loaded config");
+    let provider_store = directory.path().join("provider-store");
+    fs::create_dir(&provider_store).expect("provider store directory");
+    fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
+        .expect("private provider store");
+    let now = Timestamp::now();
+    let catalog = Arc::new(CatalogSnapshot {
+        revision: CatalogRevision::new(format!("sha256:{}", "2".repeat(64)))
+            .expect("catalog revision"),
+        source: CatalogSource::Bootstrap,
+        state: CatalogRuntimeState {
+            availability: CatalogAvailability::Bootstrap,
+            age: CatalogAgeState::Current,
+            last_error: None,
+        },
+        validated_at: now,
+        last_checked_at: now,
+        etag: None,
+        providers: BTreeMap::new(),
+        canonical_models: BTreeMap::new(),
+        quarantine: Vec::new(),
+    });
+    let manager = Arc::new(
+        ModelManager::new(
+            config.runtime.providers.clone(),
+            catalog,
+            ProviderStore::open(provider_store).expect("provider store"),
+        )
+        .expect("custom manager"),
+    );
+    let engine = Engine::open(EngineOptions {
+        data_dir: directory.path().join("data"),
+        cwd: directory.path().to_owned(),
+        config: config.clone(),
+        model_manager: Arc::clone(&manager),
+        tools: Vec::new(),
+    })
+    .expect("engine");
+    Fixture {
+        _directory: directory,
+        engine,
+        config,
+        manager,
+    }
+}
+
 async fn scripted_model_server() -> (String, tokio::task::JoinHandle<String>) {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -601,6 +689,113 @@ fn empty_startup_is_coherent_and_rejects_fabricated_sessions() {
         fixture.engine.create_session(selection),
         Err(EngineError::NoRunnableModel)
     ));
+}
+
+#[test]
+fn available_models_synthesize_default_agent_and_admit_sessions() {
+    let fixture = synthetic_default_fixture(None);
+    let snapshot = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
+    assert_eq!(snapshot.models.len(), 2);
+    assert_eq!(snapshot.agents.len(), 1);
+    let agent = &snapshot.agents[0];
+    assert_eq!(agent.id.as_str(), "default");
+    assert!(agent.runnable_as_root);
+    assert_eq!(agent.resolved_fallback.len(), 1);
+    assert_eq!(
+        agent.resolved_fallback[0].model.to_string(),
+        "custom.test/a-model"
+    );
+    assert_eq!(
+        agent.resolved_fallback[0]
+            .variant
+            .as_ref()
+            .map(|variant| variant.as_str()),
+        Some("precise")
+    );
+    let session = fixture
+        .engine
+        .create_session(RunSelection {
+            agent: agent.id.clone(),
+            model: agent.resolved_fallback[0].clone(),
+        })
+        .expect("synthetic-agent session");
+    let frozen = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("stored session")
+        .creation_agent;
+    assert_eq!(
+        frozen.document_source,
+        cookie_agent_protocol::AgentDocumentSource::BuiltIn
+    );
+    assert_eq!(
+        frozen.tools,
+        vec![
+            cookie_agent_protocol::ToolName::Read,
+            cookie_agent_protocol::ToolName::Grep,
+            cookie_agent_protocol::ToolName::Glob,
+            cookie_agent_protocol::ToolName::Write,
+            cookie_agent_protocol::ToolName::Edit,
+            cookie_agent_protocol::ToolName::Bash,
+        ]
+    );
+    assert!(frozen.delegation.is_none());
+    assert!(frozen.permissions.iter().any(|rule| {
+        rule.action == PermissionAction::Read
+            && rule.resource.as_str() == "store-v3.json"
+            && rule.effect == cookie_agent_protocol::PermissionEffect::Deny
+    }));
+    assert!(frozen.permissions.iter().any(|rule| {
+        rule.action == PermissionAction::Write
+            && rule.resource.as_str() == "*"
+            && rule.effect == cookie_agent_protocol::PermissionEffect::Ask
+    }));
+}
+
+#[test]
+fn synthetic_default_replaces_no_authored_agent_and_unrunnable_authored_agents_only() {
+    let unrunnable = synthetic_default_fixture(Some(
+        "---\nschema: 1\ndescription: Unrunnable primary\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/missing\", variant: base }]\ntools: []\npermissions: []\n---\nUnrunnable prompt.\n",
+    ));
+    let snapshot = unrunnable
+        .engine
+        .runtime_snapshot()
+        .expect("runtime")
+        .snapshot;
+    assert_eq!(snapshot.agents.len(), 2);
+    assert!(
+        snapshot
+            .agents
+            .iter()
+            .any(|agent| agent.id.as_str() == "default" && agent.runnable_as_root)
+    );
+    assert!(
+        snapshot
+            .agents
+            .iter()
+            .any(|agent| agent.id.as_str() == "primary" && !agent.runnable_as_root)
+    );
+
+    let (runnable, _) = custom_fixture();
+    let snapshot = runnable
+        .engine
+        .runtime_snapshot()
+        .expect("runtime")
+        .snapshot;
+    assert!(
+        snapshot
+            .agents
+            .iter()
+            .any(|agent| agent.id.as_str() == "primary")
+    );
+    assert!(
+        !snapshot
+            .agents
+            .iter()
+            .any(|agent| agent.id.as_str() == "default")
+    );
 }
 
 #[test]

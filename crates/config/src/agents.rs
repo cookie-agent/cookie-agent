@@ -7,6 +7,7 @@ use crate::{AgentDocument, ConfigError};
 
 const AGENT_SCHEMA: u32 = 1;
 const MAX_LIST: usize = 256;
+pub const BUILT_IN_DEFAULT_AGENT_ID: &str = "default";
 
 /// Exact schema-1 agent marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -180,6 +181,9 @@ fn validate_agent_document(
     document: &AgentDocument,
     all: &BTreeMap<AgentId, AgentDocument>,
 ) -> Result<(), ConfigError> {
+    if document.id.as_str() == BUILT_IN_DEFAULT_AGENT_ID {
+        return Err(ConfigError::ReservedAgentId(document.id.clone()));
+    }
     let frontmatter = &document.frontmatter;
     if frontmatter.description.is_empty()
         || frontmatter.description.len() > 512

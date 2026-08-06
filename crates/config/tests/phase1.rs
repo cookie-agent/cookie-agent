@@ -140,6 +140,23 @@ fn authored_agent_registry_retains_slash_model_ids_without_model_compilation() {
 }
 
 #[test]
+fn authored_agents_cannot_use_the_built_in_default_id() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("reserved-agent");
+    write_config(&root, "schema_version = 7\n");
+    write_agent(
+        &root,
+        "default.md",
+        &agent("Reserved", "[{ model: \"custom.test/model\" }]"),
+    );
+
+    assert!(matches!(
+        load_from_roots(None, Some(&root)),
+        Err(ConfigError::ReservedAgentId(id)) if id.as_str() == "default"
+    ));
+}
+
+#[test]
 fn workspace_agent_replaces_user_agent_before_registry_validation() {
     let temp = TempDir::new().unwrap();
     let user = temp.path().join("user-agents");

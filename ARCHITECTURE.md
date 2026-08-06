@@ -68,6 +68,11 @@ Family registry 1 is described in
     custom provider exists, startup publishes zero models/root-runnable agents
     and opens the TUI so `/connect` can bootstrap setup. Empty TOML does not hide
     existing per-user stored managed connections.
+18. **A model-bearing runtime is immediately runnable.** After authored-agent
+    projection, if no authored agent is root-runnable and at least one model is
+    available, the engine adds the reserved built-in primary agent `default`.
+    Authored agents never use that ID and are never rewritten to use another
+    model.
 
 ## 2. Component boundary
 
@@ -254,7 +259,11 @@ authored custom provider exists; otherwise stored managed connections or
 authored custom providers still materialize. Empty setup is not a configuration
 error and must never produce `runtime providers must be nonempty`. Agent
 fallback references with no current model are retained as unavailable
-descriptors; their agents are not root-runnable.
+descriptors; their authored agents are not root-runnable. If no authored agent
+is root-runnable but at least one model is available, the engine separately
+materializes built-in agent `default` with the lexicographically first available
+model and that model's default variant (base when there is no named default).
+The synthetic agent disappears whenever an authored agent is root-runnable.
 
 Custom IDs must begin `custom.`; managed IDs must not. Custom providers are
 config-only, are not `/connect` rows, and never read or write provider store 3.
@@ -436,6 +445,9 @@ Runtime snapshot schema 1 contains the snapshot schema version, recipe registry
 revision, catalog revision/source/cache state, provider-state revision, model
 revision, provider-store generation, agent revision, aggregate runtime revision,
 provider descriptors, model descriptors, and materialized agent descriptors.
+Materialized agents include authored descriptors unchanged plus the conditional
+built-in `default` descriptor when the runtime has available models but no
+root-runnable authored agent.
 
 `runtime.snapshot.get` is mandatory and atomically returns the entire object.
 Protocol 8 removes legacy independently refreshed catalog/provider/model/agent
@@ -553,8 +565,10 @@ Startup order is frozen and must not be reordered:
 3. **Provider store:** lock and load provider store 3 and its generation.
 4. **Effective providers:** combine authored definitions, global stored managed
    connections, catalog metadata, and code-owned recipes.
-5. **Coherent runtime:** compile all effective providers/models/agents and build
-   one runtime snapshot 1; an empty effective set is valid.
+5. **Coherent runtime:** compile all effective providers/models/authored agents;
+   if models are available but no authored agent is root-runnable, synthesize
+   built-in `default`; then build one runtime snapshot 1. An empty effective
+   model set is valid.
 6. **Project manifests:** scan/validate model-snapshot manifests 1 and rehydrate
    every referenced safe blueprint needed by project sessions.
 7. **Engine:** open version-8 session/event/delegation state and reconcile it
@@ -573,7 +587,7 @@ global/row states are:
 
 - `loading`: no snapshot yet; controls disabled;
 - `empty`: after authored providers and global store records are applied, a valid
-  snapshot has zero models or zero root-runnable agents. The
+  snapshot has zero available models. The
   Message model/draft display is exactly `type /connect to continue`; it has no
   Model or Variant hit region, ordinary text/run submission is blocked with the
   same guidance, and `/connect` remains accepted;
@@ -601,12 +615,20 @@ clears or replaces them. Active frozen runs never mutate on refresh/connect/
 disconnect. Unsupported Enter is details-only.
 
 `loading`, `empty`, and `error-retry` are distinct: loading has no snapshot;
-empty has a valid coherent snapshot but no runnable draft; error-retry has no
+empty has a valid coherent zero-model snapshot and no runnable draft; error-retry has no
 usable snapshot or a failed explicit operation. After connect publishes a
-coherent snapshot with a root-runnable agent/model selection, normal structured
-draft attribution replaces the exact guidance and its Model/Variant hit regions
-become active. If a durable connection still yields no root-runnable selection,
-the valid `empty` state and guidance remain; no model is fabricated.
+coherent snapshot with any available model, an authored root-runnable agent or
+the synthetic built-in `default` supplies normal structured draft attribution
+and activates Model/Variant hit regions. No model is fabricated; authored
+fallbacks remain unresolved and unchanged.
+
+The built-in `default` agent has source `built_in`, mode `primary`, the standard
+coding tools (`read`, `grep`, `glob`, `write`, `edit`, `bash`), no delegation
+targets, and authored-style ordered permission rules. Workspace read/search/glob
+are allowed; write/edit, bash, delegate, and external-directory access ask;
+reads of `.env` variants, `store-v3.json`, `token-v1`, `id_*`, `.netrc`, and
+`application_default_credentials.json` are denied, with the existing exact
+`.env.example` read exceptions. `default` is a reserved authored-agent ID.
 
 `/connect` always displays the exact durable copy
 `Stored setup, connections, and credentials are per-user and shared across workspaces.`
@@ -665,11 +687,16 @@ only helper strings: absent/empty provider TOML plus empty provider store and no
 effective custom provider; nonempty store with empty TOML; zero-model snapshot;
 byte-exact guidance; no Model/Variant target; blocked ordinary submission with
 no run RPC; accepted `/connect`; all-provider discovery RPC; and guidance removal
-after a coherent runnable refresh. Connect tests must cover recipe-derived setup
+after a coherent model-bearing refresh, including selection of synthetic
+`default` when authored agents are absent or unrunnable. Engine tests must prove
+the synthetic agent's iff trigger, reserved ID, first-available/default-variant
+fallback, disappearance when an authored agent is runnable, permissions/source,
+and successful session admission. Connect tests must cover recipe-derived setup
 and auth descriptors, multi-method selection and per-method credential resets,
 boxed public/secret controls, masking, Unicode input, focus traversal, submit and
 cancel behavior, persistent full connect errors with public-value retry state,
 first-use verification copy, defaults, missing/extra rejection,
 absent-provider upsert, reconnect replacement, cross-workspace setup persistence,
-and disconnect removal of setup plus credentials. Server tests must prove empty startup and
-typed run rejection without `runtime providers must be nonempty`.
+and disconnect removal of setup plus credentials. Server tests must prove empty
+zero-model startup and typed run rejection without `runtime providers must be
+nonempty`.

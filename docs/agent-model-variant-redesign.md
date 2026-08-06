@@ -701,6 +701,14 @@ catalog/provider/model/agent list RPCs and racing refresh sequences. Connect,
 disconnect, startup, catalog refresh, and config reload return a complete
 snapshot.
 
+Agent materialization preserves authored descriptors and unresolved fallbacks
+unchanged. When no authored agent is root-runnable but at least one model is
+available, the engine additionally materializes reserved built-in primary agent
+`default`. Its sole fallback is the lexicographically first available model with
+that model's default variant, or base when no named default exists. It is absent
+as soon as any authored agent is root-runnable, and authored documents cannot use
+the reserved `default` ID.
+
 Every publication emits:
 
 ```rust
@@ -927,8 +935,9 @@ manifest-directory, or runtime changes do not reinterpret it.
 3. **Provider store:** lock/load provider store 3 and its generation.
 4. **Effective providers:** resolve authored/stored managed and authored custom
    providers.
-5. **Coherent runtime:** compile all providers/models/agents into runtime
-   snapshot 1; an empty effective set is valid.
+5. **Coherent runtime:** compile all providers/models/authored agents, add
+   built-in `default` iff models are available and no authored agent is
+   root-runnable, and build runtime snapshot 1; an empty model set is valid.
 6. **Project manifests:** scan/validate model-snapshot manifests 1 and rehydrate
    referenced safe blueprints.
 7. **Engine:** open/reconcile version-8 sessions/events/delegation against the
@@ -946,7 +955,7 @@ The TUI consumes one runtime snapshot and notifications. It implements exactly:
 | State | Required behavior |
 |---|---|
 | `loading` | No snapshot; selectors and ordinary submission disabled. |
-| `empty` | Valid coherent snapshot with zero models or zero root-runnable agents after authored providers and global store records are applied. Message model/draft display is exactly `type /connect to continue`; no Model/Variant hit target; ordinary text/run blocked with the same guidance; `/connect` accepted. |
+| `empty` | Valid coherent snapshot with zero available models after authored providers and global store records are applied. Message model/draft display is exactly `type /connect to continue`; no Model/Variant hit target; ordinary text/run blocked with the same guidance; `/connect` accepted. |
 | `ready` | Live or 304-validated catalog; normal actions. |
 | `stale` | Cache selected after error; usable rows plus durable global error/time explanation. |
 | `bootstrap` | Bootstrap selected; durable global fallback explanation. |
@@ -966,18 +975,25 @@ The `/connect` view always renders the exact copy
 Normalized setup is non-secret and projected only where its recipe descriptor
 marks it safe; credential values are always secret/redacted.
 
-`loading` means no runtime snapshot exists. `empty` means a valid snapshot exists
-but cannot form a root draft. `error-retry` means startup or an explicit
+`loading` means no runtime snapshot exists. `empty` means a valid zero-model
+snapshot exists and cannot form a root draft. `error-retry` means startup or an explicit
 operation has no usable result. These states must never reuse one another's
 display or actions. Empty state cannot project a persisted, removed, stale, or
 placeholder model as the draft.
 
 After `provider.connect` and its coherent runtime publication produce at least
-one root-runnable agent/model selection, the TUI initializes the normal
-structured draft, removes `type /connect to continue`, and restores Model and
-Variant hit regions. If the durable connection produces no root-runnable
-selection, the snapshot remains valid `empty` and the guidance remains; this is
-preferable to fabricating a model.
+one available model, the TUI initializes the normal structured draft from an
+authored root-runnable agent or built-in `default`, removes
+`type /connect to continue`, and restores Model and Variant hit regions. No model
+is fabricated and authored fallback chains are never rewritten.
+
+Built-in `default` uses source `built_in`, mode `primary`, the standard coding
+tools, no delegation targets, and normal ordered agent permission rules:
+workspace read/search/glob allow; write/edit, bash, delegate, and external
+directory ask; secret-file reads deny for `.env` variants, `store-v3.json`,
+`token-v1`, `id_*`, `.netrc`, and
+`application_default_credentials.json`, retaining the exact `.env.example`
+allow exceptions.
 
 ### 12.1 Required actual-buffer and RPC tests
 
@@ -989,18 +1005,19 @@ and protocol client:
    snapshot 1 with `models = []` and no root-runnable agents, opens the TUI, and
    never emits `runtime providers must be nonempty`.
 3. Empty/omitted TOML plus a valid global stored managed connection materializes
-   its models and does not show empty guidance when a root draft is available.
+   its models and does not show empty guidance; built-in `default` supplies the
+   root draft when no authored agent is runnable.
 4. The actual Message model/draft buffer equals the UTF-8 bytes
    `type /connect to continue`; rendered hit maps contain no Model or Variant
    target for it.
-5. Submitting ordinary text does not invoke session-create or run-start RPC and
+5. In the zero-model state, submitting ordinary text does not invoke session-create or run-start RPC and
    returns/displays exactly `type /connect to continue`. Direct run RPC in the
    same state returns typed `no_runnable_model` with that safe guidance.
 6. Submitting `/connect` through the actual input buffer remains accepted and
    opens all-provider discovery from the coherent runtime snapshot.
-7. A successful connect plus `runtime.changed` carrying a root-runnable draft
-   replaces the guidance with normal structured agent/model selection. A
-   connection yielding no root-runnable agent preserves empty state.
+7. A successful connect plus `runtime.changed` carrying any available model
+   replaces the guidance with normal structured agent/model selection, using
+   synthetic `default` iff no authored agent is root-runnable.
 8. Cross-process store-generation change before discovery/session/root admission
    publishes `provider_store_changed` plus `provider_store_reloaded`, or blocks
    with `provider_store_reload_failed`.
@@ -1012,6 +1029,10 @@ and protocol client:
     observes both after provider-store generation reconciliation.
 12. Disconnect removes both stored setup and credentials, while custom providers
     remain absent from all store-backed actions.
+13. Engine projection tests cover zero authored agents, authored agents that are
+    all unrunnable, authored runnable suppression, lexicographically first model
+    plus default variant selection, built-in source/tools/permissions, reserved
+    ID rejection, and successful session admission through `default`.
 
 ## 13. Current-only protocol and persistence
 

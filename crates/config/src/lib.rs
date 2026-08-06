@@ -12,8 +12,8 @@ mod wildcard;
 pub use agent_document::{AgentDocument, AgentDocumentSource};
 pub use agents::{
     AgentDelegationConfig, AgentFrontmatter, AgentMaterializationInput, AgentMode,
-    AgentModelFallback, AgentRegistry, AgentSchemaVersion, PermissionAction, PermissionEffect,
-    PermissionRule, ToolName,
+    AgentModelFallback, AgentRegistry, AgentSchemaVersion, BUILT_IN_DEFAULT_AGENT_ID,
+    PermissionAction, PermissionEffect, PermissionRule, ToolName,
 };
 pub use error::ConfigError;
 pub use loader::{LoadedConfiguration, load, load_from_roots};

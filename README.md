@@ -84,7 +84,9 @@ When provider store 3 is also empty and there is no effective authored custom
 provider, it opens the TUI with no models/root-runnable agents and keeps
 `/connect` available. It must not fail with
 `runtime providers must be nonempty`. Because provider store 3 is per-user
-global, empty TOML may still materialize stored managed connections.
+global, empty TOML may still materialize stored managed connections. Whenever
+models are available but authored agents are absent or all unrunnable, the
+engine supplies reserved built-in coding agent `default`.
 
 The following is a separate nonempty example:
 
@@ -284,8 +286,9 @@ In valid empty state, the Message model/draft display is exactly
 `type /connect to continue`. It is not clickable as Model or Variant. Ordinary
 text/run submission is blocked with the same guidance, while `/connect` opens
 all-provider discovery. A coherent refresh that yields a root-runnable
-agent/model replaces the guidance with normal draft selection; otherwise empty
-state remains without fabricating a model.
+agent/model replaces the guidance with normal draft selection. If models exist
+without a runnable authored agent, built-in `default` supplies that selection;
+the empty state remains only while no models are available.
 
 ## Running
 

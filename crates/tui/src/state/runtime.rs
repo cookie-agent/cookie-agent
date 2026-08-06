@@ -104,8 +104,7 @@ impl RuntimeState {
     }
 
     fn install(&mut self, snapshot: RuntimeSnapshotV1) {
-        let empty = snapshot.models.is_empty()
-            || !snapshot.agents.iter().any(|agent| agent.runnable_as_root);
+        let empty = snapshot.models.is_empty();
         let (phase, explanation) = if empty {
             (RuntimePhase::Empty, catalog_explanation(&snapshot))
         } else if snapshot.catalog_source == CatalogSource::Bootstrap {
@@ -143,11 +142,103 @@ fn catalog_explanation(snapshot: &RuntimeSnapshotV1) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn revision<T>() -> T
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        serde_json::from_value(serde_json::json!(format!("sha256:{}", "a".repeat(64))))
+            .expect("revision")
+    }
+
+    fn snapshot(with_model: bool) -> RuntimeSnapshotV1 {
+        let model = cookie_agent_protocol::AvailableModelDescriptor {
+            key: "custom.test/model".parse().expect("model key"),
+            display_name: "Model".to_owned(),
+            capabilities: cookie_agent_protocol::ModelCapabilities {
+                input: [cookie_agent_protocol::Modality::Text]
+                    .into_iter()
+                    .collect(),
+                output: [cookie_agent_protocol::Modality::Text]
+                    .into_iter()
+                    .collect(),
+                context_tokens: 4096,
+                output_tokens: 1024,
+                tool_calling: true,
+                parallel_tool_calls: true,
+                structured_output: false,
+                reasoning: false,
+                temperature: true,
+                top_p: true,
+                seed: true,
+                native_replay: cookie_agent_protocol::ReplayCapability::Unsupported,
+                native_compaction: cookie_agent_protocol::CompactionCapability::Unsupported,
+                cancellation: cookie_agent_protocol::CancellationCapability::LocalOnly,
+                media: Default::default(),
+            },
+            variants: Vec::new(),
+            default_variant: None,
+            behavior_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(b"model"),
+        };
+        let selection = cookie_agent_protocol::ModelSelection {
+            model: model.key.clone(),
+            variant: None,
+        };
+        RuntimeSnapshotV1 {
+            snapshot_schema_version: cookie_agent_protocol::RuntimeSnapshotSchemaVersion::current(),
+            recipe_registry_revision: revision(),
+            catalog_revision: revision(),
+            catalog_source: CatalogSource::Network,
+            catalog_state: cookie_agent_protocol::CatalogRuntimeState {
+                stale: false,
+                provider_quarantine_count: 0,
+                model_quarantine_count: 0,
+                quarantine_digest: cookie_agent_protocol::Sha256Digest::of_bytes(b"quarantine"),
+                last_error: None,
+            },
+            provider_state_revision: revision(),
+            provider_store_generation: cookie_agent_protocol::ProviderStoreGeneration::new(1)
+                .expect("generation"),
+            model_revision: revision(),
+            agent_revision: revision(),
+            runtime_revision: revision(),
+            providers: Vec::new(),
+            models: if with_model { vec![model] } else { Vec::new() },
+            agents: if with_model {
+                vec![cookie_agent_protocol::AgentDescriptor {
+                    id: cookie_agent_protocol::AgentId::new("default").expect("agent ID"),
+                    description: "Built-in default coding agent".to_owned(),
+                    mode: cookie_agent_protocol::AgentMode::Primary,
+                    enabled: true,
+                    runnable_as_root: true,
+                    resolved_fallback: vec![selection],
+                    tools: Vec::new(),
+                    delegation_targets: Vec::new(),
+                }]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
     #[test]
     fn empty_guidance_is_exact() {
         assert_eq!(
             EMPTY_RUNTIME_GUIDANCE.as_bytes(),
             b"type /connect to continue"
         );
+    }
+
+    #[test]
+    fn models_with_synthetic_agent_are_not_empty() {
+        let mut state = RuntimeState::default();
+        state.install_initial(snapshot(true));
+        assert_eq!(state.phase(), RuntimePhase::Ready);
+    }
+
+    #[test]
+    fn runtime_without_available_models_is_empty() {
+        let mut state = RuntimeState::default();
+        state.install_initial(snapshot(false));
+        assert_eq!(state.phase(), RuntimePhase::Empty);
     }
 }

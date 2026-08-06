@@ -3384,7 +3384,7 @@ impl App {
                     RuntimePhase::Empty => EMPTY_RUNTIME_GUIDANCE,
                     RuntimePhase::ErrorRetry => "runtime error — retry",
                     RuntimePhase::Ready | RuntimePhase::Stale | RuntimePhase::Bootstrap => {
-                        EMPTY_RUNTIME_GUIDANCE
+                        "select an agent and model"
                     }
                 };
                 vec![Span::styled(text.to_owned(), self.theme.muted())]
