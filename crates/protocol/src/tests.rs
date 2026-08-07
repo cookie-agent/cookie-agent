@@ -142,11 +142,14 @@ fn runtime() -> RuntimeSnapshotV1 {
 #[test]
 fn exact_versions_are_current_only() {
     assert_eq!(PROTOCOL_VERSION, 8);
-    assert_eq!(EVENT_SCHEMA_VERSION, 8);
+    assert_eq!(EVENT_SCHEMA_VERSION, 9);
     assert_eq!(SESSION_META_SCHEMA_VERSION, 9);
-    assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 8);
+    assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 9);
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 2);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(7)).is_err());
+    assert!(serde_json::from_value::<AgentSchemaVersion>(json!(1)).is_err());
+    assert!(serde_json::from_value::<EventSchemaVersion>(json!(8)).is_err());
+    assert!(serde_json::from_value::<DelegationJournalSchemaVersion>(json!(8)).is_err());
     assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(1)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
 }
@@ -465,7 +468,7 @@ fn frozen_sources_and_credentials_are_strict() {
 }
 
 #[test]
-fn delegation_journal_schema_eight_roundtrips_actual_start_record() {
+fn delegation_journal_schema_nine_roundtrips_actual_start_record() {
     let binding = frozen_binding();
     let manifest_revision = binding.manifest_revision.clone();
     let record = StoredDelegationJournalRecord {

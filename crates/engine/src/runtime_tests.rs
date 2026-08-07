@@ -297,6 +297,7 @@ fn fixture() -> Fixture {
             approval: ApprovalConfig::default(),
             context_compaction: ContextCompactionConfig::default(),
             session_title: SessionTitleConfig::default(),
+            delegation: cookie_agent_config::DelegationConfig::default(),
             providers: BTreeMap::new(),
         },
         agents: BTreeMap::new(),
@@ -408,7 +409,7 @@ fn empty_provider_workspace(path: &std::path::Path) -> LoadedConfiguration {
     let project = path.join(".cookie-agent");
     fs::create_dir(&project).expect("project");
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
-    fs::write(project.join("config.toml"), "schema_version = 7\n").expect("empty provider config");
+    fs::write(project.join("config.toml"), "schema_version = 8\n").expect("empty provider config");
     fs::set_permissions(
         project.join("config.toml"),
         fs::Permissions::from_mode(0o600),
@@ -419,7 +420,7 @@ fn empty_provider_workspace(path: &std::path::Path) -> LoadedConfiguration {
     fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
     fs::write(
         agents.join("primary.md"),
-        "---\nschema: 1\ndescription: Bedrock test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0\", variant: base }]\ntools: []\npermissions: []\n---\nUse Bedrock.\n",
+        "---\nschema: 2\ndescription: Bedrock test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0\", variant: base }]\ntools: []\npermissions: {}\n---\nUse Bedrock.\n",
     )
     .expect("agent");
     fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
@@ -598,21 +599,21 @@ fn session_metadata_cache_version_eight_is_rejected() {
 fn custom_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\nschema: 1\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: [{ id: allow-delegate, action: delegate, resource: \"*\", effect: allow }]\ndelegation: { agents: [worker], max_depth: 1 }\n---\nTest prompt.\n",
+        "---\nschema: 2\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions:\n  delegate:\n    worker: allow\n---\nTest prompt.\n",
     )
 }
 
 fn approval_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\nschema: 1\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions: [{ id: ask-write, action: write, resource: \"*\", effect: ask }]\n---\nTest approval flow.\n",
+        "---\nschema: 2\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
     )
 }
 
 fn denied_approval_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\nschema: 1\ndescription: Denied approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions: [{ id: deny-write, action: write, resource: \"*\", effect: deny }]\n---\nTest denied approval flow.\n",
+        "---\nschema: 2\ndescription: Denied approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: deny\n---\nTest denied approval flow.\n",
     )
 }
 
@@ -626,7 +627,10 @@ fn custom_fixture_with_endpoint_and_primary_agent(
     let project = directory.path().join(".cookie-agent");
     fs::create_dir(&project).expect("project directory");
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
-    let config_text = r#"schema_version = 7
+    let config_text = r#"schema_version = 8
+
+[delegation]
+max_depth = 1
 
 [providers."custom.test"]
 source = "custom"
@@ -669,7 +673,7 @@ media = {}
         .expect("private agent");
     fs::write(
         agents.join("worker.md"),
-        "---\nschema: 1\ndescription: Worker test agent\nmode: subagent\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: []\n---\nWorker prompt.\n",
+        "---\nschema: 2\ndescription: Worker test agent\nmode: subagent\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: {}\n---\nWorker prompt.\n",
     )
     .expect("worker agent");
     fs::set_permissions(agents.join("worker.md"), fs::Permissions::from_mode(0o600))
@@ -740,7 +744,7 @@ fn synthetic_default_fixture(authored_agent: Option<&str>) -> Fixture {
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
     fs::write(
         project.join("config.toml"),
-        r#"schema_version = 7
+        r#"schema_version = 8
 
 [providers."custom.test"]
 source = "custom"
@@ -1170,6 +1174,100 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
             && rule.resource.as_str() == "*"
             && rule.effect == cookie_agent_protocol::PermissionEffect::Ask
     }));
+    for (action, resource, expected) in [
+        (
+            PermissionAction::Read,
+            ".env",
+            cookie_agent_protocol::PermissionEffect::Deny,
+        ),
+        (
+            PermissionAction::Read,
+            "nested/.env.local",
+            cookie_agent_protocol::PermissionEffect::Deny,
+        ),
+        (
+            PermissionAction::Read,
+            ".env.example",
+            cookie_agent_protocol::PermissionEffect::Allow,
+        ),
+        (
+            PermissionAction::Read,
+            "nested/.env.example",
+            cookie_agent_protocol::PermissionEffect::Allow,
+        ),
+        (
+            PermissionAction::Read,
+            "store-v3.json",
+            cookie_agent_protocol::PermissionEffect::Deny,
+        ),
+        (
+            PermissionAction::Read,
+            "nested/token-v1",
+            cookie_agent_protocol::PermissionEffect::Deny,
+        ),
+        (
+            PermissionAction::Read,
+            "id_ed25519",
+            cookie_agent_protocol::PermissionEffect::Deny,
+        ),
+        (
+            PermissionAction::Read,
+            ".netrc",
+            cookie_agent_protocol::PermissionEffect::Deny,
+        ),
+        (
+            PermissionAction::Read,
+            "application_default_credentials.json",
+            cookie_agent_protocol::PermissionEffect::Deny,
+        ),
+        (
+            PermissionAction::Read,
+            "src/lib.rs",
+            cookie_agent_protocol::PermissionEffect::Allow,
+        ),
+        (
+            PermissionAction::Grep,
+            "*",
+            cookie_agent_protocol::PermissionEffect::Deny,
+        ),
+        (
+            PermissionAction::Glob,
+            "*",
+            cookie_agent_protocol::PermissionEffect::Deny,
+        ),
+        (
+            PermissionAction::Write,
+            "src/lib.rs",
+            cookie_agent_protocol::PermissionEffect::Ask,
+        ),
+        (
+            PermissionAction::Bash,
+            "cargo test",
+            cookie_agent_protocol::PermissionEffect::Ask,
+        ),
+        (
+            PermissionAction::Delegate,
+            "worker",
+            cookie_agent_protocol::PermissionEffect::Ask,
+        ),
+        (
+            PermissionAction::ExternalDirectory,
+            "/tmp",
+            cookie_agent_protocol::PermissionEffect::Ask,
+        ),
+    ] {
+        assert_eq!(
+            crate::permissions::effective_permission(
+                &frozen,
+                action,
+                resource,
+                fixture.engine.inner.store.cwd(),
+            )
+            .0,
+            expected,
+            "{action:?} {resource}"
+        );
+    }
 }
 
 #[test]
@@ -1193,7 +1291,7 @@ fn runtime_snapshot_model_descriptor_preserves_compiled_variant_order() {
 #[test]
 fn synthetic_default_replaces_no_authored_agent_and_unrunnable_authored_agents_only() {
     let unrunnable = synthetic_default_fixture(Some(
-        "---\nschema: 1\ndescription: Unrunnable primary\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/missing\", variant: base }]\ntools: []\npermissions: []\n---\nUnrunnable prompt.\n",
+        "---\nschema: 2\ndescription: Unrunnable primary\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/missing\", variant: base }]\ntools: []\npermissions: {}\n---\nUnrunnable prompt.\n",
     ));
     let snapshot = unrunnable
         .engine
@@ -2732,7 +2830,7 @@ async fn scripted_parent_delegate_child_run_completes_and_reopens() {
 }
 
 #[tokio::test]
-async fn root_run_and_schema_eight_delegation_reservation_reopen_exactly() {
+async fn root_run_and_schema_nine_delegation_reservation_reopen_exactly() {
     let (fixture, selection) = custom_fixture();
     let session = fixture
         .engine
@@ -2812,7 +2910,7 @@ async fn root_run_and_schema_eight_delegation_reservation_reopen_exactly() {
     assert_eq!(schema["title"], "StoredDelegationJournalRecord");
     assert_eq!(
         schema["properties"]["delegation_journal_schema_version"]["const"],
-        8
+        9
     );
     assert_eq!(schema["additionalProperties"], false);
     let required_keys = |value: &serde_json::Value| {

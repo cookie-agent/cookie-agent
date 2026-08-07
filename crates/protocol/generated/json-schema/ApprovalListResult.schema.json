@@ -451,18 +451,18 @@
     "MatchedPermissionRule": {
       "type": "object",
       "properties": {
+        "action": {
+          "$ref": "#/$defs/PermissionAction"
+        },
         "effect": {
           "$ref": "#/$defs/PermissionEffect"
         },
-        "rule_id": {
-          "description": "Stable lowercase machine-readable code.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "maxLength": 128,
+        "resource": {
+          "description": "Current wildcard grammar: '*' matches any characters, '?' matches one character, and the exact '${workspace_dir}' expression is allowed; controls, globstar, escapes, classes, and every other brace form are forbidden. Runtime deserialization additionally enforces a maximum of 4096 UTF-8 bytes; x-cookie-agent-maxUtf8Bytes records that byte limit because JSON Schema maxLength counts Unicode code points.",
+          "type": "string",
           "minLength": 1,
-          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+          "pattern": "^(?!.*\\*\\*)(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$",
+          "x-cookie-agent-maxUtf8Bytes": 4096
         },
         "source_layer": {
           "description": "Stable lowercase machine-readable code.",
@@ -474,8 +474,9 @@
       },
       "additionalProperties": false,
       "required": [
-        "rule_id",
         "source_layer",
+        "action",
+        "resource",
         "effect"
       ]
     },

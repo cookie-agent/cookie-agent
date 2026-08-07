@@ -14,16 +14,18 @@ the implemented npm-family/provider/auth baseline is described in
 
 | Surface | Version |
 |---|---:|
-| Runtime configuration | 7 |
-| Agent document | 1 |
-| Protocol, events, session JSONL/metadata, delegation journal | 8 |
-| Runtime snapshot | 1 |
+| Runtime configuration | 8 |
+| Agent document | 2 |
+| Protocol | 8 |
+| Events, session JSONL, delegation journal | 9 |
+| Session metadata | 9 |
+| Runtime snapshot | 2 |
 | Catalog cache | 2 |
 | Provider store | 3 |
 | Family recipe registry | 1 |
 | Project model-snapshot manifest | 1 |
 
-Earlier project formats are rejected. There is no schema-6 or protocol-7
+Earlier project formats are rejected. There is no schema-7 or protocol-7
 migration.
 
 ## Dynamic catalog
@@ -42,7 +44,7 @@ single-link files handled no-follow and atomically. The metadata records stale/
 fallback state, safe last error, ETag, timestamps, revision, and quarantine
 counts.
 
-## Configuration schema 7
+## Configuration schema 8
 
 There is one top-level `providers` map; nonempty entries use
 `[providers.<id>]`:
@@ -71,7 +73,11 @@ same-definition authored auth remains invalid and cannot fall through to store.
 bootstrap configuration:
 
 ```toml
-schema_version = 7
+schema_version = 8
+
+[delegation]
+max_depth = 3
+# max_concurrency = 4 # omitted means unlimited
 
 [server]
 host = "127.0.0.1"
@@ -91,7 +97,7 @@ engine supplies reserved built-in coding agent `default`.
 The following is a separate nonempty example:
 
 ```toml
-schema_version = 7
+schema_version = 8
 
 [providers.openai]
 source = "models_dev"

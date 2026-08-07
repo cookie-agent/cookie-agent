@@ -115,6 +115,7 @@ impl Engine {
                 &active.policy.agent,
                 &operation,
                 &policy_labels,
+                engine.inner.store.cwd(),
             );
             if permission.effect != cookie_agent_protocol::PermissionEffect::Allow {
                 if permission.effect == cookie_agent_protocol::PermissionEffect::Ask {

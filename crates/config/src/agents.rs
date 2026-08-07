@@ -1,15 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use cookie_agent_identity::{AgentId, ConfiguredVariantRef, ModelKey, SafeCode, WildcardPattern};
+use cookie_agent_identity::{AgentId, ConfiguredVariantRef, ModelKey, WildcardPattern};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{AgentDocument, ConfigError};
 
-const AGENT_SCHEMA: u32 = 1;
+const AGENT_SCHEMA: u32 = 2;
 const MAX_LIST: usize = 256;
 pub const BUILT_IN_DEFAULT_AGENT_ID: &str = "default";
 
-/// Exact schema-1 agent marker.
+/// Exact schema-2 agent marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct AgentSchemaVersion;
 
@@ -22,12 +23,12 @@ impl<'de> Deserialize<'de> for AgentSchemaVersion {
         if value == AGENT_SCHEMA {
             Ok(Self)
         } else {
-            Err(serde::de::Error::custom("agent schema must be exactly 1"))
+            Err(serde::de::Error::custom("agent schema must be exactly 2"))
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentMode {
     Primary,
@@ -46,7 +47,7 @@ pub enum ToolName {
     Glob,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionAction {
     Read,
@@ -69,17 +70,113 @@ pub enum PermissionEffect {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionRule {
-    pub id: SafeCode,
     pub action: PermissionAction,
     pub resource: WildcardPattern,
     pub effect: PermissionEffect,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentDelegationConfig {
-    pub agents: Vec<AgentId>,
-    pub max_depth: u32,
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum PermissionValue {
+    Effect(PermissionEffect),
+    Resources(IndexMap<WildcardPattern, PermissionEffect>),
+}
+
+impl<'de> Deserialize<'de> for PermissionValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = PermissionValue;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a permission effect or ordered resource map")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let effect = match value {
+                    "allow" => PermissionEffect::Allow,
+                    "ask" => PermissionEffect::Ask,
+                    "deny" => PermissionEffect::Deny,
+                    _ => return Err(E::custom("invalid permission effect")),
+                };
+                Ok(PermissionValue::Effect(effect))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut resources = IndexMap::new();
+                while let Some((resource, effect)) =
+                    map.next_entry::<WildcardPattern, PermissionEffect>()?
+                {
+                    if resources.insert(resource, effect).is_some() {
+                        return Err(serde::de::Error::custom("duplicate permission resource"));
+                    }
+                }
+                Ok(PermissionValue::Resources(resources))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+fn deserialize_permissions<'de, D>(
+    deserializer: D,
+) -> Result<IndexMap<PermissionAction, PermissionValue>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Visitor;
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = IndexMap<PermissionAction, PermissionValue>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("an ordered action permission map")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut permissions = IndexMap::new();
+            while let Some((action, value)) =
+                map.next_entry::<PermissionAction, PermissionValue>()?
+            {
+                if permissions.insert(action, value).is_some() {
+                    return Err(serde::de::Error::custom("duplicate permission action"));
+                }
+            }
+            Ok(permissions)
+        }
+    }
+    deserializer.deserialize_map(Visitor)
+}
+
+impl PermissionValue {
+    pub fn rules(&self, action: PermissionAction) -> Vec<PermissionRule> {
+        match self {
+            Self::Effect(effect) => vec![PermissionRule {
+                action,
+                resource: WildcardPattern::new("*").expect("static wildcard"),
+                effect: *effect,
+            }],
+            Self::Resources(resources) => resources
+                .iter()
+                .map(|(resource, effect)| PermissionRule {
+                    action,
+                    resource: resource.clone(),
+                    effect: *effect,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -98,8 +195,8 @@ pub struct AgentFrontmatter {
     pub enabled: bool,
     pub model_fallback: Vec<AgentModelFallback>,
     pub tools: Vec<ToolName>,
-    pub permissions: Vec<PermissionRule>,
-    pub delegation: Option<AgentDelegationConfig>,
+    #[serde(deserialize_with = "deserialize_permissions")]
+    pub permissions: IndexMap<PermissionAction, PermissionValue>,
 }
 
 /// Validated authored-agent input for downstream runtime materialization.
@@ -197,11 +294,7 @@ fn validate_agent_document(
     if matches!(frontmatter.mode, AgentMode::Primary) && frontmatter.model_fallback.is_empty() {
         return Err(ConfigError::PrimaryFallback(document.id.clone()));
     }
-    for length in [
-        frontmatter.model_fallback.len(),
-        frontmatter.tools.len(),
-        frontmatter.permissions.len(),
-    ] {
+    for length in [frontmatter.model_fallback.len(), frontmatter.tools.len()] {
         if length > MAX_LIST {
             return Err(ConfigError::AgentLimit(document.id.clone()));
         }
@@ -218,22 +311,30 @@ fn validate_agent_document(
     if frontmatter.tools.iter().collect::<BTreeSet<_>>().len() != frontmatter.tools.len() {
         return Err(ConfigError::DuplicateTool(document.id.clone()));
     }
-    let mut rules = BTreeSet::new();
-    for rule in &frontmatter.permissions {
-        if !rules.insert(rule.id.clone()) {
-            return Err(ConfigError::PermissionRule(document.id.clone()));
-        }
+    let permission_rules = frontmatter
+        .permissions
+        .values()
+        .map(|value| match value {
+            PermissionValue::Effect(_) => 1,
+            PermissionValue::Resources(resources) => resources.len(),
+        })
+        .sum::<usize>();
+    if permission_rules > MAX_LIST {
+        return Err(ConfigError::AgentLimit(document.id.clone()));
     }
-    if let Some(delegation) = &frontmatter.delegation {
-        if delegation.agents.is_empty()
-            || delegation.agents.len() > MAX_LIST
-            || delegation.agents.iter().collect::<BTreeSet<_>>().len() != delegation.agents.len()
-        {
-            return Err(ConfigError::Delegation(document.id.clone()));
-        }
-        for target in &delegation.agents {
+    if let Some(delegate) = frontmatter.permissions.get(&PermissionAction::Delegate) {
+        let rules = delegate.rules(PermissionAction::Delegate);
+        for rule in rules {
+            if rule.effect == PermissionEffect::Deny {
+                if rule.resource.as_str() == "*" && matches!(delegate, PermissionValue::Effect(_)) {
+                    continue;
+                }
+                return Err(ConfigError::Delegation(document.id.clone()));
+            }
+            let target = AgentId::new(rule.resource.as_str())
+                .map_err(|_| ConfigError::Delegation(document.id.clone()))?;
             let target_document =
-                all.get(target)
+                all.get(&target)
                     .ok_or_else(|| ConfigError::UnknownDelegationTarget {
                         agent: document.id.clone(),
                         target: target.clone(),
@@ -249,6 +350,18 @@ fn validate_agent_document(
                     target: target.clone(),
                 });
             }
+        }
+    }
+    for (action, value) in &frontmatter.permissions {
+        if !matches!(
+            action,
+            PermissionAction::Read | PermissionAction::Write | PermissionAction::ExternalDirectory
+        ) && value.rules(*action).iter().any(|rule| {
+            rule.resource
+                .as_str()
+                .contains(WildcardPattern::WORKSPACE_DIR_EXPRESSION)
+        }) {
+            return Err(ConfigError::AgentPermissionExpression(document.id.clone()));
         }
     }
     Ok(())

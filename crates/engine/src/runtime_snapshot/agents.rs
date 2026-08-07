@@ -3,12 +3,13 @@ use std::collections::BTreeMap;
 use cookie_agent_config::{
     AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentMode as ConfigAgentMode,
     AgentModelFallback, AgentRegistry as ConfigAgentRegistry, AgentSchemaVersion,
-    BUILT_IN_DEFAULT_AGENT_ID, PermissionAction, PermissionEffect, PermissionRule,
+    BUILT_IN_DEFAULT_AGENT_ID, PermissionAction, PermissionEffect, PermissionValue,
     ToolName as ConfigToolName,
 };
-use cookie_agent_identity::{AgentId as IdentityAgentId, SafeCode, WildcardPattern};
+use cookie_agent_identity::{AgentId as IdentityAgentId, WildcardPattern};
 use cookie_agent_models::{CompiledModelRuntime, compiler::CompiledModelStatus};
 use cookie_agent_protocol::{AgentDescriptor, AgentId, AgentMode, ModelSelection, ToolName};
+use indexmap::IndexMap;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
@@ -97,14 +98,7 @@ impl AgentRegistry {
                     .copied()
                     .map(wire_tool)
                     .collect(),
-                delegation_targets: agent.document.frontmatter.delegation.as_ref().map_or_else(
-                    Vec::new,
-                    |delegation| {
-                        let mut targets = delegation.agents.clone();
-                        targets.sort();
-                        targets
-                    },
-                ),
+                delegation_targets: delegation_targets(&agent.document.frontmatter.permissions),
             })
             .collect();
         Ok(Self {
@@ -156,7 +150,6 @@ fn built_in_default_document(selection: &ModelSelection) -> Result<AgentDocument
             ConfigToolName::Bash,
         ],
         permissions: built_in_default_permissions()?,
-        delegation: None,
     };
     let document_fingerprint = fingerprint("cookie-agent/built-in-default-document/v1", selection)?;
     let prompt_fingerprint = fingerprint("cookie-agent/system-prompt/v1", &body)?;
@@ -182,159 +175,89 @@ fn fingerprint(
         .map_err(|_| EngineError::RuntimeCompileFailed)
 }
 
-fn built_in_default_permissions() -> Result<Vec<PermissionRule>, EngineError> {
+fn built_in_default_permissions() -> Result<IndexMap<PermissionAction, PermissionValue>, EngineError>
+{
     let definitions = [
+        (PermissionAction::Read, "*?*", PermissionEffect::Allow),
+        (PermissionAction::Grep, "*", PermissionEffect::Deny),
+        (PermissionAction::Glob, "*", PermissionEffect::Deny),
+        (PermissionAction::Write, "*", PermissionEffect::Ask),
+        (PermissionAction::Bash, "*", PermissionEffect::Ask),
+        (PermissionAction::Delegate, "*", PermissionEffect::Ask),
         (
-            "allow-workspace-read",
-            PermissionAction::Read,
-            "*",
-            PermissionEffect::Allow,
-        ),
-        (
-            "allow-workspace-search",
-            PermissionAction::Grep,
-            "*",
-            PermissionEffect::Allow,
-        ),
-        (
-            "allow-workspace-glob",
-            PermissionAction::Glob,
-            "*",
-            PermissionEffect::Allow,
-        ),
-        (
-            "ask-write",
-            PermissionAction::Write,
-            "*",
-            PermissionEffect::Ask,
-        ),
-        (
-            "ask-bash",
-            PermissionAction::Bash,
-            "*",
-            PermissionEffect::Ask,
-        ),
-        (
-            "ask-delegate",
-            PermissionAction::Delegate,
-            "*",
-            PermissionEffect::Ask,
-        ),
-        (
-            "ask-external-directory",
             PermissionAction::ExternalDirectory,
             "*",
             PermissionEffect::Ask,
         ),
+        (PermissionAction::Read, ".env", PermissionEffect::Deny),
+        (PermissionAction::Read, "*/.env", PermissionEffect::Deny),
+        (PermissionAction::Read, ".env.*", PermissionEffect::Deny),
+        (PermissionAction::Read, "*/.env.*", PermissionEffect::Deny),
         (
-            "deny-read-root-dotenv",
-            PermissionAction::Read,
-            ".env",
-            PermissionEffect::Deny,
-        ),
-        (
-            "deny-read-nested-dotenv",
-            PermissionAction::Read,
-            "*/.env",
-            PermissionEffect::Deny,
-        ),
-        (
-            "deny-read-root-dotenv-variants",
-            PermissionAction::Read,
-            ".env.*",
-            PermissionEffect::Deny,
-        ),
-        (
-            "deny-read-nested-dotenv-variants",
-            PermissionAction::Read,
-            "*/.env.*",
-            PermissionEffect::Deny,
-        ),
-        (
-            "allow-read-root-dotenv-example",
             PermissionAction::Read,
             ".env.example",
             PermissionEffect::Allow,
         ),
         (
-            "allow-read-nested-dotenv-example",
             PermissionAction::Read,
             "*/.env.example",
             PermissionEffect::Allow,
         ),
         (
-            "deny-read-root-credential-store",
             PermissionAction::Read,
             "store-v3.json",
             PermissionEffect::Deny,
         ),
         (
-            "deny-read-nested-credential-store",
             PermissionAction::Read,
             "*/store-v3.json",
             PermissionEffect::Deny,
         ),
+        (PermissionAction::Read, "token-v1", PermissionEffect::Deny),
+        (PermissionAction::Read, "*/token-v1", PermissionEffect::Deny),
+        (PermissionAction::Read, "id_*", PermissionEffect::Deny),
+        (PermissionAction::Read, "*/id_*", PermissionEffect::Deny),
+        (PermissionAction::Read, ".netrc", PermissionEffect::Deny),
+        (PermissionAction::Read, "*/.netrc", PermissionEffect::Deny),
         (
-            "deny-read-root-daemon-token",
-            PermissionAction::Read,
-            "token-v1",
-            PermissionEffect::Deny,
-        ),
-        (
-            "deny-read-nested-daemon-token",
-            PermissionAction::Read,
-            "*/token-v1",
-            PermissionEffect::Deny,
-        ),
-        (
-            "deny-read-root-private-keys",
-            PermissionAction::Read,
-            "id_*",
-            PermissionEffect::Deny,
-        ),
-        (
-            "deny-read-nested-private-keys",
-            PermissionAction::Read,
-            "*/id_*",
-            PermissionEffect::Deny,
-        ),
-        (
-            "deny-read-root-netrc",
-            PermissionAction::Read,
-            ".netrc",
-            PermissionEffect::Deny,
-        ),
-        (
-            "deny-read-nested-netrc",
-            PermissionAction::Read,
-            "*/.netrc",
-            PermissionEffect::Deny,
-        ),
-        (
-            "deny-read-root-cloud-credentials",
             PermissionAction::Read,
             "application_default_credentials.json",
             PermissionEffect::Deny,
         ),
         (
-            "deny-read-nested-cloud-credentials",
             PermissionAction::Read,
             "*/application_default_credentials.json",
             PermissionEffect::Deny,
         ),
     ];
-    definitions
-        .into_iter()
-        .map(|(id, action, resource, effect)| {
-            Ok(PermissionRule {
-                id: SafeCode::new(id).map_err(|_| EngineError::RuntimeCompileFailed)?,
-                action,
-                resource: WildcardPattern::new(resource)
-                    .map_err(|_| EngineError::RuntimeCompileFailed)?,
-                effect,
-            })
-        })
-        .collect()
+    let mut permissions = IndexMap::new();
+    for (action, resource, effect) in definitions {
+        let entry = permissions
+            .entry(action)
+            .or_insert_with(|| PermissionValue::Resources(IndexMap::new()));
+        let PermissionValue::Resources(resources) = entry else {
+            unreachable!("synthetic permissions use map form")
+        };
+        resources.insert(
+            WildcardPattern::new(resource).map_err(|_| EngineError::RuntimeCompileFailed)?,
+            effect,
+        );
+    }
+    Ok(permissions)
+}
+
+fn delegation_targets(permissions: &IndexMap<PermissionAction, PermissionValue>) -> Vec<AgentId> {
+    let Some(PermissionValue::Resources(resources)) = permissions.get(&PermissionAction::Delegate)
+    else {
+        return Vec::new();
+    };
+    let mut targets = resources
+        .iter()
+        .filter(|(_, effect)| **effect != PermissionEffect::Deny)
+        .filter_map(|(resource, _)| AgentId::new(resource.as_str()).ok())
+        .collect::<Vec<_>>();
+    targets.sort();
+    targets
 }
 
 fn selection_available(models: &CompiledModelRuntime, selection: &ModelSelection) -> bool {

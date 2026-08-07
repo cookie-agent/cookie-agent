@@ -164,16 +164,17 @@ pub struct WildcardPattern(String);
 
 impl WildcardPattern {
     pub const MAX_BYTES: usize = 4096;
+    pub const WORKSPACE_DIR_EXPRESSION: &'static str = "${workspace_dir}";
     pub const JSON_SCHEMA_MAX_UTF8_BYTES_EXTENSION: &'static str = "x-cookie-agent-maxUtf8Bytes";
-    pub const JSON_SCHEMA_PATTERN: &'static str =
-        "^(?!.*\\*\\*)[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}]+$";
+    pub const JSON_SCHEMA_PATTERN: &'static str = "^(?!.*\\*\\*)(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$";
 
     pub fn new(value: impl Into<String>) -> Result<Self, IdentityError> {
         let value = value.into();
+        let without_workspace_expression = value.replace(Self::WORKSPACE_DIR_EXPRESSION, "");
         if (1..=Self::MAX_BYTES).contains(&value.len())
             && !value.chars().any(char::is_control)
             && !value.contains("**")
-            && !value
+            && !without_workspace_expression
                 .chars()
                 .any(|character| matches!(character, '\\' | '[' | ']' | '{' | '}'))
         {
@@ -256,7 +257,7 @@ shared_permission_string_impl!(
         "minLength": 1,
         "pattern": WildcardPattern::JSON_SCHEMA_PATTERN,
         "x-cookie-agent-maxUtf8Bytes": WildcardPattern::MAX_BYTES,
-        "description": "Current wildcard grammar: '*' matches any characters, '?' matches one character, and controls, globstar, escapes, classes, and braces are forbidden. Runtime deserialization additionally enforces a maximum of 4096 UTF-8 bytes; x-cookie-agent-maxUtf8Bytes records that byte limit because JSON Schema maxLength counts Unicode code points."
+        "description": "Current wildcard grammar: '*' matches any characters, '?' matches one character, and the exact '${workspace_dir}' expression is allowed; controls, globstar, escapes, classes, and every other brace form are forbidden. Runtime deserialization additionally enforces a maximum of 4096 UTF-8 bytes; x-cookie-agent-maxUtf8Bytes records that byte limit because JSON Schema maxLength counts Unicode code points."
     })
 );
 string_identity!(
@@ -777,10 +778,26 @@ mod tests {
         assert!(SafeCode::new("a".repeat(128)).is_ok());
         assert!(SafeCode::new("a".repeat(129)).is_err());
 
-        for pattern in ["*", "file?.rs", "literal(value)", "資料/?"] {
+        for pattern in [
+            "*",
+            "file?.rs",
+            "literal(value)",
+            "資料/?",
+            "${workspace_dir}/src/*",
+        ] {
             assert!(WildcardPattern::new(pattern).is_ok(), "{pattern:?}");
         }
-        for pattern in ["", "**", "a**b", r"a\\*", "[ab]", "{a,b}", "a\n"] {
+        for pattern in [
+            "",
+            "**",
+            "a**b",
+            r"a\\*",
+            "[ab]",
+            "{a,b}",
+            "${foo}/src/*",
+            "${workspace_dir}/src/{x}",
+            "a\n",
+        ] {
             assert!(WildcardPattern::new(pattern).is_err(), "{pattern:?}");
         }
         assert!(WildcardPattern::new("a".repeat(4096)).is_ok());

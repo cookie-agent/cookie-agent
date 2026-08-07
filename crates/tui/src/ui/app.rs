@@ -4962,12 +4962,10 @@ pub(super) fn approval_content(approval: &ApprovalState) -> String {
             for (candidate_index, candidate) in evaluation.trace.candidates.iter().enumerate() {
                 writeln!(
                     content,
-                    "      {}. rule id: {} · source layer: {} · effect: {:?}",
+                    "      {}. action: {:?} · resource: {} · source layer: {} · effect: {:?}",
                     candidate_index + 1,
-                    candidate
-                        .rule_id
-                        .as_ref()
-                        .map_or("<none>", |id| id.as_str()),
+                    candidate.action,
+                    candidate.resource,
                     candidate.source_layer,
                     candidate.effect
                 )

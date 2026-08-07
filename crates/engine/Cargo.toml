@@ -21,6 +21,7 @@ cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
 crc32fast.workspace = true
 futures-util.workspace = true
 image = { version = "0.25.8", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+indexmap.workspace = true
 jiff.workspace = true
 lopdf = { version = "0.44.0", default-features = false }
 oven-sdk.workspace = true

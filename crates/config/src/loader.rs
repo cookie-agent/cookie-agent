@@ -11,8 +11,8 @@ use serde::Deserialize as _;
 
 use crate::{
     AgentDocument, AgentDocumentSource, AgentRegistry, ApprovalConfig, ConfigError,
-    ConfigSchemaVersion, ContextCompactionConfig, RuntimeConfig, ServerConfig, SessionTitleConfig,
-    ToolOutputConfig,
+    ConfigSchemaVersion, ContextCompactionConfig, DelegationConfig, RuntimeConfig, ServerConfig,
+    SessionTitleConfig, ToolOutputConfig,
     agent_document::parse_agent,
     runtime::{RawRuntimeLayer, apply_settings, validate_runtime},
     secure_fs::{
@@ -68,6 +68,7 @@ pub fn load_from_roots(
         approval: ApprovalConfig::default(),
         context_compaction: ContextCompactionConfig::default(),
         session_title: SessionTitleConfig::default(),
+        delegation: DelegationConfig::default(),
         providers: BTreeMap::new(),
     };
     let mut agents = BTreeMap::new();
@@ -153,6 +154,7 @@ fn decode_runtime_layer(value: &mut toml::Value) -> Result<RawRuntimeLayer, Conf
         "approval",
         "context_compaction",
         "session_title",
+        "delegation",
         "providers",
     ];
     let table = value

@@ -41,6 +41,10 @@ pub enum ConfigError {
     ReservedAgentId(AgentId),
     #[error("invalid frontmatter for agent `{0}`")]
     AgentFrontmatter(AgentId),
+    #[error(
+        "agent `{0}` permission resources support only `${{workspace_dir}}`, and only for read, write, or external_directory"
+    )]
+    AgentPermissionExpression(AgentId),
     #[error("agent YAML resource limit exceeded")]
     AgentYamlLimit,
     #[error("agent `{0}` has an empty system prompt")]
@@ -53,8 +57,6 @@ pub enum ConfigError {
     PrimaryFallback(AgentId),
     #[error("agent `{0}` lists a tool more than once")]
     DuplicateTool(AgentId),
-    #[error("agent `{0}` has an invalid or duplicate permission rule")]
-    PermissionRule(AgentId),
     #[error("agent `{0}` has invalid delegation")]
     Delegation(AgentId),
     #[error("agent `{agent}` delegates to unknown agent `{target}`")]

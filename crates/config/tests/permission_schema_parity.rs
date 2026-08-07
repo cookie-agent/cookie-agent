@@ -1,22 +1,24 @@
 use std::fs;
 
-use cookie_agent_config::{AgentFrontmatter, ConfigError, PermissionRule, load_from_roots};
+use cookie_agent_config::{
+    AgentFrontmatter, ConfigError, PermissionAction, PermissionEffect, PermissionValue,
+    load_from_roots, simple_wildcard_match,
+};
 use tempfile::TempDir;
 
-fn config_rule(id: &str, resource: &str) -> Result<PermissionRule, serde_yaml::Error> {
-    let id = serde_json::to_string(id).unwrap();
-    let resource = serde_json::to_string(resource).unwrap();
-    serde_yaml::from_str(&format!(
-        "id: {id}\naction: read\nresource: {resource}\neffect: allow\n"
-    ))
+fn config_rule(resource: &str) -> Result<PermissionValue, serde_yaml::Error> {
+    let mut mapping = serde_yaml::Mapping::new();
+    mapping.insert(
+        serde_yaml::Value::String(resource.to_owned()),
+        serde_yaml::Value::String("allow".to_owned()),
+    );
+    serde_yaml::from_value(serde_yaml::Value::Mapping(mapping))
 }
 
 fn protocol_rule(
-    id: &str,
     resource: &str,
 ) -> Result<cookie_agent_protocol::PermissionRule, serde_json::Error> {
     serde_json::from_value(serde_json::json!({
-        "id": id,
         "action": "read",
         "resource": resource,
         "effect": "allow"
@@ -24,53 +26,52 @@ fn protocol_rule(
 }
 
 #[test]
-fn config_and_protocol_reject_the_same_adversarial_permission_values() {
+fn config_and_protocol_reject_the_same_adversarial_permission_resources() {
     let three_byte_boundary = "界".repeat(1365);
     let three_byte_overflow = "界".repeat(1366);
     let four_byte_boundary = "😀".repeat(1024);
     let four_byte_overflow = "😀".repeat(1025);
     let cases = [
-        ("allow-read", "*", true),
-        (&"a".repeat(128), "資料/?", true),
-        ("allow-read", three_byte_boundary.as_str(), true),
-        ("allow-read", three_byte_overflow.as_str(), false),
-        ("allow-read", four_byte_boundary.as_str(), true),
-        ("allow-read", four_byte_overflow.as_str(), false),
-        ("Allow-read", "*", false),
-        ("-allow-read", "*", false),
-        (&"a".repeat(129), "*", false),
-        ("allow-read", "", false),
-        ("allow-read", "**", false),
-        ("allow-read", "a**b", false),
-        ("allow-read", r"path\\*", false),
-        ("allow-read", "[ab]", false),
-        ("allow-read", "{a,b}", false),
-        ("allow-read", "line\nfeed", false),
-        ("allow-read", &"a".repeat(4097), false),
+        ("*", true),
+        ("資料/?", true),
+        ("${workspace_dir}/src/*", true),
+        ("${foo}/src/*", false),
+        (three_byte_boundary.as_str(), true),
+        (three_byte_overflow.as_str(), false),
+        (four_byte_boundary.as_str(), true),
+        (four_byte_overflow.as_str(), false),
+        ("", false),
+        ("**", false),
+        ("a**b", false),
+        (r"path\\*", false),
+        ("[ab]", false),
+        ("{a,b}", false),
+        ("line\nfeed", false),
+        (&"a".repeat(4097), false),
     ];
 
-    for (id, resource, expected) in cases {
-        let config_accepts = config_rule(id, resource).is_ok();
-        let protocol_accepts = protocol_rule(id, resource).is_ok();
+    for (resource, expected) in cases {
         assert_eq!(
-            config_accepts, expected,
-            "config id={id:?} resource={resource:?}"
+            config_rule(resource).is_ok(),
+            expected,
+            "config {resource:?}"
         );
         assert_eq!(
-            protocol_accepts, expected,
-            "protocol id={id:?} resource={resource:?}"
+            protocol_rule(resource).is_ok(),
+            expected,
+            "protocol {resource:?}"
         );
     }
 }
 
 #[test]
-fn invalid_safe_code_rule_id_fails_during_configuration_load() {
+fn old_rule_list_and_delegation_field_are_rejected() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join(".cookie-agent");
     fs::create_dir_all(root.join("agents")).unwrap();
     fs::write(
         root.join("agents/worker.md"),
-        "---\nschema: 1\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  - { id: Invalid, action: read, resource: \"*\", effect: allow }\n---\nWorker.\n",
+        "---\nschema: 2\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  - { id: old, action: read, resource: \"*\", effect: allow }\ndelegation: { agents: [worker], max_depth: 1 }\n---\nWorker.\n",
     )
     .unwrap();
     assert!(matches!(
@@ -80,12 +81,214 @@ fn invalid_safe_code_rule_id_fails_during_configuration_load() {
 }
 
 #[test]
-fn frontmatter_uses_shared_permission_types() {
+fn frontmatter_uses_action_keyed_ordered_permissions() {
     let frontmatter: AgentFrontmatter = serde_yaml::from_str(
-        "schema: 1\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  - { id: allow-read, action: read, resource: \"file?.rs\", effect: allow }\n",
+        "schema: 2\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read:\n    \"*\": ask\n    \"file?.rs\": allow\n  bash: deny\n",
     )
     .unwrap();
-    let rule = &frontmatter.permissions[0];
-    assert_eq!(rule.id.as_str(), "allow-read");
-    assert_eq!(rule.resource.as_str(), "file?.rs");
+    let read = frontmatter
+        .permissions
+        .get(&PermissionAction::Read)
+        .unwrap();
+    let PermissionValue::Resources(resources) = read else {
+        panic!("read should use resource map form");
+    };
+    assert_eq!(resources.get_index(0).unwrap().0.as_str(), "*");
+    assert_eq!(resources.get_index(1).unwrap().0.as_str(), "file?.rs");
+    assert_eq!(resources.get_index(1).unwrap().1, &PermissionEffect::Allow);
+    assert!(matches!(
+        frontmatter.permissions.get(&PermissionAction::Bash),
+        Some(PermissionValue::Effect(PermissionEffect::Deny))
+    ));
+}
+
+#[test]
+fn duplicate_action_and_resource_keys_are_rejected() {
+    let duplicate_action = "schema: 2\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read: allow\n  read: deny\n";
+    assert!(serde_yaml::from_str::<AgentFrontmatter>(duplicate_action).is_err());
+
+    let duplicate_resource = "schema: 2\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read:\n    \"*\": allow\n    \"*\": deny\n";
+    assert!(serde_yaml::from_str::<AgentFrontmatter>(duplicate_resource).is_err());
+}
+
+#[test]
+fn checked_workspace_agents_preserve_permission_outcomes() {
+    let project = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cookie-agent");
+    let loaded = load_from_roots(None, Some(&project)).expect("checked workspace agents");
+    assert_eq!(loaded.agents.len(), 5);
+    for (id, document) in &loaded.agents {
+        let cases = [
+            (PermissionAction::Read, ".env", PermissionEffect::Deny),
+            (
+                PermissionAction::Read,
+                "nested/.env.local",
+                PermissionEffect::Deny,
+            ),
+            (
+                PermissionAction::Read,
+                ".env.example",
+                PermissionEffect::Allow,
+            ),
+            (
+                PermissionAction::Read,
+                "nested/.env.example",
+                PermissionEffect::Allow,
+            ),
+            (
+                PermissionAction::Read,
+                "store-v3.json",
+                PermissionEffect::Deny,
+            ),
+            (
+                PermissionAction::Read,
+                "nested/token-v1",
+                PermissionEffect::Deny,
+            ),
+            (PermissionAction::Read, "id_ed25519", PermissionEffect::Deny),
+            (PermissionAction::Read, ".netrc", PermissionEffect::Deny),
+            (
+                PermissionAction::Read,
+                "application_default_credentials.json",
+                PermissionEffect::Deny,
+            ),
+            (
+                PermissionAction::Read,
+                "src/lib.rs",
+                PermissionEffect::Allow,
+            ),
+            (PermissionAction::Grep, "*", PermissionEffect::Deny),
+            (PermissionAction::Glob, "*", PermissionEffect::Deny),
+        ];
+        for (action, resource, expected) in cases {
+            assert_eq!(
+                configured_effect(&document.frontmatter, action, resource),
+                expected,
+                "{id} {action:?} {resource}"
+            );
+        }
+        if id.as_str() == "worker" {
+            assert!(
+                !document
+                    .frontmatter
+                    .permissions
+                    .contains_key(&PermissionAction::Delegate)
+            );
+        } else {
+            assert_eq!(
+                configured_effect(&document.frontmatter, PermissionAction::Delegate, "worker"),
+                PermissionEffect::Ask
+            );
+            for action in [
+                PermissionAction::Write,
+                PermissionAction::Bash,
+                PermissionAction::ExternalDirectory,
+            ] {
+                assert_eq!(
+                    configured_effect(&document.frontmatter, action, "operation"),
+                    PermissionEffect::Ask,
+                    "{id} {action:?}"
+                );
+            }
+        }
+    }
+}
+
+fn configured_effect(
+    frontmatter: &AgentFrontmatter,
+    action: PermissionAction,
+    resource: &str,
+) -> PermissionEffect {
+    let Some(value) = frontmatter.permissions.get(&action) else {
+        return PermissionEffect::Ask;
+    };
+    let name = resource.rsplit('/').next().unwrap_or(resource);
+    let protected_env = action == PermissionAction::Read
+        && (name == ".env" || name.starts_with(".env."))
+        && !name.ends_with(".example");
+    value
+        .rules(action)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, rule)| {
+            simple_wildcard_match(rule.resource.as_str(), resource)
+                && !(protected_env
+                    && rule.effect == PermissionEffect::Allow
+                    && rule.resource.as_str() != resource)
+        })
+        .max_by_key(|(index, rule)| {
+            let wildcards = rule
+                .resource
+                .as_str()
+                .chars()
+                .filter(|character| matches!(character, '*' | '?'))
+                .count();
+            let literals = rule.resource.as_str().chars().count() - wildcards;
+            (std::cmp::Reverse(wildcards), literals, *index)
+        })
+        .map_or(PermissionEffect::Ask, |(_, rule)| rule.effect)
+}
+
+#[test]
+fn workspace_dir_expression_is_action_scoped_and_unknown_expressions_are_rejected() {
+    for action in ["grep", "glob", "bash", "delegate"] {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join(".cookie-agent");
+        fs::create_dir_all(root.join("agents")).unwrap();
+        fs::write(root.join("config.toml"), "schema_version = 8\n").unwrap();
+        fs::write(
+            root.join("agents/worker.md"),
+            format!(
+                "---\nschema: 2\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  {action}:\n    \"${{workspace_dir}}/*\": allow\n---\nWorker.\n"
+            ),
+        )
+        .unwrap();
+        assert!(matches!(
+            load_from_roots(None, Some(&root)),
+            Err(ConfigError::AgentPermissionExpression(_))
+        ));
+    }
+
+    for resource in ["${foo}/src/*", "${workspace_dir/src/*"] {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join(".cookie-agent");
+        fs::create_dir_all(root.join("agents")).unwrap();
+        fs::write(root.join("config.toml"), "schema_version = 8\n").unwrap();
+        fs::write(
+            root.join("agents/worker.md"),
+            format!(
+                "---\nschema: 2\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read:\n    \"{resource}\": allow\n---\nWorker.\n"
+            ),
+        )
+        .unwrap();
+        assert!(matches!(
+            load_from_roots(None, Some(&root)),
+            Err(ConfigError::AgentPermissionExpression(_))
+        ));
+    }
+}
+
+#[test]
+fn workspace_dir_expression_is_portable_and_external_directory_is_accepted() {
+    let temp = TempDir::new().unwrap();
+    let document = "---\nschema: 2\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read:\n    \"${workspace_dir}/src/*\": allow\n  write:\n    \"${workspace_dir}/src/*\": allow\n  external_directory:\n    \"${workspace_dir}/*\": ask\n---\nWorker.\n";
+    let mut fingerprints = Vec::new();
+    for name in ["workspace-a", "workspace-b"] {
+        let root = temp.path().join(name).join(".cookie-agent");
+        fs::create_dir_all(root.join("agents")).unwrap();
+        fs::write(root.join("config.toml"), "schema_version = 8\n").unwrap();
+        fs::write(root.join("agents/worker.md"), document).unwrap();
+        let loaded = load_from_roots(None, Some(&root)).unwrap();
+        let worker = loaded.agents.values().next().unwrap();
+        fingerprints.push(worker.document_fingerprint.clone());
+        let read = worker
+            .frontmatter
+            .permissions
+            .get(&PermissionAction::Read)
+            .unwrap();
+        assert_eq!(
+            read.rules(PermissionAction::Read)[0].resource.as_str(),
+            "${workspace_dir}/src/*"
+        );
+    }
+    assert_eq!(fingerprints[0], fingerprints[1]);
 }

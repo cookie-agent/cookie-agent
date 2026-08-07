@@ -2,16 +2,16 @@
 
 **Status:** frozen current implementation contract
 
-**Required versions:** configuration schema 7; agent document schema 1;
-protocol 8; event schema 8; session JSONL 8; session metadata 9;
-delegation-journal schema 8; runtime snapshot schema 2; catalog cache schema 2;
+**Required versions:** configuration schema 8; agent document schema 2;
+protocol 8; event schema 9; session JSONL 9; session metadata 9;
+delegation-journal schema 9; runtime snapshot schema 2; catalog cache schema 2;
 provider store schema 3; family recipe registry schema 1; project model-snapshot
 manifest schema 1.
 
-Only those versions are accepted. Configuration schema 6, protocol/event/
-persistence 7, catalog cache 1, provider stores 1/2, and every unversioned or earlier replacement
-are rejected. There are no migrations, compatibility readers, aliases, or dual
-paths.
+Only those versions are accepted. Configuration schema 7, agent schema 1,
+event/session/delegation-journal schema 8, protocol/persistence 7, catalog cache
+1, provider stores 1/2, and every unversioned or earlier replacement are
+rejected. There are no migrations, compatibility readers, aliases, or dual paths.
 
 Session metadata schema 9 adds required `last_activity: Timestamp`. Its value is
 the timestamp of the latest event in the session JSONL log; a session containing
@@ -72,7 +72,7 @@ Family registry 1 is described in
 15. Model keys split at the first `/`; a model ID may contain `/`.
 16. Secrets never enter caches, revisions, snapshots, events, errors, logs,
     generated artifacts, session files, or TUI projections.
-17. **Empty setup is valid.** Config schema 7 permits `providers` to be omitted
+17. **Empty setup is valid.** Config schema 8 permits `providers` to be omitted
     or empty. When provider store 3 is also empty and no effective authored
     custom provider exists, startup publishes zero models/root-runnable agents
     and opens the TUI so `/connect` can bootstrap setup. Empty TOML does not hide
@@ -99,7 +99,7 @@ model manager ── atomic RuntimeSnapshot schema 1
     │
     ├── catalog manager ── fixed HTTPS / cache 2 / bootstrap
     ├── family registry 1 ── npm-family/protocol/auth compilers
-    ├── config loader ── schema 7 and agent schema 1
+    ├── config loader ── schema 8 and agent schema 2
     └── provider store 3 ── managed durable connections only
 ```
 
@@ -173,7 +173,7 @@ Runtime defaults and catalog/recipes are not TOML layers. The only authored
 layer precedence is:
 
 ```text
-user config schema 7 < exact-cwd workspace config schema 7
+user config schema 8 < exact-cwd workspace config schema 8
 user agent document < same-ID workspace agent document
 ```
 
@@ -181,6 +181,75 @@ A provider definition is atomic by `ProviderId`: if workspace TOML defines an
 ID, the entire user definition with that ID is discarded before parsing and
 semantic validation. Provider fields, model maps, overrides, variants, headers,
 auth values, and arrays never merge. Agent documents are likewise atomic.
+
+Agent schema 2 uses one ordered `permissions` map entry per
+`PermissionAction`. Each action value is either a bare `allow`, `ask`, or `deny`
+effect, or an ordered resource-pattern-to-effect map; the two forms cannot be
+ mixed for one action. Bare effects compile to resource `"*"`. Within an action,
+matching precedence is deterministic: more literal characters wins, then fewer
+`*`/`?` wildcards wins, and an exact tie is won by the later declaration. The
+universal catch-all `*` therefore carries the lowest specificity.
+`${workspace_dir}` is the only permission-resource expression. It is accepted
+only for `read`, `write`, and `external_directory`; grep/glob patterns, bash
+commands, delegation targets, unknown `${...}` expressions, and every other
+brace form reject. The token remains literal in configuration, frozen policy,
+serialization, and fingerprints. Its literal token characters count toward the
+specificity metric, so ordering is stable across machines and checkout paths.
+
+At permission evaluation, a resource pattern containing `${workspace_dir}` is
+expanded against the engine workspace root and matched against the resource's
+absolute path. A pattern without the token continues to match the existing
+workspace-relative label. The workspace root uses the same normalization choice
+as filesystem capability preparation: canonicalize the workspace directory
+when possible, otherwise retain it, then render path separators as `/`.
+Prepared read/write labels already derive from canonical capability paths;
+joining a relative label does not require the target to exist, which preserves
+absent-write behavior. External-directory labels are already absolute. An
+expanded workspace pattern therefore cannot match an outside path; such rules
+are accepted because config loading is checkout-independent, and simply do not
+match outside resources. Ordinary absolute `external_directory` patterns remain
+the policy mechanism for outside paths. There is no environment-variable
+expansion in permission patterns.
+
+Unmatched resources ask. Generic read allows do not override the built-in
+default ask for `.env`/`.env.*`; exact or more-specific authored rules decide
+naturally. A bare deny hides the corresponding tool. Map form hides it only
+when `"*": deny` exists and there are no non-deny exceptions. `tools` remains a
+separate allowlist and both gates apply.
+
+The standard `bash` tool reroutes simple commands by exact first token. Read
+commands are `ls`, `cat`, `head`, `tail`, `pwd`, `echo`, `find`, `grep`, `rg`,
+`wc`, `file`, `stat`, and `tree`; write commands are `rm`, `rmdir`, `mv`, `cp`,
+`mkdir`, `touch`, `chmod`, `chown`, `ln`, `tee`, and `truncate`. Every other
+first token, including `git`, remains `bash`. A single command or a pipeline
+whose segments are all plain commands joined only by `|` is simple, and each
+segment is classified independently. Lists (`&&`/`||`), semicolon-separated or
+background commands, `|&`, redirections, command substitutions (both `$(...)`
+and backticks), subshells/grouping, and command lines containing newlines are
+complex; every command resource parsed from such a line retains the `bash`
+action. The existing tree-sitter traversal emits every `command` node in source
+order for complex lines, so list/semicolon members and nested substitution
+commands remain separate bash resources even though none are rerouted.
+
+For a rerouted segment, policy labels are its bare file/path arguments rather
+than its command text, with one resource per path. Flags are omitted, `--`
+ends option handling, and known options that take a separate value omit that
+value. Command-specific positional syntax also omits grep/rg's pattern (unless
+`-e`/`-f` supplies it), find expressions, chmod's mode, and chown's owner/group.
+Shell expansions are not treated as bare paths; there is no glob expansion or
+filesystem existence check. If no file/path argument remains, the segment's raw
+subcommand text is the single label. Approval traces and inspector/event views
+therefore expose the rerouted `read`/`write` action with the same normalized
+labels used for policy matching.
+
+The removed agent `delegation` field has no decoder. Delegation targets are the
+keys of the `delegate` permission resource map, whose target effects are
+`allow` or `ask`; targets must resolve to enabled `subagent`/`all` agents.
+Runtime schema 8 owns `[delegation]`: `max_depth` defaults to 3 and
+`max_concurrency` defaults to unlimited. A frozen child ceiling is the parent
+ceiling bounded by runtime `max_depth`. Admission serializes the count of
+delegated sessions in the root tree that currently have an active run; reaching
+`max_concurrency` denies delegation and names the configured limit.
 
 Managed `source = "models_dev"` definitions may directly author credentials in
 either user or workspace TOML using `api_key` or typed `auth_override`. The
@@ -580,7 +649,7 @@ Typed failures leave history readable and never substitute another model:
 Startup order is frozen and must not be reordered:
 
 1. **Schema 7 and agents:** securely open roots, load family registry 1, then
-   strictly load atomic config schema 7 and agent documents.
+   strictly load atomic config schema 8 and agent schema 2 documents.
 2. **Catalog:** securely open cache schema 2, perform the bounded identity-only
    network request, then select network, validated cache, or bundled bootstrap
    and apply record quarantine.
@@ -655,8 +724,9 @@ fallbacks remain unresolved and unchanged.
 
 The built-in `default` agent has source `built_in`, mode `primary`, the standard
 coding tools (`read`, `grep`, `glob`, `write`, `edit`, `bash`), no delegation
-targets, and authored-style ordered permission rules. Workspace read/search/glob
-are allowed; write/edit, bash, delegate, and external-directory access ask;
+targets, and the same action-keyed ordered permission map as authored agents.
+Workspace reads are allowed and grep/glob enumeration is denied; write/edit,
+bash, delegate, and external-directory access ask;
 reads of `.env` variants, `store-v3.json`, `token-v1`, `id_*`, `.netrc`, and
 `application_default_credentials.json` are denied, with the existing exact
 `.env.example` read exceptions. `default` is a reserved authored-agent ID.

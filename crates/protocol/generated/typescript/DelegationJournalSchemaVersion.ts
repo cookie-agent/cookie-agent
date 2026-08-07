@@ -3,4 +3,4 @@
 /**
  *The exact delegation-journal schema version.
  */
-export type DelegationJournalSchemaVersion = 8;
+export type DelegationJournalSchemaVersion = 9;

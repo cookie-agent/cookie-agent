@@ -59,6 +59,7 @@ pub(crate) fn freeze_root_agent_policy(
     registry: Arc<AgentRegistry>,
     runtime: Arc<PublishedRuntime>,
     selection: &protocol::ModelSelection,
+    max_depth: u32,
     result_limits: ResultLimits,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if !agent.runnable_as_root {
@@ -94,7 +95,7 @@ pub(crate) fn freeze_root_agent_policy(
         runtime,
         selections,
         selection,
-        None,
+        Some(max_depth),
         result_limits,
     )
 }
@@ -190,16 +191,10 @@ fn freeze_with_bindings(
         return Err(EngineError::NoRunnableModel);
     }
     let document = &agent.document;
-    let delegation = document.frontmatter.delegation.as_ref().map(|delegation| {
-        let mut targets = delegation.agents.clone();
-        targets.sort();
+    let delegation = delegation_targets(&document.frontmatter.permissions).map(|targets| {
         protocol::FrozenDelegationPolicy {
             targets,
-            max_depth: delegation.max_depth,
-            effective_depth_ceiling: inherited_depth_ceiling
-                .map_or(delegation.max_depth, |parent| {
-                    parent.min(delegation.max_depth)
-                }),
+            effective_depth_ceiling: inherited_depth_ceiling.unwrap_or_default(),
         }
     });
     let snapshot = protocol::AgentSnapshot {
@@ -222,7 +217,8 @@ fn freeze_with_bindings(
             .frontmatter
             .permissions
             .iter()
-            .map(wire_permission)
+            .flat_map(|(action, value)| value.rules(*action))
+            .map(|rule| wire_permission(&rule))
             .collect::<Result<Vec<_>, _>>()?,
         delegation,
         fallback_chain: bindings.clone(),
@@ -338,8 +334,6 @@ fn wire_permission(
     rule: &cookie_agent_config::PermissionRule,
 ) -> Result<protocol::PermissionRule, EngineError> {
     Ok(protocol::PermissionRule {
-        id: protocol::SafeCode::new(rule.id.as_str())
-            .map_err(|_| EngineError::RuntimeCompileFailed)?,
         action: match rule.action {
             cookie_agent_config::PermissionAction::Read => protocol::PermissionAction::Read,
             cookie_agent_config::PermissionAction::Write => protocol::PermissionAction::Write,
@@ -359,6 +353,25 @@ fn wire_permission(
             cookie_agent_config::PermissionEffect::Deny => protocol::PermissionEffect::Deny,
         },
     })
+}
+
+fn delegation_targets(
+    permissions: &indexmap::IndexMap<
+        cookie_agent_config::PermissionAction,
+        cookie_agent_config::PermissionValue,
+    >,
+) -> Option<Vec<protocol::AgentId>> {
+    let value = permissions.get(&cookie_agent_config::PermissionAction::Delegate)?;
+    let cookie_agent_config::PermissionValue::Resources(resources) = value else {
+        return None;
+    };
+    let mut targets = resources
+        .iter()
+        .filter(|(_, effect)| **effect != cookie_agent_config::PermissionEffect::Deny)
+        .filter_map(|(resource, _)| protocol::AgentId::new(resource.as_str()).ok())
+        .collect::<Vec<_>>();
+    targets.sort();
+    (!targets.is_empty()).then_some(targets)
 }
 
 fn wire_agent_mode(mode: cookie_agent_config::AgentMode) -> protocol::AgentMode {

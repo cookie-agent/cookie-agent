@@ -1548,6 +1548,7 @@ mod tests {
                 approval: ApprovalConfig::default(),
                 context_compaction: ContextCompactionConfig::default(),
                 session_title: SessionTitleConfig::default(),
+                delegation: cookie_agent_config::DelegationConfig::default(),
                 providers: BTreeMap::new(),
             },
             agents: BTreeMap::new(),

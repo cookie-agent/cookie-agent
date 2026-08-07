@@ -2,6 +2,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
     sync::Mutex,
 };
 
@@ -112,6 +113,7 @@ impl PermissionPipeline {
         policy: &AgentSnapshot,
         operation: &PreparedOperationIdentity,
         policy_labels: &[String],
+        workspace: &Path,
     ) -> PermissionDecision {
         assert_eq!(operation.resources().len(), policy_labels.len());
         let evaluations = operation
@@ -119,9 +121,9 @@ impl PermissionPipeline {
             .iter()
             .zip(policy_labels)
             .map(|(resource, normalized)| {
-                let candidates = matching_rules(policy, resource.capability, normalized);
+                let candidates = matching_rules(policy, resource.capability, normalized, workspace);
                 let (effect, reason) =
-                    effective_permission(policy, resource.capability, normalized);
+                    effective_permission(policy, resource.capability, normalized, workspace);
                 ApprovalEvaluation {
                     resource_digest: resource.binding_digest.clone(),
                     effect,
@@ -159,37 +161,53 @@ impl PermissionPipeline {
         let Ok(action) = Self::action_for_tool(tool) else {
             return true;
         };
-        let Some((deny_index, deny)) = policy
+        let Some(deny) = policy
             .permissions
             .iter()
-            .enumerate()
-            .rfind(|(_, rule)| rule.action == action && rule.resource.as_str() == "*")
+            .find(|rule| rule.action == action && rule.resource.as_str() == "*")
         else {
             return true;
         };
         deny.effect != PermissionEffect::Deny
-            || policy.permissions[deny_index + 1..]
-                .iter()
-                .any(|rule| rule.action == action && rule.effect != PermissionEffect::Deny)
+            || policy.permissions.iter().any(|rule| {
+                rule.action == action
+                    && rule.resource.as_str() != "*"
+                    && rule.effect != PermissionEffect::Deny
+            })
     }
 }
 
-fn effective_permission(
+pub(crate) fn effective_permission(
     policy: &AgentSnapshot,
     action: PermissionAction,
     resource: &str,
+    workspace: &Path,
 ) -> (PermissionEffect, String) {
     let protected_env = action == PermissionAction::Read && protected_env_resource(resource);
-    policy
+    let absolute_resource = absolute_resource(workspace, resource);
+    let winner = policy
         .permissions
         .iter()
-        .rfind(|rule| {
+        .enumerate()
+        .filter(|(_, rule)| {
             rule.action == action
-                && simple_wildcard_match(rule.resource.as_str(), resource)
+                && permission_pattern_matches(
+                    rule.resource.as_str(),
+                    resource,
+                    &absolute_resource,
+                    workspace,
+                )
                 && !(protected_env
                     && rule.effect == PermissionEffect::Allow
-                    && rule.resource.as_str() != resource)
+                    && !permission_pattern_is_exact(
+                        rule.resource.as_str(),
+                        resource,
+                        &absolute_resource,
+                        workspace,
+                    ))
         })
+        .max_by_key(|(index, rule)| specificity(rule.resource.as_str(), *index));
+    winner
         .map_or_else(
             || {
                 if protected_env {
@@ -205,18 +223,104 @@ fn effective_permission(
                     )
                 }
             },
-            |rule| {
+            |(_, rule)| {
                 let reason = if protected_env
                     && rule.effect == PermissionEffect::Allow
-                    && rule.resource.as_str() == resource
+                    && permission_pattern_is_exact(
+                        rule.resource.as_str(),
+                        resource,
+                        &absolute_resource,
+                        workspace,
+                    )
                 {
                     "exact agent rule overrides the built-in .env default".into()
                 } else {
-                    "last effective matching rule".into()
+                    "most-specific matching pattern: more literal characters, then fewer wildcards, then later declaration".into()
                 };
                 (rule.effect, reason)
             },
         )
+}
+
+fn permission_pattern_is_exact(
+    pattern: &str,
+    relative_resource: &str,
+    absolute_resource: &str,
+    workspace: &Path,
+) -> bool {
+    if pattern
+        .chars()
+        .any(|character| matches!(character, '*' | '?'))
+    {
+        return false;
+    }
+    if pattern.contains(cookie_agent_protocol::WildcardPattern::WORKSPACE_DIR_EXPRESSION) {
+        expand_workspace_pattern(pattern, workspace) == absolute_resource
+    } else {
+        pattern == relative_resource
+    }
+}
+
+fn permission_pattern_matches(
+    pattern: &str,
+    relative_resource: &str,
+    absolute_resource: &str,
+    workspace: &Path,
+) -> bool {
+    if pattern.contains(cookie_agent_protocol::WildcardPattern::WORKSPACE_DIR_EXPRESSION) {
+        let expanded = expand_workspace_pattern(pattern, workspace);
+        simple_wildcard_match(&expanded, absolute_resource)
+    } else {
+        simple_wildcard_match(pattern, relative_resource)
+    }
+}
+
+fn expand_workspace_pattern(pattern: &str, workspace: &Path) -> String {
+    let workspace = normalized_path(&canonical_workspace(workspace));
+    if workspace == "/" {
+        pattern.replace("${workspace_dir}/", "/").replace(
+            cookie_agent_protocol::WildcardPattern::WORKSPACE_DIR_EXPRESSION,
+            "/",
+        )
+    } else {
+        pattern.replace(
+            cookie_agent_protocol::WildcardPattern::WORKSPACE_DIR_EXPRESSION,
+            workspace.trim_end_matches('/'),
+        )
+    }
+}
+
+fn absolute_resource(workspace: &Path, resource: &str) -> String {
+    let resource_path = Path::new(resource);
+    if resource_path.is_absolute() {
+        normalized_path(resource_path)
+    } else if resource_path == Path::new(".") {
+        normalized_path(&canonical_workspace(workspace))
+    } else {
+        normalized_path(&canonical_workspace(workspace).join(resource_path))
+    }
+}
+
+fn canonical_workspace(workspace: &Path) -> PathBuf {
+    workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_owned())
+}
+
+fn normalized_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn specificity(
+    pattern: &str,
+    declaration_index: usize,
+) -> (usize, std::cmp::Reverse<usize>, usize) {
+    let wildcards = pattern
+        .chars()
+        .filter(|character| matches!(character, '*' | '?'))
+        .count();
+    let literals = pattern.chars().count() - wildcards;
+    (literals, std::cmp::Reverse(wildcards), declaration_index)
 }
 
 fn protected_env_resource(resource: &str) -> bool {
@@ -228,16 +332,25 @@ fn matching_rules(
     policy: &AgentSnapshot,
     action: PermissionAction,
     resource: &str,
+    workspace: &Path,
 ) -> Vec<MatchedPermissionRule> {
+    let absolute_resource = absolute_resource(workspace, resource);
     policy
         .permissions
         .iter()
         .filter(|rule| {
-            rule.action == action && simple_wildcard_match(rule.resource.as_str(), resource)
+            rule.action == action
+                && permission_pattern_matches(
+                    rule.resource.as_str(),
+                    resource,
+                    &absolute_resource,
+                    workspace,
+                )
         })
         .map(|rule| MatchedPermissionRule {
-            rule_id: Some(rule.id.clone()),
             source_layer: SafeCode::new("agent_document").expect("static safe code"),
+            action: rule.action,
+            resource: rule.resource.clone(),
             effect: rule.effect,
         })
         .collect()
@@ -274,13 +387,12 @@ mod tests {
     }
 
     fn rule(
-        id: &str,
+        _id: &str,
         action: PermissionAction,
         resource: &str,
         effect: PermissionEffect,
     ) -> PermissionRule {
         PermissionRule {
-            id: SafeCode::new(id).expect("rule id"),
             action,
             resource: WildcardPattern::new(resource).expect("wildcard"),
             effect,
@@ -342,7 +454,12 @@ mod tests {
                 _ => unreachable!("test resources carry explicit labels"),
             })
             .collect::<Vec<_>>();
-        PermissionPipeline::default().decide_operation(policy, &operation(resources), &labels)
+        PermissionPipeline::default().decide_operation(
+            policy,
+            &operation(resources),
+            &labels,
+            std::path::Path::new("/workspace"),
+        )
     }
 
     #[test]
@@ -368,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_and_last_matching_deny_are_applied_to_labels() {
+    fn more_literals_win_before_wildcard_count() {
         let decision = decide(
             &policy(vec![
                 rule(
@@ -395,7 +512,34 @@ mod tests {
     }
 
     #[test]
-    fn later_agent_rule_overrides_earlier_rule() {
+    fn universal_catch_all_is_least_specific() {
+        let decision = decide(
+            &policy(vec![
+                rule(
+                    "allow",
+                    PermissionAction::Read,
+                    "*",
+                    PermissionEffect::Allow,
+                ),
+                rule(
+                    "deny",
+                    PermissionAction::Read,
+                    "*/.env.*",
+                    PermissionEffect::Deny,
+                ),
+            ]),
+            vec![resource(
+                PermissionAction::Read,
+                "nested/.env.local",
+                b"secret",
+            )],
+        );
+        assert_eq!(decision.effect, PermissionEffect::Deny);
+        assert_eq!(decision.evaluations[0].trace.candidates.len(), 2);
+    }
+
+    #[test]
+    fn later_declaration_wins_final_specificity_tie() {
         let decision = decide(
             &policy(vec![
                 rule(
@@ -631,6 +775,106 @@ mod tests {
                 PermissionEffect::Deny,
             ),
         ]);
-        assert!(!PermissionPipeline::tool_visible(&denied_again, "read"));
+        assert!(PermissionPipeline::tool_visible(&denied_again, "read"));
+    }
+
+    #[test]
+    fn workspace_dir_pattern_matches_absolute_workspace_path_only() {
+        let policy = policy(vec![rule(
+            "workspace-write",
+            PermissionAction::Write,
+            "${workspace_dir}/src/*",
+            PermissionEffect::Allow,
+        )]);
+        assert_eq!(
+            super::effective_permission(
+                &policy,
+                PermissionAction::Write,
+                "src/main.rs",
+                std::path::Path::new("/workspace"),
+            )
+            .0,
+            PermissionEffect::Allow
+        );
+        assert_eq!(
+            super::effective_permission(
+                &policy,
+                PermissionAction::Write,
+                "/outside/src/main.rs",
+                std::path::Path::new("/workspace"),
+            )
+            .0,
+            PermissionEffect::Ask
+        );
+    }
+
+    #[test]
+    fn relative_and_workspace_dir_patterns_share_specificity_ordering() {
+        let policy = policy(vec![
+            rule(
+                "relative",
+                PermissionAction::Write,
+                "src/*",
+                PermissionEffect::Deny,
+            ),
+            rule(
+                "absolute",
+                PermissionAction::Write,
+                "${workspace_dir}/src/*",
+                PermissionEffect::Allow,
+            ),
+        ]);
+        assert_eq!(
+            super::effective_permission(
+                &policy,
+                PermissionAction::Write,
+                "src/main.rs",
+                std::path::Path::new("/workspace"),
+            )
+            .0,
+            PermissionEffect::Allow
+        );
+    }
+
+    #[test]
+    fn workspace_dir_external_rule_does_not_match_outside_boundary() {
+        let policy = policy(vec![rule(
+            "workspace-external",
+            PermissionAction::ExternalDirectory,
+            "${workspace_dir}/*",
+            PermissionEffect::Allow,
+        )]);
+        assert_eq!(
+            super::effective_permission(
+                &policy,
+                PermissionAction::ExternalDirectory,
+                "/outside/*",
+                std::path::Path::new("/workspace"),
+            )
+            .0,
+            PermissionEffect::Ask
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_dir_expansion_canonicalizes_the_workspace_anchor() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("real-workspace");
+        std::fs::create_dir(&workspace).expect("workspace");
+        let alias = temp.path().join("workspace-alias");
+        symlink(&workspace, &alias).expect("workspace symlink");
+        let policy = policy(vec![rule(
+            "workspace-write",
+            PermissionAction::Write,
+            "${workspace_dir}/src/*",
+            PermissionEffect::Allow,
+        )]);
+        assert_eq!(
+            super::effective_permission(&policy, PermissionAction::Write, "src/main.rs", &alias,).0,
+            PermissionEffect::Allow
+        );
     }
 }

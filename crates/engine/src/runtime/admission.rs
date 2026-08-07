@@ -70,6 +70,7 @@ impl Engine {
     ) -> Result<SessionMeta, EngineError> {
         let child_runtime = Arc::clone(&child_policy.runtime);
         let parent = self.inner.store.get(parent_session_id)?;
+        enforce_delegation_concurrency(self, &parent)?;
         if parent
             .runs
             .get(&parent_run_id)

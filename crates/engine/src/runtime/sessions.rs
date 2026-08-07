@@ -24,6 +24,7 @@ impl Engine {
             agents,
             Arc::clone(&runtime),
             &selection.model,
+            self.inner.config.runtime.delegation.max_depth,
             policy::ResultLimits {
                 tool_output_max_lines: self.inner.config.runtime.tool_output.max_lines,
                 tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,

@@ -7,7 +7,7 @@ use ts_rs::TS;
 
 use crate::{
     ApprovalId, PermissionAction, PermissionEffect, SafeCode, SafeErrorMessage, SessionId,
-    Sha256Digest, TreeApprovalGrantId,
+    Sha256Digest, TreeApprovalGrantId, WildcardPattern,
 };
 
 #[derive(Clone, Debug, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
@@ -181,10 +181,9 @@ pub struct PreparedApprovalResource {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct MatchedPermissionRule {
-    #[serde(deserialize_with = "crate::deserialize_required_option")]
-    #[schemars(with = "crate::NullableSchema<SafeCode>", required)]
-    pub rule_id: Option<SafeCode>,
     pub source_layer: SafeCode,
+    pub action: PermissionAction,
+    pub resource: WildcardPattern,
     pub effect: PermissionEffect,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]

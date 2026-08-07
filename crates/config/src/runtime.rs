@@ -8,11 +8,11 @@ use crate::ConfigError;
 use crate::toml_values::{SensitiveProviderValues, zeroize_toml_value};
 use zeroize::Zeroize;
 
-const CONFIG_SCHEMA: u32 = 7;
+const CONFIG_SCHEMA: u32 = 8;
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 7419;
 
-/// Exact schema-7 marker.
+/// Exact schema-8 marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConfigSchemaVersion;
 
@@ -33,7 +33,7 @@ impl<'de> Deserialize<'de> for ConfigSchemaVersion {
         if value == CONFIG_SCHEMA {
             Ok(Self)
         } else {
-            Err(serde::de::Error::custom("schema_version must be exactly 7"))
+            Err(serde::de::Error::custom("schema_version must be exactly 8"))
         }
     }
 }
@@ -53,6 +53,8 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub session_title: SessionTitleConfig,
     #[serde(default)]
+    pub delegation: DelegationConfig,
+    #[serde(default)]
     pub providers: BTreeMap<ProviderId, ProviderDefinition>,
 }
 
@@ -65,6 +67,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) approval: Option<ApprovalConfig>,
     pub(crate) context_compaction: Option<ContextCompactionConfig>,
     pub(crate) session_title: Option<SessionTitleConfig>,
+    pub(crate) delegation: Option<DelegationConfig>,
     #[serde(default)]
     pub(crate) providers: SensitiveProviderValues,
 }
@@ -131,6 +134,26 @@ const fn default_output_bytes() -> usize {
 pub struct ApprovalConfig {
     #[serde(default = "default_approval_timeout")]
     pub timeout_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DelegationConfig {
+    #[serde(default = "default_delegation_depth")]
+    pub max_depth: u32,
+    #[serde(default)]
+    pub max_concurrency: Option<u32>,
+}
+impl Default for DelegationConfig {
+    fn default() -> Self {
+        Self {
+            max_depth: default_delegation_depth(),
+            max_concurrency: None,
+        }
+    }
+}
+const fn default_delegation_depth() -> u32 {
+    3
 }
 impl Default for ApprovalConfig {
     fn default() -> Self {
@@ -233,6 +256,9 @@ pub(crate) fn apply_settings(runtime: &mut RuntimeConfig, layer: &RawRuntimeLaye
     if let Some(value) = &layer.session_title {
         runtime.session_title = value.clone();
     }
+    if let Some(value) = &layer.delegation {
+        runtime.delegation = value.clone();
+    }
 }
 
 pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigError> {
@@ -241,6 +267,8 @@ pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigErro
         || runtime.tool_output.max_lines == 0
         || runtime.tool_output.max_bytes == 0
         || runtime.approval.timeout_ms == 0
+        || runtime.delegation.max_depth == 0
+        || runtime.delegation.max_concurrency == Some(0)
     {
         return Err(ConfigError::InvalidRuntime);
     }

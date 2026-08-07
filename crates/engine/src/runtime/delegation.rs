@@ -143,6 +143,7 @@ impl Engine {
         invocation_id: InvocationId,
         generation: u64,
     ) -> Result<DelegateHandle, EngineError> {
+        let _admission = self.inner.delegation_admission.lock().await;
         let parent = self.inner.store.get(invocation.parent_session_id)?;
         if parent
             .runs
@@ -168,6 +169,7 @@ impl Engine {
             .delegation
             .as_ref()
             .ok_or_else(|| EngineError::MissingTool("delegation is disabled".into()))?;
+        enforce_delegation_concurrency(self, &parent)?;
         if !parent_delegation.targets.contains(&invocation.agent)
             || session_depth(&parent.meta.origin) >= parent_delegation.effective_depth_ceiling
         {
@@ -650,6 +652,50 @@ pub(crate) fn freeze_delegated_child_policy(
     )
 }
 
+pub(super) fn enforce_delegation_concurrency(
+    engine: &Engine,
+    parent: &session::SessionProjection,
+) -> Result<(), EngineError> {
+    let Some(limit) = engine.inner.config.runtime.delegation.max_concurrency else {
+        return Ok(());
+    };
+    let root = match parent.meta.origin {
+        SessionOrigin::Delegated {
+            root_session_id, ..
+        } => root_session_id,
+        _ => parent.meta.session_id,
+    };
+    let active_sessions = engine
+        .inner
+        .active
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .values()
+        .map(|active| active.session)
+        .collect::<HashSet<_>>();
+    let active_delegated = active_sessions
+        .into_iter()
+        .filter(|session_id| {
+            engine.inner.store.get(*session_id).is_ok_and(|session| {
+                matches!(
+                    session.meta.origin,
+                    SessionOrigin::Delegated { root_session_id, .. } if root_session_id == root
+                )
+            })
+        })
+        .count() as u32;
+    if delegation_concurrency_limit_reached(limit, active_delegated) {
+        return Err(EngineError::MissingTool(format!(
+            "delegate admission denied: active delegated-session concurrency limit {limit} reached"
+        )));
+    }
+    Ok(())
+}
+
+const fn delegation_concurrency_limit_reached(limit: u32, active_delegated: u32) -> bool {
+    active_delegated >= limit
+}
+
 pub(super) fn delegate_client_run_id(
     invocation_id: InvocationId,
 ) -> cookie_agent_protocol::ClientRunId {
@@ -756,4 +802,16 @@ pub(super) fn is_journal_append_failure(error: &EngineError) -> bool {
             JournalError::Event(_) | JournalError::Poisoned | JournalError::Stopped
         ) | EngineError::ActorStopped
     )
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::delegation_concurrency_limit_reached;
+
+    #[test]
+    fn max_concurrency_denies_at_the_configured_active_run_limit() {
+        assert!(!delegation_concurrency_limit_reached(2, 1));
+        assert!(delegation_concurrency_limit_reached(2, 2));
+        assert!(delegation_concurrency_limit_reached(2, 3));
+    }
 }

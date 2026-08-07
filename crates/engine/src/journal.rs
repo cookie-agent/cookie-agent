@@ -579,15 +579,15 @@ mod tests {
     }
 
     #[test]
-    fn journal_replay_accepts_only_schema_eight_and_strict_records() {
+    fn journal_replay_accepts_only_schema_nine_and_strict_records() {
         let invocation_id = InvocationId::new_v7();
         for value in [
             serde_json::json!({
-                "delegation_journal_schema_version":7,
+                "delegation_journal_schema_version":8,
                 "record":{"type":"delegation_linked","invocation_id":invocation_id}
             }),
             serde_json::json!({
-                "delegation_journal_schema_version":8,
+                "delegation_journal_schema_version":9,
                 "record":{"type":"delegation_linked","invocation_id":invocation_id,"legacy":true}
             }),
         ] {

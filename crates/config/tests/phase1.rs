@@ -25,7 +25,7 @@ fn write_agent(root: &Path, name: &str, text: &str) {
 
 fn agent(description: &str, fallback: &str) -> String {
     format!(
-        "---\nschema: 1\ndescription: {description}\nmode: primary\nenabled: true\nmodel_fallback: {fallback}\ntools: []\npermissions: []\n---\nPrompt.\n"
+        "---\nschema: 2\ndescription: {description}\nmode: primary\nenabled: true\nmodel_fallback: {fallback}\ntools: []\npermissions: {{}}\n---\nPrompt.\n"
     )
 }
 
@@ -46,7 +46,7 @@ fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 
 fn custom(endpoint: &str) -> String {
     format!(
-        r#"schema_version = 7
+        r#"schema_version = 8
 
 [providers."custom.test"]
 source = "custom"
@@ -78,17 +78,17 @@ media = {{}}
 }
 
 #[test]
-fn schema7_allows_omitted_and_empty_providers_and_rejects_schema6() {
+fn schema8_allows_omitted_and_empty_providers_and_rejects_schema7() {
     let temp = TempDir::new().unwrap();
     let omitted = temp.path().join("omitted");
-    write_config(&omitted, "schema_version = 7\n");
+    write_config(&omitted, "schema_version = 8\n");
     let loaded = load_from_roots(None, Some(&omitted)).unwrap();
     assert!(loaded.runtime.providers.is_empty());
     assert!(loaded.agents.is_empty());
     assert_eq!(loaded.agent_registry().agents().len(), 0);
 
     let empty = temp.path().join("empty");
-    write_config(&empty, "schema_version = 7\nproviders = {}\n");
+    write_config(&empty, "schema_version = 8\nproviders = {}\n");
     assert!(
         load_from_roots(None, Some(&empty))
             .unwrap()
@@ -98,7 +98,7 @@ fn schema7_allows_omitted_and_empty_providers_and_rejects_schema6() {
     );
 
     let old = temp.path().join("old");
-    write_config(&old, "schema_version = 6\n");
+    write_config(&old, "schema_version = 7\n");
     assert!(matches!(
         load_from_roots(None, Some(&old)),
         Err(ConfigError::Toml(_))
@@ -106,10 +106,39 @@ fn schema7_allows_omitted_and_empty_providers_and_rejects_schema6() {
 }
 
 #[test]
+fn delegation_runtime_defaults_and_limits_are_strict() {
+    let temp = TempDir::new().unwrap();
+    let defaults = temp.path().join("delegation-defaults");
+    write_config(&defaults, "schema_version = 8\n");
+    let loaded = load_from_roots(None, Some(&defaults)).unwrap();
+    assert_eq!(loaded.runtime.delegation.max_depth, 3);
+    assert_eq!(loaded.runtime.delegation.max_concurrency, None);
+
+    let authored = temp.path().join("delegation-authored");
+    write_config(
+        &authored,
+        "schema_version = 8\n[delegation]\nmax_depth = 5\nmax_concurrency = 2\n",
+    );
+    let loaded = load_from_roots(None, Some(&authored)).unwrap();
+    assert_eq!(loaded.runtime.delegation.max_depth, 5);
+    assert_eq!(loaded.runtime.delegation.max_concurrency, Some(2));
+
+    let invalid = temp.path().join("delegation-invalid");
+    write_config(
+        &invalid,
+        "schema_version = 8\n[delegation]\nmax_concurrency = 0\n",
+    );
+    assert!(matches!(
+        load_from_roots(None, Some(&invalid)),
+        Err(ConfigError::InvalidRuntime)
+    ));
+}
+
+#[test]
 fn authored_agent_registry_retains_slash_model_ids_without_model_compilation() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("agents-only");
-    write_config(&root, "schema_version = 7\n");
+    write_config(&root, "schema_version = 8\n");
     write_agent(
         &root,
         "primary.md",
@@ -143,7 +172,7 @@ fn authored_agent_registry_retains_slash_model_ids_without_model_compilation() {
 fn authored_agents_cannot_use_the_built_in_default_id() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("reserved-agent");
-    write_config(&root, "schema_version = 7\n");
+    write_config(&root, "schema_version = 8\n");
     write_agent(
         &root,
         "default.md",
@@ -161,7 +190,7 @@ fn workspace_agent_replaces_user_agent_before_registry_validation() {
     let temp = TempDir::new().unwrap();
     let user = temp.path().join("user-agents");
     let workspace = temp.path().join("workspace-agents");
-    write_config(&user, "schema_version = 7\n");
+    write_config(&user, "schema_version = 8\n");
     write_agent(
         &user,
         "primary.md",
@@ -170,7 +199,7 @@ fn workspace_agent_replaces_user_agent_before_registry_validation() {
             "[{ model: \"openai/group/model\" }, { model: \"openai/group/model\" }]",
         ),
     );
-    write_config(&workspace, "schema_version = 7\n");
+    write_config(&workspace, "schema_version = 8\n");
     write_agent(
         &workspace,
         "primary.md",
@@ -191,7 +220,7 @@ fn explicit_source_has_no_alias_or_compatibility_reader() {
     let root = temp.path().join("explicit");
     write_config(
         &root,
-        "schema_version = 7\n[providers.test]\nsource = \"explicit\"\n",
+        "schema_version = 8\n[providers.test]\nsource = \"explicit\"\n",
     );
     assert!(matches!(
         load_from_roots(None, Some(&root)),
@@ -206,7 +235,7 @@ fn same_id_workspace_provider_replaces_user_before_provider_decode() {
     let workspace = temp.path().join("workspace");
     write_config(
         &user,
-        "schema_version = 7\n[providers.\"custom.test\"]\nsource = \"custom\"\nunknown = true\n",
+        "schema_version = 8\n[providers.\"custom.test\"]\nsource = \"custom\"\nunknown = true\n",
     );
     write_config(&workspace, &custom("https://workspace.example/v1"));
 
@@ -239,7 +268,7 @@ fn managed_auth_is_mutually_exclusive_and_custom_namespace_is_strict() {
     let conflict = temp.path().join("conflict");
     write_config(
         &conflict,
-        "schema_version = 7\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"a\"\nauth_override = { method = \"bearer-api-key-v1\", values = { api_key = \"b\" } }\n",
+        "schema_version = 8\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"a\"\nauth_override = { method = \"bearer-api-key-v1\", values = { api_key = \"b\" } }\n",
     );
     assert!(matches!(
         load_from_roots(None, Some(&conflict)),
@@ -265,7 +294,7 @@ fn secret_sentinel_is_redacted_on_parse_interpolation_and_unknown_field_errors()
     write_config(
         &parse,
         &format!(
-            "schema_version = 7\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"{SECRET_SENTINEL}\"\nbroken = [\n"
+            "schema_version = 8\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"{SECRET_SENTINEL}\"\nbroken = [\n"
         ),
     );
     assert_redacted(&load_from_roots(None, Some(&parse)).unwrap_err());
@@ -274,7 +303,7 @@ fn secret_sentinel_is_redacted_on_parse_interpolation_and_unknown_field_errors()
     write_config(
         &interpolation,
         &format!(
-            "schema_version = 7\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"{SECRET_SENTINEL}-${{env:P1_MISSING_SECRET}}\"\n"
+            "schema_version = 8\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"{SECRET_SENTINEL}-${{env:P1_MISSING_SECRET}}\"\n"
         ),
     );
     let _guard = env_lock();
@@ -285,7 +314,7 @@ fn secret_sentinel_is_redacted_on_parse_interpolation_and_unknown_field_errors()
     write_config(
         &unknown,
         &format!(
-            "schema_version = 7\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"ok\"\nunknown_secret = \"{SECRET_SENTINEL}\"\n"
+            "schema_version = 8\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"ok\"\nunknown_secret = \"{SECRET_SENTINEL}\"\n"
         ),
     );
     assert_redacted(&load_from_roots(None, Some(&unknown)).unwrap_err());
@@ -297,7 +326,7 @@ fn interpolated_secret_is_redacted_on_success_and_configuration_drop() {
     let root = temp.path().join("success-secret");
     write_config(
         &root,
-        "schema_version = 7\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"${env:P1_SUCCESS_SECRET}\"\n",
+        "schema_version = 8\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"${env:P1_SUCCESS_SECRET}\"\n",
     );
     let _guard = env_lock();
     unsafe { std::env::set_var("P1_SUCCESS_SECRET", SECRET_SENTINEL) };

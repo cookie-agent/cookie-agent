@@ -46,6 +46,7 @@ impl Engine {
                     Arc::clone(&agents),
                     runtime,
                     &params.selection.model,
+                    self.inner.config.runtime.delegation.max_depth,
                     result_limits,
                 )?
             }

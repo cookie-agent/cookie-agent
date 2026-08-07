@@ -371,7 +371,7 @@ async fn compose_with<T: CatalogTransport + 'static>(
     open_data_dir: impl FnOnce() -> anyhow::Result<PathBuf>,
 ) -> anyhow::Result<Runtime> {
     let configuration = cookie_agent_config::load(workspace)
-        .context("load schema-7 workspace configuration and agents")?;
+        .context("load schema-8 workspace configuration and agents")?;
     if configuration.runtime.server.host != "127.0.0.1" {
         anyhow::bail!("server.host must be exactly 127.0.0.1");
     }
@@ -1142,7 +1142,7 @@ mod tests {
         private_directory(workspace);
         private_directory(&workspace.join(".cookie-agent"));
         let config = workspace.join(".cookie-agent/config.toml");
-        std::fs::write(&config, "schema_version = 7\n").unwrap();
+        std::fs::write(&config, "schema_version = 8\n").unwrap();
         std::fs::set_permissions(config, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
 
@@ -1350,7 +1350,7 @@ mod tests {
         let cache_anchor = temporary.path().join("cache-anchor");
         let provider_store = temporary.path().join("provider-store");
         let data = temporary.path().join("data");
-        write_empty_config(&workspace, 7);
+        write_empty_config(&workspace, 8);
         private_directory(&cache_anchor);
         let fetches = Arc::new(AtomicUsize::new(0));
         let mut runtime = compose_with(
@@ -1381,7 +1381,7 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         private_directory(temporary.path());
         let workspace = temporary.path().join("workspace");
-        write_empty_config(&workspace, 6);
+        write_empty_config(&workspace, 7);
         let fetches = Arc::new(AtomicUsize::new(0));
         let catalog_opens = Arc::new(AtomicUsize::new(0));
         let provider_opens = Arc::new(AtomicUsize::new(0));
@@ -1594,7 +1594,7 @@ mod tests {
         private_directory(temporary.path());
         let workspace = temporary.path().join("workspace");
         let cache_anchor = temporary.path().join("cache-anchor");
-        write_empty_config(&workspace, 7);
+        write_empty_config(&workspace, 8);
         private_directory(&cache_anchor);
         let mut runtime = compose_with(
             &workspace,
@@ -1665,7 +1665,7 @@ mod tests {
         private_directory(temporary.path());
         let workspace = temporary.path().join("workspace");
         let cache_anchor = temporary.path().join("cache-anchor");
-        write_empty_config(&workspace, 7);
+        write_empty_config(&workspace, 8);
         private_directory(&cache_anchor);
         let mut runtime = compose_with(
             &workspace,
@@ -1815,7 +1815,7 @@ mod tests {
         private_directory(temporary.path());
         let workspace = temporary.path().join("workspace");
         let cache_anchor = temporary.path().join("cache-anchor");
-        write_empty_config(&workspace, 7);
+        write_empty_config(&workspace, 8);
         private_directory(&cache_anchor);
         let fetches = Arc::new(AtomicUsize::new(0));
         let steps = Arc::new(Mutex::new(VecDeque::from([

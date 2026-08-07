@@ -54,6 +54,7 @@ pub(crate) fn parse_agent(
     let yaml_value: serde_yaml::Value =
         serde_yaml::from_str(yaml).map_err(|_| ConfigError::AgentFrontmatter(id.clone()))?;
     validate_yaml_limits(&yaml_value, 0)?;
+    validate_permission_expressions(&yaml_value, &id)?;
     let frontmatter: AgentFrontmatter = serde_yaml::from_value(yaml_value)
         .map_err(|_| ConfigError::AgentFrontmatter(id.clone()))?;
     let body = format!("{}\n", raw_body.trim_end_matches('\n'));
@@ -73,6 +74,40 @@ pub(crate) fn parse_agent(
         document_fingerprint,
         prompt_fingerprint,
     })
+}
+
+fn validate_permission_expressions(
+    value: &serde_yaml::Value,
+    agent: &AgentId,
+) -> Result<(), ConfigError> {
+    let Some(frontmatter) = value.as_mapping() else {
+        return Ok(());
+    };
+    let permissions_key = serde_yaml::Value::String("permissions".to_owned());
+    let Some(permissions) = frontmatter
+        .get(&permissions_key)
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return Ok(());
+    };
+    for (action, permission) in permissions {
+        let Some(action) = action.as_str() else {
+            continue;
+        };
+        let Some(resources) = permission.as_mapping() else {
+            continue;
+        };
+        for resource in resources.keys().filter_map(serde_yaml::Value::as_str) {
+            let remainder = resource.replace("${workspace_dir}", "");
+            let malformed_expression = remainder.contains("${");
+            let unsupported_action = resource.contains("${workspace_dir}")
+                && !matches!(action, "read" | "write" | "external_directory");
+            if malformed_expression || unsupported_action {
+                return Err(ConfigError::AgentPermissionExpression(agent.clone()));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn forbidden_yaml(yaml: &str) -> bool {
