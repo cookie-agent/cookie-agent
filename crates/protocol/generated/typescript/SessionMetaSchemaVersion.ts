@@ -3,4 +3,4 @@
 /**
  *The exact session metadata schema version.
  */
-export type SessionMetaSchemaVersion = 8;
+export type SessionMetaSchemaVersion = 9;

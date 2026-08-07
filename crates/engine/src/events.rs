@@ -128,6 +128,15 @@ impl EventLog {
     }
 
     #[must_use]
+    pub fn last_event(&self) -> Option<StoredEvent> {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .last()
+            .cloned()
+    }
+
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }

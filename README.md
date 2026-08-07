@@ -254,7 +254,7 @@ session admission, or root-run admission.
 
 ## Runtime and sessions
 
-`runtime.snapshot.get` returns runtime snapshot schema 1 containing recipe,
+`runtime.snapshot.get` returns runtime snapshot schema 2 containing recipe,
 catalog, provider-state, model, agent, and aggregate runtime revisions plus all
 descriptors. Protocol 8 has no independently racing list-refresh flow. Every
 publication emits `runtime.changed` with a complete snapshot and typed reasons.

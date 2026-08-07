@@ -1,4 +1,3 @@
-use super::sessions::session_meta;
 use super::*;
 
 impl Engine {
@@ -167,7 +166,7 @@ impl Engine {
             let journal = self.inner.journal.clone();
             self.spawn_admission_blocking(move || journal.mark_linked(invocation_id))
                 .await?;
-            return Ok(existing.meta);
+            return Ok(existing.metadata());
         }
         let (root, depth) = match parent.meta.origin {
             SessionOrigin::Delegated {
@@ -189,14 +188,7 @@ impl Engine {
             agent: agent.clone(),
             model: child_policy.selected_suffix[0].selection.clone(),
         };
-        let meta = session_meta(
-            entry.reservation.child_session_id,
-            origin.clone(),
-            parent.meta.cwd_identity.clone(),
-            selection.clone(),
-            &child_runtime.result.snapshot,
-            child_policy.selected_suffix[0].manifest_revision.clone(),
-        );
+        let child_session_id = entry.reservation.child_session_id;
         let creation = Event::SessionCreated {
             origin,
             cwd_identity: parent.meta.cwd_identity.clone(),
@@ -219,10 +211,9 @@ impl Engine {
             manifest_revision: child_policy.selected_suffix[0].manifest_revision.clone(),
         };
         let store = self.inner.store.clone();
-        let creation_meta = meta.clone();
-        self.spawn_admission_blocking(move || store.create_with_status(creation_meta, creation))
+        self.spawn_admission_blocking(move || store.create_with_status(child_session_id, creation))
             .await?;
-        self.spawn_actor(meta.session_id);
+        self.spawn_actor(child_session_id);
         if admission.is_some_and(|(invocation_id, generation)| {
             !self.admission_generation_live(invocation_id, generation)
         }) {
@@ -234,13 +225,13 @@ impl Engine {
             parent_session_id,
             parent_run_id,
             parent_tool_call_id,
-            meta.session_id,
+            child_session_id,
         )
         .await?;
         let journal = self.inner.journal.clone();
         self.spawn_admission_blocking(move || journal.mark_linked(invocation_id))
             .await?;
-        Ok(meta)
+        Ok(self.inner.store.get(child_session_id)?.metadata())
     }
 
     pub(super) fn admission_generation_live(

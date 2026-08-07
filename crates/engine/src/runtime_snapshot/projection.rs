@@ -430,6 +430,7 @@ fn model_descriptor(
         display_name: model.model.display_name.clone(),
         capabilities,
         variants,
+        variant_order: model.model.variant_order.clone(),
         default_variant: model.model.default_variant.clone(),
         behavior_fingerprint: protocol::Sha256Digest::new(
             model.model.behavior_fingerprint.as_str(),

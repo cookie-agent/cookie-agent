@@ -176,6 +176,7 @@ mod tests {
                 media: Default::default(),
             },
             variants: Vec::new(),
+            variant_order: Vec::new(),
             default_variant: None,
             behavior_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(b"model"),
         };

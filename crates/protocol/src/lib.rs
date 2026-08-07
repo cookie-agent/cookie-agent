@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol, event, and persistence schema version 8.
+//! Exact cookie-agent protocol/event schema version 8 and session metadata schema 9.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders.
 
@@ -127,11 +127,11 @@ pub const PROTOCOL_VERSION: u32 = 8;
 /// The only durable event/session-JSONL schema supported by this build.
 pub const EVENT_SCHEMA_VERSION: u32 = 8;
 /// The only session metadata schema supported by this build.
-pub const SESSION_META_SCHEMA_VERSION: u32 = 8;
+pub const SESSION_META_SCHEMA_VERSION: u32 = 9;
 /// The only delegation-journal schema supported by this build.
 pub const DELEGATION_JOURNAL_SCHEMA_VERSION: u32 = 8;
 /// The only coherent runtime snapshot schema supported by this build.
-pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 /// Returns the TypeScript generation configuration required by this JSON wire.
 #[must_use]
@@ -209,8 +209,8 @@ exact_numeric_wire_type!(
 );
 exact_numeric_wire_type!(
     SessionMetaSchemaVersion,
-    8,
-    "8",
+    9,
+    "9",
     "The exact session metadata schema version."
 );
 exact_numeric_wire_type!(
@@ -221,8 +221,8 @@ exact_numeric_wire_type!(
 );
 exact_numeric_wire_type!(
     RuntimeSnapshotSchemaVersion,
-    1,
-    "1",
+    2,
+    "2",
     "The exact coherent runtime snapshot schema version."
 );
 

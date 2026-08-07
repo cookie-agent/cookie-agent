@@ -668,11 +668,11 @@ payload `idempotency_conflict`, stale expected revisions/generation, custom
 provider rejection, one durable removal/no-op-plus-receipt transaction, one
 `ProviderDisconnected` publication, and no publication on replay.
 
-## 9. Runtime snapshot schema 1
+## 9. Runtime snapshot schema 2
 
 ```rust
 pub struct RuntimeSnapshotV1 {
-    pub snapshot_schema_version: RuntimeSnapshotSchemaVersion, // exactly 1
+    pub snapshot_schema_version: RuntimeSnapshotSchemaVersion, // exactly 2
     pub recipe_registry_revision: RecipeRegistryRevision,
     pub catalog_revision: CatalogRevision,
     pub catalog_source: CatalogSource,
@@ -1037,7 +1037,7 @@ and protocol client:
 ## 13. Current-only protocol and persistence
 
 Protocol handshake, events, session JSONL, metadata, and delegation journal are
-exactly version 8. Every run admission records runtime snapshot schema 1 revision
+exactly version 8. Every run admission records runtime snapshot schema 2 revision
 and complete frozen safe bindings. Version 7 input and config schema 6 are
 rejected; no migration tool exists. Provider store 1 and unversioned cache/store
 files are rejected rather than renamed or imported. Project model-snapshot

@@ -17,8 +17,8 @@ use cookie_agent_protocol::{
     EventPayload, ModelKey, ModelSelection, PermissionMode, ProviderConnectParams,
     ProviderDescriptor, ProviderDisconnectParams, RunCancelParams, RunSelection, RunStartParams,
     RunSteerParams, RunToolStdinParams, SessionCreateParams, SessionId, SessionListParams,
-    SessionMeta, SessionSetPermissionModeParams, SessionTitle, SessionTitleChange, SessionTree,
-    SessionTreeParams, VariantId,
+    SessionMeta, SessionSetPermissionModeParams, SessionStatus, SessionTitle, SessionTitleChange,
+    SessionTree, SessionTreeParams, VariantId,
 };
 use crossterm::{
     event::{
@@ -56,8 +56,8 @@ use crate::{
 use super::events::{RenderScheduler, TerminalRestore};
 use super::input::{self, InputState};
 use super::pickers::{
-    SearchPickerFocus, SearchPickerState, cycle_selection, flatten_tree,
-    move_selection as move_picker_selection, provider_matches, session_matches, short_id,
+    SearchPickerFocus, SearchPickerState, SessionSearchRow, cycle_selection, flatten_tree,
+    move_selection as move_picker_selection, provider_matches, session_search_rows, short_id,
 };
 use super::provider::{
     DURABLE_PROVIDER_COPY, ProviderAction, ProviderForm, ProviderFormFocus, ProviderOperation,
@@ -254,7 +254,7 @@ pub struct App {
     pub(super) hit_map: UiHitMap,
     pub(super) transient_notices: Vec<String>,
     pub(super) picker_state: ListState,
-    pub(super) picker_query: String,
+    pub(super) session_search: SearchPickerState,
     pub(super) provider_search: SearchPickerState,
     pub(super) palette_state: ListState,
     pub(super) palette_dismissed: bool,
@@ -457,7 +457,7 @@ impl App {
             hit_map: UiHitMap::default(),
             transient_notices: Vec::new(),
             picker_state: ListState::default().with_selected(Some(0)),
-            picker_query: String::new(),
+            session_search: SearchPickerState::default(),
             provider_search: SearchPickerState::default(),
             palette_state: ListState::default().with_selected(Some(0)),
             palette_dismissed: false,
@@ -535,6 +535,18 @@ impl App {
             .copied()
             .unwrap_or(0);
         let mut session = session;
+        let known_status = self
+            .sessions
+            .iter()
+            .filter(|existing| existing.session_id == session.session_id)
+            .map(|existing| (existing.last_event_seq, existing.status))
+            .chain(
+                self.tree
+                    .as_ref()
+                    .and_then(|tree| find_session(tree, session.session_id))
+                    .map(|existing| (existing.last_event_seq, existing.status)),
+            )
+            .max_by_key(|(seq, _)| *seq);
         if session.title_updated_seq < known
             && let Some(current) = self
                 .sessions
@@ -549,6 +561,12 @@ impl App {
         {
             session.title = current.title;
             session.title_updated_seq = known;
+        }
+        if let Some((seq, status)) = known_status
+            && session.last_event_seq < seq
+        {
+            session.last_event_seq = seq;
+            session.status = status;
         }
         self.note_title_sequence(&session);
         session
@@ -973,8 +991,9 @@ impl App {
     }
 
     /// Variant cycle for the selected draft model. Root order is exact base,
-    /// then named variants lexicographically. Delegated sessions expose only
-    /// their exact persisted selection, so cycling cannot escape the suffix.
+    /// then the descriptor's declared named-variant order. Delegated sessions
+    /// expose only their exact persisted selection, so cycling cannot escape
+    /// the suffix.
     pub(super) fn draft_variants(&self) -> Vec<Option<VariantId>> {
         let Some(draft) = &self.draft else {
             return Vec::new();
@@ -993,7 +1012,13 @@ impl App {
                 .map(|variant| variant.id.clone())
                 .collect::<Vec<_>>();
             named.sort();
-            variants.extend(named.into_iter().map(Some));
+            let mut declared = descriptor.variant_order.clone();
+            let mut declared_sorted = declared.clone();
+            declared_sorted.sort();
+            if declared_sorted != named {
+                declared = named;
+            }
+            variants.extend(declared.into_iter().map(Some));
         }
         variants
     }
@@ -1480,9 +1505,8 @@ impl App {
         }
     }
 
-    /// Apply title-sequence staleness rules to a fresh tree response: any
-    /// node carrying a title sequence older than the latest title event keeps
-    /// the newer known title instead.
+    /// Apply event-sequence staleness rules to a fresh tree response so title
+    /// and run-status event patches cannot be undone by an older RPC result.
     pub(super) fn patch_tree_titles(&mut self, tree: &mut SessionTree) {
         let mut known_titles = HashMap::new();
         collect_known_titles(
@@ -1492,6 +1516,9 @@ impl App {
             &mut known_titles,
         );
         patch_tree_node_titles(tree, &self.title_sequences, &known_titles);
+        let mut known_statuses = HashMap::new();
+        collect_known_statuses(self.tree.as_ref(), &self.sessions, &mut known_statuses);
+        patch_tree_node_statuses(tree, &known_statuses);
     }
 
     pub(super) fn apply_provider_mutation_outcome(&mut self, outcome: ProviderMutationOutcome) {
@@ -1663,29 +1690,25 @@ impl App {
             };
             return;
         }
-        let linked = match &delivery {
-            ClientDelivery::Live { message, .. } => matches!(
-                message.as_ref(),
-                cookie_agent_protocol::EventSubscriptionMessage::Event { event }
-                    if matches!(event.payload, EventPayload::ToolCallLinked { .. })
-            ),
-            ClientDelivery::ReplayEvent { event, .. } => {
-                matches!(event.payload, EventPayload::ToolCallLinked { .. })
-            }
-            _ => false,
-        };
-        let title_change = match &delivery {
+        let event = match &delivery {
             ClientDelivery::Live { message, .. } => match message.as_ref() {
                 cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
-                    title_change_from_event(event)
+                    Some(event.as_ref())
                 }
                 cookie_agent_protocol::EventSubscriptionMessage::Gap { .. } => None,
             },
-            ClientDelivery::ReplayEvent { event, .. } => title_change_from_event(event),
+            ClientDelivery::ReplayEvent { event, .. } => Some(event.as_ref()),
             _ => None,
         };
+        let linked = event
+            .is_some_and(|event| matches!(&event.payload, EventPayload::ToolCallLinked { .. }));
+        let title_change = event.and_then(title_change_from_event);
+        let status_change = event.and_then(status_change_from_event);
         if let Some((session_id, title, seq)) = title_change {
             self.apply_title_patch(session_id, title, seq);
+        }
+        if let Some((session_id, status, seq)) = status_change {
+            self.apply_status_patch(session_id, status, seq);
         }
         let replay_finished = matches!(
             &delivery,
@@ -1735,6 +1758,32 @@ impl App {
         {
             node.session.title = title;
             node.session.title_updated_seq = seq;
+        }
+    }
+
+    /// Apply a run lifecycle status immediately to both panel metadata
+    /// sources without waiting for a session-list or tree RPC response.
+    pub(super) fn apply_status_patch(
+        &mut self,
+        session_id: SessionId,
+        status: SessionStatus,
+        seq: u64,
+    ) {
+        if let Some(session) = self
+            .sessions
+            .iter_mut()
+            .find(|session| session.session_id == session_id)
+            && seq >= session.last_event_seq
+        {
+            session.status = status;
+            session.last_event_seq = seq;
+        }
+        if let Some(tree) = &mut self.tree
+            && let Some(node) = find_node_mut(tree, session_id)
+            && seq >= node.session.last_event_seq
+        {
+            node.session.status = status;
+            node.session.last_event_seq = seq;
         }
     }
 
@@ -1832,11 +1881,19 @@ impl App {
         super::slash::entries(self.input.as_str())
     }
 
-    /// Sessions matching the current picker query, most recent first.
-    pub(super) fn filtered_sessions(&self) -> Vec<&SessionMeta> {
-        self.sessions
+    pub(super) fn current_session_search_rows(&self) -> Vec<SessionSearchRow> {
+        session_search_rows(
+            &self.sessions,
+            self.session_search.query(),
+            jiff::Timestamp::now(),
+            &jiff::tz::TimeZone::system(),
+        )
+    }
+
+    fn session_search_ids(&self) -> Vec<SessionId> {
+        self.current_session_search_rows()
             .iter()
-            .filter(|session| session_matches(session, &self.picker_query))
+            .filter_map(SessionSearchRow::session_id)
             .collect()
     }
 
@@ -1850,7 +1907,7 @@ impl App {
 
     pub(super) fn picker_entry_count(&self) -> usize {
         match self.modal {
-            Modal::Sessions => self.filtered_sessions().len(),
+            Modal::Sessions => self.session_search_ids().len(),
             Modal::Agents => self.selectable_agents().len(),
             Modal::Models => self.draft_models().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
@@ -1873,26 +1930,9 @@ impl App {
         }
     }
 
-    fn handle_picker_query_key(&mut self, key: KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Backspace => {
-                self.picker_query.pop();
-                self.clamp_picker_selection();
-                true
-            }
-            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
-                self.picker_query.clear();
-                self.clamp_picker_selection();
-                true
-            }
-            KeyCode::Char(character) if is_printable_key(key) => {
-                self.picker_query.push(character);
-                self.picker_state.select(Some(0));
-                self.clamp_picker_selection();
-                true
-            }
-            _ => false,
-        }
+    fn session_search_changed(&mut self) {
+        self.picker_state.select(Some(0));
+        self.clamp_picker_selection();
     }
 
     fn provider_search_changed(&mut self) {
@@ -2024,16 +2064,19 @@ impl App {
                 .picker_input
                 .filter(|hit| contains(hit.rect, column, row))
             {
-                self.provider_search.focus_input();
-                self.provider_search
-                    .input_mut()
-                    .set_cursor_from_display_position(
-                        row.saturating_sub(hit.text_rect.y)
-                            .min(hit.text_rect.height.saturating_sub(1)),
-                        column
-                            .saturating_sub(hit.text_rect.x)
-                            .min(hit.text_rect.width),
-                    );
+                let search = match self.modal {
+                    Modal::Sessions => &mut self.session_search,
+                    Modal::ConnectProviders => &mut self.provider_search,
+                    _ => return,
+                };
+                search.focus_input();
+                search.input_mut().set_cursor_from_display_position(
+                    row.saturating_sub(hit.text_rect.y)
+                        .min(hit.text_rect.height.saturating_sub(1)),
+                    column
+                        .saturating_sub(hit.text_rect.x)
+                        .min(hit.text_rect.width),
+                );
                 return;
             }
             if let Some(hit) = self
@@ -2184,7 +2227,10 @@ impl App {
                 .is_some_and(|rect| contains(rect, column, row))
             {
                 let len = match self.modal {
-                    Modal::Sessions => self.filtered_sessions().len(),
+                    Modal::Sessions => {
+                        self.session_search.focus_list();
+                        self.session_search_ids().len()
+                    }
                     Modal::Agents | Modal::Models => self.picker_entry_count(),
                     Modal::ConnectProviders => self.filtered_providers().len(),
                     Modal::ConnectDetails
@@ -2397,6 +2443,13 @@ impl App {
     }
 
     pub(super) fn handle_paste(&mut self, text: &str) {
+        if self.modal == Modal::Sessions {
+            let sanitized = text.replace(['\r', '\n'], "");
+            self.session_search.focus_input();
+            self.session_search.input_mut().insert_text(&sanitized);
+            self.session_search_changed();
+            return;
+        }
         if self.modal == Modal::ConnectProviders {
             let sanitized = text.replace(['\r', '\n'], "");
             self.provider_search.focus_input();
@@ -2431,21 +2484,72 @@ impl App {
     }
 
     pub(super) async fn handle_session_picker(&mut self, key: KeyEvent) {
-        let count = self.filtered_sessions().len();
+        let count = self.session_search_ids().len();
+        if self.session_search.focus() == SearchPickerFocus::Input {
+            match key.code {
+                KeyCode::Esc => {
+                    self.session_search.reset();
+                    self.modal = Modal::None;
+                }
+                KeyCode::Down | KeyCode::Tab | KeyCode::Enter if count > 0 => {
+                    self.session_search.focus_list();
+                    self.clamp_picker_selection();
+                }
+                KeyCode::Backspace => {
+                    self.session_search.input_mut().backspace();
+                    self.session_search_changed();
+                }
+                KeyCode::Delete => {
+                    self.session_search.input_mut().delete();
+                    self.session_search_changed();
+                }
+                KeyCode::Left => self.session_search.input_mut().move_left(),
+                KeyCode::Right => self.session_search.input_mut().move_right(),
+                KeyCode::Home | KeyCode::Char('a')
+                    if key.code == KeyCode::Home || key.modifiers == KeyModifiers::CONTROL =>
+                {
+                    self.session_search.input_mut().move_buffer_home();
+                }
+                KeyCode::End | KeyCode::Char('e')
+                    if key.code == KeyCode::End || key.modifiers == KeyModifiers::CONTROL =>
+                {
+                    self.session_search.input_mut().move_buffer_end();
+                }
+                KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                    self.session_search.input_mut().set_buffer(String::new());
+                    self.session_search_changed();
+                }
+                KeyCode::Char(character) if is_printable_key(key) => {
+                    self.session_search.input_mut().insert(character);
+                    self.session_search_changed();
+                }
+                _ => {}
+            }
+            return;
+        }
         match key.code {
-            KeyCode::Esc => {
-                self.modal = Modal::None;
-                self.picker_query.clear();
+            KeyCode::Esc | KeyCode::BackTab => self.session_search.focus_input(),
+            KeyCode::Up if self.picker_state.selected().unwrap_or(0) == 0 => {
+                self.session_search.focus_input();
             }
             KeyCode::Up => move_picker_selection(&mut self.picker_state, count, true),
-            KeyCode::Down => move_picker_selection(&mut self.picker_state, count, false),
+            KeyCode::Down | KeyCode::Tab => {
+                move_picker_selection(&mut self.picker_state, count, false)
+            }
             KeyCode::Enter => {
                 self.choose_picker_entry(self.picker_state.selected().unwrap_or(0))
                     .await
             }
-            _ => {
-                self.handle_picker_query_key(key);
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                self.session_search.reset();
+                self.session_search_changed();
             }
+            KeyCode::Char(character) if is_printable_key(key) => {
+                self.session_search.focus_input();
+                self.session_search.input_mut().insert(character);
+                self.session_search_changed();
+            }
+            _ => {}
         }
     }
 
@@ -2864,13 +2968,9 @@ impl App {
     pub(super) async fn choose_picker_entry(&mut self, index: usize) {
         match self.modal {
             Modal::Sessions => {
-                if let Some(session_id) = self
-                    .filtered_sessions()
-                    .get(index)
-                    .map(|session| session.session_id)
-                {
+                if let Some(session_id) = self.session_search_ids().get(index).copied() {
                     self.modal = Modal::None;
-                    self.picker_query.clear();
+                    self.session_search.reset();
                     self.reroot_tree(session_id);
                 }
             }
@@ -2936,11 +3036,6 @@ impl App {
                 self.palette_dismissed = false;
                 self.run_command(command).await;
             }
-            Submission::Prompt(prompt) if self.input_mode == InputMode::ToolStdin => {
-                self.input.take();
-                self.palette_dismissed = false;
-                self.send_stdin(prompt, false).await;
-            }
             Submission::Prompt(prompt) => self.submit_prompt(prompt).await,
         }
     }
@@ -3005,7 +3100,7 @@ impl App {
         });
     }
 
-    pub(super) async fn send_stdin(&mut self, input: String, eof: bool) {
+    pub async fn send_stdin(&mut self, input: String, eof: bool) {
         let Some((run_id, call_id)) = self.selected_running_tool() else {
             self.status = "no running interactive tool".into();
             return;
@@ -3082,54 +3177,13 @@ impl App {
             }
             SlashCommand::Sessions => {
                 self.modal = Modal::Sessions;
-                self.picker_query.clear();
+                self.session_search.reset();
                 self.picker_state.select(Some(0));
             }
             SlashCommand::Cancel => self.cancel_active_run(),
-            SlashCommand::Stdin { next: false } => self.enter_stdin(),
-            SlashCommand::Stdin { next: true } => {
-                if self.select_next_stdin_target() {
-                    self.status = format!(
-                        "tool stdin for {}",
-                        self.stdin_target.expect("stdin target selected")
-                    );
-                } else {
-                    self.status = "no running interactive tool".into();
-                }
-            }
-            SlashCommand::Eof => {
-                self.send_stdin(String::new(), true).await;
-                self.input_mode = InputMode::Message;
-            }
             SlashCommand::Message => {
                 self.input_mode = InputMode::Message;
                 self.status = "message mode".into();
-            }
-            SlashCommand::Watch => {
-                let target = self.tree_cursor.or(self.selected).filter(|session_id| {
-                    self.tree
-                        .as_ref()
-                        .is_some_and(|tree| find_session(tree, *session_id).is_some())
-                });
-                if let Some(session_id) = target {
-                    self.watch_session(session_id);
-                } else {
-                    self.status = "no session selected in the tree".into();
-                }
-            }
-            SlashCommand::TreeUp => self.move_tree_selection(true),
-            SlashCommand::TreeDown => {
-                self.move_tree_selection(false);
-            }
-            SlashCommand::TreeToggle => {
-                if let Some(session_id) = self.tree_cursor.filter(|session_id| {
-                    self.tree
-                        .as_ref()
-                        .is_some_and(|tree| find_session(tree, *session_id).is_some())
-                }) && !self.collapsed_sessions.insert(session_id)
-                {
-                    self.collapsed_sessions.remove(&session_id);
-                }
             }
             SlashCommand::Approve(decision) => self.answer_approval(decision).await,
             SlashCommand::Events(level) => {
@@ -3139,18 +3193,6 @@ impl App {
                 self.status = format!("diagnostic event filter: {}", level.name());
             }
             SlashCommand::Help => self.show_help(),
-        }
-    }
-
-    pub(super) fn enter_stdin(&mut self) {
-        if self.selected_running_tool().is_some() {
-            self.input_mode = InputMode::ToolStdin;
-            self.status = format!(
-                "tool stdin for {}",
-                self.stdin_target.expect("stdin target selected")
-            );
-        } else {
-            self.status = "no running interactive tool".into();
         }
     }
 
@@ -3424,21 +3466,6 @@ impl App {
         ids
     }
 
-    pub(super) fn select_next_stdin_target(&mut self) -> bool {
-        let calls = self.running_tool_ids();
-        let Some(next) = calls
-            .iter()
-            .position(|call_id| Some(*call_id) == self.stdin_target)
-            .map(|index| calls[(index + 1) % calls.len()])
-            .or_else(|| calls.first().copied())
-        else {
-            self.stdin_target = None;
-            return false;
-        };
-        self.stdin_target = Some(next);
-        true
-    }
-
     pub(super) fn cancel_active_run(&mut self) {
         let Some(session_id) = self.selected else {
             self.status = "no active run to cancel".into();
@@ -3601,25 +3628,9 @@ impl App {
             self.hit_map.approval_actions = self.render_approval(frame, &approval, area);
         }
         match self.modal {
-            Modal::Sessions => self.render_picker(
-                frame,
-                "Sessions",
-                self.filtered_sessions()
-                    .iter()
-                    .map(|session| {
-                        let title = session
-                            .title
-                            .as_ref()
-                            .map(SessionTitle::to_string)
-                            .unwrap_or_else(|| {
-                                format!("{} · untitled", session.creation_selection.agent)
-                            });
-                        format!("{title}  ({})", short_id(session.session_id))
-                    })
-                    .collect(),
-                None,
-                centered(frame.area(), 68, 50),
-            ),
+            Modal::Sessions => {
+                self.render_session_search(frame, centered(frame.area(), 72, 60));
+            }
             Modal::Agents => {
                 // Root sessions may draft any currently root-runnable
                 // primary/all agent between runs; delegated sessions are
@@ -3846,9 +3857,9 @@ impl App {
     }
 
     pub(super) fn render_tree(&mut self, frame: &mut ratatui::Frame, area: Rect) {
-        // The Agents panel has exactly clamp(visible row count, 1, 3) text
+        // The Agents panel has exactly clamp(visible row count, 1, 8) text
         // rows, with its borders outside that count.
-        let text_rows = self.tree_entries().len().clamp(1, 3) as u16;
+        let text_rows = self.tree_entries().len().clamp(1, 8) as u16;
         let panel_height = text_rows.saturating_add(2).min(area.height);
         let panel = Rect::new(area.x, area.y, area.width, panel_height);
         let entries = self.tree_entries();
@@ -3969,6 +3980,11 @@ impl App {
             "  "
         };
         let cursor = if cursor { "> " } else { "  " };
+        let status = match session.status {
+            SessionStatus::Running => "⏳ ",
+            SessionStatus::Idle | SessionStatus::Completed => "✅ ",
+            SessionStatus::Failed | SessionStatus::Cancelled | SessionStatus::Interrupted => "   ",
+        };
         let title = session
             .title
             .as_ref()
@@ -3978,7 +3994,7 @@ impl App {
         // cursor, and watch markers live in prefix cells only, and the row
         // shows no session ID.
         format!(
-            "{cursor}{indent}{watched}{agent}:{title}",
+            "{cursor}{indent}{watched}{status}{agent}:{title}",
             agent = session.creation_selection.agent,
         )
     }
@@ -4072,6 +4088,102 @@ impl App {
         .into_iter()
         .map(|(rect, index)| PickerRowHit { rect, index })
         .collect();
+    }
+
+    fn render_session_search(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        frame.render_widget(Clear, area);
+        let input_height = 3.min(area.height);
+        let input_area = Rect::new(area.x, area.y, area.width, input_height);
+        let rendered_input = super::pickers::render_search_input(
+            frame,
+            input_area,
+            &mut self.session_search,
+            &self.theme,
+        );
+        self.hit_map.picker_input = Some(InputHit {
+            rect: input_area,
+            text_rect: rendered_input.text_rect,
+        });
+
+        let picker = Rect::new(
+            area.x,
+            area.y.saturating_add(input_height),
+            area.width,
+            area.height.saturating_sub(input_height),
+        );
+        self.hit_map.picker = Some(picker);
+        self.clamp_picker_selection();
+        let rows = self.current_session_search_rows();
+        let session_count = rows.iter().filter(|row| row.session_id().is_some()).count();
+        let title = format!("Sessions ({session_count}/{})", self.sessions.len());
+        frame.render_widget(Block::default().borders(Borders::ALL).title(title), picker);
+        let inner = inner_rect(picker);
+        self.hit_map.picker_rows.clear();
+        if session_count == 0 {
+            frame.render_widget(
+                Paragraph::new("No sessions match the filter.").style(self.theme.muted()),
+                inner,
+            );
+            return;
+        }
+
+        let selected = self
+            .picker_state
+            .selected()
+            .unwrap_or(0)
+            .min(session_count - 1);
+        let selected_visual = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.session_id().is_some())
+            .nth(selected)
+            .map_or(0, |(index, _)| index);
+        let viewport_height = usize::from(inner.height);
+        let max_start = rows.len().saturating_sub(viewport_height);
+        let start = selected_visual
+            .saturating_add(1)
+            .saturating_sub(viewport_height)
+            .min(max_start);
+        let mut selectable_index = rows[..start]
+            .iter()
+            .filter(|row| row.session_id().is_some())
+            .count();
+        for (line, row) in rows.iter().skip(start).take(viewport_height).enumerate() {
+            let row_area = Rect::new(
+                inner.x,
+                inner
+                    .y
+                    .saturating_add(u16::try_from(line).unwrap_or(u16::MAX)),
+                inner.width,
+                1,
+            );
+            match row {
+                SessionSearchRow::Header(label) => {
+                    frame.render_widget(
+                        Paragraph::new(format!("  {label}")).style(self.theme.muted()),
+                        row_area,
+                    );
+                }
+                SessionSearchRow::Session { label, .. } => {
+                    let is_selected = selectable_index == selected;
+                    let prefix = if is_selected { "> " } else { "  " };
+                    let paragraph = Paragraph::new(format!("{prefix}{label}"));
+                    frame.render_widget(
+                        if is_selected {
+                            paragraph.style(self.theme.user())
+                        } else {
+                            paragraph
+                        },
+                        row_area,
+                    );
+                    self.hit_map.picker_rows.push(PickerRowHit {
+                        rect: row_area,
+                        index: selectable_index,
+                    });
+                    selectable_index += 1;
+                }
+            }
+        }
     }
 
     fn render_connect_details(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -4616,6 +4728,21 @@ fn title_change_from_event(
     Some((event.session_id, title, event.seq))
 }
 
+/// Mirror the engine session projection's run lifecycle status derivation.
+pub(super) fn status_change_from_event(
+    event: &cookie_agent_protocol::StoredEvent,
+) -> Option<(SessionId, SessionStatus, u64)> {
+    let status = match &event.payload {
+        EventPayload::RunStarted { .. } => SessionStatus::Running,
+        EventPayload::RunCompleted { .. } => SessionStatus::Completed,
+        EventPayload::RunFailed { .. } => SessionStatus::Failed,
+        EventPayload::RunCancelled { .. } => SessionStatus::Cancelled,
+        EventPayload::RunInterrupted { .. } => SessionStatus::Interrupted,
+        _ => return None,
+    };
+    Some((event.session_id, status, event.seq))
+}
+
 /// Collect the newest known title for each session from the live tree and
 /// session list, so stale patches can be repaired with the newer value.
 fn collect_known_titles(
@@ -4653,6 +4780,52 @@ fn collect_known_titles(
             .entry(*session_id)
             .and_modify(|entry| entry.0 = entry.0.max(*seq))
             .or_insert((*seq, None));
+    }
+}
+
+fn collect_known_statuses(
+    tree: Option<&SessionTree>,
+    sessions: &[SessionMeta],
+    statuses: &mut HashMap<SessionId, (u64, SessionStatus)>,
+) {
+    fn record(meta: &SessionMeta, statuses: &mut HashMap<SessionId, (u64, SessionStatus)>) {
+        statuses
+            .entry(meta.session_id)
+            .and_modify(|entry| {
+                if meta.last_event_seq > entry.0 {
+                    *entry = (meta.last_event_seq, meta.status);
+                }
+            })
+            .or_insert((meta.last_event_seq, meta.status));
+    }
+
+    fn walk(node: &SessionTree, statuses: &mut HashMap<SessionId, (u64, SessionStatus)>) {
+        record(&node.session, statuses);
+        for child in &node.children {
+            walk(child, statuses);
+        }
+    }
+
+    if let Some(tree) = tree {
+        walk(tree, statuses);
+    }
+    for session in sessions {
+        record(session, statuses);
+    }
+}
+
+fn patch_tree_node_statuses(
+    tree: &mut SessionTree,
+    statuses: &HashMap<SessionId, (u64, SessionStatus)>,
+) {
+    if let Some((seq, status)) = statuses.get(&tree.session.session_id)
+        && tree.session.last_event_seq < *seq
+    {
+        tree.session.last_event_seq = *seq;
+        tree.session.status = *status;
+    }
+    for child in &mut tree.children {
+        patch_tree_node_statuses(child, statuses);
     }
 }
 

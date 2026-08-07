@@ -3,8 +3,8 @@
 **Status:** frozen current implementation contract
 
 **Required versions:** configuration schema 7; agent document schema 1;
-protocol 8; event schema 8; session JSONL 8; session metadata 8;
-delegation-journal schema 8; runtime snapshot schema 1; catalog cache schema 2;
+protocol 8; event schema 8; session JSONL 8; session metadata 9;
+delegation-journal schema 8; runtime snapshot schema 2; catalog cache schema 2;
 provider store schema 3; family recipe registry schema 1; project model-snapshot
 manifest schema 1.
 
@@ -12,6 +12,15 @@ Only those versions are accepted. Configuration schema 6, protocol/event/
 persistence 7, catalog cache 1, provider stores 1/2, and every unversioned or earlier replacement
 are rejected. There are no migrations, compatibility readers, aliases, or dual
 paths.
+
+Session metadata schema 9 adds required `last_activity: Timestamp`. Its value is
+the timestamp of the latest event in the session JSONL log; a session containing
+only `SessionCreated` therefore reports its creation-event timestamp. The event
+log is the single source of truth: list/get/tree responses derive the value from
+the in-memory log tail, so live appends are reflected immediately and restart
+replay reconstructs the same value. The rebuildable `meta.json` cache remains
+versioned by `SessionMetaSchemaVersion` but deliberately omits this derived
+field; metadata cache version 8 and every other non-9 version are rejected.
 
 This file is authoritative. Exact types, ordering, failure behavior, startup,
 RPC, persistence, and TUI semantics are in
@@ -55,7 +64,7 @@ Family registry 1 is described in
 12. `provider.connect` and `provider.disconnect` mutate only managed provider
     store state. Connect compiles before a single durable transaction; after a
     successful transaction publication is an infallible in-memory swap.
-13. Runtime snapshot schema 1 is the sole coherent discovery surface. Legacy
+13. Runtime snapshot schema 2 is the sole coherent discovery surface. Legacy
     independently refreshed provider/model/agent list flows do not exist in
     protocol 8.
 14. Runs persist exact safe model bindings, source kind, credential source, and
@@ -441,10 +450,23 @@ infallible publication with `ProviderDisconnected`; replay publishes nothing.
 
 ## 10. Runtime snapshot and notifications
 
-Runtime snapshot schema 1 contains the snapshot schema version, recipe registry
+Runtime snapshot schema 2 contains the snapshot schema version, recipe registry
 revision, catalog revision/source/cache state, provider-state revision, model
 revision, provider-store generation, agent revision, aggregate runtime revision,
 provider descriptors, model descriptors, and materialized agent descriptors.
+Each model descriptor carries ID-sorted variant metadata plus a `variant_order`
+permutation containing every named variant exactly once. Base is implicit and
+precedes that list when cycling. Managed order follows catalog option traversal:
+effort values retain list order, toggles emit `off` then `on`, and token budgets
+emit minimum/automatic before maximum; duplicate generated IDs retain their
+first position. When generated toggle `on` coexists with any generated explicit
+effort or token-budget level, compilation removes `on` from the generated map
+and order as redundant. This suppression precedes managed override directives,
+so an authored addition can intentionally restore `on`. Managed authored
+additions append in directive key order, replacements retain position, and
+disables remove the position. Custom variant definitions are TOML table maps
+decoded into `BTreeMap`, so their declared semantic order is variant-ID key
+order.
 Materialized agents include authored descriptors unchanged plus the conditional
 built-in `default` descriptor when the runtime has available models but no
 root-runnable authored agent.
@@ -582,7 +604,7 @@ is mandatory again before discovery, session admission, and root-run admission.
 
 ## 13. TUI contract
 
-The TUI consumes only runtime snapshot schema 1 and `runtime.changed`. Required
+The TUI consumes only runtime snapshot schema 2 and `runtime.changed`. Required
 global/row states are:
 
 Within the transcript, one assistant block spans all model attempts in one run;

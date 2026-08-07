@@ -220,6 +220,16 @@
           "minLength": 3,
           "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
         },
+        "variant_order": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
+          },
+          "maxItems": 256
+        },
         "variants": {
           "type": "array",
           "items": {
@@ -234,6 +244,7 @@
         "display_name",
         "capabilities",
         "variants",
+        "variant_order",
         "default_variant",
         "behavior_fingerprint"
       ]
@@ -826,7 +837,7 @@
         },
         "snapshot_schema_version": {
           "type": "integer",
-          "const": 1
+          "const": 2
         }
       },
       "additionalProperties": false,

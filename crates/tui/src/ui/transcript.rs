@@ -1486,6 +1486,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend, text::Line};
 
     use crate::Client;
+    use crate::client::ClientDelivery;
     use crate::markdown::{MarkdownDocument, PlainHighlighter};
     use crate::state::{
         ApprovalState, AssistantChild, FrozenAssistantAttribution, SessionState, StateStore,
@@ -2232,6 +2233,7 @@ mod tests {
             title: None,
             title_updated_seq: 0,
             last_event_seq: 1,
+            last_activity: "2026-08-06T12:00:00Z".parse().expect("timestamp"),
             status: SessionStatus::Idle,
         }
     }
@@ -2360,6 +2362,10 @@ mod tests {
                     origin: cookie_agent_protocol::VariantOrigin::ModelsDevEffort,
                     behavior_fingerprint: Sha256Digest::of_bytes(b"high"),
                 },
+            ],
+            variant_order: vec![
+                cookie_agent_protocol::VariantId::new("fast").expect("variant"),
+                cookie_agent_protocol::VariantId::new("high").expect("variant"),
             ],
             default_variant: None,
             behavior_fingerprint: Sha256Digest::of_bytes(b"model"),
@@ -2519,6 +2525,13 @@ mod tests {
                 origin: cookie_agent_protocol::VariantOrigin::Explicit,
                 behavior_fingerprint: Sha256Digest::of_bytes(id.as_bytes()),
             })
+            .collect();
+        descriptor
+            .variants
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        descriptor.variant_order = variants
+            .iter()
+            .map(|id| cookie_agent_protocol::VariantId::new(*id).expect("variant"))
             .collect();
         descriptor.default_variant = default_variant
             .map(|id| cookie_agent_protocol::VariantId::new(id).expect("default variant"));
@@ -2874,9 +2887,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_panel_text_rows_are_clamped_1_to_3_with_borders_outside() {
+    async fn agent_panel_text_rows_are_clamped_1_to_8_with_borders_outside() {
         let mut app = test_app().await;
-        for (sessions, expected_rows) in [(0usize, 3u16), (1, 3), (2, 4), (3, 5), (9, 5)] {
+        for (sessions, expected_rows) in [(0usize, 3u16), (1, 3), (2, 4), (3, 5), (8, 10), (9, 10)]
+        {
             let layout = terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions.max(1));
             app.tree = (sessions > 0).then(|| SessionTree {
                 session: session_meta(SessionId::new_v7()),
@@ -2900,6 +2914,9 @@ mod tests {
             assert!(bottom, "sessions {sessions}");
             assert!(!below, "sessions {sessions}");
         }
+        let tiny = terminal_layout_with_tree_rows(Rect::new(0, 0, 20, 8), 20);
+        assert_eq!(tiny.agent.height, 1);
+        assert_eq!(tiny.conversation.height, 1);
     }
 
     // ------------------------------------------------------------------
@@ -3968,9 +3985,9 @@ mod tests {
         // Primary text is exactly `agent-id:session-title` with no session
         // ID; cursor/watch markers live in prefix cells only.
         let label = app.tree_row_label(&entries[0], false);
-        assert_eq!(label, "  ● primary:fix the flaky test");
+        assert_eq!(label, "  ● ✅ primary:fix the flaky test");
         let label = app.tree_row_label(&entries[0], true);
-        assert_eq!(label, "> ● primary:fix the flaky test");
+        assert_eq!(label, "> ● ✅ primary:fix the flaky test");
         let root_id = root.to_string();
         assert!(!label.contains(&root_id));
         assert!(!label.contains(&root_id[..8]));
@@ -3983,23 +4000,274 @@ mod tests {
         let entries = app.tree_entries();
         assert_eq!(
             app.tree_row_label(&entries[0], false),
-            "    primary:untitled"
+            "    ✅ primary:untitled"
         );
     }
 
     #[tokio::test]
-    async fn sessions_picker_shows_titles_with_filtering_and_no_results_state() {
+    async fn session_search_filters_titles_and_untitled_placeholder() {
         let mut app = test_app().await;
         let first = titled_meta(SessionId::new_v7(), "quarterly report", 1);
         let second = session_meta(SessionId::new_v7());
         app.sessions = vec![first, second];
-        assert_eq!(app.filtered_sessions().len(), 2);
-        app.picker_query = "quarterly".into();
-        assert_eq!(app.filtered_sessions().len(), 1);
-        app.picker_query = "primary".into();
-        assert_eq!(app.filtered_sessions().len(), 2);
-        app.picker_query = "no-such-session".into();
-        assert!(app.filtered_sessions().is_empty());
+        assert_eq!(
+            app.current_session_search_rows()
+                .iter()
+                .filter(|row| row.session_id().is_some())
+                .count(),
+            2
+        );
+        app.session_search
+            .input_mut()
+            .set_buffer("quarterly".into());
+        assert_eq!(
+            app.current_session_search_rows()
+                .iter()
+                .filter(|row| row.session_id().is_some())
+                .count(),
+            1
+        );
+        app.session_search.input_mut().set_buffer("untitled".into());
+        assert_eq!(
+            app.current_session_search_rows()
+                .iter()
+                .filter(|row| row.session_id().is_some())
+                .count(),
+            1
+        );
+        app.session_search.input_mut().set_buffer("primary".into());
+        assert!(
+            app.current_session_search_rows()
+                .iter()
+                .all(|row| row.session_id().is_none())
+        );
+    }
+
+    #[tokio::test]
+    async fn session_search_headers_are_not_clickable_and_click_reroots() {
+        let mut app = test_app().await;
+        let first = SessionId::new_v7();
+        let second = SessionId::new_v7();
+        app.sessions = vec![
+            titled_meta(first, "first session", 1),
+            titled_meta(second, "second session", 1),
+        ];
+        app.modal = Modal::Sessions;
+        frame_rows(&mut app, 100, 30);
+        assert_eq!(app.hit_map.picker_rows.len(), 2);
+        let picker = app.hit_map.picker.expect("picker");
+        app.handle_wheel(picker.x + 1, picker.y + 1, false);
+        assert_eq!(app.session_search.focus(), SearchPickerFocus::List);
+        assert_eq!(app.picker_state.selected(), Some(1));
+        let header_y = app.hit_map.picker_rows[0].rect.y.saturating_sub(1);
+        let picker_x = picker.x + 1;
+        app.handle_click(picker_x, header_y).await;
+        assert_eq!(app.modal, Modal::Sessions);
+        let hit = app.hit_map.picker_rows[1].rect;
+        app.handle_click(hit.x, hit.y).await;
+        assert_eq!(app.modal, Modal::None);
+        assert_eq!(app.tree_root, Some(second));
+    }
+
+    #[tokio::test]
+    async fn session_search_enter_selects_and_live_title_patch_updates_open_overlay() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        app.sessions = vec![titled_meta(session, "before rename", 1)];
+        app.modal = Modal::Sessions;
+        let before = frame_rows(&mut app, 100, 30).join("\n");
+        assert!(before.contains("before rename"));
+        app.apply_title_patch(
+            session,
+            Some(SessionTitle::new("after rename").expect("title")),
+            2,
+        );
+        let after = frame_rows(&mut app, 100, 30).join("\n");
+        assert!(after.contains("after rename"));
+        assert!(!after.contains("before rename"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.session_search.focus(), SearchPickerFocus::List);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::None);
+        assert_eq!(app.tree_root, Some(session));
+    }
+
+    #[tokio::test]
+    async fn agent_tree_status_icons_keep_row_hit_geometry_intact() {
+        let mut app = test_app().await;
+        let statuses = [
+            (SessionStatus::Running, "⏳ "),
+            (SessionStatus::Idle, "✅ "),
+            (SessionStatus::Completed, "✅ "),
+            (SessionStatus::Failed, "   "),
+            (SessionStatus::Cancelled, "   "),
+            (SessionStatus::Interrupted, "   "),
+        ];
+        let root = SessionId::new_v7();
+        let mut root_meta = titled_meta(root, "root", 1);
+        root_meta.status = statuses[0].0;
+        app.tree = Some(SessionTree {
+            session: root_meta,
+            children: statuses[1..]
+                .iter()
+                .enumerate()
+                .map(|(index, (status, _))| {
+                    let mut meta = titled_meta(SessionId::new_v7(), &format!("child {index}"), 1);
+                    meta.status = *status;
+                    SessionTree {
+                        session: meta,
+                        children: Vec::new(),
+                    }
+                })
+                .collect(),
+        });
+        let entries = app.tree_entries();
+        for (entry, (_, icon)) in entries.iter().zip(statuses) {
+            assert!(app.tree_row_label(entry, false).contains(icon));
+        }
+        frame_rows(&mut app, 80, 30);
+        assert_eq!(app.hit_map.tree_rows.len(), statuses.len());
+        assert!(
+            app.hit_map
+                .tree_rows
+                .iter()
+                .all(|hit| hit.rect.width == app.hit_map.tree.expect("tree rect").width)
+        );
+    }
+
+    #[tokio::test]
+    async fn run_lifecycle_events_patch_watched_and_background_panel_statuses_without_tree_rpc() {
+        let (client, requests) = recording_client();
+        let mut app = App::new(client).await.expect("test app");
+        let watched = SessionId::new_v7();
+        let background = SessionId::new_v7();
+        app.selected = Some(watched);
+        app.tree_root = Some(watched);
+        app.sessions = vec![session_meta(watched), session_meta(background)];
+        app.tree = Some(SessionTree {
+            session: session_meta(watched),
+            children: vec![SessionTree {
+                session: session_meta(background),
+                children: Vec::new(),
+            }],
+        });
+        assert!(app.store.apply_event(session_created(watched, 1)));
+        assert!(app.store.apply_event(session_created(background, 1)));
+        requests.lock().expect("requests lock").clear();
+
+        for session_id in [watched, background] {
+            let run = run_id();
+            app.handle_delivery(ClientDelivery::Live {
+                message: Box::new(cookie_agent_protocol::EventSubscriptionMessage::Event {
+                    event: Box::new(run_started_with_suffix(
+                        session_id,
+                        2,
+                        run,
+                        vec![resolved_model(None)],
+                    )),
+                }),
+                generation: 0,
+            })
+            .await;
+            assert_eq!(
+                app.sessions
+                    .iter()
+                    .find(|meta| meta.session_id == session_id)
+                    .expect("session list meta")
+                    .status,
+                SessionStatus::Running
+            );
+            let running_entry = app
+                .tree_entries()
+                .into_iter()
+                .find(|entry| entry.0 == session_id)
+                .expect("tree meta");
+            assert_eq!(running_entry.1.status, SessionStatus::Running);
+            assert!(app.tree_row_label(&running_entry, false).contains("⏳ "));
+
+            app.handle_delivery(ClientDelivery::Live {
+                message: Box::new(cookie_agent_protocol::EventSubscriptionMessage::Event {
+                    event: Box::new(event(
+                        session_id,
+                        3,
+                        run,
+                        EventPayload::RunCompleted { final_text: None },
+                    )),
+                }),
+                generation: 0,
+            })
+            .await;
+            assert_eq!(
+                app.sessions
+                    .iter()
+                    .find(|meta| meta.session_id == session_id)
+                    .expect("session list meta")
+                    .status,
+                SessionStatus::Completed
+            );
+            let completed_entry = app
+                .tree_entries()
+                .into_iter()
+                .find(|entry| entry.0 == session_id)
+                .expect("tree meta");
+            assert_eq!(completed_entry.1.status, SessionStatus::Completed);
+            assert!(app.tree_row_label(&completed_entry, false).contains("✅ "));
+        }
+
+        let merged = app.merge_session_meta(session_meta(watched));
+        assert_eq!(merged.last_event_seq, 3);
+        assert_eq!(merged.status, SessionStatus::Completed);
+        let mut stale_tree = SessionTree {
+            session: session_meta(watched),
+            children: vec![SessionTree {
+                session: session_meta(background),
+                children: Vec::new(),
+            }],
+        };
+        app.patch_tree_titles(&mut stale_tree);
+        assert_eq!(stale_tree.session.status, SessionStatus::Completed);
+        assert_eq!(
+            stale_tree.children[0].session.status,
+            SessionStatus::Completed
+        );
+
+        tokio::task::yield_now().await;
+        assert_eq!(recorded_method_count(&requests, "session.tree"), 0);
+    }
+
+    #[test]
+    fn run_terminal_status_patches_match_engine_session_projection() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let cases = [
+            (
+                EventPayload::RunCompleted { final_text: None },
+                SessionStatus::Completed,
+            ),
+            (
+                EventPayload::RunFailed {
+                    error: SafeErrorMessage::new("failed").expect("error"),
+                },
+                SessionStatus::Failed,
+            ),
+            (
+                EventPayload::RunCancelled { reason: None },
+                SessionStatus::Cancelled,
+            ),
+            (
+                EventPayload::RunInterrupted { reason: None },
+                SessionStatus::Interrupted,
+            ),
+        ];
+        for (payload, expected) in cases {
+            assert_eq!(
+                status_change_from_event(&event(session, 2, run, payload)),
+                Some((session, expected, 2))
+            );
+        }
     }
 
     #[tokio::test]
@@ -4104,28 +4372,28 @@ mod tests {
             assert_eq!(app.tree_root, Some(root));
             assert_eq!(depths(&app), expected, "width {width}");
             assert!(
-                root_selected[0].starts_with("> ● primary:"),
+                root_selected[0].starts_with("> ● ✅"),
                 "width {width}: {root_selected:?}"
             );
-            assert!(root_selected[1].starts_with("  -   primary"));
-            assert!(root_selected[2].starts_with("        p"));
-            assert!(child_selected[0].starts_with("    primary:"));
-            assert!(child_selected[1].starts_with("> - ● primary"));
-            assert!(child_selected[2].starts_with("        p"));
-            assert!(root_selected_again[1].starts_with("  -   primary"));
-            assert!(root_selected_again[2].starts_with("        p"));
+            assert!(root_selected[1].starts_with("  -   ✅"));
+            assert!(root_selected[2].starts_with("        ✅"));
+            assert!(child_selected[0].starts_with("    ✅"));
+            assert!(child_selected[1].starts_with("> - ● ✅"));
+            assert!(child_selected[2].starts_with("        ✅"));
+            assert!(root_selected_again[1].starts_with("  -   ✅"));
+            assert!(root_selected_again[2].starts_with("        ✅"));
 
             // These columns come from the actual rendered buffer. Selection
             // changes cursor/watch cells only; agent text retains depth 0/1/2.
-            assert_eq!(text_column(&root_selected[0], "p"), 4);
-            assert_eq!(text_column(&root_selected[1], "p"), 6);
-            assert_eq!(text_column(&root_selected[2], "p"), 8);
-            assert_eq!(text_column(&child_selected[0], "p"), 4);
-            assert_eq!(text_column(&child_selected[1], "p"), 6);
-            assert_eq!(text_column(&child_selected[2], "p"), 8);
-            assert_eq!(text_column(&root_selected_again[0], "p"), 4);
-            assert_eq!(text_column(&root_selected_again[1], "p"), 6);
-            assert_eq!(text_column(&root_selected_again[2], "p"), 8);
+            assert_eq!(text_column(&root_selected[0], "p"), 7);
+            assert_eq!(text_column(&root_selected[1], "p"), 9);
+            assert_eq!(text_column(&root_selected[2], "p"), 11);
+            assert_eq!(text_column(&child_selected[0], "p"), 7);
+            assert_eq!(text_column(&child_selected[1], "p"), 9);
+            assert_eq!(text_column(&child_selected[2], "p"), 11);
+            assert_eq!(text_column(&root_selected_again[0], "p"), 7);
+            assert_eq!(text_column(&root_selected_again[1], "p"), 9);
+            assert_eq!(text_column(&root_selected_again[2], "p"), 11);
         }
     }
 
@@ -4502,13 +4770,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn composer_variant_hit_cycles_lexically_wraps_and_one_entry_is_noop() {
+    async fn composer_variant_hit_cycles_in_declared_order_wraps_and_one_entry_is_noop() {
         let mut app = test_app().await;
         app.agents = vec![descriptor("primary", true)];
         app.models = vec![catalog_model(MODEL, &["high", "default", "fast"], None)];
         app.draft = app.default_draft_selection();
 
-        for expected in [Some("default"), Some("fast"), Some("high"), None] {
+        for expected in [Some("high"), Some("default"), Some("fast"), None] {
             let rows = frame_rows(&mut app, 48, 24);
             let hit = app
                 .hit_map
@@ -4542,6 +4810,49 @@ mod tests {
         let before = app.draft.clone();
         app.cycle_draft_variant();
         assert_eq!(app.draft, before);
+
+        app.models = vec![catalog_model(MODEL, &["high", "default", "fast"], None)];
+        app.models[0].variant_order =
+            vec![cookie_agent_protocol::VariantId::new("high").expect("variant")];
+        app.revalidate_draft();
+        assert_eq!(
+            app.draft_variants()
+                .iter()
+                .map(|variant| variant.as_ref().map(|id| id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![None, Some("default"), Some("fast"), Some("high")],
+            "descriptor drift falls back to lexical order"
+        );
+    }
+
+    #[tokio::test]
+    async fn composer_variant_hit_cycles_k3_base_low_high_max() {
+        let mut app = test_app().await;
+        app.agents = vec![descriptor("primary", true)];
+        app.models = vec![catalog_model(
+            "kimi-for-coding/k3",
+            &["low", "high", "max"],
+            None,
+        )];
+        app.draft = app.default_draft_selection();
+
+        assert_eq!(
+            app.draft_variants()
+                .iter()
+                .map(|variant| variant.as_ref().map(|id| id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![None, Some("low"), Some("high"), Some("max")]
+        );
+        for expected in [Some("low"), Some("high"), Some("max"), None] {
+            app.cycle_draft_variant();
+            assert_eq!(
+                app.draft
+                    .as_ref()
+                    .and_then(|draft| draft.model.variant.as_ref())
+                    .map(|variant| variant.as_str()),
+                expected
+            );
+        }
     }
 
     #[tokio::test]
@@ -5366,8 +5677,19 @@ mod tests {
         assert_eq!(app.input.as_str(), "p");
         assert!(command_spec("block").is_none());
         assert!(command_spec("scroll").is_none());
+        assert!(command_spec("stdin").is_none());
+        assert!(command_spec("eof").is_none());
+        assert!(command_spec("tree").is_none());
+        assert!(command_spec("watch").is_none());
         assert!(parse_submission("/block next").is_err());
         assert!(parse_submission("/scroll top").is_err());
+        assert!(parse_submission("/stdin").is_err());
+        assert!(parse_submission("/stdin next").is_err());
+        assert!(parse_submission("/eof").is_err());
+        assert!(parse_submission("/tree up").is_err());
+        assert!(parse_submission("/tree down").is_err());
+        assert!(parse_submission("/tree toggle").is_err());
+        assert!(parse_submission("/watch").is_err());
     }
 
     #[tokio::test]
@@ -5395,10 +5717,6 @@ mod tests {
         assert!(!help.contains("/scroll"));
         assert!(command_allowed_in_mode(
             SlashCommand::Help,
-            InputMode::Message
-        ));
-        assert!(!command_allowed_in_mode(
-            SlashCommand::Eof,
             InputMode::Message
         ));
     }
@@ -5512,22 +5830,7 @@ mod tests {
             ("/connect", InputMode::Message, Some("Connect provider")),
             ("/sessions", InputMode::Message, Some("Sessions")),
             ("/cancel", InputMode::Message, Some("no active run")),
-            (
-                "/stdin",
-                InputMode::Message,
-                Some("no running interactive tool"),
-            ),
-            (
-                "/stdin next",
-                InputMode::Message,
-                Some("no running interactive tool"),
-            ),
-            ("/eof", InputMode::ToolStdin, None),
             ("/message", InputMode::ToolStdin, Some("message mode")),
-            ("/watch", InputMode::Message, Some("no session selected")),
-            ("/tree up", InputMode::Message, None),
-            ("/tree down", InputMode::Message, None),
-            ("/tree toggle", InputMode::Message, None),
             ("/approve once", InputMode::Message, None),
             ("/approve tree", InputMode::Message, None),
             ("/approve reject", InputMode::Message, None),
@@ -5616,52 +5919,6 @@ mod tests {
         submit_direct_command(&mut cancel, "/cancel").await;
         wait_for_method(&recorded, "run.cancel", 1).await;
         assert_eq!(recorded_method_count(&recorded, "run.cancel"), 1);
-        assert_eq!(recorded_method_count(&recorded, "run.start"), 0);
-        assert_eq!(recorded_method_count(&recorded, "run.steer"), 0);
-        drop(incoming_guard);
-
-        let mut watch = test_app().await;
-        let (client, recorded, incoming_guard) = live_recording_client();
-        watch.client = client;
-        let session = SessionId::new_v7();
-        watch.tree = Some(SessionTree {
-            session: session_meta(session),
-            children: Vec::new(),
-        });
-        watch.tree_cursor = Some(session);
-        submit_direct_command(&mut watch, "/watch").await;
-        wait_for_method(&recorded, "events.subscribe", 1).await;
-        assert_eq!(watch.selected, Some(session));
-        assert_eq!(recorded_method_count(&recorded, "run.start"), 0);
-        assert_eq!(recorded_method_count(&recorded, "run.steer"), 0);
-        drop(incoming_guard);
-
-        let mut eof = test_app().await;
-        let (client, recorded, incoming_guard) = live_recording_client();
-        eof.client = client;
-        let session = SessionId::new_v7();
-        let call_id = ToolCallId::new_v7();
-        let mut state = SessionState {
-            active_run: Some(run_id()),
-            ..SessionState::default()
-        };
-        state.tools.insert(
-            call_id,
-            ToolCallState {
-                id: call_id,
-                owner: owner(1, "call-1"),
-                presentation: presentation("bash", None),
-                arguments: "{}".into(),
-                status: ToolStatus::Running,
-                detail: String::new(),
-            },
-        );
-        eof.selected = Some(session);
-        eof.store.sessions.insert(session, state);
-        eof.input_mode = InputMode::ToolStdin;
-        submit_direct_command(&mut eof, "/eof").await;
-        wait_for_method(&recorded, "run.tool_stdin", 1).await;
-        assert_eq!(recorded_method_count(&recorded, "run.tool_stdin"), 1);
         assert_eq!(recorded_method_count(&recorded, "run.start"), 0);
         assert_eq!(recorded_method_count(&recorded, "run.steer"), 0);
         drop(incoming_guard);

@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use cookie_agent_protocol::{ProviderDescriptor, SessionId, SessionMeta, SessionTree};
+use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -89,7 +90,7 @@ pub(crate) fn provider_matches(provider: &ProviderDescriptor, query: &str) -> bo
         || provider.id.as_str().to_lowercase().contains(&query)
 }
 
-/// Session picker matching over title, agent ID, and full session ID.
+/// Session picker matching over title and the untitled placeholder.
 pub(crate) fn session_matches(session: &SessionMeta, query: &str) -> bool {
     if query.trim().is_empty() {
         return true;
@@ -98,18 +99,78 @@ pub(crate) fn session_matches(session: &SessionMeta, query: &str) -> bool {
     session
         .title
         .as_ref()
-        .is_some_and(|title| title.to_string().to_lowercase().contains(&query))
-        || session
-            .creation_selection
-            .agent
-            .as_str()
-            .to_lowercase()
-            .contains(&query)
-        || session
-            .session_id
-            .to_string()
-            .to_lowercase()
-            .contains(&query)
+        .map_or("untitled", |title| title.as_str())
+        .to_lowercase()
+        .contains(&query)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SessionSearchRow {
+    Header(String),
+    Session {
+        session_id: SessionId,
+        label: String,
+    },
+}
+
+impl SessionSearchRow {
+    pub(crate) fn session_id(&self) -> Option<SessionId> {
+        match self {
+            Self::Header(_) => None,
+            Self::Session { session_id, .. } => Some(*session_id),
+        }
+    }
+}
+
+/// Search sessions by title and group matching rows by their local activity day.
+pub(crate) fn session_search_rows(
+    sessions: &[SessionMeta],
+    query: &str,
+    now: Timestamp,
+    time_zone: &TimeZone,
+) -> Vec<SessionSearchRow> {
+    let today = now.to_zoned(time_zone.clone()).date();
+    let yesterday = today.yesterday().ok();
+    let mut sessions = sessions
+        .iter()
+        .filter(|session| session_matches(session, query))
+        .collect::<Vec<_>>();
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.last_activity));
+
+    let mut rows = Vec::new();
+    let mut current_date = None;
+    for session in sessions {
+        let date = session.last_activity.to_zoned(time_zone.clone()).date();
+        if current_date != Some(date) {
+            rows.push(SessionSearchRow::Header(session_day_label(
+                date, today, yesterday,
+            )));
+            current_date = Some(date);
+        }
+        let title = session
+            .title
+            .as_ref()
+            .map_or_else(|| "untitled".to_owned(), ToString::to_string);
+        rows.push(SessionSearchRow::Session {
+            session_id: session.session_id,
+            label: format!(
+                "{title}  ({} · {})",
+                session.creation_selection.agent,
+                short_id(session.session_id)
+            ),
+        });
+    }
+    rows
+}
+
+fn session_day_label(date: Date, today: Date, yesterday: Option<Date>) -> String {
+    if date == today {
+        "Today".to_owned()
+    } else if Some(date) == yesterday {
+        "Yesterday".to_owned()
+    } else {
+        date.strftime("%b %-d").to_string()
+    }
 }
 
 /// First eight characters of a session ID for subdued secondary display.
@@ -256,8 +317,8 @@ mod tests {
     use ratatui::widgets::ListState;
 
     use super::{
-        clamp_tree_view, cycle_selection, move_selection, provider_matches, session_matches,
-        short_id,
+        SessionSearchRow, clamp_tree_view, cycle_selection, move_selection, provider_matches,
+        session_matches, session_search_rows, short_id,
     };
 
     fn provider() -> ProviderDescriptor {
@@ -326,6 +387,7 @@ mod tests {
             title: None,
             title_updated_seq: 0,
             last_event_seq: 1,
+            last_activity: "2026-08-06T12:00:00Z".parse().expect("timestamp"),
             status: SessionStatus::Idle,
         }
     }
@@ -355,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn session_filter_matches_title_agent_and_full_id_but_not_short_id() {
+    fn session_filter_matches_title_and_untitled_placeholder_only() {
         let session_id = SessionId::new_v7();
         let mut session = SessionMeta {
             session_id,
@@ -367,12 +429,61 @@ mod tests {
         };
         assert!(session_matches(&session, "quarterly"));
         assert!(session_matches(&session, "REPORT"));
-        assert!(session_matches(&session, "primary"));
-        assert!(session_matches(&session, &session_id.to_string()));
+        assert!(!session_matches(&session, "primary"));
+        assert!(!session_matches(&session, &session_id.to_string()));
         assert!(!session_matches(&session, "unrelated words"));
         session.title = None;
         assert!(!session_matches(&session, "quarterly"));
-        assert!(session_matches(&session, "primary"));
+        assert!(session_matches(&session, "UNTITLED"));
+    }
+
+    #[test]
+    fn session_search_groups_local_days_and_sorts_newest_first() {
+        let now = "2026-08-06T12:00:00Z".parse().expect("timestamp");
+        let time_zone = jiff::tz::TimeZone::UTC;
+        let mut today_old = session_meta(SessionId::new_v7());
+        today_old.title =
+            Some(cookie_agent_protocol::SessionTitle::new("today old").expect("title"));
+        today_old.last_activity = "2026-08-06T09:00:00Z".parse().expect("timestamp");
+        let mut today_new = session_meta(SessionId::new_v7());
+        today_new.title =
+            Some(cookie_agent_protocol::SessionTitle::new("today new").expect("title"));
+        today_new.last_activity = "2026-08-06T11:00:00Z".parse().expect("timestamp");
+        let mut yesterday = session_meta(SessionId::new_v7());
+        yesterday.title =
+            Some(cookie_agent_protocol::SessionTitle::new("yesterday").expect("title"));
+        yesterday.last_activity = "2026-08-05T18:00:00Z".parse().expect("timestamp");
+        let mut older = session_meta(SessionId::new_v7());
+        older.title = Some(cookie_agent_protocol::SessionTitle::new("older").expect("title"));
+        older.last_activity = "2026-08-04T18:00:00Z".parse().expect("timestamp");
+
+        let rows = session_search_rows(
+            &[today_old, older, today_new, yesterday],
+            "",
+            now,
+            &time_zone,
+        );
+        assert_eq!(rows[0], SessionSearchRow::Header("Today".into()));
+        assert!(
+            matches!(&rows[1], SessionSearchRow::Session { label, .. } if label.starts_with("today new"))
+        );
+        assert!(
+            matches!(&rows[2], SessionSearchRow::Session { label, .. } if label.starts_with("today old"))
+        );
+        assert_eq!(rows[3], SessionSearchRow::Header("Yesterday".into()));
+        assert!(
+            matches!(&rows[4], SessionSearchRow::Session { label, .. } if label.starts_with("yesterday"))
+        );
+        assert_eq!(rows[5], SessionSearchRow::Header("Aug 4".into()));
+        assert!(
+            matches!(&rows[6], SessionSearchRow::Session { label, .. } if label.starts_with("older"))
+        );
+        assert!(rows.iter().filter_map(SessionSearchRow::session_id).count() == 4);
+        assert!(
+            rows.iter()
+                .filter(|row| matches!(row, SessionSearchRow::Header(_)))
+                .all(|row| row.session_id().is_none())
+        );
     }
 
     #[test]

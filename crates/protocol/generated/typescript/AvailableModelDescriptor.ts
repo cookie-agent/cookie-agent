@@ -3,4 +3,4 @@ import type { AvailableVariantDescriptor } from "./AvailableVariantDescriptor.js
 import type { ModelCapabilities } from "./ModelCapabilities.js";
 import type { Sha256Digest } from "./Sha256Digest.js";
 
-export type AvailableModelDescriptor = { key: ModelKey, display_name: string, capabilities: ModelCapabilities, variants: Array<AvailableVariantDescriptor>, default_variant: VariantId | null, behavior_fingerprint: Sha256Digest, };
+export type AvailableModelDescriptor = { key: ModelKey, display_name: string, capabilities: ModelCapabilities, variants: Array<AvailableVariantDescriptor>, variant_order: Array<VariantId>, default_variant: VariantId | null, behavior_fingerprint: Sha256Digest, };

@@ -12,7 +12,7 @@ pub use app::{App, run_with_client, run_with_new_session};
 
 use ratatui::layout::Rect;
 
-const MAX_AGENT_HEIGHT: u16 = 5;
+const MAX_AGENT_HEIGHT: u16 = 10;
 const INPUT_HEIGHT: u16 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,10 +26,10 @@ pub(crate) struct UiLayout {
 
 /// Resolve the single top-to-bottom pane geometry for a known visible tree
 /// row count. The Agents panel is exactly
-/// `clamp(visible_tree_row_count, 1, 3)` text rows with its borders outside
+/// `clamp(visible_tree_row_count, 1, 8)` text rows with its borders outside
 /// that count, so the conversation starts immediately below it.
 pub(crate) fn terminal_layout_with_tree_rows(area: Rect, visible_tree_rows: usize) -> UiLayout {
-    let agent_text_rows = visible_tree_rows.clamp(1, 3) as u16;
+    let agent_text_rows = visible_tree_rows.clamp(1, 8) as u16;
     let agent_height = agent_text_rows.saturating_add(2).min(MAX_AGENT_HEIGHT);
     let bar_height = u16::from(area.height > 0);
     let input_height = INPUT_HEIGHT.min(area.height.saturating_sub(bar_height));

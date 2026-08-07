@@ -942,6 +942,9 @@ pub struct AvailableModelDescriptor {
     pub capabilities: ModelCapabilities,
     #[schemars(length(max = 256))]
     pub variants: Vec<AvailableVariantDescriptor>,
+    #[schemars(length(max = 256))]
+    #[ts(type = "Array<VariantId>")]
+    pub variant_order: Vec<VariantId>,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<VariantId>", required)]
     #[ts(type = "VariantId | null")]
@@ -979,6 +982,16 @@ impl AvailableModelDescriptor {
         for variant in &self.variants {
             validate_display_name(&variant.display_name)?;
         }
+        let variant_ids = self
+            .variants
+            .iter()
+            .map(|variant| &variant.id)
+            .collect::<BTreeSet<_>>();
+        if self.variant_order.len() != self.variants.len()
+            || self.variant_order.iter().collect::<BTreeSet<_>>() != variant_ids
+        {
+            return Err(ModelSchemaError::InvalidVariantOrder);
+        }
         if self
             .default_variant
             .as_ref()
@@ -1001,6 +1014,7 @@ impl<'de> Deserialize<'de> for AvailableModelDescriptor {
             display_name: String,
             capabilities: ModelCapabilities,
             variants: Vec<AvailableVariantDescriptor>,
+            variant_order: Vec<VariantId>,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             default_variant: Option<VariantId>,
             behavior_fingerprint: Sha256Digest,
@@ -1011,6 +1025,7 @@ impl<'de> Deserialize<'de> for AvailableModelDescriptor {
             display_name: w.display_name,
             capabilities: w.capabilities,
             variants: w.variants,
+            variant_order: w.variant_order,
             default_variant: w.default_variant,
             behavior_fingerprint: w.behavior_fingerprint,
         };
@@ -1247,6 +1262,7 @@ pub enum ModelSchemaError {
     InvalidDisplayName,
     TooManyVariants,
     VariantsNotStrictlySorted,
+    InvalidVariantOrder,
     UnknownDefaultVariant,
     ResolvedIdentityMismatch,
     DescriptorIdentityMismatch,
@@ -1282,6 +1298,9 @@ impl fmt::Display for ModelSchemaError {
             }
             Self::TooManyVariants => "model has more than 256 variants",
             Self::VariantsNotStrictlySorted => "variants must be strictly sorted by ID",
+            Self::InvalidVariantOrder => {
+                "variant order must contain every available variant exactly once"
+            }
             Self::UnknownDefaultVariant => "default variant is not present",
             Self::ResolvedIdentityMismatch => {
                 "resolved provider/model fields do not match selection"

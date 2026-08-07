@@ -27,13 +27,13 @@ use cookie_agent_protocol::{
     AgentId, ApprovalBoundary, ApprovalCapability, ApprovalDecisionSource, ApprovalFinalOutcome,
     ApprovalInternalDecisionKind, ApprovalReasonCode, ApprovalResourceSource,
     ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision, CatalogRevision, ClientConnectId,
-    ClientRequestId, ClientResponseId, EventPayload, InternalAgentKind, InvocationId,
-    ModelSelection, PermissionAction, PermissionMode, PreparedApprovalResource,
+    ClientRenameId, ClientRequestId, ClientResponseId, EventPayload, InternalAgentKind,
+    InvocationId, ModelSelection, PermissionAction, PermissionMode, PreparedApprovalResource,
     PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
     PreparedResourceDigest, PreparedResourceIdentity, ProviderConnectParams,
     ProviderCredentialValues, ProviderDisconnectParams, ProviderId, ProviderModelId, RunSelection,
-    RunStartParams, RuntimeChangeReason, SessionId, SetupFieldId, Sha256Digest, ToolCallId,
-    ToolTerminationOutcome,
+    RunStartParams, RuntimeChangeReason, SessionId, SessionTitle, SessionTitleChange, SetupFieldId,
+    Sha256Digest, ToolCallId, ToolTerminationOutcome,
 };
 use jiff::Timestamp;
 use tempfile::TempDir;
@@ -457,6 +457,144 @@ fn custom_fixture() -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint("http://127.0.0.1:9/v1")
 }
 
+#[test]
+fn session_metadata_tracks_log_tail_for_create_get_list_tree_and_append() {
+    let (fixture, selection) = custom_fixture();
+    let created = fixture
+        .engine
+        .create_session(selection)
+        .expect("create session");
+    let creation_event = fixture
+        .engine
+        .inner
+        .store
+        .get(created.session_id)
+        .expect("created projection")
+        .log
+        .last_event()
+        .expect("creation event");
+    assert_eq!(created.last_activity, creation_event.timestamp);
+    assert_eq!(
+        fixture
+            .engine
+            .get_session(created.session_id)
+            .expect("get session")
+            .last_activity,
+        creation_event.timestamp
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .list_sessions()
+            .into_iter()
+            .find(|session| session.session_id == created.session_id)
+            .expect("listed session")
+            .last_activity,
+        creation_event.timestamp
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .tree(created.session_id)
+            .expect("session tree")
+            .session
+            .last_activity,
+        creation_event.timestamp
+    );
+
+    fixture
+        .engine
+        .append_direct(
+            created.session_id,
+            None,
+            EventPayload::SessionTitleCommitted {
+                input_through_seq: creation_event.seq,
+                change: SessionTitleChange::UserSet {
+                    title: SessionTitle::new("Latest activity").expect("title"),
+                    client_rename_id: ClientRenameId::new("latest-activity").expect("rename ID"),
+                },
+            },
+        )
+        .expect("append event");
+    let latest_event = fixture
+        .engine
+        .inner
+        .store
+        .get(created.session_id)
+        .expect("updated projection")
+        .log
+        .last_event()
+        .expect("latest event");
+    assert_eq!(
+        fixture
+            .engine
+            .get_session(created.session_id)
+            .expect("updated session")
+            .last_activity,
+        latest_event.timestamp
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .list_sessions()
+            .into_iter()
+            .find(|session| session.session_id == created.session_id)
+            .expect("updated listed session")
+            .last_activity,
+        latest_event.timestamp
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .tree(created.session_id)
+            .expect("updated tree")
+            .session
+            .last_activity,
+        latest_event.timestamp
+    );
+
+    let reopened = reopen_engine(&fixture);
+    assert_eq!(
+        reopened
+            .get_session(created.session_id)
+            .expect("replayed session")
+            .last_activity,
+        latest_event.timestamp
+    );
+}
+
+#[test]
+fn session_metadata_cache_version_eight_is_rejected() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture
+        .engine
+        .create_session(selection)
+        .expect("create session");
+    let path = fixture
+        .engine
+        .inner
+        .store
+        .session_dir(session.session_id)
+        .join("meta.json");
+    let mut persisted: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).expect("read metadata cache"))
+            .expect("parse metadata cache");
+    assert!(persisted.get("last_activity").is_none());
+    persisted["meta_schema_version"] = serde_json::json!(8);
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&persisted).expect("encode old metadata cache"),
+    )
+    .expect("write old metadata cache");
+
+    let error = crate::session::SessionStore::open(
+        &fixture._directory.path().join("data"),
+        fixture._directory.path(),
+    )
+    .expect_err("schema 8 metadata cache must be rejected");
+    assert!(error.to_string().contains("expected 9"));
+}
+
 fn custom_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
@@ -617,7 +755,7 @@ capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, out
 [providers."custom.test".models."a-model"]
 display_name = "A Model"
 capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "unsupported", native_compaction = "unsupported", cancellation = "local_only", media = {} }
-variants = { precise = { operation = "add", defaults = { temperature = 0.25 } } }
+variants = { zeta = { operation = "add" }, alpha = { operation = "add" }, precise = { operation = "add", defaults = { temperature = 0.25 } } }
 default_variant = "precise"
 "#,
     )
@@ -1032,6 +1170,24 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
             && rule.resource.as_str() == "*"
             && rule.effect == cookie_agent_protocol::PermissionEffect::Ask
     }));
+}
+
+#[test]
+fn runtime_snapshot_model_descriptor_preserves_compiled_variant_order() {
+    let fixture = synthetic_default_fixture(None);
+    let snapshot = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
+    let descriptor = snapshot
+        .models
+        .iter()
+        .find(|model| model.key.to_string() == "custom.test/a-model")
+        .expect("runtime model descriptor");
+    let runtime = fixture.manager.current();
+    let compiled = runtime
+        .models()
+        .get(&descriptor.key)
+        .expect("compiled runtime model");
+
+    assert_eq!(descriptor.variant_order, compiled.model.variant_order);
 }
 
 #[test]

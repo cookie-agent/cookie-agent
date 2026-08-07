@@ -117,6 +117,7 @@ pub struct SessionMeta {
     pub title_updated_seq: u64,
     #[schemars(range(min = 1))]
     pub last_event_seq: u64,
+    pub last_activity: Timestamp,
     pub status: SessionStatus,
 }
 impl SessionMeta {
@@ -151,6 +152,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             title: Option<SessionTitle>,
             title_updated_seq: u64,
             last_event_seq: u64,
+            last_activity: Timestamp,
             status: SessionStatus,
         }
         let w = Wire::deserialize(d)?;
@@ -170,6 +172,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             title: w.title,
             title_updated_seq: w.title_updated_seq,
             last_event_seq: w.last_event_seq,
+            last_activity: w.last_activity,
             status: w.status,
         };
         value.validate().map_err(serde::de::Error::custom)?;

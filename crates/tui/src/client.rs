@@ -1470,7 +1470,7 @@ mod tests {
     fn runtime_snapshot_json(digit: &str) -> Value {
         let revision = format!("sha256:{}", digit.repeat(64 / digit.len()));
         serde_json::json!({
-            "snapshot_schema_version": 1,
+            "snapshot_schema_version": cookie_agent_protocol::RuntimeSnapshotSchemaVersion::current(),
             "recipe_registry_revision": revision,
             "catalog_revision": revision,
             "catalog_source": "bootstrap",

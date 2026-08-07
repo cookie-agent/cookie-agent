@@ -15,9 +15,10 @@ use std::{
 
 use cookie_agent_protocol::{
     AgentSnapshot, ChildSummary, ClientRunId, EventPayload, RunId, RunSelection, SessionId,
-    SessionMeta, SessionOrigin, SessionRenameRecord, SessionStatus, SessionTitleChange,
-    SessionTree, ToolCallId, Usage,
+    SessionMeta, SessionMetaSchemaVersion, SessionOrigin, SessionRenameRecord, SessionStatus,
+    SessionTitleChange, SessionTree, ToolCallId, Usage,
 };
+use serde::Deserialize;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -66,6 +67,24 @@ pub struct SessionProjection {
     pub runs: HashMap<RunId, RunProjection>,
     pub rename_records: HashMap<cookie_agent_protocol::ClientRenameId, SessionRenameRecord>,
     pub log: Arc<EventLog>,
+}
+
+impl SessionProjection {
+    #[must_use]
+    pub fn metadata(&self) -> SessionMeta {
+        let mut meta = self.meta.clone();
+        let latest = self
+            .log
+            .last_event()
+            .expect("session event log always has SessionCreated");
+        meta.last_activity = latest.timestamp;
+        meta
+    }
+}
+
+#[derive(Deserialize)]
+struct PersistedSessionMetaVersion {
+    meta_schema_version: SessionMetaSchemaVersion,
 }
 
 #[derive(Debug)]
@@ -123,6 +142,7 @@ impl SessionStore {
             let Ok(id) = entry.file_name().to_string_lossy().parse::<SessionId>() else {
                 continue;
             };
+            read_cache_version(&entry.path().join("meta.json"))?;
             let log = EventLog::open(entry.path().join("events.jsonl"), id)?;
             let projection = projection(log)?;
             store
@@ -136,40 +156,44 @@ impl SessionStore {
 
     pub fn create(
         &self,
-        meta: SessionMeta,
+        session_id: SessionId,
         creation: EventPayload,
     ) -> Result<Arc<EventLog>, SessionError> {
-        self.create_with_status(meta, creation).map(|(log, _)| log)
+        self.create_with_status(session_id, creation)
+            .map(|(log, _)| log)
     }
 
     /// Creates a session atomically and reports whether this caller won creation.
     pub fn create_with_status(
         &self,
-        meta: SessionMeta,
+        session_id: SessionId,
         creation: EventPayload,
     ) -> Result<(Arc<EventLog>, bool), SessionError> {
         let _creation = self
             .creation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let final_dir = self.sessions_dir.join(meta.session_id.to_string());
+        let final_dir = self.sessions_dir.join(session_id.to_string());
         if final_dir.exists() {
-            return Ok((self.get(meta.session_id)?.log, false));
+            return Ok((self.get(session_id)?.log, false));
         }
-        let temporary =
-            self.sessions_dir
-                .join(format!(".{}.{}.tmp", meta.session_id, SessionId::new_v7()));
+        let temporary = self
+            .sessions_dir
+            .join(format!(".{session_id}.{}.tmp", SessionId::new_v7()));
         fs::create_dir_all(&temporary).map_err(|source| SessionError::Io {
             path: temporary.clone(),
             source,
         })?;
-        let _log = EventLog::create(temporary.join("events.jsonl"), meta.session_id, creation)?;
-        write_cache(&temporary.join("meta.json"), &meta)?;
+        let temporary_log = EventLog::create(temporary.join("events.jsonl"), session_id, creation)?;
+        write_cache(
+            &temporary.join("meta.json"),
+            &projection(temporary_log)?.meta,
+        )?;
         fsync_directory(&temporary)?;
         if let Err(source) = fs::rename(&temporary, &final_dir) {
             if source.kind() == std::io::ErrorKind::AlreadyExists || final_dir.exists() {
                 let _ = fs::remove_dir_all(&temporary);
-                return Ok((self.get(meta.session_id)?.log, false));
+                return Ok((self.get(session_id)?.log, false));
             }
             return Err(SessionError::Io {
                 path: final_dir.clone(),
@@ -177,12 +201,12 @@ impl SessionStore {
             });
         }
         fsync_directory(&self.sessions_dir)?;
-        let final_log = EventLog::open(final_dir.join("events.jsonl"), meta.session_id)?;
+        let final_log = EventLog::open(final_dir.join("events.jsonl"), session_id)?;
         let result = projection(final_log.clone())?;
         self.sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(meta.session_id, result);
+            .insert(session_id, result);
         Ok((final_log, true))
     }
 
@@ -251,7 +275,7 @@ impl SessionStore {
     }
 
     pub fn tree(&self, id: SessionId) -> Result<SessionTree, SessionError> {
-        let session = self.get(id)?.meta;
+        let session = self.get(id)?.metadata();
         Ok(SessionTree {
             session,
             children: self
@@ -325,6 +349,10 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
         title: None,
         title_updated_seq: 0,
         last_event_seq: events.last().map_or(1, |event| event.seq),
+        last_activity: events
+            .last()
+            .expect("creation checked by EventLog")
+            .timestamp,
         status: SessionStatus::Idle,
     };
     let mut runs = HashMap::new();
@@ -490,7 +518,15 @@ fn turns_tool_name(
 }
 
 fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
-    let bytes = serde_json::to_vec_pretty(cache).map_err(|source| SessionError::Json {
+    let mut persisted = serde_json::to_value(cache).map_err(|source| SessionError::Json {
+        path: path.to_owned(),
+        source,
+    })?;
+    persisted
+        .as_object_mut()
+        .expect("SessionMeta serializes as an object")
+        .remove("last_activity");
+    let bytes = serde_json::to_vec_pretty(&persisted).map_err(|source| SessionError::Json {
         path: path.to_owned(),
         source,
     })?;
@@ -504,6 +540,20 @@ fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
             path: path.to_owned(),
             source,
         })
+}
+
+fn read_cache_version(path: &Path) -> Result<(), SessionError> {
+    let bytes = fs::read(path).map_err(|source| SessionError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    let version: PersistedSessionMetaVersion =
+        serde_json::from_slice(&bytes).map_err(|source| SessionError::Json {
+            path: path.to_owned(),
+            source,
+        })?;
+    let _ = version.meta_schema_version;
+    Ok(())
 }
 
 fn write_project_cwd(project_dir: &Path, cwd: &Path) -> Result<(), SessionError> {

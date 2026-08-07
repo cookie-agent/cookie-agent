@@ -481,7 +481,7 @@ impl Engine {
                 let result = self
                     .resolve_interrupted_direct(session)
                     .await
-                    .and_then(|()| Ok(self.inner.store.get(session)?.meta));
+                    .and_then(|()| Ok(self.inner.store.get(session)?.metadata()));
                 let _ = reply.send(result);
             }
             SessionCommand::Rename { params, reply } => {
@@ -493,7 +493,7 @@ impl Engine {
                         }
                         return Ok(SessionRenameResult {
                             client_rename_id: params.client_rename_id,
-                            session: projection.meta,
+                            session: projection.metadata(),
                         });
                     }
                     let commit = match params.change {
@@ -520,7 +520,7 @@ impl Engine {
                     )?;
                     Ok(SessionRenameResult {
                         client_rename_id: params.client_rename_id,
-                        session: self.inner.store.get(session)?.meta,
+                        session: self.inner.store.get(session)?.metadata(),
                     })
                 })();
                 let _ = reply.send(result);

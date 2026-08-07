@@ -20,13 +20,7 @@ pub(crate) enum SlashCommand {
     Connect,
     Sessions,
     Cancel,
-    Stdin { next: bool },
-    Eof,
     Message,
-    Watch,
-    TreeUp,
-    TreeDown,
-    TreeToggle,
     Approve(ApprovalUserDecision),
     Events(crate::state::EventLevel),
     Help,
@@ -77,39 +71,11 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         requires_arguments: false,
     },
     CommandSpec {
-        name: "stdin",
-        aliases: &[],
-        usage: "/stdin [next]",
-        description: "enter or cycle tool stdin",
-        requires_arguments: true,
-    },
-    CommandSpec {
-        name: "eof",
-        aliases: &[],
-        usage: "/eof",
-        description: "close tool stdin",
-        requires_arguments: false,
-    },
-    CommandSpec {
         name: "message",
         aliases: &[],
         usage: "/message",
         description: "leave tool stdin",
         requires_arguments: false,
-    },
-    CommandSpec {
-        name: "watch",
-        aliases: &[],
-        usage: "/watch",
-        description: "watch the selected tree session",
-        requires_arguments: false,
-    },
-    CommandSpec {
-        name: "tree",
-        aliases: &[],
-        usage: "/tree up|down|toggle",
-        description: "navigate the session tree",
-        requires_arguments: true,
     },
     CommandSpec {
         name: "approve",
@@ -188,14 +154,7 @@ pub(crate) fn parse_submission(input: &str) -> Result<Submission, String> {
         ["connect"] => SlashCommand::Connect,
         ["sessions"] => SlashCommand::Sessions,
         ["cancel"] => SlashCommand::Cancel,
-        ["stdin"] => SlashCommand::Stdin { next: false },
-        ["stdin", "next"] => SlashCommand::Stdin { next: true },
-        ["eof"] => SlashCommand::Eof,
         ["message"] => SlashCommand::Message,
-        ["watch"] => SlashCommand::Watch,
-        ["tree", "up"] => SlashCommand::TreeUp,
-        ["tree", "down"] => SlashCommand::TreeDown,
-        ["tree", "toggle"] => SlashCommand::TreeToggle,
         ["approve", "once"] => SlashCommand::Approve(ApprovalUserDecision::ApproveOnce),
         ["approve", "tree"] => SlashCommand::Approve(ApprovalUserDecision::ApproveTree),
         ["approve", "reject"] => SlashCommand::Approve(ApprovalUserDecision::Reject),
@@ -212,8 +171,7 @@ pub(crate) fn parse_submission(input: &str) -> Result<Submission, String> {
 
 pub(crate) fn command_allowed_in_mode(command: SlashCommand, mode: InputMode) -> bool {
     match command {
-        SlashCommand::Stdin { .. } => mode == InputMode::Message,
-        SlashCommand::Eof | SlashCommand::Message => mode == InputMode::ToolStdin,
+        SlashCommand::Message => mode == InputMode::ToolStdin,
         _ => mode == InputMode::Message,
     }
 }
@@ -225,14 +183,7 @@ pub(crate) fn command_name(command: SlashCommand) -> &'static str {
         SlashCommand::Connect => "connect",
         SlashCommand::Sessions => "sessions",
         SlashCommand::Cancel => "cancel",
-        SlashCommand::Stdin { next: false } => "stdin",
-        SlashCommand::Stdin { next: true } => "stdin next",
-        SlashCommand::Eof => "eof",
         SlashCommand::Message => "message",
-        SlashCommand::Watch => "watch",
-        SlashCommand::TreeUp => "tree up",
-        SlashCommand::TreeDown => "tree down",
-        SlashCommand::TreeToggle => "tree toggle",
         SlashCommand::Approve(ApprovalUserDecision::ApproveOnce) => "approve once",
         SlashCommand::Approve(ApprovalUserDecision::ApproveTree) => "approve tree",
         SlashCommand::Approve(ApprovalUserDecision::Reject) => "approve reject",
@@ -247,7 +198,7 @@ pub(crate) fn command_name(command: SlashCommand) -> &'static str {
 
 pub(crate) fn command_mode_name(command: SlashCommand) -> &'static str {
     match command {
-        SlashCommand::Eof | SlashCommand::Message => "tool stdin",
+        SlashCommand::Message => "tool stdin",
         _ => "message",
     }
 }

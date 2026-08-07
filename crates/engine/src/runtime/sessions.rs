@@ -44,17 +44,9 @@ impl Engine {
             recipe_registry_revision: runtime.result.snapshot.recipe_registry_revision.clone(),
             manifest_revision: runtime.current_manifest.revision.clone(),
         };
-        let meta = session_meta(
-            id,
-            SessionOrigin::Root,
-            cwd_identity,
-            selection,
-            &runtime.result.snapshot,
-            runtime.current_manifest.revision.clone(),
-        );
-        self.inner.store.create(meta.clone(), creation)?;
+        self.inner.store.create(id, creation)?;
         self.spawn_actor(id);
-        Ok(meta)
+        Ok(self.inner.store.get(id)?.metadata())
     }
 
     #[must_use]
@@ -63,11 +55,11 @@ impl Engine {
             .store
             .all()
             .into_iter()
-            .map(|session| session.meta)
+            .map(|session| session.metadata())
             .collect()
     }
     pub fn get_session(&self, id: SessionId) -> Result<SessionMeta, EngineError> {
-        Ok(self.inner.store.get(id)?.meta)
+        Ok(self.inner.store.get(id)?.metadata())
     }
     pub fn delegate_targets(&self, id: SessionId) -> Result<Vec<AgentId>, EngineError> {
         let session = self.inner.store.get(id)?;
@@ -151,7 +143,7 @@ impl Engine {
     }
     pub fn tree(&self, id: SessionId) -> Result<cookie_agent_protocol::SessionTree, EngineError> {
         Ok(cookie_agent_protocol::SessionTree {
-            session: self.inner.store.get(id)?.meta,
+            session: self.inner.store.get(id)?.metadata(),
             children: self
                 .children(id)
                 .into_iter()
@@ -187,36 +179,8 @@ impl Engine {
             .await?;
         if reset {
             self.generate_title_after_reset(session_id).await?;
-            result.session = self.inner.store.get(session_id)?.meta;
+            result.session = self.inner.store.get(session_id)?.metadata();
         }
         Ok(result)
-    }
-}
-
-pub(crate) fn session_meta(
-    id: SessionId,
-    origin: SessionOrigin,
-    cwd_identity: cookie_agent_protocol::CwdIdentity,
-    creation_selection: RunSelection,
-    runtime: &cookie_agent_protocol::RuntimeSnapshotV1,
-    manifest_revision: cookie_agent_protocol::ModelSnapshotRevision,
-) -> SessionMeta {
-    SessionMeta {
-        meta_schema_version: cookie_agent_protocol::SessionMetaSchemaVersion::current(),
-        session_id: id,
-        origin,
-        cwd_identity,
-        creation_selection,
-        runtime_revision: runtime.runtime_revision.clone(),
-        catalog_revision: runtime.catalog_revision.clone(),
-        provider_state_revision: runtime.provider_state_revision.clone(),
-        model_revision: runtime.model_revision.clone(),
-        agent_revision: runtime.agent_revision.clone(),
-        recipe_registry_revision: runtime.recipe_registry_revision.clone(),
-        manifest_revision,
-        title: None,
-        title_updated_seq: 0,
-        last_event_seq: 1,
-        status: SessionStatus::Idle,
     }
 }

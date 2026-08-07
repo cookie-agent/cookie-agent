@@ -4,8 +4,8 @@ use cookie_agent_identity::{
     AuthFieldName, AuthMethodId, ProviderId, ProviderModelId, SetupFieldId,
 };
 use cookie_agent_models::{
-    AuthOverride, BoundedSetupString, ManagedModelShape, ModelsDevProvider, SafeSetupValue,
-    SecretString,
+    AuthOverride, BoundedSetupString, ManagedModelShape, ModelsDevProvider, ProviderDefinition,
+    SafeSetupValue, SecretString,
     adapters::OvenAdapterFamily,
     catalog::{
         CatalogInterleaved, CatalogLimits, CatalogModalities, CatalogModelEntry,
@@ -313,6 +313,137 @@ fn anthropic_compatible_and_bedrock_accept_toggle_and_budget_variants() {
             .compile_managed("sha256:test", &provider, None)
             .unwrap();
         assert!(compiled.unsupported_models.is_empty());
-        assert_eq!(compiled.models.values().next().unwrap().variants.len(), 4);
+        let model = compiled.models.values().next().unwrap();
+        assert_eq!(model.variants.len(), 3);
+        assert!(!model.variants.keys().any(|id| id.as_str() == "on"));
     }
+}
+
+#[test]
+fn managed_effort_variant_order_preserves_catalog_value_order() {
+    let mut provider = record("@ai-sdk/anthropic", None);
+    provider
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .reasoning_options = vec![CatalogReasoningOption::Effort {
+        values: vec![Some("low".into()), Some("high".into()), Some("max".into())],
+    }];
+
+    let compiled = DynamicCompiler::family_registry()
+        .compile_managed("sha256:test", &provider, None)
+        .unwrap();
+    let order = &compiled.models.values().next().unwrap().variant_order;
+
+    assert_eq!(
+        order.iter().map(|id| id.as_str()).collect::<Vec<_>>(),
+        ["low", "high", "max"]
+    );
+}
+
+#[test]
+fn managed_toggle_only_preserves_on_but_toggle_with_effort_suppresses_it() {
+    let mut provider = record("@ai-sdk/anthropic", None);
+    provider
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .reasoning_options = vec![CatalogReasoningOption::Toggle];
+    let toggle = DynamicCompiler::family_registry()
+        .compile_managed("sha256:test", &provider, None)
+        .unwrap();
+    assert_eq!(
+        toggle
+            .models
+            .values()
+            .next()
+            .unwrap()
+            .variant_order
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        ["off", "on"]
+    );
+
+    provider
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .reasoning_options
+        .push(CatalogReasoningOption::Effort {
+            values: vec![Some("low".into()), Some("high".into())],
+        });
+    let mixed = DynamicCompiler::family_registry()
+        .compile_managed("sha256:test", &provider, None)
+        .unwrap();
+    assert_eq!(
+        mixed
+            .models
+            .values()
+            .next()
+            .unwrap()
+            .variant_order
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        ["off", "low", "high"]
+    );
+    assert!(
+        !mixed
+            .models
+            .values()
+            .next()
+            .unwrap()
+            .variants
+            .keys()
+            .any(|id| id.as_str() == "on")
+    );
+}
+
+#[test]
+fn custom_variant_order_uses_config_key_order() {
+    let definition: ProviderDefinition = toml::from_str(
+        r#"source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "openai-compatible"
+auth = { method = "bearer-api-key-v1", values = { api_key = "secret" } }
+
+[models.test]
+display_name = "Test"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", native_compaction = "unsupported", cancellation = "local_only", media = {} }
+variants = { zeta = { operation = "add" }, alpha = { operation = "add" } }
+"#,
+    )
+    .unwrap();
+    let ProviderDefinition::Custom(provider) = definition else {
+        unreachable!();
+    };
+    let compiled = DynamicCompiler::family_registry()
+        .compile_custom(&ProviderId::new("custom.test").unwrap(), &provider)
+        .unwrap();
+
+    assert_eq!(
+        compiled
+            .models
+            .values()
+            .next()
+            .unwrap()
+            .variant_order
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        ["alpha", "zeta"]
+    );
 }

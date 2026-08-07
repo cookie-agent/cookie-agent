@@ -79,6 +79,10 @@
           "minLength": 1,
           "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
         },
+        "last_activity": {
+          "type": "string",
+          "format": "date-time"
+        },
         "last_event_seq": {
           "type": "integer",
           "format": "uint64",
@@ -92,7 +96,7 @@
         },
         "meta_schema_version": {
           "type": "integer",
-          "const": 8
+          "const": 9
         },
         "model_revision": {
           "type": "string",
@@ -160,6 +164,7 @@
         "title",
         "title_updated_seq",
         "last_event_seq",
+        "last_activity",
         "status"
       ]
     },

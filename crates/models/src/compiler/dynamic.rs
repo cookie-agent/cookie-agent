@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use cookie_agent_identity::{ProviderId, ProviderModelId};
+use cookie_agent_identity::{ProviderId, ProviderModelId, VariantId};
 use serde::Serialize;
 
 use crate::{
@@ -72,8 +72,9 @@ pub struct CompiledDynamicModel {
     pub capabilities: ModelCapabilities,
     pub defaults: RequestDefaults,
     pub options: ProviderOptions,
-    pub variants: BTreeMap<cookie_agent_identity::VariantId, CompiledVariant>,
-    pub default_variant: Option<cookie_agent_identity::VariantId>,
+    pub variants: BTreeMap<VariantId, CompiledVariant>,
+    pub variant_order: Vec<VariantId>,
+    pub default_variant: Option<VariantId>,
     pub status: CompiledModelStatus,
     pub behavior_fingerprint: Sha256Digest,
 }
@@ -309,7 +310,7 @@ impl DynamicCompiler {
                 "unsupported_model_capabilities".to_owned(),
             ));
         }
-        let (variants, default_variant) =
+        let (variants, variant_order, default_variant) =
             managed_variants(&model.reasoning_options, override_, adapter).map_err(|_| {
                 ModelLocalError::Unsupported("unsupported_protocol_feature".to_owned())
             })?;
@@ -350,6 +351,7 @@ impl DynamicCompiler {
                 &defaults,
                 &options,
                 &variants,
+                &variant_order,
                 &default_variant,
                 "managed_catalog",
             ),
@@ -380,6 +382,7 @@ impl DynamicCompiler {
             defaults,
             options,
             variants,
+            variant_order,
             default_variant,
             status,
             behavior_fingerprint,
@@ -417,7 +420,7 @@ impl DynamicCompiler {
             {
                 return Err(DynamicCompileError::CustomModel);
             }
-            let (variants, default_variant) =
+            let (variants, variant_order, default_variant) =
                 custom_variants(&model.variants, model.default_variant.as_ref())
                     .map_err(|_| DynamicCompileError::Variant)?;
             if variants.values().any(|variant| {
@@ -454,8 +457,7 @@ impl DynamicCompiler {
                     &model.capabilities,
                     &model.defaults,
                     &options,
-                    &variants,
-                    &default_variant,
+                    (&variants, &variant_order, &default_variant),
                     "custom_authored",
                 ),
             );
@@ -484,6 +486,7 @@ impl DynamicCompiler {
                     defaults: model.defaults.clone(),
                     options,
                     variants,
+                    variant_order,
                     default_variant,
                     status: CompiledModelStatus::Available,
                     behavior_fingerprint,

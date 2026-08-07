@@ -1425,6 +1425,7 @@ fn compile_frozen_managed(
         defaults: defaults.request.clone(),
         options: options.clone(),
         variants: BTreeMap::new(),
+        variant_order: Vec::new(),
         default_variant: None,
         status: CompiledModelStatus::Available,
         behavior_fingerprint: Sha256Digest::new(

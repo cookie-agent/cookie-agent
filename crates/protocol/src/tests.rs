@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::schema_for;
 use serde_json::json;
@@ -143,11 +143,93 @@ fn runtime() -> RuntimeSnapshotV1 {
 fn exact_versions_are_current_only() {
     assert_eq!(PROTOCOL_VERSION, 8);
     assert_eq!(EVENT_SCHEMA_VERSION, 8);
-    assert_eq!(SESSION_META_SCHEMA_VERSION, 8);
+    assert_eq!(SESSION_META_SCHEMA_VERSION, 9);
     assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 8);
+    assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 2);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(7)).is_err());
-    assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(2)).is_err());
+    assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(1)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
+}
+
+#[test]
+fn available_model_descriptor_serde_round_trip_preserves_variant_order() {
+    let descriptor = AvailableModelDescriptor {
+        key: "test/model".parse().expect("model key"),
+        display_name: "Test model".into(),
+        capabilities: ModelCapabilities {
+            input: BTreeSet::from([Modality::Text]),
+            output: BTreeSet::from([Modality::Text]),
+            context_tokens: 4096,
+            output_tokens: 1024,
+            tool_calling: false,
+            parallel_tool_calls: false,
+            structured_output: false,
+            reasoning: true,
+            temperature: true,
+            top_p: true,
+            seed: false,
+            native_replay: ReplayCapability::Unsupported,
+            native_compaction: CompactionCapability::Unsupported,
+            cancellation: CancellationCapability::LocalOnly,
+            media: BTreeMap::new(),
+        },
+        variants: ["alpha", "zeta"]
+            .into_iter()
+            .map(|id| AvailableVariantDescriptor {
+                id: VariantId::new(id).expect("variant ID"),
+                display_name: id.into(),
+                origin: VariantOrigin::Explicit,
+                behavior_fingerprint: Sha256Digest::of_bytes(id.as_bytes()),
+            })
+            .collect(),
+        variant_order: ["zeta", "alpha"]
+            .into_iter()
+            .map(|id| VariantId::new(id).expect("variant ID"))
+            .collect(),
+        default_variant: None,
+        behavior_fingerprint: Sha256Digest::of_bytes(b"model behavior"),
+    };
+
+    let encoded = serde_json::to_value(&descriptor).expect("serialize model descriptor");
+    let decoded: AvailableModelDescriptor =
+        serde_json::from_value(encoded).expect("deserialize model descriptor");
+    assert_eq!(decoded, descriptor);
+}
+
+#[test]
+fn session_meta_serde_round_trip_preserves_last_activity() {
+    let runtime = runtime();
+    let last_activity = "2026-08-06T12:34:56Z".parse().expect("timestamp");
+    let meta = SessionMeta {
+        meta_schema_version: SessionMetaSchemaVersion::current(),
+        session_id: SessionId::new_v7(),
+        origin: SessionOrigin::Root,
+        cwd_identity: CwdIdentity::new("test-workspace").expect("cwd identity"),
+        creation_selection: RunSelection {
+            agent: AgentId::new("primary").expect("agent ID"),
+            model: ModelSelection {
+                model: "openai/gpt-5.6-sol".parse().expect("model key"),
+                variant: None,
+            },
+        },
+        runtime_revision: runtime.runtime_revision,
+        catalog_revision: runtime.catalog_revision,
+        provider_state_revision: runtime.provider_state_revision,
+        model_revision: runtime.model_revision,
+        agent_revision: runtime.agent_revision,
+        recipe_registry_revision: runtime.recipe_registry_revision,
+        manifest_revision: revision("manifest"),
+        title: None,
+        title_updated_seq: 0,
+        last_event_seq: 1,
+        last_activity,
+        status: SessionStatus::Idle,
+    };
+
+    let encoded = serde_json::to_value(&meta).expect("serialize session metadata");
+    let decoded: SessionMeta =
+        serde_json::from_value(encoded).expect("deserialize session metadata");
+    assert_eq!(decoded, meta);
 }
 
 #[test]

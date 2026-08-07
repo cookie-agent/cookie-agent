@@ -287,7 +287,10 @@ async fn empty_runtime_snapshot_is_coherent_and_legacy_lists_are_absent() {
     let harness = harness();
     let mut client = connect(Arc::clone(&harness.server)).await;
     let (snapshot, _) = request(&mut client, 2, "runtime.snapshot.get", json!({})).await;
-    assert_eq!(snapshot["result"]["snapshot"]["snapshot_schema_version"], 1);
+    assert_eq!(
+        snapshot["result"]["snapshot"]["snapshot_schema_version"],
+        serde_json::json!(cookie_agent_protocol::RuntimeSnapshotSchemaVersion::current())
+    );
     assert_eq!(snapshot["result"]["snapshot"]["models"], json!([]));
     assert_eq!(snapshot["result"]["snapshot"]["agents"], json!([]));
     assert_eq!(snapshot["result"]["snapshot"]["providers"], json!([]));

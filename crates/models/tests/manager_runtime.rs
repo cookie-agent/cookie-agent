@@ -346,6 +346,19 @@ async fn kimi_for_coding_catalog_connect_compiles_full_runtime() {
             || model.model.capabilities.native_replay
                 == cookie_agent_models::ReplayCapability::Required
     }));
+    let k3 = kimi_models
+        .iter()
+        .find(|model| model.key.model_id().as_str() == "k3")
+        .unwrap();
+    assert_eq!(
+        k3.model
+            .variant_order
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        ["off", "low", "high", "max"]
+    );
+    assert!(!k3.model.variants.keys().any(|id| id.as_str() == "on"));
 }
 
 #[tokio::test]
