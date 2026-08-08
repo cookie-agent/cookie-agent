@@ -1,11 +1,14 @@
-//! Durable session event logs and ephemeral tool-output hubs.
+//! Buffered/durable session event logs and ephemeral tool-output hubs.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -44,6 +47,7 @@ pub struct EventLog {
     path: PathBuf,
     session_id: SessionId,
     events: Mutex<Vec<StoredEvent>>,
+    persisted: AtomicBool,
 }
 
 impl EventLog {
@@ -56,6 +60,25 @@ impl EventLog {
             path,
             session_id,
             events: Mutex::new(Vec::new()),
+            persisted: AtomicBool::new(true),
+        });
+        if !matches!(creation, EventPayload::SessionCreated { .. }) {
+            return Err(EventLogError::MissingCreation(log.path.clone()));
+        }
+        log.append_inner(None, creation)?;
+        Ok(log)
+    }
+
+    pub fn create_buffered(
+        path: PathBuf,
+        session_id: SessionId,
+        creation: EventPayload,
+    ) -> Result<Arc<Self>, EventLogError> {
+        let log = Arc::new(Self {
+            path,
+            session_id,
+            events: Mutex::new(Vec::new()),
+            persisted: AtomicBool::new(false),
         });
         if !matches!(creation, EventPayload::SessionCreated { .. }) {
             return Err(EventLogError::MissingCreation(log.path.clone()));
@@ -77,6 +100,7 @@ impl EventLog {
             path,
             session_id,
             events: Mutex::new(records),
+            persisted: AtomicBool::new(true),
         }))
     }
 
@@ -112,7 +136,9 @@ impl EventLog {
         let mut candidate = events.clone();
         candidate.push(event.clone());
         validate_records(&self.path, self.session_id, &candidate)?;
-        append_jsonl(&self.path, &event)?;
+        if self.persisted.load(Ordering::Acquire) {
+            append_jsonl(&self.path, &event)?;
+        }
         events.push(event.clone());
         Ok(event)
     }
@@ -139,6 +165,15 @@ impl EventLog {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    #[must_use]
+    pub fn is_persisted(&self) -> bool {
+        self.persisted.load(Ordering::Acquire)
+    }
+
+    pub fn mark_persisted(&self) {
+        self.persisted.store(true, Ordering::Release);
     }
 }
 

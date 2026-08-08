@@ -142,16 +142,50 @@ fn runtime() -> RuntimeSnapshotV1 {
 #[test]
 fn exact_versions_are_current_only() {
     assert_eq!(PROTOCOL_VERSION, 8);
-    assert_eq!(EVENT_SCHEMA_VERSION, 9);
+    assert_eq!(EVENT_SCHEMA_VERSION, 10);
     assert_eq!(SESSION_META_SCHEMA_VERSION, 9);
     assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 9);
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 2);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(7)).is_err());
     assert!(serde_json::from_value::<AgentSchemaVersion>(json!(1)).is_err());
-    assert!(serde_json::from_value::<EventSchemaVersion>(json!(8)).is_err());
+    assert!(serde_json::from_value::<EventSchemaVersion>(json!(9)).is_err());
     assert!(serde_json::from_value::<DelegationJournalSchemaVersion>(json!(8)).is_err());
     assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(1)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
+}
+
+#[test]
+fn checkpoint_validation_allows_predictive_trigger_and_requires_shrink() {
+    let checkpoint = InternalSummaryCheckpoint::new(
+        "summary".into(),
+        InternalAgentInvocationId::new_v7(),
+        InternalAgentRunId::new_v7(),
+        SummaryByteLimit::new(1024).unwrap(),
+    )
+    .unwrap();
+    let mut commit = ContextCheckpointCommit {
+        checkpoint: ContextCheckpoint::InternalSummary { checkpoint },
+        boundaries: ContextCheckpointBoundaries {
+            source_from_seq: 1,
+            source_through_seq: 2,
+            input_through_seq: 2,
+            prior_checkpoint_seq: None,
+        },
+        budgets: ContextCheckpointBudgets {
+            context_limit_tokens: 100,
+            trigger_tokens: 70,
+            input_tokens_before: 60,
+            input_tokens_after: 2,
+            max_summary_bytes: SummaryByteLimit::new(1024).unwrap(),
+        },
+    };
+
+    assert!(commit.validate().is_ok());
+    commit.budgets.input_tokens_after = commit.budgets.input_tokens_before;
+    assert_eq!(
+        commit.validate(),
+        Err(EventSchemaError::InvalidCheckpointBoundaries)
+    );
 }
 
 #[test]

@@ -3,4 +3,4 @@
 /**
  *The exact event/session-JSONL schema version.
  */
-export type EventSchemaVersion = 9;
+export type EventSchemaVersion = 10;

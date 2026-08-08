@@ -1,6 +1,9 @@
 //! Transcript layout, collapse state, wrapping, scrolling, and hit testing.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use cookie_agent_protocol::SessionId;
 use ratatui::{
@@ -40,7 +43,7 @@ pub(super) struct ScrollbarGeometry {
 }
 
 impl ScrollbarGeometry {
-    fn resolve(track: Rect, content_height: usize) -> Option<Self> {
+    pub(super) fn resolve(track: Rect, content_height: usize) -> Option<Self> {
         if track.height == 0 || content_height <= usize::from(track.height) {
             return None;
         }
@@ -81,7 +84,7 @@ impl ScrollbarGeometry {
         (self.clamp_offset(offset) * travel + self.max_offset / 2) / self.max_offset
     }
 
-    fn with_thumb(mut self, offset: usize) -> Self {
+    pub(super) fn with_thumb(mut self, offset: usize) -> Self {
         let top = self.thumb_top(offset);
         let size = self.thumb_size();
         self.thumb = Rect::new(
@@ -240,6 +243,9 @@ struct ItemLayoutKey {
     id: u64,
     version: u64,
     interaction: Vec<(BlockId, bool)>,
+    /// Animation bucket for items with a streaming thinking part (0 otherwise),
+    /// so the "thinking…" ellipsis advances without a transcript mutation.
+    clock: u8,
 }
 
 #[derive(Clone, Default)]
@@ -259,6 +265,10 @@ struct AssistantPartLayoutKey {
     version: u64,
     expanded: bool,
     streaming: bool,
+    /// Animated ellipsis bucket while thinking streams (0 when settled).
+    dots: u8,
+    /// Sealed thinking duration shown as "thought for Ns" when known.
+    duration: Option<Duration>,
 }
 
 #[derive(Clone)]
@@ -273,6 +283,8 @@ struct TranscriptRenderContext<'a> {
     theme: &'a Theme,
     highlighter: &'a dyn Highlighter,
     minimum_event_level: crate::state::EventLevel,
+    /// Animation bucket (0–3) driving the streaming "thinking…" ellipsis.
+    clock_bucket: u8,
     assistant_part_cache: &'a mut HashMap<u64, CachedAssistantPartLayout>,
     assistant_part_layout_passes: &'a mut u64,
 }
@@ -295,6 +307,7 @@ pub(super) fn ensure_cached_transcript_layout(
     theme: &Theme,
     highlighter: &dyn Highlighter,
     minimum_event_level: crate::state::EventLevel,
+    clock_bucket: u8,
 ) -> bool {
     let key = LayoutCacheKey {
         session_id,
@@ -315,6 +328,11 @@ pub(super) fn ensure_cached_transcript_layout(
             id: item.id(),
             version: item.version(),
             interaction: item_interaction(item, expanded),
+            clock: if item_is_live(state, item) {
+                clock_bucket
+            } else {
+                0
+            },
         };
         let layout = if cache
             .items
@@ -333,6 +351,7 @@ pub(super) fn ensure_cached_transcript_layout(
                     theme,
                     highlighter,
                     minimum_event_level,
+                    clock_bucket,
                     assistant_part_cache: &mut cache.assistant_parts,
                     assistant_part_layout_passes: &mut cache.assistant_part_layout_passes,
                 },
@@ -352,15 +371,7 @@ pub(super) fn ensure_cached_transcript_layout(
             }
             layout
         };
-        let start_line = assembled.lines.len();
-        assembled.lines.extend(layout.lines);
-        for region in layout.regions {
-            assembled.regions.push(BlockRegion {
-                id: region.id,
-                start_line: start_line + region.start_line,
-                end_line: start_line + region.end_line,
-            });
-        }
+        append_item_layout(&mut assembled, layout);
     }
     cache.items.truncate(state.transcript.len());
     cache.layout = assembled;
@@ -386,10 +397,14 @@ impl App {
             .width
             .saturating_sub(2)
             .saturating_sub(u16::from(scrollable));
+        let session_present = self
+            .selected
+            .is_some_and(|session_id| self.store.sessions.contains_key(&session_id));
         let empty_layout = TranscriptLayout {
-            lines: vec![Line::from("Select or create a session")],
+            lines: empty_conversation_lines(session_present, width, &self.theme),
             regions: Vec::new(),
         };
+        let clock_bucket = self.clock_bucket();
         let layout = if let Some((session_id, state)) = self.selected.and_then(|session_id| {
             self.store
                 .sessions
@@ -405,19 +420,35 @@ impl App {
                 &self.theme,
                 self.highlighter.as_ref(),
                 self.tui_config.minimum_event_level,
+                clock_bucket,
             );
-            &self.layout_cache.layout
+            // A fresh session greets with guidance instead of a blank pane;
+            // a filtered-down transcript (lines hidden by the event level)
+            // keeps its own rows, empty-looking or not.
+            if state.transcript.is_empty() {
+                &empty_layout
+            } else {
+                &self.layout_cache.layout
+            }
         } else {
             &empty_layout
         };
         let mut notice_lines = Vec::new();
         for notice in &self.transient_notices {
-            notice_lines.extend(role_block(
-                Role::Internal,
-                vec![Line::from(format!("NOTICE: {notice}"))],
-                width,
-                &self.theme,
-            ));
+            // Multiline notices (e.g. /help) keep their structure: the
+            // NOTICE badge leads, continuation lines align beneath it.
+            let lines = notice
+                .lines()
+                .enumerate()
+                .map(|(index, line)| {
+                    if index == 0 {
+                        Line::from(format!("NOTICE: {line}"))
+                    } else {
+                        Line::from(format!("        {line}"))
+                    }
+                })
+                .collect::<Vec<_>>();
+            notice_lines.extend(role_block(Role::Internal, lines, width, &self.theme));
         }
         // Descendant warnings aggregate into the viewed session's pane with
         // their owning session's attribution. The viewed session's own
@@ -437,6 +468,11 @@ impl App {
                     &self.theme,
                 ));
             }
+        }
+        // Notices follow the same rhythm as transcript items: one blank row
+        // between real content and the first notice block.
+        if !layout.lines.is_empty() && !notice_lines.is_empty() {
+            notice_lines.insert(0, Line::default());
         }
         let viewport = Rect::new(
             area.x.saturating_add(1),
@@ -506,14 +542,23 @@ impl App {
                 hit.flatten()
             })
         };
-        frame.render_widget(
-            Paragraph::new(Text::from(visible_lines)).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(Line::from(title_spans)),
-            ),
-            area,
-        );
+        let mut block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(self.theme.panel_border())
+            .title(Line::from(title_spans));
+        // A viewport that no longer follows live output says so loudly, in
+        // the title row, with the truthful way back — never buried in the
+        // muted status line.
+        if !self.conversation_scroll.following {
+            block = block.title(
+                Line::from(Span::styled(
+                    "↑ scrolled · PgDn: bottom",
+                    self.theme.warning(),
+                ))
+                .right_aligned(),
+            );
+        }
+        frame.render_widget(Paragraph::new(Text::from(visible_lines)).block(block), area);
         self.scrollbar_geometry = scrollbar_track.and_then(|track| {
             ScrollbarGeometry::resolve(track, content_height)
                 .map(|geometry| geometry.with_thumb(self.conversation_scroll.offset))
@@ -536,7 +581,12 @@ impl App {
 
 /// Render the reserved scrollbar column: a subdued track with a distinct
 /// thumb covering the exact visible fraction of the total rendered height.
-fn render_scrollbar_track(frame: &mut ratatui::Frame, geometry: ScrollbarGeometry, theme: &Theme) {
+/// Shared by the conversation pane and the overflowed message composer.
+pub(super) fn render_scrollbar_track(
+    frame: &mut ratatui::Frame,
+    geometry: ScrollbarGeometry,
+    theme: &Theme,
+) {
     for row in 0..geometry.track.height {
         let y = geometry.track.y + row;
         if y >= geometry.track.y + geometry.track.height {
@@ -612,21 +662,36 @@ fn transcript_layout_with_level(
                 theme,
                 highlighter,
                 minimum_event_level,
+                clock_bucket: 0,
                 assistant_part_cache: &mut assistant_parts,
                 assistant_part_layout_passes: &mut assistant_part_layout_passes,
             },
         );
-        let start_line = layout.lines.len();
-        layout.lines.extend(item_layout.lines);
-        for region in item_layout.regions {
-            layout.regions.push(BlockRegion {
-                id: region.id,
-                start_line: start_line + region.start_line,
-                end_line: start_line + region.end_line,
-            });
-        }
+        append_item_layout(&mut layout, item_layout);
     }
     layout
+}
+
+/// One blank row of breathing room between top-level transcript items, so
+/// messages never butt against each other. Items that render nothing
+/// (event rows below the level filter) contribute no lines and no spacer —
+/// never a leading, trailing, or doubled blank row.
+fn append_item_layout(assembled: &mut TranscriptLayout, item_layout: ItemLayout) {
+    if item_layout.lines.is_empty() {
+        return;
+    }
+    if !assembled.lines.is_empty() {
+        assembled.lines.push(Line::default());
+    }
+    let start_line = assembled.lines.len();
+    assembled.lines.extend(item_layout.lines);
+    for region in item_layout.regions {
+        assembled.regions.push(BlockRegion {
+            id: region.id,
+            start_line: start_line + region.start_line,
+            end_line: start_line + region.end_line,
+        });
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -665,6 +730,29 @@ fn item_interaction(
         .into_iter()
         .map(|id| (id, expanded.is_some_and(|blocks| blocks.contains(&id))))
         .collect()
+}
+
+/// Whether one transcript item owns live content — a still-streaming
+/// thinking part or a running tool row — and so re-renders on each
+/// animation clock bucket.
+fn item_is_live(state: &SessionState, item: &TranscriptItem) -> bool {
+    match item {
+        TranscriptItem::Assistant { id, children, .. } => {
+            children.iter().any(|child| match child {
+                AssistantChild::Thinking { id: part_id, .. } => {
+                    state.is_open_thinking(*id, *part_id)
+                }
+                AssistantChild::Tool { call_id } => state
+                    .tools
+                    .get(call_id)
+                    .is_some_and(|tool| tool.status == ToolStatus::Running),
+                AssistantChild::Text { .. }
+                | AssistantChild::Attribution { .. }
+                | AssistantChild::CommittedTool { .. } => false,
+            })
+        }
+        TranscriptItem::User { .. } | TranscriptItem::Event { .. } => false,
+    }
 }
 
 fn transcript_item_layout(
@@ -738,12 +826,21 @@ fn assistant_item_layout(
                         unreachable!()
                     }
                 };
+                let streaming = matches!(child, AssistantChild::Thinking { id, .. } if state.is_open_thinking(item_id, *id));
+                let duration = match child {
+                    AssistantChild::Thinking { id, .. } if !streaming => state
+                        .thinking_duration(item_id, *id)
+                        .filter(|duration| duration.as_secs() >= 1),
+                    _ => None,
+                };
                 let key = AssistantPartLayoutKey {
                     version: child.version(),
                     expanded: block_id.is_some_and(|id| {
                         context.expanded.is_some_and(|blocks| blocks.contains(&id))
                     }),
-                    streaming: matches!(child, AssistantChild::Thinking { id, .. } if state.is_open_thinking(item_id, *id)),
+                    streaming,
+                    dots: if streaming { context.clock_bucket } else { 0 },
+                    duration,
                 };
                 let part_layout = if context
                     .assistant_part_cache
@@ -824,6 +921,13 @@ fn assistant_item_layout(
             }
         }
     }
+    // The block footer closes the run: one muted, gutter-aligned row with
+    // generation speed and context use, from committed-turn usage and
+    // durable event timestamps. Passive — no region, no hover — and absent
+    // entirely when the data is missing.
+    if let Some(footer) = assistant_footer_line(state, item_id, context.width, context.theme) {
+        layout.lines.extend(footer);
+    }
     layout
 }
 
@@ -846,16 +950,22 @@ fn assistant_child_layout(
             let block_id = BlockId::Thinking(*id);
             let body = thinking_body_lines(text, width, theme);
             let hidden_lines = body.len().max(1);
-            // Exactly one chevron per thinking row: `▸` collapsed, `▾`
-            // expanded, after the thinking emoji.
-            let mut label = if key.expanded {
-                "💭 ▾ thinking".to_owned()
+            // While thinking streams the header animates an ellipsis; once
+            // sealed it reads "thought", with the durable elapsed time when
+            // the projection recorded one. Exactly one chevron per thinking
+            // row: `▸` collapsed, `▾` expanded, after the thinking emoji.
+            let status = if key.streaming {
+                format!("thinking{}", ".".repeat(usize::from(key.dots)))
+            } else if let Some(duration) = key.duration {
+                format!("thought for {}", format_thinking_duration(duration))
             } else {
-                format!("💭 ▸ thinking ({hidden_lines} lines hidden)")
+                "thought".to_owned()
             };
-            if key.streaming {
-                label.push_str(" …");
-            }
+            let label = if key.expanded {
+                format!("💭 ▾ {status}")
+            } else {
+                format!("💭 ▸ {status} ({hidden_lines} lines hidden)")
+            };
             let mut lines = assistant_body_line(
                 Line::from(Span::styled(label, theme.thinking())),
                 width,
@@ -883,9 +993,10 @@ fn assistant_child_layout(
 
 /// A compact or expanded tool row inside its owning assistant item. Compact
 /// rows render the persisted sanitized title and primary argument: running
-/// adds `…`, success adds no suffix, and failed/cancelled/interrupted use
-/// their exact concise markers. `COMPLETED` is never rendered. Exactly one
-/// chevron per row, after the tool emoji.
+/// pulses a `…`/dot suffix with the animation clock, success adds no
+/// suffix, and failed/cancelled/interrupted use their exact concise
+/// markers. `COMPLETED` is never rendered. Exactly one chevron per row,
+/// after the tool emoji.
 fn tool_child_layout(
     state: &SessionState,
     call_id: Option<cookie_agent_protocol::ToolCallId>,
@@ -923,11 +1034,19 @@ fn tool_child_layout(
         };
     };
     let (suffix, role) = match tool.status {
-        ToolStatus::Running => (" …", Role::ToolRunning),
-        ToolStatus::Completed => ("", Role::ToolSuccess),
-        ToolStatus::Failed => (" failed", Role::ToolFailure),
-        ToolStatus::Cancelled => (" cancelled", Role::ToolFailure),
-        ToolStatus::Interrupted => (" interrupted", Role::ToolFailure),
+        // The running marker breathes with the animation clock: a resting
+        // ellipsis, then growing dots. Subtle liveness, never busy.
+        ToolStatus::Running => (
+            match context.clock_bucket {
+                0 => " …".to_owned(),
+                dots => format!(" {}", ".".repeat(usize::from(dots))),
+            },
+            Role::ToolRunning,
+        ),
+        ToolStatus::Completed => (String::new(), Role::ToolSuccess),
+        ToolStatus::Failed => (" failed".to_owned(), Role::ToolFailure),
+        ToolStatus::Cancelled => (" cancelled".to_owned(), Role::ToolFailure),
+        ToolStatus::Interrupted => (" interrupted".to_owned(), Role::ToolFailure),
     };
     let title = tool.compact_title();
     let mut body = if is_expanded {
@@ -1053,6 +1172,45 @@ fn split_read_detail(detail: &str) -> (&str, Vec<&str>) {
     (detail[..content_len].trim_end_matches('\n'), metadata)
 }
 
+/// A settled thinking duration as compact text: seconds under a minute,
+/// then minutes and seconds. Sub-second spans never reach the label (they
+/// are filtered to plain "thought" by the caller).
+fn format_thinking_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds >= 60 {
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+/// Warm, actionable empty states: what the pane says before there is
+/// anything to show. The no-session variant points at session commands; the
+/// fresh-session variant invites the first message. Both stay muted so the
+/// guidance never competes with real content, and both wrap to the pane.
+fn empty_conversation_lines(has_session: bool, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    let (headline, hint) = if has_session {
+        (
+            "🍪 Fresh session, warm out of the oven.",
+            "Type a message below to start · `ctrl+p` lists commands · `/help` shows help",
+        )
+    } else {
+        (
+            "No session selected.",
+            "`/sessions` chooses one · `/new` starts one · `ctrl+p` lists commands",
+        )
+    };
+    let wrap = |text: &str, style: Style| {
+        wrapped_line(
+            Line::from(Span::styled(text.to_owned(), style)),
+            width.max(1),
+        )
+    };
+    let mut lines = wrap(headline, theme.muted());
+    lines.extend(wrap(hint, theme.internal()));
+    lines
+}
+
 fn assistant_header(attribution: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     // The frozen `Agent • Model` attribution wraps at tiny widths and is
     // never reduced to a tag: it is the sole producer identity.
@@ -1111,6 +1269,40 @@ fn attribution_line(
         )),
         width,
     )
+}
+
+/// The assistant block's closing footer: `╰─ ⚡ 42.1 tps · 12.5K ctx` in
+/// muted styling — visually subordinate to the body, closing the block's
+/// gutter tree. The rate is committed output tokens over generation wall
+/// time measured between durable event timestamps, so a replayed log yields
+/// the identical row; the ctx is the total context the turn left behind
+/// (`input_tokens + output_tokens`). `None` unless every input is present:
+/// at least one turn with a positive generation span and a known
+/// end-of-turn context total.
+fn assistant_footer_line(
+    state: &SessionState,
+    item_id: u64,
+    width: u16,
+    theme: &Theme,
+) -> Option<Vec<Line<'static>>> {
+    let metrics = state.assistant_metrics.get(&item_id)?;
+    let context_tokens = metrics.context_tokens?;
+    if metrics.timed_output_tokens == 0 || metrics.generation.is_zero() {
+        return None;
+    }
+    let tps = metrics.timed_output_tokens as f64 / metrics.generation.as_secs_f64();
+    let prefix = (width >= 4).then(|| vec![Span::styled("╰─ ", theme.muted())]);
+    Some(repeated_prefixed_wrapped_line(
+        prefix.unwrap_or_default(),
+        Line::from(Span::styled(
+            format!(
+                "⚡ {tps:.1} tps · {} ctx",
+                super::app::format_token_count(context_tokens)
+            ),
+            theme.muted(),
+        )),
+        width,
+    ))
 }
 
 fn assistant_body_line(line: Line<'static>, width: u16, theme: &Theme) -> Vec<Line<'static>> {
@@ -1472,18 +1664,20 @@ mod tests {
     use cookie_agent_protocol::{
         AgentId, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
         ApprovalId, ApprovalRecord, ApprovalRequest, ApprovalResourceSource, ApprovalStatus,
-        ApprovalTrigger, AssistantToolCallRef, AttemptId, DecisionTrace, EventPayload,
-        EventSchemaVersion, ModelCallId, ModelKey, ModelSelection, OperationFingerprint,
-        OutputDelta, OutputStream, PermissionAction, PermissionEffect, PreparedApprovalResource,
-        PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
-        PreparedResourceDigest, PreparedResourceIdentity, ProviderId, RunId, RunSelection,
-        SafeCode, SafeDisplayText, SafeErrorMessage, SessionId, SessionMeta,
+        ApprovalTrigger, ApprovalUserDecision, AssistantToolCallRef, AttemptId, DecisionTrace,
+        EventPayload, EventSchemaVersion, ModelCallId, ModelKey, ModelSelection,
+        OperationFingerprint, OutputDelta, OutputStream, PermissionAction, PermissionEffect,
+        PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
+        PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, ProviderId,
+        RunId, RunSelection, SafeCode, SafeDisplayText, SafeErrorMessage, SessionId, SessionMeta,
         SessionMetaSchemaVersion, SessionOrigin, SessionStatus, SessionTitle, SessionTree,
         Sha256Digest, StoredEvent, ToolCallId, ToolCallStart, Usage,
     };
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use jiff::Timestamp;
-    use ratatui::{Terminal, backend::TestBackend, text::Line};
+    use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
 
     use crate::Client;
     use crate::client::ClientDelivery;
@@ -1499,8 +1693,7 @@ mod tests {
     use crate::ui::pickers::SearchPickerFocus;
     use crate::ui::provider::{ProviderAction, ProviderForm, ProviderFormFocus, ProviderOperation};
     use crate::ui::slash::{
-        InputMode, SlashCommand, Submission, command_allowed_in_mode, command_help, command_spec,
-        parse_submission,
+        SlashCommand, Submission, command_help, command_spec, parse_submission,
     };
     use crate::ui::terminal_layout_with_tree_rows;
 
@@ -2022,7 +2215,7 @@ mod tests {
     }
 
     #[test]
-    fn model_turn_committed_updates_latest_context_input_tokens() {
+    fn model_turn_committed_updates_latest_context_tokens() {
         let session = SessionId::new_v7();
         let run = run_id();
         let first_attempt = AttemptId::new_v7();
@@ -2067,7 +2260,8 @@ mod tests {
         ];
         let mut store = StateStore::default();
         assert!(store.rebuild_session(session, 1, events));
-        assert_eq!(store.sessions[&session].context_input_tokens, Some(48_200));
+        // End-of-turn total: 48,200 consumed plus the fixture's 4 generated.
+        assert_eq!(store.sessions[&session].context_tokens, Some(48_204));
     }
 
     fn text_part(text: &str) -> cookie_agent_protocol::PersistedAssistantPart {
@@ -2233,7 +2427,10 @@ mod tests {
             manifest_revision: protocol_revision("7"),
             title: None,
             title_updated_seq: 0,
-            last_event_seq: 1,
+            // Creation plus one user message: a session with content that
+            // renders in the Agents panel. Tests for the empty-session ghost
+            // filter set this back to 1 explicitly.
+            last_event_seq: 2,
             last_activity: "2026-08-06T12:00:00Z".parse().expect("timestamp"),
             status: SessionStatus::Idle,
         }
@@ -2772,7 +2969,7 @@ mod tests {
     #[test]
     fn terminal_layout_has_exact_rects_for_wide_square_tall_and_tiny_terminals() {
         for (width, height) in [(160, 50), (80, 24), (40, 12), (20, 8), (8, 2), (4, 1)] {
-            let layout = terminal_layout_with_tree_rows(Rect::new(0, 0, width, height), 3);
+            let layout = terminal_layout_with_tree_rows(Rect::new(0, 0, width, height), 3, 1);
             assert_eq!(layout.agent.y, 0);
             assert_eq!(layout.conversation.y, layout.agent.height);
             assert_eq!(layout.bar.height, 1.min(height));
@@ -2791,7 +2988,7 @@ mod tests {
         app.store.sessions.insert(
             session,
             SessionState {
-                context_input_tokens: Some(48_200),
+                context_tokens: Some(48_200),
                 ..SessionState::default()
             },
         );
@@ -2838,7 +3035,10 @@ mod tests {
         requests.lock().expect("requests lock").clear();
 
         let first_row = rendered_row(&mut app, 80, 24, 23);
-        assert!(first_row.contains("auto-approve    ctx"));
+        // Without token data the bar shows no placeholder segment — just
+        // the mode and the commands hint.
+        assert!(first_row.contains("auto-approve    `ctrl+p` commands"));
+        assert!(!first_row.contains("ctx"), "{first_row}");
         let hit = app.hit_map.permission_mode.expect("permission mode hit");
         app.handle_click(hit.x, hit.y).await;
         assert_eq!(
@@ -2878,7 +3078,7 @@ mod tests {
 
         app.selected = Some(second);
         let second_row = rendered_row(&mut app, 80, 24, 23);
-        assert!(second_row.contains("yolo    ctx"));
+        assert!(second_row.contains("yolo    `ctrl+p` commands"));
         let hit = app.hit_map.permission_mode.expect("permission mode hit");
         app.handle_click(hit.x, hit.y).await;
         assert_eq!(
@@ -2892,7 +3092,8 @@ mod tests {
         let mut app = test_app().await;
         for (sessions, expected_rows) in [(0usize, 3u16), (1, 3), (2, 4), (3, 5), (8, 10), (9, 10)]
         {
-            let layout = terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions.max(1));
+            let layout =
+                terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions.max(1), 1);
             app.tree = (sessions > 0).then(|| SessionTree {
                 session: session_meta(SessionId::new_v7()),
                 children: (1..sessions)
@@ -2915,9 +3116,35 @@ mod tests {
             assert!(bottom, "sessions {sessions}");
             assert!(!below, "sessions {sessions}");
         }
-        let tiny = terminal_layout_with_tree_rows(Rect::new(0, 0, 20, 8), 20);
-        assert_eq!(tiny.agent.height, 1);
+        let tiny = terminal_layout_with_tree_rows(Rect::new(0, 0, 20, 8), 20, 1);
+        // The single-row composer is three rows tall, so the eight-row
+        // terminal leaves four rows above the bar: one for the status line,
+        // one guaranteed conversation row, and the rest for the agent panel
+        // (borders only at this extreme).
+        assert_eq!(tiny.agent.height, 2);
         assert_eq!(tiny.conversation.height, 1);
+    }
+
+    #[test]
+    fn composer_grows_with_text_rows_and_reclaims_conversation() {
+        let area = Rect::new(0, 0, 80, 24);
+        let single = terminal_layout_with_tree_rows(area, 3, 1);
+        assert_eq!(single.input.height, 3);
+        let grown = terminal_layout_with_tree_rows(area, 3, 4);
+        assert_eq!(grown.input.height, 6);
+        // Every added composer row comes out of the conversation pane; the
+        // agent panel, status line, and bar keep their geometry.
+        assert_eq!(
+            single.conversation.height - grown.conversation.height,
+            grown.input.height - single.input.height
+        );
+        assert_eq!(grown.agent, single.agent);
+        assert_eq!(grown.bar, single.bar);
+        // The ceiling is five text rows plus borders, and the box stays
+        // glued to the bar above it.
+        let ceiling = terminal_layout_with_tree_rows(area, 3, 99);
+        assert_eq!(ceiling.input.height, 7);
+        assert_eq!(ceiling.input.y + ceiling.input.height, ceiling.bar.y);
     }
 
     // ------------------------------------------------------------------
@@ -3076,6 +3303,199 @@ mod tests {
         assert_eq!(item_block_ids(&item), vec![BlockId::Thinking(10)]);
     }
 
+    // ------------------------------------------------------------------
+    // Assistant footer: generation speed + context from committed turns
+    // ------------------------------------------------------------------
+
+    /// One committed-turn log with fixed durable timestamps: user input at
+    /// T+0 closes the turn's input window, the commit lands at T+2s with
+    /// the given usage. Every timestamp is pinned so runs are reproducible.
+    fn footer_event_log(
+        session: SessionId,
+        run: RunId,
+        attempt: AttemptId,
+        usage: Option<(u64, u64)>,
+        commit_after_seconds: i64,
+    ) -> Vec<StoredEvent> {
+        let base: Timestamp = "2026-08-06T12:00:00Z".parse().expect("timestamp");
+        let at = |seconds: i64| {
+            base.checked_add(jiff::SignedDuration::from_secs(seconds))
+                .expect("timestamp")
+        };
+        let stamp = |stored: StoredEvent, seconds: i64| StoredEvent {
+            timestamp: at(seconds),
+            ..stored
+        };
+        let mut commit = turn_committed(
+            session,
+            4,
+            run,
+            attempt,
+            1,
+            vec![text_part("the answer")],
+            Vec::new(),
+            None,
+        );
+        let EventPayload::ModelTurnCommitted {
+            input_through_seq,
+            turn,
+            ..
+        } = &mut commit.payload
+        else {
+            panic!("expected committed turn");
+        };
+        *input_through_seq = 2;
+        match usage {
+            Some((input_tokens, output_tokens)) => {
+                turn.usage.input_tokens = Some(input_tokens);
+                turn.usage.output_tokens = Some(output_tokens);
+            }
+            None => {
+                turn.usage = Usage {
+                    input_tokens: None,
+                    input_tokens_no_cache: None,
+                    input_tokens_cache_read: None,
+                    input_tokens_cache_write: None,
+                    output_tokens: None,
+                    output_tokens_text: None,
+                    output_tokens_reasoning: None,
+                };
+            }
+        }
+        vec![
+            stamp(session_created(session, 1), 0),
+            stamp(
+                event(
+                    session,
+                    2,
+                    run,
+                    EventPayload::UserInputSubmitted {
+                        input: "question".into(),
+                    },
+                ),
+                0,
+            ),
+            stamp(attempt_started(session, 3, run, attempt, None), 0),
+            stamp(commit, commit_after_seconds),
+        ]
+    }
+
+    async fn app_with_footer_log(events: Vec<StoredEvent>, session: SessionId) -> App {
+        let mut app = test_app().await;
+        app.selected = Some(session);
+        for event in events {
+            assert!(app.store.apply_event(event));
+        }
+        app
+    }
+
+    #[tokio::test]
+    async fn assistant_footer_shows_speed_and_context_from_durable_timestamps() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        // 84 output tokens over the 2s span between the input-closing event
+        // and the commit: 42.0 tps; the ctx is the end-of-turn total,
+        // 12,400 input + 84 generated = 12,484 → 12.5K.
+        let mut app = app_with_footer_log(
+            footer_event_log(session, run, attempt, Some((12_400, 84)), 2),
+            session,
+        )
+        .await;
+        let rendered = frame_rows(&mut app, 100, 30).join("\n");
+        // ⚡ is a two-cell glyph; assert the gutter and the values around it.
+        assert!(rendered.contains("╰─ ⚡"), "gutter: {rendered}");
+        assert!(
+            rendered.contains("42.0 tps · 12.5K ctx"),
+            "footer: {rendered}"
+        );
+        // The footer is passive: it registers no hover target.
+        let footer_row = rendered
+            .lines()
+            .position(|line| line.contains("tps"))
+            .map(|row| row as u16)
+            .expect("footer row");
+        assert_eq!(app.hover_target_at(2, footer_row), None);
+    }
+
+    #[tokio::test]
+    async fn assistant_footer_hides_without_usage_or_a_positive_duration() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        // Old sessions carry no usage at all: no placeholder, no row.
+        let attempt = AttemptId::new_v7();
+        let mut app =
+            app_with_footer_log(footer_event_log(session, run, attempt, None, 2), session).await;
+        let rendered = frame_rows(&mut app, 100, 30).join("\n");
+        assert!(!rendered.contains("tps"), "no usage: {rendered}");
+
+        // A zero-duration span (commit timestamp equals the input's) hides
+        // the footer rather than dividing by zero.
+        let attempt = AttemptId::new_v7();
+        let mut app = app_with_footer_log(
+            footer_event_log(session, run, attempt, Some((12_400, 84)), 0),
+            session,
+        )
+        .await;
+        let rendered = frame_rows(&mut app, 100, 30).join("\n");
+        assert!(!rendered.contains("tps"), "zero duration: {rendered}");
+    }
+
+    #[tokio::test]
+    async fn assistant_footer_is_replay_stable_for_the_same_event_log() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let footer_of = |app: &mut App| {
+            frame_rows(app, 100, 30)
+                .into_iter()
+                .find(|row| row.contains("tps"))
+                .expect("footer row")
+        };
+        let mut first = app_with_footer_log(
+            footer_event_log(session, run, attempt, Some((12_400, 84)), 2),
+            session,
+        )
+        .await;
+        let first = footer_of(&mut first);
+        let mut second = app_with_footer_log(
+            footer_event_log(session, run, attempt, Some((12_400, 84)), 2),
+            session,
+        )
+        .await;
+        let second = footer_of(&mut second);
+        assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn assistant_footer_wraps_within_narrow_widths() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let mut app = app_with_footer_log(
+            footer_event_log(session, run, attempt, Some((12_400, 84)), 2),
+            session,
+        )
+        .await;
+        // Every width renders without overflow; once the wrapped footer
+        // fits whole words (≈16 cells) it stays visible.
+        for width in [3, 8, 12, 16, 24] {
+            let rows = frame_rows(&mut app, width, 40);
+            assert!(
+                rows.iter()
+                    .all(|row| row.chars().count() <= usize::from(width)),
+                "width {width}: {rows:?}"
+            );
+        }
+        for width in [16, 24] {
+            let rendered = frame_rows(&mut app, width, 40).join("\n");
+            assert!(
+                rendered.contains("tps"),
+                "width {width} keeps the footer: {rendered}"
+            );
+        }
+    }
+
     #[test]
     fn merged_thinking_children_have_distinct_regions_and_collapse_state() {
         let state = assistant_state(vec![
@@ -3101,10 +3521,204 @@ mod tests {
             vec![BlockId::Thinking(10), BlockId::Thinking(20)]
         );
         let rendered = snapshot_lines(&layout.lines);
-        assert!(rendered.contains("💭 ▾ thinking"));
+        assert!(rendered.contains("💭 ▾ thought"));
         assert!(rendered.contains("first thought"));
-        assert!(rendered.contains("💭 ▸ thinking"));
+        assert!(rendered.contains("💭 ▸ thought"));
         assert!(!rendered.contains("second thought"));
+    }
+
+    #[test]
+    fn streaming_thinking_header_animates_its_ellipsis_with_the_clock() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            attempt_started(session, 1, run, attempt, None),
+            reasoning_delta(session, 2, run, attempt, "pondering"),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        assert!(state.has_open_thinking());
+        let mut cache = LayoutCache::default();
+        let mut previous = String::new();
+        for (bucket, expected) in ["thinking", "thinking.", "thinking..", "thinking..."]
+            .iter()
+            .enumerate()
+        {
+            ensure_cached_transcript_layout(
+                &mut cache,
+                session,
+                state,
+                None,
+                60,
+                &Theme::default(),
+                &crate::markdown::SyntectHighlighter::default(),
+                crate::state::EventLevel::Debug,
+                u8::try_from(bucket).expect("bucket"),
+            );
+            let rendered = snapshot_lines(&cache.layout.lines);
+            assert!(
+                rendered.contains(&format!("💭 ▸ {expected} ")),
+                "bucket {bucket}: {rendered}"
+            );
+            if bucket > 0 {
+                // Each clock bucket invalidates the cached label in place:
+                // no transcript mutation is needed to advance the ellipsis.
+                assert_ne!(rendered, previous, "bucket {bucket}");
+            }
+            previous = rendered;
+        }
+    }
+
+    #[test]
+    fn sealed_thinking_header_reports_the_recorded_duration() {
+        let mut state = assistant_state(vec![AssistantChild::Thinking {
+            id: 7,
+            version: 0,
+            text: "pondered".into(),
+        }]);
+        state
+            .thinking_durations
+            .insert((1, 7), Duration::from_secs(95));
+        let collapsed = snapshot_lines(&transcript_layout(&state, None, 60).lines);
+        assert!(collapsed.contains("💭 ▸ thought for 1m 35s"), "{collapsed}");
+        let expanded = HashSet::from([BlockId::Thinking(7)]);
+        let expanded = snapshot_lines(&transcript_layout(&state, Some(&expanded), 60).lines);
+        assert!(expanded.contains("💭 ▾ thought for 1m 35s"), "{expanded}");
+
+        // Sub-second streams settle to the plain label: "thought for 0s"
+        // would read as noise.
+        state
+            .thinking_durations
+            .insert((1, 7), Duration::from_millis(400));
+        let rendered = snapshot_lines(&transcript_layout(&state, None, 60).lines);
+        assert!(rendered.contains("💭 ▸ thought "), "{rendered}");
+        assert!(!rendered.contains("thought for"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn thinking_clock_cycles_buckets_only_while_thinking_streams() {
+        let mut app = test_app().await;
+        assert!(!app.animation_active());
+
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        for event in [
+            session_created(session, 1),
+            attempt_started(session, 2, run, attempt, None),
+            reasoning_delta(session, 3, run, attempt, "pondering"),
+        ] {
+            assert!(app.store.apply_event(event));
+        }
+        app.selected = Some(session);
+        assert!(app.animation_active());
+
+        // Twelve 33ms frames per step ≈ 400ms per ellipsis dot, wrapping
+        // after "thinking..." back to the bare label.
+        assert_eq!(app.clock_bucket(), 0);
+        for expected in [1, 2, 3, 0] {
+            for _ in 0..12 {
+                app.animation_tick();
+            }
+            assert_eq!(app.clock_bucket(), expected);
+        }
+
+        // Sealing the part (any other part opening, or a commit) stops the
+        // animation; the UI is event-driven again.
+        assert!(
+            app.store
+                .apply_event(text_delta(session, 4, run, attempt, "answer"))
+        );
+        assert!(!app.animation_active());
+    }
+
+    #[tokio::test]
+    async fn running_tool_rows_pulse_with_the_clock() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let call = ToolCallId::new_v7();
+        for event in [
+            session_created(session, 1),
+            attempt_started(session, 2, run, attempt, None),
+            turn_committed(
+                session,
+                3,
+                run,
+                attempt,
+                1,
+                vec![cookie_agent_protocol::PersistedAssistantPart::ToolCall {
+                    id: ModelCallId::new("call-1").expect("call"),
+                    provider_item_id: None,
+                    name: SafeCode::new("bash").expect("tool"),
+                    input: serde_json::json!({"command": "sleep 2"}),
+                    raw_input: None,
+                    metadata: None,
+                }],
+                Vec::new(),
+                None,
+            ),
+            tool_started_at(
+                session,
+                4,
+                run,
+                call,
+                1,
+                "call-1",
+                0,
+                "bash",
+                Some("sleep 2"),
+            ),
+        ] {
+            assert!(app.store.apply_event(event));
+        }
+        app.selected = Some(session);
+
+        // A running tool keeps the animation clock alive on its own.
+        assert!(app.animation_active());
+        let state = &app.store.sessions[&session];
+        let mut cache = LayoutCache::default();
+        let mut seen = Vec::new();
+        for bucket in 0..4u8 {
+            ensure_cached_transcript_layout(
+                &mut cache,
+                session,
+                state,
+                None,
+                60,
+                &Theme::default(),
+                &crate::markdown::SyntectHighlighter::default(),
+                crate::state::EventLevel::Debug,
+                bucket,
+            );
+            seen.push(snapshot_lines(&cache.layout.lines));
+        }
+        assert!(seen[0].contains("🔨 ▸ bash sleep 2 …"), "{}", seen[0]);
+        assert!(seen[1].contains("🔨 ▸ bash sleep 2 ."), "{}", seen[1]);
+        assert!(seen[2].contains("🔨 ▸ bash sleep 2 .."), "{}", seen[2]);
+        assert!(seen[3].contains("🔨 ▸ bash sleep 2 ..."), "{}", seen[3]);
+        // Each bucket re-rendered the cached live item in place.
+        assert!(seen.windows(2).all(|pair| pair[0] != pair[1]));
+
+        // Completion settles the row and stops the clock.
+        assert!(app.store.apply_event(tool_terminated(
+            session,
+            5,
+            run,
+            call,
+            1,
+            "call-1",
+            cookie_agent_protocol::ToolTerminationOutcome::Completed,
+        )));
+        assert!(!app.animation_active());
+        let state = &app.store.sessions[&session];
+        let settled = snapshot_lines(&transcript_layout(state, None, 60).lines);
+        assert!(settled.contains("🔨 ▸ bash sleep 2"), "{settled}");
+        assert!(!settled.contains('…'), "{settled}");
     }
 
     #[test]
@@ -3131,13 +3745,13 @@ mod tests {
         );
 
         let collapsed = snapshot_lines(&transcript_layout(&state, None, 60).lines);
-        assert!(collapsed.contains("💭 ▸ thinking"));
+        assert!(collapsed.contains("💭 ▸ thought"));
         assert!(collapsed.contains("🔨 ▸ bash true"));
 
         let expanded = HashSet::from([BlockId::Thinking(10), BlockId::Tool(call_id)]);
         let expanded_layout = transcript_layout(&state, Some(&expanded), 60);
         let expanded_rendered = snapshot_lines(&expanded_layout.lines);
-        assert!(expanded_rendered.contains("💭 ▾ thinking"));
+        assert!(expanded_rendered.contains("💭 ▾ thought"));
         assert!(expanded_rendered.contains("🔨 ▾ bash true"));
         assert_eq!(expanded_layout.regions.len(), 2);
 
@@ -4004,6 +4618,81 @@ mod tests {
             "    ✅ primary:untitled"
         );
     }
+    #[tokio::test]
+    async fn watched_tree_row_keeps_its_glyph_but_never_a_color_marker() {
+        let mut app = test_app().await;
+        // Pin the default true-color theme so the assertions do not depend
+        // on the developer's ambient tui.toml or terminal detection.
+        app.theme = Theme::default();
+        let meta = |id: SessionId, title: &str| {
+            let mut meta = titled_meta(id, title, 1);
+            // Space-padded statuses keep every glyph single-width: ratatui
+            // resets the continuation cell after a wide emoji, which would
+            // otherwise break the cell-for-cell comparison below.
+            meta.status = SessionStatus::Failed;
+            meta
+        };
+        let watched = SessionId::new_v7();
+        let other = SessionId::new_v7();
+        let sibling = SessionId::new_v7();
+        app.selected = Some(watched);
+        app.tree_root = Some(watched);
+        app.tree = Some(SessionTree {
+            session: meta(watched, "watched root"),
+            children: vec![
+                SessionTree {
+                    session: meta(other, "cursor child"),
+                    children: Vec::new(),
+                },
+                SessionTree {
+                    session: meta(sibling, "plain sibling"),
+                    children: Vec::new(),
+                },
+            ],
+        });
+        // Park the keyboard cursor on the first child so the watched row
+        // shows exactly its own styling, not the cursor's.
+        app.tree_cursor = Some(other);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| app.draw_for_test(frame))
+            .expect("app render");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(app.hit_map.tree_rows.len(), 3);
+        let watched_row = app.hit_map.tree_rows[0].rect;
+        let cursor_row = app.hit_map.tree_rows[1].rect;
+        let reference_row = app.hit_map.tree_rows[2].rect;
+
+        // The `●` glyph remains the only "current session" marker…
+        let entries = app.tree_entries();
+        assert!(app.tree_row_label(&entries[0], false).contains("● "));
+        // …while the row renders exactly like every other plain row:
+        // cell-for-cell identical styles (no toasted selection band, no
+        // user-role color), and none of the bold/reverse modifiers the
+        // removed accents carried.
+        for x in watched_row.x..watched_row.x.saturating_add(watched_row.width) {
+            let cell = buffer[(x, watched_row.y)].style();
+            let reference = buffer[(x, reference_row.y)].style();
+            assert_eq!(cell, reference, "same as every other row: {cell:?}");
+            assert!(
+                !cell.add_modifier.contains(Modifier::BOLD),
+                "no bold accent: {cell:?}"
+            );
+            assert!(
+                !cell.add_modifier.contains(Modifier::REVERSED),
+                "no reverse accent: {cell:?}"
+            );
+        }
+        // The keyboard cursor row keeps its assistant accent — keyboard
+        // selection is a separate, intentional highlight.
+        let cursor_cell = buffer[(cursor_row.x, cursor_row.y)].style();
+        assert_eq!(
+            cursor_cell.fg,
+            app.theme.assistant().fg,
+            "cursor accent: {cursor_cell:?}"
+        );
+    }
 
     #[tokio::test]
     async fn session_search_filters_titles_and_untitled_placeholder() {
@@ -4239,6 +4928,151 @@ mod tests {
         assert_eq!(recorded_method_count(&requests, "session.tree"), 0);
     }
 
+    #[tokio::test]
+    async fn tree_panel_hides_empty_sessions_until_their_first_message_lands() {
+        let mut app = test_app().await;
+        let root = SessionId::new_v7();
+        let worker = SessionId::new_v7();
+        let ghost = SessionId::new_v7();
+        let mut ghost_meta = session_meta(ghost);
+        // Only `SessionCreated` in the log: no user message yet.
+        ghost_meta.last_event_seq = 1;
+        app.tree = Some(SessionTree {
+            session: session_meta(root),
+            children: vec![
+                SessionTree {
+                    session: session_meta(worker),
+                    children: Vec::new(),
+                },
+                SessionTree {
+                    session: ghost_meta,
+                    children: Vec::new(),
+                },
+            ],
+        });
+
+        // The ghost renders nowhere: flattened entries and click hit rows
+        // skip it while content sessions keep their order.
+        assert_eq!(
+            app.tree_entries()
+                .iter()
+                .map(|(id, _, _)| *id)
+                .collect::<Vec<_>>(),
+            vec![root, worker]
+        );
+        frame_rows(&mut app, 100, 30);
+        assert_eq!(
+            app.hit_map
+                .tree_rows
+                .iter()
+                .map(|hit| hit.session_id)
+                .collect::<Vec<_>>(),
+            vec![root, worker]
+        );
+
+        // Its first run event bumps the sequence and the row appears.
+        app.apply_status_patch(ghost, SessionStatus::Running, 2);
+        assert_eq!(
+            app.tree_entries()
+                .iter()
+                .map(|(id, _, _)| *id)
+                .collect::<Vec<_>>(),
+            vec![root, worker, ghost]
+        );
+
+        // A tree of ghosts only renders the panel's empty state, never rows.
+        let mut solo = session_meta(root);
+        solo.last_event_seq = 1;
+        app.tree = Some(SessionTree {
+            session: solo,
+            children: Vec::new(),
+        });
+        assert!(app.tree_entries().is_empty());
+        let rendered = frame_rows(&mut app, 100, 30).join("\n");
+        assert!(rendered.contains("No sessions yet"));
+    }
+
+    #[tokio::test]
+    async fn tree_navigation_skips_hidden_sessions_and_heals_a_hidden_cursor() {
+        let mut app = test_app().await;
+        let root = SessionId::new_v7();
+        let first = SessionId::new_v7();
+        let ghost = SessionId::new_v7();
+        let last = SessionId::new_v7();
+        let mut ghost_meta = session_meta(ghost);
+        ghost_meta.last_event_seq = 1;
+        app.tree = Some(SessionTree {
+            session: session_meta(root),
+            children: vec![
+                SessionTree {
+                    session: session_meta(first),
+                    children: Vec::new(),
+                },
+                SessionTree {
+                    session: ghost_meta,
+                    children: Vec::new(),
+                },
+                SessionTree {
+                    session: session_meta(last),
+                    children: Vec::new(),
+                },
+            ],
+        });
+
+        // Navigation walks root → first → last and never lands on the ghost.
+        app.tree_cursor = Some(root);
+        app.move_tree_selection(false);
+        assert_eq!(app.tree_cursor, Some(first));
+        app.move_tree_selection(false);
+        assert_eq!(app.tree_cursor, Some(last));
+        app.move_tree_selection(false);
+        assert_eq!(app.tree_cursor, Some(last));
+        app.move_tree_selection(true);
+        assert_eq!(app.tree_cursor, Some(first));
+
+        // A cursor left pointing at a hidden session — the just-created
+        // watched session before its first message — never navigates onto
+        // the ghost and heals onto the first visible row at render.
+        app.tree_cursor = Some(ghost);
+        app.move_tree_selection(true);
+        assert_eq!(app.tree_cursor, Some(root));
+        app.tree_cursor = Some(ghost);
+        frame_rows(&mut app, 100, 30);
+        assert_eq!(app.tree_cursor, Some(root));
+    }
+
+    #[tokio::test]
+    async fn hidden_current_session_stays_fully_usable() {
+        let mut app = test_app().await;
+        let current = SessionId::new_v7();
+        let mut meta = session_meta(current);
+        meta.last_event_seq = 1;
+        app.selected = Some(current);
+        app.tree_root = Some(current);
+        app.tree = Some(SessionTree {
+            session: meta,
+            children: Vec::new(),
+        });
+        app.tree_cursor = Some(current);
+        app.draft = Some(RunSelection {
+            agent: agent_id(),
+            model: ModelSelection {
+                model: model_key(),
+                variant: None,
+            },
+        });
+
+        let rendered = frame_rows(&mut app, 100, 30).join("\n");
+        // The panel shows its empty state with no ghost row or hit region…
+        assert!(app.tree_entries().is_empty());
+        assert!(app.hit_map.tree_rows.is_empty());
+        assert!(rendered.contains("No sessions yet"));
+        // …while the composer and the Message title bar keep working.
+        assert!(app.hit_map.input.is_some());
+        assert!(!app.hit_map.title_segments.is_empty());
+        assert_eq!(app.selected, Some(current));
+    }
+
     #[test]
     fn run_terminal_status_patches_match_engine_session_projection() {
         let session = SessionId::new_v7();
@@ -4466,6 +5300,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn message_title_bolds_only_the_agent_name() {
+        let mut app = test_app().await;
+        // Pin the default true-color theme so style assertions do not
+        // depend on the developer's ambient tui.toml or terminal detection.
+        app.theme = Theme::default();
+        app.agents = vec![descriptor("primary", true)];
+        app.models = vec![model_descriptor()];
+        app.draft = Some(RunSelection {
+            agent: agent_id(),
+            model: ModelSelection {
+                model: model_key(),
+                variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
+            },
+        });
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| app.draw_for_test(frame))
+            .expect("app render");
+        let buffer = terminal.backend().buffer();
+        let segment_rect = |segment: TitleSegment| {
+            app.hit_map
+                .title_segments
+                .iter()
+                .find(|hit| hit.segment == segment)
+                .expect("title segment")
+                .rect
+        };
+        let agent = segment_rect(TitleSegment::Agent);
+        let model = segment_rect(TitleSegment::Model);
+        let variant = segment_rect(TitleSegment::Variant);
+        // The bullet is decoration between the agent and model segments.
+        let bullet = Rect::new(
+            agent.x.saturating_add(agent.width),
+            agent.y,
+            model.x.saturating_sub(agent.x.saturating_add(agent.width)),
+            1,
+        );
+
+        // The focused composer's border is bold caramel; only the agent
+        // name keeps that weight. Everything in the title shares the border
+        // accent color — bold is the emphasis, never a color marker.
+        for x in agent.x..agent.x.saturating_add(agent.width) {
+            let cell = buffer[(x, agent.y)].style();
+            assert!(
+                cell.add_modifier.contains(Modifier::BOLD),
+                "agent name is bold: {cell:?}"
+            );
+            assert_eq!(cell.fg, app.theme.user().fg, "border accent: {cell:?}");
+        }
+        for rect in [bullet, model, variant] {
+            for x in rect.x..rect.x.saturating_add(rect.width) {
+                let cell = buffer[(x, rect.y)].style();
+                assert!(
+                    !cell.add_modifier.contains(Modifier::BOLD),
+                    "segment stays regular: {cell:?}"
+                );
+                assert_eq!(cell.fg, app.theme.user().fg, "shared color: {cell:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn scrolled_message_title_hits_follow_visible_cells_or_disappear() {
         async fn app_at_scroll_position(position: usize, width: u16) -> (App, Vec<String>) {
             let mut app = test_app().await;
@@ -4492,7 +5389,10 @@ mod tests {
                 2 => {}
                 _ => unreachable!(),
             }
-            assert_eq!(app.input.viewport_row(), [0, 1, 4][position]);
+            // The seven-line draft grows the composer to its five-text-row
+            // ceiling, so the viewport only scrolls once the cursor passes
+            // row four: positions land at rows 0, 3, and 6.
+            assert_eq!(app.input.viewport_row(), [0, 0, 2][position]);
             let rows = frame_rows(&mut app, width, 24);
             (app, rows)
         }
@@ -4595,10 +5495,18 @@ mod tests {
 
         for position in 0..3 {
             let (mut app, rows) = app_at_scroll_position(position, 28).await;
-            let title_y =
-                terminal_layout_with_tree_rows(Rect::new(0, 0, 28, 24), app.tree_entries().len())
-                    .input
-                    .y;
+            // Mirror draw(): the composer's text-row demand comes from its
+            // actual content at the frame width, not a fixed height.
+            let input_text_rows = u16::try_from(app.input.content_rows(28 - 2))
+                .unwrap_or(u16::MAX)
+                .clamp(1, crate::ui::input::MAX_TEXT_ROWS);
+            let title_y = terminal_layout_with_tree_rows(
+                Rect::new(0, 0, 28, 24),
+                app.tree_entries().len(),
+                input_text_rows,
+            )
+            .input
+            .y;
             assert!(app.hit_map.title_segments.is_empty());
             assert!(!rows[usize::from(title_y)].contains("primary"));
             let original_variant = app.draft.as_ref().expect("draft").model.variant.clone();
@@ -4749,13 +5657,15 @@ mod tests {
                     "width {width}: {rows:?}"
                 );
             } else {
+                // Narrow panels ellipsize rows instead of hard-clipping
+                // mid-word: the cut point always ends in an ellipsis.
                 assert!(
                     rows.iter()
-                        .any(|row| row.contains("other/catalog-model[de"))
+                        .any(|row| row.contains("other/catalog-model") && row.contains('…'))
                 );
                 assert!(
                     rows.iter()
-                        .any(|row| row.contains("gateway/arbitrary-mode"))
+                        .any(|row| row.contains("gateway/arbitrary") && row.contains('…'))
                 );
             }
             assert_eq!(app.hit_map.picker_rows.len(), 2);
@@ -5623,6 +6533,147 @@ mod tests {
         assert!(app.conversation_scroll.offset > 0);
     }
 
+    /// A composer draft overflowing the ceiling-height box, rendered once so
+    /// the hit map and scrollbar geometry exist.
+    async fn app_with_overflowing_composer() -> (App, super::ScrollbarGeometry) {
+        let mut app = test_app().await;
+        app.handle_paste("a\nb\nc\nd\ne\nf\ng\nh");
+        rendered_frame(&mut app, 80, 50);
+        let geometry = app
+            .hit_map
+            .input
+            .expect("input hit")
+            .scrollbar
+            .expect("composer scrollbar at the overflowing ceiling");
+        assert_eq!(geometry.track.width, 1);
+        (app, geometry)
+    }
+
+    #[tokio::test]
+    async fn composer_scrollbar_drag_scrolls_without_moving_the_text_cursor() {
+        let (mut app, geometry) = app_with_overflowing_composer().await;
+        let cursor_before = app.input.cursor_byte();
+        // The cursor anchors the bottom of the draft, so the thumb rests at
+        // the bottom of the track.
+        assert!(app.input.viewport_row() > 0);
+        let press = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_mouse(press(
+            MouseEventKind::Down(MouseButton::Left),
+            geometry.thumb.x,
+            geometry.thumb.y,
+        ))
+        .await;
+        assert!(
+            matches!(app.scrollbar_drag, Some(drag) if drag.target == ScrollbarTarget::Input),
+            "thumb press captures an input drag: {:?}",
+            app.scrollbar_drag
+        );
+        // Dragging the thumb to the top of the track scrolls the composer…
+        app.handle_mouse(press(
+            MouseEventKind::Drag(MouseButton::Left),
+            geometry.track.x,
+            geometry.track.y,
+        ))
+        .await;
+        rendered_frame(&mut app, 80, 50);
+        assert_eq!(app.input.viewport_row(), 0);
+        // …while the text cursor never moves.
+        assert_eq!(app.input.cursor_byte(), cursor_before);
+        // Releasing the press ends the capture.
+        app.handle_mouse(press(
+            MouseEventKind::Up(MouseButton::Left),
+            geometry.track.x,
+            geometry.track.y,
+        ))
+        .await;
+        assert!(app.scrollbar_drag.is_none());
+    }
+
+    #[tokio::test]
+    async fn composer_scrollbar_drag_stays_captured_outside_the_track() {
+        let (mut app, geometry) = app_with_overflowing_composer().await;
+        let event = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_mouse(event(
+            MouseEventKind::Down(MouseButton::Left),
+            geometry.thumb.x,
+            geometry.thumb.y,
+        ))
+        .await;
+        // The pointer wanders far into the conversation pane; the captured
+        // drag keeps its anchor and clamps against the original geometry.
+        app.handle_mouse(event(MouseEventKind::Drag(MouseButton::Left), 0, 0))
+            .await;
+        rendered_frame(&mut app, 80, 50);
+        assert_eq!(app.input.viewport_row(), 0);
+        assert!(
+            matches!(app.scrollbar_drag, Some(drag) if drag.target == ScrollbarTarget::Input),
+            "capture survives leaving the track"
+        );
+        app.handle_mouse(event(MouseEventKind::Up(MouseButton::Left), 0, 0))
+            .await;
+        assert!(app.scrollbar_drag.is_none());
+    }
+
+    #[tokio::test]
+    async fn composer_scrollbar_track_press_pages_the_viewport() {
+        let (mut app, geometry) = app_with_overflowing_composer().await;
+        let cursor_before = app.input.cursor_byte();
+        assert!(app.input.viewport_row() > 0);
+        // Bare track above the thumb pages the viewport toward that offset
+        // without capturing a drag or moving the text cursor.
+        app.handle_click(geometry.track.x, geometry.track.y).await;
+        assert_eq!(app.input.viewport_row(), 0);
+        assert!(app.scrollbar_drag.is_none());
+        assert_eq!(app.input.cursor_byte(), cursor_before);
+    }
+
+    #[tokio::test]
+    async fn composer_scrollbar_hold_reanchors_on_the_next_edit() {
+        let (mut app, geometry) = app_with_overflowing_composer().await;
+        app.handle_click(geometry.track.x, geometry.track.y).await;
+        rendered_frame(&mut app, 80, 50);
+        assert_eq!(app.input.viewport_row(), 0);
+        // The next edit ends the hold: the viewport follows the cursor back
+        // to the bottom of the draft.
+        app.handle_paste("x");
+        rendered_frame(&mut app, 80, 50);
+        assert_eq!(app.input.viewport_row(), 3);
+    }
+
+    #[tokio::test]
+    async fn composer_wheel_still_scrolls_the_overflowing_viewport() {
+        let (mut app, geometry) = app_with_overflowing_composer().await;
+        let wheel = |kind| MouseEvent {
+            kind,
+            column: geometry.track.x - 1,
+            row: geometry.track.y,
+            modifiers: KeyModifiers::NONE,
+        };
+        // The wheel keeps its existing composer semantics: it walks the text
+        // cursor three visual rows per tick, and the viewport follows.
+        assert_eq!(app.input.viewport_row(), 3);
+        for _ in 0..3 {
+            app.handle_mouse(wheel(MouseEventKind::ScrollUp)).await;
+        }
+        rendered_frame(&mut app, 80, 50);
+        assert_eq!(app.input.viewport_row(), 0);
+        for _ in 0..3 {
+            app.handle_mouse(wheel(MouseEventKind::ScrollDown)).await;
+        }
+        rendered_frame(&mut app, 80, 50);
+        assert_eq!(app.input.viewport_row(), 3);
+    }
+
     // ------------------------------------------------------------------
     // Input, palette, and commands
     // ------------------------------------------------------------------
@@ -5708,6 +6759,113 @@ mod tests {
         assert_eq!(app.conversation_scroll.offset, 30);
     }
 
+    #[tokio::test]
+    async fn chrome_stays_coherent_across_themes_and_tiny_terminals() {
+        for theme in [
+            Theme::default(),
+            Theme::new(ThemeKind::Mono, ColorLevel::None),
+            Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
+        ] {
+            let mut app = test_app().await;
+            let kind = theme.key();
+            app.theme = theme;
+            let session = SessionId::new_v7();
+            assert!(app.store.apply_event(session_created(session, 1)));
+            app.selected = Some(session);
+            for (width, height) in [(100, 30), (40, 12), (20, 8)] {
+                let rendered = rendered_frame(&mut app, width, height);
+                // Every theme kind renders the same textual chrome: the
+                // empty-state guidance, the composer placeholder, the
+                // command hint. State never depends on color alone.
+                if width >= 100 {
+                    assert!(rendered.contains("Fresh session"), "{kind:?}: {rendered}");
+                    assert!(rendered.contains("ctrl+p"), "{kind:?}: {rendered}");
+                }
+                if width >= 40 {
+                    assert!(rendered.contains("Type a message"), "{kind:?}: {rendered}");
+                }
+                assert!(rendered.contains("Conversation"), "{kind:?}: {rendered}");
+            }
+            // A detached viewport announces itself in every theme.
+            app.store
+                .sessions
+                .get_mut(&session)
+                .expect("session")
+                .transcript = (0..30)
+                .map(|index| TranscriptItem::user(format!("message {index}")))
+                .collect();
+            let _ = rendered_frame(&mut app, 100, 30);
+            app.conversation_scroll.top();
+            let rendered = rendered_frame(&mut app, 100, 30);
+            assert!(rendered.contains("↑ scrolled · PgDn: bottom"), "{kind:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn help_lists_each_command_on_its_own_transcript_line() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        assert!(app.store.apply_event(session_created(session, 1)));
+        app.selected = Some(session);
+        submit_direct_command(&mut app, "/help").await;
+        let rendered = rendered_frame(&mut app, 110, 40);
+        assert!(
+            rendered.contains("NOTICE: Available commands:"),
+            "{rendered}"
+        );
+        for expected in [
+            "/quit — exit the TUI",
+            "/new — choose the next run agent",
+            "/approve once|tree|reject|cancel — answer an approval",
+            "/events debug|info|warning|error — set the diagnostic level filter for this view",
+            "/help — show command help",
+            "Use // to send a prompt beginning with /.",
+        ] {
+            assert!(rendered.contains(expected), "{expected}: {rendered}");
+        }
+        // The wall of semicolon-joined text is gone.
+        assert!(!rendered.contains("; /new"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn scroll_follow_state_is_loud_in_the_conversation_title() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        assert!(app.store.apply_event(session_created(session, 1)));
+        // Enough top-level content to overflow the conversation viewport.
+        app.store
+            .sessions
+            .get_mut(&session)
+            .expect("session")
+            .transcript = (0..30)
+            .map(|index| TranscriptItem::user(format!("message {index}")))
+            .collect();
+        app.selected = Some(session);
+
+        // Following: the title row carries no scroll warning.
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(!rendered.contains("PgDn: bottom"), "{rendered}");
+
+        // Detached: the title row says so, with the truthful way back.
+        app.conversation_scroll.top();
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("↑ scrolled · PgDn: bottom"), "{rendered}");
+
+        // Paging down re-engages following at the exact bottom and clears
+        // the warning.
+        for _ in 0..10 {
+            if app.conversation_scroll.following {
+                break;
+            }
+            app.handle_input_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE))
+                .await;
+            let _ = rendered_frame(&mut app, 100, 30);
+        }
+        assert!(app.conversation_scroll.following);
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(!rendered.contains("PgDn: bottom"), "{rendered}");
+    }
+
     #[test]
     fn command_registry_drives_help_and_parser() {
         let help = command_help();
@@ -5716,10 +6874,8 @@ mod tests {
         assert!(help.contains("/events"));
         assert!(!help.contains("/block"));
         assert!(!help.contains("/scroll"));
-        assert!(command_allowed_in_mode(
-            SlashCommand::Help,
-            InputMode::Message
-        ));
+        // The stdin era is over: /message left with it.
+        assert!(!help.contains("/message"));
     }
 
     async fn submit_direct_command(app: &mut App, command: &str) {
@@ -5826,44 +6982,26 @@ mod tests {
     #[tokio::test]
     async fn every_slash_command_variant_dispatches_from_key_events_without_starting_a_run() {
         let cases = [
-            ("/quit", InputMode::Message, None),
-            ("/new", InputMode::Message, Some("Agent")),
-            ("/connect", InputMode::Message, Some("Connect provider")),
-            ("/sessions", InputMode::Message, Some("Sessions")),
-            ("/cancel", InputMode::Message, Some("no active run")),
-            ("/message", InputMode::ToolStdin, Some("message mode")),
-            ("/approve once", InputMode::Message, None),
-            ("/approve tree", InputMode::Message, None),
-            ("/approve reject", InputMode::Message, None),
-            ("/approve cancel", InputMode::Message, None),
-            (
-                "/events debug",
-                InputMode::Message,
-                Some("diagnostic event filter"),
-            ),
-            (
-                "/events info",
-                InputMode::Message,
-                Some("diagnostic event filter"),
-            ),
-            (
-                "/events warning",
-                InputMode::Message,
-                Some("diagnostic event filter"),
-            ),
-            (
-                "/events error",
-                InputMode::Message,
-                Some("diagnostic event filter"),
-            ),
-            ("/help", InputMode::Message, Some("Commands:")),
+            ("/quit", None),
+            ("/new", Some("Agent")),
+            ("/connect", Some("Connect provider")),
+            ("/sessions", Some("Sessions")),
+            ("/cancel", Some("no active run")),
+            ("/approve once", None),
+            ("/approve tree", None),
+            ("/approve reject", None),
+            ("/approve cancel", None),
+            ("/events debug", Some("diagnostic event filter")),
+            ("/events info", Some("diagnostic event filter")),
+            ("/events warning", Some("diagnostic event filter")),
+            ("/events error", Some("diagnostic event filter")),
+            ("/help", Some("Available commands:")),
         ];
 
-        for (command, mode, expected) in cases {
+        for (command, expected) in cases {
             let mut app = test_app().await;
             let (client, recorded, incoming_guard) = live_recording_client();
             app.client = client;
-            app.input_mode = mode;
             submit_direct_command(&mut app, command).await;
             settle_recording().await;
             let rendered = rendered_frame(&mut app, 100, 30);
@@ -6140,20 +7278,42 @@ mod tests {
     }
 
     #[test]
-    fn inline_code_spans_have_a_background_highlight() {
-        let state = assistant_state(vec![AssistantChild::Text {
-            id: 1,
-            version: 0,
-            markdown: MarkdownDocument::new("use `cargo test` here".to_owned()),
-        }]);
-        let layout = transcript_layout_with(&state, None, 60, &Theme::default(), &PlainHighlighter);
-        let code_span = layout
-            .lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .find(|span| span.content.contains("cargo test"))
-            .expect("inline code span");
-        assert!(code_span.style.bg.is_some());
+    fn inline_code_spans_use_a_foreground_chip_except_in_high_contrast() {
+        fn inline_code_style(theme: &Theme) -> ratatui::style::Style {
+            let state = assistant_state(vec![AssistantChild::Text {
+                id: 1,
+                version: 0,
+                markdown: MarkdownDocument::new("use `cargo test` here".to_owned()),
+            }]);
+            let layout = transcript_layout_with(&state, None, 60, theme, &PlainHighlighter);
+            layout
+                .lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .find(|span| span.content.contains("cargo test"))
+                .expect("inline code span")
+                .style
+        }
+
+        // Default theme: warm terracotta foreground, never a background —
+        // the source backticks stay visible, and bold carries the
+        // distinction where color is unavailable.
+        let default = inline_code_style(&Theme::default());
+        assert!(default.bg.is_none());
+        assert_eq!(default.fg, Theme::default().inline_code().fg);
+        assert!(
+            default
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
+
+        // High contrast keeps its inverse-video chip so code still pops
+        // against bright text.
+        let contrast = inline_code_style(&Theme::new(
+            crate::theme::ThemeKind::HighContrast,
+            crate::theme::ColorLevel::Ansi16,
+        ));
+        assert_eq!(contrast.bg, Some(ratatui::style::Color::LightYellow));
     }
 
     // ------------------------------------------------------------------
@@ -6493,6 +7653,151 @@ mod tests {
             assert!(app.provider_form.is_none());
         }
         assert!(credential_wipe_count() > before);
+    }
+
+    #[tokio::test]
+    async fn connect_form_fields_focus_on_click_and_submit_dispatches() {
+        let mut app = test_app().await;
+        app.begin_provider_form(multi_auth_provider());
+        frame_rows(&mut app, 120, 40);
+
+        // Every rendered control registered a hit: the auth selector, one
+        // credential, two setup fields, and the submit box.
+        let fields = app.hit_map.provider_fields.clone();
+        assert_eq!(fields.len(), 4);
+        let submit = app.hit_map.provider_submit.expect("submit hit");
+
+        // Hovering a control resolves to its own target.
+        let credential = fields
+            .iter()
+            .find(|hit| hit.focus == ProviderFormFocus::Credential(0))
+            .copied()
+            .expect("credential hit");
+        assert_eq!(
+            app.hover_target_at(credential.rect.x + 1, credential.rect.y + 1),
+            Some(HoverTarget::ProviderField(ProviderFormFocus::Credential(0)))
+        );
+        assert_eq!(
+            app.hover_target_at(submit.x + 1, submit.y + 1),
+            Some(HoverTarget::ProviderSubmit)
+        );
+
+        // Clicking the auth selector cycles the method, mirroring Enter, and
+        // wipes the previous method's stale secrets.
+        let auth = fields
+            .iter()
+            .find(|hit| hit.focus == ProviderFormFocus::AuthMethod)
+            .copied()
+            .expect("auth hit");
+        app.handle_click(auth.rect.x + 2, auth.rect.y + 1).await;
+        let form = app.provider_form.as_ref().expect("form");
+        assert_eq!(form.auth_method.as_str(), "bearer");
+        assert!(form.secrets[0].input.as_str().is_empty());
+
+        // Clicking a credential focuses it and places the cursor at the
+        // clicked display column of the real (unmasked) buffer.
+        app.provider_form.as_mut().expect("form").secrets[0]
+            .input
+            .insert_owned("hunter2".to_owned());
+        // The cycled auth method replaced the secret editors; a fresh frame
+        // gives the new editor its render layout before the click maps
+        // display cells to a cursor.
+        frame_rows(&mut app, 120, 40);
+        app.handle_click(credential.text_rect.x + 3, credential.text_rect.y)
+            .await;
+        let form = app.provider_form.as_mut().expect("form");
+        assert_eq!(form.focus(), ProviderFormFocus::Credential(0));
+        assert_eq!(form.secrets[0].input.state_mut().cursor_byte(), 3);
+
+        // Clicking submit routes through the same validation as Enter:
+        // required setup fields are empty, so the error stays inline in the
+        // form — the modal and focus are retained for correction.
+        app.handle_click(submit.x + 1, submit.y + 1).await;
+        assert_eq!(app.modal, Modal::ConnectSetup);
+        assert_eq!(
+            app.provider_form.as_ref().expect("form").focus(),
+            ProviderFormFocus::Credential(0)
+        );
+        assert!(app.provider_form.as_ref().expect("form").error.is_some());
+    }
+
+    #[tokio::test]
+    async fn enter_submits_from_every_focus_and_validation_keeps_the_form_open() {
+        let mut app = test_app().await;
+        let (client, recorded, incoming_guard) = live_recording_client();
+        app.client = client;
+        app.begin_provider_form(multi_auth_provider());
+
+        // Required values are empty: Enter from every focus position routes
+        // to the submit path, surfaces the validation error inline, and
+        // leaves the modal, the focus, and the auth method untouched.
+        let focuses = [
+            ProviderFormFocus::AuthMethod,
+            ProviderFormFocus::Credential(0),
+            ProviderFormFocus::Setup(0),
+            ProviderFormFocus::Setup(1),
+            ProviderFormFocus::Submit,
+        ];
+        for focus in focuses {
+            let form = app.provider_form.as_mut().expect("form");
+            form.set_focus(focus);
+            form.error = None;
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+                .await;
+            let form = app.provider_form.as_ref().expect("form retained");
+            assert_eq!(app.modal, Modal::ConnectSetup, "modal stays for {focus:?}");
+            assert_eq!(form.focus(), focus, "focus unchanged for {focus:?}");
+            assert_eq!(
+                form.auth_method.as_str(),
+                "api-key",
+                "Enter does not cycle the auth method for {focus:?}"
+            );
+            assert!(
+                form.error.is_some(),
+                "inline validation error for {focus:?}"
+            );
+            assert!(
+                app.provider_operations.is_empty(),
+                "nothing dispatched for {focus:?}"
+            );
+            let rendered = rendered_frame(&mut app, 120, 40);
+            assert!(
+                rendered.contains("Region is required"),
+                "error renders inline for {focus:?}"
+            );
+        }
+        settle_recording().await;
+        assert_eq!(recorded_method_count(&recorded, "provider.connect"), 0);
+
+        // With every required value populated, Enter from an input box
+        // dispatches exactly like the Submit button.
+        let form = app.provider_form.as_mut().expect("form");
+        form.secrets[0].input.insert_owned("api-secret".to_owned());
+        form.setup[0].input.insert_owned("eu".to_owned());
+        form.setup[1].input.insert_owned("derived".to_owned());
+        form.set_focus(ProviderFormFocus::Setup(1));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::ConnectSetup);
+        assert!(matches!(
+            app.provider_operations
+                .get(&ProviderId::new("multi-auth").expect("provider ID")),
+            Some(ProviderOperation::InProgress(ProviderAction::Connect))
+        ));
+        settle_recording().await;
+        assert_eq!(recorded_method_count(&recorded, "provider.connect"), 1);
+        let request = recorded
+            .lock()
+            .expect("recorded")
+            .iter()
+            .find(|value| value["method"] == "provider.connect")
+            .cloned()
+            .expect("connect request");
+        assert_eq!(request["params"]["auth_method"], "api-key");
+        assert_eq!(request["params"]["auth_values"]["api_key"], "api-secret");
+        assert_eq!(request["params"]["setup_values"]["region"], "eu");
+        app.abort_connect_work();
+        drop(incoming_guard);
     }
 
     #[tokio::test]
@@ -7106,11 +8411,9 @@ mod tests {
         assert!(!setup.contains("Ctrl-D disconnect"));
         assert!(!setup.contains("https://"));
         type_input(&mut app, "rotated-authored-secret").await;
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
             .await;
         type_input(&mut app, "us-east-1").await;
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
-            .await;
         let submit = rendered_frame(&mut app, 140, 32);
         assert!(submit.contains("Enter to connect"));
         assert!(!submit.contains("Enter to reconnect/update"));
@@ -7822,6 +9125,7 @@ mod tests {
             &Theme::default(),
             &crate::markdown::SyntectHighlighter::default(),
             crate::state::EventLevel::Debug,
+            0,
         );
         let passes = cache.assistant_part_layout_passes;
         assert_eq!(passes, 2);
@@ -7836,6 +9140,7 @@ mod tests {
             &Theme::default(),
             &crate::markdown::SyntectHighlighter::default(),
             crate::state::EventLevel::Debug,
+            0,
         );
         assert_eq!(cache.assistant_part_layout_passes, passes);
         assert_eq!(cache.item_layout_passes, item_passes);
@@ -7862,6 +9167,7 @@ mod tests {
             &Theme::default(),
             &crate::markdown::SyntectHighlighter::default(),
             crate::state::EventLevel::Debug,
+            0,
         );
         assert_eq!(cache.assistant_part_layout_passes, passes + 1);
     }
@@ -8155,5 +9461,304 @@ mod tests {
         assert!(content.contains("git status"));
         let lines = content.lines().count();
         assert!(lines > 20);
+    }
+
+    async fn app_with_approval() -> App {
+        let mut app = test_app().await;
+        let approval = bash_approval_state();
+        app.selected = Some(approval.session_id);
+        app.store
+            .sessions
+            .entry(approval.session_id)
+            .or_default()
+            .approvals
+            .push(approval);
+        app
+    }
+
+    #[tokio::test]
+    async fn roomy_approval_renders_glyph_buttons_with_tiled_hit_regions() {
+        let mut app = app_with_approval().await;
+        let rendered = rendered_frame(&mut app, 120, 40);
+        // Glyph-bearing labels: the decision never relies on color alone.
+        assert!(rendered.contains("✓ Allow once"), "{rendered}");
+        assert!(rendered.contains("✗ Reject"), "{rendered}");
+        assert!(rendered.contains("⎋ Cancel"), "{rendered}");
+        // Rounded button frames read as distinct buttons.
+        assert!(rendered.contains('╭'), "{rendered}");
+
+        let actions = &app.hit_map.approval_actions;
+        assert_eq!(
+            actions.iter().map(|hit| hit.decision).collect::<Vec<_>>(),
+            vec![
+                ApprovalUserDecision::ApproveOnce,
+                ApprovalUserDecision::Reject,
+                ApprovalUserDecision::Cancel,
+            ]
+        );
+        // The roomy panel gets three-row buttons whose hit regions tile the
+        // inner width contiguously: no gaps, no overlaps.
+        assert!(actions.iter().all(|hit| hit.rect.height == 3));
+        let mut column = actions[0].rect.x;
+        let row = actions[0].rect.y;
+        for hit in actions {
+            assert_eq!(hit.rect.x, column);
+            assert_eq!(hit.rect.y, row);
+            column = column.saturating_add(hit.rect.width);
+        }
+    }
+
+    #[tokio::test]
+    async fn cramped_approval_falls_back_to_a_single_action_row() {
+        let mut app = app_with_approval().await;
+        let rendered = rendered_frame(&mut app, 80, 24);
+        let actions = &app.hit_map.approval_actions;
+        assert_eq!(actions.len(), 3);
+        assert!(actions.iter().all(|hit| hit.rect.height == 1));
+        let mut column = actions[0].rect.x;
+        for hit in actions {
+            assert_eq!(hit.rect.x, column);
+            column = column.saturating_add(hit.rect.width);
+        }
+        assert!(rendered.contains("✓ Allow once"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn hover_follows_mouse_moves_and_styles_the_target_cells() {
+        let mut app = app_with_approval().await;
+        // Draw once to populate the hit map.
+        let _ = rendered_frame(&mut app, 120, 40);
+        let target = app.hit_map.approval_actions[0].rect;
+        let moved = |column: u16, row: u16| MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // Moving onto a button resolves it and asks for one redraw.
+        assert!(app.handle_mouse(moved(target.x, target.y)).await);
+        assert_eq!(
+            app.hover,
+            Some(HoverTarget::ApprovalAction(
+                ApprovalUserDecision::ApproveOnce
+            ))
+        );
+        // Staying put is not redraw-worthy; moving to the next button is.
+        assert!(!app.handle_mouse(moved(target.x, target.y)).await);
+        let next = app.hit_map.approval_actions[1].rect;
+        assert!(app.handle_mouse(moved(next.x, next.y)).await);
+        assert_eq!(
+            app.hover,
+            Some(HoverTarget::ApprovalAction(ApprovalUserDecision::Reject))
+        );
+        // While the approval is up it owns the pointer: anywhere off a
+        // button clears the hover instead of leaking to content beneath.
+        assert!(app.handle_mouse(moved(0, 0)).await);
+        assert_eq!(app.hover, None);
+        assert!(!app.handle_mouse(moved(0, 0)).await);
+
+        // The hovered button is visibly filled with the glaze hover color.
+        app.hover = Some(HoverTarget::ApprovalAction(
+            ApprovalUserDecision::ApproveOnce,
+        ));
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| app.draw_for_test(frame))
+            .expect("app render");
+        let buffer = terminal.backend().buffer();
+        let cell = buffer[(target.x.saturating_add(1), target.y.saturating_add(1))].style();
+        // Environment-independent: whatever the detected color level, the
+        // hovered button carries exactly the theme's glaze hover fill, and
+        // it visibly differs from the unhovered cream panel.
+        assert_eq!(cell.bg, app.theme.hover_fill().bg, "glaze fill: {cell:?}");
+        assert_ne!(cell.bg, app.theme.panel().bg, "fill changed: {cell:?}");
+    }
+
+    #[tokio::test]
+    async fn hover_only_targets_elements_with_a_click_action() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        app.selected = Some(session);
+        app.tree_root = Some(session);
+        app.store.sessions.insert(
+            session,
+            assistant_state(vec![AssistantChild::Thinking {
+                id: 1,
+                version: 0,
+                text: "thought".into(),
+            }]),
+        );
+        app.tree = Some(SessionTree {
+            session: titled_meta(session, "root", 1),
+            children: Vec::new(),
+        });
+        rendered_frame(&mut app, 80, 24);
+        let moved = |column: u16, row: u16| MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // Passive surfaces never resolve a hover target, even though clicks
+        // on them still work (focus the composer, drag the scrollbar,
+        // toggle a block).
+        let input = app.hit_map.input.expect("input hit").rect;
+        assert!(
+            !app.handle_mouse(moved(input.x.saturating_add(1), input.y.saturating_add(1)))
+                .await
+        );
+        assert_eq!(app.hover, None);
+        let block = app.hit_map.blocks.first().copied().expect("block hit").rect;
+        assert!(!app.handle_mouse(moved(block.x, block.y)).await);
+        assert_eq!(app.hover, None);
+        let track = app.hit_map.scrollbar.expect("scrollbar reserved");
+        assert!(!app.handle_mouse(moved(track.x, track.y)).await);
+        assert_eq!(app.hover, None);
+
+        // Elements whose click performs a real action do hover: cycle the
+        // permission mode, cycle the event-level filter, select/watch a
+        // tree row.
+        let mode = app.hit_map.permission_mode.expect("permission mode hit");
+        assert!(app.handle_mouse(moved(mode.x, mode.y)).await);
+        assert_eq!(app.hover, Some(HoverTarget::PermissionMode));
+        let filter = app.hit_map.event_level_filter.expect("event filter hit");
+        assert!(app.handle_mouse(moved(filter.x, filter.y)).await);
+        assert_eq!(app.hover, Some(HoverTarget::EventLevelFilter));
+        let row = app
+            .hit_map
+            .tree_rows
+            .first()
+            .copied()
+            .expect("tree row hit");
+        assert!(app.handle_mouse(moved(row.rect.x, row.rect.y)).await);
+        assert_eq!(app.hover, Some(HoverTarget::TreeRow(session)));
+    }
+
+    #[test]
+    fn transcript_items_get_exactly_one_breathing_row_between_them() {
+        let mut state = assistant_state(vec![AssistantChild::Text {
+            id: 2,
+            version: 0,
+            markdown: MarkdownDocument::new("answer".into()),
+        }]);
+        state
+            .transcript
+            .insert(0, TranscriptItem::user("question one"));
+        let layout = transcript_layout(&state, None, 60);
+        let rendered = layout
+            .lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        let blanks = rendered
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.trim().is_empty())
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        assert_eq!(blanks.len(), 1, "{rendered:?}");
+        assert!(
+            rendered[..blanks[0]]
+                .iter()
+                .any(|line| line.contains("USER"))
+        );
+        assert!(
+            rendered[blanks[0] + 1..]
+                .iter()
+                .any(|line| line.contains("answer"))
+        );
+
+        // Filtered-out event rows contribute no lines and no spacer, so
+        // hiding diagnostics never leaves stray blank rows behind.
+        state.transcript.push(TranscriptItem::Event {
+            id: 3,
+            version: 0,
+            level: crate::state::EventLevel::Debug,
+            text: "hidden diagnostic".into(),
+        });
+        state.transcript.push(TranscriptItem::Event {
+            id: 4,
+            version: 0,
+            level: crate::state::EventLevel::Error,
+            text: "visible failure".into(),
+        });
+        let layout = transcript_layout_with_level(
+            &state,
+            None,
+            60,
+            &Theme::default(),
+            &PlainHighlighter,
+            crate::state::EventLevel::Warning,
+        );
+        let rendered = layout
+            .lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        let blanks = rendered
+            .iter()
+            .filter(|line| line.trim().is_empty())
+            .count();
+        assert_eq!(blanks, 2, "{rendered:?}");
+        assert!(rendered.iter().any(|line| line.contains("visible failure")));
+        assert!(
+            !rendered
+                .iter()
+                .any(|line| line.contains("hidden diagnostic"))
+        );
+    }
+
+    #[test]
+    fn empty_conversation_guidance_wraps_inside_the_pane() {
+        for (has_session, headline, hint) in [
+            (false, "No session selected.", "/sessions"),
+            (true, "Fresh session", "ctrl+p"),
+        ] {
+            let lines = empty_conversation_lines(has_session, 60, &Theme::default());
+            let rendered = snapshot_lines(&lines);
+            assert!(rendered.contains(headline), "{rendered}");
+            assert!(rendered.contains(hint), "{rendered}");
+            for width in [8, 13, 24] {
+                for line in empty_conversation_lines(has_session, width, &Theme::default()) {
+                    assert!(
+                        unicode_width::UnicodeWidthStr::width(line.to_string().as_str())
+                            <= usize::from(width),
+                        "width {width}: {line}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn first_launch_and_fresh_session_show_warm_empty_states() {
+        let mut app = test_app().await;
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("No session selected."), "{rendered}");
+        assert!(rendered.contains("/sessions"), "{rendered}");
+
+        // A fresh, empty session greets instead of showing a blank pane.
+        let session = SessionId::new_v7();
+        assert!(app.store.apply_event(session_created(session, 1)));
+        app.selected = Some(session);
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("Fresh session"), "{rendered}");
+        assert!(rendered.contains("ctrl+p"), "{rendered}");
+
+        // Once content exists the guidance is gone.
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        for event in [
+            attempt_started(session, 2, run, attempt, None),
+            text_delta(session, 3, run, attempt, "hello"),
+        ] {
+            assert!(app.store.apply_event(event));
+        }
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("hello"), "{rendered}");
+        assert!(!rendered.contains("Fresh session"), "{rendered}");
     }
 }

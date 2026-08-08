@@ -176,6 +176,19 @@ impl ProviderForm {
         };
     }
 
+    /// Focus the field a pointer hit maps to: the inverse of `focus()`,
+    /// clamped to the last valid linear index.
+    pub(crate) fn set_focus(&mut self, focus: ProviderFormFocus) {
+        let offset = usize::from(self.has_auth_selector());
+        self.field_index = match focus {
+            ProviderFormFocus::AuthMethod => 0,
+            ProviderFormFocus::Credential(index) => offset + index,
+            ProviderFormFocus::Setup(index) => offset + self.secrets.len() + index,
+            ProviderFormFocus::Submit => self.focus_count().saturating_sub(1),
+        }
+        .min(self.focus_count().saturating_sub(1));
+    }
+
     pub(crate) fn has_auth_selector(&self) -> bool {
         self.provider.auth_methods.len() > 1
     }
@@ -216,6 +229,8 @@ impl ProviderForm {
             })
             .collect();
         self.field_index = 0;
+        // Rebuilt credential buffers supersede any stale inline error.
+        self.error = None;
     }
 
     fn focus_count(&self) -> usize {

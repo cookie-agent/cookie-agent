@@ -8,11 +8,11 @@ use crate::ConfigError;
 use crate::toml_values::{SensitiveProviderValues, zeroize_toml_value};
 use zeroize::Zeroize;
 
-const CONFIG_SCHEMA: u32 = 8;
+const CONFIG_SCHEMA: u32 = 9;
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 7419;
 
-/// Exact schema-8 marker.
+/// Exact schema-9 marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConfigSchemaVersion;
 
@@ -33,7 +33,7 @@ impl<'de> Deserialize<'de> for ConfigSchemaVersion {
         if value == CONFIG_SCHEMA {
             Ok(Self)
         } else {
-            Err(serde::de::Error::custom("schema_version must be exactly 8"))
+            Err(serde::de::Error::custom("schema_version must be exactly 9"))
         }
     }
 }
@@ -171,10 +171,6 @@ const fn default_approval_timeout() -> u64 {
 pub struct ContextCompactionConfig {
     #[serde(default = "default_soft")]
     pub soft_threshold_percent: u8,
-    #[serde(default = "default_hard")]
-    pub hard_threshold_percent: u8,
-    #[serde(default = "default_target")]
-    pub target_percent: u8,
     #[serde(default = "default_summary")]
     pub max_summary_bytes: usize,
     #[serde(default = "default_native")]
@@ -184,8 +180,6 @@ impl Default for ContextCompactionConfig {
     fn default() -> Self {
         Self {
             soft_threshold_percent: default_soft(),
-            hard_threshold_percent: default_hard(),
-            target_percent: default_target(),
             max_summary_bytes: default_summary(),
             max_native_context_bytes: default_native(),
         }
@@ -193,12 +187,6 @@ impl Default for ContextCompactionConfig {
 }
 const fn default_soft() -> u8 {
     70
-}
-const fn default_hard() -> u8 {
-    85
-}
-const fn default_target() -> u8 {
-    50
 }
 const fn default_summary() -> usize {
     256 * 1024
@@ -273,9 +261,7 @@ pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigErro
         return Err(ConfigError::InvalidRuntime);
     }
     let context = &runtime.context_compaction;
-    if !(context.target_percent < context.soft_threshold_percent
-        && context.soft_threshold_percent < context.hard_threshold_percent
-        && context.hard_threshold_percent <= 100)
+    if !(1..=100).contains(&context.soft_threshold_percent)
         || context.max_summary_bytes == 0
         || context.max_summary_bytes > 2 * 1024 * 1024
         || context.max_native_context_bytes == 0

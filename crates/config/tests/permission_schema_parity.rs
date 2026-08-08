@@ -234,7 +234,7 @@ fn workspace_dir_expression_is_action_scoped_and_unknown_expressions_are_rejecte
         let temp = TempDir::new().unwrap();
         let root = temp.path().join(".cookie-agent");
         fs::create_dir_all(root.join("agents")).unwrap();
-        fs::write(root.join("config.toml"), "schema_version = 8\n").unwrap();
+        fs::write(root.join("config.toml"), "schema_version = 9\n").unwrap();
         fs::write(
             root.join("agents/worker.md"),
             format!(
@@ -252,7 +252,7 @@ fn workspace_dir_expression_is_action_scoped_and_unknown_expressions_are_rejecte
         let temp = TempDir::new().unwrap();
         let root = temp.path().join(".cookie-agent");
         fs::create_dir_all(root.join("agents")).unwrap();
-        fs::write(root.join("config.toml"), "schema_version = 8\n").unwrap();
+        fs::write(root.join("config.toml"), "schema_version = 9\n").unwrap();
         fs::write(
             root.join("agents/worker.md"),
             format!(
@@ -275,7 +275,7 @@ fn workspace_dir_expression_is_portable_and_external_directory_is_accepted() {
     for name in ["workspace-a", "workspace-b"] {
         let root = temp.path().join(name).join(".cookie-agent");
         fs::create_dir_all(root.join("agents")).unwrap();
-        fs::write(root.join("config.toml"), "schema_version = 8\n").unwrap();
+        fs::write(root.join("config.toml"), "schema_version = 9\n").unwrap();
         fs::write(root.join("agents/worker.md"), document).unwrap();
         let loaded = load_from_roots(None, Some(&root)).unwrap();
         let worker = loaded.agents.values().next().unwrap();

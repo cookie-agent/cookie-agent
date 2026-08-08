@@ -7,7 +7,7 @@ expression: rendered
 │ 🔨 ▾ bash sleep 2 …
 │ arguments: {"command":"sleep 2"}
 │ model call: call-a
-│ 💭 ▾ thinking
+│ 💭 ▾ thought
 │ ┆ waiting on both
 │ 🔨 ▾ read src/lib.rs
 │ arguments: {"path":"src/lib.rs"}

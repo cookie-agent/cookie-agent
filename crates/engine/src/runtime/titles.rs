@@ -72,7 +72,10 @@ impl Engine {
                 InternalAgentKind::SessionTitle,
                 internal_policy,
                 prompt,
-                cancellation,
+                InternalAgentExecution {
+                    cancellation,
+                    actor_direct: false,
+                },
             )
             .await;
         let commit = match generated {

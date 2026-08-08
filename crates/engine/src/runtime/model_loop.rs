@@ -93,6 +93,57 @@ impl Engine {
                 input_through_seq,
             },
         )?;
+        if let Some(context_limit) = run_policy.selected_suffix[0]
+            .descriptor
+            .capabilities
+            .limits
+            .context
+        {
+            let message_bytes = serde_json::to_vec(&params.input)
+                .map_err(|error| ModelError::invalid_request(error.to_string()))?
+                .len();
+            let soft_tokens = context_limit.saturating_mul(
+                self.inner
+                    .config
+                    .runtime
+                    .context_compaction
+                    .soft_threshold_percent as u64,
+            ) / 100;
+            let estimator = self
+                .inner
+                .context_token_estimators
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&params.session_id)
+                .copied()
+                .unwrap_or_default();
+            if should_run_predictive_compaction(
+                estimator,
+                message_bytes,
+                soft_tokens,
+                self.inner.store.is_persisted(params.session_id)?,
+            ) {
+                let binding = &run_policy.selected_suffix[0];
+                let model = policy::resolve_model(binding, &run_policy.runtime)?;
+                let events = self.inner.store.get(params.session_id)?.log.events();
+                self.maybe_compact_context(
+                    params.session_id,
+                    run_id,
+                    &CancellationToken::new(),
+                    binding,
+                    &model,
+                    &self.inner.internal_agents.policy(
+                        InternalAgentKind::ContextCompaction,
+                        &run_policy,
+                        &run_policy.selected_suffix,
+                    ),
+                    events,
+                    true,
+                    true,
+                )
+                .await?;
+            }
+        }
         self.append_direct(
             params.session_id,
             Some(run_id),
@@ -478,6 +529,7 @@ impl Engine {
                         ),
                         request_events,
                         false,
+                        false,
                     )
                     .await?;
                 let input_through_seq = request_events.last().map_or(0, |event| event.seq);
@@ -487,6 +539,9 @@ impl Engine {
                     binding,
                     composed_prompt,
                 )?;
+                let serialized_history_bytes = serde_json::to_vec(&context.history)
+                    .map_err(|error| ModelError::invalid_request(error.to_string()))?
+                    .len();
                 let replay_preflight = context.replay_decisions;
                 let mut request = ModelRequest::new(context.history).with_tools(tools.clone());
                 if let Some(native_context) = context.native_context {
@@ -618,6 +673,16 @@ impl Engine {
                             },
                         )
                         .await?;
+                        self.inner
+                            .context_token_estimators
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .entry(session)
+                            .or_default()
+                            .record_committed_turn(
+                                serialized_history_bytes,
+                                turn.usage.input_tokens,
+                            );
                         self.maybe_generate_session_title(
                             session,
                             run,
@@ -672,6 +737,7 @@ impl Engine {
                                 ),
                                 recovery_events,
                                 true,
+                                false,
                             )
                             .await?;
                         let after = recovered

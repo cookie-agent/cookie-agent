@@ -3,7 +3,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    text::{Line, Text},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph},
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -11,6 +11,14 @@ use unicode_width::UnicodeWidthStr;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::theme::Theme;
+
+use super::transcript::{ScrollbarGeometry, render_scrollbar_track};
+
+/// Visible text-row ceiling for the growing message composer: the layout
+/// reclaims conversation rows up to this height, and the box scrolls beyond
+/// it. Credential and search fields are always single-row and never reach
+/// the ceiling.
+pub(crate) const MAX_TEXT_ROWS: u16 = 5;
 
 #[derive(Default)]
 pub(crate) struct InputState {
@@ -20,6 +28,10 @@ pub(crate) struct InputState {
     preferred_column: Option<u16>,
     layout_width: u16,
     layout_height: u16,
+    /// Set by scrollbar interaction: the viewport stays where the drag or
+    /// track press put it instead of chasing the text cursor, until the
+    /// next edit or cursor key re-anchors it.
+    scroll_hold: bool,
 }
 
 /// Secret-bearing single-field editor used only by provider setup.
@@ -134,7 +146,21 @@ impl InputState {
 
     #[cfg(test)]
     pub(crate) fn visual_row_count(&self, width: u16) -> usize {
+        self.content_rows(width)
+    }
+
+    /// Soft-wrapped visual row count at a display width — the composer's
+    /// adaptive height derives from this.
+    pub(crate) fn content_rows(&self, width: u16) -> usize {
         visual_rows(&self.value, width).len()
+    }
+
+    /// True when content rows exceed the laid-out viewport: the box is at
+    /// its ceiling and wheel scrolling is meaningful.
+    pub(crate) fn has_overflow(&self) -> bool {
+        self.layout_width > 0
+            && self.layout_height > 0
+            && self.content_rows(self.layout_width) > usize::from(self.layout_height)
     }
 
     #[cfg(test)]
@@ -203,6 +229,21 @@ impl InputState {
 
     pub(crate) fn move_wheel(&mut self, up: bool) {
         self.move_visual_rows(up, 3);
+    }
+
+    /// Scroll the viewport to an exact row without moving the text cursor:
+    /// scrollbar thumb-drag and track paging. The hold survives renders and
+    /// ends on the next edit or cursor key, which re-anchors the viewport
+    /// to the cursor as usual.
+    pub(crate) fn scroll_to(&mut self, row: usize) {
+        self.viewport_row = row;
+        self.scroll_hold = true;
+        if self.layout_width > 0 && self.layout_height > 0 {
+            let rows = visual_rows(&self.value, self.layout_width);
+            self.viewport_row = self
+                .viewport_row
+                .min(rows.len().saturating_sub(usize::from(self.layout_height)));
+        }
     }
 
     pub(crate) fn move_word_left(&mut self) {
@@ -359,6 +400,9 @@ impl InputState {
     }
 
     fn reanchor_cursor(&mut self) {
+        // Any edit or cursor key ends a scrollbar hold: the viewport
+        // follows the text cursor again.
+        self.scroll_hold = false;
         if self.layout_width == 0 || self.layout_height == 0 {
             return;
         }
@@ -394,9 +438,16 @@ impl InputState {
                 rows.len().saturating_sub(rows_above),
             );
         }
-        self.reanchor_cursor();
-        let (cursor_row, cursor_column) = cursor_position(&rows, self.cursor);
         let visible = usize::from(height);
+        if self.scroll_hold {
+            // A scrollbar drag positions the viewport directly; renders
+            // only clamp it against shrinking content, never chase the
+            // cursor.
+            self.viewport_row = self.viewport_row.min(rows.len().saturating_sub(visible));
+        } else {
+            self.reanchor_cursor();
+        }
+        let (cursor_row, cursor_column) = cursor_position(&rows, self.cursor);
         let lines = rows
             .iter()
             .skip(self.viewport_row)
@@ -437,6 +488,10 @@ pub(crate) struct RenderedInput {
     /// The visible cells occupied by the caller-provided title, excluding any
     /// scroll prefix. `None` means scroll indicators replaced the title.
     pub(crate) title_rect: Option<Rect>,
+    /// Track and thumb geometry of the reserved scrollbar column, present
+    /// only when the box is at its height ceiling and content overflows —
+    /// the click/drag hit source mirroring the conversation scrollbar.
+    pub(crate) scrollbar: Option<ScrollbarGeometry>,
 }
 
 pub(crate) fn render(
@@ -444,20 +499,51 @@ pub(crate) fn render(
     area: Rect,
     input: &mut InputState,
     focused: bool,
-    title: &str,
+    title: impl Into<Line<'static>>,
+    placeholder: Option<&str>,
     theme: &Theme,
 ) -> RenderedInput {
+    let title = title.into();
     let border_style = theme.input_border(focused);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style);
+    // The focused composer paints the shared cream panel beneath its text;
+    // the bold accent border, not a second fill, marks the active editing
+    // surface.
+    let block = if focused {
+        block.style(theme.panel())
+    } else {
+        block
+    };
     let inner = block.inner(area);
-    let (lines, cursor_column, cursor_row, rows_above, rows_below) =
-        input.visible_rows(inner.width, inner.height);
+    // A box at its height ceiling with overflowing content reserves its
+    // rightmost column for a scrollbar — the same track/thumb treatment as
+    // the conversation pane. Only the message composer is ever laid out at
+    // the ceiling, which scopes the affordance to it.
+    let overflowing = inner.height == MAX_TEXT_ROWS
+        && visual_rows(input.as_str(), inner.width.max(1)).len() > usize::from(inner.height);
+    let text_width = inner.width.saturating_sub(u16::from(overflowing));
+    let (mut lines, cursor_column, cursor_row, rows_above, rows_below) =
+        input.visible_rows(text_width, inner.height);
+    let total_rows = rows_above
+        .saturating_add(lines.len())
+        .saturating_add(rows_below);
+    // An empty editor invites typing, the way a web form placeholder does;
+    // it disappears as soon as there is real content.
+    if input.as_str().is_empty()
+        && let Some(placeholder) = placeholder
+        && let Some(first) = lines.first_mut()
+    {
+        let fitted =
+            super::app::truncate_with_ellipsis(placeholder, usize::from(inner.width.max(1)));
+        *first = Line::from(Span::styled(fitted, theme.muted()));
+    }
+    let title_width = line_width(&title);
     let title_layout = overflow_title(title, rows_above, rows_below, area.width);
     let title_rect = title_layout.original_offset.and_then(|offset| {
         let available = area.width.saturating_sub(2);
-        let visible_width = available.saturating_sub(offset).min(text_width(title));
+        let visible_width = available.saturating_sub(offset).min(title_width);
         (visible_width > 0).then(|| {
             Rect::new(
                 area.x.saturating_add(1).saturating_add(offset),
@@ -469,7 +555,22 @@ pub(crate) fn render(
     });
     let block = block.title(title_layout.text);
     frame.render_widget(block, area);
-    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)),
+        Rect::new(inner.x, inner.y, text_width, inner.height),
+    );
+    let scrollbar = if overflowing {
+        ScrollbarGeometry::resolve(
+            Rect::new(inner.x.saturating_add(text_width), inner.y, 1, inner.height),
+            total_rows,
+        )
+        .map(|geometry| geometry.with_thumb(rows_above))
+    } else {
+        None
+    };
+    if let Some(geometry) = scrollbar {
+        render_scrollbar_track(frame, geometry, theme);
+    }
     if focused && inner.width > 0 && inner.height > 0 {
         frame.set_cursor_position((
             inner.x.saturating_add(cursor_column),
@@ -479,6 +580,7 @@ pub(crate) fn render(
     RenderedInput {
         text_rect: inner,
         title_rect,
+        scrollbar,
     }
 }
 
@@ -499,39 +601,69 @@ pub(crate) fn render_masked(
         cursor: cursor_graphemes.saturating_mul('•'.len_utf8()),
         ..InputState::default()
     };
-    render(frame, area, &mut masked, focused, title, theme)
+    // Credential fields show no placeholder: their title and help text carry
+    // the explanation, and a stray hint could read as a default value.
+    let rendered = render(
+        frame,
+        area,
+        &mut masked,
+        focused,
+        title.to_owned(),
+        None,
+        theme,
+    );
+    // The masked stand-in owned the render layout; mirror it back so mouse
+    // positioning on the real (secret) buffer resolves display cells.
+    input.input.layout_width = masked.layout_width;
+    input.input.layout_height = masked.layout_height;
+    input.input.viewport_row = masked.viewport_row;
+    rendered
 }
 
 struct OverflowTitle {
-    text: String,
+    text: Line<'static>,
     original_offset: Option<u16>,
 }
 
-fn overflow_title(title: &str, rows_above: usize, rows_below: usize, width: u16) -> OverflowTitle {
+fn line_width(line: &Line) -> u16 {
+    u16::try_from(line.width()).unwrap_or(u16::MAX)
+}
+
+/// The input box title plus its scroll-position prefix. The caller's styled
+/// title spans pass through untouched; only the prefix/fallback indicators
+/// are plain text that inherits the border accent.
+fn overflow_title(
+    title: Line<'static>,
+    rows_above: usize,
+    rows_below: usize,
+    width: u16,
+) -> OverflowTitle {
     if rows_above == 0 && rows_below == 0 {
         return OverflowTitle {
-            text: title.to_owned(),
+            text: title,
             original_offset: Some(0),
         };
     }
     let available = width.saturating_sub(2);
     let prefix = format!("Input ↑{rows_above} ↓{rows_below} · ");
-    let full = format!("{prefix}{title}");
-    if text_width(&full) <= available {
+    let prefix_width = text_width(&prefix);
+    if prefix_width.saturating_add(line_width(&title)) <= available {
+        let mut spans = vec![Span::raw(prefix)];
+        spans.extend(title.spans);
         return OverflowTitle {
-            text: full,
-            original_offset: Some(text_width(&prefix)),
+            text: Line::from(spans),
+            original_offset: Some(prefix_width),
         };
     }
     let labelled = format!("Input ↑{rows_above} ↓{rows_below}");
     if text_width(&labelled) <= available {
         return OverflowTitle {
-            text: labelled,
+            text: Line::from(labelled),
             original_offset: None,
         };
     }
     OverflowTitle {
-        text: format!("↑{rows_above}↓{rows_below}"),
+        text: Line::from(format!("↑{rows_above}↓{rows_below}")),
         original_offset: None,
     }
 }
@@ -709,12 +841,12 @@ mod tests {
         style::{Modifier, Style},
     };
 
-    use super::{CredentialInput, InputState, render};
+    use super::{CredentialInput, InputState, ScrollbarGeometry, render};
     use crate::theme::Theme;
 
     #[test]
-    fn focused_and_unfocused_message_borders_share_the_bright_color() {
-        fn rendered_styles(focused: bool) -> (Style, Style) {
+    fn focused_and_unfocused_message_borders_differ_by_weight_and_fill() {
+        fn rendered_styles(focused: bool) -> (Style, Style, Style) {
             let mut input = InputState::default();
             let mut terminal = Terminal::new(TestBackend::new(12, 3)).expect("terminal");
             terminal
@@ -725,23 +857,81 @@ mod tests {
                         &mut input,
                         focused,
                         "Message",
+                        None,
                         &Theme::default(),
                     );
                 })
                 .expect("render Message box");
             let buffer = terminal.backend().buffer();
-            (buffer[(0, 0)].style(), buffer[(1, 0)].style())
+            (
+                buffer[(0, 0)].style(),
+                buffer[(1, 0)].style(),
+                buffer[(1, 1)].style(),
+            )
         }
 
-        let (focused_border, focused_title) = rendered_styles(true);
-        let (unfocused_border, unfocused_title) = rendered_styles(false);
+        let theme = Theme::default();
+        let (focused_border, focused_title, focused_text) = rendered_styles(true);
+        let (unfocused_border, unfocused_title, unfocused_text) = rendered_styles(false);
 
-        assert_eq!(unfocused_border.fg, focused_border.fg);
-        assert_eq!(unfocused_title.fg, focused_title.fg);
+        // Focus carries the warm user accent in bold; the resting box falls
+        // back to a dim crust border. Weight — not color alone — still
+        // distinguishes the states when color is unavailable.
+        assert_eq!(focused_border.fg, theme.user().fg);
+        assert_eq!(unfocused_border.fg, theme.panel_border().fg);
         assert!(focused_border.add_modifier.contains(Modifier::BOLD));
         assert!(!focused_border.add_modifier.contains(Modifier::DIM));
         assert!(unfocused_border.add_modifier.contains(Modifier::DIM));
         assert!(!unfocused_border.add_modifier.contains(Modifier::BOLD));
+        // The focused composer interior is filled with the panel surface.
+        assert_eq!(focused_text.bg, theme.panel().bg);
+        assert!(matches!(
+            unfocused_text.bg,
+            None | Some(ratatui::style::Color::Reset)
+        ));
+        // Titles pick up the border accent of their state.
+        assert_eq!(focused_title.fg, theme.user().fg);
+        assert_eq!(unfocused_title.fg, theme.panel_border().fg);
+    }
+
+    #[test]
+    fn empty_input_shows_the_placeholder_until_text_arrives() {
+        fn buffer_text(input: &mut InputState, placeholder: Option<&str>) -> String {
+            let mut terminal = Terminal::new(TestBackend::new(30, 3)).expect("terminal");
+            terminal
+                .draw(|frame| {
+                    render(
+                        frame,
+                        frame.area(),
+                        input,
+                        true,
+                        "Message",
+                        placeholder,
+                        &Theme::default(),
+                    );
+                })
+                .expect("render");
+            let buffer = terminal.backend().buffer();
+            (0..3)
+                .flat_map(|y| (0..30).map(move |x| buffer[(x, y)].symbol().to_owned()))
+                .collect()
+        }
+
+        let mut input = InputState::default();
+        let rendered = buffer_text(&mut input, Some("Type a message · / for commands"));
+        assert!(rendered.contains("Type a message"), "{rendered}");
+        // Too narrow for the full hint: it ellipsizes instead of clipping
+        // mid-word at the border.
+        assert!(rendered.contains('…'), "{rendered}");
+
+        input.set_buffer("h".into());
+        let rendered = buffer_text(&mut input, Some("Type a message · / for commands"));
+        assert!(!rendered.contains("Type a message"), "{rendered}");
+
+        // No placeholder configured: the row stays blank.
+        let mut blank = InputState::default();
+        let rendered = buffer_text(&mut blank, None);
+        assert!(!rendered.contains("Type a message"), "{rendered}");
     }
 
     #[test]
@@ -829,6 +1019,7 @@ mod tests {
                     &mut input,
                     true,
                     "Message",
+                    None,
                     &Theme::default(),
                 );
             })
@@ -852,6 +1043,7 @@ mod tests {
                     &mut input,
                     true,
                     "Message",
+                    None,
                     &Theme::default(),
                 );
             })
@@ -869,6 +1061,7 @@ mod tests {
                     &mut input,
                     true,
                     "Message",
+                    None,
                     &Theme::default(),
                 );
             })
@@ -889,6 +1082,7 @@ mod tests {
                     &mut newline,
                     true,
                     "Message",
+                    None,
                     &Theme::default(),
                 );
             })
@@ -911,6 +1105,7 @@ mod tests {
                     &mut wrapped,
                     true,
                     "Message",
+                    None,
                     &Theme::default(),
                 );
             })
@@ -934,6 +1129,7 @@ mod tests {
                     &mut input,
                     true,
                     "Message",
+                    None,
                     &Theme::default(),
                 );
             })
@@ -971,6 +1167,7 @@ mod tests {
                     &mut input,
                     false,
                     "Message",
+                    None,
                     &Theme::default(),
                 );
             })
@@ -993,6 +1190,7 @@ mod tests {
                     &mut input,
                     true,
                     "Message",
+                    None,
                     &Theme::from_environment("dark", true, "xterm", "truecolor"),
                 );
             })
@@ -1014,6 +1212,7 @@ mod tests {
                     &mut input,
                     false,
                     "Message",
+                    None,
                     &Theme::from_environment("dark", true, "xterm", "truecolor"),
                 );
             })
@@ -1031,6 +1230,7 @@ mod tests {
                 &mut input,
                 false,
                 "Message",
+                None,
                 &Theme::from_environment("dark", true, "xterm", "truecolor"),
             );
         })
@@ -1054,6 +1254,7 @@ mod tests {
                     &mut input,
                     true,
                     "Message",
+                    None,
                     &Theme::default(),
                 );
             })
@@ -1068,6 +1269,7 @@ mod tests {
                     &mut input,
                     true,
                     "Message",
+                    None,
                     &Theme::default(),
                 );
             })
@@ -1091,6 +1293,7 @@ mod tests {
                     &mut input,
                     true,
                     "Message",
+                    None,
                     &Theme::default(),
                 );
             })
@@ -1107,6 +1310,7 @@ mod tests {
                     &mut input,
                     true,
                     "Message",
+                    None,
                     &Theme::default(),
                 );
             })
@@ -1124,6 +1328,7 @@ mod tests {
                     &mut input,
                     true,
                     "Message",
+                    None,
                     &Theme::default(),
                 );
             })
@@ -1149,10 +1354,147 @@ mod tests {
                         &mut input,
                         true,
                         "Message",
+                        None,
                         &Theme::default(),
                     );
                 })
                 .expect("tiny render");
         }
+    }
+
+    #[test]
+    fn composer_at_ceiling_renders_scrollbar_only_when_content_overflows() {
+        fn track_symbols(lines: &str) -> Vec<String> {
+            let mut input = InputState::default();
+            input.set_buffer(lines.to_owned());
+            let mut terminal = Terminal::new(TestBackend::new(20, 7)).expect("terminal");
+            terminal
+                .draw(|frame| {
+                    render(
+                        frame,
+                        Rect::new(0, 0, 20, 7),
+                        &mut input,
+                        true,
+                        "Message",
+                        None,
+                        &Theme::default(),
+                    );
+                })
+                .expect("render");
+            let buffer = terminal.backend().buffer();
+            // The reserved track column is the last inner cell, left of the
+            // right border at x = 19.
+            (1..6)
+                .map(|y| buffer[(18, y)].symbol().to_owned())
+                .collect()
+        }
+
+        // Eight rows of content in a five-row box: the track column shows a
+        // muted rail with a thumb covering the visible fraction.
+        let overflowing = track_symbols("a\nb\nc\nd\ne\nf\ng\nh");
+        assert!(
+            overflowing
+                .iter()
+                .all(|symbol| symbol == "│" || symbol == "█"),
+            "track column: {overflowing:?}"
+        );
+        assert!(
+            overflowing.iter().any(|symbol| symbol == "█"),
+            "thumb present: {overflowing:?}"
+        );
+
+        // Three rows fit the box: no reservation, the column stays text.
+        let fitting = track_symbols("a\nb\nc");
+        assert!(
+            fitting.iter().all(|symbol| symbol != "│" && symbol != "█"),
+            "no track when fitting: {fitting:?}"
+        );
+    }
+
+    #[test]
+    fn rendered_input_reports_scrollbar_geometry_only_at_the_overflowing_ceiling() {
+        fn rendered_scrollbar(lines: &str, area: Rect) -> Option<ScrollbarGeometry> {
+            let mut input = InputState::default();
+            input.set_buffer(lines.to_owned());
+            let mut terminal =
+                Terminal::new(TestBackend::new(area.width, area.height)).expect("terminal");
+            let mut rendered = None;
+            terminal
+                .draw(|frame| {
+                    rendered = Some(render(
+                        frame,
+                        area,
+                        &mut input,
+                        true,
+                        "Message",
+                        None,
+                        &Theme::default(),
+                    ));
+                })
+                .expect("render");
+            rendered.and_then(|rendered| rendered.scrollbar)
+        }
+
+        // Eight rows in the five-row ceiling box: the reserved column
+        // reports its track and thumb as the click/drag hit source.
+        let geometry = rendered_scrollbar("a\nb\nc\nd\ne\nf\ng\nh", Rect::new(0, 0, 20, 7))
+            .expect("scrollbar while overflowing at the ceiling");
+        assert_eq!(geometry.track, Rect::new(18, 1, 1, 5));
+        assert!(!geometry.thumb.is_empty());
+
+        // Fitting content at the same height has nothing to scroll.
+        assert!(rendered_scrollbar("a\nb\nc", Rect::new(0, 0, 20, 7)).is_none());
+    }
+
+    #[test]
+    fn scroll_to_holds_the_viewport_until_an_edit_or_cursor_key_reanchors() {
+        fn draw(terminal: &mut Terminal<TestBackend>, input: &mut InputState) {
+            terminal
+                .draw(|frame| {
+                    render(
+                        frame,
+                        Rect::new(0, 0, 12, 7),
+                        input,
+                        true,
+                        "Message",
+                        None,
+                        &Theme::default(),
+                    );
+                })
+                .expect("render");
+        }
+
+        let mut input = InputState::default();
+        input.set_buffer("a\nb\nc\nd\ne\nf\ng\nh".to_owned());
+        let mut terminal = Terminal::new(TestBackend::new(12, 7)).expect("terminal");
+        // Eight rows in a five-row viewport: the cursor anchors the bottom.
+        draw(&mut terminal, &mut input);
+        assert_eq!(input.viewport_row(), 3);
+
+        // scroll_to positions the viewport directly, clamped to the exact
+        // offset range, and renders keep the held position instead of
+        // chasing the cursor at the bottom.
+        input.scroll_to(0);
+        draw(&mut terminal, &mut input);
+        assert_eq!(input.viewport_row(), 0);
+        input.scroll_to(usize::MAX);
+        assert_eq!(input.viewport_row(), 3);
+
+        // A cursor key ends the hold: the viewport follows the cursor again
+        // (a held viewport would have stayed at row 1, hiding the cursor).
+        input.scroll_to(1);
+        draw(&mut terminal, &mut input);
+        assert_eq!(input.viewport_row(), 1);
+        input.move_up();
+        draw(&mut terminal, &mut input);
+        assert_eq!(input.viewport_row(), 2);
+
+        // So does an edit (cursor back at the buffer end first).
+        input.move_buffer_end();
+        input.scroll_to(1);
+        draw(&mut terminal, &mut input);
+        input.insert('x');
+        draw(&mut terminal, &mut input);
+        assert_eq!(input.viewport_row(), 3);
     }
 }

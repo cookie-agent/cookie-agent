@@ -2,14 +2,14 @@
 
 **Status:** frozen current implementation contract
 
-**Required versions:** configuration schema 8; agent document schema 2;
-protocol 8; event schema 9; session JSONL 9; session metadata 9;
+**Required versions:** configuration schema 9; agent document schema 2;
+protocol 8; event schema 10; session JSONL 10; session metadata 9;
 delegation-journal schema 9; runtime snapshot schema 2; catalog cache schema 2;
 provider store schema 3; family recipe registry schema 1; project model-snapshot
 manifest schema 1.
 
-Only those versions are accepted. Configuration schema 7, agent schema 1,
-event/session/delegation-journal schema 8, protocol/persistence 7, catalog cache
+Only those versions are accepted. Configuration schema 8, agent schema 1,
+event/session schema 9, delegation-journal schema 8, protocol/persistence 7, catalog cache
 1, provider stores 1/2, and every unversioned or earlier replacement are
 rejected. There are no migrations, compatibility readers, aliases, or dual paths.
 
@@ -21,6 +21,20 @@ the in-memory log tail, so live appends are reflected immediately and restart
 replay reconstructs the same value. The rebuildable `meta.json` cache remains
 versioned by `SessionMetaSchemaVersion` but deliberately omits this derived
 field; metadata cache version 8 and every other non-9 version are rejected.
+
+New sessions begin as in-memory projections with a buffered event log. Creating
+a session, changing its live permission mode, renaming it, or appending other
+pre-message events creates no per-session directory, `meta.json`, or
+`events.jsonl`. The first `UserInputSubmitted` append is the persistence gate:
+under the session-store mutation lock, the engine appends that event to the
+buffer, rebuilds metadata, writes the complete contiguous log and cache into a
+temporary session directory, fsyncs it, and atomically renames it into place.
+All later events use normal append-per-event durability. Consequently live
+session list/get/tree calls include empty sessions, while restart forgets every
+session that never received a user message. Root empty-session creation does not
+write delegation or artifact entries. Predictive compaction is disabled for an
+unpersisted session, so the first run buffers `RunStarted`, skips compaction,
+then flushes `SessionCreated`, `RunStarted`, and `UserInputSubmitted` in sequence.
 
 This file is authoritative. Exact types, ordering, failure behavior, startup,
 RPC, persistence, and TUI semantics are in
@@ -72,7 +86,7 @@ Family registry 1 is described in
 15. Model keys split at the first `/`; a model ID may contain `/`.
 16. Secrets never enter caches, revisions, snapshots, events, errors, logs,
     generated artifacts, session files, or TUI projections.
-17. **Empty setup is valid.** Config schema 8 permits `providers` to be omitted
+17. **Empty setup is valid.** Config schema 9 permits `providers` to be omitted
     or empty. When provider store 3 is also empty and no effective authored
     custom provider exists, startup publishes zero models/root-runnable agents
     and opens the TUI so `/connect` can bootstrap setup. Empty TOML does not hide
@@ -92,14 +106,14 @@ TUI / CLI
 server ─────────────── runtime.changed notifications
     │
     ▼
-engine ── version-8 events/sessions and frozen run policy
+engine ── version-10 events/sessions and frozen run policy
     │
     ▼
 model manager ── atomic RuntimeSnapshot schema 1
     │
     ├── catalog manager ── fixed HTTPS / cache 2 / bootstrap
     ├── family registry 1 ── npm-family/protocol/auth compilers
-    ├── config loader ── schema 8 and agent schema 2
+    ├── config loader ── schema 9 and agent schema 2
     └── provider store 3 ── managed durable connections only
 ```
 
@@ -173,7 +187,7 @@ Runtime defaults and catalog/recipes are not TOML layers. The only authored
 layer precedence is:
 
 ```text
-user config schema 8 < exact-cwd workspace config schema 8
+user config schema 9 < exact-cwd workspace config schema 9
 user agent document < same-ID workspace agent document
 ```
 
@@ -245,7 +259,7 @@ labels used for policy matching.
 The removed agent `delegation` field has no decoder. Delegation targets are the
 keys of the `delegate` permission resource map, whose target effects are
 `allow` or `ask`; targets must resolve to enabled `subagent`/`all` agents.
-Runtime schema 8 owns `[delegation]`: `max_depth` defaults to 3 and
+Runtime schema 9 owns `[delegation]`: `max_depth` defaults to 3 and
 `max_concurrency` defaults to unlimited. A frozen child ceiling is the parent
 ceiling bounded by runtime `max_depth`. Admission serializes the count of
 delegated sessions in the root tree that currently have an active run; reaching
@@ -644,12 +658,46 @@ Typed failures leave history readable and never substitute another model:
 `snapshot_config_mismatch`, `snapshot_credentials_unavailable`,
 `unsupported_snapshot_recipe`, and `snapshot_rehydration_mismatch`.
 
-## 12. Normative startup order
+## 12. Context compaction
+
+Runtime schema 9 exposes one compaction trigger,
+`context_compaction.soft_threshold_percent`, defaulting to 70, plus the durable
+summary and native-context byte limits. There is no hard threshold or target
+percentage. The model loop retains its assembled-history estimate of serialized
+history bytes divided by four and attempts compaction when that estimate reaches
+the soft threshold. Failure to produce a valid native or summary checkpoint is
+always soft: the unchanged events continue to the model.
+
+Each loaded session starts with an in-memory token estimator whose
+`tokens_per_byte` and `last_committed_input_tokens` are both zero; persisted
+history is deliberately not used to seed it. After a model turn is durably
+committed, nonzero reported input tokens divided by the nonzero serialized byte
+length of the exact history sent for that turn replaces the learned ratio. The
+last committed input-token count follows the committed turn and is zero when
+usage is absent. Before `start_run_direct` appends a new `UserInputSubmitted`
+event, it projects the next input as the last committed input tokens plus the
+serialized user-message bytes multiplied by the learned ratio. A positive ratio
+whose projection reaches the same soft threshold forces compaction over the
+current log first. The checkpoint therefore precedes the new user event, keeping
+that message live beside the compacted context. A zero ratio never predicts a
+trigger.
+
+`ContextCheckpointBudgets` records the context limit, soft trigger, estimated
+input tokens before and after compaction, and summary-byte limit; it has no
+target budget. Native checkpoints estimate their post-compaction tokens from
+the retained artifact payload bytes divided by four, rounded up. Commit
+validation requires a nonempty monotonic source range, an input boundary at or
+after the source range, a positive context limit, a trigger no greater than that
+limit, and strict shrinkage (`input_tokens_after < input_tokens_before`). The
+pre-compaction estimate may be below the trigger because predictive intake
+compaction is valid.
+
+## 13. Normative startup order
 
 Startup order is frozen and must not be reordered:
 
-1. **Schema 7 and agents:** securely open roots, load family registry 1, then
-   strictly load atomic config schema 8 and agent schema 2 documents.
+1. **Schema 9 and agents:** securely open roots, load family registry 1, then
+   strictly load atomic config schema 9 and agent schema 2 documents.
 2. **Catalog:** securely open cache schema 2, perform the bounded identity-only
    network request, then select network, validated cache, or bundled bootstrap
    and apply record quarantine.
@@ -662,7 +710,7 @@ Startup order is frozen and must not be reordered:
    model set is valid.
 6. **Project manifests:** scan/validate model-snapshot manifests 1 and rehydrate
    every referenced safe blueprint needed by project sessions.
-7. **Engine:** open version-8 session/event/delegation state and reconcile it
+7. **Engine:** open version-10 session/event state and version-9 delegation state and reconcile it
    against the manifest index; accepted/delegated bindings stay pinned.
 8. **Service:** atomically publish runtime, open server/TUI, then emit startup
    `runtime.changed`.
@@ -671,7 +719,7 @@ Any failure before step 8 opens no server/TUI except the documented usable
 catalog fallback paths. Cross-process provider-store generation reconciliation
 is mandatory again before discovery, session admission, and root-run admission.
 
-## 13. TUI contract
+## 14. TUI contract
 
 The TUI consumes only runtime snapshot schema 2 and `runtime.changed`. Required
 global/row states are:
@@ -683,7 +731,13 @@ streamed deltas, while abandoned attempts contribute no durable text or
 thinking content. The TUI state model represents these boundaries with
 `AssistantChild::Attribution`, and committed tool placeholders carry
 `CommittedTool.turn_seq` alongside their content index so tools from different
-turns cannot alias.
+turns cannot alias. A completed block closes with one muted, passive footer row
+(`╰─ ⚡ 42.0 tps · 12.5K ctx`): committed output tokens over generation wall
+time measured between durable event timestamps (the input-closing event at
+`input_through_seq` and the commit itself, so replays render identically), and
+the last committed turn's end-of-turn context (`input_tokens + output_tokens`)
+in the bottom bar's K convention.
+Blocks without usage data or a positive generation span render no footer.
 
 - `loading`: no snapshot yet; controls disabled;
 - `empty`: after authored providers and global store records are applied, a valid
@@ -749,17 +803,24 @@ explicitly with no selected row.
 The provider connect form has one focus order: a selectable auth-method row
 when multiple descriptor methods exist, the selected method's credential input
 boxes, every projected setup input box, and Submit. A sole auth method is
-displayed read-only. Left/Right, Space, or Enter cycles a focused method and
+displayed read-only. Left/Right or Space cycles a focused method and
 best-effort wipes/rebuilds its credential buffers so values never cross method
-boundaries. Tab/Down and Shift-Tab/Up traverse the form; Enter advances from an
-input and dispatches only from Submit; Esc cancels and wipes secret-bearing
-buffers. All boxes use the shared grapheme-safe input state and accept Unicode
+boundaries. Tab/Down and Shift-Tab/Up traverse the form; Enter dispatches the
+form from every focus position, matching Submit; Esc cancels and wipes
+secret-bearing buffers. Pointer interaction mirrors the same contract: clicking a credential
+or setup box focuses it and places its cursor at the clicked cell, clicking the
+auth-method row cycles the method with the same wipe/rebuild, clicking Submit
+dispatches, and hovered controls highlight without moving focus. All boxes use
+the shared grapheme-safe input state and accept Unicode
 typing and paste, cursor movement, Backspace/Delete, and Ctrl-U. Credential
 values and setup descriptors with `safe_to_project = false` are bullet-masked;
 the latter includes recipe-projected KEY/TOKEN/SECRET placeholder fields.
 Connect is store-and-go and performs no TUI-side provider request or credential
 test. The form states `Credentials are verified on first use.` because validity
-is exercised only when a conversation invokes the provider. A failed connect
+is exercised only when a conversation invokes the provider. Client-side
+validation failures keep the form open with the modal and focus unchanged and
+surface the error inline until the next edit, auth-method change, or submit
+attempt. A failed connect
 RPC opens a persistent full-message error state rather than a transient notice;
 Esc returns to the retained form for correction and retry. Public setup inputs
 remain populated, while credential and secret-classified setup inputs are
@@ -769,7 +830,7 @@ formatting includes the RPC code/message and only scalar `data.code` and
 Connect/disconnect changes become visible to other workspace daemons through
 provider-store generation reconciliation.
 
-### 13.1 Live per-session permission mode
+### 14.1 Live per-session permission mode
 
 Every session has a live permission mode, defaulting to `auto_approve` when no
 explicit value has been set. `auto_approve` preserves the normal approval-agent
@@ -799,11 +860,14 @@ before updating its live in-memory mode. The TUI mirrors values per session for
 display while the engine remains authoritative. Its bottom bar renders the
 clickable mode immediately left of context usage, for example
 "auto-approve    ctx 48.2K (24%)    `ctrl+p` commands", and clicking cycles
-`auto-approve → ask → yolo → auto-approve`. Narrow layouts remove the command
+`auto-approve → ask → yolo → auto-approve`. The context value is the
+end-of-turn total (`input_tokens + output_tokens`) of the latest committed
+turn, hidden when the turn reported no usage, with the percentage taken
+against the model context limit. Narrow layouts remove the command
 hint, percentage, and context value in that order while retaining the mode
 control; the working-directory field truncates into the remaining left space.
 
-## 14. Validation ownership
+## 15. Validation ownership
 
 Required validation covers every version rejection, secure file mode/ownership/
 link attack, exact startup order, identity-only streamed 16 MiB acquisition,

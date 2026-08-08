@@ -75,7 +75,7 @@ fn checked_schema7_fixture_rejects_ambient_config_overrides_before_cli_secret_in
     );
     assert!(report.contains("interactive TTY"), "{report}");
     assert!(
-        !report.contains("load schema-8 workspace configuration"),
+        !report.contains("load schema-9 workspace configuration"),
         "{report}"
     );
     for secret in [

@@ -1,4 +1,12 @@
 //! Semantic terminal themes and capability-aware color quantization.
+//!
+//! The default theme is a warm, light "cookie" palette: one cream surface
+//! across the whole frame, espresso-brown text, and caramel/cinnamon/sage
+//! accents. Every foreground is chosen for WCAG-AA-or-better contrast
+//! against the cream surface; state is never conveyed by color alone
+//! (bold/italic/underline and text markers accompany every semantic color).
+//! `Mono` drops all color, `HighContrast` keeps bright ANSI colors on the
+//! terminal's own background.
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -22,6 +30,57 @@ pub struct ThemeKey {
     pub kind: ThemeKind,
     pub colors: ColorLevel,
 }
+
+/// The semantic color direction of an approval decision button.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum DecisionTone {
+    Allow,
+    Deny,
+    Neutral,
+}
+
+// --- The bakery palette (true color) ---------------------------------------
+//
+// Surfaces: a single cream base, parchment code blocks, toasted selection,
+// glaze hover, crust borders. Text: espresso body with cocoa and latte
+// derivatives. Accents: caramel, sage, cinnamon, cranberry, honey, maple,
+// slate, plum, terracotta.
+
+const CREAM: (u8, u8, u8) = (0xFB, 0xF4, 0xE6);
+const PARCHMENT: (u8, u8, u8) = (0xF2, 0xE5, 0xCC);
+const TOASTED: (u8, u8, u8) = (0xEA, 0xD7, 0xB4);
+const GLAZE: (u8, u8, u8) = (0xF0, 0xDF, 0xC0);
+const CRUST: (u8, u8, u8) = (0xC9, 0xAE, 0x85);
+const ESPRESSO: (u8, u8, u8) = (0x46, 0x30, 0x1F);
+const COCOA: (u8, u8, u8) = (0x6E, 0x4E, 0x38);
+const LATTE: (u8, u8, u8) = (0x86, 0x69, 0x4F);
+const FAWN: (u8, u8, u8) = (0x93, 0x76, 0x5B);
+const CARAMEL: (u8, u8, u8) = (0x9C, 0x5A, 0x10);
+const SAGE: (u8, u8, u8) = (0x4E, 0x7A, 0x34);
+const OLIVE: (u8, u8, u8) = (0x3F, 0x6B, 0x2A);
+const CINNAMON: (u8, u8, u8) = (0xA8, 0x5B, 0x17);
+const CRANBERRY: (u8, u8, u8) = (0xAE, 0x33, 0x27);
+const HONEY: (u8, u8, u8) = (0x8F, 0x64, 0x08);
+const MAPLE: (u8, u8, u8) = (0x8A, 0x4A, 0x0B);
+const SLATE: (u8, u8, u8) = (0x3D, 0x6A, 0x8C);
+const PLUM: (u8, u8, u8) = (0x8A, 0x55, 0x70);
+const TAN: (u8, u8, u8) = (0x8A, 0x6B, 0x45);
+const TERRACOTTA: (u8, u8, u8) = (0xA0, 0x3A, 0x20);
+const QUOTE: (u8, u8, u8) = (0x84, 0x70, 0x5C);
+const ALLOW_TINT: (u8, u8, u8) = (0xDE, 0xE7, 0xC6);
+const DENY_TINT: (u8, u8, u8) = (0xF3, 0xD5, 0xC9);
+const NEUTRAL_TINT: (u8, u8, u8) = (0xE6, 0xDC, 0xC6);
+
+// --- xterm-256 background bands --------------------------------------------
+//
+// The naive RGB→cube quantizer drags every warm beige into the pink
+// (255, 215, 215) cell 224, so each light band names its cube index by hand.
+// The ladder steps from light to deep: cream surface, parchment code band,
+// glaze hover, toasted selection.
+const CREAM_256: u8 = 231; // (255, 255, 255)
+const PARCHMENT_256: u8 = 230; // (255, 255, 215)
+const GLAZE_256: u8 = 223; // (255, 215, 175)
+const TOASTED_256: u8 = 222; // (255, 215, 135)
 
 #[derive(Clone, Debug)]
 pub struct Theme {
@@ -100,48 +159,184 @@ impl Theme {
         self.key
     }
 
+    /// Base surface painted beneath the whole default-theme UI: a warm cream
+    /// background with an espresso foreground, so even unstyled text stays
+    /// readable. Mono and high-contrast themes keep the terminal background.
+    pub fn surface(&self) -> Style {
+        if self.key.kind != ThemeKind::Default {
+            return Style::default();
+        }
+        match self.key.colors {
+            ColorLevel::None => Style::default(),
+            ColorLevel::Ansi16 => Style::default().fg(Color::Black).bg(Color::White),
+            ColorLevel::Ansi256 => {
+                let mut style = Style::default().bg(Color::Indexed(CREAM_256));
+                if let Some(foreground) = self.quantize_rgb(ESPRESSO.0, ESPRESSO.1, ESPRESSO.2) {
+                    style = style.fg(foreground);
+                }
+                style
+            }
+            ColorLevel::TrueColor => Style::default()
+                .fg(Color::Rgb(ESPRESSO.0, ESPRESSO.1, ESPRESSO.2))
+                .bg(Color::Rgb(CREAM.0, CREAM.1, CREAM.2)),
+        }
+    }
+
+    /// Panels (overlays, pickers, the focused input box, the bottom bar)
+    /// share the one cream surface — borders, not a second fill, delineate
+    /// them. Foreground is left alone so content keeps whatever the surface
+    /// painted.
+    pub fn panel(&self) -> Style {
+        self.background_color(CREAM, Color::White, CREAM_256, None)
+            .map_or_else(Style::default, |background| Style::default().bg(background))
+    }
+
+    /// Subdued crust border for pane chrome (conversation, tree, pickers).
+    pub fn panel_border(&self) -> Style {
+        self.semantic(CRUST, Color::DarkGray, Color::White, Modifier::DIM)
+    }
+
+    /// Keyboard-selected row in pickers, palettes, and the session tree: a
+    /// toasted background with bold espresso text. Reverse video carries the
+    /// selection where no color is available.
+    pub fn selected(&self) -> Style {
+        let style = Style::default().add_modifier(Modifier::BOLD);
+        match self.key.colors {
+            ColorLevel::None => Style::default().add_modifier(Modifier::REVERSED),
+            _ if self.key.kind == ThemeKind::HighContrast => {
+                style.fg(Color::Black).bg(Color::LightYellow)
+            }
+            ColorLevel::Ansi16 => style.fg(Color::Black).bg(Color::Gray),
+            ColorLevel::Ansi256 => {
+                let mut style = style.bg(Color::Indexed(TOASTED_256));
+                if let Some(foreground) = self.quantize_rgb(ESPRESSO.0, ESPRESSO.1, ESPRESSO.2) {
+                    style = style.fg(foreground);
+                }
+                style
+            }
+            ColorLevel::TrueColor => style
+                .fg(Color::Rgb(ESPRESSO.0, ESPRESSO.1, ESPRESSO.2))
+                .bg(Color::Rgb(TOASTED.0, TOASTED.1, TOASTED.2)),
+        }
+    }
+
+    /// Hover affordance patched over interactive text cells: a quiet glaze
+    /// background — one calm step deeper than the cream surface, never a
+    /// reddish tint. Cruder targets (mono, ANSI-16, high contrast) underline
+    /// as well, so the affordance never relies on a subtle background shift
+    /// alone. Existing foreground colors are preserved by the patch.
+    pub fn hover(&self) -> Style {
+        let quiet_background_only = matches!(
+            (self.key.kind, self.key.colors),
+            (
+                ThemeKind::Default,
+                ColorLevel::Ansi256 | ColorLevel::TrueColor
+            )
+        );
+        let style = if quiet_background_only {
+            Style::default()
+        } else {
+            Style::default().add_modifier(Modifier::UNDERLINED)
+        };
+        self.background_color(GLAZE, Color::Gray, GLAZE_256, Some(Color::DarkGray))
+            .map_or(style, |background| style.bg(background))
+    }
+
+    /// Background-only hover fill for approval buttons and other glyph
+    /// cells where an underline would not read.
+    pub fn hover_fill(&self) -> Style {
+        self.background_color(GLAZE, Color::Gray, GLAZE_256, Some(Color::DarkGray))
+            .map_or_else(Style::default, |background| Style::default().bg(background))
+    }
+
+    /// Subtle parchment band behind fenced code blocks. Only the default
+    /// theme paints one; mono and high-contrast keep blocks flat.
+    pub fn code_background(&self) -> Option<Color> {
+        if self.key.kind != ThemeKind::Default {
+            return None;
+        }
+        self.background_color(PARCHMENT, Color::Gray, PARCHMENT_256, None)
+    }
+
+    /// One approval decision button. `active` (hover) fills the button with
+    /// a decision-tinted background; the border/label color and the button
+    /// glyphs carry the meaning, never color alone.
+    pub fn decision(&self, tone: DecisionTone, active: bool) -> Style {
+        if self.key.colors == ColorLevel::None {
+            let mut style = Style::default().add_modifier(Modifier::BOLD);
+            if active {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            return style;
+        }
+        if self.key.kind == ThemeKind::HighContrast {
+            let foreground = match tone {
+                DecisionTone::Allow => Color::LightGreen,
+                DecisionTone::Deny => Color::LightRed,
+                DecisionTone::Neutral => Color::White,
+            };
+            let mut style = Style::default().fg(foreground).add_modifier(Modifier::BOLD);
+            if active {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            return style;
+        }
+        if self.key.colors == ColorLevel::Ansi16 {
+            if active {
+                let background = match tone {
+                    DecisionTone::Allow => Color::LightGreen,
+                    DecisionTone::Deny => Color::LightRed,
+                    DecisionTone::Neutral => Color::Gray,
+                };
+                return Style::default()
+                    .fg(Color::Black)
+                    .bg(background)
+                    .add_modifier(Modifier::BOLD);
+            }
+            let foreground = match tone {
+                DecisionTone::Allow => Color::Green,
+                DecisionTone::Deny => Color::Red,
+                DecisionTone::Neutral => Color::Cyan,
+            };
+            return Style::default().fg(foreground).add_modifier(Modifier::BOLD);
+        }
+        let (foreground, tint) = match tone {
+            DecisionTone::Allow => (OLIVE, ALLOW_TINT),
+            DecisionTone::Deny => (CRANBERRY, DENY_TINT),
+            DecisionTone::Neutral => (COCOA, NEUTRAL_TINT),
+        };
+        let mut style = Style::default().add_modifier(Modifier::BOLD);
+        if let Some(foreground) = self.quantize_rgb(foreground.0, foreground.1, foreground.2) {
+            style = style.fg(foreground);
+        }
+        if active && let Some(background) = self.quantize_rgb(tint.0, tint.1, tint.2) {
+            style = style.bg(background);
+        }
+        style
+    }
+
     pub fn body(&self) -> Style {
         Style::default()
     }
 
     pub fn muted(&self) -> Style {
-        self.semantic(
-            (112, 122, 136),
-            Color::DarkGray,
-            Color::White,
-            Modifier::DIM,
-        )
+        self.semantic(LATTE, Color::DarkGray, Color::White, Modifier::DIM)
     }
 
     pub fn user(&self) -> Style {
-        self.semantic(
-            (64, 196, 255),
-            Color::Cyan,
-            Color::LightCyan,
-            Modifier::BOLD,
-        )
+        self.semantic(CARAMEL, Color::Yellow, Color::LightCyan, Modifier::BOLD)
     }
 
     pub fn assistant(&self) -> Style {
-        self.semantic((96, 220, 160), Color::Green, Color::White, Modifier::BOLD)
+        self.semantic(SAGE, Color::Green, Color::White, Modifier::BOLD)
     }
 
     pub fn thinking(&self) -> Style {
-        self.semantic(
-            (170, 150, 220),
-            Color::Magenta,
-            Color::LightMagenta,
-            Modifier::ITALIC,
-        )
+        self.semantic(PLUM, Color::Magenta, Color::LightMagenta, Modifier::ITALIC)
     }
 
     pub fn tool(&self) -> Style {
-        self.semantic(
-            (245, 190, 80),
-            Color::Yellow,
-            Color::LightYellow,
-            Modifier::BOLD,
-        )
+        self.semantic(CINNAMON, Color::Yellow, Color::LightYellow, Modifier::BOLD)
     }
 
     pub fn tool_running(&self) -> Style {
@@ -149,12 +344,7 @@ impl Theme {
     }
 
     pub fn tool_success(&self) -> Style {
-        self.semantic(
-            (96, 220, 160),
-            Color::Green,
-            Color::LightGreen,
-            Modifier::BOLD,
-        )
+        self.semantic(OLIVE, Color::Green, Color::LightGreen, Modifier::BOLD)
     }
 
     pub fn tool_failure(&self) -> Style {
@@ -163,24 +353,19 @@ impl Theme {
 
     /// Warning style — visually distinct from error styling (never red).
     pub fn warning(&self) -> Style {
-        self.semantic(
-            (255, 205, 90),
-            Color::Yellow,
-            Color::LightYellow,
-            Modifier::BOLD,
-        )
+        self.semantic(HONEY, Color::Yellow, Color::LightYellow, Modifier::BOLD)
     }
 
     pub fn error(&self) -> Style {
-        self.semantic((255, 100, 100), Color::Red, Color::LightRed, Modifier::BOLD)
+        self.semantic(CRANBERRY, Color::Red, Color::LightRed, Modifier::BOLD)
     }
 
     pub fn internal(&self) -> Style {
-        self.semantic((150, 160, 175), Color::Gray, Color::Gray, Modifier::DIM)
+        self.semantic(FAWN, Color::Gray, Color::Gray, Modifier::DIM)
     }
 
     pub fn heading(&self) -> Style {
-        let style = self.semantic((255, 215, 110), Color::Yellow, Color::White, Modifier::BOLD);
+        let style = self.semantic(MAPLE, Color::Yellow, Color::White, Modifier::BOLD);
         if self.key.kind == ThemeKind::HighContrast && self.key.colors != ColorLevel::None {
             style.add_modifier(Modifier::UNDERLINED)
         } else {
@@ -190,49 +375,40 @@ impl Theme {
 
     pub fn link(&self) -> Style {
         self.semantic(
-            (90, 170, 255),
+            SLATE,
             Color::Blue,
             Color::LightCyan,
             Modifier::UNDERLINED | Modifier::BOLD,
         )
     }
 
-    /// Inline code in assistant Markdown: a distinct semantic background
-    /// with a readable foreground, never color-only — the source backticks
-    /// stay visible, and the bold modifier carries the distinction in mono
-    /// terminals.
+    /// Inline code in assistant Markdown: a distinct warm terracotta
+    /// foreground, never a background in the default theme — the source
+    /// backticks stay visible, and the bold modifier carries the distinction
+    /// in mono terminals. High contrast keeps its inverse-video chip.
     pub fn inline_code(&self) -> Style {
-        let foreground =
-            self.semantic((255, 175, 100), Color::Yellow, Color::Black, Modifier::BOLD);
+        let foreground = self.semantic(TERRACOTTA, Color::Red, Color::Black, Modifier::BOLD);
         let background = match self.key.colors {
             ColorLevel::None => None,
             _ if self.key.kind == ThemeKind::HighContrast => Some(Color::LightYellow),
-            ColorLevel::Ansi16 => Some(Color::Black),
-            ColorLevel::Ansi256 | ColorLevel::TrueColor => self.quantize_rgb(48, 52, 70),
+            ColorLevel::Ansi16 | ColorLevel::Ansi256 | ColorLevel::TrueColor => None,
         };
         background.map_or(foreground, |background| foreground.bg(background))
     }
 
     pub fn code_border(&self) -> Style {
-        self.semantic((120, 150, 180), Color::Blue, Color::White, Modifier::DIM)
+        self.semantic(TAN, Color::Yellow, Color::White, Modifier::DIM)
     }
 
     pub fn quote(&self) -> Style {
-        self.semantic(
-            (175, 185, 200),
-            Color::Gray,
-            Color::LightMagenta,
-            Modifier::ITALIC,
-        )
+        self.semantic(QUOTE, Color::Gray, Color::LightMagenta, Modifier::ITALIC)
     }
 
     pub fn input_border(&self, focused: bool) -> Style {
         if focused {
             self.user()
         } else {
-            let mut style = self.muted();
-            style.fg = self.user().fg;
-            style
+            self.panel_border()
         }
     }
 
@@ -245,6 +421,26 @@ impl Theme {
             ColorLevel::TrueColor => Some(Color::Rgb(red, green, blue)),
             ColorLevel::Ansi256 => Some(Color::Indexed(rgb_to_ansi256(red, green, blue))),
             ColorLevel::Ansi16 => Some(nearest_ansi16(red, green, blue)),
+        }
+    }
+
+    /// A background color honoring kind/level fallbacks, with hand-picked
+    /// ANSI-16 choices that stay readable on a light surface and a
+    /// hand-picked xterm-256 cube index — the computed quantization drags
+    /// warm beiges into pink cells, so light bands never trust it.
+    fn background_color(
+        &self,
+        rgb: (u8, u8, u8),
+        ansi16: Color,
+        ansi256: u8,
+        high_contrast: Option<Color>,
+    ) -> Option<Color> {
+        match self.key.colors {
+            ColorLevel::None => None,
+            _ if self.key.kind == ThemeKind::HighContrast => high_contrast,
+            ColorLevel::Ansi16 => Some(ansi16),
+            ColorLevel::Ansi256 => Some(Color::Indexed(ansi256)),
+            ColorLevel::TrueColor => Some(Color::Rgb(rgb.0, rgb.1, rgb.2)),
         }
     }
 
@@ -329,7 +525,7 @@ mod tests {
     use insta::assert_snapshot;
     use ratatui::style::{Color, Modifier, Style};
 
-    use super::{ColorLevel, Theme, ThemeKind};
+    use super::{ColorLevel, DecisionTone, Theme, ThemeKind};
 
     #[test]
     fn environment_selects_themes_and_disables_color_safely() {
@@ -387,15 +583,28 @@ mod tests {
         let contrast = Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16);
         let mono = Theme::new(ThemeKind::Mono, ColorLevel::None);
         let snapshot = [
+            signature("default.surface", default.surface()),
+            signature("default.panel", default.panel()),
             signature("default.user", default.user()),
             signature("default.assistant", default.assistant()),
             signature("default.tool_running", default.tool_running()),
             signature("default.tool_success", default.tool_success()),
             signature("default.tool_failure", default.tool_failure()),
+            signature("default.selected", default.selected()),
+            signature("default.hover", default.hover()),
+            signature(
+                "default.decision.allow",
+                default.decision(DecisionTone::Allow, false),
+            ),
+            signature(
+                "default.decision.deny.active",
+                default.decision(DecisionTone::Deny, true),
+            ),
             signature("contrast.user", contrast.user()),
             signature("contrast.assistant", contrast.assistant()),
             signature("contrast.tool_success", contrast.tool_success()),
             signature("contrast.error", contrast.error()),
+            signature("contrast.selected", contrast.selected()),
             signature("default.warning", default.warning()),
             signature("contrast.warning", contrast.warning()),
             signature("mono.warning", mono.warning()),
@@ -404,35 +613,46 @@ mod tests {
             signature("contrast.inline_code", contrast.inline_code()),
             signature("mono.link", mono.link()),
             signature("mono.inline_code", mono.inline_code()),
+            signature("mono.selected", mono.selected()),
+            signature("mono.hover", mono.hover()),
         ]
         .join("\n");
         assert_snapshot!(snapshot, @r#"
-default.user: fg=Some(Rgb(64, 196, 255)) bg=None bold=true italic=false underline=false dim=false reverse=false
-default.assistant: fg=Some(Rgb(96, 220, 160)) bg=None bold=true italic=false underline=false dim=false reverse=false
-default.tool_running: fg=Some(Rgb(245, 190, 80)) bg=None bold=true italic=false underline=false dim=false reverse=false
-default.tool_success: fg=Some(Rgb(96, 220, 160)) bg=None bold=true italic=false underline=false dim=false reverse=false
-default.tool_failure: fg=Some(Rgb(255, 100, 100)) bg=None bold=true italic=false underline=false dim=false reverse=false
+default.surface: fg=Some(Rgb(70, 48, 31)) bg=Some(Rgb(251, 244, 230)) bold=false italic=false underline=false dim=false reverse=false
+default.panel: fg=None bg=Some(Rgb(251, 244, 230)) bold=false italic=false underline=false dim=false reverse=false
+default.user: fg=Some(Rgb(156, 90, 16)) bg=None bold=true italic=false underline=false dim=false reverse=false
+default.assistant: fg=Some(Rgb(78, 122, 52)) bg=None bold=true italic=false underline=false dim=false reverse=false
+default.tool_running: fg=Some(Rgb(168, 91, 23)) bg=None bold=true italic=false underline=false dim=false reverse=false
+default.tool_success: fg=Some(Rgb(63, 107, 42)) bg=None bold=true italic=false underline=false dim=false reverse=false
+default.tool_failure: fg=Some(Rgb(174, 51, 39)) bg=None bold=true italic=false underline=false dim=false reverse=false
+default.selected: fg=Some(Rgb(70, 48, 31)) bg=Some(Rgb(234, 215, 180)) bold=true italic=false underline=false dim=false reverse=false
+default.hover: fg=None bg=Some(Rgb(240, 223, 192)) bold=false italic=false underline=false dim=false reverse=false
+default.decision.allow: fg=Some(Rgb(63, 107, 42)) bg=None bold=true italic=false underline=false dim=false reverse=false
+default.decision.deny.active: fg=Some(Rgb(174, 51, 39)) bg=Some(Rgb(243, 213, 201)) bold=true italic=false underline=false dim=false reverse=false
 contrast.user: fg=Some(LightCyan) bg=None bold=true italic=false underline=false dim=false reverse=false
 contrast.assistant: fg=Some(White) bg=None bold=true italic=false underline=false dim=false reverse=false
 contrast.tool_success: fg=Some(LightGreen) bg=None bold=true italic=false underline=false dim=false reverse=false
 contrast.error: fg=Some(LightRed) bg=None bold=true italic=false underline=false dim=false reverse=false
-default.warning: fg=Some(Rgb(255, 205, 90)) bg=None bold=true italic=false underline=false dim=false reverse=false
+contrast.selected: fg=Some(Black) bg=Some(LightYellow) bold=true italic=false underline=false dim=false reverse=false
+default.warning: fg=Some(Rgb(143, 100, 8)) bg=None bold=true italic=false underline=false dim=false reverse=false
 contrast.warning: fg=Some(LightYellow) bg=None bold=true italic=false underline=false dim=false reverse=false
 mono.warning: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
 contrast.heading: fg=Some(White) bg=None bold=true italic=false underline=true dim=false reverse=false
-default.inline_code: fg=Some(Rgb(255, 175, 100)) bg=Some(Rgb(48, 52, 70)) bold=true italic=false underline=false dim=false reverse=false
+default.inline_code: fg=Some(Rgb(160, 58, 32)) bg=None bold=true italic=false underline=false dim=false reverse=false
 contrast.inline_code: fg=Some(Black) bg=Some(LightYellow) bold=true italic=false underline=false dim=false reverse=false
 mono.link: fg=None bg=None bold=true italic=false underline=true dim=false reverse=false
 mono.inline_code: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
+mono.selected: fg=None bg=None bold=false italic=false underline=false dim=false reverse=true
+mono.hover: fg=None bg=None bold=false italic=false underline=true dim=false reverse=false
 "#);
     }
 
     #[test]
-    fn inline_code_sets_a_background_in_color_themes_only() {
+    fn inline_code_uses_foreground_only_except_in_high_contrast() {
         for (theme, has_background) in [
-            (Theme::new(ThemeKind::Default, ColorLevel::TrueColor), true),
-            (Theme::new(ThemeKind::Default, ColorLevel::Ansi256), true),
-            (Theme::new(ThemeKind::Default, ColorLevel::Ansi16), true),
+            (Theme::new(ThemeKind::Default, ColorLevel::TrueColor), false),
+            (Theme::new(ThemeKind::Default, ColorLevel::Ansi256), false),
+            (Theme::new(ThemeKind::Default, ColorLevel::Ansi16), false),
             (
                 Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
                 true,
@@ -458,6 +678,71 @@ mono.inline_code: fg=None bg=None bold=true italic=false underline=false dim=fal
                 "bold distinction without color: {:?}",
                 theme.key()
             );
+        }
+    }
+
+    #[test]
+    fn warm_background_bands_hand_pick_ansi256_cells() {
+        // The computed RGB→cube quantization lands every warm beige on the
+        // pink (255, 215, 215) cell 224. Each light band names its cube
+        // index explicitly instead, and the ladder steps from light to
+        // deep: cream surface, parchment code band, glaze hover, toasted
+        // selection.
+        let theme = Theme::new(ThemeKind::Default, ColorLevel::Ansi256);
+        assert_eq!(theme.surface().bg, Some(Color::Indexed(231)));
+        assert_eq!(theme.panel().bg, Some(Color::Indexed(231)));
+        assert_eq!(theme.code_background(), Some(Color::Indexed(230)));
+        assert_eq!(theme.hover().bg, Some(Color::Indexed(223)));
+        assert_eq!(theme.hover_fill().bg, Some(Color::Indexed(223)));
+        assert_eq!(theme.selected().bg, Some(Color::Indexed(222)));
+        // The default theme's hover on a capable terminal is the quiet
+        // background alone — no underline, no foreground shift.
+        assert!(!theme.hover().add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(theme.hover().fg, None);
+        let truecolor = Theme::new(ThemeKind::Default, ColorLevel::TrueColor);
+        assert!(
+            !truecolor
+                .hover()
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
+    }
+
+    #[test]
+    fn surfaces_and_interactions_degrade_gracefully_without_color() {
+        let mono = Theme::new(ThemeKind::Mono, ColorLevel::None);
+        assert_eq!(mono.surface(), Style::default());
+        assert_eq!(mono.panel(), Style::default());
+        assert_eq!(mono.code_background(), None);
+        assert!(mono.selected().add_modifier.contains(Modifier::REVERSED));
+        assert!(mono.hover().add_modifier.contains(Modifier::UNDERLINED));
+        let active = mono.decision(DecisionTone::Allow, true);
+        assert!(active.add_modifier.contains(Modifier::REVERSED));
+        assert!(active.add_modifier.contains(Modifier::BOLD));
+
+        let contrast = Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16);
+        assert_eq!(contrast.surface(), Style::default());
+        assert_eq!(contrast.code_background(), None);
+        let ansi16 = Theme::new(ThemeKind::Default, ColorLevel::Ansi16);
+        assert_eq!(ansi16.surface().fg, Some(Color::Black));
+        assert_eq!(ansi16.surface().bg, Some(Color::White));
+        // Hand-picked light-safe ANSI backgrounds, never nearest-color guesses.
+        assert_eq!(ansi16.code_background(), Some(Color::Gray));
+        assert_eq!(ansi16.selected().bg, Some(Color::Gray));
+        assert_eq!(ansi16.hover().bg, Some(Color::Gray));
+        assert!(ansi16.hover().add_modifier.contains(Modifier::UNDERLINED));
+
+        let default = Theme::new(ThemeKind::Default, ColorLevel::TrueColor);
+        for tone in [
+            DecisionTone::Allow,
+            DecisionTone::Deny,
+            DecisionTone::Neutral,
+        ] {
+            let idle = default.decision(tone, false);
+            let active = default.decision(tone, true);
+            assert!(idle.bg.is_none(), "idle button has no fill: {tone:?}");
+            assert!(active.bg.is_some(), "active button is filled: {tone:?}");
+            assert_eq!(idle.fg, active.fg, "tone survives hover: {tone:?}");
         }
     }
 }

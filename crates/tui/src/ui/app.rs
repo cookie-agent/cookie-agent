@@ -34,8 +34,9 @@ use ratatui::{
     Terminal,
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Position, Rect},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListState, Paragraph, Wrap},
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -64,8 +65,7 @@ use super::provider::{
     ProviderRowState, action_name, row_label, row_state,
 };
 use super::slash::{
-    CommandSpec, InputMode, SlashCommand, Submission, command_allowed_in_mode, command_help,
-    command_mode_name, command_name, move_selection, parse_submission,
+    CommandSpec, SlashCommand, Submission, command_help_lines, move_selection, parse_submission,
 };
 use super::transcript::{
     BlockHit, BlockId, ConversationScroll, LayoutCache, ScrollbarGeometry, wrapped_line,
@@ -88,6 +88,14 @@ pub(super) enum Modal {
 pub(super) struct InputHit {
     pub(super) rect: Rect,
     pub(super) text_rect: Rect,
+    pub(super) scrollbar: Option<ScrollbarGeometry>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ProviderFieldHit {
+    pub(super) rect: Rect,
+    pub(super) text_rect: Rect,
+    pub(super) focus: ProviderFormFocus,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -134,6 +142,33 @@ pub(super) enum TitleSegment {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ScrollbarDrag {
     pub(super) grab_row: u16,
+    pub(super) target: ScrollbarTarget,
+}
+
+/// Which pane's scrollbar a captured drag drives.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ScrollbarTarget {
+    Conversation,
+    Input,
+}
+
+/// The interactive element currently under the pointer. Hover is resolved
+/// from the same per-frame hit map that click handling consults, in the same
+/// priority order, and only ever changes styling — never selection state.
+/// Only elements with a real click action are hover targets at all: passive
+/// surfaces (the composer, the scrollbar, transcript blocks) stay quiet even
+/// though clicks on them still work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HoverTarget {
+    PaletteRow(usize),
+    PickerRow(usize),
+    ApprovalAction(ApprovalUserDecision),
+    TitleSegment(TitleSegment),
+    PermissionMode,
+    EventLevelFilter,
+    TreeRow(SessionId),
+    ProviderField(ProviderFormFocus),
+    ProviderSubmit,
 }
 
 /// Per-frame hit targets built from the same geometry and transcript layout
@@ -157,6 +192,8 @@ pub(super) struct UiHitMap {
     pub(super) title_segments: Vec<TitleSegmentHit>,
     pub(super) permission_mode: Option<Rect>,
     pub(super) event_level_filter: Option<Rect>,
+    pub(super) provider_fields: Vec<ProviderFieldHit>,
+    pub(super) provider_submit: Option<Rect>,
 }
 
 struct BottomBarRender {
@@ -252,6 +289,12 @@ pub struct App {
     pub(super) theme: Theme,
     pub(super) highlighter: Box<dyn Highlighter>,
     pub(super) hit_map: UiHitMap,
+    /// Interactive element under the pointer as of the last mouse move;
+    /// resolved against the hit map at render time and purely visual.
+    pub(super) hover: Option<HoverTarget>,
+    /// Monotonic frame counter driving the streaming "thinking…" ellipsis;
+    /// advanced by the frame tick only while animation is active.
+    pub(super) animation_ticks: u64,
     pub(super) transient_notices: Vec<String>,
     pub(super) picker_state: ListState,
     pub(super) session_search: SearchPickerState,
@@ -261,7 +304,6 @@ pub struct App {
     pub(super) last_escape: Option<Instant>,
     pub(super) input: InputState,
     pub(super) modal: Modal,
-    pub(super) input_mode: InputMode,
     pub(super) input_focused: bool,
     pub(super) stdin_target: Option<cookie_agent_protocol::ToolCallId>,
     pub(super) status: String,
@@ -455,6 +497,8 @@ impl App {
             theme,
             highlighter: Box::<SyntectHighlighter>::default(),
             hit_map: UiHitMap::default(),
+            hover: None,
+            animation_ticks: 0,
             transient_notices: Vec::new(),
             picker_state: ListState::default().with_selected(Some(0)),
             session_search: SearchPickerState::default(),
@@ -464,7 +508,6 @@ impl App {
             last_escape: None,
             input: InputState::default(),
             modal: Modal::None,
-            input_mode: InputMode::Message,
             input_focused: true,
             stdin_target: None,
             status: "Connected. Type /help for commands.".into(),
@@ -1848,7 +1891,6 @@ impl App {
         self.modal == Modal::None
             && self.current_approval().is_none()
             && self.input_focused
-            && self.input_mode == InputMode::Message
             && self.input.as_str().starts_with('/')
             && !self.input.as_str().starts_with("//")
             && !command.chars().any(char::is_whitespace)
@@ -2012,21 +2054,228 @@ impl App {
         }
     }
 
-    pub(super) async fn handle_mouse(&mut self, mouse: MouseEvent) {
+    /// Handle one mouse event. Returns whether a redraw is needed: every
+    /// button/wheel event redraws, while pointer motion redraws only when it
+    /// actually changed the hovered element.
+    pub(super) async fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.handle_click(mouse.column, mouse.row).await;
+                true
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 self.handle_drag(mouse.column, mouse.row);
+                true
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 self.scrollbar_drag = None;
+                true
             }
-            MouseEventKind::ScrollUp => self.handle_wheel(mouse.column, mouse.row, true),
-            MouseEventKind::ScrollDown => self.handle_wheel(mouse.column, mouse.row, false),
-            _ => {}
+            MouseEventKind::ScrollUp => {
+                self.handle_wheel(mouse.column, mouse.row, true);
+                true
+            }
+            MouseEventKind::ScrollDown => {
+                self.handle_wheel(mouse.column, mouse.row, false);
+                true
+            }
+            MouseEventKind::Moved => self.update_hover(mouse.column, mouse.row),
+            _ => false,
         }
+    }
+
+    /// Recompute the hovered element from the current hit map. Returns true
+    /// when the hover target changed (the only case needing a redraw). A
+    /// captured scrollbar drag freezes hover until the press is released.
+    fn update_hover(&mut self, column: u16, row: u16) -> bool {
+        if self.scrollbar_drag.is_some() {
+            return false;
+        }
+        let next = self.hover_target_at(column, row);
+        if next == self.hover {
+            return false;
+        }
+        self.hover = next;
+        true
+    }
+
+    /// Resolve the interactive element under a point using the exact same
+    /// hit-map priority order as click handling.
+    pub(super) fn hover_target_at(&self, column: u16, row: u16) -> Option<HoverTarget> {
+        let over = |rect: Rect| contains(rect, column, row);
+        if self.hit_map.palette.is_some() {
+            return self
+                .hit_map
+                .palette_rows
+                .iter()
+                .find(|hit| over(hit.rect))
+                .map(|hit| HoverTarget::PaletteRow(hit.index));
+        }
+        if self.hit_map.modal_open {
+            if self.hit_map.provider_submit.is_some_and(over) {
+                return Some(HoverTarget::ProviderSubmit);
+            }
+            if let Some(hit) = self
+                .hit_map
+                .provider_fields
+                .iter()
+                .find(|hit| over(hit.rect))
+            {
+                return Some(HoverTarget::ProviderField(hit.focus));
+            }
+            return self
+                .hit_map
+                .picker_rows
+                .iter()
+                .find(|hit| over(hit.rect))
+                .map(|hit| HoverTarget::PickerRow(hit.index));
+        }
+        if self.hit_map.approval.is_some() || !self.hit_map.approval_actions.is_empty() {
+            return self
+                .hit_map
+                .approval_actions
+                .iter()
+                .find(|hit| over(hit.rect))
+                .map(|hit| HoverTarget::ApprovalAction(hit.decision));
+        }
+        if self.hit_map.permission_mode.is_some_and(over) {
+            return Some(HoverTarget::PermissionMode);
+        }
+        if self.hit_map.event_level_filter.is_some_and(over) {
+            return Some(HoverTarget::EventLevelFilter);
+        }
+        if let Some(hit) = self
+            .hit_map
+            .title_segments
+            .iter()
+            .find(|hit| over(hit.rect))
+        {
+            return Some(HoverTarget::TitleSegment(hit.segment));
+        }
+        if let Some(hit) = self.hit_map.tree_rows.iter().find(|hit| over(hit.rect)) {
+            return Some(HoverTarget::TreeRow(hit.session_id));
+        }
+        None
+    }
+
+    /// Patch the hover affordance onto the resolved target's cells. Text
+    /// targets get the glaze text style; approval buttons get the fill-only
+    /// variant so their glyphs stay put.
+    fn apply_hover(&self, frame: &mut ratatui::Frame) {
+        let Some(hover) = self.hover else {
+            return;
+        };
+        let text_style = self.theme.hover();
+        let fill_style = self.theme.hover_fill();
+        let patch = |frame: &mut ratatui::Frame, rect: Rect, style: ratatui::style::Style| {
+            for y in rect.y..rect.y.saturating_add(rect.height) {
+                for x in rect.x..rect.x.saturating_add(rect.width) {
+                    if frame.area().contains(Position::new(x, y)) {
+                        let cell = &mut frame.buffer_mut()[(x, y)];
+                        cell.set_style(style);
+                    }
+                }
+            }
+        };
+        match hover {
+            HoverTarget::PaletteRow(index) => {
+                if let Some(hit) = self
+                    .hit_map
+                    .palette_rows
+                    .iter()
+                    .find(|hit| hit.index == index)
+                {
+                    patch(frame, hit.rect, text_style);
+                }
+            }
+            HoverTarget::PickerRow(index) => {
+                if let Some(hit) = self
+                    .hit_map
+                    .picker_rows
+                    .iter()
+                    .find(|hit| hit.index == index)
+                {
+                    patch(frame, hit.rect, text_style);
+                }
+            }
+            HoverTarget::ProviderField(focus) => {
+                if let Some(hit) = self
+                    .hit_map
+                    .provider_fields
+                    .iter()
+                    .find(|hit| hit.focus == focus)
+                {
+                    patch(frame, hit.text_rect, fill_style);
+                }
+            }
+            HoverTarget::ProviderSubmit => {
+                if let Some(rect) = self.hit_map.provider_submit {
+                    patch(frame, rect, fill_style);
+                }
+            }
+            HoverTarget::ApprovalAction(decision) => {
+                if let Some(hit) = self
+                    .hit_map
+                    .approval_actions
+                    .iter()
+                    .find(|hit| hit.decision == decision)
+                {
+                    patch(frame, hit.rect, fill_style);
+                }
+            }
+            HoverTarget::TitleSegment(segment) => {
+                if let Some(hit) = self
+                    .hit_map
+                    .title_segments
+                    .iter()
+                    .find(|hit| hit.segment == segment)
+                {
+                    patch(frame, hit.rect, text_style);
+                }
+            }
+            HoverTarget::PermissionMode => {
+                if let Some(rect) = self.hit_map.permission_mode {
+                    patch(frame, rect, text_style);
+                }
+            }
+            HoverTarget::EventLevelFilter => {
+                if let Some(rect) = self.hit_map.event_level_filter {
+                    patch(frame, rect, text_style);
+                }
+            }
+            HoverTarget::TreeRow(session_id) => {
+                if let Some(hit) = self
+                    .hit_map
+                    .tree_rows
+                    .iter()
+                    .find(|hit| hit.session_id == session_id)
+                {
+                    patch(frame, hit.rect, text_style);
+                }
+            }
+        }
+    }
+
+    /// The animation bucket (0–3) for the streaming "thinking…" ellipsis:
+    /// one step per twelve 33ms frames ≈ 400ms.
+    pub(super) fn clock_bucket(&self) -> u8 {
+        u8::try_from((self.animation_ticks / 12) % 4).unwrap_or(0)
+    }
+
+    /// Animation frames run only while the visible session has live content
+    /// — streaming thinking or a running tool; everything else is
+    /// event-driven.
+    pub(super) fn animation_active(&self) -> bool {
+        self.selected
+            .and_then(|session_id| self.store.sessions.get(&session_id))
+            .is_some_and(|state| {
+                crate::state::SessionState::has_open_thinking(state)
+                    || crate::state::SessionState::has_running_tool(state)
+            })
+    }
+
+    pub(super) fn animation_tick(&mut self) {
+        self.animation_ticks = self.animation_ticks.wrapping_add(1);
     }
 
     /// A captured scrollbar thumb drag keeps its grab anchor and resolves
@@ -2035,14 +2284,26 @@ impl App {
         let Some(drag) = self.scrollbar_drag else {
             return;
         };
-        let Some(geometry) = self.scrollbar_geometry else {
-            self.scrollbar_drag = None;
-            return;
-        };
         let _ = column;
-        let offset = geometry.offset_for_thumb_anchor(row, drag.grab_row);
-        self.conversation_scroll
-            .scroll_to(geometry.clamp_offset(offset));
+        match drag.target {
+            ScrollbarTarget::Conversation => {
+                let Some(geometry) = self.scrollbar_geometry else {
+                    self.scrollbar_drag = None;
+                    return;
+                };
+                let offset = geometry.offset_for_thumb_anchor(row, drag.grab_row);
+                self.conversation_scroll
+                    .scroll_to(geometry.clamp_offset(offset));
+            }
+            ScrollbarTarget::Input => {
+                let Some(geometry) = self.hit_map.input.and_then(|hit| hit.scrollbar) else {
+                    self.scrollbar_drag = None;
+                    return;
+                };
+                let offset = geometry.offset_for_thumb_anchor(row, drag.grab_row);
+                self.input.scroll_to(geometry.clamp_offset(offset));
+            }
+        }
     }
 
     pub(super) async fn handle_click(&mut self, column: u16, row: u16) {
@@ -2087,6 +2348,32 @@ impl App {
                 .copied()
             {
                 self.choose_picker_entry(hit.index).await;
+            }
+            if self
+                .hit_map
+                .provider_submit
+                .is_some_and(|rect| contains(rect, column, row))
+            {
+                self.dispatch_provider_connect();
+                return;
+            }
+            if let Some(hit) = self
+                .hit_map
+                .provider_fields
+                .iter()
+                .find(|hit| contains(hit.rect, column, row))
+                .copied()
+            {
+                if hit.focus == ProviderFormFocus::AuthMethod {
+                    // Clicking the selector mirrors pressing Enter on it:
+                    // cycle to the next method, wiping its stale secrets.
+                    if let Some(form) = self.provider_form.as_mut() {
+                        form.cycle_auth_method(false);
+                    }
+                } else {
+                    self.focus_provider_field(hit, column, row);
+                }
+                return;
             }
             return;
         }
@@ -2141,6 +2428,25 @@ impl App {
             .filter(|hit| contains(hit.rect, column, row))
         {
             self.input_focused = true;
+            // The composer's reserved scrollbar column mirrors the
+            // conversation's exactly: a press on the thumb captures a drag,
+            // a press on the bare track pages to the matching offset — all
+            // without moving the text cursor.
+            if let Some(geometry) = hit
+                .scrollbar
+                .filter(|geometry| contains(geometry.track, column, row))
+            {
+                if contains(geometry.thumb, column, row) {
+                    self.scrollbar_drag = Some(ScrollbarDrag {
+                        grab_row: row.saturating_sub(geometry.thumb.y),
+                        target: ScrollbarTarget::Input,
+                    });
+                } else {
+                    let offset = geometry.clamp_offset(geometry.offset_for_track_row(row));
+                    self.input.scroll_to(offset);
+                }
+                return;
+            }
             self.input.set_cursor_from_display_position(
                 row.saturating_sub(hit.text_rect.y)
                     .min(hit.text_rect.height.saturating_sub(1)),
@@ -2162,6 +2468,7 @@ impl App {
             if contains(geometry.thumb, column, row) {
                 self.scrollbar_drag = Some(ScrollbarDrag {
                     grab_row: row.saturating_sub(geometry.thumb.y),
+                    target: ScrollbarTarget::Conversation,
                 });
             } else {
                 let offset = geometry.clamp_offset(geometry.offset_for_track_row(row));
@@ -2199,6 +2506,31 @@ impl App {
                 // only; the tree root snapshot is retained.
                 self.watch_session(hit.session_id);
             }
+        }
+    }
+
+    fn focus_provider_field(&mut self, hit: ProviderFieldHit, column: u16, row: u16) {
+        let Some(form) = self.provider_form.as_mut() else {
+            return;
+        };
+        form.set_focus(hit.focus);
+        let editor = match hit.focus {
+            ProviderFormFocus::Credential(index) => {
+                form.secrets.get_mut(index).map(|field| &mut field.input)
+            }
+            ProviderFormFocus::Setup(index) => {
+                form.setup.get_mut(index).map(|field| &mut field.input)
+            }
+            ProviderFormFocus::AuthMethod | ProviderFormFocus::Submit => None,
+        };
+        if let Some(editor) = editor {
+            editor.state_mut().set_cursor_from_display_position(
+                row.saturating_sub(hit.text_rect.y)
+                    .min(hit.text_rect.height.saturating_sub(1)),
+                column
+                    .saturating_sub(hit.text_rect.x)
+                    .min(hit.text_rect.width),
+            );
         }
     }
 
@@ -2251,7 +2583,13 @@ impl App {
             .input
             .is_some_and(|hit| contains(hit.rect, column, row))
         {
-            self.input.move_wheel(up);
+            // The composer wheel-scrolls only when its content overflows
+            // the (ceiling-height) box; a fitting draft has nothing to
+            // scroll, and the gesture must not leak through to the
+            // conversation beneath.
+            if self.input.has_overflow() {
+                self.input.move_wheel(up);
+            }
             return;
         }
         // The reserved scrollbar column keeps wheel priority over content.
@@ -2461,12 +2799,18 @@ impl App {
             let mut sanitized = Zeroizing::new(text.replace(['\r', '\n'], ""));
             if let Some(form) = &mut self.provider_form {
                 match form.focus() {
-                    ProviderFormFocus::Credential(index) => form.secrets[index]
-                        .input
-                        .insert_owned(std::mem::take(&mut *sanitized)),
-                    ProviderFormFocus::Setup(index) => form.setup[index]
-                        .input
-                        .insert_owned(std::mem::take(&mut *sanitized)),
+                    ProviderFormFocus::Credential(index) => {
+                        form.error = None;
+                        form.secrets[index]
+                            .input
+                            .insert_owned(std::mem::take(&mut *sanitized));
+                    }
+                    ProviderFormFocus::Setup(index) => {
+                        form.error = None;
+                        form.setup[index]
+                            .input
+                            .insert_owned(std::mem::take(&mut *sanitized));
+                    }
                     ProviderFormFocus::AuthMethod | ProviderFormFocus::Submit => {}
                 }
             }
@@ -2762,13 +3106,10 @@ impl App {
         match key.code {
             KeyCode::Up | KeyCode::BackTab => form.move_focus(true),
             KeyCode::Down | KeyCode::Tab => form.move_focus(false),
-            KeyCode::Enter => match form.focus() {
-                ProviderFormFocus::AuthMethod => form.cycle_auth_method(false),
-                ProviderFormFocus::Submit => self.dispatch_provider_connect(),
-                ProviderFormFocus::Credential(_) | ProviderFormFocus::Setup(_) => {
-                    form.move_focus(false);
-                }
-            },
+            // Enter submits from wherever focus is — the same path as the
+            // Submit button. Traversal is Tab/Down-only; validation
+            // failures keep the modal and the focus where they are.
+            KeyCode::Enter => self.dispatch_provider_connect(),
             KeyCode::Left if form.focus() == ProviderFormFocus::AuthMethod => {
                 form.cycle_auth_method(true);
             }
@@ -2779,9 +3120,12 @@ impl App {
             }
             _ => match form.focus() {
                 ProviderFormFocus::Credential(index) => {
+                    // Any edit supersedes a stale inline validation error.
+                    form.error = None;
                     edit_credential_input(&mut form.secrets[index].input, key);
                 }
                 ProviderFormFocus::Setup(index) => {
+                    form.error = None;
                     edit_credential_input(&mut form.setup[index].input, key);
                 }
                 ProviderFormFocus::AuthMethod | ProviderFormFocus::Submit => {}
@@ -2810,10 +3154,13 @@ impl App {
         };
         form.error = None;
         let provider = form.provider.clone();
+        // Pre-dispatch validation failures stay inline: the form keeps the
+        // modal and the focus where they are so the user can correct the
+        // offending value and press Enter again. Only a failed connect RPC
+        // escalates to the persistent full-message error state.
         let Some(catalog_revision) = self.catalog_revision.clone() else {
             let error = "Catalog revision is unavailable.".to_owned();
             form.error = Some(error.clone());
-            self.modal = Modal::ConnectError;
             self.status = error;
             return;
         };
@@ -2822,7 +3169,6 @@ impl App {
             Err(error) => {
                 let error = format!("Invalid public setup: {error}");
                 form.error = Some(error.clone());
-                self.modal = Modal::ConnectError;
                 self.status = error;
                 return;
             }
@@ -2832,7 +3178,6 @@ impl App {
             Err(error) => {
                 let error = format!("Invalid credentials: {error}");
                 form.error = Some(error.clone());
-                self.modal = Modal::ConnectError;
                 self.status = error;
                 return;
             }
@@ -3144,14 +3489,6 @@ impl App {
     }
 
     pub(super) async fn run_command(&mut self, command: SlashCommand) {
-        if !command_allowed_in_mode(command, self.input_mode) {
-            self.status = format!(
-                "/{} is only available in {} mode",
-                command_name(command),
-                command_mode_name(command)
-            );
-            return;
-        }
         match command {
             SlashCommand::Quit => self.should_quit = true,
             SlashCommand::New => {
@@ -3181,10 +3518,6 @@ impl App {
                 self.picker_state.select(Some(0));
             }
             SlashCommand::Cancel => self.cancel_active_run(),
-            SlashCommand::Message => {
-                self.input_mode = InputMode::Message;
-                self.status = "message mode".into();
-            }
             SlashCommand::Approve(decision) => self.answer_approval(decision).await,
             SlashCommand::Events(level) => {
                 // View-only threshold change: the TOML is not rewritten and
@@ -3197,12 +3530,17 @@ impl App {
     }
 
     pub(super) fn show_help(&mut self) {
-        let help = format!(
-            "Commands: {}. Use // to send a prompt beginning with /.",
-            command_help()
-        );
-        self.status = help.clone();
-        self.transient_notices.push(help);
+        // One line per command in the transcript; the status line stays a
+        // short pointer instead of a truncated wall of text.
+        let notice = std::iter::once("Available commands:".to_owned())
+            .chain(command_help_lines())
+            .chain(std::iter::once(
+                "Use // to send a prompt beginning with /.".to_owned(),
+            ))
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.status = "commands listed in the conversation".into();
+        self.transient_notices.push(notice);
         if self.transient_notices.len() > MAX_TRANSIENT_NOTICES {
             let excess = self.transient_notices.len() - MAX_TRANSIENT_NOTICES;
             self.transient_notices.drain(..excess);
@@ -3493,13 +3831,20 @@ impl App {
     }
 
     /// The exact Message panel title `Agent • Model[Variant]` with separate
-    /// structured agent, model, and bracketed variant hit regions.
+    /// structured agent, model, and bracketed variant hit regions. Only the
+    /// agent name is bold — typographic emphasis, never a color marker. The
+    /// separator, model, and variant subtract the bold the focused border
+    /// would otherwise lend them, so they stay regular.
     fn message_title_spans(&self) -> Vec<Span<'static>> {
+        let regular = Style::default().remove_modifier(Modifier::BOLD);
         match &self.draft {
             Some(draft) => vec![
-                Span::styled(draft.agent.to_string(), self.theme.user()),
-                Span::raw(" • "),
-                Span::styled(draft.model.model.to_string(), self.theme.assistant()),
+                Span::styled(
+                    draft.agent.to_string(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" • ", regular),
+                Span::styled(draft.model.model.to_string(), regular),
                 Span::styled(
                     format!(
                         "[{}]",
@@ -3509,7 +3854,7 @@ impl App {
                             .as_ref()
                             .map_or_else(|| "base".to_owned(), |variant| variant.to_string())
                     ),
-                    self.theme.tool(),
+                    regular,
                 ),
             ],
             None => {
@@ -3521,28 +3866,44 @@ impl App {
                         "select an agent and model"
                     }
                 };
-                vec![Span::styled(text.to_owned(), self.theme.muted())]
+                // Raw text keeps the border accent inheritance, exactly as
+                // the styled composition does for its regular segments.
+                vec![Span::raw(text.to_owned())]
             }
         }
     }
 
     pub(super) fn draw(&mut self, frame: &mut ratatui::Frame) {
+        // The warm cream surface is painted beneath everything first so
+        // unstyled cells still land on the light theme; overlays then paint
+        // their own panels over it instead of clearing to the terminal.
+        frame.render_widget(Block::default().style(self.theme.surface()), frame.area());
         self.hit_map = UiHitMap::default();
         self.hit_map.modal_open = self.modal != Modal::None;
-        let layout = super::terminal_layout_with_tree_rows(frame.area(), self.tree_entries().len());
+        // The composer takes one text row by default and grows with its
+        // soft-wrapped content up to the ceiling; the layout reclaims those
+        // rows from the conversation pane.
+        let input_text_rows = u16::try_from(
+            self.input
+                .content_rows(frame.area().width.saturating_sub(2)),
+        )
+        .unwrap_or(u16::MAX)
+        .clamp(1, super::input::MAX_TEXT_ROWS);
+        let layout = super::terminal_layout_with_tree_rows(
+            frame.area(),
+            self.tree_entries().len(),
+            input_text_rows,
+        );
         self.render_tree(frame, layout.agent);
         self.render_conversation(frame, layout.conversation);
         let title_spans = self.message_title_spans();
-        let title_text: String = title_spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
         let rendered_input = super::input::render(
             frame,
             layout.input,
             &mut self.input,
             self.input_focused && self.modal == Modal::None,
-            &title_text,
+            Line::from(title_spans.clone()),
+            Some("Type a message · / for commands"),
             &self.theme,
         );
         // Agent, Model, and the complete bracketed Variant suffix are separate
@@ -3582,6 +3943,7 @@ impl App {
         self.hit_map.input = Some(InputHit {
             rect: layout.input,
             text_rect: rendered_input.text_rect,
+            scrollbar: rendered_input.scrollbar,
         });
         let mut base_status = if self.pending_approval.is_some() {
             "Approval submitting…".to_owned()
@@ -3593,13 +3955,11 @@ impl App {
         {
             base_status = format!("{explanation} · {base_status}");
         }
-        let status = if self.conversation_scroll.following {
-            base_status
-        } else {
-            format!("{base_status}  ↑ scrolled")
-        };
+        // The scroll-follow state lives in the Conversation title, not here.
+        let status = base_status;
+        // Status and bottom bar share the one cream surface with the input.
         frame.render_widget(
-            Paragraph::new(status).style(self.theme.muted()),
+            Paragraph::new(Span::styled(status, self.theme.muted())).style(self.theme.panel()),
             layout.status,
         );
         let bottom_bar = self.bottom_bar_line(layout.bar.width);
@@ -3621,7 +3981,10 @@ impl App {
             }
             None
         });
-        frame.render_widget(Paragraph::new(bottom_bar.line), layout.bar);
+        frame.render_widget(
+            Paragraph::new(bottom_bar.line).style(self.theme.panel()),
+            layout.bar,
+        );
         if let Some(approval) = self.current_approval().cloned() {
             let area = centered(frame.area(), 76, 40);
             self.hit_map.approval = Some(area);
@@ -3669,6 +4032,7 @@ impl App {
                     entries,
                     empty_message,
                     centered(frame.area(), 56, 44),
+                    Some("↑↓ move · enter: select · esc: close"),
                 );
             }
             Modal::Models => self.render_picker(
@@ -3677,6 +4041,7 @@ impl App {
                 self.draft_model_labels(),
                 Some("No models are available for this draft."),
                 centered(frame.area(), 56, 44),
+                Some("↑↓ move · enter: select · esc: close"),
             ),
             Modal::ConnectProviders => {
                 let match_count = self.filtered_providers().len();
@@ -3684,7 +4049,7 @@ impl App {
                 let title =
                     format!("Connect provider ({match_count}/{provider_count}) · Enter: details");
                 let area = centered(frame.area(), 78, 64);
-                frame.render_widget(Clear, area);
+                paint_panel(frame, area, &self.theme);
                 let input_height = 3.min(area.height);
                 let input_area = Rect::new(area.x, area.y, area.width, input_height);
                 let rendered_input = super::pickers::render_search_input(
@@ -3696,6 +4061,9 @@ impl App {
                 self.hit_map.picker_input = Some(InputHit {
                     rect: input_area,
                     text_rect: rendered_input.text_rect,
+                    // Single-row search inputs never reach the composer
+                    // ceiling, so they never carry a scrollbar.
+                    scrollbar: None,
                 });
                 let remaining = Rect::new(
                     area.x,
@@ -3711,6 +4079,7 @@ impl App {
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
+                                .border_style(self.theme.panel_border())
                                 .title("Global provider store"),
                         ),
                     copy,
@@ -3742,6 +4111,7 @@ impl App {
                         None
                     },
                     picker,
+                    Some("↑↓ move · enter: details · esc: close"),
                 );
             }
             Modal::ConnectDetails => {
@@ -3761,6 +4131,9 @@ impl App {
         if self.command_palette_visible() {
             self.render_command_palette(frame, centered(frame.area(), 68, 60));
         }
+        // Hover is the very last pass: a pure cell-style patch over whatever
+        // was rendered, so it can never change layout or hit geometry.
+        self.apply_hover(frame);
     }
 
     fn bottom_bar_line(&self, width: u16) -> BottomBarRender {
@@ -3787,11 +4160,10 @@ impl App {
         let state = self
             .selected
             .and_then(|session_id| self.store.sessions.get(&session_id));
-        let input_tokens = state.and_then(|state| state.context_input_tokens);
-        let context = input_tokens.map_or_else(
-            || "ctx —".to_owned(),
-            |tokens| format!("ctx {}", format_token_count(tokens)),
-        );
+        let context_tokens = state.and_then(|state| state.context_tokens);
+        // No token data → no context segment at all; a bare dash would be
+        // noise. The percentage degrades away before the count does.
+        let context = context_tokens.map(|tokens| format!("ctx {}", format_token_count(tokens)));
         let context_limit = self
             .draft
             .as_ref()
@@ -3802,10 +4174,12 @@ impl App {
                     .and_then(|key| self.model_descriptor(key))
             })
             .map(|descriptor| descriptor.capabilities.context_tokens);
-        let context_with_percentage = match (input_tokens, context_limit) {
-            (Some(input), Some(limit)) => {
-                let percentage = input.saturating_mul(100).saturating_add(limit / 2) / limit;
-                format!("{context} ({percentage}%)")
+        let context_with_percentage = match (context_tokens, context_limit) {
+            (Some(tokens), Some(limit)) => {
+                let percentage = tokens.saturating_mul(100).saturating_add(limit / 2) / limit;
+                context
+                    .as_ref()
+                    .map(|context| format!("{context} ({percentage}%)"))
             }
             _ => context.clone(),
         };
@@ -3815,12 +4189,18 @@ impl App {
             .unwrap_or_default();
         let mode = permission_mode_label(mode);
         let hint = "`ctrl+p` commands";
-        let candidates = [
-            format!("{mode}    {context_with_percentage}    {hint}"),
-            format!("{mode}    {context_with_percentage}"),
-            format!("{mode}    {context}"),
-            mode.to_owned(),
-        ];
+        let mut candidates = Vec::with_capacity(5);
+        if let Some(context) = &context_with_percentage {
+            candidates.push(format!("{mode}    {context}    {hint}"));
+            candidates.push(format!("{mode}    {context}"));
+        }
+        if let Some(context) = &context
+            && context_with_percentage.as_ref() != Some(context)
+        {
+            candidates.push(format!("{mode}    {context}"));
+        }
+        candidates.push(format!("{mode}    {hint}"));
+        candidates.push(mode.to_owned());
         let right = candidates
             .into_iter()
             .find(|candidate| UnicodeWidthStr::width(candidate.as_str()) <= width)
@@ -3920,12 +4300,12 @@ impl App {
             .take(usize::from(inner.height))
             .map(|(index, entry)| {
                 let label = self.tree_row_label(entry, cursor_index == Some(index));
-                // The whole row renders in the semantic user color so the
-                // `agent-id:session-title` text is the prominent identity.
-                let mut line = Line::from(Span::styled(label, self.theme.user()));
-                if self.selected == Some(entry.0) {
-                    line = line.style(self.theme.user());
-                } else if cursor_index == Some(index) {
+                // Rows render in plain body styling: the watched session is
+                // marked only by its `●` glyph, never a persistent color.
+                // The keyboard cursor keeps its `>` marker plus assistant
+                // accent, and click-action hover keeps the glaze patch.
+                let mut line = Line::from(Span::styled(label, self.theme.body()));
+                if cursor_index == Some(index) {
                     line = line.style(self.theme.assistant());
                 }
                 line
@@ -3933,14 +4313,25 @@ impl App {
             .collect::<Vec<_>>();
         if entries.is_empty() {
             frame.render_widget(
-                List::new(vec!["No session selected"])
-                    .block(Block::default().borders(Borders::ALL).title("Agents")),
+                List::new(vec!["No sessions yet · /new starts one"])
+                    .style(self.theme.muted())
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(self.theme.panel_border())
+                            .title("Agents"),
+                    ),
                 panel,
             );
             return;
         }
         frame.render_widget(
-            List::new(rows).block(Block::default().borders(Borders::ALL).title("Agents")),
+            List::new(rows).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(self.theme.panel_border())
+                    .title("Agents"),
+            ),
             panel,
         );
     }
@@ -4004,6 +4395,14 @@ impl App {
         if let Some(tree) = &self.tree {
             flatten_tree(tree, 0, &self.collapsed_sessions, &mut entries);
         }
+        // A session whose event log still holds only `SessionCreated`
+        // (`last_event_seq == 1`, so no `UserInputSubmitted` yet) is an
+        // empty, memory-only ghost on the engine side: it never renders as
+        // a panel row. The watched session stays fully usable while hidden
+        // and its row appears normally once its first message lands. A
+        // rename bumps the sequence via `SessionTitleCommitted`, so a named
+        // empty session stays visible — an explicit user act, not a ghost.
+        entries.retain(|(_, meta, _)| meta.last_event_seq > 1);
         entries
     }
 
@@ -4013,23 +4412,37 @@ impl App {
         approval: &ApprovalState,
         area: Rect,
     ) -> Vec<ApprovalHit> {
-        frame.render_widget(Clear, area);
+        paint_panel(frame, area, &self.theme);
         let request = (approval.approval_id, approval.request_revision);
         if self.approval_scroll_request != Some(request) {
             self.approval_scroll_request = Some(request);
             self.approval_scroll = 0;
         }
+        let actions = approval_action_hits(area, approval);
+        let actions_height = actions.first().map_or(0, |hit| hit.rect.height);
+        let spacer = u16::from(actions_height > 1);
         let inner = inner_rect(area);
         let body = Rect::new(
             inner.x,
             inner.y,
             inner.width,
-            inner.height.saturating_sub(1),
+            inner
+                .height
+                .saturating_sub(actions_height)
+                .saturating_sub(spacer),
         );
         let content = approval_content(approval);
         let lines = content
             .lines()
-            .flat_map(|line| wrapped_line(Line::raw(line.to_owned()), body.width))
+            .flat_map(|line| {
+                wrapped_line(
+                    Line::from(Span::styled(
+                        line.to_owned(),
+                        approval_line_style(line, &self.theme),
+                    )),
+                    body.width,
+                )
+            })
             .collect::<Vec<_>>();
         let line_count = lines.len().min(usize::from(u16::MAX)) as u16;
         let paragraph = Paragraph::new(lines);
@@ -4053,16 +4466,14 @@ impl App {
         frame.render_widget(
             Block::default()
                 .borders(Borders::ALL)
-                .title(title)
-                .style(self.theme.tool()),
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .border_style(self.theme.warning())
+                .title(Span::styled(title, self.theme.heading()))
+                .style(self.theme.panel()),
             area,
         );
         frame.render_widget(paragraph.scroll((self.approval_scroll, 0)), body);
-        let actions = approval_action_hits(area, approval);
-        for action in &actions {
-            let label = approval_action_label(action.decision, action.rect.width);
-            frame.render_widget(Paragraph::new(label), action.rect);
-        }
+        render_approval_actions(frame, &actions, &self.theme);
         actions
     }
 
@@ -4073,14 +4484,18 @@ impl App {
         entries: Vec<String>,
         empty_message: Option<&str>,
         area: Rect,
+        hint: Option<&str>,
     ) {
         self.clamp_picker_selection();
         self.hit_map.picker = Some(area);
         self.hit_map.picker_rows = super::pickers::render(
             frame,
-            title,
+            super::pickers::PickerChrome {
+                title,
+                empty_message,
+                hint,
+            },
             entries,
-            empty_message,
             area,
             &mut self.picker_state,
             &self.theme,
@@ -4091,7 +4506,7 @@ impl App {
     }
 
     fn render_session_search(&mut self, frame: &mut ratatui::Frame, area: Rect) {
-        frame.render_widget(Clear, area);
+        paint_panel(frame, area, &self.theme);
         let input_height = 3.min(area.height);
         let input_area = Rect::new(area.x, area.y, area.width, input_height);
         let rendered_input = super::pickers::render_search_input(
@@ -4103,6 +4518,9 @@ impl App {
         self.hit_map.picker_input = Some(InputHit {
             rect: input_area,
             text_rect: rendered_input.text_rect,
+            // Single-row search inputs never reach the composer ceiling, so
+            // they never carry a scrollbar.
+            scrollbar: None,
         });
 
         let picker = Rect::new(
@@ -4116,7 +4534,14 @@ impl App {
         let rows = self.current_session_search_rows();
         let session_count = rows.iter().filter(|row| row.session_id().is_some()).count();
         let title = format!("Sessions ({session_count}/{})", self.sessions.len());
-        frame.render_widget(Block::default().borders(Borders::ALL).title(title), picker);
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(self.theme.panel_border())
+                .title(title)
+                .style(self.theme.panel()),
+            picker,
+        );
         let inner = inner_rect(picker);
         self.hit_map.picker_rows.clear();
         if session_count == 0 {
@@ -4160,17 +4585,24 @@ impl App {
             match row {
                 SessionSearchRow::Header(label) => {
                     frame.render_widget(
-                        Paragraph::new(format!("  {label}")).style(self.theme.muted()),
+                        Paragraph::new(format!(
+                            "  {}",
+                            truncate_with_ellipsis(label, inner.width.saturating_sub(2).into())
+                        ))
+                        .style(self.theme.muted()),
                         row_area,
                     );
                 }
                 SessionSearchRow::Session { label, .. } => {
                     let is_selected = selectable_index == selected;
                     let prefix = if is_selected { "> " } else { "  " };
+                    // Long titles ellipsize instead of hard-clipping at the
+                    // panel edge; the agent/id metadata yields first.
+                    let label = truncate_with_ellipsis(label, inner.width.saturating_sub(2).into());
                     let paragraph = Paragraph::new(format!("{prefix}{label}"));
                     frame.render_widget(
                         if is_selected {
-                            paragraph.style(self.theme.user())
+                            paragraph.style(self.theme.selected())
                         } else {
                             paragraph
                         },
@@ -4187,7 +4619,7 @@ impl App {
     }
 
     fn render_connect_details(&mut self, frame: &mut ratatui::Frame, area: Rect) {
-        frame.render_widget(Clear, area);
+        paint_panel(frame, area, &self.theme);
         let Some(provider) = self.connect_provider.as_ref() else {
             return;
         };
@@ -4243,6 +4675,7 @@ impl App {
             Paragraph::new(content).wrap(Wrap { trim: false }).block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_style(self.theme.panel_border())
                     .title("Provider details"),
             ),
             area,
@@ -4250,12 +4683,13 @@ impl App {
     }
 
     fn render_connect_setup(&mut self, frame: &mut ratatui::Frame, area: Rect) {
-        frame.render_widget(Clear, area);
+        paint_panel(frame, area, &self.theme);
         let Some(form) = self.provider_form.as_mut() else {
             return;
         };
         let outer = Block::default()
             .borders(Borders::ALL)
+            .border_style(self.theme.panel_border())
             .title("Connect provider");
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
@@ -4265,17 +4699,29 @@ impl App {
         );
         let focus = form.focus();
         let instructions = if form.can_disconnect {
-            "Tab/Down: next · Shift-Tab/Up: previous · Enter: advance/submit · Esc: cancel · Ctrl-D: disconnect"
+            "Tab/Down: next · Shift-Tab/Up: previous · Enter: submit · Esc: cancel · Ctrl-D: disconnect"
         } else {
-            "Tab/Down: next · Shift-Tab/Up: previous · Enter: advance/submit · Esc: cancel"
+            "Tab/Down: next · Shift-Tab/Up: previous · Enter: submit · Esc: cancel"
         };
-        let header_height = 4.min(inner.height);
-        frame.render_widget(
-            Paragraph::new(format!(
-                "{DURABLE_PROVIDER_COPY}\nProvider: {} ({})\n{instructions}",
+        // A validation failure renders inline above the fields instead of
+        // taking over the panel; editing any value clears it.
+        let header_height = if form.error.is_some() { 5 } else { 4 }.min(inner.height);
+        let mut header = vec![
+            Line::from(DURABLE_PROVIDER_COPY),
+            Line::from(format!(
+                "Provider: {} ({})",
                 form.provider.display_name, form.provider.id
-            ))
-            .wrap(Wrap { trim: false }),
+            )),
+            Line::from(instructions),
+        ];
+        if let Some(error) = form.error.as_deref() {
+            header.push(Line::from(Span::styled(
+                error.to_owned(),
+                self.theme.error(),
+            )));
+        }
+        frame.render_widget(
+            Paragraph::new(header).wrap(Wrap { trim: false }),
             Rect::new(inner.x, inner.y, inner.width, header_height),
         );
         let mut y = inner.y.saturating_add(header_height);
@@ -4289,10 +4735,20 @@ impl App {
                             self.theme
                                 .input_border(focus == ProviderFormFocus::AuthMethod),
                         )
-                        .title("Authentication method · Left/Right/Space/Enter: change"),
+                        .title("Authentication method · Left/Right/Space: change"),
                 ),
                 auth_area,
             );
+            self.hit_map.provider_fields.push(ProviderFieldHit {
+                rect: auth_area,
+                text_rect: Rect::new(
+                    auth_area.x.saturating_add(1),
+                    auth_area.y.saturating_add(1),
+                    auth_area.width.saturating_sub(2),
+                    auth_area.height.saturating_sub(2),
+                ),
+                focus: ProviderFormFocus::AuthMethod,
+            });
             y = y.saturating_add(3);
         } else {
             let height = 1.min(inner.bottom() - y);
@@ -4324,6 +4780,16 @@ impl App {
                 &title,
                 &self.theme,
             );
+            self.hit_map.provider_fields.push(ProviderFieldHit {
+                rect: field_area,
+                text_rect: Rect::new(
+                    field_area.x.saturating_add(1),
+                    field_area.y.saturating_add(1),
+                    field_area.width.saturating_sub(2),
+                    field_area.height.saturating_sub(2),
+                ),
+                focus: ProviderFormFocus::Credential(index),
+            });
             y = y.saturating_add(height);
             let helper_height = 1.min(inner.bottom().saturating_sub(y));
             frame.render_widget(
@@ -4369,10 +4835,23 @@ impl App {
                     field_area,
                     field.input.state_mut(),
                     focused,
-                    &title,
+                    title.clone(),
+                    // Setup fields carry their display name and help text;
+                    // a placeholder could read as a prefilled default.
+                    None,
                     &self.theme,
                 );
             }
+            self.hit_map.provider_fields.push(ProviderFieldHit {
+                rect: field_area,
+                text_rect: Rect::new(
+                    field_area.x.saturating_add(1),
+                    field_area.y.saturating_add(1),
+                    field_area.width.saturating_sub(2),
+                    field_area.height.saturating_sub(2),
+                ),
+                focus: ProviderFormFocus::Setup(index),
+            });
             y = y.saturating_add(height);
         }
         let submit_area = Rect::new(
@@ -4398,10 +4877,11 @@ impl App {
             ),
             submit_area,
         );
+        self.hit_map.provider_submit = Some(submit_area);
     }
 
     fn render_connect_error(&mut self, frame: &mut ratatui::Frame, area: Rect) {
-        frame.render_widget(Clear, area);
+        paint_panel(frame, area, &self.theme);
         let Some(form) = self.provider_form.as_ref() else {
             return;
         };
@@ -4414,6 +4894,7 @@ impl App {
             Paragraph::new(content).wrap(Wrap { trim: false }).block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_style(self.theme.panel_border())
                     .title("Provider connection error"),
             ),
             area,
@@ -4421,7 +4902,7 @@ impl App {
     }
 
     fn render_disconnect_confirm(&mut self, frame: &mut ratatui::Frame, area: Rect) {
-        frame.render_widget(Clear, area);
+        paint_panel(frame, area, &self.theme);
         let Some(provider) = self.connect_provider.as_ref() else {
             return;
         };
@@ -4433,6 +4914,7 @@ impl App {
             Paragraph::new(content).wrap(Wrap { trim: false }).block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_style(self.theme.panel_border())
                     .title("Confirm provider disconnect"),
             ),
             area,
@@ -4448,11 +4930,17 @@ impl App {
             .map(|spec| format!("{} — {}", spec.usage, spec.description))
             .collect::<Vec<_>>();
         self.hit_map.palette = Some(area);
-        self.hit_map.palette_rows =
-            super::slash::render(frame, query, labels, area, &mut self.palette_state)
-                .into_iter()
-                .map(|(rect, index)| PaletteRowHit { rect, index })
-                .collect();
+        self.hit_map.palette_rows = super::slash::render(
+            frame,
+            query,
+            labels,
+            area,
+            &mut self.palette_state,
+            &self.theme,
+        )
+        .into_iter()
+        .map(|(rect, index)| PaletteRowHit { rect, index })
+        .collect();
     }
 }
 
@@ -4496,7 +4984,7 @@ fn shorten_home(cwd: &str) -> String {
     }
 }
 
-fn format_token_count(tokens: u64) -> String {
+pub(super) fn format_token_count(tokens: u64) -> String {
     if tokens < 1_000 {
         tokens.to_string()
     } else {
@@ -4512,7 +5000,7 @@ const fn permission_mode_label(mode: PermissionMode) -> &'static str {
     }
 }
 
-fn truncate_with_ellipsis(value: &str, width: usize) -> String {
+pub(super) fn truncate_with_ellipsis(value: &str, width: usize) -> String {
     if UnicodeWidthStr::width(value) <= width {
         return value.to_owned();
     }
@@ -4613,8 +5101,9 @@ async fn event_loop(
                     render.mark_immediate();
                 }
                 Ok(CrosstermEvent::Mouse(mouse)) => {
-                    app.handle_mouse(mouse).await;
-                    render.mark_immediate();
+                    if app.handle_mouse(mouse).await {
+                        render.mark_immediate();
+                    }
                 }
                 Ok(CrosstermEvent::Paste(text)) => {
                     let text = Zeroizing::new(text);
@@ -4653,7 +5142,14 @@ async fn event_loop(
                 app.recover_timed_out_replays();
                 render.mark_stream();
             },
-            _ = frame_tick.tick() => {},
+            _ = frame_tick.tick() => {
+                // The frame cadence drives only the streaming "thinking…"
+                // ellipsis; everything else redraws on events.
+                if app.animation_active() {
+                    app.animation_tick();
+                    render.mark_stream();
+                }
+            },
         }
     }
 }
@@ -5026,12 +5522,89 @@ fn inner_rect(area: Rect) -> Rect {
     )
 }
 
+/// Paint an overlay panel: reset every cell like `Clear` (a styled `Block`
+/// only re-styles cells, so underlying glyphs would ghost through), then
+/// fill with the theme surface instead of punching a terminal-default hole
+/// in the light theme.
+pub(super) fn paint_panel(frame: &mut ratatui::Frame, area: Rect, theme: &Theme) {
+    let clip = area.intersection(frame.area());
+    let buffer = frame.buffer_mut();
+    for y in clip.top()..clip.bottom() {
+        for x in clip.left()..clip.right() {
+            let cell = &mut buffer[(x, y)];
+            cell.reset();
+            cell.set_style(theme.panel());
+        }
+    }
+}
+
+/// Visual hierarchy for the approval body: the banner is a warning, the
+/// consent target is the prominent identity, section headers are headings,
+/// identity digests recede, and the remaining evidence is body text. The
+/// content itself is produced by `approval_content` unchanged.
+fn approval_line_style(line: &str, theme: &Theme) -> ratatui::style::Style {
+    if line.starts_with("PERMISSION REQUIRED") {
+        return theme.warning();
+    }
+    if line.starts_with("consent target:") {
+        return theme.user();
+    }
+    if [
+        "CAPABILITIES (",
+        "RESOURCES (",
+        "EVALUATIONS (",
+        "RESPONSE CONSTRAINTS",
+    ]
+    .iter()
+    .any(|header| line.starts_with(header))
+    {
+        return theme.heading();
+    }
+    if [
+        "approval id:",
+        "request revision:",
+        "trigger:",
+        "operation fingerprint:",
+        "normalized-arguments digest:",
+        "execution-context digest:",
+        "prepared capability lifetime:",
+    ]
+    .iter()
+    .any(|key| line.starts_with(key))
+    {
+        return theme.internal();
+    }
+    theme.body()
+}
+
+fn decision_tone(decision: ApprovalUserDecision) -> crate::theme::DecisionTone {
+    match decision {
+        ApprovalUserDecision::ApproveOnce | ApprovalUserDecision::ApproveTree => {
+            crate::theme::DecisionTone::Allow
+        }
+        ApprovalUserDecision::Reject => crate::theme::DecisionTone::Deny,
+        ApprovalUserDecision::Cancel => crate::theme::DecisionTone::Neutral,
+    }
+}
+
 fn approval_action_hits(area: Rect, approval: &ApprovalState) -> Vec<ApprovalHit> {
     let inner = inner_rect(area);
     if inner.width == 0 || inner.height == 0 {
         return Vec::new();
     }
-    let row = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
+    // Roomy panels get three-row rounded buttons; cramped ones keep the
+    // single action row. Heights here and in `render_approval` must agree.
+    let height = if inner.width >= 44 && inner.height >= 10 {
+        3
+    } else {
+        1
+    };
+    let row = Rect::new(
+        inner.x,
+        inner.y + inner.height - height,
+        inner.width,
+        height,
+    );
     let mut decisions = Vec::new();
     if approval.constraints.allow_once {
         decisions.push(ApprovalUserDecision::ApproveOnce);
@@ -5060,21 +5633,70 @@ fn approval_action_hits(area: Rect, approval: &ApprovalState) -> Vec<ApprovalHit
         .collect()
 }
 
+/// Render each decision as a distinct button: a rounded frame in the
+/// decision's tone with a glyph-bearing label (never color alone). Buttons
+/// leave a one-column visual gap between frames while their hit regions
+/// stay contiguous; single-row areas fall back to flat labels.
+fn render_approval_actions(frame: &mut ratatui::Frame, actions: &[ApprovalHit], theme: &Theme) {
+    for action in actions {
+        let tone = theme.decision(decision_tone(action.decision), false);
+        if action.rect.height == 1 {
+            let label = approval_action_label(action.decision, action.rect.width);
+            frame.render_widget(
+                Paragraph::new(Span::styled(label, tone))
+                    .alignment(ratatui::layout::Alignment::Center),
+                action.rect,
+            );
+            continue;
+        }
+        // Visual frame shrinks one column off the hit region for the gap.
+        let visual = Rect::new(
+            action.rect.x,
+            action.rect.y,
+            action.rect.width.saturating_sub(1).max(1),
+            action.rect.height,
+        );
+        let inner = inner_rect(visual);
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .border_style(tone)
+                .style(theme.panel()),
+            visual,
+        );
+        let label = approval_action_label(action.decision, visual.width);
+        frame.render_widget(
+            Paragraph::new(Span::styled(label, tone)).alignment(ratatui::layout::Alignment::Center),
+            inner,
+        );
+    }
+}
+
 fn approval_action_label(decision: ApprovalUserDecision, width: u16) -> &'static str {
     let full = match decision {
-        ApprovalUserDecision::ApproveOnce => "[Once]",
-        ApprovalUserDecision::ApproveTree => "[Tree]",
-        ApprovalUserDecision::Reject => "[Reject]",
-        ApprovalUserDecision::Cancel => "[Cancel]",
+        ApprovalUserDecision::ApproveOnce => "✓ Allow once",
+        ApprovalUserDecision::ApproveTree => "✓ Allow tree",
+        ApprovalUserDecision::Reject => "✗ Reject",
+        ApprovalUserDecision::Cancel => "⎋ Cancel",
     };
-    if usize::from(width) >= full.len() {
+    if usize::from(width) >= full.len() + 2 {
         return full;
     }
+    let short = match decision {
+        ApprovalUserDecision::ApproveOnce => "✓ Once",
+        ApprovalUserDecision::ApproveTree => "✓ Tree",
+        ApprovalUserDecision::Reject => "✗ No",
+        ApprovalUserDecision::Cancel => "⎋ Esc",
+    };
+    if usize::from(width) >= short.len() + 2 {
+        return short;
+    }
     match decision {
-        ApprovalUserDecision::ApproveOnce => "[Yes]",
-        ApprovalUserDecision::ApproveTree => "[Tree]",
-        ApprovalUserDecision::Reject => "[No]",
-        ApprovalUserDecision::Cancel => "[Esc]",
+        ApprovalUserDecision::ApproveOnce => "✓",
+        ApprovalUserDecision::ApproveTree => "✓T",
+        ApprovalUserDecision::Reject => "✗",
+        ApprovalUserDecision::Cancel => "⎋",
     }
 }
 

@@ -12,6 +12,7 @@ impl Engine {
         internal_policy: &FrozenInternalAgentPolicy,
         events: Vec<StoredEvent>,
         force: bool,
+        actor_direct: bool,
     ) -> Result<Vec<StoredEvent>, EngineError> {
         let Some(context_limit) = binding.descriptor.capabilities.limits.context else {
             return Ok(events);
@@ -24,7 +25,6 @@ impl Engine {
             .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
         let input_tokens_before = (serialized.len() as u64).div_ceil(4);
         let soft_tokens = context_limit.saturating_mul(config.soft_threshold_percent as u64) / 100;
-        let hard_tokens = context_limit.saturating_mul(config.hard_threshold_percent as u64) / 100;
         if !force && input_tokens_before < soft_tokens {
             return Ok(events);
         }
@@ -38,8 +38,6 @@ impl Engine {
         }) {
             return Ok(events);
         }
-        let hard = input_tokens_before >= hard_tokens;
-        let target_tokens = context_limit.saturating_mul(config.target_percent as u64) / 100;
         let previous = events.iter().rev().find_map(|event| match &event.payload {
             Event::ContextCheckpointCommitted { .. } => Some(event.seq),
             _ => None,
@@ -65,7 +63,7 @@ impl Engine {
                 resolved_model: wire_model(binding),
             };
             let digest = Sha256Digest::of_bytes(&serialized);
-            self.append(
+            self.append_compaction_event(
                 session,
                 Some(run),
                 Event::InternalAgentStarted {
@@ -79,6 +77,7 @@ impl Engine {
                         input_digest: digest,
                     },
                 },
+                actor_direct,
             )
             .await?;
             let mut request = ModelRequest::new(context.history);
@@ -103,7 +102,7 @@ impl Engine {
                 },
                 _ = cancellation.cancelled() => {
                     abort.abort();
-                    self.append(
+                    self.append_compaction_event(
                         session,
                         Some(run),
                         Event::InternalAgentCancelled {
@@ -112,6 +111,7 @@ impl Engine {
                             kind: InternalAgentKind::ContextCompaction,
                             reason: Some(safe_error("parent run cancelled")),
                         },
+                        actor_direct,
                     ).await?;
                     return Err(ModelError::abort("context compaction was cancelled").into());
                 }
@@ -133,7 +133,10 @@ impl Engine {
                     let payload = serde_json::to_vec(&result.native_context).map_err(|error| {
                         EngineError::from(ModelError::native_context(error.to_string()))
                     })?;
-                    if payload.len() <= config.max_native_context_bytes {
+                    let input_tokens_after = estimated_tokens_for_bytes(payload.len());
+                    if payload.len() <= config.max_native_context_bytes
+                        && input_tokens_after < input_tokens_before
+                    {
                         let (reference, digest) = self.inner.artifacts.retain(&payload)?;
                         let checkpoint = ContextCheckpoint::ProviderNative {
                             model: wire_model(binding),
@@ -154,7 +157,7 @@ impl Engine {
                                 reference,
                             }),
                         };
-                        self.append(
+                        self.append_compaction_event(
                             session,
                             Some(run),
                             Event::InternalAgentCompleted {
@@ -169,14 +172,14 @@ impl Engine {
                                     output_digest: Sha256Digest::of_bytes(&payload),
                                 },
                             },
+                            actor_direct,
                         )
                         .await?;
                         let budgets = ContextCheckpointBudgets {
                             context_limit_tokens: context_limit,
                             trigger_tokens: soft_tokens,
-                            target_tokens,
                             input_tokens_before,
-                            input_tokens_after: target_tokens,
+                            input_tokens_after,
                             max_summary_bytes: summary_limit,
                         };
                         let commit = ContextCheckpointCommit {
@@ -184,18 +187,19 @@ impl Engine {
                             boundaries,
                             budgets,
                         };
-                        commit.validate().map_err(|error| {
-                            EngineError::from(ModelError::native_context(error.to_string()))
-                        })?;
-                        self.append(
+                        if commit.validate().is_err() {
+                            return Ok(events);
+                        }
+                        self.append_compaction_event(
                             session,
                             Some(run),
                             Event::ContextCheckpointCommitted { commit },
+                            actor_direct,
                         )
                         .await?;
                         return Ok(self.inner.store.get(session)?.log.events());
                     }
-                    self.append(
+                    self.append_compaction_event(
                         session,
                         Some(run),
                         Event::InternalAgentFailed {
@@ -209,10 +213,11 @@ impl Engine {
                                 model_error: None,
                             },
                         },
+                        actor_direct,
                     ).await?;
                 }
                 Ok(_) => {
-                    self.append(
+                    self.append_compaction_event(
                         session,
                         Some(run),
                         Event::InternalAgentFailed {
@@ -226,10 +231,11 @@ impl Engine {
                                 model_error: None,
                             },
                         },
+                        actor_direct,
                     ).await?;
                 }
                 Err(error) => {
-                    self.append(
+                    self.append_compaction_event(
                         session,
                         Some(run),
                         Event::InternalAgentFailed {
@@ -243,6 +249,7 @@ impl Engine {
                                 model_error: Some(model_error_summary(&error)),
                             },
                         },
+                        actor_direct,
                     )
                     .await?;
                 }
@@ -257,7 +264,7 @@ impl Engine {
                         resolved_model: wire_model(binding),
                     },
                 );
-                self.append(
+                self.append_compaction_event(
                     session,
                     Some(run),
                     Event::InternalAgentFallback {
@@ -276,6 +283,7 @@ impl Engine {
                         },
                         attempts: 1,
                     },
+                    actor_direct,
                 )
                 .await?;
             }
@@ -292,7 +300,10 @@ impl Engine {
                 format!(
                     "Summarize the durable conversation below without omitting system policy, approval boundaries, attachments, or complete tool call/result pairs. Return summary text only.\n{durable}"
                 ),
-                cancellation,
+                InternalAgentExecution {
+                    cancellation,
+                    actor_direct,
+                },
             )
             .await;
         match summary {
@@ -310,7 +321,6 @@ impl Engine {
                 let budgets = ContextCheckpointBudgets {
                     context_limit_tokens: context_limit,
                     trigger_tokens: soft_tokens,
-                    target_tokens,
                     input_tokens_before,
                     input_tokens_after,
                     max_summary_bytes: summary_limit,
@@ -320,23 +330,50 @@ impl Engine {
                     boundaries,
                     budgets,
                 };
-                commit.validate().map_err(|error| {
-                    EngineError::from(ModelError::invalid_response(error.to_string()))
-                })?;
-                self.append(
+                if commit.validate().is_err() {
+                    return Ok(events);
+                }
+                self.append_compaction_event(
                     session,
                     Some(run),
                     Event::ContextCheckpointCommitted { commit },
+                    actor_direct,
                 )
                 .await?;
                 Ok(self.inner.store.get(session)?.log.events())
             }
-            _ if hard => Err(ModelError::new(
-                oven_sdk::ModelErrorKind::ContextLength,
-                "hard context limit reached and no valid context checkpoint could be produced",
-            )
-            .into()),
             _ => Ok(events),
         }
+    }
+
+    async fn append_compaction_event(
+        &self,
+        session: SessionId,
+        run: Option<RunId>,
+        event: Event,
+        actor_direct: bool,
+    ) -> Result<(), EngineError> {
+        if actor_direct {
+            self.append_direct(session, run, event)
+        } else {
+            self.append(session, run, event).await
+        }
+    }
+}
+
+fn estimated_tokens_for_bytes(bytes: usize) -> u64 {
+    (bytes as u64).div_ceil(4)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::estimated_tokens_for_bytes;
+
+    #[test]
+    fn native_payload_after_estimate_rounds_bytes_up_by_four() {
+        assert_eq!(estimated_tokens_for_bytes(0), 0);
+        assert_eq!(estimated_tokens_for_bytes(1), 1);
+        assert_eq!(estimated_tokens_for_bytes(4), 1);
+        assert_eq!(estimated_tokens_for_bytes(5), 2);
     }
 }

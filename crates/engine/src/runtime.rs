@@ -229,6 +229,48 @@ struct AttemptTurn {
     model_turn_seq: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct ContextTokenEstimator {
+    tokens_per_byte: f64,
+    last_committed_input_tokens: u64,
+}
+
+impl ContextTokenEstimator {
+    fn record_committed_turn(
+        &mut self,
+        serialized_history_bytes: usize,
+        input_tokens: Option<u64>,
+    ) {
+        self.last_committed_input_tokens = input_tokens.unwrap_or(0);
+        if serialized_history_bytes > 0
+            && let Some(input_tokens) = input_tokens.filter(|tokens| *tokens > 0)
+        {
+            self.tokens_per_byte = input_tokens as f64 / serialized_history_bytes as f64;
+        }
+    }
+
+    fn projected_tokens(self, serialized_message_bytes: usize) -> Option<u64> {
+        (self.tokens_per_byte > 0.0).then(|| {
+            self.last_committed_input_tokens
+                .saturating_add((serialized_message_bytes as f64 * self.tokens_per_byte) as u64)
+        })
+    }
+
+    fn should_compact(self, serialized_message_bytes: usize, soft_tokens: u64) -> bool {
+        self.projected_tokens(serialized_message_bytes)
+            .is_some_and(|projected| projected >= soft_tokens)
+    }
+}
+
+fn should_run_predictive_compaction(
+    estimator: ContextTokenEstimator,
+    serialized_message_bytes: usize,
+    soft_tokens: u64,
+    session_persisted: bool,
+) -> bool {
+    session_persisted && estimator.should_compact(serialized_message_bytes, soft_tokens)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ApprovalOutcome {
     pub(crate) approved: bool,
@@ -346,6 +388,12 @@ struct InternalAgentTextResult {
     invocation_id: InternalAgentInvocationId,
     internal_run_id: InternalAgentRunId,
     text: String,
+}
+
+#[derive(Clone, Copy)]
+struct InternalAgentExecution<'a> {
+    cancellation: &'a CancellationToken,
+    actor_direct: bool,
 }
 
 enum PendingTool {
@@ -603,6 +651,7 @@ pub(crate) struct Inner {
     finalized_output_hubs: Mutex<VecDeque<ToolCallId>>,
     pub(crate) pending_approvals: Mutex<HashMap<(SessionId, ApprovalId), PendingApproval>>,
     permission_modes: Mutex<HashMap<SessionId, PermissionMode>>,
+    context_token_estimators: Mutex<HashMap<SessionId, ContextTokenEstimator>>,
     runtime: Option<tokio::runtime::Handle>,
     admission_tasks: Mutex<Vec<JoinHandle<()>>>,
     admission_blocking_tasks: Mutex<Vec<JoinHandle<()>>>,
@@ -690,6 +739,7 @@ impl Engine {
                 finalized_output_hubs: Mutex::new(VecDeque::new()),
                 pending_approvals: Mutex::new(HashMap::new()),
                 permission_modes: Mutex::new(HashMap::new()),
+                context_token_estimators: Mutex::new(HashMap::new()),
                 runtime: tokio::runtime::Handle::try_current().ok(),
                 admission_tasks: Mutex::new(Vec::new()),
                 admission_blocking_tasks: Mutex::new(Vec::new()),
@@ -1182,5 +1232,62 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
         self.inner.journal.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod context_token_estimator_tests {
+    use super::{ContextTokenEstimator, should_run_predictive_compaction};
+
+    #[test]
+    fn learns_from_committed_usage_and_projects() {
+        let mut estimator = ContextTokenEstimator::default();
+        estimator.record_committed_turn(200, Some(50));
+
+        assert_eq!(estimator.tokens_per_byte, 0.25);
+        assert_eq!(estimator.last_committed_input_tokens, 50);
+        assert_eq!(estimator.projected_tokens(40), Some(60));
+    }
+
+    #[test]
+    fn skips_degenerate_ratio_updates() {
+        let mut estimator = ContextTokenEstimator {
+            tokens_per_byte: 0.5,
+            last_committed_input_tokens: 10,
+        };
+        estimator.record_committed_turn(0, Some(20));
+        assert_eq!(estimator.tokens_per_byte, 0.5);
+        assert_eq!(estimator.last_committed_input_tokens, 20);
+
+        estimator.record_committed_turn(100, None);
+        assert_eq!(estimator.tokens_per_byte, 0.5);
+        assert_eq!(estimator.last_committed_input_tokens, 0);
+
+        estimator.record_committed_turn(100, Some(0));
+        assert_eq!(estimator.tokens_per_byte, 0.5);
+        assert_eq!(estimator.last_committed_input_tokens, 0);
+    }
+
+    #[test]
+    fn predictive_trigger_crosses_or_stays_below_soft_threshold() {
+        let estimator = ContextTokenEstimator {
+            tokens_per_byte: 0.5,
+            last_committed_input_tokens: 60,
+        };
+
+        assert!(estimator.should_compact(20, 70));
+        assert!(!estimator.should_compact(18, 70));
+        assert!(!ContextTokenEstimator::default().should_compact(usize::MAX, 1));
+    }
+
+    #[test]
+    fn predictive_compaction_is_disabled_until_session_persistence() {
+        let estimator = ContextTokenEstimator {
+            tokens_per_byte: 1.0,
+            last_committed_input_tokens: 100,
+        };
+
+        assert!(!should_run_predictive_compaction(estimator, 100, 70, false));
+        assert!(should_run_predictive_compaction(estimator, 100, 70, true));
     }
 }

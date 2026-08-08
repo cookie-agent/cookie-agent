@@ -44,7 +44,7 @@ single-link files handled no-follow and atomically. The metadata records stale/
 fallback state, safe last error, ETag, timestamps, revision, and quarantine
 counts.
 
-## Configuration schema 8
+## Configuration schema 9
 
 There is one top-level `providers` map; nonempty entries use
 `[providers.<id>]`:
@@ -73,11 +73,16 @@ same-definition authored auth remains invalid and cannot fall through to store.
 bootstrap configuration:
 
 ```toml
-schema_version = 8
+schema_version = 9
 
 [delegation]
 max_depth = 3
 # max_concurrency = 4 # omitted means unlimited
+
+[context_compaction]
+soft_threshold_percent = 70
+# max_summary_bytes = 262144
+# max_native_context_bytes = 2097152
 
 [server]
 host = "127.0.0.1"
@@ -85,6 +90,20 @@ port = 17419
 
 [providers]
 ```
+
+Context compaction has one soft threshold; there are no hard-threshold or
+target-percentage settings. After a committed model turn supplies real input
+usage, the engine learns a per-session tokens-per-byte ratio. A newly submitted
+message whose projected input reaches the soft threshold compacts the existing
+log before the message is appended, so the model receives the compacted context
+plus the live user message. Fresh sessions start with ratio zero and do not use
+a fallback prediction.
+
+New empty sessions are memory-only. Their session directory, metadata cache, and
+event JSONL are created atomically when the first user message is submitted;
+events buffered before that message are included in the initial ordered flush.
+Closing before a message leaves no persisted session, while live session RPCs
+still expose the in-memory draft.
 
 When provider store 3 is also empty and there is no effective authored custom
 provider, it opens the TUI with no models/root-runnable agents and keeps
@@ -97,7 +116,7 @@ engine supplies reserved built-in coding agent `default`.
 The following is a separate nonempty example:
 
 ```toml
-schema_version = 8
+schema_version = 9
 
 [providers.openai]
 source = "models_dev"

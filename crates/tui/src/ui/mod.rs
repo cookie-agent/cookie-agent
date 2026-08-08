@@ -13,7 +13,8 @@ pub use app::{App, run_with_client, run_with_new_session};
 use ratatui::layout::Rect;
 
 const MAX_AGENT_HEIGHT: u16 = 10;
-const INPUT_HEIGHT: u16 = 5;
+/// Composer ceiling in total rows: five text rows plus top/bottom borders.
+const MAX_INPUT_HEIGHT: u16 = 7;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct UiLayout {
@@ -25,14 +26,24 @@ pub(crate) struct UiLayout {
 }
 
 /// Resolve the single top-to-bottom pane geometry for a known visible tree
-/// row count. The Agents panel is exactly
+/// row count and composer text-row demand. The Agents panel is exactly
 /// `clamp(visible_tree_row_count, 1, 8)` text rows with its borders outside
-/// that count, so the conversation starts immediately below it.
-pub(crate) fn terminal_layout_with_tree_rows(area: Rect, visible_tree_rows: usize) -> UiLayout {
+/// that count, so the conversation starts immediately below it. The
+/// composer takes one text row by default and grows with its content up to
+/// five; every added composer row is reclaimed from the conversation pane.
+pub(crate) fn terminal_layout_with_tree_rows(
+    area: Rect,
+    visible_tree_rows: usize,
+    input_text_rows: u16,
+) -> UiLayout {
     let agent_text_rows = visible_tree_rows.clamp(1, 8) as u16;
     let agent_height = agent_text_rows.saturating_add(2).min(MAX_AGENT_HEIGHT);
     let bar_height = u16::from(area.height > 0);
-    let input_height = INPUT_HEIGHT.min(area.height.saturating_sub(bar_height));
+    let input_height = input_text_rows
+        .clamp(1, input::MAX_TEXT_ROWS)
+        .saturating_add(2)
+        .min(MAX_INPUT_HEIGHT)
+        .min(area.height.saturating_sub(bar_height));
     let available_height = area
         .height
         .saturating_sub(input_height)

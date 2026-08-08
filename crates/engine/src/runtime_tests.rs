@@ -27,13 +27,13 @@ use cookie_agent_protocol::{
     AgentId, ApprovalBoundary, ApprovalCapability, ApprovalDecisionSource, ApprovalFinalOutcome,
     ApprovalInternalDecisionKind, ApprovalReasonCode, ApprovalResourceSource,
     ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision, CatalogRevision, ClientConnectId,
-    ClientRenameId, ClientRequestId, ClientResponseId, EventPayload, InternalAgentKind,
-    InvocationId, ModelSelection, PermissionAction, PermissionMode, PreparedApprovalResource,
-    PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
-    PreparedResourceDigest, PreparedResourceIdentity, ProviderConnectParams,
-    ProviderCredentialValues, ProviderDisconnectParams, ProviderId, ProviderModelId, RunSelection,
-    RunStartParams, RuntimeChangeReason, SessionId, SessionTitle, SessionTitleChange, SetupFieldId,
-    Sha256Digest, ToolCallId, ToolTerminationOutcome,
+    ClientRenameId, ClientRequestId, ClientResponseId, ClientRunId, EventPayload,
+    InternalAgentKind, InvocationId, ModelSelection, PermissionAction, PermissionMode,
+    PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
+    PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity,
+    ProviderConnectParams, ProviderCredentialValues, ProviderDisconnectParams, ProviderId,
+    ProviderModelId, RunSelection, RunStartParams, RuntimeChangeReason, SessionId, SessionTitle,
+    SessionTitleChange, SetupFieldId, Sha256Digest, ToolCallId, ToolTerminationOutcome,
 };
 use jiff::Timestamp;
 use tempfile::TempDir;
@@ -409,7 +409,7 @@ fn empty_provider_workspace(path: &std::path::Path) -> LoadedConfiguration {
     let project = path.join(".cookie-agent");
     fs::create_dir(&project).expect("project");
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
-    fs::write(project.join("config.toml"), "schema_version = 8\n").expect("empty provider config");
+    fs::write(project.join("config.toml"), "schema_version = 9\n").expect("empty provider config");
     fs::set_permissions(
         project.join("config.toml"),
         fs::Permissions::from_mode(0o600),
@@ -458,12 +458,12 @@ fn custom_fixture() -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint("http://127.0.0.1:9/v1")
 }
 
-#[test]
-fn session_metadata_tracks_log_tail_for_create_get_list_tree_and_append() {
+#[tokio::test]
+async fn session_metadata_tracks_log_tail_for_create_get_list_tree_and_append() {
     let (fixture, selection) = custom_fixture();
     let created = fixture
         .engine
-        .create_session(selection)
+        .create_session(selection.clone())
         .expect("create session");
     let creation_event = fixture
         .engine
@@ -517,6 +517,26 @@ fn session_metadata_tracks_log_tail_for_create_get_list_tree_and_append() {
             },
         )
         .expect("append event");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: created.session_id,
+            client_run_id: ClientRunId::new("metadata-persist").expect("client run ID"),
+            selection,
+            input: "persist session".into(),
+        })
+        .await
+        .expect("persist session");
+    for _ in 0..200 {
+        if fixture
+            .engine
+            .get_session(created.session_id)
+            .is_ok_and(|meta| meta.status != cookie_agent_protocol::SessionStatus::Running)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     let latest_event = fixture
         .engine
         .inner
@@ -564,13 +584,33 @@ fn session_metadata_tracks_log_tail_for_create_get_list_tree_and_append() {
     );
 }
 
-#[test]
-fn session_metadata_cache_version_eight_is_rejected() {
+#[tokio::test]
+async fn session_metadata_cache_version_eight_is_rejected() {
     let (fixture, selection) = custom_fixture();
     let session = fixture
         .engine
-        .create_session(selection)
+        .create_session(selection.clone())
         .expect("create session");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("metadata-cache-persist").expect("client run ID"),
+            selection,
+            input: "persist session".into(),
+        })
+        .await
+        .expect("persist session");
+    for _ in 0..200 {
+        if fixture
+            .engine
+            .get_session(session.session_id)
+            .is_ok_and(|meta| meta.status != cookie_agent_protocol::SessionStatus::Running)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     let path = fixture
         .engine
         .inner
@@ -594,6 +634,133 @@ fn session_metadata_cache_version_eight_is_rejected() {
     )
     .expect_err("schema 8 metadata cache must be rejected");
     assert!(error.to_string().contains("expected 9"));
+}
+
+#[test]
+fn empty_session_is_live_only_and_disappears_on_restart_without_artifacts() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture
+        .engine
+        .create_session(selection)
+        .expect("create session");
+    let session_dir = fixture.engine.inner.store.session_dir(session.session_id);
+
+    assert!(!session_dir.exists());
+    assert!(
+        fixture
+            .engine
+            .list_sessions()
+            .iter()
+            .any(|listed| listed.session_id == session.session_id)
+    );
+    fixture
+        .engine
+        .set_permission_mode(session.session_id, PermissionMode::Ask)
+        .expect("set memory-only permission mode");
+    fixture
+        .engine
+        .append_direct(
+            session.session_id,
+            None,
+            EventPayload::SessionTitleCommitted {
+                input_through_seq: 1,
+                change: SessionTitleChange::UserSet {
+                    title: SessionTitle::new("Memory-only title").expect("title"),
+                    client_rename_id: ClientRenameId::new("memory-only-title").expect("rename ID"),
+                },
+            },
+        )
+        .expect("append memory-only title");
+    assert!(!session_dir.exists());
+
+    let reopened = reopen_engine(&fixture);
+    assert!(
+        !reopened
+            .list_sessions()
+            .iter()
+            .any(|listed| listed.session_id == session.session_id)
+    );
+    assert!(reopened.get_session(session.session_id).is_err());
+    assert!(!session_dir.exists());
+}
+
+#[tokio::test]
+async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("create session");
+    let session_dir = fixture.engine.inner.store.session_dir(session.session_id);
+    assert!(!session_dir.exists());
+
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("first-persist").expect("client run ID"),
+            selection,
+            input: "first user message".into(),
+        })
+        .await
+        .expect("start run");
+
+    assert!(session_dir.join("meta.json").is_file());
+    assert!(session_dir.join("events.jsonl").is_file());
+    for _ in 0..200 {
+        if fixture
+            .engine
+            .get_session(session.session_id)
+            .is_ok_and(|meta| meta.status != cookie_agent_protocol::SessionStatus::Running)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let memory_events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("live session")
+        .log
+        .events();
+    let disk_events = crate::events::load_jsonl::<cookie_agent_protocol::StoredEvent>(
+        &session_dir.join("events.jsonl"),
+    )
+    .expect("disk events");
+    assert_eq!(disk_events, memory_events);
+    assert!(matches!(
+        disk_events[0].payload,
+        EventPayload::SessionCreated { .. }
+    ));
+    assert!(matches!(
+        disk_events[1].payload,
+        EventPayload::RunStarted { .. }
+    ));
+    assert!(matches!(
+        disk_events[2].payload,
+        EventPayload::UserInputSubmitted { .. }
+    ));
+    assert!(
+        disk_events
+            .iter()
+            .enumerate()
+            .all(|(index, event)| event.seq == index as u64 + 1)
+    );
+
+    let reopened = reopen_engine(&fixture);
+    assert_eq!(
+        reopened
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("replayed session")
+            .log
+            .events(),
+        memory_events
+    );
 }
 
 fn custom_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
@@ -627,7 +794,7 @@ fn custom_fixture_with_endpoint_and_primary_agent(
     let project = directory.path().join(".cookie-agent");
     fs::create_dir(&project).expect("project directory");
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
-    let config_text = r#"schema_version = 8
+    let config_text = r#"schema_version = 9
 
 [delegation]
 max_depth = 1
@@ -744,7 +911,7 @@ fn synthetic_default_fixture(authored_agent: Option<&str>) -> Fixture {
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
     fs::write(
         project.join("config.toml"),
-        r#"schema_version = 8
+        r#"schema_version = 9
 
 [providers."custom.test"]
 source = "custom"

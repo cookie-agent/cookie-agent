@@ -358,9 +358,11 @@ impl Highlighter for SyntectHighlighter {
         else {
             return self.plain.highlight(&language, code, theme);
         };
+        // The default UI theme is a warm light palette, so code highlights
+        // come from a light syntect theme; colors quantize away in mono.
         let theme_name = match theme.key().kind {
             ThemeKind::HighContrast => "base16-eighties.dark",
-            ThemeKind::Default | ThemeKind::Mono => "base16-ocean.dark",
+            ThemeKind::Default | ThemeKind::Mono => "InspiredGitHub",
         };
         let Some(syntax_theme) = self.themes.themes.get(theme_name) else {
             return self.plain.highlight(&language, code, theme);
@@ -1112,6 +1114,14 @@ impl<'a> MarkdownRenderer<'a> {
         };
         let label = code.language.split_whitespace().next().unwrap_or_default();
         let quote_prefix = "> ".repeat(self.quote_depth);
+        // The whole block (borders included) sits on one subtle parchment
+        // band; content lines pad to a common width so the band is solid.
+        let band = self
+            .theme
+            .code_background()
+            .map(|background| Style::default().bg(background));
+        let patch = |style: Style| band.map_or(style, |band| style.patch(band));
+        let border = patch(self.theme.code_border());
         self.lines.push(Line::from(vec![
             Span::styled(quote_prefix.clone(), self.theme.quote()),
             Span::styled(
@@ -1120,20 +1130,37 @@ impl<'a> MarkdownRenderer<'a> {
                 } else {
                     format!("┌─ code: {label}")
                 },
-                self.theme.code_border(),
+                border,
             ),
         ]));
-        for line in self.highlighter.highlight(label, &code.code, self.theme) {
+        let mut highlighted = self.highlighter.highlight(label, &code.code, self.theme);
+        if let Some(band) = band {
+            let band_width = highlighted
+                .iter()
+                .map(|line| line.width())
+                .max()
+                .unwrap_or(0);
+            for line in &mut highlighted {
+                for span in &mut line.spans {
+                    span.style = span.style.patch(band);
+                }
+                let padding = band_width.saturating_sub(line.width());
+                if padding > 0 {
+                    line.spans.push(Span::styled(" ".repeat(padding), band));
+                }
+            }
+        }
+        for line in highlighted {
             let mut spans = vec![
                 Span::styled(quote_prefix.clone(), self.theme.quote()),
-                Span::styled("│ ", self.theme.code_border()),
+                Span::styled("│ ", border),
             ];
             spans.extend(line.spans);
             self.lines.push(Line::from(spans));
         }
         self.lines.push(Line::from(vec![
             Span::styled(quote_prefix, self.theme.quote()),
-            Span::styled("└─".to_owned(), self.theme.code_border()),
+            Span::styled("└─".to_owned(), border),
         ]));
     }
 
@@ -1447,30 +1474,30 @@ mod tests {
         assert_snapshot!(snapshot.join("\n"), @r#"
 default-truecolor:
   rs:
-    text="fn" fg=Some(Rgb(180, 142, 173)) bg=None modifiers=NONE
-    text=" " fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
-    text="main" fg=Some(Rgb(143, 161, 179)) bg=None modifiers=NONE
-    text="(" fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
-    text=")" fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
-    text=" " fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
-    text="{" fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
-    text="}" fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
+    text="fn" fg=Some(Rgb(167, 29, 93)) bg=None modifiers=BOLD
+    text=" " fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
+    text="main" fg=Some(Rgb(121, 93, 163)) bg=None modifiers=BOLD
+    text="(" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
+    text=")" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
+    text=" " fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
+    text="{" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
+    text="}" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
   json:
-    text="{" fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
-    text="\"" fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
-    text="ok" fg=Some(Rgb(163, 190, 140)) bg=None modifiers=NONE
-    text="\"" fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
-    text=":" fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
-    text=" " fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
-    text="true" fg=Some(Rgb(208, 135, 112)) bg=None modifiers=NONE
-    text="}" fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
+    text="{" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
+    text="\"" fg=Some(Rgb(24, 54, 145)) bg=None modifiers=BOLD
+    text="ok" fg=Some(Rgb(24, 54, 145)) bg=None modifiers=BOLD
+    text="\"" fg=Some(Rgb(24, 54, 145)) bg=None modifiers=BOLD
+    text=":" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
+    text=" " fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
+    text="true" fg=Some(Rgb(0, 134, 179)) bg=None modifiers=NONE
+    text="}" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
   sh:
-    text="echo" fg=Some(Rgb(150, 181, 180)) bg=None modifiers=NONE
-    text=" " fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
-    text="\"" fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
-    text="$" fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
-    text="HOME" fg=Some(Rgb(191, 97, 106)) bg=None modifiers=NONE
-    text="\"" fg=Some(Rgb(192, 197, 206)) bg=None modifiers=NONE
+    text="echo" fg=Some(Rgb(98, 163, 92)) bg=None modifiers=NONE
+    text=" " fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
+    text="\"" fg=Some(Rgb(24, 54, 145)) bg=None modifiers=NONE
+    text="$" fg=Some(Rgb(24, 54, 145)) bg=None modifiers=NONE
+    text="HOME" fg=Some(Rgb(50, 50, 50)) bg=None modifiers=NONE
+    text="\"" fg=Some(Rgb(24, 54, 145)) bg=None modifiers=NONE
   not-a-language:
     text="plain" fg=None bg=None modifiers=NONE
 high-contrast-ansi16:
@@ -1503,9 +1530,9 @@ high-contrast-ansi16:
     text="plain" fg=None bg=None modifiers=NONE
 mono:
   rs:
-    text="fn" fg=None bg=None modifiers=NONE
+    text="fn" fg=None bg=None modifiers=BOLD
     text=" " fg=None bg=None modifiers=NONE
-    text="main" fg=None bg=None modifiers=NONE
+    text="main" fg=None bg=None modifiers=BOLD
     text="(" fg=None bg=None modifiers=NONE
     text=")" fg=None bg=None modifiers=NONE
     text=" " fg=None bg=None modifiers=NONE
@@ -1513,9 +1540,9 @@ mono:
     text="}" fg=None bg=None modifiers=NONE
   json:
     text="{" fg=None bg=None modifiers=NONE
-    text="\"" fg=None bg=None modifiers=NONE
-    text="ok" fg=None bg=None modifiers=NONE
-    text="\"" fg=None bg=None modifiers=NONE
+    text="\"" fg=None bg=None modifiers=BOLD
+    text="ok" fg=None bg=None modifiers=BOLD
+    text="\"" fg=None bg=None modifiers=BOLD
     text=":" fg=None bg=None modifiers=NONE
     text=" " fg=None bg=None modifiers=NONE
     text="true" fg=None bg=None modifiers=NONE
@@ -1748,7 +1775,7 @@ bold and italic, `code`, link <https://example.test>.
     }
 
     #[test]
-    fn table_cells_keep_inline_markup_styles_with_inline_code_backgrounds() {
+    fn table_cells_keep_inline_markup_styles_with_distinct_inline_code_foreground() {
         let document = MarkdownDocument::new(
             "| fn | note |\n|----|------|\n| `render()` | **fast** [docs](https://x.test) |".into(),
         );
@@ -1759,7 +1786,10 @@ bold and italic, `code`, link <https://example.test>.
             .flat_map(|line| line.spans.iter())
             .find(|span| span.content.contains("render()"))
             .expect("inline code span");
-        assert!(code_span.style.bg.is_some());
+        // Inline code is foreground-only in the default theme: a warm
+        // terracotta plus bold, never a background or reverse video.
+        assert!(code_span.style.bg.is_none());
+        assert!(code_span.style.fg.is_some());
         assert!(!code_span.style.add_modifier.contains(Modifier::REVERSED));
         assert!(
             lines
@@ -1880,10 +1910,10 @@ bold and italic, `code`, link <https://example.test>.
     }
 
     #[test]
-    fn inline_code_has_a_background_in_color_themes() {
+    fn inline_code_is_foreground_only_except_in_high_contrast() {
         let document = MarkdownDocument::new("before `let x = 1;` after".into());
         for (theme, has_background) in [
-            (Theme::default(), true),
+            (Theme::default(), false),
             (
                 Theme::new(
                     crate::theme::ThemeKind::HighContrast,

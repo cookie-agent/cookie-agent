@@ -242,6 +242,10 @@ pub(crate) struct OpenAssistantProjection {
     item_id: u64,
     part_id: u64,
     kind: AssistantPartKind,
+    /// Durable timestamp of the event that opened this part. Sealing a
+    /// thinking part derives its "thought for Ns" duration from event
+    /// timestamps, so replays reproduce the original elapsed time.
+    opened_at: jiff::Timestamp,
 }
 
 impl TranscriptItem {
@@ -294,6 +298,19 @@ pub(crate) struct RunAssistantProjection {
     pub(crate) current_model: ResolvedModelRef,
 }
 
+/// Generation metrics accumulated across one assistant block's committed
+/// turns: output tokens and generation wall time summed over exactly the
+/// turns with a known positive span (never mixing measured and unmeasured
+/// generation), plus the total context occupied at the end of the last
+/// committed turn (its `input_tokens + output_tokens`).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct AssistantTurnMetrics {
+    pub(crate) timed_output_tokens: u64,
+    pub(crate) generation: Duration,
+    pub(crate) timed_turns: u32,
+    pub(crate) context_tokens: Option<u64>,
+}
+
 /// A tool start buffered until its committed placeholder exists, linked by
 /// the owning turn's exact content index.
 #[derive(Clone, Copy, Debug)]
@@ -331,8 +348,10 @@ pub struct SessionState {
     pub last_seq: u64,
     pub active_run: Option<RunId>,
     pub cwd_identity: Option<cookie_agent_protocol::CwdIdentity>,
-    /// Full prompt context sent by the latest committed model turn.
-    pub context_input_tokens: Option<u64>,
+    /// Total context occupied at the end of the latest committed turn
+    /// (`input_tokens + output_tokens`); `None` when the turn reported no
+    /// usage, so the bottom bar hides its context segment.
+    pub context_tokens: Option<u64>,
     /// Frozen producing agent of the latest accepted `RunStarted`.
     pub run_agent: Option<AgentId>,
     /// The complete frozen creation snapshot from `SessionCreated`,
@@ -349,6 +368,15 @@ pub struct SessionState {
     pub transcript: Vec<TranscriptItem>,
     pub(crate) next_transcript_id: u64,
     pub(crate) open_assistant: Option<OpenAssistantProjection>,
+    /// Elapsed thinking time per sealed thinking part, keyed by
+    /// `(item_id, part_id)` and derived from durable event timestamps.
+    pub thinking_durations: HashMap<(u64, u64), Duration>,
+    /// Durable event timestamps by sequence, pruned at each committed
+    /// turn's input boundary; backs replay-exact generation durations.
+    pub(crate) event_timestamps: BTreeMap<u64, jiff::Timestamp>,
+    /// Generation metrics per assistant item, accumulated from committed
+    /// turns, for the subordinate footer row at the end of the block.
+    pub(crate) assistant_metrics: HashMap<u64, AssistantTurnMetrics>,
     pub(crate) open_run_assistant: Option<RunAssistantProjection>,
     pub(crate) attempts: HashMap<AttemptId, AttemptProjection>,
     pub tools: HashMap<ToolCallId, ToolCallState>,
@@ -375,6 +403,24 @@ impl SessionState {
                 && open.part_id == part_id
                 && open.kind == AssistantPartKind::Thinking
         })
+    }
+
+    /// Whether any assistant part is still streaming thinking content.
+    pub fn has_open_thinking(&self) -> bool {
+        self.open_assistant
+            .is_some_and(|open| open.kind == AssistantPartKind::Thinking)
+    }
+
+    /// Whether any tool call in this session is still running.
+    pub fn has_running_tool(&self) -> bool {
+        self.tools
+            .values()
+            .any(|tool| tool.status == ToolStatus::Running)
+    }
+
+    /// The sealed elapsed thinking duration for one part, when known.
+    pub fn thinking_duration(&self, item_id: u64, part_id: u64) -> Option<Duration> {
+        self.thinking_durations.get(&(item_id, part_id)).copied()
     }
 }
 
@@ -470,7 +516,7 @@ impl StateStore {
                     self.quarantined_sessions.insert(session_id);
                     return DeliveryOutcome::ReplayFailed { session_id };
                 };
-                close_open_assistant(&mut scratch);
+                close_open_assistant(&mut scratch, jiff::Timestamp::now());
                 self.replays.insert(
                     session_id,
                     ReplayProgress {
@@ -512,6 +558,7 @@ impl StateStore {
                         event.session_id,
                         event.run_id,
                         event.seq,
+                        event.timestamp,
                         event.payload,
                     );
                     replay.scratch.version = replay.scratch.version.wrapping_add(1);
@@ -679,6 +726,7 @@ impl StateStore {
             event.session_id,
             event.run_id,
             event.seq,
+            event.timestamp,
             event.payload,
         );
         state.version = state.version.wrapping_add(1);
@@ -974,15 +1022,20 @@ fn reduce_event(
     session_id: SessionId,
     run_id: Option<RunId>,
     sequence: u64,
+    timestamp: jiff::Timestamp,
     payload: EventPayload,
 ) {
+    // Every durable timestamp is indexed by sequence so a committed turn
+    // can measure its generation wall time from the exact event that closed
+    // its input window — replay-exact, never render-time wall clock.
+    state.event_timestamps.insert(sequence, timestamp);
     match payload {
         EventPayload::RunStarted {
             agent,
             selected_suffix,
             ..
         } => {
-            close_open_assistant(state);
+            close_open_assistant(state, timestamp);
             state.open_run_assistant = None;
             state.active_run = run_id;
             state.run_agent = Some(agent.agent.clone());
@@ -990,7 +1043,7 @@ fn reduce_event(
             state.run_selected_suffix = Some(selected_suffix);
         }
         EventPayload::UserInputSubmitted { input } => {
-            close_open_assistant(state);
+            close_open_assistant(state, timestamp);
             push_item(state, |id| TranscriptItem::User {
                 id,
                 version: 0,
@@ -1002,7 +1055,7 @@ fn reduce_event(
             resolved_model,
             ..
         } => {
-            close_open_assistant(state);
+            close_open_assistant(state, timestamp);
             // Attempt attribution is frozen: the producing agent comes from
             // the owning `RunStarted`, the exact resolved model from this
             // event — never from the current picker or live configuration.
@@ -1064,7 +1117,14 @@ fn reduce_event(
             else {
                 return;
             };
-            append_assistant_delta(state, item_id, sequence, text, AssistantPartKind::Text);
+            append_assistant_delta(
+                state,
+                item_id,
+                sequence,
+                text,
+                AssistantPartKind::Text,
+                timestamp,
+            );
         }
         EventPayload::ReasoningDelta { attempt_id, text } => {
             let Some(item_id) = state
@@ -1074,10 +1134,17 @@ fn reduce_event(
             else {
                 return;
             };
-            append_assistant_delta(state, item_id, sequence, text, AssistantPartKind::Thinking);
+            append_assistant_delta(
+                state,
+                item_id,
+                sequence,
+                text,
+                AssistantPartKind::Thinking,
+                timestamp,
+            );
         }
         EventPayload::AttemptAbandoned { attempt_id } => {
-            close_open_assistant(state);
+            close_open_assistant(state, timestamp);
             if let Some(attempt) = state.attempts.remove(&attempt_id) {
                 let committed_prefix = state
                     .open_run_assistant
@@ -1094,12 +1161,32 @@ fn reduce_event(
             attempt_id,
             model_turn_seq,
             resolved_model,
+            input_through_seq,
             turn,
             warnings,
             ..
         } => {
-            close_open_assistant(state);
-            state.context_input_tokens = turn.usage.input_tokens;
+            close_open_assistant(state, timestamp);
+            // The context the turn left behind: what it consumed plus what
+            // it generated. A usage-less turn clears the display.
+            state.context_tokens = match (turn.usage.input_tokens, turn.usage.output_tokens) {
+                (Some(input), Some(output)) => Some(input.saturating_add(output)),
+                _ => None,
+            };
+            // Generation wall time: the durable span between the event that
+            // closed this turn's input window and the commit itself.
+            // Missing or clock-skewed (negative/zero) spans contribute
+            // nothing, so unmeasured generation never dilutes the rate.
+            let generation = state
+                .event_timestamps
+                .get(&input_through_seq)
+                .and_then(|started| {
+                    std::time::Duration::try_from(timestamp.duration_since(*started)).ok()
+                })
+                .filter(|duration| !duration.is_zero());
+            // Later commits always close their inputs at a newer sequence,
+            // so older timestamps are dead weight.
+            state.event_timestamps = state.event_timestamps.split_off(&input_through_seq);
             // The committed turn is the canonical boundary: every
             // text/thinking/tool child is rebuilt in exact
             // `PersistedModelTurn.content` order, preserving multiple
@@ -1108,6 +1195,22 @@ fn reduce_event(
             // event arrives.
             if let Some(projection) = state.attempts.get(&attempt_id) {
                 let item_id = projection.item_id;
+                let metrics = state.assistant_metrics.entry(item_id).or_default();
+                if let Some(generation) = generation {
+                    metrics.timed_output_tokens = metrics
+                        .timed_output_tokens
+                        .saturating_add(turn.usage.output_tokens.unwrap_or(0));
+                    metrics.generation += generation;
+                    metrics.timed_turns = metrics.timed_turns.saturating_add(1);
+                }
+                // The context the block now holds: what the turn consumed
+                // plus everything it generated. Either side missing makes
+                // the total unknowable, so the footer stays hidden.
+                if let (Some(input), Some(output)) =
+                    (turn.usage.input_tokens, turn.usage.output_tokens)
+                {
+                    metrics.context_tokens = Some(input.saturating_add(output));
+                }
                 mark_committed(state, item_id, model_turn_seq, &resolved_model);
                 index_turn_tool_content(state, model_turn_seq, &turn);
                 rebuild_committed_children(state, item_id, model_turn_seq, sequence, &turn);
@@ -1141,7 +1244,7 @@ fn reduce_event(
             ordered_decisions,
             ..
         } => {
-            close_open_assistant(state);
+            close_open_assistant(state, timestamp);
             // Incompatible replay/cache discards are one WARNING per logical
             // run transition. Reconstruction is the expected consequence and
             // remains DEBUG, as do routine replay details.
@@ -1181,7 +1284,7 @@ fn reduce_event(
             error,
             ..
         } => {
-            close_open_assistant(state);
+            close_open_assistant(state, timestamp);
             push_event(
                 state,
                 EventLevel::Warning,
@@ -1194,7 +1297,7 @@ fn reduce_event(
             );
         }
         EventPayload::ToolCallStarted { start } => {
-            close_open_assistant(state);
+            close_open_assistant(state, timestamp);
             let mut identities = format!("model call: {}", start.owner.model_call_id);
             if let Some(provider_item_id) = &start.owner.provider_item_id {
                 identities.push_str(&format!(" · provider item: {provider_item_id}"));
@@ -1367,7 +1470,7 @@ fn reduce_event(
             ),
         ),
         EventPayload::RunCompleted { .. } => {
-            close_open_assistant(state);
+            close_open_assistant(state, timestamp);
             state.open_run_assistant = None;
             state.active_run = None;
             state.attempts.clear();
@@ -1376,7 +1479,7 @@ fn reduce_event(
             push_event(state, EventLevel::Info, "run completed".into());
         }
         EventPayload::RunFailed { error } => {
-            close_open_assistant(state);
+            close_open_assistant(state, timestamp);
             state.open_run_assistant = None;
             state.active_run = None;
             state.attempts.clear();
@@ -1385,7 +1488,7 @@ fn reduce_event(
             push_event(state, EventLevel::Error, format!("run failed: {error}"));
         }
         EventPayload::RunCancelled { reason } => {
-            close_open_assistant(state);
+            close_open_assistant(state, timestamp);
             state.open_run_assistant = None;
             state.active_run = None;
             state.attempts.clear();
@@ -1401,7 +1504,7 @@ fn reduce_event(
             );
         }
         EventPayload::RunInterrupted { reason } => {
-            close_open_assistant(state);
+            close_open_assistant(state, timestamp);
             state.open_run_assistant = None;
             state.active_run = None;
             state.attempts.clear();
@@ -1500,7 +1603,7 @@ fn reduce_event(
         EventPayload::SessionTitleCommitted { change, .. } => {
             push_event(state, EventLevel::Info, render_title_commit(&change));
         }
-        EventPayload::UserInputApplied { .. } => close_open_assistant(state),
+        EventPayload::UserInputApplied { .. } => close_open_assistant(state, timestamp),
         EventPayload::SessionCreated {
             cwd_identity,
             creation_agent,
@@ -1557,6 +1660,11 @@ fn prune_abandoned_attempt(state: &mut SessionState, item_id: u64, committed_pre
         .find(|item| item.id() == item_id)
     {
         let tail = children.split_off(committed_prefix.min(children.len()));
+        for child in &tail {
+            if let AssistantChild::Thinking { id, .. } = child {
+                state.thinking_durations.remove(&(item_id, *id));
+            }
+        }
         children.extend(
             tail.into_iter()
                 .filter(|child| matches!(child, AssistantChild::Attribution { .. })),
@@ -1682,6 +1790,23 @@ fn rebuild_committed_children(
             .filter(|projection| projection.item_id == item_id)
             .map_or(0, |projection| projection.committed_prefix)
             .min(existing.len());
+        // Streamed thinking parts are superseded by their committed
+        // counterparts; their sealed durations transfer to the committed
+        // thinking children in order so "thought for Ns" survives the swap.
+        let mut sealed_durations = Vec::new();
+        for child in existing.iter().skip(committed_prefix) {
+            if let AssistantChild::Thinking { id, .. } = child {
+                sealed_durations.push(state.thinking_durations.remove(&(item_id, *id)));
+            }
+        }
+        let mut sealed_durations = sealed_durations.into_iter();
+        for child in &mut children {
+            if let AssistantChild::Thinking { id, .. } = child
+                && let Some(Some(duration)) = sealed_durations.next()
+            {
+                state.thinking_durations.insert((item_id, *id), duration);
+            }
+        }
         let retained_markers = existing
             .drain(committed_prefix..)
             .filter(|child| matches!(child, AssistantChild::Attribution { .. }))
@@ -1705,6 +1830,7 @@ fn append_assistant_delta(
     sequence: u64,
     text: String,
     kind: AssistantPartKind,
+    timestamp: jiff::Timestamp,
 ) {
     if let Some(open) = state.open_assistant
         && open.item_id == item_id
@@ -1751,23 +1877,38 @@ fn append_assistant_delta(
                     _ => unreachable!("open assistant part kind matches its projection"),
                 }
                 *version = version.wrapping_add(1);
+                // Continuing the same open part preserves its original
+                // opening timestamp; the rare rposition fallback continues a
+                // different part, whose opening time is no longer known.
                 state.open_assistant = Some(OpenAssistantProjection {
-                    item_id,
+                    opened_at: if part_id == open.part_id {
+                        open.opened_at
+                    } else {
+                        timestamp
+                    },
                     part_id,
-                    kind,
+                    ..open
                 });
                 return;
             }
         }
-
+        // A part of a different kind (or an unknown continuation) replaces
+        // the open projection: seal the previous thinking part first.
+        if let Some(previous) = state.open_assistant.take() {
+            seal_open_thinking(&mut state.thinking_durations, previous, timestamp);
+        }
         children.push(new_assistant_part(sequence, text, kind));
         *version = version.wrapping_add(1);
         state.open_assistant = Some(OpenAssistantProjection {
             item_id,
             part_id: sequence,
             kind,
+            opened_at: timestamp,
         });
         return;
+    }
+    if let Some(previous) = state.open_assistant.take() {
+        seal_open_thinking(&mut state.thinking_durations, previous, timestamp);
     }
     if let Some(TranscriptItem::Assistant {
         version, children, ..
@@ -1782,7 +1923,11 @@ fn append_assistant_delta(
             item_id,
             part_id: sequence,
             kind,
+            opened_at: timestamp,
         });
+    } else {
+        // The owning item is gone; keep the projection cleared.
+        state.open_assistant = None;
     }
 }
 
@@ -1876,10 +2021,11 @@ fn link_tool_child(
     false
 }
 
-fn close_open_assistant(state: &mut SessionState) {
+fn close_open_assistant(state: &mut SessionState, sealed_at: jiff::Timestamp) {
     let Some(open) = state.open_assistant.take() else {
         return;
     };
+    seal_open_thinking(&mut state.thinking_durations, open, sealed_at);
     if let Some(TranscriptItem::Assistant { version, .. }) = state
         .transcript
         .iter_mut()
@@ -1887,6 +2033,24 @@ fn close_open_assistant(state: &mut SessionState) {
     {
         *version = version.wrapping_add(1);
     }
+}
+
+/// Record a sealed thinking part's elapsed time, derived from the durable
+/// timestamps of the events that opened and sealed it. Non-thinking parts
+/// and clock-skewed (negative) spans record nothing.
+fn seal_open_thinking(
+    thinking_durations: &mut HashMap<(u64, u64), Duration>,
+    open: OpenAssistantProjection,
+    sealed_at: jiff::Timestamp,
+) {
+    if open.kind != AssistantPartKind::Thinking {
+        return;
+    }
+    let elapsed = sealed_at.duration_since(open.opened_at);
+    let Ok(duration) = std::time::Duration::try_from(elapsed) else {
+        return;
+    };
+    thinking_durations.insert((open.item_id, open.part_id), duration);
 }
 
 fn push_item(state: &mut SessionState, item: impl FnOnce(u64) -> TranscriptItem) {
@@ -2320,6 +2484,7 @@ mod tests {
             10,
             "first".into(),
             AssistantPartKind::Thinking,
+            jiff::Timestamp::now(),
         );
         let stale_open = state.open_assistant.expect("open thinking segment");
         let turn = PersistedModelTurn {
@@ -2343,6 +2508,7 @@ mod tests {
             21,
             " second".into(),
             AssistantPartKind::Thinking,
+            jiff::Timestamp::now(),
         );
 
         let TranscriptItem::Assistant { children, .. } = &state.transcript[0] else {
@@ -2395,6 +2561,7 @@ mod tests {
             SessionId::new_v7(),
             None,
             1,
+            jiff::Timestamp::now(),
             EventPayload::ToolCallTerminated {
                 termination: cookie_agent_protocol::ToolCallTermination {
                     tool_call_id: call_id,
@@ -2433,6 +2600,7 @@ mod tests {
             session_id,
             None,
             1,
+            jiff::Timestamp::now(),
             EventPayload::ApprovalEscalated {
                 approval_id,
                 reason_code: cookie_agent_protocol::ApprovalReasonCode::Escalated,
@@ -2443,6 +2611,7 @@ mod tests {
             session_id,
             None,
             2,
+            jiff::Timestamp::now(),
             EventPayload::ApprovalFinalized {
                 approval_id,
                 decision: cookie_agent_protocol::ApprovalFinalDecision {
@@ -2459,6 +2628,7 @@ mod tests {
             session_id,
             None,
             3,
+            jiff::Timestamp::now(),
             EventPayload::ApprovalFinalized {
                 approval_id,
                 decision: cookie_agent_protocol::ApprovalFinalDecision {
@@ -2482,6 +2652,126 @@ mod tests {
         assert_eq!(
             levels,
             vec![EventLevel::Info, EventLevel::Info, EventLevel::Info]
+        );
+    }
+
+    fn timestamp(iso: &str) -> jiff::Timestamp {
+        iso.parse().expect("timestamp")
+    }
+
+    fn assistant_state_with_item(item_id: u64) -> SessionState {
+        SessionState {
+            transcript: vec![TranscriptItem::Assistant {
+                id: item_id,
+                version: 0,
+                attribution: FrozenAssistantAttribution {
+                    agent: AgentId::new("test").expect("agent id"),
+                    resolved_model: serde_json::from_value(serde_json::json!({
+                        "provider_id": "test",
+                        "model_id": "test",
+                        "adapter_id": "openai-compatible",
+                        "selection": {"model": "test/test", "variant": null},
+                        "selection_fingerprint": "a".repeat(64)
+                    }))
+                    .expect("resolved model"),
+                },
+                committed_turn_seq: None,
+                children: Vec::new(),
+            }],
+            ..SessionState::default()
+        }
+    }
+
+    #[test]
+    fn thinking_durations_derive_from_durable_event_timestamps() {
+        let item_id = 1;
+        let mut state = assistant_state_with_item(item_id);
+        let opened = timestamp("2026-08-07T10:00:00Z");
+        append_assistant_delta(
+            &mut state,
+            item_id,
+            10,
+            "hmm".into(),
+            AssistantPartKind::Thinking,
+            opened,
+        );
+        assert!(state.has_open_thinking());
+        // Continuing the open part keeps its original opening timestamp.
+        append_assistant_delta(
+            &mut state,
+            item_id,
+            11,
+            "…".into(),
+            AssistantPartKind::Thinking,
+            timestamp("2026-08-07T10:00:01Z"),
+        );
+        close_open_assistant(&mut state, timestamp("2026-08-07T10:00:04Z"));
+        assert!(!state.has_open_thinking());
+        assert_eq!(
+            state.thinking_duration(item_id, 10),
+            Some(Duration::from_secs(4))
+        );
+
+        // Clock-skewed (negative) spans record nothing rather than panic.
+        append_assistant_delta(
+            &mut state,
+            item_id,
+            20,
+            "again".into(),
+            AssistantPartKind::Thinking,
+            timestamp("2026-08-07T11:00:00Z"),
+        );
+        close_open_assistant(&mut state, timestamp("2026-08-07T10:59:00Z"));
+        assert_eq!(state.thinking_duration(item_id, 20), None);
+    }
+
+    #[test]
+    fn thinking_duration_transfers_to_the_committed_child_on_rebuild() {
+        let item_id = 1;
+        let mut state = assistant_state_with_item(item_id);
+        append_assistant_delta(
+            &mut state,
+            item_id,
+            10,
+            "streamed".into(),
+            AssistantPartKind::Thinking,
+            timestamp("2026-08-07T10:00:00Z"),
+        );
+        close_open_assistant(&mut state, timestamp("2026-08-07T10:00:07Z"));
+        assert_eq!(
+            state.thinking_duration(item_id, 10),
+            Some(Duration::from_secs(7))
+        );
+
+        let turn = PersistedModelTurn {
+            content: vec![cookie_agent_protocol::PersistedAssistantPart::Reasoning {
+                text: "streamed".into(),
+                metadata: None,
+            }],
+            provider_options: BTreeMap::new(),
+            finish_reason: cookie_agent_protocol::ModelFinishReason::Stop,
+            usage: Usage::default(),
+            response_metadata: BTreeMap::new(),
+            provider_metadata: BTreeMap::new(),
+            native_replay: None,
+        };
+        rebuild_committed_children(&mut state, item_id, 1, 20, &turn);
+        // The streamed part id is gone; the committed child carries the time.
+        assert_eq!(state.thinking_duration(item_id, 10), None);
+        let TranscriptItem::Assistant { children, .. } = &state.transcript[0] else {
+            panic!("assistant item")
+        };
+        let committed_id = children
+            .iter()
+            .find_map(|child| match child {
+                AssistantChild::Thinking { id, .. } => Some(*id),
+                _ => None,
+            })
+            .expect("committed thinking child");
+        assert_ne!(committed_id, 10);
+        assert_eq!(
+            state.thinking_duration(item_id, committed_id),
+            Some(Duration::from_secs(7))
         );
     }
 }

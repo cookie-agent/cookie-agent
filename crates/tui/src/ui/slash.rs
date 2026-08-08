@@ -4,14 +4,8 @@ use cookie_agent_protocol::ApprovalUserDecision;
 use ratatui::{
     Frame,
     layout::Rect,
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum InputMode {
-    Message,
-    ToolStdin,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SlashCommand {
@@ -20,7 +14,6 @@ pub(crate) enum SlashCommand {
     Connect,
     Sessions,
     Cancel,
-    Message,
     Approve(ApprovalUserDecision),
     Events(crate::state::EventLevel),
     Help,
@@ -68,13 +61,6 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &[],
         usage: "/cancel",
         description: "cancel the active run",
-        requires_arguments: false,
-    },
-    CommandSpec {
-        name: "message",
-        aliases: &[],
-        usage: "/message",
-        description: "leave tool stdin",
         requires_arguments: false,
     },
     CommandSpec {
@@ -154,7 +140,6 @@ pub(crate) fn parse_submission(input: &str) -> Result<Submission, String> {
         ["connect"] => SlashCommand::Connect,
         ["sessions"] => SlashCommand::Sessions,
         ["cancel"] => SlashCommand::Cancel,
-        ["message"] => SlashCommand::Message,
         ["approve", "once"] => SlashCommand::Approve(ApprovalUserDecision::ApproveOnce),
         ["approve", "tree"] => SlashCommand::Approve(ApprovalUserDecision::ApproveTree),
         ["approve", "reject"] => SlashCommand::Approve(ApprovalUserDecision::Reject),
@@ -169,46 +154,20 @@ pub(crate) fn parse_submission(input: &str) -> Result<Submission, String> {
     Ok(Submission::Command(command))
 }
 
-pub(crate) fn command_allowed_in_mode(command: SlashCommand, mode: InputMode) -> bool {
-    match command {
-        SlashCommand::Message => mode == InputMode::ToolStdin,
-        _ => mode == InputMode::Message,
-    }
-}
-
-pub(crate) fn command_name(command: SlashCommand) -> &'static str {
-    match command {
-        SlashCommand::Quit => "quit",
-        SlashCommand::New => "new",
-        SlashCommand::Connect => "connect",
-        SlashCommand::Sessions => "sessions",
-        SlashCommand::Cancel => "cancel",
-        SlashCommand::Message => "message",
-        SlashCommand::Approve(ApprovalUserDecision::ApproveOnce) => "approve once",
-        SlashCommand::Approve(ApprovalUserDecision::ApproveTree) => "approve tree",
-        SlashCommand::Approve(ApprovalUserDecision::Reject) => "approve reject",
-        SlashCommand::Approve(ApprovalUserDecision::Cancel) => "approve cancel",
-        SlashCommand::Events(crate::state::EventLevel::Debug) => "events debug",
-        SlashCommand::Events(crate::state::EventLevel::Info) => "events info",
-        SlashCommand::Events(crate::state::EventLevel::Warning) => "events warning",
-        SlashCommand::Events(crate::state::EventLevel::Error) => "events error",
-        SlashCommand::Help => "help",
-    }
-}
-
-pub(crate) fn command_mode_name(command: SlashCommand) -> &'static str {
-    match command {
-        SlashCommand::Message => "tool stdin",
-        _ => "message",
-    }
-}
-
+#[cfg(test)]
 pub(crate) fn command_help() -> String {
     COMMANDS
         .iter()
         .map(|spec| format!("{} — {}", spec.usage, spec.description))
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// One readable line per command for the in-transcript help notice.
+pub(crate) fn command_help_lines() -> impl Iterator<Item = String> {
+    COMMANDS
+        .iter()
+        .map(|spec| format!("{} — {}", spec.usage, spec.description))
 }
 
 pub(crate) fn move_selection(state: &mut ListState, len: usize, up: bool) {
@@ -230,6 +189,7 @@ pub(crate) fn render(
     entries: Vec<String>,
     area: Rect,
     state: &mut ListState,
+    theme: &crate::theme::Theme,
 ) -> Vec<(Rect, usize)> {
     let inner = inner_rect(area);
     let list_area = Rect::new(
@@ -238,25 +198,50 @@ pub(crate) fn render(
         inner.width,
         inner.height.saturating_sub(2),
     );
-    frame.render_widget(Clear, area);
+    super::app::paint_panel(frame, area, theme);
     frame.render_widget(
-        Block::default().borders(Borders::ALL).title("Commands"),
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme.panel_border())
+            .title("Commands")
+            .title_bottom(
+                ratatui::text::Line::from(ratatui::text::Span::styled(
+                    "↑↓ move · enter: choose · esc: dismiss",
+                    theme.internal(),
+                ))
+                .right_aligned(),
+            ),
         area,
     );
     frame.render_widget(
-        Paragraph::new(format!("/{query}"))
-            .block(Block::default().borders(Borders::BOTTOM).title("Search")),
+        Paragraph::new(format!("/{query}")).block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(theme.panel_border())
+                .title("Search"),
+        ),
         Rect::new(inner.x, inner.y, inner.width, inner.height.min(2)),
     );
     let entry_count = entries.len();
     if entry_count == 0 {
-        frame.render_widget(Paragraph::new("No matching commands"), list_area);
+        frame.render_widget(
+            Paragraph::new("No matching commands").style(theme.muted()),
+            list_area,
+        );
         state.select(None);
         return Vec::new();
     }
+    // Rows ellipsize instead of hard-clipping at the panel edge; the two
+    // selection-marker columns stay reserved on every row.
+    let available = usize::from(list_area.width.saturating_sub(2));
+    let entries = entries
+        .into_iter()
+        .map(|entry| super::app::truncate_with_ellipsis(&entry, available))
+        .collect::<Vec<_>>();
     frame.render_stateful_widget(
         List::new(entries.into_iter().map(ListItem::new).collect::<Vec<_>>())
-            .highlight_symbol("> "),
+            .highlight_symbol("> ")
+            .highlight_style(theme.selected()),
         list_area,
         state,
     );
@@ -284,4 +269,41 @@ fn inner_rect(area: Rect) -> Rect {
         area.width.saturating_sub(2),
         area.height.saturating_sub(2),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{Terminal, backend::TestBackend, widgets::ListState};
+
+    #[test]
+    fn palette_rows_ellipsize_and_the_footer_explains_the_keys() {
+        let theme = crate::theme::Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(34, 10)).expect("terminal");
+        let mut state = ListState::default().with_selected(Some(0));
+        terminal
+            .draw(|frame| {
+                super::render(
+                    frame,
+                    "",
+                    vec![
+                        "/approve once|tree|reject|cancel — answer an approval".to_owned(),
+                        "/quit — exit the TUI".to_owned(),
+                    ],
+                    frame.area(),
+                    &mut state,
+                    &theme,
+                );
+            })
+            .expect("render palette");
+        let buffer = terminal.backend().buffer();
+        let text = (0..10)
+            .flat_map(|y| (0..34).map(move |x| buffer[(x, y)].symbol().to_owned()))
+            .collect::<String>();
+        assert!(text.contains('…'), "{text}");
+        assert!(!text.contains("answer an approval"), "{text}");
+        // No row spills over the right border.
+        assert_eq!(buffer[(33, 3)].symbol(), "│");
+        assert!(text.contains("enter: choose"), "{text}");
+        assert!(text.contains("esc: dismiss"), "{text}");
+    }
 }

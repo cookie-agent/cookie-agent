@@ -264,7 +264,10 @@ impl Engine {
                         InternalAgentKind::Approval,
                         &approval_policy,
                         prompt,
-                        &active.cancellation,
+                        InternalAgentExecution {
+                            cancellation: &active.cancellation,
+                            actor_direct: false,
+                        },
                     )
                     .await
                 {

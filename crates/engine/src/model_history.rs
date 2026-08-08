@@ -1198,14 +1198,15 @@ mod tests {
     use cookie_agent_protocol::{
         AssistantToolCallRef, ContextCheckpoint, ContextCheckpointBoundaries,
         ContextCheckpointBudgets, ContextCheckpointCommit, EventPayload, EventSchemaVersion,
-        ModelCallId, ModelFinishReason, ModelKey, ModelSelection, NativeContextArtifact,
-        NativeContextScope, NativeReplayArtifact, OperationFingerprint, PermissionAction,
-        PersistedAssistantPart, PersistedModelTurn, PersistedToolResult, PreparedApprovalResource,
-        PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
-        PreparedResourceDigest, PreparedResourceIdentity, ProviderId, ProviderModelId,
-        ReplayDisposition, ResolvedModelRef, RunId, SafeCode, SafeDisplayText, SessionId,
-        Sha256Digest, StoredEvent, SummaryByteLimit, ToolCallId, ToolCallPresentation,
-        ToolCallStart, ToolCallTermination, ToolTerminationOutcome, Usage,
+        InternalAgentInvocationId, InternalAgentRunId, InternalSummaryCheckpoint, ModelCallId,
+        ModelFinishReason, ModelKey, ModelSelection, NativeContextArtifact, NativeContextScope,
+        NativeReplayArtifact, OperationFingerprint, PermissionAction, PersistedAssistantPart,
+        PersistedModelTurn, PersistedToolResult, PreparedApprovalResource, PreparedBindingLifetime,
+        PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
+        PreparedResourceIdentity, ProviderId, ProviderModelId, ReplayDisposition, ResolvedModelRef,
+        RunId, SafeCode, SafeDisplayText, SessionId, Sha256Digest, StoredEvent, SummaryByteLimit,
+        ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination,
+        ToolTerminationOutcome, Usage,
     };
     use oven_sdk::{
         NativeContextScope as OvenNativeContextScope, ReplayDecision as OvenReplayDecision,
@@ -1641,7 +1642,6 @@ mod tests {
                         budgets: ContextCheckpointBudgets {
                             context_limit_tokens: 100,
                             trigger_tokens: 80,
-                            target_tokens: 40,
                             input_tokens_before: 90,
                             input_tokens_after: 30,
                             max_summary_bytes: SummaryByteLimit::new(1024).expect("limit"),
@@ -1687,6 +1687,69 @@ mod tests {
                 if persisted_found.model.to_string() == "provider/one"
                     && persisted_expected == &binding.selection
         ));
+    }
+
+    #[test]
+    fn checkpoint_before_new_user_keeps_summary_and_user_live() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let binding = binding();
+        let run = RunId::new_v7();
+        let summary_limit = SummaryByteLimit::new(1024).expect("limit");
+        let checkpoint = InternalSummaryCheckpoint::new(
+            "predictive summary".into(),
+            InternalAgentInvocationId::new_v7(),
+            InternalAgentRunId::new_v7(),
+            summary_limit,
+        )
+        .expect("checkpoint");
+        let events = vec![
+            event(
+                1,
+                run,
+                EventPayload::UserInputSubmitted {
+                    input: "old compacted input".into(),
+                },
+            ),
+            event(
+                2,
+                run,
+                EventPayload::ContextCheckpointCommitted {
+                    commit: ContextCheckpointCommit {
+                        checkpoint: ContextCheckpoint::InternalSummary { checkpoint },
+                        boundaries: ContextCheckpointBoundaries {
+                            source_from_seq: 1,
+                            source_through_seq: 1,
+                            input_through_seq: 1,
+                            prior_checkpoint_seq: None,
+                        },
+                        budgets: ContextCheckpointBudgets {
+                            context_limit_tokens: 100,
+                            trigger_tokens: 70,
+                            input_tokens_before: 60,
+                            input_tokens_after: 5,
+                            max_summary_bytes: summary_limit,
+                        },
+                    },
+                },
+            ),
+            event(
+                3,
+                run,
+                EventPayload::UserInputSubmitted {
+                    input: "extremely long live user input".into(),
+                },
+            ),
+            event(4, run, EventPayload::UserInputApplied { user_input_seq: 3 }),
+        ];
+
+        assert!(events[1].seq < events[2].seq);
+        let context = assemble_model_context(&events, &store, &binding, "System prompt.")
+            .expect("assembled context");
+        let serialized = serde_json::to_string(&context.history).expect("serialized history");
+        assert!(serialized.contains("predictive summary"));
+        assert!(serialized.contains("extremely long live user input"));
+        assert!(!serialized.contains("old compacted input"));
     }
 
     #[test]

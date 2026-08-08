@@ -1285,8 +1285,6 @@ pub struct ContextCheckpointBudgets {
     #[schemars(range(min = 1))]
     pub trigger_tokens: u64,
     #[schemars(range(min = 1))]
-    pub target_tokens: u64,
-    #[schemars(range(min = 1))]
     pub input_tokens_before: u64,
     pub input_tokens_after: u64,
     pub max_summary_bytes: SummaryByteLimit,
@@ -1388,11 +1386,7 @@ impl ContextCheckpointCommit {
             || self.boundaries.source_from_seq > self.boundaries.source_through_seq
             || self.boundaries.input_through_seq < self.boundaries.source_through_seq
             || self.budgets.context_limit_tokens == 0
-            || self.budgets.target_tokens == 0
-            || self.budgets.target_tokens >= self.budgets.trigger_tokens
             || self.budgets.trigger_tokens > self.budgets.context_limit_tokens
-            || self.budgets.input_tokens_before < self.budgets.trigger_tokens
-            || self.budgets.input_tokens_after > self.budgets.target_tokens
             || self.budgets.input_tokens_after >= self.budgets.input_tokens_before
         {
             return Err(EventSchemaError::InvalidCheckpointBoundaries);

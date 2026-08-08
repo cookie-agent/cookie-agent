@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState},
+    widgets::{Block, Borders, List, ListItem, ListState},
 };
 
 use crate::theme::Theme;
@@ -72,6 +72,7 @@ pub(crate) fn render_search_input(
         &mut state.input,
         state.focus == SearchPickerFocus::Input,
         title,
+        Some("Filter…"),
         theme,
     )
 }
@@ -178,19 +179,42 @@ pub(crate) fn short_id(session_id: SessionId) -> String {
     session_id.to_string().chars().take(8).collect()
 }
 
+/// A right-aligned, dimmed key hint on a picker panel's bottom border, so
+/// every chooser explains itself without docs.
+fn footer_hint(theme: &Theme, hint: Option<&str>) -> Option<Line<'static>> {
+    hint.map(|hint| Line::from(Span::styled(hint.to_owned(), theme.internal())).right_aligned())
+}
+
+/// Rows never hard-clip mid-word at the panel edge: each label is ellipsized
+/// to the space left after the selection marker's two columns.
+fn ellipsized(entries: Vec<String>, inner_width: u16) -> Vec<String> {
+    let available = usize::from(inner_width.saturating_sub(2));
+    entries
+        .into_iter()
+        .map(|entry| super::app::truncate_with_ellipsis(&entry, available))
+        .collect()
+}
+
+/// The textual chrome of a picker panel: its title, the message shown when
+/// there is nothing to list, and the bottom-border key hint.
+pub(crate) struct PickerChrome<'a> {
+    pub(crate) title: &'a str,
+    pub(crate) empty_message: Option<&'a str>,
+    pub(crate) hint: Option<&'a str>,
+}
+
 pub(crate) fn render(
     frame: &mut Frame,
-    title: &str,
+    chrome: PickerChrome<'_>,
     entries: Vec<String>,
-    empty_message: Option<&str>,
     area: Rect,
     state: &mut ListState,
     theme: &Theme,
 ) -> Vec<(Rect, usize)> {
-    frame.render_widget(Clear, area);
+    super::app::paint_panel(frame, area, theme);
     let entry_count = entries.len();
     if entry_count == 0 {
-        let content = empty_message.map_or_else(
+        let content = chrome.empty_message.map_or_else(
             || {
                 Line::from(vec![
                     Span::styled("No matches. ", theme.muted()),
@@ -199,22 +223,33 @@ pub(crate) fn render(
             },
             |message| Line::from(Span::styled(message.to_owned(), theme.muted())),
         );
-        frame.render_widget(
-            ratatui::widgets::Paragraph::new(content)
-                .block(Block::default().borders(Borders::ALL).title(title)),
-            area,
-        );
+        let mut block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme.panel_border())
+            .title(chrome.title);
+        if let Some(hint) = footer_hint(theme, chrome.hint) {
+            block = block.title_bottom(hint);
+        }
+        frame.render_widget(ratatui::widgets::Paragraph::new(content).block(block), area);
         return Vec::new();
+    }
+    let inner = inner_rect(area);
+    let entries = ellipsized(entries, inner.width);
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.panel_border())
+        .title(chrome.title);
+    if let Some(hint) = footer_hint(theme, chrome.hint) {
+        block = block.title_bottom(hint);
     }
     frame.render_stateful_widget(
         List::new(entries.into_iter().map(ListItem::new).collect::<Vec<_>>())
             .highlight_symbol("> ")
-            .highlight_style(theme.user())
-            .block(Block::default().borders(Borders::ALL).title(title)),
+            .highlight_style(theme.selected())
+            .block(block),
         area,
         state,
     );
-    let inner = inner_rect(area);
     (state.offset()..entry_count)
         .take(usize::from(inner.height))
         .enumerate()
@@ -491,6 +526,43 @@ mod tests {
         let session_id = SessionId::new_v7();
         assert_eq!(short_id(session_id).len(), 8);
         assert!(session_id.to_string().starts_with(&short_id(session_id)));
+    }
+
+    #[test]
+    fn picker_rows_ellipsize_and_the_footer_explains_the_keys() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let theme = crate::theme::Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(30, 8)).expect("terminal");
+        let mut state = ListState::default().with_selected(Some(0));
+        terminal
+            .draw(|frame| {
+                super::render(
+                    frame,
+                    super::PickerChrome {
+                        title: "Model",
+                        empty_message: None,
+                        hint: Some("↑↓ move · enter: select · esc: close"),
+                    },
+                    vec!["a/very/long/model-name[variant] — Display Name".to_owned()],
+                    frame.area(),
+                    &mut state,
+                    &theme,
+                );
+            })
+            .expect("render picker");
+        let buffer = terminal.backend().buffer();
+        let text = (0..8)
+            .flat_map(|y| (0..30).map(move |x| buffer[(x, y)].symbol().to_owned()))
+            .collect::<String>();
+        // The long row ellipsizes instead of clipping mid-word…
+        assert!(text.contains('…'), "{text}");
+        assert!(!text.contains("Display Name"), "{text}");
+        // …and never spills over the right border.
+        assert_eq!(buffer[(29, 1)].symbol(), "│");
+        // The bottom border carries the key hints.
+        assert!(text.contains("enter: select"), "{text}");
+        assert!(text.contains("esc: close"), "{text}");
     }
 
     #[test]

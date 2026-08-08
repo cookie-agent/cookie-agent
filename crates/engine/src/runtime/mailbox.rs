@@ -125,8 +125,7 @@ impl Engine {
         run: Option<RunId>,
         event: Event,
     ) -> Result<(), EngineError> {
-        let envelope = self.inner.store.get(session)?.log.append(run, event)?;
-        self.inner.store.update(session)?;
+        let envelope = self.inner.store.append(session, run, event)?;
         self.inner
             .subscribers
             .lock()
@@ -257,6 +256,12 @@ impl Engine {
         {
             return;
         }
+        self.inner
+            .context_token_estimators
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(session)
+            .or_default();
         let engine = self.clone();
         let actor = SessionActor::spawn(SESSION_MAILBOX_CAPACITY, move |command| {
             let engine = engine.clone();

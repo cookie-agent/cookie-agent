@@ -8,7 +8,7 @@ impl Engine {
         kind: InternalAgentKind,
         policy: &FrozenInternalAgentPolicy,
         input: String,
-        cancellation: &CancellationToken,
+        execution: InternalAgentExecution<'_>,
     ) -> Result<InternalAgentTextResult, EngineError> {
         let name = match kind {
             InternalAgentKind::Approval => "approval",
@@ -39,7 +39,7 @@ impl Engine {
                 resolved_model: wire_model(binding),
             };
             if index == 0 {
-                self.append(
+                self.append_internal_agent_event(
                     session,
                     parent_run,
                     Event::InternalAgentStarted {
@@ -49,10 +49,11 @@ impl Engine {
                         backend: backend.clone(),
                         call: call.clone(),
                     },
+                    execution.actor_direct,
                 )
                 .await?;
             } else if let Some(from) = previous_backend.take() {
-                self.append(
+                self.append_internal_agent_event(
                     session,
                     parent_run,
                     Event::InternalAgentFallback {
@@ -64,6 +65,7 @@ impl Engine {
                         failure: last_failure.clone(),
                         attempts: index as u32,
                     },
+                    execution.actor_direct,
                 )
                 .await?;
             }
@@ -85,7 +87,7 @@ impl Engine {
             let mut request = ModelRequest::new(history);
             request.inference.max_output_tokens = Some(policy.limits.max_output_tokens);
             let request = model.prepare_request(request);
-            let abort = AbortBridge::new(cancellation.child_token());
+            let abort = AbortBridge::new(execution.cancellation.child_token());
             let call_future = model.model().complete(request, abort.signal());
             let result = tokio::select! {
                 result = tokio::time::timeout(
@@ -98,9 +100,9 @@ impl Engine {
                         Err(ModelError::timeout("internal agent timed out"))
                     },
                 },
-                _ = cancellation.cancelled() => {
+                _ = execution.cancellation.cancelled() => {
                     abort.abort();
-                    self.append(
+                    self.append_internal_agent_event(
                         session,
                         parent_run,
                         Event::InternalAgentCancelled {
@@ -109,6 +111,7 @@ impl Engine {
                             kind,
                             reason: Some(safe_error("parent run cancelled")),
                         },
+                        execution.actor_direct,
                     ).await?;
                     return Err(ModelError::abort("internal agent was cancelled").into());
                 }
@@ -138,7 +141,7 @@ impl Engine {
                         previous_backend = Some(backend);
                         continue;
                     }
-                    self.append(
+                    self.append_internal_agent_event(
                         session,
                         parent_run,
                         Event::InternalAgentCompleted {
@@ -153,6 +156,7 @@ impl Engine {
                                 output_digest: Sha256Digest::of_bytes(output.as_bytes()),
                             },
                         },
+                        execution.actor_direct,
                     )
                     .await?;
                     return Ok(InternalAgentTextResult {
@@ -173,7 +177,7 @@ impl Engine {
             }
         }
         if policy.models.is_empty() {
-            self.append(
+            self.append_internal_agent_event(
                 session,
                 parent_run,
                 Event::InternalAgentStarted {
@@ -186,10 +190,11 @@ impl Engine {
                     },
                     call,
                 },
+                execution.actor_direct,
             )
             .await?;
         }
-        self.append(
+        self.append_internal_agent_event(
             session,
             parent_run,
             Event::InternalAgentFailed {
@@ -198,9 +203,24 @@ impl Engine {
                 kind,
                 failure: last_failure,
             },
+            execution.actor_direct,
         )
         .await?;
         Err(ModelError::invalid_response("internal agent failed safely").into())
+    }
+
+    async fn append_internal_agent_event(
+        &self,
+        session: SessionId,
+        run: Option<RunId>,
+        event: Event,
+        actor_direct: bool,
+    ) -> Result<(), EngineError> {
+        if actor_direct {
+            self.append_direct(session, run, event)
+        } else {
+            self.append(session, run, event).await
+        }
     }
 
     pub(super) fn active_internal_policy(

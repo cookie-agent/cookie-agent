@@ -735,11 +735,6 @@
           "maximum": 2097152,
           "minimum": 0
         },
-        "target_tokens": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 1
-        },
         "trigger_tokens": {
           "type": "integer",
           "format": "uint64",
@@ -750,7 +745,6 @@
       "required": [
         "context_limit_tokens",
         "trigger_tokens",
-        "target_tokens",
         "input_tokens_before",
         "input_tokens_after",
         "max_summary_bytes"
@@ -4633,7 +4627,7 @@
       "properties": {
         "event_schema_version": {
           "type": "integer",
-          "const": 9
+          "const": 10
         },
         "payload": {
           "$ref": "#/$defs/EventPayload"

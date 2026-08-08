@@ -93,7 +93,7 @@ pub struct SessionStore {
     sessions_dir: PathBuf,
     cwd: PathBuf,
     sessions: Mutex<HashMap<SessionId, SessionProjection>>,
-    creation: Mutex<()>,
+    mutation: Mutex<()>,
 }
 
 impl SessionStore {
@@ -119,7 +119,7 @@ impl SessionStore {
             sessions_dir: sessions_dir.clone(),
             cwd: cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned()),
             sessions: Mutex::new(HashMap::new()),
-            creation: Mutex::new(()),
+            mutation: Mutex::new(()),
         });
         for entry in fs::read_dir(&sessions_dir).map_err(|source| SessionError::Io {
             path: sessions_dir.clone(),
@@ -169,45 +169,37 @@ impl SessionStore {
         session_id: SessionId,
         creation: EventPayload,
     ) -> Result<(Arc<EventLog>, bool), SessionError> {
-        let _creation = self
-            .creation
+        let _mutation = self
+            .mutation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session_id)
+            .cloned()
+        {
+            return Ok((existing.log, false));
+        }
         let final_dir = self.sessions_dir.join(session_id.to_string());
         if final_dir.exists() {
-            return Ok((self.get(session_id)?.log, false));
+            read_cache_version(&final_dir.join("meta.json"))?;
+            let log = EventLog::open(final_dir.join("events.jsonl"), session_id)?;
+            let existing = projection(log.clone())?;
+            self.sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(session_id, existing);
+            return Ok((log, false));
         }
-        let temporary = self
-            .sessions_dir
-            .join(format!(".{session_id}.{}.tmp", SessionId::new_v7()));
-        fs::create_dir_all(&temporary).map_err(|source| SessionError::Io {
-            path: temporary.clone(),
-            source,
-        })?;
-        let temporary_log = EventLog::create(temporary.join("events.jsonl"), session_id, creation)?;
-        write_cache(
-            &temporary.join("meta.json"),
-            &projection(temporary_log)?.meta,
-        )?;
-        fsync_directory(&temporary)?;
-        if let Err(source) = fs::rename(&temporary, &final_dir) {
-            if source.kind() == std::io::ErrorKind::AlreadyExists || final_dir.exists() {
-                let _ = fs::remove_dir_all(&temporary);
-                return Ok((self.get(session_id)?.log, false));
-            }
-            return Err(SessionError::Io {
-                path: final_dir.clone(),
-                source,
-            });
-        }
-        fsync_directory(&self.sessions_dir)?;
-        let final_log = EventLog::open(final_dir.join("events.jsonl"), session_id)?;
-        let result = projection(final_log.clone())?;
+        let log = EventLog::create_buffered(final_dir.join("events.jsonl"), session_id, creation)?;
+        let result = projection(log.clone())?;
         self.sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(session_id, result);
-        Ok((final_log, true))
+        Ok((log, true))
     }
 
     pub fn get(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
@@ -219,17 +211,68 @@ impl SessionStore {
             .ok_or(SessionError::Missing(id))
     }
 
-    pub fn update(&self, id: SessionId) -> Result<(), SessionError> {
+    pub fn append(
+        &self,
+        id: SessionId,
+        run: Option<RunId>,
+        event: EventPayload,
+    ) -> Result<cookie_agent_protocol::StoredEvent, SessionError> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let current = self.get(id)?;
+        let first_user_message =
+            !current.log.is_persisted() && matches!(event, EventPayload::UserInputSubmitted { .. });
+        let envelope = current.log.append(run, event)?;
         let rebuilt = projection(current.log.clone())?;
-        write_cache(
-            &self.sessions_dir.join(id.to_string()).join("meta.json"),
-            &rebuilt.meta,
-        )?;
+        if first_user_message {
+            self.persist_buffered(id, &rebuilt)?;
+        } else if current.log.is_persisted() {
+            write_cache(
+                &self.sessions_dir.join(id.to_string()).join("meta.json"),
+                &rebuilt.meta,
+            )?;
+        }
         self.sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(id, rebuilt);
+        Ok(envelope)
+    }
+
+    fn persist_buffered(
+        &self,
+        session_id: SessionId,
+        projection: &SessionProjection,
+    ) -> Result<(), SessionError> {
+        let final_dir = self.sessions_dir.join(session_id.to_string());
+        let temporary = self
+            .sessions_dir
+            .join(format!(".{session_id}.{}.tmp", SessionId::new_v7()));
+        fs::create_dir_all(&temporary).map_err(|source| SessionError::Io {
+            path: temporary.clone(),
+            source,
+        })?;
+        let result = (|| {
+            let log_path = temporary.join("events.jsonl");
+            for event in projection.log.events() {
+                crate::events::append_jsonl(&log_path, &event)?;
+            }
+            write_cache(&temporary.join("meta.json"), &projection.meta)?;
+            fsync_directory(&temporary)?;
+            fs::rename(&temporary, &final_dir).map_err(|source| SessionError::Io {
+                path: final_dir.clone(),
+                source,
+            })?;
+            fsync_directory(&self.sessions_dir)?;
+            Ok::<(), SessionError>(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&temporary);
+            return result;
+        }
+        projection.log.mark_persisted();
         Ok(())
     }
 
@@ -253,6 +296,10 @@ impl SessionStore {
     #[must_use]
     pub fn session_dir(&self, id: SessionId) -> PathBuf {
         self.sessions_dir.join(id.to_string())
+    }
+
+    pub fn is_persisted(&self, id: SessionId) -> Result<bool, SessionError> {
+        Ok(self.get(id)?.log.is_persisted())
     }
 
     pub fn children(&self, parent: SessionId) -> Vec<ChildSummary> {
