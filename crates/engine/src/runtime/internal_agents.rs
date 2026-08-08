@@ -55,6 +55,15 @@ impl Engine {
             InternalAgentKind::SessionTitle => "session_title",
         };
         let policy = policy.clone();
+        let input_tokens = internal_history_tokens(&input.history, &input.tools)?;
+        let max_input_tokens = internal_agent_input_limit(kind, &policy);
+        if input_tokens > max_input_tokens {
+            return Err(ModelError::invalid_request(format!(
+                "internal agent input is {input_tokens} estimated tokens, exceeding the frozen {}-token limit",
+                max_input_tokens
+            ))
+            .into());
+        }
         let invocation_id = InternalAgentInvocationId::new_v7();
         let internal_run_id = InternalAgentRunId::new_v7();
         let call = SafeInternalAgentCall {
@@ -140,20 +149,25 @@ impl Engine {
                 },
                 _ = execution.cancellation.cancelled() => {
                     abort.abort();
-                    self.append_internal_agent_event(
-                        session,
-                        parent_run,
-                        Event::InternalAgentCancelled {
-                            invocation_id,
-                            internal_run_id,
-                            kind,
-                            reason: Some(safe_error("parent run cancelled")),
-                        },
-                        execution.actor_direct,
-                    ).await?;
-                    return Err(ModelError::abort("internal agent was cancelled").into());
+                    Err(ModelError::abort("internal agent was cancelled"))
                 }
             };
+            if execution.cancellation.is_cancelled() {
+                abort.abort();
+                self.append_internal_agent_event(
+                    session,
+                    parent_run,
+                    Event::InternalAgentCancelled {
+                        invocation_id,
+                        internal_run_id,
+                        kind,
+                        reason: Some(safe_error("parent run cancelled")),
+                    },
+                    execution.actor_direct,
+                )
+                .await?;
+                return Err(ModelError::abort("internal agent was cancelled").into());
+            }
             match result {
                 Ok(completed) => {
                     if invalid_internal_output(
@@ -384,6 +398,19 @@ impl Engine {
     }
 }
 
+fn internal_agent_input_limit(kind: InternalAgentKind, policy: &FrozenInternalAgentPolicy) -> u64 {
+    if kind != InternalAgentKind::ContextCompaction {
+        return policy.limits.max_input_tokens;
+    }
+    policy
+        .models
+        .iter()
+        .filter_map(|binding| binding.descriptor.capabilities.limits.context)
+        .max()
+        .unwrap_or(0)
+        .max(policy.limits.max_input_tokens)
+}
+
 fn internal_model_request(
     history: Vec<oven_sdk::HistoryTurn>,
     tools: Vec<ToolDefinition>,
@@ -392,6 +419,16 @@ fn internal_model_request(
     let mut request = ModelRequest::new(history).with_tools(tools);
     request.inference.max_output_tokens = Some(max_output_tokens);
     request
+}
+
+pub(super) fn internal_history_tokens(
+    history: &[oven_sdk::HistoryTurn],
+    tools: &[ToolDefinition],
+) -> Result<u64, EngineError> {
+    let bytes = serde_json::to_vec(&(history, tools))
+        .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?
+        .len();
+    Ok((bytes as u64).div_ceil(4))
 }
 
 fn invalid_internal_output(parts: &[oven_sdk::AssistantPart], reject_non_text: bool) -> bool {
@@ -421,7 +458,11 @@ pub(super) fn parse_internal_approval(value: &str) -> Option<ApprovalInternalDec
 
 #[cfg(test)]
 mod tests {
-    use super::{internal_model_request, invalid_internal_output};
+    use super::{
+        FrozenInternalAgentPolicy, InternalAgentKind, InternalAgentLimits,
+        internal_agent_input_limit, internal_history_tokens, internal_model_request,
+        invalid_internal_output,
+    };
 
     #[test]
     fn internal_model_requests_are_structurally_toolless() {
@@ -437,5 +478,55 @@ mod tests {
         )];
         assert!(invalid_internal_output(&parts, true));
         assert!(!invalid_internal_output(&parts, false));
+    }
+
+    #[test]
+    fn approval_rejects_json_plus_tool_call_hybrids() {
+        let parts = vec![
+            oven_sdk::AssistantPart::Text(oven_sdk::TextPart::new(r#"{"decision":"allow"}"#)),
+            oven_sdk::AssistantPart::ToolCall(oven_sdk::ToolCallPart::new(
+                "call",
+                "read",
+                serde_json::json!({"filePath":"secret"}),
+            )),
+        ];
+        assert!(invalid_internal_output(&parts, true));
+    }
+
+    #[test]
+    fn history_input_estimate_counts_the_full_history_and_tools() {
+        let history = vec![oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(
+            vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
+                "x".repeat(4_000),
+            ))],
+        ))];
+        assert!(internal_history_tokens(&history, &[]).unwrap() >= 1_000);
+    }
+
+    #[test]
+    fn compaction_input_limit_scales_to_parent_context_window() {
+        let mut binding = crate::test_support::model_binding();
+        binding.descriptor.capabilities.limits.context = Some(200_000);
+        let policy = FrozenInternalAgentPolicy {
+            agent: crate::test_support::agent_snapshot(
+                "compaction",
+                cookie_agent_protocol::AgentMode::Internal,
+            ),
+            models: vec![binding],
+            runtime: None,
+            limits: InternalAgentLimits {
+                max_input_tokens: 16_384,
+                max_output_tokens: 2_048,
+                timeout_ms: 30_000,
+            },
+        };
+        assert_eq!(
+            internal_agent_input_limit(InternalAgentKind::ContextCompaction, &policy),
+            200_000
+        );
+        assert_eq!(
+            internal_agent_input_limit(InternalAgentKind::Approval, &policy),
+            16_384
+        );
     }
 }

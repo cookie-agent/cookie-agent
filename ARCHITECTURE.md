@@ -246,6 +246,11 @@ selection. Approval and title internal model requests use the shared tool-less
 request builder and always emit an empty tool list. Compaction is the deliberate
 exception described in section 12: it preserves the parent request's tool
 definitions for cache-prefix identity but rejects every non-text response.
+Internal input limits cover the complete assembled history and tool definitions.
+Approval retains its authored limit and trims oldest conversation increments when
+needed; compaction raises its effective input ceiling to at least the largest
+frozen parent-model context window in its resolved chain so a built-in 16,384
+default cannot reject the context it was invoked to compact.
 The built-in compaction chain begins with `${parent_model}`; the built-in
 approval and title chains preserve the same parent-model behavior used before
 schema 3. Title generation receives only the first user message, never assistant
@@ -259,7 +264,9 @@ the new normalized operations and resource labels. Real system, user, and
 assistant turns are reused for the next evaluation. Retention is capped at the
 latest 20 approval increments; removed history is represented by an `…and M
 earlier messages` system note. This state is never written to session JSONL and
-is not reconstructed after restart. Event schema 11 adds
+is not reconstructed after restart. Approval decisions are accepted only from
+pure-text model output; any tool call or other non-text part invalidates the
+response and fails safe to escalation. Event schema 11 adds
 `approval_session_increment_count` to every `ApprovalEvaluated` event. Invoked
 internal-agent evaluations use their monotonically increasing per-session
 increment; Ask-mode evaluations that skip the agent and all non-agent
@@ -733,6 +740,23 @@ invalid internal-agent output and is never dispatched. Optional forced-focus
 text is appended only after the fixed instruction.
 The TUI `/compact [focus]` command calls strict `session.compact` for the
 selected idle session; its RPC focus field is required, nullable, and bounded.
+Manual and predictive compaction reserve the session inside its actor, then run
+provider and tool futures outside the actor. While reserved, concurrent run
+starts and steering are rejected; completion clears the reservation through the
+actor. This preserves the pre-send/checkpoint ordering without blocking model
+stream appends or cancellation behind a slow summarizer. Manual compaction uses
+the run's persisted active fallback index when resolving `${parent_model}`.
+Barrier-sensitive `PromptSnapshot`, `CompleteIfNoSteering`, and `Resume` commands
+wait behind that completion barrier. The deferred set is bounded to one command
+of each kind and retains FIFO order among those first surviving commands. A
+duplicate snapshot or resume receives the same session-running retry signal used
+by competing start/steer requests, while a duplicate completion reports that it
+did not complete the run. Keeping the first command prevents a later observer
+from displacing the model loop's already-queued context barrier.
+For start-time prediction, the durable `RunStarted` event and the real active-run
+cancellation token are installed before the summarizer starts. Cancellation is
+therefore accepted during prediction, aborts the internal agent, records
+`RunCancelled`, and prevents the pending initial user input from being appended.
 
 The validated summary replaces the covered range as one user turn. The system
 turn remains index zero. The framing is frozen as
@@ -740,12 +764,15 @@ turn remains index zero. The framing is frozen as
 Pending input remains after the checkpoint. Commit validation keeps monotonic
 boundaries and requires strict estimated shrinkage.
 
-After commit, the engine scans completed read-tool results newest-first, selects
-up to five distinct file paths, and re-reads readable UTF-8 files. Each file is
-capped at 32 KiB and the aggregate is capped at 128 KiB. Missing, unreadable, and
-non-UTF-8 files are skipped. `ContextRehydrated` durably records the bounded
-content; history projects it as ordinary synthetic `read` tool calls and tool
-results after the summary turn.
+After commit, the engine scans completed tool lifecycles newest-first and trusts
+only paths from persisted assistant tool-call parts whose exact originating tool
+identity is `read`. Up to five distinct candidates are re-prepared through the
+normal read provider, evaluated by the frozen permission pipeline, and executed
+through the prepared capability so path or symlink changes fail closed. Each
+readable UTF-8 file is capped at 32 KiB and the aggregate is capped at 128 KiB.
+Denied, changed, missing, unreadable, and non-UTF-8 files are skipped.
+`ContextRehydrated` durably records the bounded content; history projects it as
+ordinary synthetic `read` tool calls and tool results after the summary turn.
 
 A provider `ContextLength` failure with no meaningful output abandons the
 attempt, forces this same compaction path, and retries the turn exactly once; a

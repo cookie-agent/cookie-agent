@@ -65,7 +65,7 @@ impl Engine {
         };
         let run_id = RunId::new_v7();
         let input_through_seq = session.meta.last_event_seq;
-        self.append_direct(
+        self.append(
             params.session_id,
             Some(run_id),
             Event::RunStarted {
@@ -92,72 +92,8 @@ impl Engine {
                 selected_suffix: run_policy.selected_suffix_wire.clone(),
                 input_through_seq,
             },
-        )?;
-        if let Some(context_limit) = run_policy.selected_suffix[0]
-            .descriptor
-            .capabilities
-            .limits
-            .context
-        {
-            let compaction_config = &self.inner.config.runtime.context_compaction;
-            let message_bytes = serde_json::to_vec(&params.input)
-                .map_err(|error| ModelError::invalid_request(error.to_string()))?
-                .len();
-            let trigger_tokens =
-                effective_compaction_limit(context_limit, compaction_config.buffer_tokens);
-            let estimator = self
-                .inner
-                .context_token_estimators
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(&params.session_id)
-                .copied()
-                .unwrap_or_default();
-            if compaction_config.auto_compaction
-                && trigger_tokens > 0
-                && !self
-                    .inner
-                    .compaction_auto_disabled
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .contains(&params.session_id)
-                && should_run_predictive_compaction(
-                    estimator,
-                    message_bytes,
-                    trigger_tokens,
-                    self.inner.store.is_persisted(params.session_id)?,
-                )
-            {
-                let binding = &run_policy.selected_suffix[0];
-                let events = self.inner.store.get(params.session_id)?.log.events();
-                let tools = self.tool_definitions(params.session_id, &run_policy)?;
-                let internal_policy = self.internal_agent_policy(
-                    InternalAgentKind::ContextCompaction,
-                    &run_policy,
-                    Some(binding),
-                )?;
-                self.maybe_compact_context(CompactionInput {
-                    session: params.session_id,
-                    run: run_id,
-                    cancellation: &CancellationToken::new(),
-                    binding,
-                    internal_policy: &internal_policy,
-                    tools: &tools,
-                    events,
-                    force: true,
-                    focus: None,
-                    actor_direct: true,
-                })
-                .await?;
-            }
-        }
-        self.append_direct(
-            params.session_id,
-            Some(run_id),
-            Event::UserInputSubmitted {
-                input: params.input,
-            },
-        )?;
+        )
+        .await?;
         let active = Arc::new(ActiveRun {
             session: params.session_id,
             policy: Arc::new(run_policy),
@@ -167,6 +103,56 @@ impl Engine {
             prompt_seq: AtomicU64::new(0),
             fallback_index: AtomicU64::new(0),
         });
+        self.inner
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(run_id, active.clone());
+        let compacted = self
+            .maybe_predictive_compact_before_input(PredictiveCompactionInput {
+                session: params.session_id,
+                run: run_id,
+                input: &params.input,
+                policy: &active.policy,
+                fallback_index: 0,
+                cancellation: &active.cancellation,
+                actor_direct: false,
+            })
+            .await;
+        if active.cancellation.is_cancelled() {
+            self.append_run_cancelled_once(&active, run_id, None)?;
+            self.inner
+                .active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&run_id);
+            return Ok(RunStartResult { run_id });
+        }
+        if let Err(error) = compacted {
+            self.inner
+                .active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&run_id);
+            return Err(error);
+        }
+        if let Err(error) = self
+            .append(
+                params.session_id,
+                Some(run_id),
+                Event::UserInputSubmitted {
+                    input: params.input,
+                },
+            )
+            .await
+        {
+            self.inner
+                .active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&run_id);
+            return Err(error);
+        }
         // A sweeper may have terminalized this durable run before active-run
         // registration. Never resurrect a cancelled run with a live loop.
         if self.run_cancelled_recorded(params.session_id, run_id)? {
@@ -176,19 +162,16 @@ impl Engine {
             && let Err(error) =
                 self.publish_admission_run(invocation_id, generation, params.session_id, run_id)
         {
+            let cancelled = self
+                .cancel_run_durably(run_id, Some("delegate admission publication failed".into()));
             self.inner
                 .active
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .insert(run_id, active);
-            self.cancel_run_durably(run_id, Some("delegate admission publication failed".into()))?;
+                .remove(&run_id);
+            cancelled?;
             return Err(error);
         }
-        self.inner
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(run_id, active.clone());
         if self.run_cancelled_recorded(params.session_id, run_id)? {
             self.inner
                 .active
@@ -211,6 +194,70 @@ impl Engine {
             }
         });
         Ok(RunStartResult { run_id })
+    }
+
+    pub(super) async fn maybe_predictive_compact_before_input(
+        &self,
+        input: PredictiveCompactionInput<'_>,
+    ) -> Result<(), EngineError> {
+        let Some(binding) = input.policy.selected_suffix.get(input.fallback_index) else {
+            return Ok(());
+        };
+        let Some(context_limit) = binding.descriptor.capabilities.limits.context else {
+            return Ok(());
+        };
+        let config = &self.inner.config.runtime.context_compaction;
+        let trigger_tokens = effective_compaction_limit(context_limit, config.buffer_tokens);
+        let message_bytes = serde_json::to_vec(input.input)
+            .map_err(|error| ModelError::invalid_request(error.to_string()))?
+            .len();
+        let estimator = self
+            .inner
+            .context_token_estimators
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&input.session)
+            .copied()
+            .unwrap_or_default();
+        if !config.auto_compaction
+            || trigger_tokens == 0
+            || self
+                .inner
+                .compaction_auto_disabled
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&input.session)
+            || !should_run_predictive_compaction(
+                estimator,
+                message_bytes,
+                trigger_tokens,
+                self.inner.store.is_persisted(input.session)?,
+            )
+        {
+            return Ok(());
+        }
+        let events = self.inner.store.get(input.session)?.log.events();
+        let tools = self.tool_definitions(input.session, input.policy)?;
+        let internal_policy = self.internal_agent_policy(
+            InternalAgentKind::ContextCompaction,
+            input.policy,
+            Some(binding),
+        )?;
+        self.maybe_compact_context(CompactionInput {
+            session: input.session,
+            run: input.run,
+            cancellation: input.cancellation,
+            binding,
+            owner_policy: input.policy,
+            internal_policy: &internal_policy,
+            tools: &tools,
+            events,
+            force: true,
+            focus: None,
+            actor_direct: input.actor_direct,
+        })
+        .await?;
+        Ok(())
     }
 
     pub(super) async fn run_loop(
@@ -533,6 +580,7 @@ impl Engine {
                         run,
                         cancellation,
                         binding,
+                        owner_policy: policy,
                         internal_policy: &compaction_policy,
                         tools: &tools,
                         events: request_events,
@@ -740,6 +788,7 @@ impl Engine {
                                 run,
                                 cancellation,
                                 binding,
+                                owner_policy: policy,
                                 internal_policy: &recovery_policy,
                                 tools: &tools,
                                 events: recovery_events,

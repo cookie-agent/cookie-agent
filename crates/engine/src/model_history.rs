@@ -555,14 +555,7 @@ fn assemble_history_with_replay(
                         "read",
                         serde_json::json!({"filePath": file.path.as_str()}),
                     )));
-                    results.push(ToolResultPart::new(
-                        id,
-                        ToolContent::Text(format!(
-                            "<path>{}</path>\n<type>file</type>\n<content>\n{}\n</content>",
-                            file.path.as_str(),
-                            file.content
-                        )),
-                    ));
+                    results.push(ToolResultPart::new(id, ToolContent::Text(file.content)));
                 }
                 history.push(HistoryTurn::assistant(CompletedTurn::new(
                     AssistantMessage::new(calls),

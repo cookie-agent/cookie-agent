@@ -86,7 +86,7 @@ mod approval_api;
 mod approval_flow;
 mod approval_projection;
 mod artifacts;
-mod compaction;
+pub(crate) mod compaction;
 mod delegation;
 mod helpers;
 mod internal_agents;
@@ -233,6 +233,16 @@ struct ContextTokenEstimator {
     last_committed_input_tokens: u64,
 }
 
+struct PredictiveCompactionInput<'a> {
+    session: SessionId,
+    run: RunId,
+    input: &'a str,
+    policy: &'a FrozenRunPolicy,
+    fallback_index: usize,
+    cancellation: &'a CancellationToken,
+    actor_direct: bool,
+}
+
 impl ContextTokenEstimator {
     fn record_committed_turn(
         &mut self,
@@ -334,6 +344,20 @@ impl ApprovalConversation {
     fn set_latest_assistant(&mut self, assistant: String) {
         if let Some(increment) = self.increments.back_mut() {
             increment.assistant = Some(assistant);
+        }
+    }
+
+    fn trim_oldest_increment(&mut self) -> bool {
+        if self.increments.len() <= 1 {
+            return false;
+        }
+        if let Some(removed) = self.increments.pop_front() {
+            self.omitted_messages = self
+                .omitted_messages
+                .saturating_add(1 + u64::from(removed.assistant.is_some()));
+            true
+        } else {
+            false
         }
     }
 
@@ -591,6 +615,13 @@ enum SessionCommand {
         input: String,
         reply: oneshot::Sender<Result<RunSteerResult, EngineError>>,
     },
+    Compact {
+        focus: Option<String>,
+        reply: oneshot::Sender<Result<bool, EngineError>>,
+    },
+    CompactionFinished {
+        reply: oneshot::Sender<Result<(), EngineError>>,
+    },
     Cancel {
         run: RunId,
         reply: oneshot::Sender<Result<RunCancelResult, EngineError>>,
@@ -673,6 +704,41 @@ enum SessionCommand {
     },
 }
 
+impl SessionCommand {
+    fn compaction_deferred_kind(&self) -> Option<CompactionDeferredKind> {
+        match self {
+            Self::PromptSnapshot { .. } => Some(CompactionDeferredKind::PromptSnapshot),
+            Self::CompleteIfNoSteering { .. } => Some(CompactionDeferredKind::CompleteIfNoSteering),
+            Self::Resume { .. } => Some(CompactionDeferredKind::Resume),
+            _ => None,
+        }
+    }
+
+    fn reject_duplicate_during_compaction(self, session: SessionId) {
+        match self {
+            Self::PromptSnapshot { reply, .. } => {
+                let _ = reply.send(Err(EngineError::SessionRunning(session)));
+            }
+            Self::CompleteIfNoSteering { reply, .. } => {
+                let _ = reply.send(Ok(false));
+            }
+            Self::Resume { reply } => {
+                let _ = reply.send(Err(EngineError::SessionRunning(session)));
+            }
+            _ => unreachable!("only barrier-sensitive commands are superseded"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CompactionDeferredKind {
+    PromptSnapshot,
+    CompleteIfNoSteering,
+    Resume,
+}
+
+const MAX_COMPACTION_DEFERRED_COMMANDS: usize = 3;
+
 pub(crate) struct Inner {
     config: LoadedConfiguration,
     pub(crate) artifacts: Arc<ArtifactStore>,
@@ -703,6 +769,8 @@ pub(crate) struct Inner {
         Mutex<HashMap<SessionId, Arc<tokio::sync::Mutex<ApprovalConversation>>>>,
     compaction_auto_disabled: Mutex<HashSet<SessionId>>,
     compaction_postcheck_pending: Mutex<HashSet<SessionId>>,
+    compaction_in_progress: Mutex<HashSet<SessionId>>,
+    compaction_deferred: Mutex<HashMap<SessionId, VecDeque<SessionCommand>>>,
     context_token_estimators: Mutex<HashMap<SessionId, ContextTokenEstimator>>,
     runtime: Option<tokio::runtime::Handle>,
     admission_tasks: Mutex<Vec<JoinHandle<()>>>,
@@ -792,6 +860,8 @@ impl Engine {
                 approval_conversations: Mutex::new(HashMap::new()),
                 compaction_auto_disabled: Mutex::new(HashSet::new()),
                 compaction_postcheck_pending: Mutex::new(HashSet::new()),
+                compaction_in_progress: Mutex::new(HashSet::new()),
+                compaction_deferred: Mutex::new(HashMap::new()),
                 context_token_estimators: Mutex::new(HashMap::new()),
                 runtime: tokio::runtime::Handle::try_current().ok(),
                 admission_tasks: Mutex::new(Vec::new()),

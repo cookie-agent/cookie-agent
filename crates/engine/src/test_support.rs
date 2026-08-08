@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt as _};
 
 use cookie_agent_models::{
-    ModelManager, ProviderDefinition,
+    CompiledModelRuntime, ModelManager, ProviderDefinition,
     catalog::{
         CatalogAgeState, CatalogAvailability, CatalogRuntimeState, CatalogSnapshot, CatalogSource,
     },
@@ -15,7 +15,13 @@ use cookie_agent_protocol::{
 use jiff::Timestamp;
 use tempfile::TempDir;
 
-fn bindings_for(model_id: &str) -> (FrozenModelBinding, Option<FrozenModelBinding>) {
+fn binding_fixture(
+    model_id: &str,
+) -> (
+    std::sync::Arc<CompiledModelRuntime>,
+    FrozenModelBinding,
+    Option<FrozenModelBinding>,
+) {
     let temporary = TempDir::new().expect("test model directory");
     fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700))
         .expect("private test model directory");
@@ -102,6 +108,11 @@ variants = { fast = { operation = "add", defaults = { temperature = 0.1 } } }
             )
             .expect("variant binding")
         });
+    (runtime, base, variant)
+}
+
+fn bindings_for(model_id: &str) -> (FrozenModelBinding, Option<FrozenModelBinding>) {
+    let (_, base, variant) = binding_fixture(model_id);
     (base, variant)
 }
 
@@ -115,6 +126,12 @@ pub(crate) fn model_binding_named(model_id: &str) -> FrozenModelBinding {
 
 pub(crate) fn variant_model_binding() -> FrozenModelBinding {
     bindings_for("test").1.expect("test variant")
+}
+
+pub(crate) fn model_runtime_and_binding()
+-> (std::sync::Arc<CompiledModelRuntime>, FrozenModelBinding) {
+    let (runtime, binding, _) = binding_fixture("test");
+    (runtime, binding)
 }
 
 pub(crate) fn run_selection(agent: &str) -> RunSelection {

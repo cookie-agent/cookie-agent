@@ -224,6 +224,57 @@ impl Engine {
         Ok(events)
     }
 
+    #[cfg(test)]
+    pub(crate) async fn prompt_events_for_test(
+        &self,
+        session: SessionId,
+        run: RunId,
+    ) -> Result<Vec<StoredEvent>, EngineError> {
+        self.prompt_events(session, run).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn complete_if_no_steering_for_test(
+        &self,
+        session: SessionId,
+        run: RunId,
+    ) -> Result<bool, EngineError> {
+        self.request(session, |reply| SessionCommand::CompleteIfNoSteering {
+            run,
+            final_text: Some("test completion".into()),
+            reply,
+        })
+        .await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn deferred_compaction_commands_for_test(&self, session: SessionId) -> usize {
+        self.inner
+            .compaction_deferred
+            .lock()
+            .expect("compaction deferred lock poisoned")
+            .get(&session)
+            .map_or(0, VecDeque::len)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compaction_reserved_for_test(&self, session: SessionId) -> bool {
+        self.inner
+            .compaction_in_progress
+            .lock()
+            .expect("compaction reservation lock poisoned")
+            .contains(&session)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn run_active_for_test(&self, run: RunId) -> bool {
+        self.inner
+            .active
+            .lock()
+            .expect("active runs lock poisoned")
+            .contains_key(&run)
+    }
+
     pub(super) fn request_blocking<T>(
         &self,
         session: SessionId,
@@ -274,7 +325,54 @@ impl Engine {
             .insert(session, actor);
     }
 
+    fn reserve_compaction(&self, session: SessionId) -> bool {
+        self.inner
+            .compaction_in_progress
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(session)
+    }
+
+    async fn finish_compaction(&self, session: SessionId) -> Result<(), EngineError> {
+        self.request(session, |reply| SessionCommand::CompactionFinished {
+            reply,
+        })
+        .await
+    }
+
     pub(super) async fn handle_actor_command(&self, session: SessionId, command: SessionCommand) {
+        if let Some(kind) = command.compaction_deferred_kind()
+            && self
+                .inner
+                .compaction_in_progress
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&session)
+        {
+            let rejected = {
+                let mut deferred = self
+                    .inner
+                    .compaction_deferred
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let queue = deferred.entry(session).or_default();
+                let duplicate = queue
+                    .iter()
+                    .any(|pending| pending.compaction_deferred_kind() == Some(kind));
+                let rejected = if duplicate {
+                    Some(command)
+                } else {
+                    queue.push_back(command);
+                    None
+                };
+                debug_assert!(queue.len() <= MAX_COMPACTION_DEFERRED_COMMANDS);
+                rejected
+            };
+            if let Some(rejected) = rejected {
+                rejected.reject_duplicate_during_compaction(session);
+            }
+            return;
+        }
         match command {
             SessionCommand::Append { run, event, reply } => {
                 let _ = reply.send(self.append_direct(session, run, event));
@@ -316,36 +414,48 @@ impl Engine {
                 admission,
                 reply,
             } => {
-                let child_session_id = params.session_id;
-                let mut result = self.start_run_direct(params, admission).await;
-                if let (Some((invocation_id, generation)), Ok(started)) =
-                    (admission, result.as_ref())
-                    && let Err(error) = self.publish_admission_run(
-                        invocation_id,
-                        generation,
-                        child_session_id,
-                        started.run_id,
-                    )
-                {
-                    let _ = self.cancel_run_durably(
-                        started.run_id,
-                        Some("delegate admission could not be published".into()),
-                    );
-                    result = Err(error);
-                }
-                let started = result.as_ref().ok().map(|result| result.run_id);
-                if reply.send(result).is_err()
-                    && admission.is_some()
-                    && let Some(run_id) = started
-                {
-                    let _ = self.cancel_run_durably(
-                        run_id,
-                        Some("delegate admission reply abandoned".into()),
-                    );
+                if !self.reserve_compaction(session) {
+                    let _ = reply.send(Err(EngineError::SessionRunning(session)));
+                } else {
+                    let engine = self.clone();
+                    tokio::spawn(async move {
+                        let child_session_id = params.session_id;
+                        let mut result = engine.start_run_direct(params, admission).await;
+                        if let (Some((invocation_id, generation)), Ok(started)) =
+                            (admission, result.as_ref())
+                            && let Err(error) = engine.publish_admission_run(
+                                invocation_id,
+                                generation,
+                                child_session_id,
+                                started.run_id,
+                            )
+                        {
+                            let _ = engine.cancel_run_durably(
+                                started.run_id,
+                                Some("delegate admission could not be published".into()),
+                            );
+                            result = Err(error);
+                        }
+                        if let Err(error) = engine.finish_compaction(session).await
+                            && result.is_ok()
+                        {
+                            result = Err(error);
+                        }
+                        let started = result.as_ref().ok().map(|result| result.run_id);
+                        if reply.send(result).is_err()
+                            && admission.is_some()
+                            && let Some(run_id) = started
+                        {
+                            let _ = engine.cancel_run_durably(
+                                run_id,
+                                Some("delegate admission reply abandoned".into()),
+                            );
+                        }
+                    });
                 }
             }
             SessionCommand::Steer { run, input, reply } => {
-                let result = self
+                let active = self
                     .inner
                     .active
                     .lock()
@@ -353,24 +463,102 @@ impl Engine {
                     .get(&run)
                     .cloned()
                     .filter(|active| active.session == session)
-                    .ok_or(EngineError::MissingRun(run))
-                    .and_then(|_| {
-                        let projection = self.inner.store.get(session)?;
-                        let accepting = projection
-                            .runs
-                            .get(&run)
-                            .is_some_and(|run| run.status == SessionStatus::Running);
-                        if !accepting {
-                            return Ok(RunSteerResult { accepted: false });
+                    .ok_or(EngineError::MissingRun(run));
+                let result = match active {
+                    Err(error) => Err(error),
+                    Ok(active) => {
+                        let projection = self.inner.store.get(session);
+                        match projection {
+                            Err(error) => Err(error.into()),
+                            Ok(projection)
+                                if !projection
+                                    .runs
+                                    .get(&run)
+                                    .is_some_and(|run| run.status == SessionStatus::Running) =>
+                            {
+                                Ok(RunSteerResult { accepted: false })
+                            }
+                            Ok(_) if !self.reserve_compaction(session) => {
+                                Err(EngineError::SessionRunning(session))
+                            }
+                            Ok(_) => {
+                                let fallback_index =
+                                    active.fallback_index.load(Ordering::Acquire) as usize;
+                                let engine = self.clone();
+                                tokio::spawn(async move {
+                                    let compacted = engine
+                                        .maybe_predictive_compact_before_input(
+                                            PredictiveCompactionInput {
+                                                session,
+                                                run,
+                                                input: &input,
+                                                policy: &active.policy,
+                                                fallback_index,
+                                                cancellation: &active.cancellation,
+                                                actor_direct: false,
+                                            },
+                                        )
+                                        .await;
+                                    let mut result = match compacted {
+                                        Ok(()) => engine
+                                            .append(
+                                                session,
+                                                Some(run),
+                                                Event::UserInputSubmitted { input },
+                                            )
+                                            .await
+                                            .map(|()| RunSteerResult { accepted: true }),
+                                        Err(error) => Err(error),
+                                    };
+                                    if let Err(error) = engine.finish_compaction(session).await
+                                        && result.is_ok()
+                                    {
+                                        result = Err(error);
+                                    }
+                                    let _ = reply.send(result);
+                                });
+                                return;
+                            }
                         }
-                        self.append_direct(
-                            session,
-                            Some(run),
-                            Event::UserInputSubmitted { input },
-                        )?;
-                        Ok(RunSteerResult { accepted: true })
-                    });
+                    }
+                };
                 let _ = reply.send(result);
+            }
+            SessionCommand::Compact { focus, reply } => {
+                if !self.reserve_compaction(session) {
+                    let _ = reply.send(Err(EngineError::SessionRunning(session)));
+                } else {
+                    let engine = self.clone();
+                    tokio::spawn(async move {
+                        let mut result = engine
+                            .compact_session_direct(session, focus.as_deref())
+                            .await;
+                        if let Err(error) = engine.finish_compaction(session).await
+                            && result.is_ok()
+                        {
+                            result = Err(error);
+                        }
+                        let _ = reply.send(result);
+                    });
+                }
+            }
+            SessionCommand::CompactionFinished { reply } => {
+                self.inner
+                    .compaction_in_progress
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&session);
+                let deferred = self
+                    .inner
+                    .compaction_deferred
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&session)
+                    .unwrap_or_default();
+                for command in deferred {
+                    Box::pin(self.handle_actor_command(session, command)).await;
+                }
+                let _ = reply.send(Ok(()));
             }
             SessionCommand::Cancel { run, reply } => {
                 let result = (|| {

@@ -355,7 +355,17 @@ impl Engine {
             "{}\nReturn strict JSON only: {{\"decision\":\"allow\"|\"deny\"|\"ask\"}}.",
             policy.agent.composed_prompt
         );
-        let history = conversation.history(system_prompt);
+        let history = loop {
+            let history = conversation.history(system_prompt.clone());
+            let within_limit = internal_history_tokens(&history, &[])
+                .is_ok_and(|tokens| tokens <= policy.limits.max_input_tokens);
+            if within_limit {
+                break history;
+            }
+            if !conversation.trim_oldest_increment() {
+                return (ApprovalInternalDecisionKind::Ask, increment_count);
+            }
+        };
         let result = self
             .run_internal_history_agent(
                 active.session,
@@ -366,7 +376,7 @@ impl Engine {
                     history,
                     summary_source: prompt,
                     tools: Vec::new(),
-                    reject_non_text: false,
+                    reject_non_text: true,
                 },
                 InternalAgentExecution {
                     cancellation: &active.cancellation,
@@ -549,5 +559,18 @@ mod tests {
         assert_eq!(conversation.omitted_messages, 4);
         assert_eq!(conversation.increments.front().unwrap().user, "request 3");
         assert_eq!(conversation.history("system".into()).len(), 42);
+    }
+
+    #[test]
+    fn approval_history_can_trim_below_the_twenty_increment_cap() {
+        let mut conversation = ApprovalConversation::default();
+        for index in 1..=3 {
+            conversation.push_user(format!("request {index}"), index);
+            conversation.set_latest_assistant(format!("decision {index}"));
+        }
+        assert!(conversation.trim_oldest_increment());
+        assert_eq!(conversation.increments.len(), 2);
+        assert_eq!(conversation.omitted_messages, 2);
+        assert_eq!(conversation.increments.front().unwrap().user, "request 2");
     }
 }
