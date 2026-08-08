@@ -99,16 +99,12 @@ impl Engine {
             .limits
             .context
         {
+            let compaction_config = &self.inner.config.runtime.context_compaction;
             let message_bytes = serde_json::to_vec(&params.input)
                 .map_err(|error| ModelError::invalid_request(error.to_string()))?
                 .len();
-            let soft_tokens = context_limit.saturating_mul(
-                self.inner
-                    .config
-                    .runtime
-                    .context_compaction
-                    .soft_threshold_percent as u64,
-            ) / 100;
+            let trigger_tokens =
+                effective_compaction_limit(context_limit, compaction_config.buffer_tokens);
             let estimator = self
                 .inner
                 .context_token_estimators
@@ -117,30 +113,41 @@ impl Engine {
                 .get(&params.session_id)
                 .copied()
                 .unwrap_or_default();
-            if should_run_predictive_compaction(
-                estimator,
-                message_bytes,
-                soft_tokens,
-                self.inner.store.is_persisted(params.session_id)?,
-            ) {
-                let binding = &run_policy.selected_suffix[0];
-                let model = policy::resolve_model(binding, &run_policy.runtime)?;
-                let events = self.inner.store.get(params.session_id)?.log.events();
-                self.maybe_compact_context(
-                    params.session_id,
-                    run_id,
-                    &CancellationToken::new(),
-                    binding,
-                    &model,
-                    &self.inner.internal_agents.policy(
-                        InternalAgentKind::ContextCompaction,
-                        &run_policy,
-                        &run_policy.selected_suffix,
-                    ),
-                    events,
-                    true,
-                    true,
+            if compaction_config.auto_compaction
+                && trigger_tokens > 0
+                && !self
+                    .inner
+                    .compaction_auto_disabled
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .contains(&params.session_id)
+                && should_run_predictive_compaction(
+                    estimator,
+                    message_bytes,
+                    trigger_tokens,
+                    self.inner.store.is_persisted(params.session_id)?,
                 )
+            {
+                let binding = &run_policy.selected_suffix[0];
+                let events = self.inner.store.get(params.session_id)?.log.events();
+                let tools = self.tool_definitions(params.session_id, &run_policy)?;
+                let internal_policy = self.internal_agent_policy(
+                    InternalAgentKind::ContextCompaction,
+                    &run_policy,
+                    Some(binding),
+                )?;
+                self.maybe_compact_context(CompactionInput {
+                    session: params.session_id,
+                    run: run_id,
+                    cancellation: &CancellationToken::new(),
+                    binding,
+                    internal_policy: &internal_policy,
+                    tools: &tools,
+                    events,
+                    force: true,
+                    focus: None,
+                    actor_direct: true,
+                })
                 .await?;
             }
         }
@@ -515,22 +522,24 @@ impl Engine {
                 } else {
                     self.prompt_events(session, run).await?
                 };
+                let compaction_policy = self.internal_agent_policy(
+                    InternalAgentKind::ContextCompaction,
+                    policy,
+                    Some(binding),
+                )?;
                 let request_events = self
-                    .maybe_compact_context(
+                    .maybe_compact_context(CompactionInput {
                         session,
                         run,
                         cancellation,
                         binding,
-                        &model,
-                        &self.inner.internal_agents.policy(
-                            InternalAgentKind::ContextCompaction,
-                            policy,
-                            &chain[entry..],
-                        ),
-                        request_events,
-                        false,
-                        false,
-                    )
+                        internal_policy: &compaction_policy,
+                        tools: &tools,
+                        events: request_events,
+                        force: false,
+                        focus: None,
+                        actor_direct: false,
+                    })
                     .await?;
                 let input_through_seq = request_events.last().map_or(0, |event| event.seq);
                 let context = assemble_model_context(
@@ -543,10 +552,7 @@ impl Engine {
                     .map_err(|error| ModelError::invalid_request(error.to_string()))?
                     .len();
                 let replay_preflight = context.replay_decisions;
-                let mut request = ModelRequest::new(context.history).with_tools(tools.clone());
-                if let Some(native_context) = context.native_context {
-                    request = request.with_native_context(native_context);
-                }
+                let request = ModelRequest::new(context.history).with_tools(tools.clone());
                 let request = model.prepare_request(request);
                 let abort = AbortBridge::new(cancellation.clone());
                 let response = tokio::select! {
@@ -683,17 +689,17 @@ impl Engine {
                                 serialized_history_bytes,
                                 turn.usage.input_tokens,
                             );
+                        let title_policy = self.internal_agent_policy(
+                            InternalAgentKind::SessionTitle,
+                            policy,
+                            Some(binding),
+                        )?;
                         self.maybe_generate_session_title(
                             session,
                             run,
                             input_through_seq,
-                            &turn,
                             cancellation,
-                            &self.inner.internal_agents.policy(
-                                InternalAgentKind::SessionTitle,
-                                policy,
-                                &chain[entry..],
-                            ),
+                            &title_policy,
                         )
                         .await?;
                         return Ok(AttemptTurn {
@@ -723,22 +729,24 @@ impl Engine {
                             })
                             .unwrap_or(0);
                         let recovery_events = self.prompt_events(session, run).await?;
+                        let recovery_policy = self.internal_agent_policy(
+                            InternalAgentKind::ContextCompaction,
+                            policy,
+                            Some(binding),
+                        )?;
                         let recovered = self
-                            .maybe_compact_context(
+                            .maybe_compact_context(CompactionInput {
                                 session,
                                 run,
                                 cancellation,
                                 binding,
-                                &model,
-                                &self.inner.internal_agents.policy(
-                                    InternalAgentKind::ContextCompaction,
-                                    policy,
-                                    &chain[entry..],
-                                ),
-                                recovery_events,
-                                true,
-                                false,
-                            )
+                                internal_policy: &recovery_policy,
+                                tools: &tools,
+                                events: recovery_events,
+                                force: true,
+                                focus: None,
+                                actor_direct: false,
+                            })
                             .await?;
                         let after = recovered
                             .iter()

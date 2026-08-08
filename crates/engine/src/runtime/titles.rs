@@ -31,7 +31,6 @@ impl Engine {
         session: SessionId,
         run: RunId,
         input_through_seq: u64,
-        turn: &PersistedModelTurn,
         cancellation: &CancellationToken,
         internal_policy: &FrozenInternalAgentPolicy,
     ) -> Result<(), EngineError> {
@@ -52,19 +51,7 @@ impl Engine {
                 _ => None,
             })
             .unwrap_or_default();
-        let answer = turn
-            .content
-            .iter()
-            .filter_map(|part| match part {
-                PersistedAssistantPart::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<String>();
-        let prompt = format!(
-            "Return only a short plain-text session title. No quotes, markup, or explanation.\nUser: {}\nAssistant: {}",
-            truncate_utf8(&input, 8 * 1024),
-            truncate_utf8(&answer, 8 * 1024)
-        );
+        let prompt = title_prompt(&input);
         let generated = self
             .run_internal_text_agent(
                 session,
@@ -120,26 +107,32 @@ impl Engine {
         if !automatic_title_eligible(&events) {
             return Ok(());
         }
-        let Some((run, input_through_seq, turn)) = title_regeneration_target(&events) else {
+        let Some((run, input_through_seq)) = title_regeneration_target(&events) else {
             return Ok(());
         };
         let frozen = self.historical_title_policy(&events, run)?;
         let active_index = active_fallback_index(&events, run);
-        let internal = self.inner.internal_agents.policy(
+        let internal = self.internal_agent_policy(
             InternalAgentKind::SessionTitle,
             &frozen,
-            frozen.active_suffix(active_index),
-        );
+            frozen.active_suffix(active_index).first(),
+        )?;
         self.maybe_generate_session_title(
             session,
             run,
             input_through_seq,
-            &turn,
             &CancellationToken::new(),
             &internal,
         )
         .await
     }
+}
+
+fn title_prompt(input: &str) -> String {
+    format!(
+        "Return only a short plain-text session title for this first user message. No quotes, markup, or explanation.\nUser: {}",
+        truncate_utf8(input, 8 * 1024)
+    )
 }
 
 pub(super) fn latest_run_policy(
@@ -167,17 +160,11 @@ pub(super) fn latest_run_policy(
         .ok_or(EngineError::MissingRun(run_id))
 }
 
-pub(crate) fn title_regeneration_target(
-    events: &[StoredEvent],
-) -> Option<(RunId, u64, PersistedModelTurn)> {
+pub(crate) fn title_regeneration_target(events: &[StoredEvent]) -> Option<(RunId, u64)> {
     events.iter().rev().find_map(|event| match &event.payload {
         Event::ModelTurnCommitted {
-            input_through_seq,
-            turn,
-            ..
-        } => event
-            .run_id
-            .map(|run| (run, *input_through_seq, turn.clone())),
+            input_through_seq, ..
+        } => event.run_id.map(|run| (run, *input_through_seq)),
         _ => None,
     })
 }
@@ -242,4 +229,17 @@ pub(super) fn fallback_title(input: &str, max_chars: usize) -> Option<SessionTit
     let normalized = input.split_whitespace().collect::<Vec<_>>().join(" ");
     let bounded = normalized.chars().take(max_chars).collect::<String>();
     SessionTitle::new(bounded).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::title_prompt;
+
+    #[test]
+    fn title_prompt_contains_only_the_first_user_message() {
+        let prompt = title_prompt("first user message");
+        assert!(prompt.contains("first user message"));
+        assert!(!prompt.contains("Assistant:"));
+        assert!(!prompt.contains("assistant answer"));
+    }
 }

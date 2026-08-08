@@ -776,6 +776,5 @@ fn validate_no_auth_profile(
         && !capabilities.reasoning
         && capabilities.media.is_empty()
         && capabilities.native_replay == crate::ReplayCapability::Unsupported
-        && capabilities.native_compaction == crate::CompactionCapability::Unsupported
         && options.store.is_none_or(|store| !store)
 }

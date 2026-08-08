@@ -3,4 +3,4 @@ import type { ResolvedModelRef } from "./ResolvedModelRef.js";
 import type { SafeCode } from "./SafeCode.js";
 import type { SafeDisplayText } from "./SafeDisplayText.js";
 
-export type InternalAgentBackend = { "type": "model", resolved_model: ResolvedModelRef, } | { "type": "provider_native", resolved_model: ResolvedModelRef, } | { "type": "builtin", name: SafeCode, revision: SafeDisplayText, };
+export type InternalAgentBackend = { "type": "model", resolved_model: ResolvedModelRef, } | { "type": "builtin", name: SafeCode, revision: SafeDisplayText, };

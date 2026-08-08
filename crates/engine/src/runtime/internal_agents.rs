@@ -10,22 +10,60 @@ impl Engine {
         input: String,
         execution: InternalAgentExecution<'_>,
     ) -> Result<InternalAgentTextResult, EngineError> {
+        let max_input_bytes = usize::try_from(policy.limits.max_input_tokens)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(4);
+        let input = truncate_utf8(&input, max_input_bytes);
+        let history = vec![
+            oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
+                oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(
+                    policy.agent.composed_prompt.clone(),
+                )),
+            ])),
+            oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(vec![
+                oven_sdk::InputPart::Text(oven_sdk::TextPart::new(input.clone())),
+            ])),
+        ];
+        self.run_internal_history_agent(
+            session,
+            parent_run,
+            kind,
+            policy,
+            InternalAgentHistoryInput {
+                history,
+                summary_source: input,
+                tools: Vec::new(),
+                reject_non_text: false,
+            },
+            execution,
+        )
+        .await
+    }
+
+    pub(super) async fn run_internal_history_agent(
+        &self,
+        session: SessionId,
+        parent_run: Option<RunId>,
+        kind: InternalAgentKind,
+        policy: &FrozenInternalAgentPolicy,
+        input: InternalAgentHistoryInput,
+        execution: InternalAgentExecution<'_>,
+    ) -> Result<InternalAgentTextResult, EngineError> {
         let name = match kind {
             InternalAgentKind::Approval => "approval",
             InternalAgentKind::ContextCompaction => "context_compaction",
             InternalAgentKind::SessionTitle => "session_title",
         };
         let policy = policy.clone();
-        let max_input_bytes = usize::try_from(policy.limits.max_input_tokens)
-            .unwrap_or(usize::MAX)
-            .saturating_mul(4);
-        let input = truncate_utf8(&input, max_input_bytes);
         let invocation_id = InternalAgentInvocationId::new_v7();
         let internal_run_id = InternalAgentRunId::new_v7();
         let call = SafeInternalAgentCall {
             name: safe_code(name),
-            input_summary: safe_display(&format!("bounded {name} input ({} bytes)", input.len())),
-            input_digest: Sha256Digest::of_bytes(input.as_bytes()),
+            input_summary: safe_display(&format!(
+                "bounded {name} input ({} bytes)",
+                input.summary_source.len()
+            )),
+            input_digest: Sha256Digest::of_bytes(input.summary_source.as_bytes()),
         };
         let mut previous_backend = None;
         let mut last_failure = InternalAgentFailure {
@@ -74,18 +112,18 @@ impl Engine {
                 .as_ref()
                 .ok_or(EngineError::NoRunnableModel)?;
             let model = policy::resolve_model(binding, runtime)?;
-            let history = vec![
-                oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
-                    oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(
-                        policy.agent.composed_prompt.clone(),
-                    )),
-                ])),
-                oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(vec![
-                    oven_sdk::InputPart::Text(oven_sdk::TextPart::new(input.clone())),
-                ])),
-            ];
-            let mut request = ModelRequest::new(history);
-            request.inference.max_output_tokens = Some(policy.limits.max_output_tokens);
+            let max_output_tokens = binding
+                .descriptor
+                .capabilities
+                .limits
+                .output
+                .unwrap_or(policy.limits.max_output_tokens)
+                .min(policy.limits.max_output_tokens);
+            let request = internal_model_request(
+                input.history.clone(),
+                input.tools.clone(),
+                max_output_tokens,
+            );
             let request = model.prepare_request(request);
             let abort = AbortBridge::new(execution.cancellation.child_token());
             let call_future = model.model().complete(request, abort.signal());
@@ -118,6 +156,21 @@ impl Engine {
             };
             match result {
                 Ok(completed) => {
+                    if invalid_internal_output(
+                        &completed.turn.message.content,
+                        input.reject_non_text,
+                    ) {
+                        last_failure = InternalAgentFailure {
+                            code: safe_code("invalid_non_text_output"),
+                            message: safe_error(
+                                "internal agent returned non-text output that cannot be executed",
+                            ),
+                            retryable: false,
+                            model_error: None,
+                        };
+                        previous_backend = Some(backend);
+                        continue;
+                    }
                     let output = completed
                         .turn
                         .message
@@ -227,64 +280,125 @@ impl Engine {
         &self,
         active: &ActiveRun,
         kind: InternalAgentKind,
-    ) -> FrozenInternalAgentPolicy {
+    ) -> Result<FrozenInternalAgentPolicy, EngineError> {
         let fallback_index = active.fallback_index.load(Ordering::Acquire) as usize;
-        self.inner.internal_agents.policy(
+        self.internal_agent_policy(
             kind,
             &active.policy,
-            active.policy.active_suffix(fallback_index),
+            active.policy.active_suffix(fallback_index).first(),
         )
     }
-}
 
-pub(super) fn unavailable_internal_policy(
-    timeout_ms: u64,
-    max_input_tokens: u64,
-    max_output_tokens: u64,
-) -> FrozenInternalAgentPolicy {
-    FrozenInternalAgentPolicy {
-        agent: cookie_agent_protocol::AgentSnapshot {
-            agent: AgentId::new("internal").expect("static agent id"),
+    pub(crate) fn internal_agent_policy(
+        &self,
+        kind: InternalAgentKind,
+        owner: &FrozenRunPolicy,
+        parent_binding: Option<&cookie_agent_protocol::FrozenModelBinding>,
+    ) -> Result<FrozenInternalAgentPolicy, EngineError> {
+        let id = AgentId::new(match kind {
+            InternalAgentKind::Approval => cookie_agent_config::BUILT_IN_APPROVAL_AGENT_ID,
+            InternalAgentKind::ContextCompaction => {
+                cookie_agent_config::BUILT_IN_COMPACTION_AGENT_ID
+            }
+            InternalAgentKind::SessionTitle => cookie_agent_config::BUILT_IN_TITLE_AGENT_ID,
+        })
+        .map_err(|_| EngineError::RuntimeCompileFailed)?;
+        let resolved = owner
+            .registry
+            .get(&id)
+            .ok_or_else(|| EngineError::InvalidRuntimeAgent(id.clone()))?;
+        if resolved.document.frontmatter.mode != cookie_agent_config::AgentMode::Internal {
+            return Err(EngineError::InvalidRuntimeAgent(id));
+        }
+        let mut models = Vec::new();
+        let fallbacks = if resolved.document.frontmatter.enabled {
+            resolved.resolved_fallback.as_slice()
+        } else {
+            &[]
+        };
+        for fallback in fallbacks {
+            match fallback {
+                crate::runtime_snapshot::ResolvedAgentFallback::ParentModel => {
+                    if let Some(binding) = parent_binding {
+                        models.push(binding.clone());
+                    }
+                }
+                crate::runtime_snapshot::ResolvedAgentFallback::Selection(selection) => {
+                    if owner
+                        .runtime
+                        .models
+                        .model(&selection.model)
+                        .is_some_and(|model| {
+                            model.model.status
+                                == cookie_agent_models::compiler::CompiledModelStatus::Available
+                        })
+                    {
+                        models.push(crate::model_snapshots::binding_for_selection(
+                            &owner.runtime.current_manifest,
+                            &owner.runtime.models,
+                            selection,
+                        )?);
+                    }
+                }
+            }
+        }
+        let document = &resolved.document;
+        let snapshot = cookie_agent_protocol::AgentSnapshot {
+            agent: document.id.clone(),
             schema: cookie_agent_protocol::AgentSchemaVersion::current(),
-            mode: AgentMode::All,
-            description: "Internal engine work".into(),
-            document_source: cookie_agent_protocol::AgentDocumentSource::BuiltIn,
-            document_fingerprint: Sha256Digest::of_bytes(b"internal"),
-            composed_prompt: "Perform the requested internal engine task safely.\n".into(),
-            prompt_fingerprint: Sha256Digest::of_bytes(
-                b"Perform the requested internal engine task safely.\n",
-            ),
+            mode: AgentMode::Internal,
+            description: document.frontmatter.description.clone(),
+            document_source: match document.source {
+                cookie_agent_config::AgentDocumentSource::BuiltIn => {
+                    cookie_agent_protocol::AgentDocumentSource::BuiltIn
+                }
+                cookie_agent_config::AgentDocumentSource::User => {
+                    cookie_agent_protocol::AgentDocumentSource::User
+                }
+                cookie_agent_config::AgentDocumentSource::Workspace => {
+                    cookie_agent_protocol::AgentDocumentSource::Workspace
+                }
+            },
+            document_fingerprint: Sha256Digest::new(document.document_fingerprint.as_str())
+                .map_err(|_| EngineError::RuntimeCompileFailed)?,
+            composed_prompt: document.body.clone(),
+            prompt_fingerprint: Sha256Digest::new(document.prompt_fingerprint.as_str())
+                .map_err(|_| EngineError::RuntimeCompileFailed)?,
             tools: Vec::new(),
             permissions: Vec::new(),
             delegation: None,
-            fallback_chain: Vec::new(),
+            fallback_chain: models.clone(),
             selected_suffix_start: 0,
-        },
-        models: Vec::new(),
-        runtime: None,
-        limits: InternalAgentLimits {
-            max_input_tokens,
-            max_output_tokens,
-            timeout_ms,
-        },
+        };
+        let limits = &document.frontmatter.limits;
+        Ok(FrozenInternalAgentPolicy {
+            agent: snapshot,
+            models,
+            runtime: Some(Arc::clone(&owner.runtime)),
+            limits: InternalAgentLimits {
+                max_input_tokens: limits.max_input_tokens,
+                max_output_tokens: limits.max_output_tokens,
+                timeout_ms: limits.timeout_ms,
+            },
+        })
     }
 }
 
-pub(super) fn inherit_internal_policy(
-    configured: &FrozenInternalAgentPolicy,
-    owner: &FrozenRunPolicy,
-    active_suffix: &[cookie_agent_protocol::FrozenModelBinding],
-) -> FrozenInternalAgentPolicy {
-    FrozenInternalAgentPolicy {
-        agent: owner.agent.clone(),
-        models: if configured.models.is_empty() {
-            active_suffix.to_vec()
-        } else {
-            configured.models.clone()
-        },
-        runtime: Some(Arc::clone(&owner.runtime)),
-        limits: configured.limits.clone(),
-    }
+fn internal_model_request(
+    history: Vec<oven_sdk::HistoryTurn>,
+    tools: Vec<ToolDefinition>,
+    max_output_tokens: u64,
+) -> ModelRequest {
+    let mut request = ModelRequest::new(history).with_tools(tools);
+    request.inference.max_output_tokens = Some(max_output_tokens);
+    request
+}
+
+fn invalid_internal_output(parts: &[oven_sdk::AssistantPart], reject_non_text: bool) -> bool {
+    reject_non_text
+        && parts
+            .iter()
+            .any(|part| !matches!(part, oven_sdk::AssistantPart::Text(_)))
 }
 
 pub(super) fn parse_internal_approval(value: &str) -> Option<ApprovalInternalDecisionKind> {
@@ -302,5 +416,26 @@ pub(super) fn parse_internal_approval(value: &str) -> Option<ApprovalInternalDec
         "deny" => Some(ApprovalInternalDecisionKind::Deny),
         "ask" => Some(ApprovalInternalDecisionKind::Ask),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{internal_model_request, invalid_internal_output};
+
+    #[test]
+    fn internal_model_requests_are_structurally_toolless() {
+        let request = internal_model_request(Vec::new(), Vec::new(), 128);
+        assert!(request.tools.is_empty());
+        assert_eq!(request.inference.max_output_tokens, Some(128));
+    }
+
+    #[test]
+    fn compaction_rejects_tool_calls_instead_of_executing_them() {
+        let parts = vec![oven_sdk::AssistantPart::ToolCall(
+            oven_sdk::ToolCallPart::new("call", "read", serde_json::json!({"filePath":"x"})),
+        )];
+        assert!(invalid_internal_output(&parts, true));
+        assert!(!invalid_internal_output(&parts, false));
     }
 }

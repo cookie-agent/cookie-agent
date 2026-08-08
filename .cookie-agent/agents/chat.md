@@ -1,5 +1,5 @@
 ---
-schema: 2
+schema: 3
 description: Primary agent pinned to the compatible chat model base behavior
 mode: primary
 enabled: true

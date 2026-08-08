@@ -32,8 +32,9 @@ use cookie_agent_protocol::{
     PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
     PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity,
     ProviderConnectParams, ProviderCredentialValues, ProviderDisconnectParams, ProviderId,
-    ProviderModelId, RunSelection, RunStartParams, RuntimeChangeReason, SessionId, SessionTitle,
-    SessionTitleChange, SetupFieldId, Sha256Digest, ToolCallId, ToolTerminationOutcome,
+    ProviderModelId, RunSelection, RunStartParams, RuntimeChangeReason, SessionId, SessionStatus,
+    SessionTitle, SessionTitleChange, SetupFieldId, Sha256Digest, ToolCallId,
+    ToolTerminationOutcome,
 };
 use jiff::Timestamp;
 use tempfile::TempDir;
@@ -409,7 +410,7 @@ fn empty_provider_workspace(path: &std::path::Path) -> LoadedConfiguration {
     let project = path.join(".cookie-agent");
     fs::create_dir(&project).expect("project");
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
-    fs::write(project.join("config.toml"), "schema_version = 9\n").expect("empty provider config");
+    fs::write(project.join("config.toml"), "schema_version = 10\n").expect("empty provider config");
     fs::set_permissions(
         project.join("config.toml"),
         fs::Permissions::from_mode(0o600),
@@ -420,7 +421,7 @@ fn empty_provider_workspace(path: &std::path::Path) -> LoadedConfiguration {
     fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
     fs::write(
         agents.join("primary.md"),
-        "---\nschema: 2\ndescription: Bedrock test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0\", variant: base }]\ntools: []\npermissions: {}\n---\nUse Bedrock.\n",
+        "---\nschema: 3\ndescription: Bedrock test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0\", variant: base }]\ntools: []\npermissions: {}\n---\nUse Bedrock.\n",
     )
     .expect("agent");
     fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
@@ -766,21 +767,21 @@ async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly(
 fn custom_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\nschema: 2\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions:\n  delegate:\n    worker: allow\n---\nTest prompt.\n",
+        "---\nschema: 3\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions:\n  delegate:\n    worker: allow\n---\nTest prompt.\n",
     )
 }
 
 fn approval_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\nschema: 2\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
+        "---\nschema: 3\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
     )
 }
 
 fn denied_approval_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\nschema: 2\ndescription: Denied approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: deny\n---\nTest denied approval flow.\n",
+        "---\nschema: 3\ndescription: Denied approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: deny\n---\nTest denied approval flow.\n",
     )
 }
 
@@ -788,13 +789,21 @@ fn custom_fixture_with_endpoint_and_primary_agent(
     endpoint: &str,
     primary_agent: &str,
 ) -> (Fixture, RunSelection) {
+    custom_fixture_with_endpoint_primary_and_internal(endpoint, primary_agent, None)
+}
+
+fn custom_fixture_with_endpoint_primary_and_internal(
+    endpoint: &str,
+    primary_agent: &str,
+    internal: Option<(&str, &str)>,
+) -> (Fixture, RunSelection) {
     let directory = TempDir::new().expect("temp directory");
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
         .expect("private temp directory");
     let project = directory.path().join(".cookie-agent");
     fs::create_dir(&project).expect("project directory");
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
-    let config_text = r#"schema_version = 9
+    let config_text = r#"schema_version = 10
 
 [delegation]
 max_depth = 1
@@ -821,7 +830,6 @@ temperature = true
 top_p = true
 seed = true
 native_replay = "unsupported"
-native_compaction = "unsupported"
 cancellation = "local_only"
 media = {}
 "#
@@ -840,11 +848,16 @@ media = {}
         .expect("private agent");
     fs::write(
         agents.join("worker.md"),
-        "---\nschema: 2\ndescription: Worker test agent\nmode: subagent\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: {}\n---\nWorker prompt.\n",
+        "---\nschema: 3\ndescription: Worker test agent\nmode: subagent\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: {}\n---\nWorker prompt.\n",
     )
     .expect("worker agent");
     fs::set_permissions(agents.join("worker.md"), fs::Permissions::from_mode(0o600))
         .expect("private worker agent");
+    if let Some((name, document)) = internal {
+        fs::write(agents.join(name), document).expect("internal agent");
+        fs::set_permissions(agents.join(name), fs::Permissions::from_mode(0o600))
+            .expect("private internal agent");
+    }
     let mut config = load_from_roots(None, Some(&project)).expect("loaded config");
     config.runtime.session_title.generate_on_first_turn = false;
     let provider_store = directory.path().join("provider-store");
@@ -902,6 +915,117 @@ media = {}
     )
 }
 
+fn frozen_root_policy(
+    fixture: &Fixture,
+    selection: &RunSelection,
+) -> crate::policy::FrozenRunPolicy {
+    let runtime = fixture.engine.current_runtime();
+    let registry = Arc::clone(&runtime.agents);
+    let agent = crate::policy::resolve_agent(&registry, &selection.agent).expect("resolved agent");
+    crate::policy::freeze_root_agent_policy(
+        agent,
+        Arc::clone(&registry),
+        runtime,
+        &selection.model,
+        3,
+        crate::policy::ResultLimits {
+            tool_output_max_lines: 2_000,
+            tool_output_max_bytes: 50 * 1024,
+        },
+    )
+    .expect("frozen root policy")
+}
+
+#[test]
+fn parent_model_resolves_exact_binding_skips_parentless_and_replays_historically() {
+    let fixture = synthetic_default_fixture(None);
+    let descriptor = fixture
+        .engine
+        .runtime_snapshot()
+        .expect("runtime")
+        .snapshot
+        .agents
+        .into_iter()
+        .find(|agent| agent.id.as_str() == "default")
+        .expect("default agent");
+    let selection = RunSelection {
+        agent: descriptor.id,
+        model: descriptor.resolved_fallback[0].clone(),
+    };
+    let owner = frozen_root_policy(&fixture, &selection);
+    let parent = owner.selected_suffix[0].clone();
+    assert_eq!(
+        parent
+            .selection
+            .variant
+            .as_ref()
+            .map(|variant| variant.as_str()),
+        Some("precise")
+    );
+
+    let policy = fixture
+        .engine
+        .internal_agent_policy(InternalAgentKind::ContextCompaction, &owner, Some(&parent))
+        .expect("internal policy");
+    assert_eq!(policy.models, vec![parent.clone()]);
+
+    let parentless = fixture
+        .engine
+        .internal_agent_policy(InternalAgentKind::ContextCompaction, &owner, None)
+        .expect("parentless policy");
+    assert!(parentless.models.is_empty());
+
+    let replayed_owner = crate::policy::policy_from_snapshot(
+        owner.agent.clone(),
+        owner.selected_suffix.clone(),
+        Arc::clone(&owner.registry),
+        Arc::clone(&owner.runtime),
+        owner.result_limits.tool_output_max_lines,
+        owner.result_limits.tool_output_max_bytes,
+    )
+    .expect("replayed owner policy");
+    let replayed = fixture
+        .engine
+        .internal_agent_policy(
+            InternalAgentKind::ContextCompaction,
+            &replayed_owner,
+            replayed_owner.selected_suffix.first(),
+        )
+        .expect("replayed internal policy");
+    assert_eq!(replayed.models, vec![parent]);
+}
+
+#[test]
+fn workspace_internal_agent_replaces_builtin_document_and_limits() {
+    let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
+        "http://127.0.0.1:9/v1",
+        "---\nschema: 3\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: {}\n---\nPrimary.\n",
+        Some((
+            "approval.md",
+            "---\nschema: 3\ndescription: Workspace approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1234, max_input_tokens: 2345, max_output_tokens: 345 }\ntools: [bash]\npermissions: {}\n---\nWorkspace approval prompt.\n",
+        )),
+    );
+    let owner = frozen_root_policy(&fixture, &selection);
+    let policy = fixture
+        .engine
+        .internal_agent_policy(
+            InternalAgentKind::Approval,
+            &owner,
+            owner.selected_suffix.first(),
+        )
+        .expect("workspace approval policy");
+
+    assert_eq!(
+        policy.agent.document_source,
+        cookie_agent_protocol::AgentDocumentSource::Workspace
+    );
+    assert_eq!(policy.agent.composed_prompt, "Workspace approval prompt.\n");
+    assert_eq!(policy.limits.timeout_ms, 1234);
+    assert_eq!(policy.limits.max_input_tokens, 2345);
+    assert_eq!(policy.limits.max_output_tokens, 345);
+    assert!(policy.agent.tools.is_empty());
+}
+
 fn synthetic_default_fixture(authored_agent: Option<&str>) -> Fixture {
     let directory = TempDir::new().expect("temp directory");
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
@@ -911,7 +1035,7 @@ fn synthetic_default_fixture(authored_agent: Option<&str>) -> Fixture {
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
     fs::write(
         project.join("config.toml"),
-        r#"schema_version = 9
+        r#"schema_version = 10
 
 [providers."custom.test"]
 source = "custom"
@@ -921,11 +1045,11 @@ auth = { method = "no-auth-v1", values = {} }
 
 [providers."custom.test".models."z-model"]
 display_name = "Z Model"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "unsupported", native_compaction = "unsupported", cancellation = "local_only", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "unsupported", cancellation = "local_only", media = {} }
 
 [providers."custom.test".models."a-model"]
 display_name = "A Model"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "unsupported", native_compaction = "unsupported", cancellation = "local_only", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "unsupported", cancellation = "local_only", media = {} }
 variants = { zeta = { operation = "add" }, alpha = { operation = "add" }, precise = { operation = "add", defaults = { temperature = 0.25 } } }
 default_variant = "precise"
 "#,
@@ -1174,6 +1298,60 @@ async fn scripted_repeated_write_server(
     (format!("http://{address}/v1"), task)
 }
 
+async fn scripted_two_approved_writes_server() -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("persistent approval listener");
+    let address = listener.local_addr().expect("listener address");
+    let tool_call = |index| {
+        format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"persistent-write-{index}\",\"type\":\"function\",\"function\":{{\"name\":\"write\",\"arguments\":\"{{}}\"}}}}]}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n"
+        )
+    };
+    let approval = "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"decision\\\":\\\"allow\\\"}\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned();
+    let bodies = [
+        tool_call(1),
+        approval.clone(),
+        tool_call(2),
+        approval,
+        "data: {\"choices\":[{\"delta\":{\"content\":\"persistent approvals complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
+    ];
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for body in bodies {
+            let (mut socket, _) = listener.accept().await.expect("persistent approval accept");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 8192];
+            loop {
+                let read = socket
+                    .read(&mut buffer)
+                    .await
+                    .expect("persistent approval read");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("persistent approval response");
+            requests.push(String::from_utf8(request).expect("UTF-8 request"));
+        }
+        requests
+    });
+    (format!("http://{address}/v1"), task)
+}
+
 async fn wait_for_escalated_approval(
     engine: &Engine,
     session_id: SessionId,
@@ -1266,7 +1444,15 @@ fn empty_startup_is_coherent_and_rejects_fabricated_sessions() {
         .snapshot;
     assert!(snapshot.providers.is_empty());
     assert!(snapshot.models.is_empty());
-    assert!(snapshot.agents.is_empty());
+    assert_eq!(
+        snapshot
+            .agents
+            .iter()
+            .filter(|agent| agent.mode == cookie_agent_protocol::AgentMode::Internal)
+            .count(),
+        3
+    );
+    assert!(!snapshot.agents.iter().any(|agent| agent.runnable_as_root));
     let selection = RunSelection {
         agent: AgentId::new("primary").expect("agent ID"),
         model: ModelSelection {
@@ -1285,8 +1471,12 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
     let fixture = synthetic_default_fixture(None);
     let snapshot = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
     assert_eq!(snapshot.models.len(), 2);
-    assert_eq!(snapshot.agents.len(), 1);
-    let agent = &snapshot.agents[0];
+    assert_eq!(snapshot.agents.len(), 4);
+    let agent = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.id.as_str() == "default")
+        .expect("default agent");
     assert_eq!(agent.id.as_str(), "default");
     assert!(agent.runnable_as_root);
     assert_eq!(agent.resolved_fallback.len(), 1);
@@ -1458,14 +1648,14 @@ fn runtime_snapshot_model_descriptor_preserves_compiled_variant_order() {
 #[test]
 fn synthetic_default_replaces_no_authored_agent_and_unrunnable_authored_agents_only() {
     let unrunnable = synthetic_default_fixture(Some(
-        "---\nschema: 2\ndescription: Unrunnable primary\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/missing\", variant: base }]\ntools: []\npermissions: {}\n---\nUnrunnable prompt.\n",
+        "---\nschema: 3\ndescription: Unrunnable primary\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/missing\", variant: base }]\ntools: []\npermissions: {}\n---\nUnrunnable prompt.\n",
     ));
     let snapshot = unrunnable
         .engine
         .runtime_snapshot()
         .expect("runtime")
         .snapshot;
-    assert_eq!(snapshot.agents.len(), 2);
+    assert_eq!(snapshot.agents.len(), 5);
     assert!(
         snapshot
             .agents
@@ -1671,7 +1861,13 @@ async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_prese
         cookie_agent_protocol::EffectiveAuthSource::ProviderStore
     );
     assert_eq!(connected.runtime.models.len(), 1);
-    assert!(connected.runtime.agents[0].runnable_as_root);
+    assert!(
+        connected
+            .runtime
+            .agents
+            .iter()
+            .any(|agent| agent.runnable_as_root)
+    );
 
     let (engine_two, manager_two) = open_workspace_engine(
         &workspace_two,
@@ -2352,7 +2548,11 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
     ));
     assert!(matches!(
         &lifecycle[1].payload,
-        EventPayload::ApprovalEvaluated { decision, .. }
+        EventPayload::ApprovalEvaluated {
+            decision,
+            approval_session_increment_count: 1,
+            ..
+        }
             if decision.decision == ApprovalInternalDecisionKind::Escalate
                 && decision.source == ApprovalDecisionSource::InternalAgent
                 && decision.reason_code == ApprovalReasonCode::Escalated
@@ -2387,6 +2587,113 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
     approve_once(&fixture.engine, &approval, "ask-transaction-approval").await;
     wait_for_tool_execution(&executed).await;
     captured.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn approval_agent_conversation_persists_per_session_and_sends_delta_increments() {
+    let (endpoint, captured) = scripted_two_approved_writes_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
+        &endpoint,
+        "---\nschema: 3\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
+        Some((
+            "approval.md",
+            "---\nschema: 3\ndescription: Persistent approval evaluator\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_input_tokens: 4096, max_output_tokens: 128 }\ntools: []\npermissions: {}\n---\nEvaluate approval requests conservatively.\n",
+        )),
+    );
+    let executed = Arc::new(AtomicBool::new(false));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("persistent approval session");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: cookie_agent_protocol::ClientRunId::new("persistent-approval")
+                .expect("run ID"),
+            selection,
+            input: "request two writes".to_owned(),
+        })
+        .await
+        .expect("accepted persistent approval run");
+
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if fixture
+                .engine
+                .inner
+                .store
+                .get(session.session_id)
+                .expect("projection")
+                .status
+                == SessionStatus::Completed
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    if completed.is_err() {
+        let projection = fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("timed-out projection");
+        panic!(
+            "persistent approval completion timed out with status {:?} and events {:#?}",
+            projection.status,
+            projection.log.events()
+        );
+    }
+    assert!(executed.load(Ordering::Acquire));
+
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection")
+        .log
+        .events();
+    let counts = events
+        .iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::ApprovalEvaluated {
+                approval_session_increment_count,
+                ..
+            } => Some(approval_session_increment_count),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(counts, vec![1, 2]);
+
+    let conversation = fixture
+        .engine
+        .approval_conversation_snapshot(session.session_id)
+        .await
+        .expect("approval conversation");
+    assert_eq!(conversation.len(), 2);
+    assert!(conversation[0].1.is_some());
+    assert!(conversation[1].1.is_some());
+    let first: serde_json::Value =
+        serde_json::from_str(&conversation[0].0).expect("first increment JSON");
+    let second: serde_json::Value =
+        serde_json::from_str(&conversation[1].0).expect("second increment JSON");
+    assert!(first.get("cwd_identity").is_some());
+    assert!(first.get("instruction").is_some());
+    assert!(second.get("cwd_identity").is_none());
+    assert!(second.get("instruction").is_none());
+    assert_eq!(second["intervening_messages"], serde_json::json!([]));
+    let requests = captured.await.expect("persistent approval server task");
+    assert_eq!(requests.len(), 5);
     fixture.engine.shutdown().await;
 }
 
@@ -2498,7 +2805,11 @@ async fn yolo_permission_mode_durably_approves_and_executes_without_escalation()
     assert_eq!(approval_lifecycle.len(), 3);
     assert!(matches!(
         &approval_lifecycle[1].payload,
-        EventPayload::ApprovalEvaluated { decision, .. }
+        EventPayload::ApprovalEvaluated {
+            decision,
+            approval_session_increment_count: 0,
+            ..
+        }
             if decision.decision == ApprovalInternalDecisionKind::Allow
                 && decision.source == ApprovalDecisionSource::Policy
                 && decision.reason_code == ApprovalReasonCode::YoloApproved
@@ -2768,7 +3079,11 @@ async fn malformed_internal_approval_output_falls_back_to_escalation_transaction
         .events();
     assert!(events.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::ApprovalEvaluated { approval_id, decision }
+        EventPayload::ApprovalEvaluated {
+            approval_id,
+            decision,
+            ..
+        }
             if *approval_id == approval.request.approval_id()
                 && decision.decision == ApprovalInternalDecisionKind::Escalate
                 && decision.source == ApprovalDecisionSource::InternalAgent

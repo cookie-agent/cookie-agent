@@ -1,9 +1,6 @@
 use crate::{
     adapters::OvenAdapterFamily,
-    authoring::{
-        CancellationCapability, CompactionCapability, MediaKind, Modality, ModelCapabilities,
-        ReplayCapability,
-    },
+    authoring::{CancellationCapability, MediaKind, Modality, ModelCapabilities, ReplayCapability},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -21,7 +18,6 @@ pub fn validate_capability_ceiling(
         .iter()
         .any(|value| *value != Modality::Text)
         || capabilities.cancellation != CancellationCapability::LocalOnly
-        || capabilities.native_compaction != CompactionCapability::Unsupported
         || capabilities.parallel_tool_calls && !capabilities.tool_calling
         || capabilities.context_tokens == 0
         || capabilities.output_tokens == 0

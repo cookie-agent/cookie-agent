@@ -5,7 +5,7 @@ use cookie_agent_protocol as protocol;
 use crate::{
     EngineError,
     model_snapshots::binding_for_selection,
-    runtime_snapshot::{AgentRegistry, PublishedRuntime, ResolvedAgent},
+    runtime_snapshot::{AgentRegistry, PublishedRuntime, ResolvedAgent, ResolvedAgentFallback},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -68,18 +68,25 @@ pub(crate) fn freeze_root_agent_policy(
     let start = agent
         .resolved_fallback
         .iter()
-        .position(|candidate| candidate.model == selection.model);
+        .position(|candidate| {
+            matches!(candidate, ResolvedAgentFallback::Selection(candidate) if candidate.model == selection.model)
+        });
     let authored = start.map_or(agent.resolved_fallback.as_slice(), |index| {
         &agent.resolved_fallback[index..]
     });
     let mut selections = authored
         .iter()
-        .filter(|candidate| {
-            runtime.models.model(&candidate.model).is_some_and(|model| {
-                model.model.status == cookie_agent_models::compiler::CompiledModelStatus::Available
-            })
+        .filter_map(|candidate| match candidate {
+            ResolvedAgentFallback::Selection(candidate)
+                if runtime.models.model(&candidate.model).is_some_and(|model| {
+                    model.model.status
+                        == cookie_agent_models::compiler::CompiledModelStatus::Available
+                }) =>
+            {
+                Some(candidate.clone())
+            }
+            ResolvedAgentFallback::Selection(_) | ResolvedAgentFallback::ParentModel => None,
         })
-        .cloned()
         .collect::<Vec<_>>();
     if start.is_some() {
         if selections.is_empty() {
@@ -118,17 +125,23 @@ pub(crate) fn freeze_delegated_agent_policy(
         let index = agent
             .resolved_fallback
             .iter()
-            .position(|candidate| candidate.model == selection.model)
+            .position(|candidate| {
+                matches!(candidate, ResolvedAgentFallback::Selection(candidate) if candidate.model == selection.model)
+            })
             .ok_or(EngineError::NoRunnableModel)?;
         let mut selections = agent.resolved_fallback[index..]
             .iter()
-            .filter(|candidate| {
-                runtime.models.model(&candidate.model).is_some_and(|model| {
-                    model.model.status
-                        == cookie_agent_models::compiler::CompiledModelStatus::Available
-                })
+            .filter_map(|candidate| match candidate {
+                ResolvedAgentFallback::Selection(candidate)
+                    if runtime.models.model(&candidate.model).is_some_and(|model| {
+                        model.model.status
+                            == cookie_agent_models::compiler::CompiledModelStatus::Available
+                    }) =>
+                {
+                    Some(candidate.clone())
+                }
+                ResolvedAgentFallback::Selection(_) | ResolvedAgentFallback::ParentModel => None,
             })
-            .cloned()
             .collect::<Vec<_>>();
         if selections.is_empty() {
             return Err(EngineError::NoRunnableModel);
@@ -379,6 +392,7 @@ fn wire_agent_mode(mode: cookie_agent_config::AgentMode) -> protocol::AgentMode 
         cookie_agent_config::AgentMode::Primary => protocol::AgentMode::Primary,
         cookie_agent_config::AgentMode::Subagent => protocol::AgentMode::Subagent,
         cookie_agent_config::AgentMode::All => protocol::AgentMode::All,
+        cookie_agent_config::AgentMode::Internal => protocol::AgentMode::Internal,
     }
 }
 

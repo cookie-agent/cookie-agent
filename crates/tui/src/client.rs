@@ -21,10 +21,10 @@ use cookie_agent_protocol::{
     EventsSubscribeResult, JsonRpcError, JsonRpcId, Notification, OutputDelta, OutputGap,
     OutputSnapshotEnvelope, OutputStream, ProtocolVersion, Response, RunCancelParams,
     RunCancelResult, RunStartParams, RunStartResult, RunSteerParams, RunSteerResult,
-    RunToolStdinParams, RunToolStdinResult, ServerHello, SessionCreateParams, SessionCreateResult,
-    SessionId, SessionListParams, SessionListResult, SessionRenameParams, SessionRenameResult,
-    SessionSetPermissionModeParams, SessionSetPermissionModeResult, SessionTreeParams,
-    SessionTreeResult, StoredEvent, ToolCallId,
+    RunToolStdinParams, RunToolStdinResult, ServerHello, SessionCompactParams,
+    SessionCompactResult, SessionCreateParams, SessionCreateResult, SessionId, SessionListParams,
+    SessionListResult, SessionRenameParams, SessionRenameResult, SessionSetPermissionModeParams,
+    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, StoredEvent, ToolCallId,
 };
 use cookie_agent_server::{MessageFrame, MessageStream, Server, TransportError, in_process_pair};
 use futures_util::{SinkExt, StreamExt};
@@ -382,6 +382,13 @@ impl Client {
         params: SessionSetPermissionModeParams,
     ) -> Result<SessionSetPermissionModeResult, ClientError> {
         self.call("session.set_permission_mode", &params).await
+    }
+
+    pub async fn compact_session(
+        &self,
+        params: SessionCompactParams,
+    ) -> Result<SessionCompactResult, ClientError> {
+        self.call("session.compact", &params).await
     }
 
     pub async fn start_run(&self, params: RunStartParams) -> Result<RunStartResult, ClientError> {

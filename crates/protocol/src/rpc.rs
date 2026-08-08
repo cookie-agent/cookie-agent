@@ -284,6 +284,20 @@ pub struct SessionSetPermissionModeParams {
 pub struct SessionSetPermissionModeResult {}
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionCompactParams {
+    pub session_id: SessionId,
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<SafeDisplayText>", required)]
+    pub focus: Option<SafeDisplayText>,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionCompactResult {
+    pub compacted: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionRenameChange {
     Set { title: SessionTitle },

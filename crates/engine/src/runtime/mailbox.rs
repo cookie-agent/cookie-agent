@@ -545,11 +545,17 @@ impl Engine {
                 request,
                 executor,
                 decision,
+                approval_session_increment_count,
                 cancelled,
                 reply,
             } => {
                 let _ = reply.send(self.approval_evaluation_complete_direct(
-                    session, run, request, executor, decision, cancelled,
+                    session,
+                    run,
+                    request,
+                    executor,
+                    (decision, approval_session_increment_count),
+                    cancelled,
                 ));
             }
             SessionCommand::ApprovalTerminal {

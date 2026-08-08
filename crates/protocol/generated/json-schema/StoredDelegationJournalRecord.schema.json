@@ -30,7 +30,8 @@
       "enum": [
         "primary",
         "subagent",
-        "all"
+        "all",
+        "internal"
       ]
     },
     "AgentSnapshot": {
@@ -99,7 +100,7 @@
         },
         "schema": {
           "type": "integer",
-          "const": 2
+          "const": 3
         },
         "selected_suffix_start": {
           "type": "integer",
@@ -528,10 +529,7 @@
                 },
                 "compaction": {
                   "type": "string",
-                  "enum": [
-                    "native",
-                    "unsupported"
-                  ]
+                  "const": "unsupported"
                 },
                 "features": {
                   "type": "array",

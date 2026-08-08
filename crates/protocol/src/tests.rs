@@ -142,13 +142,13 @@ fn runtime() -> RuntimeSnapshotV1 {
 #[test]
 fn exact_versions_are_current_only() {
     assert_eq!(PROTOCOL_VERSION, 8);
-    assert_eq!(EVENT_SCHEMA_VERSION, 10);
+    assert_eq!(EVENT_SCHEMA_VERSION, 11);
     assert_eq!(SESSION_META_SCHEMA_VERSION, 9);
     assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 9);
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 2);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(7)).is_err());
-    assert!(serde_json::from_value::<AgentSchemaVersion>(json!(1)).is_err());
-    assert!(serde_json::from_value::<EventSchemaVersion>(json!(9)).is_err());
+    assert!(serde_json::from_value::<AgentSchemaVersion>(json!(2)).is_err());
+    assert!(serde_json::from_value::<EventSchemaVersion>(json!(10)).is_err());
     assert!(serde_json::from_value::<DelegationJournalSchemaVersion>(json!(8)).is_err());
     assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(1)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
@@ -206,7 +206,6 @@ fn available_model_descriptor_serde_round_trip_preserves_variant_order() {
             top_p: true,
             seed: false,
             native_replay: ReplayCapability::Unsupported,
-            native_compaction: CompactionCapability::Unsupported,
             cancellation: CancellationCapability::LocalOnly,
             media: BTreeMap::new(),
         },

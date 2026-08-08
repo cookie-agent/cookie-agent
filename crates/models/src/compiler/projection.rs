@@ -5,8 +5,7 @@ use serde_json::json;
 use crate::{
     adapters::OvenAdapterFamily,
     authoring::{
-        CancellationCapability, CompactionCapability, Modality, ModelCapabilities,
-        ReplayCapability, RequestDefaults,
+        CancellationCapability, Modality, ModelCapabilities, ReplayCapability, RequestDefaults,
     },
     catalog::CatalogModelRecord,
 };
@@ -83,7 +82,6 @@ pub(crate) fn capabilities_from_catalog(
         "top_p": false,
         "seed": false,
         "native_replay": native_replay,
-        "native_compaction": "unsupported",
         "cancellation": "local_only",
         "media": media
     }))
@@ -104,7 +102,6 @@ pub(crate) fn validate_capability_shape(capabilities: &ModelCapabilities) -> boo
         && capabilities.output_tokens > 0
         && capabilities.output_tokens <= capabilities.context_tokens
         && (!capabilities.parallel_tool_calls || capabilities.tool_calling)
-        && capabilities.native_compaction == CompactionCapability::Unsupported
         && capabilities.cancellation == CancellationCapability::LocalOnly
         && matches!(
             capabilities.native_replay,

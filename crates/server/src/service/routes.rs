@@ -4,10 +4,11 @@ use cookie_agent_protocol::{
     EventsSubscribeParams, PROVIDER_CONNECT_METHOD, PROVIDER_DISCONNECT_METHOD,
     RUNTIME_SNAPSHOT_GET_METHOD, RunCancelParams, RunStartParams, RunSteerParams,
     RunToolStdinParams, RuntimeSnapshotGetParams, SessionChildrenParams, SessionChildrenResult,
-    SessionCreateParams, SessionCreateResult, SessionGetParams, SessionGetResult,
-    SessionListParams, SessionListResult, SessionRenameErrorCode, SessionRenameParams,
-    SessionResumeParams, SessionResumeResult, SessionSetPermissionModeParams,
-    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult,
+    SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
+    SessionGetParams, SessionGetResult, SessionListParams, SessionListResult,
+    SessionRenameErrorCode, SessionRenameParams, SessionResumeParams, SessionResumeResult,
+    SessionSetPermissionModeParams, SessionSetPermissionModeResult, SessionTreeParams,
+    SessionTreeResult,
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -125,6 +126,18 @@ impl Server {
                     .set_permission_mode(request.session_id, request.mode)
                     .map_err(engine_fault)?;
                 value(SessionSetPermissionModeResult {})
+            }
+            "session.compact" => {
+                let request: SessionCompactParams = decode_params(params)?;
+                let compacted = self
+                    .engine
+                    .compact_session(
+                        request.session_id,
+                        request.focus.as_ref().map(|focus| focus.as_str()),
+                    )
+                    .await
+                    .map_err(engine_fault)?;
+                value(SessionCompactResult { compacted })
             }
             "run.start" => {
                 let request: RunStartParams = decode_params(params)?;

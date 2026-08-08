@@ -1494,10 +1494,6 @@ fn thaw_capabilities(value: &OvenCapabilities) -> crate::ModelCapabilities {
             OvenReplay::Optional => crate::ReplayCapability::Optional,
             OvenReplay::Required => crate::ReplayCapability::Required,
         },
-        native_compaction: match value.compaction {
-            OvenCompaction::Unsupported => crate::CompactionCapability::Unsupported,
-            OvenCompaction::Native => crate::CompactionCapability::Optional,
-        },
         cancellation: match value.cancellation {
             OvenCancellation::Unsupported | OvenCancellation::LocalOnly => {
                 crate::CancellationCapability::LocalOnly
@@ -2272,12 +2268,7 @@ fn oven_capabilities(
             crate::CancellationCapability::LocalOnly => OvenCancellation::LocalOnly,
             crate::CancellationCapability::Provider => OvenCancellation::RemoteBestEffort,
         },
-        compaction: match value.native_compaction {
-            crate::CompactionCapability::Unsupported => OvenCompaction::Unsupported,
-            crate::CompactionCapability::Optional | crate::CompactionCapability::Required => {
-                OvenCompaction::Native
-            }
-        },
+        compaction: OvenCompaction::Unsupported,
         replay: ReplayDeclaration {
             policy: if value.native_replay == crate::ReplayCapability::Unsupported {
                 ReplayPolicy::Never

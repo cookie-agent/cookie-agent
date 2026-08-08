@@ -1,6 +1,6 @@
 {
   "delegation_journal_schema_version": 9,
-  "event_schema_version": 10,
+  "event_schema_version": 11,
   "protocol_version": 8,
   "schemas": [
     "ClientHello.schema.json",
@@ -28,6 +28,8 @@
     "SessionResumeResult.schema.json",
     "SessionSetPermissionModeParams.schema.json",
     "SessionSetPermissionModeResult.schema.json",
+    "SessionCompactParams.schema.json",
+    "SessionCompactResult.schema.json",
     "RunStartParams.schema.json",
     "RunStartResult.schema.json",
     "RunStartConflict.schema.json",
@@ -58,6 +60,6 @@
     "ModelSnapshotManifestV1.schema.json",
     "StoredDelegationJournalRecord.schema.json"
   ],
-  "session_jsonl_schema_version": 10,
+  "session_jsonl_schema_version": 11,
   "session_meta_schema_version": 9
 }

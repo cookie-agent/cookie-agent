@@ -1,4 +1,4 @@
-//! Strict schema-9 provider authoring data transfer objects.
+//! Strict schema-10 provider authoring data transfer objects.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -16,8 +16,8 @@ use url::Url;
 use zeroize::Zeroize;
 
 pub use crate::model_types::{
-    CancellationCapability, CompactionCapability, FiniteF32, MediaCapability, MediaKind, MimeType,
-    Modality, ModelCapabilities, ProviderOptions as CustomProviderOptions, ReasoningBehavior,
+    CancellationCapability, FiniteF32, MediaCapability, MediaKind, MimeType, Modality,
+    ModelCapabilities, ProviderOptions as CustomProviderOptions, ReasoningBehavior,
     ReplayCapability, RequestDefaults, ToolChoice, VariantDirective,
 };
 
@@ -68,7 +68,7 @@ impl Drop for SecretString {
     }
 }
 
-/// Absolute, query-free endpoint URL accepted by schema 9.
+/// Absolute, query-free endpoint URL accepted by schema 10.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct EndpointUrl(String);

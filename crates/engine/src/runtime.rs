@@ -27,26 +27,23 @@ use cookie_agent_protocol::{
     ApprovalRequest, ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalRespondResult,
     ApprovalStatus, ApprovalTrigger, ApprovalUserDecision, ArtifactReference, ChildSummary,
     ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
-    ContextCheckpointCommit, EventPayload as Event, EventSubscriptionMessage,
-    EventsSubscribeResult, InternalAgentBackend, InternalAgentFailure, InternalAgentInvocationId,
-    InternalAgentKind, InternalAgentRunId, InternalSummaryCheckpoint, InvocationId,
-    NativeContextArtifact, OperationFingerprint, OutputStream, PermissionMode,
-    PersistedAssistantPart, PersistedModelTurn, PersistedToolResult as ToolResult,
-    PreparedOperationIdentity, ProviderConnectParams, ProviderConnectResult,
-    ProviderDisconnectParams, ProviderDisconnectResult, RunCancelResult, RunId, RunSelection,
-    RunStartParams, RunStartResult, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
-    RuntimeChangeReason, RuntimeChangedNotification, RuntimeSnapshotResult, SafeCode,
-    SafeDisplayText, SafeErrorMessage, SafeInternalAgentCall, SafeInternalAgentResult,
-    SafeToolError, SessionId, SessionMeta, SessionOrigin, SessionRenameChange, SessionRenameParams,
-    SessionRenameResult, SessionStatus, SessionTitle, SessionTitleChange, Sha256Digest,
-    StoredEvent, SummaryByteLimit, ToolAttachment, ToolCallId, ToolCallPresentation, ToolCallStart,
-    ToolCallTermination, ToolOutputTruncation, ToolTerminationOutcome, TreeApprovalGrant,
+    ContextCheckpointCommit, ContextRehydratedFile, EventPayload as Event,
+    EventSubscriptionMessage, EventsSubscribeResult, InternalAgentBackend, InternalAgentFailure,
+    InternalAgentInvocationId, InternalAgentKind, InternalAgentRunId, InternalSummaryCheckpoint,
+    InvocationId, OperationFingerprint, OutputStream, PermissionMode, PersistedAssistantPart,
+    PersistedModelTurn, PersistedToolResult as ToolResult, PreparedOperationIdentity,
+    ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
+    ProviderDisconnectResult, RunCancelResult, RunId, RunSelection, RunStartParams, RunStartResult,
+    RunSteerResult, RunToolStdinParams, RunToolStdinResult, RuntimeChangeReason,
+    RuntimeChangedNotification, RuntimeSnapshotResult, SafeCode, SafeDisplayText, SafeErrorMessage,
+    SafeInternalAgentCall, SafeInternalAgentResult, SafeToolError, SessionId, SessionMeta,
+    SessionOrigin, SessionRenameChange, SessionRenameParams, SessionRenameResult, SessionStatus,
+    SessionTitle, SessionTitleChange, Sha256Digest, StoredEvent, SummaryByteLimit, ToolAttachment,
+    ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolOutputTruncation,
+    ToolTerminationOutcome, TreeApprovalGrant,
 };
 use futures_util::StreamExt;
-use oven_sdk::{
-    CompactionCapability, CompactionRequest, JsonSchema, ModelError, Request as ModelRequest,
-    ToolDefinition,
-};
+use oven_sdk::{JsonSchema, ModelError, Request as ModelRequest, ToolDefinition};
 use rustix::fs::{
     AtFlags, Dir, FileType, Mode, OFlags, fchmod, fsync, openat, renameat, statat, unlinkat,
 };
@@ -105,6 +102,7 @@ use admission::*;
 use approval_flow::*;
 use approval_projection::*;
 pub(crate) use artifacts::{ArtifactStore, OutputCapture};
+use compaction::*;
 use delegation::*;
 use helpers::*;
 use internal_agents::*;
@@ -299,6 +297,83 @@ enum ApprovalEvaluationTransition {
     Escalated(oneshot::Receiver<ApprovalOutcome>),
 }
 
+const APPROVAL_CONVERSATION_INCREMENT_LIMIT: usize = 20;
+
+#[derive(Debug)]
+struct ApprovalConversationIncrement {
+    user: String,
+    assistant: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct ApprovalConversation {
+    increments: VecDeque<ApprovalConversationIncrement>,
+    omitted_messages: u64,
+    increment_count: u64,
+    input_through_seq: u64,
+}
+
+impl ApprovalConversation {
+    fn push_user(&mut self, user: String, input_through_seq: u64) -> u64 {
+        self.increment_count = self.increment_count.saturating_add(1);
+        self.input_through_seq = input_through_seq;
+        self.increments.push_back(ApprovalConversationIncrement {
+            user,
+            assistant: None,
+        });
+        while self.increments.len() > APPROVAL_CONVERSATION_INCREMENT_LIMIT {
+            if let Some(removed) = self.increments.pop_front() {
+                self.omitted_messages = self
+                    .omitted_messages
+                    .saturating_add(1 + u64::from(removed.assistant.is_some()));
+            }
+        }
+        self.increment_count
+    }
+
+    fn set_latest_assistant(&mut self, assistant: String) {
+        if let Some(increment) = self.increments.back_mut() {
+            increment.assistant = Some(assistant);
+        }
+    }
+
+    fn history(&self, system_prompt: String) -> Vec<oven_sdk::HistoryTurn> {
+        let mut history = vec![oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(
+            vec![oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(
+                system_prompt,
+            ))],
+        ))];
+        if self.omitted_messages > 0 {
+            history.push(oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(
+                vec![oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(
+                    format!("…and {} earlier messages", self.omitted_messages),
+                ))],
+            )));
+        }
+        for increment in &self.increments {
+            history.push(oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(
+                vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
+                    increment.user.clone(),
+                ))],
+            )));
+            if let Some(assistant) = &increment.assistant {
+                history.push(oven_sdk::HistoryTurn::assistant(
+                    oven_sdk::CompletedTurn::new(
+                        oven_sdk::AssistantMessage::new(vec![oven_sdk::AssistantPart::Text(
+                            oven_sdk::TextPart::new(assistant.clone()),
+                        )]),
+                        oven_sdk::Finish::new(
+                            oven_sdk::Usage::default(),
+                            oven_sdk::FinishReason::Stop,
+                        ),
+                    ),
+                ));
+            }
+        }
+        history
+    }
+}
+
 struct PreparedToolCall {
     call: ToolCall,
     presentation: ToolCallPresentation,
@@ -344,50 +419,27 @@ pub(crate) struct FrozenInternalAgentPolicy {
     pub(crate) agent: cookie_agent_protocol::AgentSnapshot,
     pub(crate) models: Vec<cookie_agent_protocol::FrozenModelBinding>,
     pub(crate) runtime: Option<Arc<PublishedRuntime>>,
-    limits: InternalAgentLimits,
-}
-
-pub(crate) struct InternalAgentRuntime {
-    approval: FrozenInternalAgentPolicy,
-    context_compaction: FrozenInternalAgentPolicy,
-    session_title: FrozenInternalAgentPolicy,
-}
-
-impl InternalAgentRuntime {
-    pub(crate) fn freeze() -> Self {
-        Self {
-            approval: unavailable_internal_policy(30_000, 16_384, 2_048),
-            context_compaction: unavailable_internal_policy(30_000, 16_384, 2_048),
-            session_title: unavailable_internal_policy(10_000, 4_096, 128),
-        }
-    }
-
-    pub(crate) fn policy(
-        &self,
-        kind: InternalAgentKind,
-        owner: &FrozenRunPolicy,
-        active_suffix: &[cookie_agent_protocol::FrozenModelBinding],
-    ) -> FrozenInternalAgentPolicy {
-        let configured = match kind {
-            InternalAgentKind::Approval => &self.approval,
-            InternalAgentKind::ContextCompaction => &self.context_compaction,
-            InternalAgentKind::SessionTitle => &self.session_title,
-        };
-        inherit_internal_policy(configured, owner, active_suffix)
-    }
+    pub(crate) limits: InternalAgentLimits,
 }
 
 #[derive(Clone, Debug)]
-struct InternalAgentLimits {
-    max_input_tokens: u64,
-    max_output_tokens: u64,
-    timeout_ms: u64,
+pub(crate) struct InternalAgentLimits {
+    pub(crate) max_input_tokens: u64,
+    pub(crate) max_output_tokens: u64,
+    pub(crate) timeout_ms: u64,
 }
 
 struct InternalAgentTextResult {
     invocation_id: InternalAgentInvocationId,
     internal_run_id: InternalAgentRunId,
     text: String,
+}
+
+struct InternalAgentHistoryInput {
+    history: Vec<oven_sdk::HistoryTurn>,
+    summary_source: String,
+    tools: Vec<ToolDefinition>,
+    reject_non_text: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -512,10 +564,6 @@ impl RuntimeRevisionIndex {
 const SESSION_MAILBOX_CAPACITY: usize = 256;
 const PERSISTED_SUBSCRIBER_QUEUE_CAPACITY: usize = 256;
 const MAX_PENDING_PREPARED_TOOLS: usize = 64;
-/// Semantic revision of the bounded-summary prompt/runtime contract.
-/// This is intentionally independent of the protocol and event schema version.
-pub(crate) const BOUNDED_SUMMARY_BUILTIN_REVISION: &str =
-    "context-compaction.bounded-summary.prompt-runtime.1";
 /// Semantic revision of the no-model builtin runtime contract.
 /// This is intentionally independent of the protocol and event schema version.
 pub(crate) const UNAVAILABLE_BUILTIN_REVISION: &str = "internal-agent.unavailable.runtime.1";
@@ -584,6 +632,7 @@ enum SessionCommand {
         request: ApprovalRequest,
         executor: PreparedExecutorCell,
         decision: ApprovalInternalDecisionKind,
+        approval_session_increment_count: u64,
         cancelled: bool,
         reply: oneshot::Sender<Result<ApprovalEvaluationTransition, EngineError>>,
     },
@@ -637,7 +686,6 @@ pub(crate) struct Inner {
     runtime_notifications: broadcast::Sender<RuntimeChangedNotification>,
     runtime_revision_index: Mutex<RuntimeRevisionIndex>,
     manifest_store: ModelSnapshotManifestStore,
-    internal_agents: InternalAgentRuntime,
     tools: Mutex<Vec<Arc<dyn ToolProvider>>>,
     approvals: ApprovalStore,
     permissions: PermissionPipeline,
@@ -651,6 +699,10 @@ pub(crate) struct Inner {
     finalized_output_hubs: Mutex<VecDeque<ToolCallId>>,
     pub(crate) pending_approvals: Mutex<HashMap<(SessionId, ApprovalId), PendingApproval>>,
     permission_modes: Mutex<HashMap<SessionId, PermissionMode>>,
+    approval_conversations:
+        Mutex<HashMap<SessionId, Arc<tokio::sync::Mutex<ApprovalConversation>>>>,
+    compaction_auto_disabled: Mutex<HashSet<SessionId>>,
+    compaction_postcheck_pending: Mutex<HashSet<SessionId>>,
     context_token_estimators: Mutex<HashMap<SessionId, ContextTokenEstimator>>,
     runtime: Option<tokio::runtime::Handle>,
     admission_tasks: Mutex<Vec<JoinHandle<()>>>,
@@ -702,7 +754,6 @@ impl Engine {
         let grant_journal = GrantInvalidationJournal::open(
             store.project_dir_path().join("grant-invalidations.jsonl"),
         )?;
-        let internal_agents = InternalAgentRuntime::freeze();
         let (runtime_notifications, _) = broadcast::channel(64);
         let mut runtime_revision_index = RuntimeRevisionIndex::open(
             store.project_dir_path().join("runtime-revisions-v8.jsonl"),
@@ -725,7 +776,6 @@ impl Engine {
                 runtime_notifications,
                 runtime_revision_index: Mutex::new(runtime_revision_index),
                 manifest_store,
-                internal_agents,
                 tools: Mutex::new(options.tools),
                 approvals: ApprovalStore::default(),
                 permissions: PermissionPipeline::default(),
@@ -739,6 +789,9 @@ impl Engine {
                 finalized_output_hubs: Mutex::new(VecDeque::new()),
                 pending_approvals: Mutex::new(HashMap::new()),
                 permission_modes: Mutex::new(HashMap::new()),
+                approval_conversations: Mutex::new(HashMap::new()),
+                compaction_auto_disabled: Mutex::new(HashSet::new()),
+                compaction_postcheck_pending: Mutex::new(HashSet::new()),
                 context_token_estimators: Mutex::new(HashMap::new()),
                 runtime: tokio::runtime::Handle::try_current().ok(),
                 admission_tasks: Mutex::new(Vec::new()),
@@ -1269,7 +1322,7 @@ mod context_token_estimator_tests {
     }
 
     #[test]
-    fn predictive_trigger_crosses_or_stays_below_soft_threshold() {
+    fn predictive_trigger_crosses_or_stays_below_effective_limit() {
         let estimator = ContextTokenEstimator {
             tokens_per_byte: 0.5,
             last_committed_input_tokens: 60,

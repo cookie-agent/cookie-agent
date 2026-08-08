@@ -2543,7 +2543,6 @@ mod tests {
                 top_p: true,
                 seed: true,
                 native_replay: cookie_agent_protocol::ReplayCapability::Optional,
-                native_compaction: cookie_agent_protocol::CompactionCapability::Unsupported,
                 cancellation: cookie_agent_protocol::CancellationCapability::LocalOnly,
                 media: BTreeMap::new(),
             },
@@ -5891,7 +5890,13 @@ mod tests {
     #[tokio::test]
     async fn agent_picker_lists_only_root_runnable_agents() {
         let mut app = test_app().await;
-        app.agents = vec![descriptor("primary", true), descriptor("worker", false)];
+        let mut internal = descriptor("approval", true);
+        internal.mode = cookie_agent_protocol::AgentMode::Internal;
+        app.agents = vec![
+            descriptor("primary", true),
+            descriptor("worker", false),
+            internal,
+        ];
         app.models = vec![model_descriptor()];
         assert_eq!(app.selectable_agents().len(), 1);
         let draft = app.default_draft_selection().expect("default draft");

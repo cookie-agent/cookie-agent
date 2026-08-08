@@ -1,4 +1,4 @@
-//! Strict schema-9 runtime configuration and schema-2 Markdown agents.
+//! Strict schema-10 runtime configuration and schema-3 Markdown agents.
 
 mod agent_document;
 mod agents;
@@ -11,9 +11,11 @@ mod wildcard;
 
 pub use agent_document::{AgentDocument, AgentDocumentSource};
 pub use agents::{
-    AgentFrontmatter, AgentMaterializationInput, AgentMode, AgentModelFallback, AgentRegistry,
-    AgentSchemaVersion, BUILT_IN_DEFAULT_AGENT_ID, PermissionAction, PermissionEffect,
-    PermissionRule, PermissionValue, ToolName,
+    AgentFrontmatter, AgentLimits, AgentMaterializationInput, AgentMode, AgentModelFallback,
+    AgentModelRef, AgentRegistry, AgentSchemaVersion, BUILT_IN_APPROVAL_AGENT_ID,
+    BUILT_IN_COMPACTION_AGENT_ID, BUILT_IN_DEFAULT_AGENT_ID, BUILT_IN_TITLE_AGENT_ID,
+    PARENT_MODEL_EXPRESSION, PermissionAction, PermissionEffect, PermissionRule, PermissionValue,
+    ToolName,
 };
 pub use error::ConfigError;
 pub use loader::{LoadedConfiguration, load, load_from_roots};

@@ -7,13 +7,14 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SlashCommand {
     Quit,
     New,
     Connect,
     Sessions,
     Cancel,
+    Compact(Option<String>),
     Approve(ApprovalUserDecision),
     Events(crate::state::EventLevel),
     Help,
@@ -61,6 +62,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &[],
         usage: "/cancel",
         description: "cancel the active run",
+        requires_arguments: false,
+    },
+    CommandSpec {
+        name: "compact",
+        aliases: &[],
+        usage: "/compact [focus]",
+        description: "compact context, optionally emphasizing a focus",
         requires_arguments: false,
     },
     CommandSpec {
@@ -134,22 +142,31 @@ pub(crate) fn parse_submission(input: &str) -> Result<Submission, String> {
     }) {
         return Err(format!("unknown command: /{command_line}"));
     }
-    let command = match parts.as_slice() {
-        ["quit"] | ["q"] => SlashCommand::Quit,
-        ["new"] => SlashCommand::New,
-        ["connect"] => SlashCommand::Connect,
-        ["sessions"] => SlashCommand::Sessions,
-        ["cancel"] => SlashCommand::Cancel,
-        ["approve", "once"] => SlashCommand::Approve(ApprovalUserDecision::ApproveOnce),
-        ["approve", "tree"] => SlashCommand::Approve(ApprovalUserDecision::ApproveTree),
-        ["approve", "reject"] => SlashCommand::Approve(ApprovalUserDecision::Reject),
-        ["approve", "cancel"] => SlashCommand::Approve(ApprovalUserDecision::Cancel),
-        ["events", "debug"] => SlashCommand::Events(crate::state::EventLevel::Debug),
-        ["events", "info"] => SlashCommand::Events(crate::state::EventLevel::Info),
-        ["events", "warning"] => SlashCommand::Events(crate::state::EventLevel::Warning),
-        ["events", "error"] => SlashCommand::Events(crate::state::EventLevel::Error),
-        ["help"] => SlashCommand::Help,
-        _ => return Err(format!("invalid command: /{command_line}")),
+    let command = if parts.first() == Some(&"compact") {
+        let focus = command_line
+            .strip_prefix("compact")
+            .map(str::trim)
+            .filter(|focus| !focus.is_empty())
+            .map(str::to_owned);
+        SlashCommand::Compact(focus)
+    } else {
+        match parts.as_slice() {
+            ["quit"] | ["q"] => SlashCommand::Quit,
+            ["new"] => SlashCommand::New,
+            ["connect"] => SlashCommand::Connect,
+            ["sessions"] => SlashCommand::Sessions,
+            ["cancel"] => SlashCommand::Cancel,
+            ["approve", "once"] => SlashCommand::Approve(ApprovalUserDecision::ApproveOnce),
+            ["approve", "tree"] => SlashCommand::Approve(ApprovalUserDecision::ApproveTree),
+            ["approve", "reject"] => SlashCommand::Approve(ApprovalUserDecision::Reject),
+            ["approve", "cancel"] => SlashCommand::Approve(ApprovalUserDecision::Cancel),
+            ["events", "debug"] => SlashCommand::Events(crate::state::EventLevel::Debug),
+            ["events", "info"] => SlashCommand::Events(crate::state::EventLevel::Info),
+            ["events", "warning"] => SlashCommand::Events(crate::state::EventLevel::Warning),
+            ["events", "error"] => SlashCommand::Events(crate::state::EventLevel::Error),
+            ["help"] => SlashCommand::Help,
+            _ => return Err(format!("invalid command: /{command_line}")),
+        }
     };
     Ok(Submission::Command(command))
 }
@@ -161,6 +178,25 @@ pub(crate) fn command_help() -> String {
         .map(|spec| format!("{} — {}", spec.usage, spec.description))
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::{SlashCommand, Submission, parse_submission};
+
+    #[test]
+    fn compact_accepts_an_optional_focus() {
+        assert_eq!(
+            parse_submission("/compact").unwrap(),
+            Submission::Command(SlashCommand::Compact(None))
+        );
+        assert_eq!(
+            parse_submission("/compact preserve parser decisions").unwrap(),
+            Submission::Command(SlashCommand::Compact(Some(
+                "preserve parser decisions".into()
+            )))
+        );
+    }
 }
 
 /// One readable line per command for the in-transcript help notice.

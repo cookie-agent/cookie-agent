@@ -267,37 +267,6 @@ impl ArtifactStore {
         file.read_to_end(&mut bytes)?;
         Ok(bytes)
     }
-
-    pub(crate) fn read_verified_native_context(
-        &self,
-        artifact: &cookie_agent_protocol::NativeContextArtifact,
-    ) -> std::io::Result<String> {
-        if artifact.reference.uri != format!("artifact://sha256/{}", artifact.sha256) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "native context reference and digest do not match",
-            ));
-        }
-        let mut file = self
-            .open_existing(artifact.sha256.as_str())?
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "native context artifact is missing",
-                )
-            })?;
-        let (digest, byte_length, _) = hash_file(&mut file)?;
-        if digest != artifact.sha256.as_str() || byte_length != artifact.byte_length {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "native context artifact digest or length is corrupt",
-            ));
-        }
-        file.seek(SeekFrom::Start(0))?;
-        let mut payload = String::new();
-        file.read_to_string(&mut payload)?;
-        Ok(payload)
-    }
 }
 
 pub(super) fn hash_file(file: &mut fs::File) -> std::io::Result<(String, u64, u64)> {

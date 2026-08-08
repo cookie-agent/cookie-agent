@@ -112,7 +112,7 @@ impl JsonSchema for LanguageModelDescriptorSchema {
                             "required":["input"]
                         },
                         "cancellation":{"type":"string","enum":["local_only","remote_best_effort","unsupported"]},
-                        "compaction":{"type":"string","enum":["native","unsupported"]},
+                        "compaction":{"type":"string","const":"unsupported"},
                         "replay":{
                             "type":"object","additionalProperties":false,
                             "properties":{
@@ -156,14 +156,6 @@ pub enum MediaKind {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplayCapability {
-    Unsupported,
-    Optional,
-    Required,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum CompactionCapability {
     Unsupported,
     Optional,
     Required,
@@ -264,7 +256,6 @@ pub struct ModelCapabilities {
     pub top_p: bool,
     pub seed: bool,
     pub native_replay: ReplayCapability,
-    pub native_compaction: CompactionCapability,
     pub cancellation: CancellationCapability,
     pub media: BTreeMap<MediaKind, MediaCapability>,
 }
@@ -335,7 +326,6 @@ impl<'de> Deserialize<'de> for ModelCapabilities {
             top_p: bool,
             seed: bool,
             native_replay: ReplayCapability,
-            native_compaction: CompactionCapability,
             cancellation: CancellationCapability,
             media: BTreeMap<MediaKind, MediaCapability>,
         }
@@ -353,7 +343,6 @@ impl<'de> Deserialize<'de> for ModelCapabilities {
             top_p: wire.top_p,
             seed: wire.seed,
             native_replay: wire.native_replay,
-            native_compaction: wire.native_compaction,
             cancellation: wire.cancellation,
             media: wire.media,
         };
@@ -1127,6 +1116,9 @@ impl FrozenModelBinding {
         {
             return Err(ModelSchemaError::DescriptorIdentityMismatch);
         }
+        if self.descriptor.capabilities.compaction != oven_sdk::CompactionCapability::Unsupported {
+            return Err(ModelSchemaError::NativeCompactionUnsupported);
+        }
         self.defaults
             .validate()
             .map_err(|_| ModelSchemaError::InvalidFrozenDefaults)?;
@@ -1266,6 +1258,7 @@ pub enum ModelSchemaError {
     UnknownDefaultVariant,
     ResolvedIdentityMismatch,
     DescriptorIdentityMismatch,
+    NativeCompactionUnsupported,
     ProviderOptionsAdapterMismatch,
     InvalidReasoningBudget,
     InvalidToolName,
@@ -1307,6 +1300,9 @@ impl fmt::Display for ModelSchemaError {
             }
             Self::DescriptorIdentityMismatch => {
                 "frozen descriptor key does not match resolved selection"
+            }
+            Self::NativeCompactionUnsupported => {
+                "provider-native compaction is not part of the current runtime"
             }
             Self::ProviderOptionsAdapterMismatch => {
                 "provider options do not match the resolved adapter"

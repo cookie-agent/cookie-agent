@@ -1382,6 +1382,7 @@ fn reduce_event(
         EventPayload::ApprovalEvaluated {
             approval_id,
             decision,
+            ..
         } => push_event(
             state,
             EventLevel::Debug,
@@ -1584,9 +1585,6 @@ fn reduce_event(
         ),
         EventPayload::ContextCheckpointCommitted { commit } => {
             let kind = match &commit.checkpoint {
-                cookie_agent_protocol::ContextCheckpoint::ProviderNative { .. } => {
-                    "provider-native"
-                }
                 cookie_agent_protocol::ContextCheckpoint::InternalSummary { .. } => {
                     "internal summary"
                 }
@@ -1600,6 +1598,33 @@ fn reduce_event(
                 ),
             );
         }
+        EventPayload::ToolOutputElided {
+            tool_call_id,
+            original_bytes,
+            retained,
+        } => push_event(
+            state,
+            EventLevel::Debug,
+            format!(
+                "tool output {tool_call_id} elided ({original_bytes} bytes retained at {})",
+                retained.uri
+            ),
+        ),
+        EventPayload::ContextRehydrated { files } => push_event(
+            state,
+            EventLevel::Info,
+            format!("rehydrated {} recently read file(s)", files.len()),
+        ),
+        EventPayload::ContextCompactionAutoDisabled {
+            observed_tokens,
+            trigger_tokens,
+        } => push_event(
+            state,
+            EventLevel::Warning,
+            format!(
+                "automatic context compaction disabled after remaining above the trigger ({observed_tokens}/{trigger_tokens} tokens); manual compaction remains available"
+            ),
+        ),
         EventPayload::SessionTitleCommitted { change, .. } => {
             push_event(state, EventLevel::Info, render_title_commit(&change));
         }
@@ -2362,8 +2387,7 @@ fn find_tool_call_content(
 
 fn render_internal_backend(backend: &cookie_agent_protocol::InternalAgentBackend) -> String {
     match backend {
-        cookie_agent_protocol::InternalAgentBackend::Model { resolved_model }
-        | cookie_agent_protocol::InternalAgentBackend::ProviderNative { resolved_model } => {
+        cookie_agent_protocol::InternalAgentBackend::Model { resolved_model } => {
             render_model(resolved_model)
         }
         cookie_agent_protocol::InternalAgentBackend::Builtin { name, revision } => {

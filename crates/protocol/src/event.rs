@@ -731,83 +731,6 @@ fn validate_payload(payload: &Value, maximum: usize) -> Result<(), NativeArtifac
     }
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct NativeContextArtifact {
-    pub adapter_id: SafeCode,
-    pub selection_fingerprint: Sha256Digest,
-    pub scope: NativeContextScope,
-    pub byte_length: u64,
-    pub sha256: Sha256Digest,
-    pub reference: ArtifactReference,
-}
-impl NativeContextArtifact {
-    pub fn validate_for(
-        &self,
-        resolved: &ResolvedModelRef,
-        expected_scope: &NativeContextScope,
-    ) -> Result<(), NativeArtifactError> {
-        validate_native_identity(
-            &self.adapter_id,
-            &self.selection_fingerprint,
-            &self.scope,
-            resolved,
-            expected_scope,
-        )
-    }
-
-    pub fn validate_for_binding(
-        &self,
-        binding: &FrozenModelBinding,
-        expected_scope: &NativeContextScope,
-    ) -> Result<(), NativeArtifactError> {
-        binding
-            .validate()
-            .map_err(|_| NativeArtifactError::InvalidScope)?;
-        if self.adapter_id.as_str() != binding.descriptor.adapter_id.as_str()
-            || self.selection_fingerprint != binding.blueprint_fingerprint
-            || self.scope != *expected_scope
-            || self.scope.provider_id != binding.selection.model.provider_id()
-            || self.scope.model_id != binding.selection.model.model_id()
-        {
-            return Err(NativeArtifactError::InvalidScope);
-        }
-        Ok(())
-    }
-}
-impl<'de> Deserialize<'de> for NativeContextArtifact {
-    fn deserialize<D>(d: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Wire {
-            adapter_id: SafeCode,
-            selection_fingerprint: Sha256Digest,
-            scope: NativeContextScope,
-            byte_length: u64,
-            sha256: Sha256Digest,
-            reference: ArtifactReference,
-        }
-        let w = Wire::deserialize(d)?;
-        if w.byte_length > NativeContextWindow::MAX_PAYLOAD_BYTES as u64 {
-            return Err(serde::de::Error::custom(
-                "native context artifact exceeds 32 MiB",
-            ));
-        }
-        w.reference.validate().map_err(serde::de::Error::custom)?;
-        Ok(Self {
-            adapter_id: w.adapter_id,
-            selection_fingerprint: w.selection_fingerprint,
-            scope: w.scope,
-            byte_length: w.byte_length,
-            sha256: w.sha256,
-            reference: w.reference,
-        })
-    }
-}
-
 fn validate_native_identity(
     _adapter_id: &SafeCode,
     selection_fingerprint: &Sha256Digest,
@@ -1167,9 +1090,6 @@ pub enum InternalAgentBackend {
     Model {
         resolved_model: ResolvedModelRef,
     },
-    ProviderNative {
-        resolved_model: ResolvedModelRef,
-    },
     Builtin {
         name: SafeCode,
         revision: SafeDisplayText,
@@ -1201,8 +1121,7 @@ pub struct InternalAgentFailure {
 
 fn validate_internal_backend(backend: &InternalAgentBackend) -> Result<(), EventSchemaError> {
     match backend {
-        InternalAgentBackend::Model { resolved_model }
-        | InternalAgentBackend::ProviderNative { resolved_model } => resolved_model
+        InternalAgentBackend::Model { resolved_model } => resolved_model
             .validate()
             .map_err(|_| EventSchemaError::InvalidInternalAgentLifecycle),
         InternalAgentBackend::Builtin { .. } => Ok(()),
@@ -1290,6 +1209,29 @@ pub struct ContextCheckpointBudgets {
     pub max_summary_bytes: SummaryByteLimit,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ContextRehydratedFile {
+    pub path: SafeDisplayText,
+    pub content: String,
+    pub byte_length: u64,
+    pub sha256: Sha256Digest,
+}
+
+impl ContextRehydratedFile {
+    pub const MAX_CONTENT_BYTES: usize = 32 * 1024;
+
+    pub fn validate(&self) -> Result<(), EventSchemaError> {
+        if self.content.len() > Self::MAX_CONTENT_BYTES
+            || self.byte_length != self.content.len() as u64
+            || self.sha256 != Sha256Digest::of_bytes(self.content.as_bytes())
+        {
+            return Err(EventSchemaError::InvalidContextRehydration);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct InternalSummaryCheckpoint {
@@ -1364,10 +1306,6 @@ impl<'de> Deserialize<'de> for InternalSummaryCheckpoint {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContextCheckpoint {
-    ProviderNative {
-        model: ResolvedModelRef,
-        native_context: Box<NativeContextArtifact>,
-    },
     InternalSummary {
         #[serde(flatten)]
         checkpoint: InternalSummaryCheckpoint,
@@ -1397,12 +1335,6 @@ impl ContextCheckpointCommit {
             {
                 Err(EventSchemaError::SummaryTooLarge)
             }
-            ContextCheckpoint::ProviderNative {
-                model,
-                native_context,
-            } => native_context
-                .validate_for(model, &native_context.scope)
-                .map_err(|_| EventSchemaError::NativeSelectionMismatch),
             _ => Ok(()),
         }
     }
@@ -1557,6 +1489,11 @@ pub enum EventPayload {
         #[serde(flatten)]
         termination: ToolCallTermination,
     },
+    ToolOutputElided {
+        tool_call_id: ToolCallId,
+        original_bytes: u64,
+        retained: ArtifactReference,
+    },
     ToolStdinSubmitted {
         tool_call_id: ToolCallId,
         byte_count: u64,
@@ -1570,6 +1507,7 @@ pub enum EventPayload {
     },
     ApprovalEvaluated {
         approval_id: ApprovalId,
+        approval_session_increment_count: u64,
         decision: ApprovalInternalDecision,
     },
     ApprovalEscalated {
@@ -1649,6 +1587,16 @@ pub enum EventPayload {
     ContextCheckpointCommitted {
         #[serde(flatten)]
         commit: ContextCheckpointCommit,
+    },
+    ContextRehydrated {
+        #[schemars(length(max = 5))]
+        files: Vec<ContextRehydratedFile>,
+    },
+    ContextCompactionAutoDisabled {
+        #[schemars(range(min = 1))]
+        observed_tokens: u64,
+        #[schemars(range(min = 1))]
+        trigger_tokens: u64,
     },
     SessionTitleCommitted {
         change: SessionTitleChange,
@@ -1747,9 +1695,30 @@ impl EventPayload {
                 }
             }
             Self::ToolCallTerminated { termination } => termination.validate()?,
-            Self::ApprovalEvaluated { decision, .. } => decision
-                .validate()
-                .map_err(|_| EventSchemaError::InvalidApprovalLifecycle)?,
+            Self::ToolOutputElided {
+                original_bytes,
+                retained,
+                ..
+            } => {
+                if *original_bytes == 0 {
+                    return Err(EventSchemaError::InvalidToolElision);
+                }
+                retained.validate()?;
+            }
+            Self::ApprovalEvaluated {
+                decision,
+                approval_session_increment_count,
+                ..
+            } => {
+                decision
+                    .validate()
+                    .map_err(|_| EventSchemaError::InvalidApprovalLifecycle)?;
+                if decision.source != ApprovalDecisionSource::InternalAgent
+                    && *approval_session_increment_count > 0
+                {
+                    return Err(EventSchemaError::InvalidApprovalCounter);
+                }
+            }
             Self::ApprovalEscalated { reason_code, .. }
                 if *reason_code != ApprovalReasonCode::Escalated =>
             {
@@ -1798,6 +1767,20 @@ impl EventPayload {
                 validate_internal_failure(failure)?;
             }
             Self::ContextCheckpointCommitted { commit } => commit.validate()?,
+            Self::ContextRehydrated { files } => {
+                if files.is_empty() || files.len() > 5 {
+                    return Err(EventSchemaError::InvalidContextRehydration);
+                }
+                for file in files {
+                    file.validate()?;
+                }
+            }
+            Self::ContextCompactionAutoDisabled {
+                observed_tokens,
+                trigger_tokens,
+            } if *trigger_tokens == 0 || *observed_tokens < *trigger_tokens => {
+                return Err(EventSchemaError::InvalidCheckpointBoundaries);
+            }
             _ => {}
         }
         Ok(())
@@ -1917,6 +1900,8 @@ pub enum EventSchemaError {
     TitleTooLong,
     TitleControlCharacter,
     InvalidArtifactReference,
+    InvalidToolElision,
+    InvalidContextRehydration,
     ToolOutputTooLarge,
     ToolMetadataTooLarge,
     TooManyAttachments,
@@ -1955,6 +1940,8 @@ impl fmt::Display for EventSchemaError {
             Self::InvalidArtifactReference => {
                 "artifact reference must be a bounded artifact:// URI"
             }
+            Self::InvalidToolElision => "tool output elision is invalid",
+            Self::InvalidContextRehydration => "context rehydration is invalid",
             Self::ToolOutputTooLarge => "persisted tool output exceeds 2 MiB",
             Self::ToolMetadataTooLarge => "persisted tool metadata exceeds 2 MiB",
             Self::TooManyAttachments => "persisted tool result exceeds 256 attachments",

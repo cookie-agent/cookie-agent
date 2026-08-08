@@ -72,6 +72,8 @@ macro_rules! protocol_roots {
             SessionResumeResult,
             SessionSetPermissionModeParams,
             SessionSetPermissionModeResult,
+            SessionCompactParams,
+            SessionCompactResult,
             RunStartParams,
             RunStartResult,
             RunStartConflict,
@@ -219,7 +221,7 @@ pub const TYPESCRIPT_GLOBALS: &str = r#"declare global {
       modalities: { input: Array<string>; output: Array<string> };
       media: { input: Record<string, { media_types: Array<string>; sources: Array<"inline_bytes" | "inline_text" | "url" | "provider_reference"> }> };
       cancellation: "local_only" | "remote_best_effort" | "unsupported";
-      compaction: "native" | "unsupported";
+      compaction: "unsupported";
       replay: { policy: "never" | "if_valid" | "always"; capability: "required" | "optional" | "unsupported"; reasoning: boolean };
     };
     provider_metadata: Record<string, unknown>;

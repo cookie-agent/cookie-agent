@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionCompactParams",
+  "type": "object",
+  "properties": {
+    "focus": {
+      "description": "Control-free bounded presentation text.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 1024,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "focus"
+  ]
+}

@@ -84,7 +84,7 @@ auth = {{ method = "no-auth-v1", values = {{}} }}
 
 [models.test]
 display_name = "No Auth"
-capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", native_compaction = "unsupported", cancellation = "local_only", media = {{}} }}
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {{}} }}
 "#
     ))
     .unwrap()

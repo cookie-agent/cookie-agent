@@ -105,7 +105,8 @@ expression: schema_for!(RuntimeSnapshotResult)
       "enum": [
         "primary",
         "subagent",
-        "all"
+        "all",
+        "internal"
       ]
     },
     "AuthCredentialDescriptor": {
@@ -360,14 +361,6 @@ expression: schema_for!(RuntimeSnapshotResult)
         "bootstrap"
       ]
     },
-    "CompactionCapability": {
-      "type": "string",
-      "enum": [
-        "unsupported",
-        "optional",
-        "required"
-      ]
-    },
     "CredentialFieldType": {
       "type": "string",
       "enum": [
@@ -532,9 +525,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           },
           "additionalProperties": false
         },
-        "native_compaction": {
-          "$ref": "#/$defs/CompactionCapability"
-        },
         "native_replay": {
           "$ref": "#/$defs/ReplayCapability"
         },
@@ -587,7 +577,6 @@ expression: schema_for!(RuntimeSnapshotResult)
         "top_p",
         "seed",
         "native_replay",
-        "native_compaction",
         "cancellation",
         "media"
       ]

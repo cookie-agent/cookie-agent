@@ -8,11 +8,11 @@ use crate::ConfigError;
 use crate::toml_values::{SensitiveProviderValues, zeroize_toml_value};
 use zeroize::Zeroize;
 
-const CONFIG_SCHEMA: u32 = 9;
+const CONFIG_SCHEMA: u32 = 10;
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 7419;
 
-/// Exact schema-9 marker.
+/// Exact schema-10 marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConfigSchemaVersion;
 
@@ -33,7 +33,9 @@ impl<'de> Deserialize<'de> for ConfigSchemaVersion {
         if value == CONFIG_SCHEMA {
             Ok(Self)
         } else {
-            Err(serde::de::Error::custom("schema_version must be exactly 9"))
+            Err(serde::de::Error::custom(
+                "schema_version must be exactly 10",
+            ))
         }
     }
 }
@@ -169,30 +171,27 @@ const fn default_approval_timeout() -> u64 {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextCompactionConfig {
-    #[serde(default = "default_soft")]
-    pub soft_threshold_percent: u8,
+    #[serde(default = "yes", rename = "auto")]
+    pub auto_compaction: bool,
+    #[serde(default = "default_compaction_buffer_tokens")]
+    pub buffer_tokens: u64,
     #[serde(default = "default_summary")]
     pub max_summary_bytes: usize,
-    #[serde(default = "default_native")]
-    pub max_native_context_bytes: usize,
 }
 impl Default for ContextCompactionConfig {
     fn default() -> Self {
         Self {
-            soft_threshold_percent: default_soft(),
+            auto_compaction: true,
+            buffer_tokens: default_compaction_buffer_tokens(),
             max_summary_bytes: default_summary(),
-            max_native_context_bytes: default_native(),
         }
     }
 }
-const fn default_soft() -> u8 {
-    70
+const fn default_compaction_buffer_tokens() -> u64 {
+    33_000
 }
 const fn default_summary() -> usize {
     256 * 1024
-}
-const fn default_native() -> usize {
-    2 * 1024 * 1024
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -261,11 +260,9 @@ pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigErro
         return Err(ConfigError::InvalidRuntime);
     }
     let context = &runtime.context_compaction;
-    if !(1..=100).contains(&context.soft_threshold_percent)
+    if context.buffer_tokens == 0
         || context.max_summary_bytes == 0
         || context.max_summary_bytes > 2 * 1024 * 1024
-        || context.max_native_context_bytes == 0
-        || context.max_native_context_bytes > 2 * 1024 * 1024
     {
         return Err(ConfigError::InvalidRuntime);
     }

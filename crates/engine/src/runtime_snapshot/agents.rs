@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 
 use cookie_agent_config::{
-    AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentMode as ConfigAgentMode,
-    AgentModelFallback, AgentRegistry as ConfigAgentRegistry, AgentSchemaVersion,
-    BUILT_IN_DEFAULT_AGENT_ID, PermissionAction, PermissionEffect, PermissionValue,
-    ToolName as ConfigToolName,
+    AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentLimits,
+    AgentMode as ConfigAgentMode, AgentModelFallback, AgentModelRef,
+    AgentRegistry as ConfigAgentRegistry, AgentSchemaVersion, BUILT_IN_APPROVAL_AGENT_ID,
+    BUILT_IN_COMPACTION_AGENT_ID, BUILT_IN_DEFAULT_AGENT_ID, BUILT_IN_TITLE_AGENT_ID,
+    PermissionAction, PermissionEffect, PermissionValue, ToolName as ConfigToolName,
 };
 use cookie_agent_identity::{AgentId as IdentityAgentId, WildcardPattern};
 use cookie_agent_models::{CompiledModelRuntime, compiler::CompiledModelStatus};
@@ -18,8 +19,14 @@ use crate::EngineError;
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedAgent {
     pub document: AgentDocument,
-    pub resolved_fallback: Vec<ModelSelection>,
+    pub resolved_fallback: Vec<ResolvedAgentFallback>,
     pub runnable_as_root: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ResolvedAgentFallback {
+    Selection(ModelSelection),
+    ParentModel,
 }
 
 #[derive(Clone, Debug)]
@@ -33,32 +40,54 @@ impl AgentRegistry {
         authored: &ConfigAgentRegistry,
         models: &CompiledModelRuntime,
     ) -> Result<Self, EngineError> {
+        let mut documents = built_in_internal_documents()?;
+        documents.extend(
+            authored
+                .documents()
+                .iter()
+                .map(|(id, document)| (id.clone(), document.clone())),
+        );
         let mut agents = BTreeMap::new();
-        for input in authored.materialization_inputs() {
-            let id = input.document.id.clone();
+        for document in documents.into_values() {
+            let id = document.id.clone();
             if id.as_str() == BUILT_IN_DEFAULT_AGENT_ID {
                 return Err(EngineError::RuntimeCompileFailed);
             }
-            let document = input.document.clone();
             let mut resolved_fallback = Vec::new();
             for fallback in &document.frontmatter.model_fallback {
-                let variant = match (&fallback.variant, models.model(&fallback.model)) {
-                    (None, Some(model)) => model.model.default_variant.clone(),
-                    (Some(cookie_agent_identity::ConfiguredVariantRef::Base), _) => None,
-                    (Some(cookie_agent_identity::ConfiguredVariantRef::Named(id)), _) => {
-                        Some(id.clone())
+                match &fallback.model {
+                    AgentModelRef::ParentModel => {
+                        resolved_fallback.push(ResolvedAgentFallback::ParentModel);
                     }
-                    (None, None) => None,
-                };
-                resolved_fallback.push(ModelSelection {
-                    model: fallback.model.clone(),
-                    variant,
-                });
+                    AgentModelRef::Model(model_key) => {
+                        let variant = match (&fallback.variant, models.model(model_key)) {
+                            (None, Some(model)) => model.model.default_variant.clone(),
+                            (Some(cookie_agent_identity::ConfiguredVariantRef::Base), _) => None,
+                            (Some(cookie_agent_identity::ConfiguredVariantRef::Named(id)), _) => {
+                                Some(id.clone())
+                            }
+                            (None, None) => None,
+                        };
+                        resolved_fallback.push(ResolvedAgentFallback::Selection(ModelSelection {
+                            model: model_key.clone(),
+                            variant,
+                        }));
+                    }
+                }
             }
             let available = resolved_fallback
                 .iter()
+                .filter_map(|fallback| match fallback {
+                    ResolvedAgentFallback::Selection(selection) => Some(selection),
+                    ResolvedAgentFallback::ParentModel => None,
+                })
                 .any(|selection| selection_available(models, selection));
-            let runnable_as_root = input.root_eligible && available;
+            let runnable_as_root = document.frontmatter.enabled
+                && matches!(
+                    document.frontmatter.mode,
+                    ConfigAgentMode::Primary | ConfigAgentMode::All
+                )
+                && available;
             agents.insert(
                 id,
                 ResolvedAgent {
@@ -76,7 +105,7 @@ impl AgentRegistry {
                 document.id.clone(),
                 ResolvedAgent {
                     document,
-                    resolved_fallback: vec![selection],
+                    resolved_fallback: vec![ResolvedAgentFallback::Selection(selection)],
                     runnable_as_root: true,
                 },
             );
@@ -89,7 +118,14 @@ impl AgentRegistry {
                 mode: wire_mode(agent.document.frontmatter.mode),
                 enabled: agent.document.frontmatter.enabled,
                 runnable_as_root: agent.runnable_as_root,
-                resolved_fallback: agent.resolved_fallback.clone(),
+                resolved_fallback: agent
+                    .resolved_fallback
+                    .iter()
+                    .filter_map(|fallback| match fallback {
+                        ResolvedAgentFallback::Selection(selection) => Some(selection.clone()),
+                        ResolvedAgentFallback::ParentModel => None,
+                    })
+                    .collect(),
                 tools: agent
                     .document
                     .frontmatter
@@ -125,6 +161,75 @@ fn first_available_selection(models: &CompiledModelRuntime) -> Option<ModelSelec
     })
 }
 
+fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, EngineError> {
+    [
+        (
+            BUILT_IN_APPROVAL_AGENT_ID,
+            "Built-in approval evaluator",
+            "Evaluate the supplied approval request conservatively. Return only the requested structured decision.\n",
+            AgentLimits::default(),
+        ),
+        (
+            BUILT_IN_COMPACTION_AGENT_ID,
+            "Built-in context compaction agent",
+            "Summarize conversation context faithfully within the supplied bounds. Return summary text only.\n",
+            AgentLimits::default(),
+        ),
+        (
+            BUILT_IN_TITLE_AGENT_ID,
+            "Built-in session title agent",
+            "Generate a concise plain-text title from the supplied first user message. Return title text only.\n",
+            AgentLimits {
+                timeout_ms: 10_000,
+                max_input_tokens: 4_096,
+                max_output_tokens: 128,
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(id, description, body, limits)| {
+        let document = built_in_internal_document(id, description, body, limits)?;
+        Ok((document.id.clone(), document))
+    })
+    .collect()
+}
+
+fn built_in_internal_document(
+    id: &str,
+    description: &str,
+    body: &str,
+    limits: AgentLimits,
+) -> Result<AgentDocument, EngineError> {
+    let id = IdentityAgentId::new(id).map_err(|_| EngineError::RuntimeCompileFailed)?;
+    let body = body.to_owned();
+    let frontmatter = AgentFrontmatter {
+        schema: AgentSchemaVersion,
+        description: description.to_owned(),
+        mode: ConfigAgentMode::Internal,
+        enabled: true,
+        model_fallback: vec![AgentModelFallback {
+            model: AgentModelRef::ParentModel,
+            variant: None,
+        }],
+        limits,
+        tools: Vec::new(),
+        permissions: IndexMap::new(),
+    };
+    let document_fingerprint = fingerprint(
+        "cookie-agent/built-in-internal-agent-document/v1",
+        &(id.as_str(), description, &body, &frontmatter.limits),
+    )?;
+    let prompt_fingerprint = fingerprint("cookie-agent/system-prompt/v1", &body)?;
+    Ok(AgentDocument {
+        id,
+        frontmatter,
+        body,
+        source: AgentDocumentSource::BuiltIn,
+        document_fingerprint,
+        prompt_fingerprint,
+    })
+}
+
 fn built_in_default_document(selection: &ModelSelection) -> Result<AgentDocument, EngineError> {
     let id = IdentityAgentId::new(BUILT_IN_DEFAULT_AGENT_ID)
         .map_err(|_| EngineError::RuntimeCompileFailed)?;
@@ -135,12 +240,13 @@ fn built_in_default_document(selection: &ModelSelection) -> Result<AgentDocument
         mode: ConfigAgentMode::Primary,
         enabled: true,
         model_fallback: vec![AgentModelFallback {
-            model: selection.model.clone(),
+            model: AgentModelRef::Model(selection.model.clone()),
             variant: selection
                 .variant
                 .clone()
                 .map(cookie_agent_identity::ConfiguredVariantRef::Named),
         }],
+        limits: AgentLimits::default(),
         tools: vec![
             ConfigToolName::Read,
             ConfigToolName::Grep,
@@ -275,6 +381,7 @@ fn wire_mode(mode: ConfigAgentMode) -> AgentMode {
         ConfigAgentMode::Primary => AgentMode::Primary,
         ConfigAgentMode::Subagent => AgentMode::Subagent,
         ConfigAgentMode::All => AgentMode::All,
+        ConfigAgentMode::Internal => AgentMode::Internal,
     }
 }
 

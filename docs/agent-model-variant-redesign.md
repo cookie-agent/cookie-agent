@@ -166,7 +166,7 @@ Complete capabilities require nonempty input/output modality sets, positive
 `context_tokens` and `output_tokens` with output not exceeding context, and
 explicit booleans for tool calling, parallel tool calls, structured output,
 reasoning, temperature, top-p, and seed. They also require explicit
-`native_replay`, `native_compaction`, and `cancellation` enums plus a complete
+`native_replay` and `cancellation` enums plus a complete
 media map. Parallel tools require tool calling. Each declared non-text input
 modality requires exactly one matching media entry with nonempty MIME types and
 positive byte/count limits; undeclared modalities and output modalities cannot

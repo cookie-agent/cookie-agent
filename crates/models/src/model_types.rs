@@ -105,14 +105,6 @@ pub enum ReplayCapability {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CompactionCapability {
-    Unsupported,
-    Optional,
-    Required,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub enum CancellationCapability {
     LocalOnly,
     Provider,
@@ -133,7 +125,6 @@ pub struct ModelCapabilities {
     pub top_p: bool,
     pub seed: bool,
     pub native_replay: ReplayCapability,
-    pub native_compaction: CompactionCapability,
     pub cancellation: CancellationCapability,
     pub media: BTreeMap<MediaKind, MediaCapability>,
 }

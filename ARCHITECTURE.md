@@ -2,14 +2,14 @@
 
 **Status:** frozen current implementation contract
 
-**Required versions:** configuration schema 9; agent document schema 2;
-protocol 8; event schema 10; session JSONL 10; session metadata 9;
+**Required versions:** configuration schema 10; agent document schema 3;
+protocol 8; event schema 11; session JSONL 11; session metadata 9;
 delegation-journal schema 9; runtime snapshot schema 2; catalog cache schema 2;
 provider store schema 3; family recipe registry schema 1; project model-snapshot
 manifest schema 1.
 
-Only those versions are accepted. Configuration schema 8, agent schema 1,
-event/session schema 9, delegation-journal schema 8, protocol/persistence 7, catalog cache
+Only those versions are accepted. Configuration schema 9, agent schema 2,
+event/session schema 10, delegation-journal schema 8, protocol/persistence 7, catalog cache
 1, provider stores 1/2, and every unversioned or earlier replacement are
 rejected. There are no migrations, compatibility readers, aliases, or dual paths.
 
@@ -86,7 +86,7 @@ Family registry 1 is described in
 15. Model keys split at the first `/`; a model ID may contain `/`.
 16. Secrets never enter caches, revisions, snapshots, events, errors, logs,
     generated artifacts, session files, or TUI projections.
-17. **Empty setup is valid.** Config schema 9 permits `providers` to be omitted
+17. **Empty setup is valid.** Config schema 10 permits `providers` to be omitted
     or empty. When provider store 3 is also empty and no effective authored
     custom provider exists, startup publishes zero models/root-runnable agents
     and opens the TUI so `/connect` can bootstrap setup. Empty TOML does not hide
@@ -113,7 +113,7 @@ model manager ── atomic RuntimeSnapshot schema 1
     │
     ├── catalog manager ── fixed HTTPS / cache 2 / bootstrap
     ├── family registry 1 ── npm-family/protocol/auth compilers
-    ├── config loader ── schema 9 and agent schema 2
+    ├── config loader ── schema 10 and agent schema 3
     └── provider store 3 ── managed durable connections only
 ```
 
@@ -187,7 +187,7 @@ Runtime defaults and catalog/recipes are not TOML layers. The only authored
 layer precedence is:
 
 ```text
-user config schema 9 < exact-cwd workspace config schema 9
+user config schema 10 < exact-cwd workspace config schema 10
 user agent document < same-ID workspace agent document
 ```
 
@@ -196,7 +196,7 @@ ID, the entire user definition with that ID is discarded before parsing and
 semantic validation. Provider fields, model maps, overrides, variants, headers,
 auth values, and arrays never merge. Agent documents are likewise atomic.
 
-Agent schema 2 uses one ordered `permissions` map entry per
+Agent schema 3 uses one ordered `permissions` map entry per
 `PermissionAction`. Each action value is either a bare `allow`, `ask`, or `deny`
 effect, or an ordered resource-pattern-to-effect map; the two forms cannot be
  mixed for one action. Bare effects compile to resource `"*"`. Within an action,
@@ -224,6 +224,46 @@ are accepted because config loading is checkout-independent, and simply do not
 match outside resources. Ordinary absolute `external_directory` patterns remain
 the policy mechanism for outside paths. There is no environment-variable
 expansion in permission patterns.
+
+Agent schema 3 extends `mode` with `internal`. Internal agents are never
+root-runnable, never valid `delegate` targets, and are filtered from every TUI
+agent picker even though runtime snapshot descriptors retain them for coherent
+discovery. They otherwise use the same document body, ordered model fallback,
+enabled flag, and bounded `limits` object (`timeout_ms`, `max_input_tokens`, and
+`max_output_tokens`). The reserved built-in internal documents are `approval`,
+`compaction`, and `title`; same-ID user/workspace documents replace them through
+the ordinary atomic layer precedence, with workspace winning over user and
+built-in.
+
+Only `mode: internal` fallback chains may contain the literal
+`${parent_model}`. It carries no authored variant because it resolves at internal
+policy freeze time to the parent run's exact active frozen binding, including
+variant and manifest identity. Parentless resolution skips that entry; an empty
+resolved chain uses the existing `unavailable` builtin lifecycle. Historical
+title regeneration reconstructs the parent policy from `RunStarted` and its
+persisted selected suffix, so `${parent_model}` never consults current model
+selection. Approval and title internal model requests use the shared tool-less
+request builder and always emit an empty tool list. Compaction is the deliberate
+exception described in section 12: it preserves the parent request's tool
+definitions for cache-prefix identity but rejects every non-text response.
+The built-in compaction chain begins with `${parent_model}`; the built-in
+approval and title chains preserve the same parent-model behavior used before
+schema 3. Title generation receives only the first user message, never assistant
+answer text.
+
+The approval internal agent has one memory-only conversation per parent session.
+The first increment carries the existing bounded request (`cwd_identity`,
+normalized operations, and normalized resource labels). Later increments carry
+only user/delegate input submitted since the preceding approval evaluation plus
+the new normalized operations and resource labels. Real system, user, and
+assistant turns are reused for the next evaluation. Retention is capped at the
+latest 20 approval increments; removed history is represented by an `…and M
+earlier messages` system note. This state is never written to session JSONL and
+is not reconstructed after restart. Event schema 11 adds
+`approval_session_increment_count` to every `ApprovalEvaluated` event. Invoked
+internal-agent evaluations use their monotonically increasing per-session
+increment; Ask-mode evaluations that skip the agent and all non-agent
+evaluations record zero.
 
 Unmatched resources ask. Generic read allows do not override the built-in
 default ask for `.env`/`.env.*`; exact or more-specific authored rules decide
@@ -259,7 +299,7 @@ labels used for policy matching.
 The removed agent `delegation` field has no decoder. Delegation targets are the
 keys of the `delegate` permission resource map, whose target effects are
 `allow` or `ask`; targets must resolve to enabled `subagent`/`all` agents.
-Runtime schema 9 owns `[delegation]`: `max_depth` defaults to 3 and
+Runtime schema 10 owns `[delegation]`: `max_depth` defaults to 3 and
 `max_concurrency` defaults to unlimited. A frozen child ceiling is the parent
 ceiling bounded by runtime `max_depth`. Admission serializes the count of
 delegated sessions in the root tree that currently have an active run; reaching
@@ -660,44 +700,67 @@ Typed failures leave history readable and never substitute another model:
 
 ## 12. Context compaction
 
-Runtime schema 9 exposes one compaction trigger,
-`context_compaction.soft_threshold_percent`, defaulting to 70, plus the durable
-summary and native-context byte limits. There is no hard threshold or target
-percentage. The model loop retains its assembled-history estimate of serialized
-history bytes divided by four and attempts compaction when that estimate reaches
-the soft threshold. Failure to produce a valid native or summary checkpoint is
-always soft: the unchanged events continue to the model.
+Runtime schema 10 exposes `context_compaction.auto` (default `true`),
+`buffer_tokens` (default 33,000), and `max_summary_bytes` (default 262,144).
+The effective trigger is `context_limit - buffer_tokens`, saturating at zero.
+Provider-native compaction and its authored capability are not part of the
+runtime; the Oven descriptor boundary is always frozen as unsupported.
 
-Each loaded session starts with an in-memory token estimator whose
-`tokens_per_byte` and `last_committed_input_tokens` are both zero; persisted
-history is deliberately not used to seed it. After a model turn is durably
-committed, nonzero reported input tokens divided by the nonzero serialized byte
-length of the exact history sent for that turn replaces the learned ratio. The
-last committed input-token count follows the committed turn and is zero when
-usage is absent. Before `start_run_direct` appends a new `UserInputSubmitted`
-event, it projects the next input as the last committed input tokens plus the
-serialized user-message bytes multiplied by the learned ratio. A positive ratio
-whose projection reaches the same soft threshold forces compaction over the
-current log first. The checkpoint therefore precedes the new user event, keeping
-that message live beside the compacted context. A zero ratio never predicts a
-trigger.
+Two automatic signals feed one compaction path. The real-usage signal compares
+the latest committed turn's `input_tokens + output_tokens` with the effective
+trigger. The pre-send predictor retains the learned per-session tokens-per-byte
+ratio: after a committed turn, nonzero reported input tokens divided by the exact
+serialized history byte length replaces the ratio, and the next user input is
+projected against the same effective trigger before `UserInputSubmitted` is
+appended. A zero ratio does not predict. `auto = false` disables both automatic
+signals, while forced compaction and context-overflow recovery remain available.
 
-`ContextCheckpointBudgets` records the context limit, soft trigger, estimated
-input tokens before and after compaction, and summary-byte limit; it has no
-target budget. Native checkpoints estimate their post-compaction tokens from
-the retained artifact payload bytes divided by four, rounded up. Commit
-validation requires a nonempty monotonic source range, an input boundary at or
-after the source range, a positive context limit, a trigger no greater than that
-limit, and strict shrinkage (`input_tokens_after < input_tokens_before`). The
-pre-compaction estimate may be below the trigger because predictive intake
-compaction is valid.
+Compaction first stages old bulky completed tool outputs. Results attached to
+the newest two model turns are protected. Older outputs of at least 8 KiB are
+retained in the artifact store and represented in model history as
+`[tool output elided; retained at <artifact-uri>; <original-bytes> bytes]` via a
+durable `ToolOutputElided` event. Elision occurs only after a complete tool
+call/result pair and checkpoint boundaries never split the pair. If the reduced
+request estimate is below the trigger, automatic compaction stops without a
+paid summarizer call.
+
+The summarizer request is a fork of the exact next normal request: the assembled
+system prompt and history are unchanged, the same tool definitions remain, and
+one fixed detailed-summary user instruction is appended last. This compaction
+fork is the sole exception to the structural no-tools rule so its request prefix
+is byte-identical and cacheable. Any returned tool call or other non-text part is
+invalid internal-agent output and is never dispatched. Optional forced-focus
+text is appended only after the fixed instruction.
+The TUI `/compact [focus]` command calls strict `session.compact` for the
+selected idle session; its RPC focus field is required, nullable, and bounded.
+
+The validated summary replaces the covered range as one user turn. The system
+turn remains index zero. The framing is frozen as
+`This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n<summary>\n{summary}\n</summary>\n\nPlease continue the conversation from where we left off without asking the user any further questions.`
+Pending input remains after the checkpoint. Commit validation keeps monotonic
+boundaries and requires strict estimated shrinkage.
+
+After commit, the engine scans completed read-tool results newest-first, selects
+up to five distinct file paths, and re-reads readable UTF-8 files. Each file is
+capped at 32 KiB and the aggregate is capped at 128 KiB. Missing, unreadable, and
+non-UTF-8 files are skipped. `ContextRehydrated` durably records the bounded
+content; history projects it as ordinary synthetic `read` tool calls and tool
+results after the summary turn.
+
+A provider `ContextLength` failure with no meaningful output abandons the
+attempt, forces this same compaction path, and retries the turn exactly once; a
+second overflow is surfaced. After a checkpoint, the first later real-usage
+sample is the anti-thrash check. If it remains at or above the trigger,
+automatic compaction is latched off in memory for that session and a durable,
+user-visible `ContextCompactionAutoDisabled` notice is emitted. Forced/manual
+compaction remains available.
 
 ## 13. Normative startup order
 
 Startup order is frozen and must not be reordered:
 
-1. **Schema 9 and agents:** securely open roots, load family registry 1, then
-   strictly load atomic config schema 9 and agent schema 2 documents.
+1. **Schema 10 and agents:** securely open roots, load family registry 1, then
+   strictly load atomic config schema 10 and agent schema 3 documents.
 2. **Catalog:** securely open cache schema 2, perform the bounded identity-only
    network request, then select network, validated cache, or bundled bootstrap
    and apply record quarantine.
@@ -710,7 +773,7 @@ Startup order is frozen and must not be reordered:
    model set is valid.
 6. **Project manifests:** scan/validate model-snapshot manifests 1 and rehydrate
    every referenced safe blueprint needed by project sessions.
-7. **Engine:** open version-10 session/event state and version-9 delegation state and reconcile it
+7. **Engine:** open version-11 session/event state and version-9 delegation state and reconcile it
    against the manifest index; accepted/delegated bindings stay pinned.
 8. **Service:** atomically publish runtime, open server/TUI, then emit startup
    `runtime.changed`.
@@ -833,8 +896,9 @@ provider-store generation reconciliation.
 ### 14.1 Live per-session permission mode
 
 Every session has a live permission mode, defaulting to `auto_approve` when no
-explicit value has been set. `auto_approve` preserves the normal approval-agent
-evaluation and escalates only when that agent asks. `ask` skips the internal
+explicit value has been set. `auto_approve` preserves the persistent
+approval-agent conversation and escalates when that agent asks, emits malformed
+output, times out, or fails. `ask` skips the internal
 approval agent and routes every policy-ask or model-requested approval through
 the durable escalation transaction and user modal. `yolo` skips both the
 internal agent and escalation, durably appends `ApprovalEvaluated { allow,

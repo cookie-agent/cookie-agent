@@ -16,9 +16,9 @@ use cookie_agent_protocol::{
     AvailableModelDescriptor, ClientConnectId, ClientRequestId, ClientResponseId, ClientRunId,
     EventPayload, ModelKey, ModelSelection, PermissionMode, ProviderConnectParams,
     ProviderDescriptor, ProviderDisconnectParams, RunCancelParams, RunSelection, RunStartParams,
-    RunSteerParams, RunToolStdinParams, SessionCreateParams, SessionId, SessionListParams,
-    SessionMeta, SessionSetPermissionModeParams, SessionStatus, SessionTitle, SessionTitleChange,
-    SessionTree, SessionTreeParams, VariantId,
+    RunSteerParams, RunToolStdinParams, SafeDisplayText, SessionCompactParams, SessionCreateParams,
+    SessionId, SessionListParams, SessionMeta, SessionSetPermissionModeParams, SessionStatus,
+    SessionTitle, SessionTitleChange, SessionTree, SessionTreeParams, VariantId,
 };
 use crossterm::{
     event::{
@@ -748,7 +748,9 @@ impl App {
     pub(super) fn selectable_agents(&self) -> Vec<&AgentDescriptor> {
         self.agents
             .iter()
-            .filter(|agent| agent.runnable_as_root)
+            .filter(|agent| {
+                agent.runnable_as_root && agent.mode != cookie_agent_protocol::AgentMode::Internal
+            })
             .collect()
     }
 
@@ -3518,6 +3520,7 @@ impl App {
                 self.picker_state.select(Some(0));
             }
             SlashCommand::Cancel => self.cancel_active_run(),
+            SlashCommand::Compact(focus) => self.compact_selected_session(focus).await,
             SlashCommand::Approve(decision) => self.answer_approval(decision).await,
             SlashCommand::Events(level) => {
                 // View-only threshold change: the TOML is not rewritten and
@@ -3527,6 +3530,30 @@ impl App {
             }
             SlashCommand::Help => self.show_help(),
         }
+    }
+
+    async fn compact_selected_session(&mut self, focus: Option<String>) {
+        let Some(session_id) = self.selected else {
+            self.status = "select a session before compacting context".into();
+            return;
+        };
+        let focus = match focus.map(SafeDisplayText::new).transpose() {
+            Ok(focus) => focus,
+            Err(_) => {
+                self.status = "compaction focus must be control-free and at most 1024 bytes".into();
+                return;
+            }
+        };
+        self.status = "compacting context…".into();
+        self.status = match self
+            .client
+            .compact_session(SessionCompactParams { session_id, focus })
+            .await
+        {
+            Ok(result) if result.compacted => "context compacted".into(),
+            Ok(_) => "context did not require or could not produce a smaller checkpoint".into(),
+            Err(error) => format!("context compaction failed: {error}"),
+        };
     }
 
     pub(super) fn show_help(&mut self) {

@@ -86,7 +86,6 @@ mod tests {
                         "top_p": false,
                         "seed": false,
                         "native_replay": "unsupported",
-                        "native_compaction": "unsupported",
                         "cancellation": "local_only",
                         "media": {}
                     }
@@ -139,11 +138,14 @@ mod tests {
                 mode: AgentMode::Primary,
                 enabled: true,
                 model_fallback: vec![cookie_agent_config::AgentModelFallback {
-                    model: "custom.gateway/arbitrary-model"
-                        .parse::<ModelKey>()
-                        .expect("model key"),
+                    model: cookie_agent_config::AgentModelRef::Model(
+                        "custom.gateway/arbitrary-model"
+                            .parse::<ModelKey>()
+                            .expect("model key"),
+                    ),
                     variant: None,
                 }],
+                limits: cookie_agent_config::AgentLimits::default(),
                 tools: Vec::new(),
                 permissions: Default::default(),
             },

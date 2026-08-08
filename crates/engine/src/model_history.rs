@@ -4,25 +4,42 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use bytes::Bytes;
 use cookie_agent_protocol::{
-    ApprovalDecisionSource, ContextCheckpoint, EventPayload, FrozenModelBinding, ModelFinishReason,
-    ModelSelection, NativeContextScope, NativeReplayArtifact, PersistedAssistantPart,
-    PersistedContentValue, PersistedFilePart, PersistedFileSource, PersistedModelTurn,
-    PersistedToolContent, PersistedToolResult, ReplayDecision, ReplayDisposition, ResolvedModelRef,
-    SafeCode, SafeErrorMessage, Sha256Digest, StoredEvent, ToolAttachment, ToolCallId,
-    ToolTerminationOutcome, Usage,
+    ApprovalDecisionSource, ArtifactReference, ContextCheckpoint, ContextRehydratedFile,
+    EventPayload, FrozenModelBinding, ModelFinishReason, ModelSelection, NativeContextScope,
+    NativeReplayArtifact, PersistedAssistantPart, PersistedContentValue, PersistedFilePart,
+    PersistedFileSource, PersistedModelTurn, PersistedToolContent, PersistedToolResult,
+    ReplayDecision, ReplayDisposition, ResolvedModelRef, SafeCode, SafeErrorMessage, Sha256Digest,
+    StoredEvent, ToolAttachment, ToolCallId, ToolTerminationOutcome, Usage,
 };
 use oven_sdk::{
     AdapterId, AssistantMessage, AssistantPart, CompletedTurn, ContentValue, CustomPart, FilePart,
     FileSource, Finish, FinishReason, HistoryTurn, InputPart, ModelError,
-    NativeContextScope as OvenNativeContextScope, NativeContextWindow,
-    NativeReplayArtifact as OvenReplayArtifact, ProviderId, ReasoningPart,
-    ReplayDecision as OvenReplayDecision, ReplayDisposition as OvenReplayDisposition, ResourceId,
-    SourcePart, SystemMessage, SystemPart, TextPart, ToolApprovalPart, ToolCallPart, ToolContent,
-    ToolMessage, ToolResultPart, UserMessage,
+    NativeContextScope as OvenNativeContextScope, NativeReplayArtifact as OvenReplayArtifact,
+    ProviderId, ReasoningPart, ReplayDecision as OvenReplayDecision,
+    ReplayDisposition as OvenReplayDisposition, ResourceId, SourcePart, SystemMessage, SystemPart,
+    TextPart, ToolApprovalPart, ToolCallPart, ToolContent, ToolMessage, ToolResultPart,
+    UserMessage,
 };
 use thiserror::Error;
 
 use crate::ArtifactStore;
+
+pub(crate) const COMPACTION_SUMMARY_PREFIX: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n<summary>\n";
+pub(crate) const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>\n\nPlease continue the conversation from where we left off without asking the user any further questions.";
+
+pub(crate) fn framed_compaction_summary(summary: &str) -> String {
+    format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}")
+}
+
+pub(crate) fn tool_output_elision_marker(
+    retained: &ArtifactReference,
+    original_bytes: u64,
+) -> String {
+    format!(
+        "[tool output elided; retained at {}; {original_bytes} bytes]",
+        retained.uri
+    )
+}
 
 #[derive(Debug, Error)]
 pub enum HistoryError {
@@ -187,6 +204,7 @@ pub(crate) fn replay_decisions_with_preflight(
 enum LogicalTurn {
     User(UserMessage),
     Assistant(Box<AssistantRecord>),
+    Rehydration(Vec<ContextRehydratedFile>),
 }
 
 #[derive(Clone)]
@@ -207,7 +225,6 @@ struct CallRecord {
 
 pub(crate) struct ModelContext {
     pub(crate) history: Vec<HistoryTurn>,
-    pub(crate) native_context: Option<NativeContextWindow>,
     pub(crate) replay_decisions: Vec<ReplayDecision>,
 }
 
@@ -230,7 +247,6 @@ pub(crate) fn assemble_model_context(
         let assembled = assemble_history_with_replay(events, store, binding, composed_prompt)?;
         return Ok(ModelContext {
             history: assembled.history,
-            native_context: None,
             replay_decisions: assembled.replay_decisions,
         });
     };
@@ -243,9 +259,10 @@ pub(crate) fn assemble_model_context(
         ContextCheckpoint::InternalSummary { checkpoint } => {
             let mut assembled =
                 assemble_history_with_replay(&after, store, binding, composed_prompt)?;
-            assembled
-                .history
-                .insert(1, HistoryTurn::user(user_text(checkpoint.summary())));
+            assembled.history.insert(
+                1,
+                HistoryTurn::user(user_text(&framed_compaction_summary(checkpoint.summary()))),
+            );
             for decision in &mut assembled.replay_decisions {
                 if decision.history_index >= 1 {
                     decision.history_index += 1;
@@ -253,49 +270,6 @@ pub(crate) fn assemble_model_context(
             }
             Ok(ModelContext {
                 history: assembled.history,
-                native_context: None,
-                replay_decisions: assembled.replay_decisions,
-            })
-        }
-        ContextCheckpoint::ProviderNative {
-            model,
-            native_context,
-        } if model == &wire_model(binding)
-            && native_context
-                .validate_for_binding(binding, &native_context.scope)
-                .is_ok() =>
-        {
-            let window = store
-                .read_verified_native_context(native_context)
-                .ok()
-                .and_then(|payload| serde_json::from_str::<NativeContextWindow>(&payload).ok())
-                .filter(|window| {
-                    restore_scope(&native_context.scope).is_ok_and(|expected_scope| {
-                        window.adapter_id() == &AdapterId::new(native_context.adapter_id.as_str())
-                            && window.scope() == &expected_scope
-                    })
-                });
-            let Some(window) = window else {
-                let assembled =
-                    assemble_history_with_replay(events, store, binding, composed_prompt)?;
-                return Ok(ModelContext {
-                    history: assembled.history,
-                    native_context: None,
-                    replay_decisions: assembled.replay_decisions,
-                });
-            };
-            let assembled = assemble_history_with_replay(&after, store, binding, composed_prompt)?;
-            Ok(ModelContext {
-                history: assembled.history,
-                native_context: Some(window),
-                replay_decisions: assembled.replay_decisions,
-            })
-        }
-        ContextCheckpoint::ProviderNative { .. } => {
-            let assembled = assemble_history_with_replay(events, store, binding, composed_prompt)?;
-            Ok(ModelContext {
-                history: assembled.history,
-                native_context: None,
                 replay_decisions: assembled.replay_decisions,
             })
         }
@@ -329,6 +303,17 @@ fn assemble_history_with_replay(
     >::new();
     let mut engine_calls =
         HashMap::<(cookie_agent_protocol::RunId, ToolCallId), (usize, usize)>::new();
+    let elisions = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolOutputElided {
+                tool_call_id,
+                original_bytes,
+                retained,
+            } => Some((*tool_call_id, (*original_bytes, retained.clone()))),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
 
     for envelope in events {
         match &envelope.payload {
@@ -403,12 +388,24 @@ fn assemble_history_with_replay(
                 if termination.outcome == ToolTerminationOutcome::Completed =>
             {
                 if let Some(result) = &termination.result {
+                    let result = elisions.get(&termination.tool_call_id).map_or_else(
+                        || tool_result_part(result, store),
+                        |(original_bytes, retained)| {
+                            Ok(ToolResultPart::new(
+                                String::new(),
+                                ToolContent::Text(tool_output_elision_marker(
+                                    retained,
+                                    *original_bytes,
+                                )),
+                            ))
+                        },
+                    )?;
                     attach_result(
                         &mut logical,
                         &engine_calls,
                         envelope.run_id,
                         termination.tool_call_id,
-                        tool_result_part(result, store)?,
+                        result,
                     )?;
                 }
             }
@@ -464,6 +461,9 @@ fn assemble_history_with_replay(
                         metadata,
                     },
                 )?;
+            }
+            EventPayload::ContextRehydrated { files } => {
+                logical.push(LogicalTurn::Rehydration(files.clone()));
             }
             _ => {}
         }
@@ -544,6 +544,31 @@ fn assemble_history_with_replay(
                     history.push(HistoryTurn::tool(ToolMessage::new(results)));
                 }
                 let _ = assistant.run_id;
+            }
+            LogicalTurn::Rehydration(files) => {
+                let mut calls = Vec::with_capacity(files.len());
+                let mut results = Vec::with_capacity(files.len());
+                for (index, file) in files.into_iter().enumerate() {
+                    let id = format!("context-rehydration-{index}");
+                    calls.push(AssistantPart::ToolCall(ToolCallPart::new(
+                        id.clone(),
+                        "read",
+                        serde_json::json!({"filePath": file.path.as_str()}),
+                    )));
+                    results.push(ToolResultPart::new(
+                        id,
+                        ToolContent::Text(format!(
+                            "<path>{}</path>\n<type>file</type>\n<content>\n{}\n</content>",
+                            file.path.as_str(),
+                            file.content
+                        )),
+                    ));
+                }
+                history.push(HistoryTurn::assistant(CompletedTurn::new(
+                    AssistantMessage::new(calls),
+                    Finish::new(oven_sdk::Usage::default(), FinishReason::ToolCalls),
+                )));
+                history.push(HistoryTurn::tool(ToolMessage::new(results)));
             }
         }
     }
@@ -1199,9 +1224,9 @@ mod tests {
         AssistantToolCallRef, ContextCheckpoint, ContextCheckpointBoundaries,
         ContextCheckpointBudgets, ContextCheckpointCommit, EventPayload, EventSchemaVersion,
         InternalAgentInvocationId, InternalAgentRunId, InternalSummaryCheckpoint, ModelCallId,
-        ModelFinishReason, ModelKey, ModelSelection, NativeContextArtifact, NativeContextScope,
-        NativeReplayArtifact, OperationFingerprint, PermissionAction, PersistedAssistantPart,
-        PersistedModelTurn, PersistedToolResult, PreparedApprovalResource, PreparedBindingLifetime,
+        ModelFinishReason, ModelKey, ModelSelection, NativeContextScope, NativeReplayArtifact,
+        OperationFingerprint, PermissionAction, PersistedAssistantPart, PersistedModelTurn,
+        PersistedToolResult, PreparedApprovalResource, PreparedBindingLifetime,
         PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
         PreparedResourceIdentity, ProviderId, ProviderModelId, ReplayDisposition, ResolvedModelRef,
         RunId, SafeCode, SafeDisplayText, SessionId, Sha256Digest, StoredEvent, SummaryByteLimit,
@@ -1214,9 +1239,39 @@ mod tests {
     };
 
     use super::{
-        assemble_history, assemble_model_context, replay_decisions,
-        replay_decisions_with_preflight, restore_replay, wire_model,
+        COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, assemble_history,
+        assemble_model_context, framed_compaction_summary, replay_decisions,
+        replay_decisions_with_preflight, restore_replay, tool_output_elision_marker, wire_model,
     };
+
+    #[test]
+    fn compaction_summary_framing_is_byte_stable() {
+        assert_eq!(
+            COMPACTION_SUMMARY_PREFIX,
+            "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n<summary>\n"
+        );
+        assert_eq!(
+            COMPACTION_SUMMARY_SUFFIX,
+            "\n</summary>\n\nPlease continue the conversation from where we left off without asking the user any further questions."
+        );
+        assert_eq!(
+            framed_compaction_summary("state"),
+            format!("{COMPACTION_SUMMARY_PREFIX}state{COMPACTION_SUMMARY_SUFFIX}")
+        );
+    }
+
+    #[test]
+    fn tool_elision_marker_is_stable_and_contains_the_artifact_reference() {
+        let retained = cookie_agent_protocol::ArtifactReference {
+            uri:
+                "artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .into(),
+        };
+        assert_eq!(
+            tool_output_elision_marker(&retained, 12_345),
+            "[tool output elided; retained at artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; 12345 bytes]"
+        );
+    }
     use crate::{
         ArtifactStore,
         test_support::{model_binding as binding, variant_model_binding},
@@ -1564,96 +1619,6 @@ mod tests {
                 }
             ]
         ));
-    }
-
-    #[test]
-    fn invalid_native_context_window_falls_back_to_readable_normalized_history() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
-        let binding = binding();
-        let resolved = wire_model(&binding);
-        let scope = OvenNativeContextScope::new(
-            oven_sdk::ProviderId::new(resolved.provider_id.as_str()),
-            oven_sdk::ModelId::new(resolved.model_id.as_str()),
-            ResourceId::new("resource").expect("resource"),
-        )
-        .expect("scope");
-        let invalid_window = oven_sdk::NativeContextWindow::new(
-            oven_sdk::AdapterId::new("vendor.foreign-adapter.v1"),
-            scope,
-            serde_json::json!({"opaque": true}),
-        )
-        .expect("window");
-        let payload = serde_json::to_vec(&invalid_window).expect("payload");
-        let (reference, digest) = store.retain(&payload).expect("retain");
-        let protocol_scope = NativeContextScope {
-            provider_id: resolved.provider_id.clone(),
-            model_id: resolved.model_id.clone(),
-            resource_id: SafeDisplayText::new("resource").expect("resource"),
-        };
-        let run = RunId::new_v7();
-        let events = vec![
-            event(
-                1,
-                run,
-                EventPayload::ModelTurnCommitted {
-                    attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
-                    model_turn_seq: 1,
-                    resolved_model: resolved.clone(),
-                    input_through_seq: 1,
-                    turn: PersistedModelTurn {
-                        content: vec![PersistedAssistantPart::Text {
-                            text: "readable answer".into(),
-                            metadata: None,
-                        }],
-                        provider_options: BTreeMap::new(),
-                        finish_reason: ModelFinishReason::Stop,
-                        usage: Usage::default(),
-                        response_metadata: BTreeMap::new(),
-                        provider_metadata: BTreeMap::new(),
-                        native_replay: None,
-                    },
-                    warnings: Vec::new(),
-                },
-            ),
-            event(
-                2,
-                run,
-                EventPayload::ContextCheckpointCommitted {
-                    commit: ContextCheckpointCommit {
-                        checkpoint: ContextCheckpoint::ProviderNative {
-                            model: resolved,
-                            native_context: Box::new(NativeContextArtifact {
-                                adapter_id: SafeCode::new(binding.descriptor.adapter_id.as_str())
-                                    .expect("adapter"),
-                                selection_fingerprint: wire_model(&binding).selection_fingerprint,
-                                scope: protocol_scope,
-                                byte_length: payload.len() as u64,
-                                sha256: Sha256Digest::new(digest).expect("digest"),
-                                reference,
-                            }),
-                        },
-                        boundaries: ContextCheckpointBoundaries {
-                            source_from_seq: 1,
-                            source_through_seq: 1,
-                            input_through_seq: 1,
-                            prior_checkpoint_seq: None,
-                        },
-                        budgets: ContextCheckpointBudgets {
-                            context_limit_tokens: 100,
-                            trigger_tokens: 80,
-                            input_tokens_before: 90,
-                            input_tokens_after: 30,
-                            max_summary_bytes: SummaryByteLimit::new(1024).expect("limit"),
-                        },
-                    },
-                },
-            ),
-        ];
-        let context = assemble_model_context(&events, &store, &binding, "System prompt.")
-            .expect("invalid native context is nonfatal");
-        assert!(context.native_context.is_none());
-        assert_eq!(context.history.len(), 2);
     }
 
     #[test]

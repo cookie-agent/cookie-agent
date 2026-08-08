@@ -171,7 +171,6 @@ mod tests {
                 top_p: true,
                 seed: true,
                 native_replay: cookie_agent_protocol::ReplayCapability::Unsupported,
-                native_compaction: cookie_agent_protocol::CompactionCapability::Unsupported,
                 cancellation: cookie_agent_protocol::CancellationCapability::LocalOnly,
                 media: Default::default(),
             },

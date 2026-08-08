@@ -7,7 +7,7 @@ use ts_rs::TS;
 use crate::{AgentId, FrozenModelBinding, ModelKey, ModelSelection, Sha256Digest, WildcardPattern};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
-#[ts(type = "2")]
+#[ts(type = "3")]
 pub struct AgentSchemaVersion(());
 impl AgentSchemaVersion {
     #[must_use]
@@ -16,7 +16,7 @@ impl AgentSchemaVersion {
     }
     #[must_use]
     pub const fn value(self) -> u32 {
-        2
+        3
     }
 }
 impl Serialize for AgentSchemaVersion {
@@ -24,7 +24,7 @@ impl Serialize for AgentSchemaVersion {
     where
         S: serde::Serializer,
     {
-        s.serialize_u32(2)
+        s.serialize_u32(3)
     }
 }
 impl<'de> Deserialize<'de> for AgentSchemaVersion {
@@ -33,11 +33,11 @@ impl<'de> Deserialize<'de> for AgentSchemaVersion {
         D: serde::Deserializer<'de>,
     {
         let v = u32::deserialize(d)?;
-        if v == 2 {
+        if v == 3 {
             Ok(Self::current())
         } else {
             Err(serde::de::Error::custom(format!(
-                "unsupported exact agent schema {v}; expected 2"
+                "unsupported exact agent schema {v}; expected 3"
             )))
         }
     }
@@ -50,7 +50,7 @@ impl JsonSchema for AgentSchemaVersion {
         Cow::Borrowed("AgentSchemaVersion")
     }
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"integer","const":2})
+        json_schema!({"type":"integer","const":3})
     }
 }
 
@@ -62,6 +62,7 @@ pub enum AgentMode {
     Primary,
     Subagent,
     All,
+    Internal,
 }
 
 #[derive(
@@ -399,7 +400,7 @@ impl AgentDescriptor {
         }
         if self.runnable_as_root
             && (!self.enabled
-                || self.mode == AgentMode::Subagent
+                || matches!(self.mode, AgentMode::Subagent | AgentMode::Internal)
                 || self.resolved_fallback.is_empty())
         {
             return Err(AgentSchemaError::InvalidRootRunnable);

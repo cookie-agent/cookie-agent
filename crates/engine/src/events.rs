@@ -207,6 +207,7 @@ fn validate_records(
     let mut provider_item_owners = HashMap::<(RunId, ProviderItemId), AssistantToolCallRef>::new();
     let mut tool_starts = HashMap::<ToolCallId, (RunId, ToolCallStart)>::new();
     let mut terminated_tools = HashSet::<ToolCallId>::new();
+    let mut elided_tools = HashSet::<ToolCallId>::new();
     let mut next_model_turn_seq = 1_u64;
     let mut previous_timestamp = None;
     for (index, record) in records.iter().enumerate() {
@@ -502,6 +503,17 @@ fn validate_records(
                 }
                 if !terminated_tools.insert(termination.tool_call_id) {
                     return corrupt(path, "tool call has more than one terminal event");
+                }
+            }
+            EventPayload::ToolOutputElided { tool_call_id, .. } => {
+                let Some((run_id, _)) = tool_starts.get(tool_call_id) else {
+                    return corrupt(path, "tool elision appeared before its start");
+                };
+                if record.run_id != Some(*run_id)
+                    || !terminated_tools.contains(tool_call_id)
+                    || !elided_tools.insert(*tool_call_id)
+                {
+                    return corrupt(path, "tool elision ownership or ordering is invalid");
                 }
             }
             EventPayload::ToolCallProgress { tool_call_id, .. }

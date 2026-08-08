@@ -10,7 +10,7 @@ impl Engine {
         executor: PreparedExecutorCell,
         message: Option<String>,
     ) -> Result<ApprovalOutcome, EngineError> {
-        let approval_policy = self.active_internal_policy(active, InternalAgentKind::Approval);
+        let approval_policy = self.active_internal_policy(active, InternalAgentKind::Approval)?;
         let request = approval_request_for_operation(
             ApprovalTrigger::ModelToolApproval,
             operation.clone(),
@@ -106,6 +106,7 @@ impl Engine {
                 Some(run),
                 Event::ApprovalEvaluated {
                     approval_id,
+                    approval_session_increment_count: 0,
                     decision,
                 },
             )
@@ -146,6 +147,7 @@ impl Engine {
                 Some(run),
                 Event::ApprovalEvaluated {
                     approval_id,
+                    approval_session_increment_count: 0,
                     decision,
                 },
             )
@@ -185,6 +187,7 @@ impl Engine {
                 Some(run),
                 Event::ApprovalEvaluated {
                     approval_id,
+                    approval_session_increment_count: 0,
                     decision: ApprovalInternalDecision {
                         decision: ApprovalInternalDecisionKind::Allow,
                         source: ApprovalDecisionSource::Policy,
@@ -215,26 +218,9 @@ impl Engine {
             });
         }
 
-        let internal_kind = match permission_mode {
-            PermissionMode::Ask => ApprovalInternalDecisionKind::Ask,
+        let (internal_kind, approval_session_increment_count) = match permission_mode {
+            PermissionMode::Ask => (ApprovalInternalDecisionKind::Ask, 0),
             PermissionMode::AutoApprove => {
-                let safe_resources = approval_evaluations(&request)
-                    .iter()
-                    .map(|evaluation| evaluation.trace.normalized_resource.clone())
-                    .collect::<Vec<_>>();
-                let safe_operations = request
-                    .operation()
-                    .capabilities()
-                    .iter()
-                    .map(|capability| capability.operation.as_str())
-                    .collect::<Vec<_>>();
-                let prompt = serde_json::to_string(&serde_json::json!({
-                    "instruction": "Return strict JSON only: {\"decision\":\"allow\"|\"deny\"|\"ask\"}.",
-                    "cwd_identity": session.meta.cwd_identity,
-                    "operations": safe_operations,
-                    "resource_labels": safe_resources,
-                }))
-                .expect("safe approval prompt serializes");
                 #[cfg(test)]
                 let hook = {
                     self.inner
@@ -256,25 +242,15 @@ impl Engine {
                     hook.release.notified().await;
                 }
                 let approval_policy =
-                    self.active_internal_policy(active, InternalAgentKind::Approval);
-                match self
-                    .run_internal_text_agent(
-                        active.session,
-                        Some(run),
-                        InternalAgentKind::Approval,
-                        &approval_policy,
-                        prompt,
-                        InternalAgentExecution {
-                            cancellation: &active.cancellation,
-                            actor_direct: false,
-                        },
-                    )
-                    .await
-                {
-                    Ok(result) => parse_internal_approval(&result.text)
-                        .unwrap_or(ApprovalInternalDecisionKind::Ask),
-                    Err(_) => ApprovalInternalDecisionKind::Ask,
-                }
+                    self.active_internal_policy(active, InternalAgentKind::Approval)?;
+                self.evaluate_with_approval_conversation(
+                    active,
+                    run,
+                    &session,
+                    &request,
+                    &approval_policy,
+                )
+                .await
             }
             PermissionMode::Yolo => unreachable!("yolo approvals resolve before prompting"),
         };
@@ -285,6 +261,7 @@ impl Engine {
                     request: request.clone(),
                     executor: executor.clone(),
                     decision: internal_kind,
+                    approval_session_increment_count,
                     cancelled: active.cancellation.is_cancelled(),
                     reply,
                 }
@@ -335,6 +312,150 @@ impl Engine {
             }
         }
     }
+
+    async fn evaluate_with_approval_conversation(
+        &self,
+        active: &ActiveRun,
+        run: RunId,
+        session: &crate::session::SessionProjection,
+        request: &ApprovalRequest,
+        policy: &FrozenInternalAgentPolicy,
+    ) -> (ApprovalInternalDecisionKind, u64) {
+        let conversation = {
+            let mut conversations = self
+                .inner
+                .approval_conversations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Arc::clone(conversations.entry(active.session).or_insert_with(|| {
+                Arc::new(tokio::sync::Mutex::new(ApprovalConversation::default()))
+            }))
+        };
+        let mut conversation = tokio::select! {
+            conversation = conversation.lock() => conversation,
+            _ = active.cancellation.cancelled() => {
+                return (ApprovalInternalDecisionKind::Ask, 0);
+            }
+        };
+        let events = session.log.events();
+        let input_through_seq = events.last().map_or(0, |event| event.seq);
+        let prompt = approval_conversation_increment(
+            session,
+            request,
+            conversation.increment_count == 0,
+            conversation.input_through_seq,
+            &events,
+        );
+        let max_input_bytes = usize::try_from(policy.limits.max_input_tokens)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(4);
+        let prompt = truncate_utf8(&prompt, max_input_bytes);
+        let increment_count = conversation.push_user(prompt.clone(), input_through_seq);
+        let system_prompt = format!(
+            "{}\nReturn strict JSON only: {{\"decision\":\"allow\"|\"deny\"|\"ask\"}}.",
+            policy.agent.composed_prompt
+        );
+        let history = conversation.history(system_prompt);
+        let result = self
+            .run_internal_history_agent(
+                active.session,
+                Some(run),
+                InternalAgentKind::Approval,
+                policy,
+                InternalAgentHistoryInput {
+                    history,
+                    summary_source: prompt,
+                    tools: Vec::new(),
+                    reject_non_text: false,
+                },
+                InternalAgentExecution {
+                    cancellation: &active.cancellation,
+                    actor_direct: false,
+                },
+            )
+            .await;
+        let decision = match result {
+            Ok(result) => {
+                conversation.set_latest_assistant(result.text.clone());
+                parse_internal_approval(&result.text).unwrap_or(ApprovalInternalDecisionKind::Ask)
+            }
+            Err(_) => ApprovalInternalDecisionKind::Ask,
+        };
+        (decision, increment_count)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn approval_conversation_snapshot(
+        &self,
+        session: SessionId,
+    ) -> Option<Vec<(String, Option<String>)>> {
+        let conversation = {
+            let conversations = self
+                .inner
+                .approval_conversations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Arc::clone(conversations.get(&session)?)
+        };
+        let conversation = conversation.lock().await;
+        Some(
+            conversation
+                .increments
+                .iter()
+                .map(|increment| (increment.user.clone(), increment.assistant.clone()))
+                .collect(),
+        )
+    }
+}
+
+fn approval_conversation_increment(
+    session: &crate::session::SessionProjection,
+    request: &ApprovalRequest,
+    first: bool,
+    after_seq: u64,
+    events: &[StoredEvent],
+) -> String {
+    let resource_labels = approval_evaluations(request)
+        .iter()
+        .map(|evaluation| evaluation.trace.normalized_resource.clone())
+        .collect::<Vec<_>>();
+    let operations = request
+        .operation()
+        .capabilities()
+        .iter()
+        .map(|capability| capability.operation.as_str())
+        .collect::<Vec<_>>();
+    let value = if first {
+        serde_json::json!({
+            "instruction": "Return strict JSON only: {\"decision\":\"allow\"|\"deny\"|\"ask\"}.",
+            "cwd_identity": session.meta.cwd_identity,
+            "operations": operations,
+            "resource_labels": resource_labels,
+        })
+    } else {
+        let source = if matches!(session.meta.origin, SessionOrigin::Delegated { .. }) {
+            "delegate"
+        } else {
+            "user"
+        };
+        let intervening_messages = events
+            .iter()
+            .filter(|event| event.seq > after_seq)
+            .filter_map(|event| match &event.payload {
+                Event::UserInputSubmitted { input } => Some(serde_json::json!({
+                    "source": source,
+                    "content": input,
+                })),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "intervening_messages": intervening_messages,
+            "operations": operations,
+            "resource_labels": resource_labels,
+        })
+    };
+    serde_json::to_string(&value).expect("safe approval increment serializes")
 }
 
 pub(super) fn approval_evaluations(request: &ApprovalRequest) -> Vec<ApprovalEvaluation> {
@@ -405,5 +526,28 @@ pub(super) fn approval_expiry_wait(expires_at: Option<jiff::Timestamp>) -> std::
         std::time::Duration::ZERO
     } else {
         expires_at.duration_since(now).unsigned_abs()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approval_conversation_retains_twenty_increments_and_counts_omitted_messages() {
+        let mut conversation = ApprovalConversation::default();
+        for index in 1..=22 {
+            assert_eq!(
+                conversation.push_user(format!("request {index}"), index),
+                index
+            );
+            conversation.set_latest_assistant(format!("decision {index}"));
+        }
+
+        assert_eq!(conversation.increment_count, 22);
+        assert_eq!(conversation.increments.len(), 20);
+        assert_eq!(conversation.omitted_messages, 4);
+        assert_eq!(conversation.increments.front().unwrap().user, "request 3");
+        assert_eq!(conversation.history("system".into()).len(), 42);
     }
 }

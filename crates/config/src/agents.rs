@@ -6,11 +6,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AgentDocument, ConfigError};
 
-const AGENT_SCHEMA: u32 = 2;
+const AGENT_SCHEMA: u32 = 3;
 const MAX_LIST: usize = 256;
 pub const BUILT_IN_DEFAULT_AGENT_ID: &str = "default";
+pub const BUILT_IN_APPROVAL_AGENT_ID: &str = "approval";
+pub const BUILT_IN_COMPACTION_AGENT_ID: &str = "compaction";
+pub const BUILT_IN_TITLE_AGENT_ID: &str = "title";
+pub const PARENT_MODEL_EXPRESSION: &str = "${parent_model}";
 
-/// Exact schema-2 agent marker.
+/// Exact schema-3 agent marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct AgentSchemaVersion;
 
@@ -23,7 +27,7 @@ impl<'de> Deserialize<'de> for AgentSchemaVersion {
         if value == AGENT_SCHEMA {
             Ok(Self)
         } else {
-            Err(serde::de::Error::custom("agent schema must be exactly 2"))
+            Err(serde::de::Error::custom("agent schema must be exactly 3"))
         }
     }
 }
@@ -34,6 +38,7 @@ pub enum AgentMode {
     Primary,
     Subagent,
     All,
+    Internal,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -179,11 +184,52 @@ impl PermissionValue {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum AgentModelRef {
+    Model(ModelKey),
+    ParentModel,
+}
+
+impl<'de> Deserialize<'de> for AgentModelRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        if value == PARENT_MODEL_EXPRESSION {
+            Ok(Self::ParentModel)
+        } else {
+            value
+                .parse::<ModelKey>()
+                .map(Self::Model)
+                .map_err(serde::de::Error::custom)
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentModelFallback {
-    pub model: ModelKey,
+    pub model: AgentModelRef,
     pub variant: Option<ConfiguredVariantRef>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentLimits {
+    pub timeout_ms: u64,
+    pub max_input_tokens: u64,
+    pub max_output_tokens: u64,
+}
+
+impl Default for AgentLimits {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 30_000,
+            max_input_tokens: 16_384,
+            max_output_tokens: 2_048,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -194,6 +240,8 @@ pub struct AgentFrontmatter {
     pub mode: AgentMode,
     pub enabled: bool,
     pub model_fallback: Vec<AgentModelFallback>,
+    #[serde(default)]
+    pub limits: AgentLimits,
     pub tools: Vec<ToolName>,
     #[serde(deserialize_with = "deserialize_permissions")]
     pub permissions: IndexMap<PermissionAction, PermissionValue>,
@@ -282,6 +330,16 @@ fn validate_agent_document(
         return Err(ConfigError::ReservedAgentId(document.id.clone()));
     }
     let frontmatter = &document.frontmatter;
+    if matches!(
+        document.id.as_str(),
+        BUILT_IN_APPROVAL_AGENT_ID | BUILT_IN_COMPACTION_AGENT_ID | BUILT_IN_TITLE_AGENT_ID
+    ) && frontmatter.mode != AgentMode::Internal
+    {
+        return Err(ConfigError::AgentField {
+            agent: document.id.clone(),
+            field: "mode",
+        });
+    }
     if frontmatter.description.is_empty()
         || frontmatter.description.len() > 512
         || frontmatter.description.chars().any(char::is_control)
@@ -301,12 +359,29 @@ fn validate_agent_document(
     }
     let mut fallback_models = BTreeSet::new();
     for fallback in &frontmatter.model_fallback {
-        if !fallback_models.insert(fallback.model.clone()) {
-            return Err(ConfigError::DuplicateFallbackModel {
+        if matches!(fallback.model, AgentModelRef::ParentModel)
+            && (frontmatter.mode != AgentMode::Internal || fallback.variant.is_some())
+        {
+            return Err(ConfigError::AgentField {
                 agent: document.id.clone(),
-                model: fallback.model.clone(),
+                field: "model_fallback",
             });
         }
+        if !fallback_models.insert(fallback.model.clone()) {
+            return Err(ConfigError::AgentField {
+                agent: document.id.clone(),
+                field: "model_fallback",
+            });
+        }
+    }
+    if frontmatter.limits.timeout_ms == 0
+        || frontmatter.limits.max_input_tokens == 0
+        || frontmatter.limits.max_output_tokens == 0
+    {
+        return Err(ConfigError::AgentField {
+            agent: document.id.clone(),
+            field: "limits",
+        });
     }
     if frontmatter.tools.iter().collect::<BTreeSet<_>>().len() != frontmatter.tools.len() {
         return Err(ConfigError::DuplicateTool(document.id.clone()));

@@ -294,7 +294,15 @@ async fn empty_runtime_snapshot_is_coherent_and_legacy_lists_are_absent() {
         serde_json::json!(cookie_agent_protocol::RuntimeSnapshotSchemaVersion::current())
     );
     assert_eq!(snapshot["result"]["snapshot"]["models"], json!([]));
-    assert_eq!(snapshot["result"]["snapshot"]["agents"], json!([]));
+    let agents = snapshot["result"]["snapshot"]["agents"]
+        .as_array()
+        .expect("agent descriptors");
+    assert_eq!(agents.len(), 3);
+    assert!(agents.iter().all(|agent| {
+        agent["mode"] == "internal"
+            && agent["runnable_as_root"] == false
+            && agent["delegation_targets"] == json!([])
+    }));
     assert_eq!(snapshot["result"]["snapshot"]["providers"], json!([]));
 
     for method in [

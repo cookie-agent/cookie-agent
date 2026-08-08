@@ -5,7 +5,7 @@ use std::{
 };
 
 use cookie_agent_config::{ConfigError, load_from_roots};
-use cookie_agent_identity::ProviderId;
+use cookie_agent_identity::{AgentId, ProviderId};
 use cookie_agent_models::ProviderDefinition;
 use tempfile::TempDir;
 
@@ -25,7 +25,7 @@ fn write_agent(root: &Path, name: &str, text: &str) {
 
 fn agent(description: &str, fallback: &str) -> String {
     format!(
-        "---\nschema: 2\ndescription: {description}\nmode: primary\nenabled: true\nmodel_fallback: {fallback}\ntools: []\npermissions: {{}}\n---\nPrompt.\n"
+        "---\nschema: 3\ndescription: {description}\nmode: primary\nenabled: true\nmodel_fallback: {fallback}\ntools: []\npermissions: {{}}\n---\nPrompt.\n"
     )
 }
 
@@ -46,7 +46,7 @@ fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 
 fn custom(endpoint: &str) -> String {
     format!(
-        r#"schema_version = 9
+        r#"schema_version = 10
 
 [providers."custom.test"]
 source = "custom"
@@ -70,7 +70,6 @@ temperature = true
 top_p = true
 seed = true
 native_replay = "unsupported"
-native_compaction = "unsupported"
 cancellation = "local_only"
 media = {{}}
 "#
@@ -78,20 +77,22 @@ media = {{}}
 }
 
 #[test]
-fn schema9_allows_soft_only_compaction_and_rejects_removed_fields_and_schema8() {
+fn schema10_adds_buffered_auto_compaction_and_rejects_schema9() {
     let temp = TempDir::new().unwrap();
     let omitted = temp.path().join("omitted");
     write_config(
         &omitted,
-        "schema_version = 9\n[context_compaction]\nsoft_threshold_percent = 70\n",
+        "schema_version = 10\n[context_compaction]\nauto = true\nbuffer_tokens = 33000\n",
     );
     let loaded = load_from_roots(None, Some(&omitted)).unwrap();
+    assert!(loaded.runtime.context_compaction.auto_compaction);
+    assert_eq!(loaded.runtime.context_compaction.buffer_tokens, 33_000);
     assert!(loaded.runtime.providers.is_empty());
     assert!(loaded.agents.is_empty());
     assert_eq!(loaded.agent_registry().agents().len(), 0);
 
     let empty = temp.path().join("empty");
-    write_config(&empty, "schema_version = 9\nproviders = {}\n");
+    write_config(&empty, "schema_version = 10\nproviders = {}\n");
     assert!(
         load_from_roots(None, Some(&empty))
             .unwrap()
@@ -101,7 +102,7 @@ fn schema9_allows_soft_only_compaction_and_rejects_removed_fields_and_schema8() 
     );
 
     let old = temp.path().join("old");
-    write_config(&old, "schema_version = 8\n");
+    write_config(&old, "schema_version = 9\n");
     assert!(matches!(
         load_from_roots(None, Some(&old)),
         Err(ConfigError::Toml(_))
@@ -110,7 +111,7 @@ fn schema9_allows_soft_only_compaction_and_rejects_removed_fields_and_schema8() 
     let removed = temp.path().join("removed");
     write_config(
         &removed,
-        "schema_version = 9\n[context_compaction]\ntarget_percent = 50\n",
+        "schema_version = 10\n[context_compaction]\nsoft_threshold_percent = 70\n",
     );
     assert!(matches!(
         load_from_roots(None, Some(&removed)),
@@ -120,11 +121,102 @@ fn schema9_allows_soft_only_compaction_and_rejects_removed_fields_and_schema8() 
     let removed_hard = temp.path().join("removed-hard");
     write_config(
         &removed_hard,
-        "schema_version = 9\n[context_compaction]\nhard_threshold_percent = 85\n",
+        "schema_version = 10\n[context_compaction]\nmax_native_context_bytes = 2097152\n",
     );
     assert!(matches!(
         load_from_roots(None, Some(&removed_hard)),
         Err(ConfigError::Toml(_))
+    ));
+
+    let native = temp.path().join("native-compaction");
+    write_config(
+        &native,
+        &custom("https://example.invalid").replace(
+            "native_replay = \"unsupported\"",
+            "native_replay = \"unsupported\"\nnative_compaction = \"unsupported\"",
+        ),
+    );
+    assert!(matches!(
+        load_from_roots(None, Some(&native)),
+        Err(ConfigError::Toml(_))
+    ));
+}
+
+#[test]
+fn agent_schema_three_internal_mode_and_parent_model_are_strict() {
+    let temp = TempDir::new().unwrap();
+
+    let old = temp.path().join("old-agent");
+    write_config(&old, "schema_version = 10\n");
+    write_agent(
+        &old,
+        "old.md",
+        "---\nschema: 2\ndescription: Old\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/model\" }]\ntools: []\npermissions: {}\n---\nOld.\n",
+    );
+    assert!(matches!(
+        load_from_roots(None, Some(&old)),
+        Err(ConfigError::AgentFrontmatter(_))
+    ));
+
+    let normal_parent = temp.path().join("normal-parent");
+    write_config(&normal_parent, "schema_version = 10\n");
+    write_agent(
+        &normal_parent,
+        "normal.md",
+        "---\nschema: 3\ndescription: Normal\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\ntools: []\npermissions: {}\n---\nNormal.\n",
+    );
+    assert!(matches!(
+        load_from_roots(None, Some(&normal_parent)),
+        Err(ConfigError::AgentField {
+            field: "model_fallback",
+            ..
+        })
+    ));
+
+    let legacy_type = temp.path().join("legacy-type");
+    write_config(&legacy_type, "schema_version = 10\n");
+    write_agent(
+        &legacy_type,
+        "legacy.md",
+        "---\nschema: 3\ntype: internal\ndescription: Legacy\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/model\" }]\ntools: []\npermissions: {}\n---\nLegacy.\n",
+    );
+    assert!(matches!(
+        load_from_roots(None, Some(&legacy_type)),
+        Err(ConfigError::AgentFrontmatter(_))
+    ));
+
+    let internal = temp.path().join("internal");
+    write_config(&internal, "schema_version = 10\n");
+    write_agent(
+        &internal,
+        "approval.md",
+        "---\nschema: 3\ndescription: Internal approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1000, max_input_tokens: 2000, max_output_tokens: 100 }\ntools: [bash]\npermissions: {}\n---\nApprove safely.\n",
+    );
+    let loaded = load_from_roots(None, Some(&internal)).unwrap();
+    let approval = loaded
+        .agents
+        .get(&AgentId::new("approval").unwrap())
+        .unwrap();
+    assert_eq!(
+        approval.frontmatter.mode,
+        cookie_agent_config::AgentMode::Internal
+    );
+
+    let delegation = temp.path().join("internal-delegation");
+    write_config(&delegation, "schema_version = 10\n");
+    write_agent(
+        &delegation,
+        "approval.md",
+        "---\nschema: 3\ndescription: Internal approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\ntools: []\npermissions: {}\n---\nApprove.\n",
+    );
+    write_agent(
+        &delegation,
+        "primary.md",
+        "---\nschema: 3\ndescription: Primary\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/model\" }]\ntools: []\npermissions:\n  delegate:\n    approval: allow\n---\nPrimary.\n",
+    );
+    assert!(matches!(
+        load_from_roots(None, Some(&delegation)),
+        Err(ConfigError::IneligibleDelegationTarget { .. })
     ));
 }
 
@@ -132,7 +224,7 @@ fn schema9_allows_soft_only_compaction_and_rejects_removed_fields_and_schema8() 
 fn delegation_runtime_defaults_and_limits_are_strict() {
     let temp = TempDir::new().unwrap();
     let defaults = temp.path().join("delegation-defaults");
-    write_config(&defaults, "schema_version = 9\n");
+    write_config(&defaults, "schema_version = 10\n");
     let loaded = load_from_roots(None, Some(&defaults)).unwrap();
     assert_eq!(loaded.runtime.delegation.max_depth, 3);
     assert_eq!(loaded.runtime.delegation.max_concurrency, None);
@@ -140,7 +232,7 @@ fn delegation_runtime_defaults_and_limits_are_strict() {
     let authored = temp.path().join("delegation-authored");
     write_config(
         &authored,
-        "schema_version = 9\n[delegation]\nmax_depth = 5\nmax_concurrency = 2\n",
+        "schema_version = 10\n[delegation]\nmax_depth = 5\nmax_concurrency = 2\n",
     );
     let loaded = load_from_roots(None, Some(&authored)).unwrap();
     assert_eq!(loaded.runtime.delegation.max_depth, 5);
@@ -149,7 +241,7 @@ fn delegation_runtime_defaults_and_limits_are_strict() {
     let invalid = temp.path().join("delegation-invalid");
     write_config(
         &invalid,
-        "schema_version = 9\n[delegation]\nmax_concurrency = 0\n",
+        "schema_version = 10\n[delegation]\nmax_concurrency = 0\n",
     );
     assert!(matches!(
         load_from_roots(None, Some(&invalid)),
@@ -161,7 +253,7 @@ fn delegation_runtime_defaults_and_limits_are_strict() {
 fn authored_agent_registry_retains_slash_model_ids_without_model_compilation() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("agents-only");
-    write_config(&root, "schema_version = 9\n");
+    write_config(&root, "schema_version = 10\n");
     write_agent(
         &root,
         "primary.md",
@@ -175,13 +267,12 @@ fn authored_agent_registry_retains_slash_model_ids_without_model_compilation() {
     let registry = loaded.agent_registry();
     let input = registry.materialization_inputs().next().unwrap();
     assert!(input.root_eligible);
-    assert_eq!(
-        input.document.frontmatter.model_fallback[0]
-            .model
-            .model_id()
-            .as_str(),
-        "group/model/deep"
-    );
+    let cookie_agent_config::AgentModelRef::Model(model) =
+        &input.document.frontmatter.model_fallback[0].model
+    else {
+        panic!("expected concrete model fallback");
+    };
+    assert_eq!(model.model_id().as_str(), "group/model/deep");
     assert!(matches!(
         input.document.frontmatter.model_fallback[0]
             .variant
@@ -195,7 +286,7 @@ fn authored_agent_registry_retains_slash_model_ids_without_model_compilation() {
 fn authored_agents_cannot_use_the_built_in_default_id() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("reserved-agent");
-    write_config(&root, "schema_version = 9\n");
+    write_config(&root, "schema_version = 10\n");
     write_agent(
         &root,
         "default.md",
@@ -213,7 +304,7 @@ fn workspace_agent_replaces_user_agent_before_registry_validation() {
     let temp = TempDir::new().unwrap();
     let user = temp.path().join("user-agents");
     let workspace = temp.path().join("workspace-agents");
-    write_config(&user, "schema_version = 9\n");
+    write_config(&user, "schema_version = 10\n");
     write_agent(
         &user,
         "primary.md",
@@ -222,7 +313,7 @@ fn workspace_agent_replaces_user_agent_before_registry_validation() {
             "[{ model: \"openai/group/model\" }, { model: \"openai/group/model\" }]",
         ),
     );
-    write_config(&workspace, "schema_version = 9\n");
+    write_config(&workspace, "schema_version = 10\n");
     write_agent(
         &workspace,
         "primary.md",
@@ -243,7 +334,7 @@ fn explicit_source_has_no_alias_or_compatibility_reader() {
     let root = temp.path().join("explicit");
     write_config(
         &root,
-        "schema_version = 9\n[providers.test]\nsource = \"explicit\"\n",
+        "schema_version = 10\n[providers.test]\nsource = \"explicit\"\n",
     );
     assert!(matches!(
         load_from_roots(None, Some(&root)),
@@ -258,7 +349,7 @@ fn same_id_workspace_provider_replaces_user_before_provider_decode() {
     let workspace = temp.path().join("workspace");
     write_config(
         &user,
-        "schema_version = 9\n[providers.\"custom.test\"]\nsource = \"custom\"\nunknown = true\n",
+        "schema_version = 10\n[providers.\"custom.test\"]\nsource = \"custom\"\nunknown = true\n",
     );
     write_config(&workspace, &custom("https://workspace.example/v1"));
 
@@ -291,7 +382,7 @@ fn managed_auth_is_mutually_exclusive_and_custom_namespace_is_strict() {
     let conflict = temp.path().join("conflict");
     write_config(
         &conflict,
-        "schema_version = 9\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"a\"\nauth_override = { method = \"bearer-api-key-v1\", values = { api_key = \"b\" } }\n",
+        "schema_version = 10\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"a\"\nauth_override = { method = \"bearer-api-key-v1\", values = { api_key = \"b\" } }\n",
     );
     assert!(matches!(
         load_from_roots(None, Some(&conflict)),
@@ -317,7 +408,7 @@ fn secret_sentinel_is_redacted_on_parse_interpolation_and_unknown_field_errors()
     write_config(
         &parse,
         &format!(
-            "schema_version = 9\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"{SECRET_SENTINEL}\"\nbroken = [\n"
+            "schema_version = 10\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"{SECRET_SENTINEL}\"\nbroken = [\n"
         ),
     );
     assert_redacted(&load_from_roots(None, Some(&parse)).unwrap_err());
@@ -326,7 +417,7 @@ fn secret_sentinel_is_redacted_on_parse_interpolation_and_unknown_field_errors()
     write_config(
         &interpolation,
         &format!(
-            "schema_version = 9\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"{SECRET_SENTINEL}-${{env:P1_MISSING_SECRET}}\"\n"
+            "schema_version = 10\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"{SECRET_SENTINEL}-${{env:P1_MISSING_SECRET}}\"\n"
         ),
     );
     let _guard = env_lock();
@@ -337,7 +428,7 @@ fn secret_sentinel_is_redacted_on_parse_interpolation_and_unknown_field_errors()
     write_config(
         &unknown,
         &format!(
-            "schema_version = 9\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"ok\"\nunknown_secret = \"{SECRET_SENTINEL}\"\n"
+            "schema_version = 10\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"ok\"\nunknown_secret = \"{SECRET_SENTINEL}\"\n"
         ),
     );
     assert_redacted(&load_from_roots(None, Some(&unknown)).unwrap_err());
@@ -349,7 +440,7 @@ fn interpolated_secret_is_redacted_on_success_and_configuration_drop() {
     let root = temp.path().join("success-secret");
     write_config(
         &root,
-        "schema_version = 9\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"${env:P1_SUCCESS_SECRET}\"\n",
+        "schema_version = 10\n[providers.openai]\nsource = \"models_dev\"\napi_key = \"${env:P1_SUCCESS_SECRET}\"\n",
     );
     let _guard = env_lock();
     unsafe { std::env::set_var("P1_SUCCESS_SECRET", SECRET_SENTINEL) };

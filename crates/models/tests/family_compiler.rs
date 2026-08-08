@@ -422,7 +422,7 @@ auth = { method = "bearer-api-key-v1", values = { api_key = "secret" } }
 
 [models.test]
 display_name = "Test"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", native_compaction = "unsupported", cancellation = "local_only", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
 variants = { zeta = { operation = "add" }, alpha = { operation = "add" } }
 "#,
     )

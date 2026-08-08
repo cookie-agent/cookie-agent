@@ -73,7 +73,8 @@
       "enum": [
         "primary",
         "subagent",
-        "all"
+        "all",
+        "internal"
       ]
     },
     "AgentSnapshot": {
@@ -142,7 +143,7 @@
         },
         "schema": {
           "type": "integer",
-          "const": 2
+          "const": 3
         },
         "selected_suffix_start": {
           "type": "integer",
@@ -617,27 +618,6 @@
         {
           "type": "object",
           "properties": {
-            "model": {
-              "$ref": "#/$defs/ResolvedModelRef"
-            },
-            "native_context": {
-              "$ref": "#/$defs/NativeContextArtifact"
-            },
-            "type": {
-              "type": "string",
-              "const": "provider_native"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "type",
-            "model",
-            "native_context"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
             "byte_length": {
               "type": "integer",
               "format": "uint64",
@@ -748,6 +728,39 @@
         "input_tokens_before",
         "input_tokens_after",
         "max_summary_bytes"
+      ]
+    },
+    "ContextRehydratedFile": {
+      "type": "object",
+      "properties": {
+        "byte_length": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "content": {
+          "type": "string"
+        },
+        "path": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "sha256": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "content",
+        "byte_length",
+        "sha256"
       ]
     },
     "DecisionTrace": {
@@ -1422,6 +1435,34 @@
         {
           "type": "object",
           "properties": {
+            "original_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "retained": {
+              "$ref": "#/$defs/ArtifactReference"
+            },
+            "tool_call_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_output_elided"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "tool_call_id",
+            "original_bytes",
+            "retained"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "byte_count": {
               "type": "integer",
               "format": "uint64",
@@ -1490,6 +1531,11 @@
               "type": "string",
               "format": "uuid"
             },
+            "approval_session_increment_count": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
             "decision": {
               "$ref": "#/$defs/ApprovalInternalDecision"
             },
@@ -1502,6 +1548,7 @@
           "required": [
             "type",
             "approval_id",
+            "approval_session_increment_count",
             "decision"
           ]
         },
@@ -1903,6 +1950,52 @@
         {
           "type": "object",
           "properties": {
+            "files": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ContextRehydratedFile"
+              },
+              "maxItems": 5
+            },
+            "type": {
+              "type": "string",
+              "const": "context_rehydrated"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "files"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "observed_tokens": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 1
+            },
+            "trigger_tokens": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "context_compaction_auto_disabled"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "observed_tokens",
+            "trigger_tokens"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "change": {
               "$ref": "#/$defs/SessionTitleChange"
             },
@@ -2065,10 +2158,7 @@
                 },
                 "compaction": {
                   "type": "string",
-                  "enum": [
-                    "native",
-                    "unsupported"
-                  ]
+                  "const": "unsupported"
                 },
                 "features": {
                   "type": "array",
@@ -2541,23 +2631,6 @@
         {
           "type": "object",
           "properties": {
-            "resolved_model": {
-              "$ref": "#/$defs/ResolvedModelRef"
-            },
-            "type": {
-              "type": "string",
-              "const": "provider_native"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "type",
-            "resolved_model"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
             "name": {
               "description": "Stable lowercase machine-readable code.",
               "type": "string",
@@ -2839,50 +2912,6 @@
       "additionalProperties": false,
       "required": [
         "model"
-      ]
-    },
-    "NativeContextArtifact": {
-      "type": "object",
-      "properties": {
-        "adapter_id": {
-          "description": "Stable lowercase machine-readable code.",
-          "type": "string",
-          "maxLength": 128,
-          "minLength": 1,
-          "pattern": "^[a-z0-9][a-z0-9._-]*$"
-        },
-        "byte_length": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "reference": {
-          "$ref": "#/$defs/ArtifactReference"
-        },
-        "scope": {
-          "$ref": "#/$defs/NativeContextScope"
-        },
-        "selection_fingerprint": {
-          "type": "string",
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "sha256": {
-          "type": "string",
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "adapter_id",
-        "selection_fingerprint",
-        "scope",
-        "byte_length",
-        "sha256",
-        "reference"
       ]
     },
     "NativeContextScope": {
@@ -4627,7 +4656,7 @@
       "properties": {
         "event_schema_version": {
           "type": "integer",
-          "const": 10
+          "const": 11
         },
         "payload": {
           "$ref": "#/$defs/EventPayload"

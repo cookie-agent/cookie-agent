@@ -44,7 +44,7 @@ single-link files handled no-follow and atomically. The metadata records stale/
 fallback state, safe last error, ETag, timestamps, revision, and quarantine
 counts.
 
-## Configuration schema 9
+## Configuration schema 10
 
 There is one top-level `providers` map; nonempty entries use
 `[providers.<id>]`:
@@ -60,6 +60,20 @@ not merge. Managed models are automatic: every family-supported,
 non-deprecated text-output model is included unless disabled by a sparse
 override.
 
+Agent Markdown documents use exact schema 3. Their `mode` is `primary`,
+`subagent`, `all`, or `internal`. Internal agents are engine-only: they cannot be
+selected as roots or delegation targets and do not appear in TUI agent pickers.
+The runtime supplies built-in `approval`, `compaction`, and `title` internal
+documents; `.cookie-agent/agents/approval.md`, `compaction.md`, or `title.md`
+replace those defaults normally. Internal documents may use `${parent_model}` in
+`model_fallback` to inherit the parent run's exact frozen model and variant, and
+may configure `limits: { timeout_ms, max_input_tokens, max_output_tokens }`.
+Approval and title internal requests are structurally tool-less. The compaction
+fork deliberately retains the parent request's tool definitions to preserve a
+byte-identical cacheable prefix, but tool calls returned by the summarizer are
+rejected and never executed. The title agent receives only the first user
+message.
+
 Managed providers may author credentials directly in user or workspace config
 with `api_key` or typed `auth_override`. The effective authored credential
 outranks provider-store credentials. Because replacement is atomic, a workspace
@@ -73,16 +87,16 @@ same-definition authored auth remains invalid and cannot fall through to store.
 bootstrap configuration:
 
 ```toml
-schema_version = 9
+schema_version = 10
 
 [delegation]
 max_depth = 3
 # max_concurrency = 4 # omitted means unlimited
 
 [context_compaction]
-soft_threshold_percent = 70
+auto = true
+buffer_tokens = 33000
 # max_summary_bytes = 262144
-# max_native_context_bytes = 2097152
 
 [server]
 host = "127.0.0.1"
@@ -91,13 +105,26 @@ port = 17419
 [providers]
 ```
 
-Context compaction has one soft threshold; there are no hard-threshold or
-target-percentage settings. After a committed model turn supplies real input
-usage, the engine learns a per-session tokens-per-byte ratio. A newly submitted
-message whose projected input reaches the soft threshold compacts the existing
-log before the message is appended, so the model receives the compacted context
-plus the live user message. Fresh sessions start with ratio zero and do not use
-a fallback prediction.
+Automatic context compaction is enabled by default. Its effective trigger is
+the model context limit minus `buffer_tokens` (default 33,000). The real-usage
+signal compares the latest committed `input_tokens + output_tokens` with that
+trigger. The existing learned tokens-per-byte predictor checks new input against
+the same trigger before appending it, so the checkpoint precedes the pending
+message. Set `auto = false` to disable automatic signals; forced/manual and
+context-overflow recovery compaction remain available. `max_summary_bytes`
+defaults to 262,144.
+
+In the TUI, `/compact` forces compaction for the selected idle session and
+`/compact <focus>` appends focus text after the fixed summary instruction.
+
+Before paying for a summary, old bulky tool output is replaced in model history
+with an artifact marker while the newest two model turns remain intact. If that
+elision gets under the trigger, no summary call is made. Otherwise the summarizer
+receives the exact normal assembled context and tool definitions plus one final
+summary instruction, allowing the shared prefix to hit provider prompt caches.
+The committed summary uses fixed continuation framing, then up to five recently
+read UTF-8 files are re-read within bounded byte limits. Provider-native
+compaction is unsupported.
 
 New empty sessions are memory-only. Their session directory, metadata cache, and
 event JSONL are created atomically when the first user message is submitted;
@@ -116,7 +143,7 @@ engine supplies reserved built-in coding agent `default`.
 The following is a separate nonempty example:
 
 ```toml
-schema_version = 9
+schema_version = 10
 
 [providers.openai]
 source = "models_dev"
@@ -152,7 +179,6 @@ temperature = true
 top_p = true
 seed = false
 native_replay = "unsupported"
-native_compaction = "unsupported"
 cancellation = "local_only"
 media = {}
 ```

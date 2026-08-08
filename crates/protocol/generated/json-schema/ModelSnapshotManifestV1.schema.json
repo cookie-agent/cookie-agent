@@ -140,10 +140,7 @@
                 },
                 "compaction": {
                   "type": "string",
-                  "enum": [
-                    "native",
-                    "unsupported"
-                  ]
+                  "const": "unsupported"
                 },
                 "features": {
                   "type": "array",
@@ -689,10 +686,7 @@
                 },
                 "compaction": {
                   "type": "string",
-                  "enum": [
-                    "native",
-                    "unsupported"
-                  ]
+                  "const": "unsupported"
                 },
                 "features": {
                   "type": "array",

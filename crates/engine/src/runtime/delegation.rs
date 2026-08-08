@@ -191,6 +191,12 @@ impl Engine {
         let child_selection = child_agent
             .resolved_fallback
             .iter()
+            .filter_map(|fallback| match fallback {
+                crate::runtime_snapshot::ResolvedAgentFallback::Selection(selection) => {
+                    Some(selection)
+                }
+                crate::runtime_snapshot::ResolvedAgentFallback::ParentModel => None,
+            })
             .find(|selection| {
                 parent_policy
                     .runtime

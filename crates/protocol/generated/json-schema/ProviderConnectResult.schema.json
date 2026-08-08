@@ -113,7 +113,8 @@
       "enum": [
         "primary",
         "subagent",
-        "all"
+        "all",
+        "internal"
       ]
     },
     "AuthCredentialDescriptor": {
@@ -368,14 +369,6 @@
         "bootstrap"
       ]
     },
-    "CompactionCapability": {
-      "type": "string",
-      "enum": [
-        "unsupported",
-        "optional",
-        "required"
-      ]
-    },
     "CredentialFieldType": {
       "type": "string",
       "enum": [
@@ -549,9 +542,6 @@
           },
           "additionalProperties": false
         },
-        "native_compaction": {
-          "$ref": "#/$defs/CompactionCapability"
-        },
         "native_replay": {
           "$ref": "#/$defs/ReplayCapability"
         },
@@ -604,7 +594,6 @@
         "top_p",
         "seed",
         "native_replay",
-        "native_compaction",
         "cancellation",
         "media"
       ]

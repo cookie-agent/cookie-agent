@@ -131,8 +131,12 @@ impl Engine {
                                     | cookie_agent_protocol::PermissionAction::ExternalDirectory
                             )
                     });
-                    let approval_policy =
-                        engine.active_internal_policy(&active, InternalAgentKind::Approval);
+                    let approval_policy = engine
+                        .active_internal_policy(&active, InternalAgentKind::Approval)
+                        .map_err(|error| ToolFailure {
+                            code: ToolCallFailureCode::ExecutionFailed,
+                            message: error.to_string(),
+                        })?;
                     let request = ApprovalRequest::new(
                         ApprovalId::new_v7(),
                         1,

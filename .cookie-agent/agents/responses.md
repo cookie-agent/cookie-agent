@@ -1,5 +1,5 @@
 ---
-schema: 2
+schema: 3
 description: Primary agent pinned to the OpenAI Responses model and high variant
 mode: primary
 enabled: true
