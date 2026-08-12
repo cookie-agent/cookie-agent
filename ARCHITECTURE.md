@@ -3,7 +3,7 @@
 **Status:** frozen current implementation contract
 
 **Required versions:** configuration schema 10; agent document schema 3;
-protocol 8; event schema 11; session JSONL 11; session metadata 9;
+protocol 8; event schema 12; session JSONL 12; session metadata 9;
 delegation-journal schema 9; runtime snapshot schema 2; catalog cache schema 2;
 provider store schema 3; family recipe registry schema 1; project model-snapshot
 manifest schema 1.
@@ -247,8 +247,8 @@ request builder and always emit an empty tool list. Compaction is the deliberate
 exception described in section 12: it preserves the parent request's tool
 definitions for cache-prefix identity but rejects every non-text response.
 Internal input limits cover the complete assembled history and tool definitions.
-Approval retains its authored limit and trims oldest conversation increments when
-needed; compaction raises its effective input ceiling to at least the largest
+Approval enforces its authored limit against its single stateless request;
+compaction raises its effective input ceiling to at least the largest
 frozen parent-model context window in its resolved chain so a built-in 16,384
 default cannot reject the context it was invoked to compact.
 The built-in compaction chain begins with `${parent_model}`; the built-in
@@ -256,21 +256,29 @@ approval and title chains preserve the same parent-model behavior used before
 schema 3. Title generation receives only the first user message, never assistant
 answer text.
 
-The approval internal agent has one memory-only conversation per parent session.
-The first increment carries the existing bounded request (`cwd_identity`,
-normalized operations, and normalized resource labels). Later increments carry
-only user/delegate input submitted since the preceding approval evaluation plus
-the new normalized operations and resource labels. Real system, user, and
-assistant turns are reused for the next evaluation. Retention is capped at the
-latest 20 approval increments; removed history is represented by an `…and M
-earlier messages` system note. This state is never written to session JSONL and
-is not reconstructed after restart. Approval decisions are accepted only from
+The approval internal agent is stateless and reasoning-blind. Every evaluation
+uses exactly two history turns: the frozen composed approval prompt as the
+byte-stable system turn, then one user turn containing a frozen framing wrapper,
+the latest exact persisted `UserInputSubmitted` bytes, and the current tool name
+plus normalized parameters last. The engine searches the current run newest-first
+and then the full session newest-first; if no user input exists it inserts the
+fixed `[no user message]` variant. It never supplies older messages, assistant
+prose, tool results, or prior approval decisions. Keeping tool parameters at the
+append-only tail preserves a cacheable `[system][latest user request]` prefix
+across consecutive approvals. Approval decisions are accepted only from
 pure-text model output; any tool call or other non-text part invalidates the
-response and fails safe to escalation. Event schema 11 adds
-`approval_session_increment_count` to every `ApprovalEvaluated` event. Invoked
-internal-agent evaluations use their monotonically increasing per-session
-increment; Ask-mode evaluations that skip the agent and all non-agent
-evaluations record zero.
+response and fails safe to escalation. Event schema 12 removes the obsolete
+approval-conversation increment counter from `ApprovalEvaluated`.
+The parameter object comes from tool preparation, not the model-authored JSON:
+filesystem paths are resolved to prepared display paths, defaulted read bounds
+are explicit, and shell input is reduced to the parsed permission subcommand
+labels. Thus the classifier and permission pipeline inspect the same prepared
+operation semantics and raw traversal spellings never reach the classifier.
+`PreparedTool::new` requires this normalized-argument object at construction;
+parameterless tools pass `{}` explicitly, so external providers cannot silently
+omit classifier parameters. Construction is fallible and rejects JSON `null`;
+non-null scalar forms remain valid for tools whose normalized schema requires
+them.
 
 Unmatched resources ask. Generic read allows do not override the built-in
 default ask for `.env`/`.env.*`; exact or more-specific authored rules decide
@@ -923,9 +931,9 @@ provider-store generation reconciliation.
 ### 14.1 Live per-session permission mode
 
 Every session has a live permission mode, defaulting to `auto_approve` when no
-explicit value has been set. `auto_approve` preserves the persistent
-approval-agent conversation and escalates when that agent asks, emits malformed
-output, times out, or fails. `ask` skips the internal
+explicit value has been set. `auto_approve` invokes the stateless approval
+classifier and escalates when that agent asks, emits malformed output, times out,
+or fails. `ask` skips the internal
 approval agent and routes every policy-ask or model-requested approval through
 the durable escalation transaction and user modal. `yolo` skips both the
 internal agent and escalation, durably appends `ApprovalEvaluated { allow,

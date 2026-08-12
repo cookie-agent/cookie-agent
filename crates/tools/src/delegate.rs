@@ -104,15 +104,23 @@ impl ToolProvider for DelegateToolProvider {
             &context,
         )?;
         let policy_labels = vec![args.agent.to_string()];
+        let normalized_arguments = serde_json::json!({
+            "agent": args.agent,
+            "task": args.task,
+            "context": args.context,
+            "success_criteria": args.success_criteria,
+            "expected_output": args.expected_output,
+        });
         PreparedTool::new(
             operation,
+            normalized_arguments,
             None,
             Box::new(DelegateExecutor {
                 engine: self.engine.clone(),
                 call_id: call.id,
                 args,
             }),
-        )
+        )?
         .with_policy_labels(policy_labels)
     }
 }

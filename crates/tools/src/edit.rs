@@ -129,13 +129,20 @@ impl ToolProvider for EditTool {
             resources,
             &context,
         )?;
+        let normalized_arguments = serde_json::json!({
+            "filePath": target.display_path,
+            "oldString": args.old_string,
+            "newString": args.new_string,
+            "replaceAll": args.replace_all,
+        });
         let mut serialization_key = target.identity.device.to_be_bytes().to_vec();
         serialization_key.extend_from_slice(&target.identity.inode.to_be_bytes());
         PreparedTool::new(
             operation,
+            normalized_arguments,
             Some(PreparedSerializationKey::new(serialization_key)),
             Box::new(EditExecutor { target, new_bytes }),
-        )
+        )?
         .with_policy_labels(policy_labels)
     }
 }

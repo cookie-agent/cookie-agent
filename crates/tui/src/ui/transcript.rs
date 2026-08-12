@@ -6821,7 +6821,7 @@ mod tests {
         for expected in [
             "/quit — exit the TUI",
             "/new — choose the next run agent",
-            "/approve once|tree|reject|cancel — answer an approval",
+            "/approve once|all|reject|cancel — answer an approval",
             "/events debug|info|warning|error — set the diagnostic level filter for this view",
             "/help — show command help",
             "Use // to send a prompt beginning with /.",
@@ -6993,7 +6993,7 @@ mod tests {
             ("/sessions", Some("Sessions")),
             ("/cancel", Some("no active run")),
             ("/approve once", None),
-            ("/approve tree", None),
+            ("/approve all", None),
             ("/approve reject", None),
             ("/approve cancel", None),
             ("/events debug", Some("diagnostic event filter")),
@@ -7069,7 +7069,7 @@ mod tests {
 
         for command in [
             "/approve once",
-            "/approve tree",
+            "/approve all",
             "/approve reject",
             "/approve cancel",
         ] {

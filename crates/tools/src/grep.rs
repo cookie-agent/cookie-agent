@@ -145,8 +145,16 @@ impl ToolProvider for GrepTool {
             truncation: None,
             attachments: Vec::new(),
         };
-        PreparedTool::new(operation, None, Box::new(GrepExecutor { result, bindings }))
-            .with_policy_labels(policy_labels)
+        PreparedTool::new(
+            operation,
+            serde_json::json!({
+                "pattern": args.pattern,
+                "path": canonical_root,
+            }),
+            None,
+            Box::new(GrepExecutor { result, bindings }),
+        )?
+        .with_policy_labels(policy_labels)
     }
 }
 

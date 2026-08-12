@@ -123,13 +123,14 @@ impl ToolProvider for TestDelegateProvider {
         .map_err(|error| ToolError::execution(error.to_string()))?;
         PreparedTool::new(
             operation,
+            serde_json::to_value(&args).map_err(|error| ToolError::execution(error.to_string()))?,
             None,
             Box::new(TestDelegateExecutor {
                 engine: self.engine.clone(),
                 call_id: call.id,
                 args,
             }),
-        )
+        )?
         .with_policy_labels(vec![label])
     }
 }
@@ -215,13 +216,14 @@ impl ToolProvider for TestWriteProvider {
             Sha256Digest::of_bytes(b"approval test execution context"),
         )
         .map_err(|error| ToolError::execution(error.to_string()))?;
-        Ok(PreparedTool::new(
+        PreparedTool::new(
             operation,
+            serde_json::json!({}),
             None,
             Box::new(TestWriteExecutor {
                 executed: Arc::clone(&self.executed),
             }),
-        ))
+        )
     }
 }
 
@@ -317,15 +319,16 @@ impl ToolProvider for TestRehydrationReadProvider {
             Sha256Digest::of_bytes(b"rehydration read context"),
         )
         .map_err(|error| ToolError::execution(error.to_string()))?;
-        Ok(PreparedTool::new(
+        PreparedTool::new(
             operation,
+            serde_json::json!({"filePath": path}),
             None,
             Box::new(TestRehydrationReadExecutor {
                 executed: Arc::clone(&self.executed),
                 path,
                 expected,
             }),
-        ))
+        )
     }
 }
 
@@ -2784,15 +2787,15 @@ fn external_store_generation_is_reloaded_before_discovery() {
 }
 
 #[test]
-fn protocol_seven_event_persistence_fails_deserialization() {
+fn event_schema_eleven_persistence_fails_deserialization() {
     let directory = TempDir::new().expect("temp directory");
     let path = directory.path().join("events.jsonl");
     fs::write(
         &path,
-        b"{\"event_schema_version\":7,\"payload\":{\"type\":\"session_created\"}}\n",
+        b"{\"event_schema_version\":11,\"payload\":{\"type\":\"session_created\"}}\n",
     )
     .expect("legacy event");
-    let error = EventLog::open(path, SessionId::new_v7()).expect_err("version 7 rejected");
+    let error = EventLog::open(path, SessionId::new_v7()).expect_err("version 11 rejected");
     assert!(matches!(error, EventLogError::Json { .. }));
 }
 
@@ -2937,7 +2940,6 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
         &lifecycle[1].payload,
         EventPayload::ApprovalEvaluated {
             decision,
-            approval_session_increment_count: 1,
             ..
         }
             if decision.decision == ApprovalInternalDecisionKind::Escalate
@@ -3254,7 +3256,7 @@ async fn cancel_during_start_prediction_aborts_compaction_without_appending_inpu
 }
 
 #[tokio::test]
-async fn approval_agent_conversation_persists_per_session_and_sends_delta_increments() {
+async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix() {
     let (endpoint, captured) = scripted_two_approved_writes_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
@@ -3312,7 +3314,7 @@ async fn approval_agent_conversation_persists_per_session_and_sends_delta_increm
             .get(session.session_id)
             .expect("timed-out projection");
         panic!(
-            "persistent approval completion timed out with status {:?} and events {:#?}",
+            "stateless approval completion timed out with status {:?} and events {:#?}",
             projection.status,
             projection.log.events()
         );
@@ -3327,35 +3329,11 @@ async fn approval_agent_conversation_persists_per_session_and_sends_delta_increm
         .expect("projection")
         .log
         .events();
-    let counts = events
+    let evaluations = events
         .iter()
-        .filter_map(|event| match event.payload {
-            EventPayload::ApprovalEvaluated {
-                approval_session_increment_count,
-                ..
-            } => Some(approval_session_increment_count),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(counts, vec![1, 2]);
-
-    let conversation = fixture
-        .engine
-        .approval_conversation_snapshot(session.session_id)
-        .await
-        .expect("approval conversation");
-    assert_eq!(conversation.len(), 2);
-    assert!(conversation[0].1.is_some());
-    assert!(conversation[1].1.is_some());
-    let first: serde_json::Value =
-        serde_json::from_str(&conversation[0].0).expect("first increment JSON");
-    let second: serde_json::Value =
-        serde_json::from_str(&conversation[1].0).expect("second increment JSON");
-    assert!(first.get("cwd_identity").is_some());
-    assert!(first.get("instruction").is_some());
-    assert!(second.get("cwd_identity").is_none());
-    assert!(second.get("instruction").is_none());
-    assert_eq!(second["intervening_messages"], serde_json::json!([]));
+        .filter(|event| matches!(event.payload, EventPayload::ApprovalEvaluated { .. }))
+        .count();
+    assert_eq!(evaluations, 2);
     let requests = captured.await.expect("persistent approval server task");
     assert_eq!(requests.len(), 5);
     fixture.engine.shutdown().await;
@@ -3471,7 +3449,6 @@ async fn yolo_permission_mode_durably_approves_and_executes_without_escalation()
         &approval_lifecycle[1].payload,
         EventPayload::ApprovalEvaluated {
             decision,
-            approval_session_increment_count: 0,
             ..
         }
             if decision.decision == ApprovalInternalDecisionKind::Allow

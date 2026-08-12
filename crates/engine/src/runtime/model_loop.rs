@@ -449,23 +449,33 @@ impl Engine {
                         .request_model_approval(
                             &active,
                             run_id,
-                            prepared
-                                .prepared
-                                .as_ref()
-                                .expect("prepared operation")
-                                .operation(),
-                            &prepared
-                                .prepared
-                                .as_ref()
-                                .expect("prepared operation")
-                                .policy_labels,
-                            prepared
-                                .prepared
-                                .as_ref()
-                                .expect("prepared operation")
-                                .executor
-                                .clone(),
-                            Some(message),
+                            ModelApprovalInput {
+                                operation: prepared
+                                    .prepared
+                                    .as_ref()
+                                    .expect("prepared operation")
+                                    .operation(),
+                                policy_labels: &prepared
+                                    .prepared
+                                    .as_ref()
+                                    .expect("prepared operation")
+                                    .policy_labels,
+                                executor: prepared
+                                    .prepared
+                                    .as_ref()
+                                    .expect("prepared operation")
+                                    .executor
+                                    .clone(),
+                                message: Some(message),
+                                tool: ApprovalToolInput {
+                                    name: &prepared.call.name,
+                                    normalized_parameters: prepared
+                                        .prepared
+                                        .as_ref()
+                                        .expect("prepared operation")
+                                        .normalized_arguments(),
+                                },
+                            },
                         )
                         .await?;
                     if outcome.approved {

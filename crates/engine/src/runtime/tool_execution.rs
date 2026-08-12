@@ -155,7 +155,17 @@ impl Engine {
                         message: error.to_string(),
                     })?;
                     let outcome = engine
-                        .await_user_approval(&active, run, request, prepared.executor.clone(), true)
+                        .await_user_approval(
+                            &active,
+                            run,
+                            request,
+                            prepared.executor.clone(),
+                            true,
+                            ApprovalToolInput {
+                                name: &call.name,
+                                normalized_parameters: prepared.normalized_arguments(),
+                            },
+                        )
                         .await
                         .map_err(|error| ToolFailure {
                             code: ToolCallFailureCode::ExecutionFailed,

@@ -107,8 +107,15 @@ impl ToolProvider for ReadTool {
             resources,
             &context,
         )?;
+        let normalized_arguments = serde_json::json!({
+            "filePath": target.display_path,
+            "offset": offset,
+            "limit": limit,
+            "byteOffset": byte_offset,
+        });
         PreparedTool::new(
             operation,
+            normalized_arguments,
             None,
             Box::new(ReadExecutor {
                 target,
@@ -116,7 +123,7 @@ impl ToolProvider for ReadTool {
                 byte_offset,
                 limit,
             }),
-        )
+        )?
         .with_policy_labels(policy_labels)
     }
 }
@@ -268,6 +275,26 @@ mod tests {
             )
             .await
             .expect("prepare read")
+    }
+
+    #[tokio::test]
+    async fn prepared_read_exposes_canonical_arguments_not_raw_traversal() {
+        let root = tempfile::TempDir::new().expect("temp directory");
+        std::fs::create_dir(root.path().join("safe")).expect("safe directory");
+        std::fs::write(root.path().join(".env"), "secret").expect("env file");
+        let prepared = prepared(root.path(), "safe/../.env").await;
+        let canonical = prepared
+            .normalized_arguments()
+            .get("filePath")
+            .and_then(serde_json::Value::as_str)
+            .expect("canonical file path");
+        assert_eq!(Path::new(canonical), root.path().join(".env"));
+        assert!(
+            !prepared
+                .normalized_arguments()
+                .to_string()
+                .contains("safe/..")
+        );
     }
 
     async fn fingerprint(root: &Path, path: &str) -> OperationFingerprint {

@@ -5,7 +5,7 @@
   "properties": {
     "event_schema_version": {
       "type": "integer",
-      "const": 11
+      "const": 12
     },
     "payload": {
       "$ref": "#/$defs/EventPayload"
@@ -1527,11 +1527,6 @@
               "type": "string",
               "format": "uuid"
             },
-            "approval_session_increment_count": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
             "decision": {
               "$ref": "#/$defs/ApprovalInternalDecision"
             },
@@ -1544,7 +1539,6 @@
           "required": [
             "type",
             "approval_id",
-            "approval_session_increment_count",
             "decision"
           ]
         },

@@ -3589,7 +3589,7 @@ impl App {
         let request_id = self.next_approval_request_id;
         let decision_label = match decision {
             ApprovalUserDecision::ApproveOnce => "approve once",
-            ApprovalUserDecision::ApproveTree => "approve tree",
+            ApprovalUserDecision::ApproveTree => "approve all",
             ApprovalUserDecision::Reject => "reject",
             ApprovalUserDecision::Cancel => "cancel",
         };
@@ -3644,7 +3644,7 @@ impl App {
                 self.remove_exact_approval(&pending.approval);
                 let decision_label = match pending.decision {
                     ApprovalUserDecision::ApproveOnce => "approve once",
-                    ApprovalUserDecision::ApproveTree => "approve tree",
+                    ApprovalUserDecision::ApproveTree => "approve all",
                     ApprovalUserDecision::Reject => "reject",
                     ApprovalUserDecision::Cancel => "cancel",
                 };
@@ -5703,7 +5703,7 @@ fn render_approval_actions(frame: &mut ratatui::Frame, actions: &[ApprovalHit], 
 fn approval_action_label(decision: ApprovalUserDecision, width: u16) -> &'static str {
     let full = match decision {
         ApprovalUserDecision::ApproveOnce => "✓ Allow once",
-        ApprovalUserDecision::ApproveTree => "✓ Allow tree",
+        ApprovalUserDecision::ApproveTree => "✓ Allow all",
         ApprovalUserDecision::Reject => "✗ Reject",
         ApprovalUserDecision::Cancel => "⎋ Cancel",
     };

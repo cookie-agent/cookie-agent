@@ -7,7 +7,7 @@ impl Engine {
         run: RunId,
         request: ApprovalRequest,
         executor: PreparedExecutorCell,
-        evaluation: (ApprovalInternalDecisionKind, u64),
+        decision: ApprovalInternalDecisionKind,
         cancelled: bool,
     ) -> Result<ApprovalEvaluationTransition, EngineError> {
         let approval_id = request.approval_id();
@@ -41,7 +41,6 @@ impl Engine {
             }));
         }
 
-        let (decision, approval_session_increment_count) = evaluation;
         let source = ApprovalDecisionSource::InternalAgent;
         let (decision, reason_code) = match decision {
             ApprovalInternalDecisionKind::Allow => (
@@ -62,7 +61,6 @@ impl Engine {
             Some(run),
             Event::ApprovalEvaluated {
                 approval_id,
-                approval_session_increment_count,
                 decision: ApprovalInternalDecision {
                     decision,
                     source,

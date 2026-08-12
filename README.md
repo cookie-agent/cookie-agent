@@ -72,7 +72,14 @@ Approval and title internal requests are structurally tool-less. The compaction
 fork deliberately retains the parent request's tool definitions to preserve a
 byte-identical cacheable prefix, but tool calls returned by the summarizer are
 rejected and never executed. The title agent receives only the first user
-message.
+message. Each approval evaluation is a stateless two-turn request containing
+only the frozen approval prompt, the latest persisted user message (or a fixed
+no-message marker), and the current tool name plus normalized parameters last;
+older history, assistant prose, tool results, and prior decisions are excluded.
+The parameters are preparation-derived rather than raw model JSON, so canonical
+paths and parsed permission labels match what the permission pipeline evaluated.
+Every prepared tool must provide this object explicitly; parameterless tools use
+an empty object, and construction rejects `null`.
 
 Managed providers may author credentials directly in user or workspace config
 with `api_key` or typed `auth_override`. The effective authored credential

@@ -1,29 +1,34 @@
 use super::*;
 
+pub(super) const APPROVAL_USER_REQUEST_PREFIX: &str = "Evaluate only the current approval request. Return strict JSON only: {\"decision\":\"allow\"|\"deny\"|\"ask\"}.\n\n<latest_user_request>\n";
+pub(super) const APPROVAL_USER_REQUEST_SUFFIX: &str = "\n</latest_user_request>";
+pub(super) const APPROVAL_TOOL_CALL_PREFIX: &str = "\n\n<tool_call>\n";
+pub(super) const APPROVAL_TOOL_CALL_SUFFIX: &str = "\n</tool_call>";
+pub(super) const APPROVAL_NO_USER_MESSAGE: &str = "[no user message]";
+
 impl Engine {
     pub(super) async fn request_model_approval(
         &self,
         active: &ActiveRun,
         run: RunId,
-        operation: &PreparedOperationIdentity,
-        policy_labels: &[String],
-        executor: PreparedExecutorCell,
-        message: Option<String>,
+        input: ModelApprovalInput<'_>,
     ) -> Result<ApprovalOutcome, EngineError> {
         let approval_policy = self.active_internal_policy(active, InternalAgentKind::Approval)?;
         let request = approval_request_for_operation(
             ApprovalTrigger::ModelToolApproval,
-            operation.clone(),
-            operation
+            input.operation.clone(),
+            input
+                .operation
                 .resources()
                 .iter()
-                .zip(policy_labels)
+                .zip(input.policy_labels)
                 .map(|(resource, label)| cookie_agent_protocol::DecisionTrace {
                     action: resource.capability,
                     normalized_resource: label.clone(),
                     candidates: Vec::new(),
                     effect: cookie_agent_protocol::PermissionEffect::Ask,
-                    precedence_reason: message
+                    precedence_reason: input
+                        .message
                         .clone()
                         .unwrap_or_else(|| "model requested tool approval".into()),
                 })
@@ -31,7 +36,7 @@ impl Engine {
             false,
             approval_expiry(approval_policy.limits.timeout_ms),
         );
-        self.await_user_approval(active, run, request, executor, false)
+        self.await_user_approval(active, run, request, input.executor, false, input.tool)
             .await
     }
 
@@ -42,6 +47,7 @@ impl Engine {
         request: ApprovalRequest,
         executor: PreparedExecutorCell,
         allow_prior_grant: bool,
+        tool: ApprovalToolInput<'_>,
     ) -> Result<ApprovalOutcome, EngineError> {
         let approval_id = request.approval_id();
         let session = self.inner.store.get(active.session)?;
@@ -106,7 +112,6 @@ impl Engine {
                 Some(run),
                 Event::ApprovalEvaluated {
                     approval_id,
-                    approval_session_increment_count: 0,
                     decision,
                 },
             )
@@ -147,7 +152,6 @@ impl Engine {
                 Some(run),
                 Event::ApprovalEvaluated {
                     approval_id,
-                    approval_session_increment_count: 0,
                     decision,
                 },
             )
@@ -187,7 +191,6 @@ impl Engine {
                 Some(run),
                 Event::ApprovalEvaluated {
                     approval_id,
-                    approval_session_increment_count: 0,
                     decision: ApprovalInternalDecision {
                         decision: ApprovalInternalDecisionKind::Allow,
                         source: ApprovalDecisionSource::Policy,
@@ -218,8 +221,8 @@ impl Engine {
             });
         }
 
-        let (internal_kind, approval_session_increment_count) = match permission_mode {
-            PermissionMode::Ask => (ApprovalInternalDecisionKind::Ask, 0),
+        let internal_kind = match permission_mode {
+            PermissionMode::Ask => ApprovalInternalDecisionKind::Ask,
             PermissionMode::AutoApprove => {
                 #[cfg(test)]
                 let hook = {
@@ -243,14 +246,8 @@ impl Engine {
                 }
                 let approval_policy =
                     self.active_internal_policy(active, InternalAgentKind::Approval)?;
-                self.evaluate_with_approval_conversation(
-                    active,
-                    run,
-                    &session,
-                    &request,
-                    &approval_policy,
-                )
-                .await
+                self.evaluate_stateless_approval(active, run, &session, &approval_policy, tool)
+                    .await
             }
             PermissionMode::Yolo => unreachable!("yolo approvals resolve before prompting"),
         };
@@ -261,7 +258,6 @@ impl Engine {
                     request: request.clone(),
                     executor: executor.clone(),
                     decision: internal_kind,
-                    approval_session_increment_count,
                     cancelled: active.cancellation.is_cancelled(),
                     reply,
                 }
@@ -313,59 +309,18 @@ impl Engine {
         }
     }
 
-    async fn evaluate_with_approval_conversation(
+    async fn evaluate_stateless_approval(
         &self,
         active: &ActiveRun,
         run: RunId,
         session: &crate::session::SessionProjection,
-        request: &ApprovalRequest,
         policy: &FrozenInternalAgentPolicy,
-    ) -> (ApprovalInternalDecisionKind, u64) {
-        let conversation = {
-            let mut conversations = self
-                .inner
-                .approval_conversations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            Arc::clone(conversations.entry(active.session).or_insert_with(|| {
-                Arc::new(tokio::sync::Mutex::new(ApprovalConversation::default()))
-            }))
-        };
-        let mut conversation = tokio::select! {
-            conversation = conversation.lock() => conversation,
-            _ = active.cancellation.cancelled() => {
-                return (ApprovalInternalDecisionKind::Ask, 0);
-            }
-        };
+        tool: ApprovalToolInput<'_>,
+    ) -> ApprovalInternalDecisionKind {
         let events = session.log.events();
-        let input_through_seq = events.last().map_or(0, |event| event.seq);
-        let prompt = approval_conversation_increment(
-            session,
-            request,
-            conversation.increment_count == 0,
-            conversation.input_through_seq,
-            &events,
-        );
-        let max_input_bytes = usize::try_from(policy.limits.max_input_tokens)
-            .unwrap_or(usize::MAX)
-            .saturating_mul(4);
-        let prompt = truncate_utf8(&prompt, max_input_bytes);
-        let increment_count = conversation.push_user(prompt.clone(), input_through_seq);
-        let system_prompt = format!(
-            "{}\nReturn strict JSON only: {{\"decision\":\"allow\"|\"deny\"|\"ask\"}}.",
-            policy.agent.composed_prompt
-        );
-        let history = loop {
-            let history = conversation.history(system_prompt.clone());
-            let within_limit = internal_history_tokens(&history, &[])
-                .is_ok_and(|tokens| tokens <= policy.limits.max_input_tokens);
-            if within_limit {
-                break history;
-            }
-            if !conversation.trim_oldest_increment() {
-                return (ApprovalInternalDecisionKind::Ask, increment_count);
-            }
-        };
+        let prompt = approval_stateless_input(tool, latest_user_message(&events, run));
+        let history =
+            approval_stateless_history(policy.agent.composed_prompt.clone(), prompt.clone());
         let result = self
             .run_internal_history_agent(
                 active.session,
@@ -384,88 +339,72 @@ impl Engine {
                 },
             )
             .await;
-        let decision = match result {
+        match result {
             Ok(result) => {
-                conversation.set_latest_assistant(result.text.clone());
                 parse_internal_approval(&result.text).unwrap_or(ApprovalInternalDecisionKind::Ask)
             }
             Err(_) => ApprovalInternalDecisionKind::Ask,
-        };
-        (decision, increment_count)
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn approval_conversation_snapshot(
-        &self,
-        session: SessionId,
-    ) -> Option<Vec<(String, Option<String>)>> {
-        let conversation = {
-            let conversations = self
-                .inner
-                .approval_conversations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            Arc::clone(conversations.get(&session)?)
-        };
-        let conversation = conversation.lock().await;
-        Some(
-            conversation
-                .increments
-                .iter()
-                .map(|increment| (increment.user.clone(), increment.assistant.clone()))
-                .collect(),
-        )
+        }
     }
 }
 
-fn approval_conversation_increment(
-    session: &crate::session::SessionProjection,
-    request: &ApprovalRequest,
-    first: bool,
-    after_seq: u64,
-    events: &[StoredEvent],
-) -> String {
-    let resource_labels = approval_evaluations(request)
+fn approval_stateless_input(tool: ApprovalToolInput<'_>, latest_user: Option<&str>) -> String {
+    let tool_call = serde_json::json!({
+        "name": tool.name,
+        "normalized_parameters": canonical_approval_parameters(tool.normalized_parameters),
+    });
+    format!(
+        "{APPROVAL_USER_REQUEST_PREFIX}{}{APPROVAL_USER_REQUEST_SUFFIX}{APPROVAL_TOOL_CALL_PREFIX}{}{APPROVAL_TOOL_CALL_SUFFIX}",
+        latest_user.unwrap_or(APPROVAL_NO_USER_MESSAGE),
+        serde_json::to_string(&tool_call).expect("safe approval tool call serializes")
+    )
+}
+
+fn canonical_approval_parameters(value: &Value) -> Value {
+    match value {
+        Value::Array(values) => {
+            Value::Array(values.iter().map(canonical_approval_parameters).collect())
+        }
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+            Value::Object(
+                keys.into_iter()
+                    .map(|key| (key.clone(), canonical_approval_parameters(&values[key])))
+                    .collect(),
+            )
+        }
+        _ => value.clone(),
+    }
+}
+
+fn latest_user_message(events: &[StoredEvent], run: RunId) -> Option<&str> {
+    events
         .iter()
-        .map(|evaluation| evaluation.trace.normalized_resource.clone())
-        .collect::<Vec<_>>();
-    let operations = request
-        .operation()
-        .capabilities()
-        .iter()
-        .map(|capability| capability.operation.as_str())
-        .collect::<Vec<_>>();
-    let value = if first {
-        serde_json::json!({
-            "instruction": "Return strict JSON only: {\"decision\":\"allow\"|\"deny\"|\"ask\"}.",
-            "cwd_identity": session.meta.cwd_identity,
-            "operations": operations,
-            "resource_labels": resource_labels,
+        .rev()
+        .find_map(|event| match &event.payload {
+            Event::UserInputSubmitted { input } if event.run_id == Some(run) => {
+                Some(input.as_str())
+            }
+            _ => None,
         })
-    } else {
-        let source = if matches!(session.meta.origin, SessionOrigin::Delegated { .. }) {
-            "delegate"
-        } else {
-            "user"
-        };
-        let intervening_messages = events
-            .iter()
-            .filter(|event| event.seq > after_seq)
-            .filter_map(|event| match &event.payload {
-                Event::UserInputSubmitted { input } => Some(serde_json::json!({
-                    "source": source,
-                    "content": input,
-                })),
+        .or_else(|| {
+            events.iter().rev().find_map(|event| match &event.payload {
+                Event::UserInputSubmitted { input } => Some(input.as_str()),
                 _ => None,
             })
-            .collect::<Vec<_>>();
-        serde_json::json!({
-            "intervening_messages": intervening_messages,
-            "operations": operations,
-            "resource_labels": resource_labels,
         })
-    };
-    serde_json::to_string(&value).expect("safe approval increment serializes")
+}
+
+fn approval_stateless_history(system_prompt: String, input: String) -> Vec<oven_sdk::HistoryTurn> {
+    vec![
+        oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
+            oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(system_prompt)),
+        ])),
+        oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(vec![oven_sdk::InputPart::Text(
+            oven_sdk::TextPart::new(input),
+        )])),
+    ]
 }
 
 pub(super) fn approval_evaluations(request: &ApprovalRequest) -> Vec<ApprovalEvaluation> {
@@ -544,33 +483,121 @@ mod tests {
     use super::*;
 
     #[test]
-    fn approval_conversation_retains_twenty_increments_and_counts_omitted_messages() {
-        let mut conversation = ApprovalConversation::default();
-        for index in 1..=22 {
-            assert_eq!(
-                conversation.push_user(format!("request {index}"), index),
-                index
-            );
-            conversation.set_latest_assistant(format!("decision {index}"));
-        }
-
-        assert_eq!(conversation.increment_count, 22);
-        assert_eq!(conversation.increments.len(), 20);
-        assert_eq!(conversation.omitted_messages, 4);
-        assert_eq!(conversation.increments.front().unwrap().user, "request 3");
-        assert_eq!(conversation.history("system".into()).len(), 42);
+    fn approval_framing_string_is_frozen() {
+        assert_eq!(
+            APPROVAL_USER_REQUEST_PREFIX,
+            "Evaluate only the current approval request. Return strict JSON only: {\"decision\":\"allow\"|\"deny\"|\"ask\"}.\n\n<latest_user_request>\n"
+        );
+        assert_eq!(APPROVAL_USER_REQUEST_SUFFIX, "\n</latest_user_request>");
+        assert_eq!(APPROVAL_TOOL_CALL_PREFIX, "\n\n<tool_call>\n");
+        assert_eq!(APPROVAL_TOOL_CALL_SUFFIX, "\n</tool_call>");
+        assert_eq!(APPROVAL_NO_USER_MESSAGE, "[no user message]");
     }
 
     #[test]
-    fn approval_history_can_trim_below_the_twenty_increment_cap() {
-        let mut conversation = ApprovalConversation::default();
-        for index in 1..=3 {
-            conversation.push_user(format!("request {index}"), index);
-            conversation.set_latest_assistant(format!("decision {index}"));
+    fn approval_request_prefix_is_stable_and_tool_parameters_are_last() {
+        let (runtime, binding) = crate::test_support::model_runtime_and_binding();
+        let model = runtime.resolve(&binding.selection).expect("resolved model");
+        let first = approval_stateless_input(
+            ApprovalToolInput {
+                name: "write",
+                normalized_parameters: &serde_json::json!({"filePath":"a"}),
+            },
+            Some("make the change"),
+        );
+        let second = approval_stateless_input(
+            ApprovalToolInput {
+                name: "write",
+                normalized_parameters: &serde_json::json!({"filePath":"b"}),
+            },
+            Some("make the change"),
+        );
+        let prefix =
+            format!("{APPROVAL_USER_REQUEST_PREFIX}make the change{APPROVAL_USER_REQUEST_SUFFIX}");
+        assert!(first.starts_with(&prefix));
+        assert!(second.starts_with(&prefix));
+        assert_ne!(first, second);
+        assert!(first.ends_with(APPROVAL_TOOL_CALL_SUFFIX));
+        let first_request = model.prepare_request(ModelRequest::new(approval_stateless_history(
+            "system".into(),
+            first,
+        )));
+        let second_request = model.prepare_request(ModelRequest::new(approval_stateless_history(
+            "system".into(),
+            second,
+        )));
+        let first_serialized = serde_json::to_string(&first_request).unwrap();
+        let second_serialized = serde_json::to_string(&second_request).unwrap();
+        let first_params = first_serialized
+            .find("\\\"normalized_parameters\\\":{\\\"filePath\\\":\\\"a\\\"}")
+            .expect("first prepared params tail");
+        let second_params = second_serialized
+            .find("\\\"normalized_parameters\\\":{\\\"filePath\\\":\\\"b\\\"}")
+            .expect("second prepared params tail");
+        assert_eq!(first_params, second_params);
+        assert_eq!(
+            &first_serialized[..first_params],
+            &second_serialized[..second_params]
+        );
+        assert_ne!(
+            first_serialized.as_bytes()[first_params..],
+            second_serialized.as_bytes()[second_params..]
+        );
+    }
+
+    #[test]
+    fn stateless_approval_does_not_accumulate_prior_decisions() {
+        let make = || {
+            approval_stateless_history(
+                "system".into(),
+                approval_stateless_input(
+                    ApprovalToolInput {
+                        name: "write",
+                        normalized_parameters: &serde_json::json!({"filePath":"same"}),
+                    },
+                    Some("same user request"),
+                ),
+            )
+        };
+        let first = make();
+        for _ in 0..5 {
+            assert_eq!(
+                serde_json::to_vec(&make()).unwrap(),
+                serde_json::to_vec(&first).unwrap()
+            );
         }
-        assert!(conversation.trim_oldest_increment());
-        assert_eq!(conversation.increments.len(), 2);
-        assert_eq!(conversation.omitted_messages, 2);
-        assert_eq!(conversation.increments.front().unwrap().user, "request 2");
+    }
+
+    #[test]
+    fn approval_without_user_message_uses_fixed_fallback() {
+        let input = approval_stateless_input(
+            ApprovalToolInput {
+                name: "delegate",
+                normalized_parameters: &serde_json::json!({"agent":"worker"}),
+            },
+            None,
+        );
+        assert!(input.contains(&format!(
+            "{APPROVAL_USER_REQUEST_PREFIX}{APPROVAL_NO_USER_MESSAGE}{APPROVAL_USER_REQUEST_SUFFIX}"
+        )));
+    }
+
+    #[test]
+    fn approval_parameters_are_canonicalized_recursively() {
+        let first = approval_stateless_input(
+            ApprovalToolInput {
+                name: "write",
+                normalized_parameters: &serde_json::json!({"z":1,"nested":{"b":2,"a":1}}),
+            },
+            Some("request"),
+        );
+        let second = approval_stateless_input(
+            ApprovalToolInput {
+                name: "write",
+                normalized_parameters: &serde_json::json!({"nested":{"a":1,"b":2},"z":1}),
+            },
+            Some("request"),
+        );
+        assert_eq!(first, second);
     }
 }

@@ -1507,7 +1507,6 @@ pub enum EventPayload {
     },
     ApprovalEvaluated {
         approval_id: ApprovalId,
-        approval_session_increment_count: u64,
         decision: ApprovalInternalDecision,
     },
     ApprovalEscalated {
@@ -1705,19 +1704,10 @@ impl EventPayload {
                 }
                 retained.validate()?;
             }
-            Self::ApprovalEvaluated {
-                decision,
-                approval_session_increment_count,
-                ..
-            } => {
+            Self::ApprovalEvaluated { decision, .. } => {
                 decision
                     .validate()
                     .map_err(|_| EventSchemaError::InvalidApprovalLifecycle)?;
-                if decision.source != ApprovalDecisionSource::InternalAgent
-                    && *approval_session_increment_count > 0
-                {
-                    return Err(EventSchemaError::InvalidApprovalCounter);
-                }
             }
             Self::ApprovalEscalated { reason_code, .. }
                 if *reason_code != ApprovalReasonCode::Escalated =>

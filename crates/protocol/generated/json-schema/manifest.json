@@ -1,6 +1,6 @@
 {
   "delegation_journal_schema_version": 9,
-  "event_schema_version": 11,
+  "event_schema_version": 12,
   "protocol_version": 8,
   "schemas": [
     "ClientHello.schema.json",
@@ -60,6 +60,6 @@
     "ModelSnapshotManifestV1.schema.json",
     "StoredDelegationJournalRecord.schema.json"
   ],
-  "session_jsonl_schema_version": 11,
+  "session_jsonl_schema_version": 12,
   "session_meta_schema_version": 9
 }

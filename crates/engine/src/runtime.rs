@@ -307,95 +307,17 @@ enum ApprovalEvaluationTransition {
     Escalated(oneshot::Receiver<ApprovalOutcome>),
 }
 
-const APPROVAL_CONVERSATION_INCREMENT_LIMIT: usize = 20;
-
-#[derive(Debug)]
-struct ApprovalConversationIncrement {
-    user: String,
-    assistant: Option<String>,
+struct ApprovalToolInput<'a> {
+    name: &'a str,
+    normalized_parameters: &'a Value,
 }
 
-#[derive(Debug, Default)]
-struct ApprovalConversation {
-    increments: VecDeque<ApprovalConversationIncrement>,
-    omitted_messages: u64,
-    increment_count: u64,
-    input_through_seq: u64,
-}
-
-impl ApprovalConversation {
-    fn push_user(&mut self, user: String, input_through_seq: u64) -> u64 {
-        self.increment_count = self.increment_count.saturating_add(1);
-        self.input_through_seq = input_through_seq;
-        self.increments.push_back(ApprovalConversationIncrement {
-            user,
-            assistant: None,
-        });
-        while self.increments.len() > APPROVAL_CONVERSATION_INCREMENT_LIMIT {
-            if let Some(removed) = self.increments.pop_front() {
-                self.omitted_messages = self
-                    .omitted_messages
-                    .saturating_add(1 + u64::from(removed.assistant.is_some()));
-            }
-        }
-        self.increment_count
-    }
-
-    fn set_latest_assistant(&mut self, assistant: String) {
-        if let Some(increment) = self.increments.back_mut() {
-            increment.assistant = Some(assistant);
-        }
-    }
-
-    fn trim_oldest_increment(&mut self) -> bool {
-        if self.increments.len() <= 1 {
-            return false;
-        }
-        if let Some(removed) = self.increments.pop_front() {
-            self.omitted_messages = self
-                .omitted_messages
-                .saturating_add(1 + u64::from(removed.assistant.is_some()));
-            true
-        } else {
-            false
-        }
-    }
-
-    fn history(&self, system_prompt: String) -> Vec<oven_sdk::HistoryTurn> {
-        let mut history = vec![oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(
-            vec![oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(
-                system_prompt,
-            ))],
-        ))];
-        if self.omitted_messages > 0 {
-            history.push(oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(
-                vec![oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(
-                    format!("…and {} earlier messages", self.omitted_messages),
-                ))],
-            )));
-        }
-        for increment in &self.increments {
-            history.push(oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(
-                vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
-                    increment.user.clone(),
-                ))],
-            )));
-            if let Some(assistant) = &increment.assistant {
-                history.push(oven_sdk::HistoryTurn::assistant(
-                    oven_sdk::CompletedTurn::new(
-                        oven_sdk::AssistantMessage::new(vec![oven_sdk::AssistantPart::Text(
-                            oven_sdk::TextPart::new(assistant.clone()),
-                        )]),
-                        oven_sdk::Finish::new(
-                            oven_sdk::Usage::default(),
-                            oven_sdk::FinishReason::Stop,
-                        ),
-                    ),
-                ));
-            }
-        }
-        history
-    }
+struct ModelApprovalInput<'a> {
+    operation: &'a PreparedOperationIdentity,
+    policy_labels: &'a [String],
+    executor: PreparedExecutorCell,
+    message: Option<String>,
+    tool: ApprovalToolInput<'a>,
 }
 
 struct PreparedToolCall {
@@ -663,7 +585,6 @@ enum SessionCommand {
         request: ApprovalRequest,
         executor: PreparedExecutorCell,
         decision: ApprovalInternalDecisionKind,
-        approval_session_increment_count: u64,
         cancelled: bool,
         reply: oneshot::Sender<Result<ApprovalEvaluationTransition, EngineError>>,
     },
@@ -765,8 +686,6 @@ pub(crate) struct Inner {
     finalized_output_hubs: Mutex<VecDeque<ToolCallId>>,
     pub(crate) pending_approvals: Mutex<HashMap<(SessionId, ApprovalId), PendingApproval>>,
     permission_modes: Mutex<HashMap<SessionId, PermissionMode>>,
-    approval_conversations:
-        Mutex<HashMap<SessionId, Arc<tokio::sync::Mutex<ApprovalConversation>>>>,
     compaction_auto_disabled: Mutex<HashSet<SessionId>>,
     compaction_postcheck_pending: Mutex<HashSet<SessionId>>,
     compaction_in_progress: Mutex<HashSet<SessionId>>,
@@ -857,7 +776,6 @@ impl Engine {
                 finalized_output_hubs: Mutex::new(VecDeque::new()),
                 pending_approvals: Mutex::new(HashMap::new()),
                 permission_modes: Mutex::new(HashMap::new()),
-                approval_conversations: Mutex::new(HashMap::new()),
                 compaction_auto_disabled: Mutex::new(HashSet::new()),
                 compaction_postcheck_pending: Mutex::new(HashSet::new()),
                 compaction_in_progress: Mutex::new(HashSet::new()),

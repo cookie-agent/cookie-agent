@@ -240,6 +240,7 @@ pub trait PreparedExecutor: Send + Sync {
 pub struct PreparedTool {
     pub(crate) operation: PreparedOperationIdentity,
     pub(crate) policy_labels: Vec<String>,
+    pub(crate) normalized_arguments: serde_json::Value,
     pub(crate) serialization_key: Option<PreparedSerializationKey>,
     pub(crate) executor: PreparedExecutorCell,
 }
@@ -247,23 +248,29 @@ pub struct PreparedTool {
 pub(crate) type PreparedExecutorCell = Arc<tokio::sync::Mutex<Option<Box<dyn PreparedExecutor>>>>;
 
 impl PreparedTool {
-    #[must_use]
     pub fn new(
         operation: PreparedOperationIdentity,
+        normalized_arguments: serde_json::Value,
         serialization_key: Option<PreparedSerializationKey>,
         executor: Box<dyn PreparedExecutor>,
-    ) -> Self {
+    ) -> Result<Self, ToolError> {
+        if normalized_arguments.is_null() {
+            return Err(ToolError::execution(
+                "prepared normalized arguments must not be null",
+            ));
+        }
         let policy_labels = operation
             .resources()
             .iter()
             .map(|resource| resource.canonical.as_str().to_owned())
             .collect();
-        Self {
+        Ok(Self {
             operation,
             policy_labels,
+            normalized_arguments,
             serialization_key,
             executor: Arc::new(tokio::sync::Mutex::new(Some(executor))),
-        }
+        })
     }
 
     #[must_use]
@@ -295,6 +302,11 @@ impl PreparedTool {
     }
 
     #[must_use]
+    pub const fn normalized_arguments(&self) -> &serde_json::Value {
+        &self.normalized_arguments
+    }
+
+    #[must_use]
     pub fn policy_labels(&self) -> &[String] {
         &self.policy_labels
     }
@@ -311,4 +323,50 @@ pub trait ToolProvider: Send + Sync {
         ctx: ToolPreparationContext,
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoopExecutor;
+
+    #[async_trait]
+    impl PreparedExecutor for NoopExecutor {
+        async fn revalidate(&self) -> Result<(), ToolError> {
+            Ok(())
+        }
+
+        async fn execute(
+            self: Box<Self>,
+            _context: ToolExecutionContext,
+        ) -> Result<ToolResult, ToolError> {
+            unreachable!("constructor validation test never executes")
+        }
+    }
+
+    #[test]
+    fn prepared_tool_rejects_null_normalized_arguments() {
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(b"arguments"),
+            vec![cookie_agent_protocol::ApprovalCapability {
+                action: cookie_agent_protocol::PermissionAction::Bash,
+                operation: cookie_agent_protocol::PreparedCapabilityOperation::new("bash:execute")
+                    .expect("capability operation"),
+            }],
+            Vec::new(),
+            Sha256Digest::of_bytes(b"context"),
+        )
+        .expect("prepared operation");
+        let error = match PreparedTool::new(
+            operation,
+            serde_json::Value::Null,
+            None,
+            Box::new(NoopExecutor),
+        ) {
+            Ok(_) => panic!("null normalized arguments must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("must not be null"));
+    }
 }

@@ -108,14 +108,19 @@ impl ToolProvider for WriteTool {
             resources,
             &context,
         )?;
+        let normalized_arguments = serde_json::json!({
+            "filePath": display_path,
+            "content": args.content,
+        });
         PreparedTool::new(
             operation,
+            normalized_arguments,
             Some(PreparedSerializationKey::new(serialization_key)),
             Box::new(WriteExecutor {
                 target,
                 bytes: args.content.into_bytes(),
             }),
-        )
+        )?
         .with_policy_labels(policy_labels)
     }
 }

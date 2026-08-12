@@ -184,15 +184,19 @@ impl ToolProvider for BashTool {
         let mut context = cwd.manifest_bytes()?;
         context.extend_from_slice(&executable_binding);
         let operation = prepared_operation("bash", &args, capabilities, resources, &context)?;
+        let normalized_arguments = serde_json::json!({
+            "subcommands": policy_labels,
+        });
         PreparedTool::new(
             operation,
+            normalized_arguments,
             None,
             Box::new(BashExecutor {
                 args,
                 cwd,
                 executable,
             }),
-        )
+        )?
         .with_policy_labels(policy_labels)
     }
 }

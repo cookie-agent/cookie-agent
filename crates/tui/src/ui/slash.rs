@@ -74,7 +74,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "approve",
         aliases: &[],
-        usage: "/approve once|tree|reject|cancel",
+        usage: "/approve once|all|reject|cancel",
         description: "answer an approval",
         requires_arguments: true,
     },
@@ -157,7 +157,7 @@ pub(crate) fn parse_submission(input: &str) -> Result<Submission, String> {
             ["sessions"] => SlashCommand::Sessions,
             ["cancel"] => SlashCommand::Cancel,
             ["approve", "once"] => SlashCommand::Approve(ApprovalUserDecision::ApproveOnce),
-            ["approve", "tree"] => SlashCommand::Approve(ApprovalUserDecision::ApproveTree),
+            ["approve", "all"] => SlashCommand::Approve(ApprovalUserDecision::ApproveTree),
             ["approve", "reject"] => SlashCommand::Approve(ApprovalUserDecision::Reject),
             ["approve", "cancel"] => SlashCommand::Approve(ApprovalUserDecision::Cancel),
             ["events", "debug"] => SlashCommand::Events(crate::state::EventLevel::Debug),
