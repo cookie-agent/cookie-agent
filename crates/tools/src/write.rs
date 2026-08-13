@@ -71,13 +71,13 @@ impl ToolProvider for WriteTool {
         ))
     }
 
-    fn get_simplified_argument(
+    fn get_display_argument(
         &self,
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
         let path = self.get_primary_argument(name, arguments)?;
-        Ok(crate::simplified_display_path(&path, &self.workspace))
+        Ok(crate::abbreviated_display_path(&path, &self.workspace))
     }
 
     async fn prepare(
@@ -206,10 +206,10 @@ mod tests {
     }
 
     #[test]
-    fn simplified_argument_abbreviates_workspace_and_home_paths() {
+    fn display_argument_abbreviates_workspace_and_home_paths() {
         let tool = WriteTool::new("/workspace");
         assert_eq!(
-            tool.get_simplified_argument(
+            tool.get_display_argument(
                 "write",
                 &serde_json::json!({"filePath":"out.txt","content":"x"})
             )
@@ -217,7 +217,7 @@ mod tests {
             "out.txt"
         );
         assert_eq!(
-            tool.get_simplified_argument(
+            tool.get_display_argument(
                 "write",
                 &serde_json::json!({"filePath":"/workspace/out.txt","content":"x"})
             )
@@ -226,7 +226,7 @@ mod tests {
         );
         let home = std::env::var("HOME").expect("HOME");
         assert_eq!(
-            tool.get_simplified_argument(
+            tool.get_display_argument(
                 "write",
                 &serde_json::json!({"filePath": format!("{home}/notes.txt"),"content":"x"})
             )

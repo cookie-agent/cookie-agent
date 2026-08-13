@@ -128,7 +128,7 @@ impl ToolProvider for BashTool {
         Ok(args.command)
     }
 
-    fn get_simplified_argument(
+    fn get_display_argument(
         &self,
         name: &str,
         arguments: &serde_json::Value,
@@ -385,10 +385,10 @@ mod tests {
     }
 
     #[test]
-    fn simplified_argument_is_a_one_line_command_that_keeps_and_segments() {
+    fn display_argument_is_a_one_line_command_that_keeps_and_segments() {
         let tool = BashTool::new("/tmp");
         assert_eq!(
-            tool.get_simplified_argument(
+            tool.get_display_argument(
                 "bash",
                 &serde_json::json!({"command":"git status && cargo test"})
             )
@@ -396,7 +396,7 @@ mod tests {
             "git status && cargo test"
         );
         assert_eq!(
-            tool.get_simplified_argument(
+            tool.get_display_argument(
                 "bash",
                 &serde_json::json!({"command":"git\n  status &&\ncargo test"})
             )
@@ -404,7 +404,7 @@ mod tests {
             "git status && cargo test"
         );
         assert!(matches!(
-            tool.get_simplified_argument("bash", &serde_json::json!({"command":"   "})),
+            tool.get_display_argument("bash", &serde_json::json!({"command":"   "})),
             Err(ToolError::Failed(_))
         ));
     }

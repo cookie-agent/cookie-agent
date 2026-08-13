@@ -339,9 +339,10 @@ path, `bash` uses the full command, and
 `delegate` uses the target agent id. After preparation the engine calls
 `get_primary_argument` on the prepared `normalized_arguments` and uses that
 string as the primary policy label; providers cannot keep a different prepared
-label. `get_simplified_argument` is TUI-only compact-title display and must
-not feed permission matching. The simplified forms are: `read`/`write`/`edit`
-use a workspace-relative or home-abbreviated path, `bash` uses a compact
+label. `get_display_argument` is TUI-only compact-title display and must not
+feed permission matching. The display forms are: `write`/`edit` use a
+workspace-relative or home-abbreviated path; `read` uses that path plus any
+explicit zero-based offset and/or limit window; `bash` uses a compact
 one-line command that never elides `&&` segments, and `delegate` uses the
 same agent id both ways. Malformed arguments fail closed. The approval
 classifier still receives the full prepared `normalized_arguments` object.

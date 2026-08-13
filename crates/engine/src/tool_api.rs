@@ -329,13 +329,11 @@ impl PreparedTool {
 pub trait ToolProvider: Send + Sync {
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError>;
     fn get_primary_argument(&self, name: &str, arguments: &Value) -> Result<String, ToolError>;
-    fn get_simplified_argument(&self, name: &str, arguments: &Value) -> Result<String, ToolError>;
+    fn get_display_argument(&self, name: &str, arguments: &Value) -> Result<String, ToolError>;
 
     fn presentation(&self, call: &ToolCall) -> ToolCallPresentation {
-        match self.get_simplified_argument(&call.name, &call.arguments) {
-            Ok(simplified) => {
-                crate::runtime::tool_execution::tool_presentation(&call.name, &simplified)
-            }
+        match self.get_display_argument(&call.name, &call.arguments) {
+            Ok(display) => crate::runtime::tool_execution::tool_presentation(&call.name, &display),
             Err(_) => crate::runtime::tool_execution::tool_title_only(&call.name),
         }
     }

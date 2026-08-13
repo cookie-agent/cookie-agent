@@ -23,7 +23,9 @@ pub struct ReadTool {
 struct ReadArgs {
     #[serde(rename = "filePath")]
     file_path: String,
+    /// Maximum number of entries or lines to return. Defaults to 2000.
     limit: Option<usize>,
+    /// Zero-based entry or line offset. Defaults to 0.
     offset: Option<usize>,
 }
 
@@ -53,7 +55,9 @@ impl ToolProvider for ReadTool {
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             name: "read".into(),
-            description: "Read a descriptor-bound file or directory snapshot.".into(),
+            description:
+                "Read a descriptor-bound file or directory snapshot using a zero-based offset."
+                    .into(),
             parameters: schema::<ReadArgs>(),
         }])
     }
@@ -76,13 +80,32 @@ impl ToolProvider for ReadTool {
         ))
     }
 
-    fn get_simplified_argument(
+    fn get_display_argument(
         &self,
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
-        let path = self.get_primary_argument(name, arguments)?;
-        Ok(crate::simplified_display_path(&path, &self.workspace))
+        if name != "read" {
+            return Err(ToolError::execution("read provider received another tool"));
+        }
+        let args: ReadArgs = parse_args("read", arguments.clone())?;
+        if args.file_path.is_empty() {
+            return Err(ToolError::execution("filePath must not be empty"));
+        }
+        let path = crate::permission_path_label(&args.file_path, &self.workspace);
+        let mut display = crate::abbreviated_display_path(&path, &self.workspace);
+        let window = match (args.offset, args.limit) {
+            (Some(offset), Some(limit)) => Some(format!("offset={offset}, limit={limit}")),
+            (Some(offset), None) => Some(format!("offset={offset}")),
+            (None, Some(limit)) => Some(format!("limit={limit}")),
+            (None, None) => None,
+        };
+        if let Some(window) = window {
+            display.push_str(" [");
+            display.push_str(&window);
+            display.push(']');
+        }
+        Ok(display)
     }
 
     async fn prepare(
@@ -94,10 +117,10 @@ impl ToolProvider for ReadTool {
             return Err(ToolError::execution("read provider received another tool"));
         }
         let mut args: ReadArgs = parse_args("read", call.arguments)?;
-        let offset = args.offset.unwrap_or(1);
+        let offset = args.offset.unwrap_or(0);
         let limit = args.limit.unwrap_or(DEFAULT_LIMIT);
-        if offset == 0 || limit == 0 {
-            return Err(ToolError::execution("offset and limit must be positive"));
+        if limit == 0 {
+            return Err(ToolError::execution("limit must be positive"));
         }
         args.offset = Some(offset);
         args.limit = Some(limit);
@@ -168,12 +191,7 @@ impl PreparedExecutor for ReadExecutor {
                     "prepared directory snapshot changed",
                 ));
             }
-            let start = self.offset.saturating_sub(1);
-            let page = entries
-                .iter()
-                .skip(start)
-                .take(self.limit)
-                .collect::<Vec<_>>();
+            let page = directory_page(&entries, self.offset, self.limit).collect::<Vec<_>>();
             let mut output = format!(
                 "<path>{}</path>\n<type>directory</type>\n<entries>\n",
                 self.target.display_path.display()
@@ -221,12 +239,11 @@ impl PreparedExecutor for ReadExecutor {
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| ToolError::execution("read supports UTF-8 text or approved media"))?;
         let lines = text.lines().collect::<Vec<_>>();
-        let start = self.offset.saturating_sub(1);
         let mut output = format!(
             "<path>{}</path>\n<type>file</type>\n<content>\n",
             self.target.display_path.display()
         );
-        for (index, line) in lines.iter().enumerate().skip(start).take(self.limit) {
+        for (index, line) in text_page(&lines, self.offset, self.limit) {
             output.push_str(&format!("{}: {line}\n", index + 1));
         }
         output.push_str("</content>");
@@ -240,6 +257,18 @@ impl PreparedExecutor for ReadExecutor {
     }
 }
 
+fn text_page<'a>(
+    lines: &'a [&'a str],
+    offset: usize,
+    limit: usize,
+) -> impl Iterator<Item = (usize, &'a str)> + 'a {
+    lines.iter().copied().enumerate().skip(offset).take(limit)
+}
+
+fn directory_page<T>(entries: &[T], offset: usize, limit: usize) -> impl Iterator<Item = &T> {
+    entries.iter().skip(offset).take(limit)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fs, path::Path};
@@ -249,7 +278,7 @@ mod tests {
         OperationFingerprint, PermissionAction, RunId, SessionId, ToolCallId,
     };
 
-    use super::ReadTool;
+    use super::{ReadTool, directory_page, text_page};
 
     #[test]
     fn primary_argument_is_the_file_path() {
@@ -273,32 +302,40 @@ mod tests {
     }
 
     #[test]
-    fn simplified_argument_abbreviates_workspace_and_home_paths() {
+    fn display_argument_abbreviates_paths_and_includes_explicit_window() {
         let tool = ReadTool::new("/workspace");
         assert_eq!(
-            tool.get_simplified_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
+            tool.get_display_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
                 .expect("relative"),
             "src/lib.rs"
         );
         assert_eq!(
-            tool.get_simplified_argument(
+            tool.get_display_argument(
                 "read",
-                &serde_json::json!({"filePath":"/workspace/src/lib.rs"})
+                &serde_json::json!({"filePath":"/workspace/src/lib.rs","offset":0,"limit":100})
             )
             .expect("workspace"),
-            "src/lib.rs"
+            "src/lib.rs [offset=0, limit=100]"
         );
         let home = std::env::var("HOME").expect("HOME");
         assert_eq!(
-            tool.get_simplified_argument(
+            tool.get_display_argument(
                 "read",
-                &serde_json::json!({"filePath": format!("{home}/.bashrc")})
+                &serde_json::json!({"filePath": format!("{home}/.bashrc"),"offset":4})
             )
             .expect("home"),
-            "~/.bashrc"
+            "~/.bashrc [offset=4]"
+        );
+        assert_eq!(
+            tool.get_display_argument(
+                "read",
+                &serde_json::json!({"filePath":"src/lib.rs","limit":25})
+            )
+            .expect("limit"),
+            "src/lib.rs [limit=25]"
         );
         assert!(matches!(
-            tool.get_simplified_argument("read", &serde_json::json!({})),
+            tool.get_display_argument("read", &serde_json::json!({})),
             Err(ToolError::Failed(_))
         ));
         let presentation = tool.presentation(&ToolCall {
@@ -313,6 +350,84 @@ mod tests {
                 .as_ref()
                 .map(cookie_agent_protocol::SafeDisplayText::as_str),
             Some("src/lib.rs")
+        );
+    }
+
+    #[test]
+    fn schema_documents_zero_based_offset_and_limit_default() {
+        let tool = ReadTool::new("/workspace");
+        let parameters = &tool
+            .tools_for_session(&cookie_agent_engine::SessionToolContext {
+                session: SessionId::new_v7(),
+            })
+            .expect("read spec")[0]
+            .parameters;
+        assert_eq!(
+            parameters["properties"]["offset"]["description"],
+            "Zero-based entry or line offset. Defaults to 0."
+        );
+        assert_eq!(
+            parameters["properties"]["limit"]["description"],
+            "Maximum number of entries or lines to return. Defaults to 2000."
+        );
+    }
+
+    #[test]
+    fn text_pagination_handles_zero_based_boundaries() {
+        let empty = Vec::<&str>::new();
+        assert!(text_page(&empty, 0, usize::MAX).next().is_none());
+
+        let lines = ["first", "second", "third"];
+        assert_eq!(
+            text_page(&lines, 0, 2).collect::<Vec<_>>(),
+            [(0, "first"), (1, "second")]
+        );
+        assert_eq!(text_page(&lines, 1, 1).collect::<Vec<_>>(), [(1, "second")]);
+        assert!(text_page(&lines, lines.len(), usize::MAX).next().is_none());
+        assert!(
+            text_page(&lines, lines.len() + 1, usize::MAX)
+                .next()
+                .is_none()
+        );
+        assert!(text_page(&lines, usize::MAX, usize::MAX).next().is_none());
+        assert_eq!(
+            text_page(&lines, 0, usize::MAX).collect::<Vec<_>>(),
+            [(0, "first"), (1, "second"), (2, "third")]
+        );
+    }
+
+    #[test]
+    fn directory_pagination_handles_zero_based_boundaries() {
+        let empty = Vec::<(String, bool)>::new();
+        assert!(directory_page(&empty, 0, usize::MAX).next().is_none());
+
+        let entries = [
+            ("alpha".to_owned(), false),
+            ("beta".to_owned(), true),
+            ("gamma".to_owned(), false),
+        ];
+        assert_eq!(
+            directory_page(&entries, 0, 2).collect::<Vec<_>>(),
+            [&entries[0], &entries[1]]
+        );
+        assert_eq!(
+            directory_page(&entries, 1, usize::MAX).collect::<Vec<_>>(),
+            [&entries[1], &entries[2]]
+        );
+        assert!(
+            directory_page(&entries, entries.len(), usize::MAX)
+                .next()
+                .is_none()
+        );
+        assert!(
+            directory_page(&entries, entries.len() + 1, usize::MAX)
+                .next()
+                .is_none()
+        );
+        assert!(
+            directory_page(&entries, usize::MAX, usize::MAX)
+                .next()
+                .is_none()
         );
     }
 
@@ -357,6 +472,8 @@ mod tests {
                 .to_string()
                 .contains("safe/..")
         );
+        assert_eq!(prepared.normalized_arguments()["offset"], 0);
+        assert_eq!(prepared.normalized_arguments()["limit"], 2_000);
     }
 
     async fn fingerprint(root: &Path, path: &str) -> OperationFingerprint {

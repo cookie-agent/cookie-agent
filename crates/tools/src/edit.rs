@@ -75,13 +75,13 @@ impl ToolProvider for EditTool {
         ))
     }
 
-    fn get_simplified_argument(
+    fn get_display_argument(
         &self,
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
         let path = self.get_primary_argument(name, arguments)?;
-        Ok(crate::simplified_display_path(&path, &self.workspace))
+        Ok(crate::abbreviated_display_path(&path, &self.workspace))
     }
 
     async fn prepare(
@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn simplified_argument_abbreviates_workspace_and_home_paths() {
+    fn display_argument_abbreviates_workspace_and_home_paths() {
         let tool = EditTool::new("/workspace");
         let args = serde_json::json!({
             "filePath":"/workspace/value.txt",
@@ -234,13 +234,12 @@ mod tests {
             "newString":"b"
         });
         assert_eq!(
-            tool.get_simplified_argument("edit", &args)
-                .expect("workspace"),
+            tool.get_display_argument("edit", &args).expect("workspace"),
             "value.txt"
         );
         let home = std::env::var("HOME").expect("HOME");
         assert_eq!(
-            tool.get_simplified_argument(
+            tool.get_display_argument(
                 "edit",
                 &serde_json::json!({
                     "filePath": format!("{home}/value.txt"),

@@ -56,7 +56,7 @@ pub struct ToolCallState {
 
 impl ToolCallState {
     /// The exact compact title: the persisted sanitized tool title plus its
-    /// persisted sanitized simplified argument, never reparsed from raw input.
+    /// persisted sanitized display argument, never reparsed from raw input.
     pub fn compact_title(&self) -> String {
         match &self.presentation.primary_argument {
             Some(argument) => format!("{} {argument}", self.presentation.title),

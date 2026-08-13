@@ -103,7 +103,7 @@ impl ToolProvider for TestDelegateProvider {
         Ok(args.agent.to_string())
     }
 
-    fn get_simplified_argument(
+    fn get_display_argument(
         &self,
         name: &str,
         arguments: &serde_json::Value,
@@ -223,7 +223,7 @@ impl ToolProvider for TestWriteProvider {
         Ok("approval-test.txt".into())
     }
 
-    fn get_simplified_argument(
+    fn get_display_argument(
         &self,
         name: &str,
         arguments: &serde_json::Value,
@@ -333,7 +333,7 @@ impl ToolProvider for TestRehydrationReadProvider {
             .ok_or_else(|| ToolError::execution("missing filePath"))
     }
 
-    fn get_simplified_argument(
+    fn get_display_argument(
         &self,
         name: &str,
         arguments: &serde_json::Value,
@@ -4815,13 +4815,13 @@ fn test_providers_expose_mandatory_primary_arguments() {
     );
     assert_eq!(
         write
-            .get_simplified_argument("write", &serde_json::json!({}))
-            .expect("write simplified"),
+            .get_display_argument("write", &serde_json::json!({}))
+            .expect("write display"),
         "approval-test.txt"
     );
     assert_eq!(
-        read.get_simplified_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
-            .expect("read simplified"),
+        read.get_display_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
+            .expect("read display"),
         "src/lib.rs"
     );
 }
@@ -4860,7 +4860,7 @@ impl ToolProvider for DivergentReadProvider {
             .ok_or_else(|| ToolError::execution("missing filePath"))
     }
 
-    fn get_simplified_argument(
+    fn get_display_argument(
         &self,
         name: &str,
         arguments: &serde_json::Value,

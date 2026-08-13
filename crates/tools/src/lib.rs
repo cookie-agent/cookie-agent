@@ -159,7 +159,7 @@ pub(crate) fn permission_path_label(path: &str, workspace: &Path) -> String {
     path
 }
 
-pub(crate) fn simplified_display_path(path: &str, workspace: &Path) -> String {
+pub(crate) fn abbreviated_display_path(path: &str, workspace: &Path) -> String {
     let path = normalized_path(Path::new(path));
     if !Path::new(&path).is_absolute() {
         return path;
@@ -245,16 +245,16 @@ impl ToolProvider for BuiltinTools {
         }
     }
 
-    fn get_simplified_argument(
+    fn get_display_argument(
         &self,
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
         match name {
-            "read" => self.read.get_simplified_argument(name, arguments),
-            "write" => self.write.get_simplified_argument(name, arguments),
-            "edit" => self.edit.get_simplified_argument(name, arguments),
-            "bash" => self.bash.get_simplified_argument(name, arguments),
+            "read" => self.read.get_display_argument(name, arguments),
+            "write" => self.write.get_display_argument(name, arguments),
+            "edit" => self.edit.get_display_argument(name, arguments),
+            "bash" => self.bash.get_display_argument(name, arguments),
             _ => Err(tool_error(format!("unknown built-in tool `{name}`"))),
         }
     }
@@ -309,10 +309,10 @@ mod tests {
             );
             assert!(
                 matches!(
-                    tools.get_simplified_argument(name, &arguments),
+                    tools.get_display_argument(name, &arguments),
                     Err(ToolError::Failed(_))
                 ),
-                "{name} simplified"
+                "{name} display"
             );
         }
     }
@@ -379,25 +379,25 @@ mod tests {
     }
 
     #[test]
-    fn simplified_display_path_prefers_workspace_then_home() {
+    fn abbreviated_display_path_prefers_workspace_then_home() {
         assert_eq!(
-            super::simplified_display_path("src/lib.rs", std::path::Path::new("/workspace")),
+            super::abbreviated_display_path("src/lib.rs", std::path::Path::new("/workspace")),
             "src/lib.rs"
         );
         assert_eq!(
-            super::simplified_display_path(
+            super::abbreviated_display_path(
                 "/workspace/src/lib.rs",
                 std::path::Path::new("/workspace")
             ),
             "src/lib.rs"
         );
         assert_eq!(
-            super::simplified_display_path("/workspace", std::path::Path::new("/workspace")),
+            super::abbreviated_display_path("/workspace", std::path::Path::new("/workspace")),
             "."
         );
         let home = std::env::var("HOME").expect("HOME");
         assert_eq!(
-            super::simplified_display_path(&home, std::path::Path::new("/workspace")),
+            super::abbreviated_display_path(&home, std::path::Path::new("/workspace")),
             "~"
         );
     }

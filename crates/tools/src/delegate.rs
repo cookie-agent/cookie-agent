@@ -78,7 +78,7 @@ impl ToolProvider for DelegateToolProvider {
         delegate_argument(name, arguments)
     }
 
-    fn get_simplified_argument(
+    fn get_display_argument(
         &self,
         name: &str,
         arguments: &serde_json::Value,
@@ -193,7 +193,7 @@ mod tests {
     use super::delegate_argument;
 
     #[test]
-    fn primary_and_simplified_arguments_are_the_agent_id() {
+    fn primary_and_display_arguments_are_the_agent_id() {
         let arguments = serde_json::json!({"task":"review","agent":"reviewer"});
         assert_eq!(
             delegate_argument("delegate", &arguments).expect("delegate argument"),

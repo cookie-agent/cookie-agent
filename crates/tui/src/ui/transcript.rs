@@ -1086,7 +1086,7 @@ fn assistant_child_layout(
 }
 
 /// A compact or expanded tool row inside its owning assistant item. Compact
-/// rows render the persisted sanitized title and simplified argument: running
+/// rows render the persisted sanitized title and display argument: running
 /// pulses a `…`/dot suffix with the animation clock, success adds no
 /// suffix, and failed/cancelled/interrupted use their exact concise
 /// markers. `COMPLETED` is never rendered. Exactly one chevron per row,
