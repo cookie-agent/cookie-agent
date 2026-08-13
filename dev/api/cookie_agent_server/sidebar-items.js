@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["MessageFrame","ServerError","TokenError","TransportError"],"fn":["in_process_pair","load_auth_token"],"struct":["InProcessStream","RunningServer","Server"],"trait":["MessageStream"]};

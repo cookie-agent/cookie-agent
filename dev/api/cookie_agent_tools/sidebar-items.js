@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["bash","delegate","edit","fs_cap","read","write"],"struct":["BuiltinTools"]};

@@ -1,0 +1,39 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="API documentation for the Rust `TYPESCRIPT_GLOBALS` constant in crate `cookie_agent_protocol`."><title>TYPESCRIPT_GLOBALS in cookie_agent_protocol - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="cookie_agent_protocol" data-themes="" data-resource-suffix="" data-rustdoc-version="1.97.1 (8bab26f4f 2026-07-14)" data-channel="1.97.1" data-search-js="search-fd9372ac.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../static.files/main-fcd733ba.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc constant"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">TYPESCRIPT_GLOBALS</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../cookie_agent_protocol/index.html">cookie_<wbr>agent_<wbr>protocol</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="index.html">cookie_agent_protocol</a></div><h1>Constant <span class="constant">TYPESCRIPT_<wbr>GLOBALS</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/cookie_agent_protocol/bindings.rs.html#199-237">Source</a> </span></div><pre class="rust item-decl"><code>pub const TYPESCRIPT_GLOBALS: &amp;<a class="primitive" href="https://doc.rust-lang.org/1.97.1/std/primitive.str.html">str</a> = r#&quot;declare global {
+  type AgentId = string;
+  type ProviderId = string;
+  type ProviderModelId = string;
+  type ModelKey = string;
+  type VariantId = string;
+  type SetupFieldId = string;
+  type AuthFieldName = string;
+  type AuthMethodId = string;
+  type ProviderRecipeId = string;
+  type ProtocolRecipeId = string;
+  type ProviderSetupRecipeId = string;
+  type RecipeCompilerVersion = string;
+  type CatalogRevision = string;
+  type RecipeRegistryRevision = string;
+  type ProviderStoreRevision = string;
+  type ProviderStateRevision = string;
+  type ModelRevision = string;
+  type AgentRevision = string;
+  type RuntimeRevision = string;
+  type ModelSnapshotRevision = string;
+  type ModelSelection = { model: ModelKey; variant: VariantId | null };
+  type LanguageModelDescriptor = {
+    identity: { provider_id: string; model_id: string };
+    adapter_id: string;
+    capabilities: {
+      features: Array&lt;&quot;tool_calling&quot; | &quot;parallel_tools&quot; | &quot;tool_input_deltas&quot; | &quot;reasoning&quot; | &quot;structured_output&quot; | &quot;temperature&quot; | &quot;top_p&quot; | &quot;max_output_tokens&quot; | &quot;prompt_caching&quot; | &quot;usage&quot; | &quot;provider_tools&quot; | &quot;sources&quot;&gt;;
+      limits: { context: number | null; input: number | null; output: number | null };
+      modalities: { input: Array&lt;string&gt;; output: Array&lt;string&gt; };
+      media: { input: Record&lt;string, { media_types: Array&lt;string&gt;; sources: Array&lt;&quot;inline_bytes&quot; | &quot;inline_text&quot; | &quot;url&quot; | &quot;provider_reference&quot;&gt; }&gt; };
+      cancellation: &quot;local_only&quot; | &quot;remote_best_effort&quot; | &quot;unsupported&quot;;
+      compaction: &quot;unsupported&quot;;
+      replay: { policy: &quot;never&quot; | &quot;if_valid&quot; | &quot;always&quot;; capability: &quot;required&quot; | &quot;optional&quot; | &quot;unsupported&quot;; reasoning: boolean };
+    };
+    provider_metadata: Record&lt;string, unknown&gt;;
+  };
+}
+export {};
+&quot;#;</code></pre></section></div></main></body></html>

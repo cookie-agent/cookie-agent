@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["JournalError"],"struct":["DelegateRequestPayload","DelegationJournal","DelegationReservation","DelegationRuntimeRevisions","JournalEntry"]};

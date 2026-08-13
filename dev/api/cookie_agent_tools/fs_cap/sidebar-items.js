@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["PreparedTarget"],"fn":["cwd_context_bytes","ensure_atomic_write_supported","prepare_existing","prepare_target"],"struct":["AtomicWriteOutcome","ObjectIdentity","PreparedAbsent","PreparedExisting"]};
