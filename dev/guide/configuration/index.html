@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://cookie-agent.github.io/cookie-agent/dev/guide/configuration/">
       
       
-        <link rel="prev" href="../permissions/">
+        <link rel="prev" href="../agents/">
       
       
         <link rel="next" href="../providers/">
@@ -287,7 +287,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../reference/protocol/" class="md-tabs__link">
+        <a href="../../reference/configuration/" class="md-tabs__link">
           
   
   
@@ -315,26 +315,6 @@
 
       </a>
     </li>
-  
-
-      
-        
-  
-  
-  
-  
-    
-    
-      <li class="md-tabs__item">
-        <a href="../../design/" class="md-tabs__link">
-          
-  
-  
-  Design Notes
-
-        </a>
-      </li>
-    
   
 
       
@@ -548,6 +528,29 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Agents
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -610,6 +613,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#minimum-runtime-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Minimum runtime configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#runtime-settings" class="md-nav__link">
     <span class="md-ellipsis">
       Runtime settings
@@ -631,6 +643,15 @@
   <a href="#agent-documents" class="md-nav__link">
     <span class="md-ellipsis">
       Agent documents
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tui-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      TUI configuration
     </span>
   </a>
   
@@ -658,6 +679,29 @@
   
   <span class="md-ellipsis">
     Providers
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../compaction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Compaction
     
   </span>
   
@@ -717,6 +761,29 @@
             Reference
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
             
               
                 
@@ -839,125 +906,6 @@
   
 
     
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-      
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
-        
-          
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
-            
-  
-  
-  <span class="md-ellipsis">
-    Design Notes
-    
-  </span>
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
-            <span class="md-nav__icon md-icon"></span>
-            Design Notes
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../design/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Overview
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../docs/agent-model-variant-redesign/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Dynamic Provider Contract
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../docs/provider-conformance/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Provider Conformance
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
   </ul>
 </nav>
                   </div>
@@ -994,6 +942,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#minimum-runtime-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Minimum runtime configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#runtime-settings" class="md-nav__link">
     <span class="md-ellipsis">
       Runtime settings
@@ -1020,6 +977,15 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#tui-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      TUI configuration
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1040,88 +1006,155 @@
 
 
 <h1 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h1>
+<p>cookie agent reads three independent configuration surfaces:</p>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Location</th>
+<th>Schema</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Runtime and providers</td>
+<td><code>~/.config/cookie_agent/config.toml</code> and <code>&lt;cwd&gt;/.cookie-agent/config.toml</code></td>
+<td>10</td>
+</tr>
+<tr>
+<td>Agents</td>
+<td><code>~/.config/cookie_agent/agents/&lt;agent-id&gt;.md</code> and <code>&lt;cwd&gt;/.cookie-agent/agents/&lt;agent-id&gt;.md</code></td>
+<td>4</td>
+</tr>
+<tr>
+<td>TUI</td>
+<td><code>$XDG_CONFIG_HOME/cookie_agent/tui.toml</code> or <code>~/.config/cookie_agent/tui.toml</code></td>
+<td>1</td>
+</tr>
+</tbody>
+</table>
+<p>This page covers where configuration lives and how it behaves. For the complete
+key-by-key reference, see <a href="../../reference/configuration/">Configuration Reference</a>.</p>
 <h2 id="locations-and-layering">Locations and layering<a class="headerlink" href="#locations-and-layering" title="Permanent link">&para;</a></h2>
-<p>cookie agent reads two optional authored layers:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>~/.config/cookie_agent/config.toml
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>~/.config/cookie_agent/agents/&lt;agent-id&gt;.md
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>&lt;exact-cwd&gt;/.cookie-agent/config.toml
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>&lt;exact-cwd&gt;/.cookie-agent/agents/&lt;agent-id&gt;.md
 </code></pre></div>
-<p>There is no upward workspace search. Workspace settings replace corresponding
-user settings. A same-ID workspace provider or agent replaces the complete user
-definition; nested fields do not merge. Unknown fields and wrong schema versions
-are rejected.</p>
-<h2 id="runtime-settings">Runtime settings<a class="headerlink" href="#runtime-settings" title="Permanent link">&para;</a></h2>
-<p><code>schema_version = 10</code> is required. All other top-level sections are optional.</p>
+<p>There is no upward workspace search: configuration is loaded from the exact
+working directory the daemon started in. The user layer and the workspace layer
+are both optional. Workspace settings replace the corresponding user settings. A
+same-ID workspace provider or agent replaces the complete user definition;
+nested fields never merge. Unknown fields, wrong schema versions, and malformed
+values are rejected.</p>
+<h2 id="minimum-runtime-configuration">Minimum runtime configuration<a class="headerlink" href="#minimum-runtime-configuration" title="Permanent link">&para;</a></h2>
+<p><code>schema_version = 10</code> is required; every other top-level section is optional.
+An empty provider map is valid.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">10</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">[server]</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">host</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;127.0.0.1&quot;</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">port</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">7419</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="k">[tool_output]</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="n">max_lines</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2000</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="n">max_bytes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">51200</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="k">[approval]</span>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="n">timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">30000</span>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="k">[context_compaction]</span>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="n">auto</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="n">buffer_tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">33000</span>
-<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="n">max_summary_bytes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">262144</span>
-<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>
-<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="k">[session_title]</span>
-<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="n">max_chars</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">80</span>
-<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="n">max_input_messages</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">4</span>
-<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="n">generate_on_first_turn</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="n">fallback_to_input_excerpt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a>
-<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="k">[delegation]</span>
-<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="n">max_depth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span>
-<a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a><span class="c1"># max_concurrency = 4 # omitted means unlimited</span>
-<a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a>
-<a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a><span class="k">[providers]</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">[providers]</span>
 </code></pre></div>
-<p>The daemon requires <code>server.host</code> to be exactly <code>127.0.0.1</code>. Positive limits are
-required; <code>max_summary_bytes</code> may not exceed 2 MiB. Provider definitions are
-covered in <a href="../providers/">Providers</a>.</p>
+<p>If the global provider store is also empty, the TUI starts in setup mode and
+keeps <code>/connect</code> available.</p>
+<h2 id="runtime-settings">Runtime settings<a class="headerlink" href="#runtime-settings" title="Permanent link">&para;</a></h2>
+<p>All runtime sections default to safe values; you only need to write the ones you
+want to change:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">10</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="k">[server]</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">host</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;127.0.0.1&quot;</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">port</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">7419</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="k">[tool_output]</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="n">max_lines</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2000</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">max_bytes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">51200</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="k">[approval]</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="n">timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">30000</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="k">[context_compaction]</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="n">auto</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="n">buffer_tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">33000</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="n">max_summary_bytes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">262144</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="k">[session_title]</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="n">max_chars</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">80</span>
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="n">max_input_messages</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">4</span>
+<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="n">generate_on_first_turn</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="n">fallback_to_input_excerpt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a>
+<a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a><span class="k">[delegation]</span>
+<a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a><span class="n">max_depth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span>
+<a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a><span class="c1"># max_concurrency = 4 # omitted means unlimited</span>
+<a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a>
+<a id="__codelineno-2-29" name="__codelineno-2-29" href="#__codelineno-2-29"></a><span class="k">[providers]</span>
+</code></pre></div>
+<p>Validation rules that apply regardless of what you set:</p>
+<ul>
+<li>The <code>cookie</code> binary requires <code>server.host</code> to be exactly <code>127.0.0.1</code>.</li>
+<li>Positive limits are required everywhere; <code>context_compaction.max_summary_bytes</code>
+  may not exceed 2 MiB.</li>
+<li><code>delegation.max_concurrency</code> of <code>0</code> is rejected; omitting it means unlimited.</li>
+<li>Provider definitions are validated per provider ID (see
+  <a href="../providers/">Providers</a>).</li>
+</ul>
 <h2 id="environment-interpolation">Environment interpolation<a class="headerlink" href="#environment-interpolation" title="Permanent link">&para;</a></h2>
-<p><code>${env:NAME}</code> is a single-pass interpolation available only in approved secret
-values and authored endpoint strings. It is not available in permission
-patterns, agent documents, or custom static headers. Prefer interpolation or
-<code>/connect</code> over plaintext credentials.</p>
+<p><code>${env:NAME}</code> is a single-pass interpolation available only in approved provider
+secret values (<code>api_key</code>, <code>auth</code>/<code>auth_override</code> credential values, <code>setup</code>
+fields) and authored endpoint strings (<code>endpoint</code>, <code>base_url</code>). It is not
+available in permission patterns, agent documents, or custom static headers.
+Interpolation is applied at load time; a missing variable fails startup with the
+offending path.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[providers.openai]</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;${env:OPENAI_API_KEY}&quot;</span>
+</code></pre></div>
+<p>Prefer interpolation or <code>/connect</code> over plaintext credentials, and never commit
+<code>.env</code> or a credential-bearing config.</p>
 <h2 id="agent-documents">Agent documents<a class="headerlink" href="#agent-documents" title="Permanent link">&para;</a></h2>
-<p>The filename is the agent ID. Each Markdown file has schema-4 YAML frontmatter
-and a nonempty Markdown body used as the system prompt:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>---
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>schema: 4
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>description: Reviews changes for correctness
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>mode: subagent
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>enabled: true
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>model_fallback:
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>model: openai/gpt-5
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    variant: null
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>limits:
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>  timeout_ms: 30000
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>  max_input_tokens: 16384
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>  max_output_tokens: 2048
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>tools: [read, bash]
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>permissions:
-<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>  read: allow
-<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>  write: deny
-<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>  bash:
-<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>    &quot;git diff*&quot;: allow
-<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>    &quot;*&quot;: ask
-<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="gu">  delegate: deny</span>
-<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="gu">---</span>
-<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>Review the requested change and report concrete findings.
+<p>Agents are Markdown files whose filename is the agent ID. Each file has schema-4
+YAML frontmatter and a nonempty Markdown body used as the system prompt:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>---
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>schema: 4
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>description: Reviews changes for correctness
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>mode: subagent
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>enabled: true
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>model_fallback:
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: &quot;openai/gpt-5&quot;, variant: null }
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>limits:
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>  timeout_ms: 30000
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>  max_input_tokens: 16384
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>  max_output_tokens: 2048
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>tools: [read, bash]
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>permissions:
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>  read: allow
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>  write: deny
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>  bash:
+<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>    &quot;git diff*&quot;: allow
+<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>    &quot;*&quot;: ask
+<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="gu">  delegate: deny</span>
+<a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a><span class="gu">---</span>
+<a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>Review the requested change and report concrete findings.
 </code></pre></div>
 <p>Modes are <code>primary</code>, <code>subagent</code>, <code>all</code>, and <code>internal</code>. Internal agents are
 engine-only and cannot be selected as roots or delegation targets. The reserved
 built-ins are <code>approval</code>, <code>compaction</code>, and <code>title</code>; same-ID authored internal
-documents replace them through normal layering. Only internal agents may use
+documents replace them through normal layering, and only internal agents may use
 <code>${parent_model}</code> in a model fallback.</p>
+<p>See <a href="../agents/">Agents</a> for the full frontmatter reference and the built-in
+internal agents.</p>
+<h2 id="tui-configuration">TUI configuration<a class="headerlink" href="#tui-configuration" title="Permanent link">&para;</a></h2>
+<p>The TUI reads <code>tui.toml</code> from <code>$XDG_CONFIG_HOME/cookie_agent/</code> when XDG is set,
+otherwise <code>~/.config/cookie_agent/</code>. It is independent of the runtime config:
+there is no workspace layer and no environment-variable override. A missing file
+uses defaults; unknown keys or malformed values are rejected naming the path and
+key.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">minimum_event_level</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;warning&quot;</span><span class="w">   </span><span class="c1"># debug | info | warning | error</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">theme</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;default&quot;</span><span class="w">                 </span><span class="c1"># default | mono | high-contrast</span>
+</code></pre></div>
+<p><code>theme</code> takes precedence over <code>COOKIE_THEME</code> and terminal detection, but
+<code>NO_COLOR</code> and <code>TERM=dumb</code> always force monochrome. See
+<code>docs/tui.toml.example</code> for the fully commented example.</p>
 
 
 

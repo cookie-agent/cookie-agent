@@ -16,7 +16,7 @@
         <link rel="prev" href="../configuration/">
       
       
-        <link rel="next" href="../../reference/protocol/">
+        <link rel="next" href="../compaction/">
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
@@ -287,7 +287,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../reference/protocol/" class="md-tabs__link">
+        <a href="../../reference/configuration/" class="md-tabs__link">
           
   
   
@@ -315,26 +315,6 @@
 
       </a>
     </li>
-  
-
-      
-        
-  
-  
-  
-  
-    
-    
-      <li class="md-tabs__item">
-        <a href="../../design/" class="md-tabs__link">
-          
-  
-  
-  Design Notes
-
-        </a>
-      </li>
-    
   
 
       
@@ -551,6 +531,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Agents
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../configuration/" class="md-nav__link">
         
   
@@ -624,9 +627,60 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#how-providers-are-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      How providers are resolved
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#managed-providers" class="md-nav__link">
     <span class="md-ellipsis">
       Managed providers
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Managed providers">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#family-registry" class="md-nav__link">
+    <span class="md-ellipsis">
+      Family registry
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#common-managed-examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      Common managed examples
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#environment-variable-conventions" class="md-nav__link">
+    <span class="md-ellipsis">
+      Environment variable conventions
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#authentication-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      Authentication methods
     </span>
   </a>
   
@@ -639,12 +693,104 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Custom providers">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#adaptors" class="md-nav__link">
+    <span class="md-ellipsis">
+      Adaptors
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openai-compatible-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      OpenAI-compatible example
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#anthropic-compatible-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      Anthropic-compatible example
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#local-openai-compatible-endpoint" class="md-nav__link">
+    <span class="md-ellipsis">
+      Local OpenAI-compatible endpoint
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vertex-bedrock-and-azure-custom-examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      Vertex, Bedrock, and Azure custom examples
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provider-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      Provider options
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#model-overrides" class="md-nav__link">
+    <span class="md-ellipsis">
+      Model overrides
+    </span>
+  </a>
+  
 </li>
       
     </ul>
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../compaction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Compaction
+    
+  </span>
+  
+
+      </a>
     </li>
   
 
@@ -699,6 +845,29 @@
             Reference
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
             
               
                 
@@ -821,125 +990,6 @@
   
 
     
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-      
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
-        
-          
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
-            
-  
-  
-  <span class="md-ellipsis">
-    Design Notes
-    
-  </span>
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
-            <span class="md-nav__icon md-icon"></span>
-            Design Notes
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../design/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Overview
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../docs/agent-model-variant-redesign/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Dynamic Provider Contract
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../docs/provider-conformance/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Provider Conformance
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
   </ul>
 </nav>
                   </div>
@@ -967,9 +1017,60 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#how-providers-are-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      How providers are resolved
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#managed-providers" class="md-nav__link">
     <span class="md-ellipsis">
       Managed providers
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Managed providers">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#family-registry" class="md-nav__link">
+    <span class="md-ellipsis">
+      Family registry
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#common-managed-examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      Common managed examples
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#environment-variable-conventions" class="md-nav__link">
+    <span class="md-ellipsis">
+      Environment variable conventions
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#authentication-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      Authentication methods
     </span>
   </a>
   
@@ -979,6 +1080,75 @@
   <a href="#custom-providers" class="md-nav__link">
     <span class="md-ellipsis">
       Custom providers
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Custom providers">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#adaptors" class="md-nav__link">
+    <span class="md-ellipsis">
+      Adaptors
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openai-compatible-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      OpenAI-compatible example
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#anthropic-compatible-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      Anthropic-compatible example
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#local-openai-compatible-endpoint" class="md-nav__link">
+    <span class="md-ellipsis">
+      Local OpenAI-compatible endpoint
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vertex-bedrock-and-azure-custom-examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      Vertex, Bedrock, and Azure custom examples
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provider-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      Provider options
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#model-overrides" class="md-nav__link">
+    <span class="md-ellipsis">
+      Model overrides
     </span>
   </a>
   
@@ -1004,74 +1174,559 @@
 
 
 <h1 id="providers">Providers<a class="headerlink" href="#providers" title="Permanent link">&para;</a></h1>
-<p>cookie agent obtains a fixed models.dev catalog at startup, then resolves
-managed providers through code-owned protocol, setup, and authentication
-recipes. The selected catalog source is network, a validated ETag cache, or the
-bundled bootstrap.</p>
+<p>cookie agent connects to language models through a dynamic provider pipeline: a
+fixed models.dev catalog, a code-owned family recipe registry, a per-user
+provider store, and Oven SDK adapters for each protocol family. Two kinds of
+provider definitions are supported: <strong>managed</strong> catalog providers and
+<strong>custom</strong> providers.</p>
+<h2 id="how-providers-are-resolved">How providers are resolved<a class="headerlink" href="#how-providers-are-resolved" title="Permanent link">&para;</a></h2>
+<p>At startup the daemon refreshes the models.dev catalog
+(<code>https://models.dev/catalog.json</code>), with a validated ETag cache and a bundled
+integrity-checked bootstrap as fallback. Catalog providers are classified by
+their npm package name against the code-owned family registry (schema 1). Only
+providers with a known family recipe compile; non-deprecated text-output models
+are included automatically. Providers removed from the catalog remain visible
+when a retained store connection matches a known family.</p>
 <h2 id="managed-providers">Managed providers<a class="headerlink" href="#managed-providers" title="Permanent link">&para;</a></h2>
-<p>The simplest setup is <code>/connect</code>. It lists current catalog providers plus
-authored or store-backed managed providers removed from the current catalog.
-Unsupported rows remain visible with a reason. The flow stores normalized setup
-and credentials globally for the current user and does not test them until first
-use.</p>
-<p>Managed providers may also be authored:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[providers.openai]</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;${env:OPENAI_API_KEY}&quot;</span>
+<p>The simplest setup is <code>/connect</code> (or <code>cookie connect</code>). It lists the current
+catalog providers plus authored or store-backed managed providers removed from
+the current catalog, and walks you through the provider's recipe-defined setup
+fields and authentication credentials. The flow stores normalized setup and
+credentials <strong>globally for the current user</strong> in the provider store and does not
+test them until the first model request.</p>
+<p>Setup values are validated as you enter them against the recipe's field
+descriptor: string and code fields enforce their declared minimum and maximum
+lengths, integer fields enforce their allowed range, and booleans accept
+<code>true</code>/<code>yes</code>/<code>y</code>/<code>1</code> and <code>false</code>/<code>no</code>/<code>n</code>/<code>0</code> case-insensitively. The same shared
+parser is used by <code>/connect</code>, <code>cookie connect</code>, and the TUI's connect flow.</p>
+<p>Managed providers may also be authored in configuration:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">10</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">[providers.openai]</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;${env:OPENAI_API_KEY}&quot;</span>
 </code></pre></div>
-<p>Available fields are <code>base_url</code>, <code>shape</code>, <code>setup</code>, <code>api_key</code>, <code>auth_override</code>,
-and sparse <code>model_overrides</code>. <code>api_key</code> is allowed only for an unambiguous
-single-secret default method. Other methods use:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">auth_override</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;oauth-access-token-v1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">access_token</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:ACCESS_TOKEN}&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<p>Available fields for a managed provider are <code>base_url</code>, <code>shape</code>, <code>setup</code>,
+<code>api_key</code>, <code>auth_override</code>, and sparse <code>model_overrides</code>. <code>api_key</code> is allowed
+only for providers whose recipe's default method is an unambiguous single-secret
+method. Other methods use <code>auth_override</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[providers.google-vertex]</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">setup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">project</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:GOOGLE_VERTEX_PROJECT}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">location</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:GOOGLE_VERTEX_LOCATION}&quot;</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">auth_override</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;oauth-access-token-v1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">access_token</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:ACCESS_TOKEN}&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
 </code></pre></div>
 <p><code>api_key</code> and <code>auth_override</code> are mutually exclusive. An authored <code>base_url</code>
-requires auth and all non-defaulted setup fields in the same provider
-definition; it never inherits provider-store setup or credentials.</p>
-<p>Managed auth precedence is authored <code>api_key</code>, authored <code>auth_override</code>, an
-eligible provider-store connection when no authored <code>base_url</code> exists,
-reviewed no-auth, then unavailable. Endpoint precedence is authored <code>base_url</code>,
-catalog API, then the family default.</p>
-<p>Supported, non-deprecated text-output models are included automatically. Sparse
-<code>model_overrides</code> can disable a model or adjust recipe-approved display,
-defaults, variants, default variant, and shape; it cannot invent an absent
-managed model or capabilities.</p>
+requires auth and all non-defaulted setup fields in the same provider definition;
+it never inherits provider-store setup or credentials, and it must be HTTPS.</p>
+<p><strong>Credential precedence</strong> for a managed provider: authored <code>api_key</code>, authored
+<code>auth_override</code>, an eligible provider-store connection (when no authored
+<code>base_url</code> exists), reviewed no-auth, then unavailable.</p>
+<p><strong>Endpoint precedence</strong>: authored <code>base_url</code>, the catalog's declared API
+endpoint, then the family default endpoint.</p>
+<h3 id="family-registry">Family registry<a class="headerlink" href="#family-registry" title="Permanent link">&para;</a></h3>
+<p>The registry maps catalog npm packages to protocol families, default endpoints,
+and authentication methods:</p>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th>npm package (catalog rows)</th>
+<th>Default endpoint</th>
+<th>Default auth</th>
+<th>Allowed auth</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OpenAI-compatible chat</td>
+<td><code>@ai-sdk/openai-compatible</code></td>
+<td><em>(none)</em></td>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>OpenAI-compatible chat</td>
+<td><code>@ai-sdk/groq</code></td>
+<td><code>https://api.groq.com/openai/v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>OpenAI-compatible chat</td>
+<td><code>@ai-sdk/mistral</code></td>
+<td><code>https://api.mistral.ai/v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>OpenAI-compatible chat</td>
+<td><code>@ai-sdk/xai</code></td>
+<td><code>https://api.x.ai/v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>OpenAI-compatible chat</td>
+<td><code>@ai-sdk/cerebras</code></td>
+<td><code>https://api.cerebras.ai/v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>OpenAI-compatible chat</td>
+<td><code>@ai-sdk/togetherai</code></td>
+<td><code>https://api.together.xyz/v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>OpenAI-compatible chat</td>
+<td><code>@ai-sdk/deepinfra</code></td>
+<td><code>https://api.deepinfra.com/v1/openai</code></td>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>OpenAI-compatible chat</td>
+<td><code>@ai-sdk/perplexity</code></td>
+<td><code>https://api.perplexity.ai</code></td>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>OpenAI-compatible chat</td>
+<td><code>venice-ai-sdk-provider</code></td>
+<td><code>https://api.venice.ai/api/v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>OpenAI-compatible chat</td>
+<td><code>@openrouter/ai-sdk-provider</code></td>
+<td><code>https://openrouter.ai/api/v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>OpenAI-compatible chat</td>
+<td><code>@qvac/ai-sdk-provider</code></td>
+<td><em>(none)</em></td>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>Anthropic</td>
+<td><code>@ai-sdk/anthropic</code></td>
+<td><code>https://api.anthropic.com/v1</code></td>
+<td><code>anthropic-api-key-v1</code></td>
+<td><code>anthropic-api-key-v1</code>, <code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>OpenAI</td>
+<td><code>@ai-sdk/openai</code></td>
+<td><code>https://api.openai.com/v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>Google</td>
+<td><code>@ai-sdk/google</code></td>
+<td><code>https://generativelanguage.googleapis.com/v1beta</code></td>
+<td><code>google-api-key-header-v1</code></td>
+<td><code>google-api-key-header-v1</code></td>
+</tr>
+<tr>
+<td>Vertex</td>
+<td><code>@ai-sdk/google-vertex</code></td>
+<td><em>(computed)</em></td>
+<td><code>oauth-access-token-v1</code></td>
+<td><code>oauth-access-token-v1</code></td>
+</tr>
+<tr>
+<td>Vertex Anthropic</td>
+<td><code>@ai-sdk/google-vertex/anthropic</code></td>
+<td><em>(computed)</em></td>
+<td><code>oauth-access-token-v1</code></td>
+<td><code>oauth-access-token-v1</code></td>
+</tr>
+<tr>
+<td>Bedrock</td>
+<td><code>@ai-sdk/amazon-bedrock</code></td>
+<td><code>https://bedrock-runtime.${AWS_REGION}.amazonaws.com</code></td>
+<td><code>aws-sigv4-credentials-v1</code></td>
+<td><code>aws-sigv4-credentials-v1</code>, <code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>Bedrock</td>
+<td><code>@ai-sdk/amazon-bedrock/mantle</code></td>
+<td><em>(none)</em></td>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>Azure</td>
+<td><code>@ai-sdk/azure</code></td>
+<td><code>https://${AZURE_RESOURCE_NAME}.openai.azure.com</code></td>
+<td><code>azure-api-key-v1</code></td>
+<td><code>azure-api-key-v1</code>, <code>bearer-api-key-v1</code></td>
+</tr>
+<tr>
+<td>Cohere</td>
+<td><code>@ai-sdk/cohere</code></td>
+<td><code>https://api.cohere.com/v2/chat</code></td>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>bearer-api-key-v1</code></td>
+</tr>
+</tbody>
+</table>
+<p>Families that build the endpoint from setup fields (<strong>Vertex</strong>, <strong>Bedrock</strong>,
+<strong>Azure</strong>) forbid authored <code>base_url</code> overrides.</p>
+<h3 id="common-managed-examples">Common managed examples<a class="headerlink" href="#common-managed-examples" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># OpenAI</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">[providers.openai]</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;${env:OPENAI_API_KEY}&quot;</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="c1"># Anthropic</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="k">[providers.anthropic]</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;${env:ANTHROPIC_API_KEY}&quot;</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="c1"># Google Gemini</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="k">[providers.google]</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;${env:GOOGLE_API_KEY}&quot;</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="c1"># Groq (OpenAI-compatible chat)</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="k">[providers.groq]</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;${env:GROQ_API_KEY}&quot;</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="c1"># Vertex (endpoint computed from project/location)</span>
+<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="k">[providers.google-vertex]</span>
+<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
+<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="n">setup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">project</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:GOOGLE_VERTEX_PROJECT}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">location</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:GOOGLE_VERTEX_LOCATION}&quot;</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a><span class="n">auth_override</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;oauth-access-token-v1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">access_token</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:GOOGLE_VERTEX_ACCESS_TOKEN}&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a>
+<a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a><span class="c1"># Bedrock (endpoint computed from region)</span>
+<a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a><span class="k">[providers.amazon-bedrock]</span>
+<a id="__codelineno-2-29" name="__codelineno-2-29" href="#__codelineno-2-29"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
+<a id="__codelineno-2-30" name="__codelineno-2-30" href="#__codelineno-2-30"></a><span class="n">setup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">region</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:AWS_REGION}&quot;</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-2-31" name="__codelineno-2-31" href="#__codelineno-2-31"></a><span class="n">auth_override</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-2-32" name="__codelineno-2-32" href="#__codelineno-2-32"></a><span class="w">  </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;aws-sigv4-credentials-v1&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-33" name="__codelineno-2-33" href="#__codelineno-2-33"></a><span class="w">  </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-2-34" name="__codelineno-2-34" href="#__codelineno-2-34"></a><span class="w">    </span><span class="n">access_key_id</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:AWS_ACCESS_KEY_ID}&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-35" name="__codelineno-2-35" href="#__codelineno-2-35"></a><span class="w">    </span><span class="n">secret_access_key</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:AWS_SECRET_ACCESS_KEY}&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-36" name="__codelineno-2-36" href="#__codelineno-2-36"></a><span class="w">    </span><span class="c1"># session_token = &quot;${env:AWS_SESSION_TOKEN}&quot;  # optional</span>
+<a id="__codelineno-2-37" name="__codelineno-2-37" href="#__codelineno-2-37"></a><span class="w">  </span><span class="p">}</span>
+<a id="__codelineno-2-38" name="__codelineno-2-38" href="#__codelineno-2-38"></a><span class="p">}</span>
+<a id="__codelineno-2-39" name="__codelineno-2-39" href="#__codelineno-2-39"></a>
+<a id="__codelineno-2-40" name="__codelineno-2-40" href="#__codelineno-2-40"></a><span class="c1"># Azure (endpoint computed from resource_name)</span>
+<a id="__codelineno-2-41" name="__codelineno-2-41" href="#__codelineno-2-41"></a><span class="k">[providers.azure]</span>
+<a id="__codelineno-2-42" name="__codelineno-2-42" href="#__codelineno-2-42"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
+<a id="__codelineno-2-43" name="__codelineno-2-43" href="#__codelineno-2-43"></a><span class="n">setup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">resource_name</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:AZURE_RESOURCE_NAME}&quot;</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-2-44" name="__codelineno-2-44" href="#__codelineno-2-44"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;${env:AZURE_API_KEY}&quot;</span>
+<a id="__codelineno-2-45" name="__codelineno-2-45" href="#__codelineno-2-45"></a>
+<a id="__codelineno-2-46" name="__codelineno-2-46" href="#__codelineno-2-46"></a><span class="c1"># Cohere</span>
+<a id="__codelineno-2-47" name="__codelineno-2-47" href="#__codelineno-2-47"></a><span class="k">[providers.cohere]</span>
+<a id="__codelineno-2-48" name="__codelineno-2-48" href="#__codelineno-2-48"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
+<a id="__codelineno-2-49" name="__codelineno-2-49" href="#__codelineno-2-49"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;${env:COHERE_API_KEY}&quot;</span>
+</code></pre></div>
+<h3 id="environment-variable-conventions">Environment variable conventions<a class="headerlink" href="#environment-variable-conventions" title="Permanent link">&para;</a></h3>
+<p>The provider store and <code>/connect</code> use the environment aliases declared by each
+catalog row. The first declared variable aliases the <code>api_key</code> (or <code>access_token</code>)
+credential; AWS static credentials map to <code>AWS_ACCESS_KEY_ID</code>,
+<code>AWS_SECRET_ACCESS_KEY</code>, and <code>AWS_SESSION_TOKEN</code>. For example, <code>openai</code> declares
+<code>OPENAI_API_KEY</code>, <code>anthropic</code> declares <code>ANTHROPIC_API_KEY</code>, <code>google</code> declares
+<code>GOOGLE_API_KEY</code>, <code>azure</code> declares <code>AZURE_API_KEY</code>, and <code>cohere</code> declares
+<code>COHERE_API_KEY</code>. These are suggestions for <code>/connect</code>; you are never required to
+use the exact variable name in authored configuration.</p>
+<h2 id="authentication-methods">Authentication methods<a class="headerlink" href="#authentication-methods" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Credentials</th>
+<th>Wire form</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>no-auth-v1</code></td>
+<td>—</td>
+<td>no auth</td>
+</tr>
+<tr>
+<td><code>bearer-api-key-v1</code></td>
+<td><code>api_key</code></td>
+<td><code>Authorization: Bearer &lt;key&gt;</code></td>
+</tr>
+<tr>
+<td><code>api-key-header-v1</code></td>
+<td><code>api_key</code> + <code>header_name</code> parameter (<code>x-api-key</code> or <code>api-key</code>)</td>
+<td>custom header</td>
+</tr>
+<tr>
+<td><code>anthropic-api-key-v1</code></td>
+<td><code>api_key</code></td>
+<td><code>x-api-key</code></td>
+</tr>
+<tr>
+<td><code>google-api-key-header-v1</code></td>
+<td><code>api_key</code></td>
+<td><code>x-goog-api-key</code></td>
+</tr>
+<tr>
+<td><code>oauth-access-token-v1</code></td>
+<td><code>access_token</code></td>
+<td><code>Authorization: Bearer &lt;token&gt;</code></td>
+</tr>
+<tr>
+<td><code>aws-sigv4-credentials-v1</code></td>
+<td><code>access_key_id</code>, <code>secret_access_key</code>, optional <code>session_token</code></td>
+<td>AWS SigV4</td>
+</tr>
+<tr>
+<td><code>azure-api-key-v1</code></td>
+<td><code>api_key</code></td>
+<td><code>api-key</code></td>
+</tr>
+</tbody>
+</table>
 <h2 id="custom-providers">Custom providers<a class="headerlink" href="#custom-providers" title="Permanent link">&para;</a></h2>
-<p>Custom provider IDs begin with <code>custom.</code>. They are config-only, never appear in
-<code>/connect</code>, and never use the provider store. A custom definition requires an
-endpoint, adaptor, typed auth, and complete explicit model capabilities:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[providers.</span><span class="s2">&quot;custom.example&quot;</span><span class="k">]</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;custom&quot;</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://api.example.invalid/v1&quot;</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">adaptor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai-compatible&quot;</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">setup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;bearer-api-key-v1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">api_key</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:CUSTOM_API_KEY}&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="n">headers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="s2">&quot;x-example-feature&quot;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;enabled&quot;</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="k">[providers.</span><span class="s2">&quot;custom.example&quot;</span><span class="k">.models.</span><span class="s2">&quot;example-org/model&quot;</span><span class="k">]</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="n">display_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Example Model&quot;</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="n">defaults</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">max_output_tokens</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">4096</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="k">[providers.</span><span class="s2">&quot;custom.example&quot;</span><span class="k">.models.</span><span class="s2">&quot;example-org/model&quot;</span><span class="k">.capabilities]</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="n">input</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">]</span>
-<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="n">output</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">]</span>
-<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="n">context_tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">32768</span>
-<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="n">output_tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">4096</span>
-<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="n">tool_calling</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="n">parallel_tool_calls</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
-<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="n">structured_output</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
-<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="n">reasoning</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
-<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="n">temperature</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="n">top_p</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="n">seed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
-<a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a><span class="n">native_replay</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;unsupported&quot;</span>
-<a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a><span class="n">cancellation</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;local_only&quot;</span>
-<a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a><span class="n">media</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
+<p>Custom provider IDs begin with <code>custom.</code> (for example <code>custom.example</code>). They
+are config-only: they never appear in <code>/connect</code> and never use the provider
+store. A custom definition requires an HTTPS endpoint (or loopback <code>http</code>), an
+adaptor, a typed auth definition, and complete explicit model capabilities.</p>
+<h3 id="adaptors">Adaptors<a class="headerlink" href="#adaptors" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Adaptor ID</th>
+<th>Allowed auth methods</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>openai-compatible</code></td>
+<td><code>bearer-api-key-v1</code>, <code>api-key-header-v1</code>, <code>no-auth-v1</code></td>
+<td>Chat Completions against any OpenAI-compatible endpoint</td>
+</tr>
+<tr>
+<td><code>openai-chat</code></td>
+<td><code>bearer-api-key-v1</code>, <code>no-auth-v1</code></td>
+<td>Official OpenAI Chat</td>
+</tr>
+<tr>
+<td><code>openai-responses</code></td>
+<td><code>bearer-api-key-v1</code>, <code>no-auth-v1</code></td>
+<td>OpenAI Responses API</td>
+</tr>
+<tr>
+<td><code>anthropic</code></td>
+<td><code>anthropic-api-key-v1</code></td>
+<td>Anthropic Messages</td>
+</tr>
+<tr>
+<td><code>anthropic-compatible</code></td>
+<td><code>anthropic-api-key-v1</code></td>
+<td>Anthropic Messages against a compatible endpoint</td>
+</tr>
+<tr>
+<td><code>google-gemini</code></td>
+<td><code>google-api-key-header-v1</code></td>
+<td>Gemini <code>generateContent</code></td>
+</tr>
+<tr>
+<td><code>google-vertex-gemini</code></td>
+<td><code>oauth-access-token-v1</code></td>
+<td>Vertex publisher; requires <code>setup</code> = <code>project</code>, <code>location</code>, <code>resource</code></td>
+</tr>
+<tr>
+<td><code>aws-bedrock-converse</code></td>
+<td><code>aws-sigv4-credentials-v1</code></td>
+<td>Bedrock Converse; requires <code>setup</code> = <code>region</code></td>
+</tr>
+<tr>
+<td><code>azure-openai-chat</code> / <code>azure-openai-responses</code></td>
+<td><code>azure-api-key-v1</code></td>
+<td>Azure OpenAI; requires <code>setup</code> = <code>api_version</code>, <code>deployment</code></td>
+</tr>
+<tr>
+<td><code>cohere-v2-chat</code></td>
+<td><code>bearer-api-key-v1</code></td>
+<td>Cohere Chat v2</td>
+</tr>
+</tbody>
+</table>
+<p>Custom model IDs are <code>provider/model-id</code> strings; group into one provider under
+the <code>models</code> map.</p>
+<h3 id="openai-compatible-example">OpenAI-compatible example<a class="headerlink" href="#openai-compatible-example" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[providers.</span><span class="s2">&quot;custom.acme&quot;</span><span class="k">]</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;custom&quot;</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://api.acme.example.invalid/v1&quot;</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">adaptor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai-compatible&quot;</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">setup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;bearer-api-key-v1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">api_key</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:ACME_API_KEY}&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">headers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="s2">&quot;x-acme-feature&quot;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;enabled&quot;</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="k">[providers.</span><span class="s2">&quot;custom.acme&quot;</span><span class="k">.models.</span><span class="s2">&quot;acme/turbo&quot;</span><span class="k">]</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="n">display_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Acme Turbo&quot;</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="n">defaults</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">max_output_tokens</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">4096</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="k">[providers.</span><span class="s2">&quot;custom.acme&quot;</span><span class="k">.models.</span><span class="s2">&quot;acme/turbo&quot;</span><span class="k">.capabilities]</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="n">input</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">]</span>
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="n">output</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">]</span>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="n">context_tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">32768</span>
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="n">output_tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">4096</span>
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="n">tool_calling</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="n">parallel_tool_calls</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
+<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="n">structured_output</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
+<a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="n">reasoning</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
+<a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="n">temperature</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="n">top_p</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="n">seed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
+<a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="n">native_replay</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;unsupported&quot;</span>
+<a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a><span class="n">cancellation</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;local_only&quot;</span>
+<a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a><span class="n">media</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
+</code></pre></div>
+<h3 id="anthropic-compatible-example">Anthropic-compatible example<a class="headerlink" href="#anthropic-compatible-example" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[providers.</span><span class="s2">&quot;custom.acme-anthropic&quot;</span><span class="k">]</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;custom&quot;</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://api.acme.example.invalid/v1&quot;</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">adaptor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;anthropic-compatible&quot;</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;anthropic-api-key-v1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">api_key</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:ACME_API_KEY}&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="k">[providers.</span><span class="s2">&quot;custom.acme-anthropic&quot;</span><span class="k">.models.</span><span class="s2">&quot;acme/claude-compatible&quot;</span><span class="k">]</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="n">display_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Acme Claude Compatible&quot;</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="n">capabilities</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">input</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">],</span><span class="w"> </span><span class="n">output</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">],</span><span class="w"> </span><span class="n">context_tokens</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">32768</span><span class="p">,</span><span class="w"> </span><span class="n">output_tokens</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">4096</span><span class="p">,</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">  </span><span class="n">tool_calling</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="n">parallel_tool_calls</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="n">structured_output</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="n">reasoning</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">  </span><span class="n">temperature</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="n">top_p</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="n">seed</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="n">native_replay</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;unsupported&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">  </span><span class="n">cancellation</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;local_only&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">media</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{}</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<p>An <code>api-key-header-v1</code> auth for a vendor that wants the key in a specific header
+(rather than <code>Authorization: Bearer</code>):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">[providers.</span><span class="s2">&quot;custom.acme&quot;</span><span class="k">]</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;custom&quot;</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://api.acme.example.invalid/v1&quot;</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">adaptor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai-compatible&quot;</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">  </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;api-key-header-v1&quot;</span><span class="p">,</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">  </span><span class="n">parameters</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">header_name</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;x-api-key&quot;</span><span class="w"> </span><span class="p">},</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">  </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">api_key</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:ACME_API_KEY}&quot;</span><span class="w"> </span><span class="p">},</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="p">}</span>
 </code></pre></div>
 <p>Custom static headers are public behavior metadata: they cannot interpolate,
-carry credentials, or collide with transport/protocol/auth-owned headers. Use a
-typed auth method such as <code>api-key-header-v1</code> for secret header values.</p>
-<p>See the <a href="../../design/">provider conformance design note</a> for the current
-npm-family registry.</p>
+carry credentials, or collide with transport/protocol/auth-owned headers
+(<code>authorization</code>, <code>host</code>, <code>content-length</code>, <code>user-agent</code>, <code>content-type</code>,
+<code>x-api-key</code>, <code>x-goog-api-key</code>, <code>anthropic-version</code>, and others). Use a typed auth
+method such as <code>api-key-header-v1</code> for secret header values.</p>
+<h3 id="local-openai-compatible-endpoint">Local OpenAI-compatible endpoint<a class="headerlink" href="#local-openai-compatible-endpoint" title="Permanent link">&para;</a></h3>
+<p>Loopback <code>http</code> endpoints are allowed for local servers (for example LM Studio or
+a local vLLM). The URL must be <code>http://localhost:&lt;port&gt;/v1</code> or
+<code>http://127.0.0.1:&lt;port&gt;/v1</code> (or <code>::1</code>) with the exact adaptor path:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">[providers.</span><span class="s2">&quot;custom.local&quot;</span><span class="k">]</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;custom&quot;</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;http://127.0.0.1:11434/v1&quot;</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">adaptor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai-compatible&quot;</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="n">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;no-auth-v1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{}</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<p><code>no-auth-v1</code> is allowed only for <code>openai-compatible</code>, <code>openai-chat</code>, and
+<code>openai-responses</code>. A no-auth OpenAI Responses model additionally requires a
+text-only, tool-less capability profile with native replay unsupported.</p>
+<h3 id="vertex-bedrock-and-azure-custom-examples">Vertex, Bedrock, and Azure custom examples<a class="headerlink" href="#vertex-bedrock-and-azure-custom-examples" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Vertex custom — endpoint is the publisher path derived from setup</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="k">[providers.</span><span class="s2">&quot;custom.vertex&quot;</span><span class="k">]</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;custom&quot;</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://us-central1-aiplatform.googleapis.com/v1/projects/my-project/locations/us-central1/publishers/google&quot;</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="n">adaptor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;google-vertex-gemini&quot;</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="n">setup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">project</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;my-project&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">location</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;us-central1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">resource</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;publishers/google&quot;</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="n">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;oauth-access-token-v1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">access_token</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:VERTEX_TOKEN}&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="k">[providers.</span><span class="s2">&quot;custom.vertex&quot;</span><span class="k">.models.</span><span class="s2">&quot;gemini-x&quot;</span><span class="k">]</span>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="n">display_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Gemini X&quot;</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="n">capabilities</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">input</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">],</span><span class="w"> </span><span class="n">output</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">],</span><span class="w"> </span><span class="n">context_tokens</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">131072</span><span class="p">,</span><span class="w"> </span><span class="n">output_tokens</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">8192</span><span class="p">,</span>
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="w">  </span><span class="n">tool_calling</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="n">parallel_tool_calls</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="n">structured_output</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="n">reasoning</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="w">  </span><span class="n">temperature</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="n">top_p</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="n">seed</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="n">native_replay</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;unsupported&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="w">  </span><span class="n">cancellation</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;local_only&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">media</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{}</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Azure custom — deployment + api_version in setup, no base_url override</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="k">[providers.</span><span class="s2">&quot;custom.azure&quot;</span><span class="k">]</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;custom&quot;</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://my-resource.openai.azure.com&quot;</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="n">adaptor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;azure-openai-chat&quot;</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="n">setup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">deployment</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;gpt-x&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">api_version</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;2024-06-01&quot;</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="n">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;azure-api-key-v1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">api_key</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:AZURE_OPENAI_API_KEY}&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<h2 id="provider-options">Provider options<a class="headerlink" href="#provider-options" title="Permanent link">&para;</a></h2>
+<p>Custom models accept adaptor-specific <code>options</code>. The current options are:</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Applies to</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api_version</code></td>
+<td><em>(reserved)</em></td>
+<td>Rejected in custom model options; set at provider level.</td>
+</tr>
+<tr>
+<td><code>beta</code></td>
+<td><code>anthropic</code>, <code>anthropic-compatible</code></td>
+<td>Anthropic beta header values.</td>
+</tr>
+<tr>
+<td><code>organization</code></td>
+<td><code>openai-chat</code>, <code>openai-responses</code>, <code>openai-compatible</code></td>
+<td><code>OpenAI-Organization</code> header.</td>
+</tr>
+<tr>
+<td><code>project</code></td>
+<td><code>openai-chat</code>, <code>openai-responses</code></td>
+<td><code>OpenAI-Project</code> header.</td>
+</tr>
+<tr>
+<td><code>store</code></td>
+<td><code>openai-responses</code></td>
+<td>Persist the response with the provider.</td>
+</tr>
+<tr>
+<td><code>api_path</code></td>
+<td><code>openai-compatible</code></td>
+<td>Alternative API path on the endpoint.</td>
+</tr>
+<tr>
+<td><code>location</code>, <code>region</code>, <code>deployment</code></td>
+<td><em>(reserved)</em></td>
+<td>Provider setup fields; rejected in custom model options.</td>
+</tr>
+</tbody>
+</table>
+<p>Options are validated per adaptor: for example <code>beta</code> is rejected for every
+non-Anthropic adaptor, and <code>api_path</code> is rejected unless the adaptor is
+<code>openai-compatible</code>.</p>
+<h2 id="model-overrides">Model overrides<a class="headerlink" href="#model-overrides" title="Permanent link">&para;</a></h2>
+<p>Managed providers accept sparse <code>model_overrides</code> to adjust a catalog model
+without inventing new behavior:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">[providers.openai]</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;${env:OPENAI_API_KEY}&quot;</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="k">[providers.openai.model_overrides.</span><span class="s2">&quot;gpt-5&quot;</span><span class="k">]</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="n">display_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;My GPT-5&quot;</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="n">defaults</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">max_output_tokens</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">8192</span><span class="p">,</span><span class="w"> </span><span class="n">temperature</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mf">0.2</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="n">shape</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;chat&quot;</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="n">default_variant</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;base&quot;</span>
+</code></pre></div>
+<p>A model override cannot add a model that is absent from the catalog, change
+capabilities, or point a default variant at a variant that does not exist.
+Variants use <code>VariantDirective</code> operations: <code>add</code>, <code>replace</code>, or <code>disable</code>.</p>
 
 
 

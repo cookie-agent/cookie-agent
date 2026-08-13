@@ -3,10 +3,10 @@
 <a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span>std::collections::BTreeMap;
 <a href=#4 id=4 data-nosnippet>4</a>
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>cookie_agent_protocol::{
-<a href=#6 id=6 data-nosnippet>6</a>    AuthCredentialDescriptor, AuthMethodId, AvailableModelDescriptor, BoundedSetupString,
-<a href=#7 id=7 data-nosnippet>7</a>    EffectiveAuthState, ProviderConfigurationState, ProviderCredentialValues, ProviderDescriptor,
-<a href=#8 id=8 data-nosnippet>8</a>    ProviderPresence, ProviderSupportState, SafeCode, SafeSetupValue, SetupFieldDescriptor,
-<a href=#9 id=9 data-nosnippet>9</a>    SetupFieldId, SetupFieldType, SetupFieldValidation,
+<a href=#6 id=6 data-nosnippet>6</a>    AuthCredentialDescriptor, AuthMethodId, AvailableModelDescriptor, EffectiveAuthState,
+<a href=#7 id=7 data-nosnippet>7</a>    ProviderConfigurationState, ProviderCredentialValues, ProviderDescriptor, ProviderPresence,
+<a href=#8 id=8 data-nosnippet>8</a>    ProviderSupportState, SafeSetupValue, SetupFieldDescriptor, SetupFieldId, parse_setup_value,
+<a href=#9 id=9 data-nosnippet>9</a>    setup_value_text,
 <a href=#10 id=10 data-nosnippet>10</a>};
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>serde::{Serialize, ser::SerializeMap <span class="kw">as _</span>};
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>zeroize::Zeroizing;
@@ -256,7 +256,7 @@
 <a href=#256 id=256 data-nosnippet>256</a>            }
 <a href=#257 id=257 data-nosnippet>257</a>            values.insert(
 <a href=#258 id=258 data-nosnippet>258</a>                field.descriptor.id.clone(),
-<a href=#259 id=259 data-nosnippet>259</a>                parse_setup_value(raw, <span class="kw-2">&amp;</span>field.descriptor.validation)
+<a href=#259 id=259 data-nosnippet>259</a>                parse_setup_value(<span class="kw-2">&amp;</span>field.descriptor, raw)
 <a href=#260 id=260 data-nosnippet>260</a>                    .map_err(|error| <span class="macro">format!</span>(<span class="string">"{}: {error}"</span>, field.descriptor.display_name))<span class="question-mark">?</span>,
 <a href=#261 id=261 data-nosnippet>261</a>            );
 <a href=#262 id=262 data-nosnippet>262</a>        }
@@ -410,60 +410,4 @@
 <a href=#410 id=410 data-nosnippet>410</a>        ProviderAction::Disconnect =&gt; <span class="string">"disconnect"</span>,
 <a href=#411 id=411 data-nosnippet>411</a>    }
 <a href=#412 id=412 data-nosnippet>412</a>}
-<a href=#413 id=413 data-nosnippet>413</a>
-<a href=#414 id=414 data-nosnippet>414</a><span class="kw">fn </span>parse_setup_value(
-<a href=#415 id=415 data-nosnippet>415</a>    raw: <span class="kw-2">&amp;</span>str,
-<a href=#416 id=416 data-nosnippet>416</a>    validation: <span class="kw-2">&amp;</span>SetupFieldValidation,
-<a href=#417 id=417 data-nosnippet>417</a>) -&gt; <span class="prelude-ty">Result</span>&lt;SafeSetupValue, String&gt; {
-<a href=#418 id=418 data-nosnippet>418</a>    validate_length(raw, validation)<span class="question-mark">?</span>;
-<a href=#419 id=419 data-nosnippet>419</a>    <span class="kw">match </span>validation.value_type {
-<a href=#420 id=420 data-nosnippet>420</a>        SetupFieldType::String =&gt; BoundedSetupString::new(raw.to_owned())
-<a href=#421 id=421 data-nosnippet>421</a>            .map(SafeSetupValue::String)
-<a href=#422 id=422 data-nosnippet>422</a>            .map_err(|error| error.to_string()),
-<a href=#423 id=423 data-nosnippet>423</a>        SetupFieldType::Code =&gt; SafeCode::new(raw.to_owned())
-<a href=#424 id=424 data-nosnippet>424</a>            .map(SafeSetupValue::Code)
-<a href=#425 id=425 data-nosnippet>425</a>            .map_err(|error| error.to_string()),
-<a href=#426 id=426 data-nosnippet>426</a>        SetupFieldType::Integer =&gt; {
-<a href=#427 id=427 data-nosnippet>427</a>            <span class="kw">let </span>value = raw
-<a href=#428 id=428 data-nosnippet>428</a>                .parse::&lt;i64&gt;()
-<a href=#429 id=429 data-nosnippet>429</a>                .map_err(|<span class="kw">_</span>| <span class="string">"must be an integer"</span>.to_owned())<span class="question-mark">?</span>;
-<a href=#430 id=430 data-nosnippet>430</a>            <span class="kw">if </span>validation.minimum.is_some_and(|minimum| value &lt; minimum)
-<a href=#431 id=431 data-nosnippet>431</a>                || validation.maximum.is_some_and(|maximum| value &gt; maximum)
-<a href=#432 id=432 data-nosnippet>432</a>            {
-<a href=#433 id=433 data-nosnippet>433</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="string">"is outside the allowed range"</span>.into());
-<a href=#434 id=434 data-nosnippet>434</a>            }
-<a href=#435 id=435 data-nosnippet>435</a>            <span class="prelude-val">Ok</span>(SafeSetupValue::Integer(value))
-<a href=#436 id=436 data-nosnippet>436</a>        }
-<a href=#437 id=437 data-nosnippet>437</a>        SetupFieldType::Bool =&gt; raw
-<a href=#438 id=438 data-nosnippet>438</a>            .parse::&lt;bool&gt;()
-<a href=#439 id=439 data-nosnippet>439</a>            .map(SafeSetupValue::Bool)
-<a href=#440 id=440 data-nosnippet>440</a>            .map_err(|<span class="kw">_</span>| <span class="string">"must be true or false"</span>.into()),
-<a href=#441 id=441 data-nosnippet>441</a>    }
-<a href=#442 id=442 data-nosnippet>442</a>}
-<a href=#443 id=443 data-nosnippet>443</a>
-<a href=#444 id=444 data-nosnippet>444</a><span class="kw">fn </span>validate_length(raw: <span class="kw-2">&amp;</span>str, validation: <span class="kw-2">&amp;</span>SetupFieldValidation) -&gt; <span class="prelude-ty">Result</span>&lt;(), String&gt; {
-<a href=#445 id=445 data-nosnippet>445</a>    <span class="kw">let </span>length = u32::try_from(raw.len()).unwrap_or(u32::MAX);
-<a href=#446 id=446 data-nosnippet>446</a>    <span class="kw">if </span>validation
-<a href=#447 id=447 data-nosnippet>447</a>        .min_length
-<a href=#448 id=448 data-nosnippet>448</a>        .is_some_and(|minimum| length &lt; minimum)
-<a href=#449 id=449 data-nosnippet>449</a>    {
-<a href=#450 id=450 data-nosnippet>450</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="string">"is shorter than the allowed minimum"</span>.into());
-<a href=#451 id=451 data-nosnippet>451</a>    }
-<a href=#452 id=452 data-nosnippet>452</a>    <span class="kw">if </span>validation
-<a href=#453 id=453 data-nosnippet>453</a>        .max_length
-<a href=#454 id=454 data-nosnippet>454</a>        .is_some_and(|maximum| length &gt; maximum)
-<a href=#455 id=455 data-nosnippet>455</a>    {
-<a href=#456 id=456 data-nosnippet>456</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="string">"is longer than the allowed maximum"</span>.into());
-<a href=#457 id=457 data-nosnippet>457</a>    }
-<a href=#458 id=458 data-nosnippet>458</a>    <span class="prelude-val">Ok</span>(())
-<a href=#459 id=459 data-nosnippet>459</a>}
-<a href=#460 id=460 data-nosnippet>460</a>
-<a href=#461 id=461 data-nosnippet>461</a><span class="kw">fn </span>setup_value_text(value: <span class="kw-2">&amp;</span>SafeSetupValue) -&gt; String {
-<a href=#462 id=462 data-nosnippet>462</a>    <span class="kw">match </span>value {
-<a href=#463 id=463 data-nosnippet>463</a>        SafeSetupValue::Bool(value) =&gt; value.to_string(),
-<a href=#464 id=464 data-nosnippet>464</a>        SafeSetupValue::Integer(value) =&gt; value.to_string(),
-<a href=#465 id=465 data-nosnippet>465</a>        SafeSetupValue::Code(value) =&gt; value.to_string(),
-<a href=#466 id=466 data-nosnippet>466</a>        SafeSetupValue::String(value) =&gt; value.as_str().to_owned(),
-<a href=#467 id=467 data-nosnippet>467</a>    }
-<a href=#468 id=468 data-nosnippet>468</a>}
 </code></pre></div></section></main></body></html>

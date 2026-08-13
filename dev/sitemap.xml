@@ -13,15 +13,11 @@
          <lastmod>2026-08-13</lastmod>
     </url>
     <url>
-         <loc>https://cookie-agent.github.io/cookie-agent/dev/design/</loc>
+         <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/agents/</loc>
          <lastmod>2026-08-13</lastmod>
     </url>
     <url>
-         <loc>https://cookie-agent.github.io/cookie-agent/dev/docs/agent-model-variant-redesign/</loc>
-         <lastmod>2026-08-13</lastmod>
-    </url>
-    <url>
-         <loc>https://cookie-agent.github.io/cookie-agent/dev/docs/provider-conformance/</loc>
+         <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/compaction/</loc>
          <lastmod>2026-08-13</lastmod>
     </url>
     <url>
@@ -46,6 +42,10 @@
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/reference/api/</loc>
+         <lastmod>2026-08-13</lastmod>
+    </url>
+    <url>
+         <loc>https://cookie-agent.github.io/cookie-agent/dev/reference/configuration/</loc>
          <lastmod>2026-08-13</lastmod>
     </url>
     <url>

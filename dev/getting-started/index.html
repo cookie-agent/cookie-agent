@@ -287,7 +287,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../reference/protocol/" class="md-tabs__link">
+        <a href="../reference/configuration/" class="md-tabs__link">
           
   
   
@@ -315,26 +315,6 @@
 
       </a>
     </li>
-  
-
-      
-        
-  
-  
-  
-  
-    
-    
-      <li class="md-tabs__item">
-        <a href="../design/" class="md-tabs__link">
-          
-  
-  
-  Design Notes
-
-        </a>
-      </li>
-    
   
 
       
@@ -633,6 +613,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../guide/agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Agents
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../guide/configuration/" class="md-nav__link">
         
   
@@ -662,6 +665,29 @@
   
   <span class="md-ellipsis">
     Providers
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/compaction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Compaction
     
   </span>
   
@@ -721,6 +747,29 @@
             Reference
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
             
               
                 
@@ -839,125 +888,6 @@
   
 
       </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-      
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
-        
-          
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
-            
-  
-  
-  <span class="md-ellipsis">
-    Design Notes
-    
-  </span>
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
-            <span class="md-nav__icon md-icon"></span>
-            Design Notes
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../design/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Overview
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../docs/agent-model-variant-redesign/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Dynamic Provider Contract
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../docs/provider-conformance/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Provider Conformance
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
     </li>
   
 
@@ -1098,7 +1028,8 @@ a request in the composer, and press Enter. If no authored root agent is
 runnable, the engine supplies the built-in <code>default</code> coding agent.</p>
 <p>Useful first commands are <code>/help</code>, <code>/sessions</code>, <code>/new</code>, <code>/compact</code>, and
 <code>/cancel</code>. The <a href="../guide/tui/">TUI guide</a> covers editing, steering, approvals,
-selection, and message actions.</p>
+selection, and message actions. <a href="../guide/agents/">Agents</a> explains the built-in
+internal agents and how to author your own.</p>
 <h2 id="separate-daemon-and-tui">Separate daemon and TUI<a class="headerlink" href="#separate-daemon-and-tui" title="Permanent link">&para;</a></h2>
 <p>The daemon binds to <code>127.0.0.1:7419</code> by default:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>cargo<span class="w"> </span>run<span class="w"> </span>--locked<span class="w"> </span>-p<span class="w"> </span>cookie_agent<span class="w"> </span>--<span class="w"> </span>daemon

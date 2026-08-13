@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://cookie-agent.github.io/cookie-agent/dev/reference/protocol/">
       
       
-        <link rel="prev" href="../../guide/providers/">
+        <link rel="prev" href="../configuration/">
       
       
         <link rel="next" href="../events/">
@@ -287,7 +287,7 @@
     
     
       <li class="md-tabs__item md-tabs__item--active">
-        <a href="./" class="md-tabs__link">
+        <a href="../configuration/" class="md-tabs__link">
           
   
   
@@ -315,26 +315,6 @@
 
       </a>
     </li>
-  
-
-      
-        
-  
-  
-  
-  
-    
-    
-      <li class="md-tabs__item">
-        <a href="../../design/" class="md-tabs__link">
-          
-  
-  
-  Design Notes
-
-        </a>
-      </li>
-    
   
 
       
@@ -546,6 +526,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Agents
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/configuration/" class="md-nav__link">
         
   
@@ -575,6 +578,29 @@
   
   <span class="md-ellipsis">
     Providers
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/compaction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Compaction
     
   </span>
   
@@ -644,6 +670,29 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -695,6 +744,15 @@
       Table of contents
     </label>
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#session-mechanics" class="md-nav__link">
+    <span class="md-ellipsis">
+      Session mechanics
+    </span>
+  </a>
+  
+</li>
       
         <li class="md-nav__item">
   <a href="#methods" class="md-nav__link">
@@ -839,125 +897,6 @@
   
 
     
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-      
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
-        
-          
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
-            
-  
-  
-  <span class="md-ellipsis">
-    Design Notes
-    
-  </span>
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
-            <span class="md-nav__icon md-icon"></span>
-            Design Notes
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../design/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Overview
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../docs/agent-model-variant-redesign/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Dynamic Provider Contract
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../docs/provider-conformance/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Provider Conformance
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
   </ul>
 </nav>
                   </div>
@@ -983,6 +922,15 @@
       Table of contents
     </label>
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#session-mechanics" class="md-nav__link">
+    <span class="md-ellipsis">
+      Session mechanics
+    </span>
+  </a>
+  
+</li>
       
         <li class="md-nav__item">
   <a href="#methods" class="md-nav__link">
@@ -1043,6 +991,31 @@
 <p>The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at <code>/ws</code>.
 Protocol 9 is current-only. A client must call <code>handshake</code> with
 <code>{ "protocol_version": 9 }</code> before any other method.</p>
+<h2 id="session-mechanics">Session mechanics<a class="headerlink" href="#session-mechanics" title="Permanent link">&para;</a></h2>
+<p>The JSON-RPC session layer lives in the <code>protocol</code> crate so the server, the TUI,
+and the CLI share one implementation of the protocol mechanics.</p>
+<ul>
+<li><strong>Transport.</strong> <code>protocol::Transport</code> is a frame-level channel:
+  <code>send(MessageFrame)</code> / <code>recv() -&gt; Option&lt;MessageFrame&gt;</code>, with <code>MessageFrame</code>
+  either a <code>Text</code> string or a <code>Value</code>. It carries no JSON-RPC semantics. The
+  <code>server</code> crate provides <code>WebSocketTransport</code> and <code>InProcessStream</code>
+  implementations; the daemon's axum accept path implements the same trait
+  server-side.</li>
+<li><strong>ServerProtocol.</strong> The server contract is one async method per RPC plus
+  <code>connected</code>. The <code>server</code> crate implements it over <code>Engine</code>. <code>protocol::serve</code>
+  drives one complete session over a transport: it rejects every method before
+  the exact-version handshake with error code <code>-32001</code>, correlates requests by
+  id, dispatches to the implementation, and delivers notifications through a
+  <code>ServerContext</code>.</li>
+<li><strong>ClientProtocol.</strong> The client contract is implemented by the shared
+  <code>protocol::Client</code>. Its connection task correlates requests by id, demuxes
+  notifications into an ordered <code>ClientDelivery</code> stream, injects cursor replays
+  and gap recovery before buffered live notifications, wipes secret-bearing
+  serialized frames, and fails outstanding calls on shutdown.</li>
+<li><strong>TUI and CLI.</strong> The TUI client is a thin adapter re-exporting the server's
+  <code>Client</code> wrapper; the CLI uses the same client through the <code>ClientProtocol</code>
+  trait. Both still work without the <code>tui</code> feature.</li>
+</ul>
 <h2 id="methods">Methods<a class="headerlink" href="#methods" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1223,6 +1196,9 @@ the title, and continues with new physical sequences.</p>
 </tr>
 </tbody>
 </table>
+<p>The shared client maps these to <code>ClientDelivery</code> variants (<code>Live</code>, replay
+deliveries, output stream events, <code>RuntimeChanged</code>, <code>RecoveryFailed</code>), so a UI
+consumes one ordered stream and never parses raw JSON-RPC frames.</p>
 <p>See <a href="../events/">Events</a> for schema-14 event payloads.</p>
 
 

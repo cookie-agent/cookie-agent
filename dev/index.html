@@ -285,7 +285,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="reference/protocol/" class="md-tabs__link">
+        <a href="reference/configuration/" class="md-tabs__link">
           
   
   
@@ -313,26 +313,6 @@
 
       </a>
     </li>
-  
-
-      
-        
-  
-  
-  
-  
-    
-    
-      <li class="md-tabs__item">
-        <a href="design/" class="md-tabs__link">
-          
-  
-  
-  Design Notes
-
-        </a>
-      </li>
-    
   
 
       
@@ -604,6 +584,29 @@
   
   
     <li class="md-nav__item">
+      <a href="guide/agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Agents
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="guide/configuration/" class="md-nav__link">
         
   
@@ -633,6 +636,29 @@
   
   <span class="md-ellipsis">
     Providers
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="guide/compaction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Compaction
     
   </span>
   
@@ -692,6 +718,29 @@
             Reference
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="reference/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
             
               
                 
@@ -814,125 +863,6 @@
   
 
     
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-      
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
-        
-          
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
-            
-  
-  
-  <span class="md-ellipsis">
-    Design Notes
-    
-  </span>
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
-            <span class="md-nav__icon md-icon"></span>
-            Design Notes
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="design/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Overview
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="docs/agent-model-variant-redesign/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Dynamic Provider Contract
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="docs/provider-conformance/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Provider Conformance
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
   </ul>
 </nav>
                   </div>
@@ -1001,15 +931,15 @@
 connections, sessions, model execution, permissions, and persistence; the
 terminal UI communicates with it over the versioned JSON-RPC protocol.</p>
 <p>The project accepts only its current schemas. There are no migration readers or
-legacy protocol paths. <a href="architecture/">Architecture</a> is the authoritative
-implementation contract; this site turns that contract into task-oriented
-guides and reference material.</p>
+legacy protocol paths. <a href="architecture/">Architecture</a> describes how the pieces
+fit together; this site turns that implementation into task-oriented guides and
+reference material.</p>
 <h2 id="quickstart">Quickstart<a class="headerlink" href="#quickstart" title="Permanent link">&para;</a></h2>
 <p>You need Rust 1.88 or newer and Python 3 for the documentation tooling.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/cookie-agent/cookie-agent.git
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>cookie-agent
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>.cookie-agent
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;schema_version = 10\n&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>.cookie-agent/config.toml
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;schema_version = 10\n[providers]\n&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>.cookie-agent/config.toml
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>cargo<span class="w"> </span>run<span class="w"> </span>--locked<span class="w"> </span>-p<span class="w"> </span>cookie_agent<span class="w"> </span>--<span class="w"> </span>daemon
 </code></pre></div>
 <p>In another terminal, open the TUI:</p>
@@ -1019,8 +949,9 @@ guides and reference material.</p>
 credentials are per-user and shared across workspaces. Credentials are checked
 when the provider is first used, not during the connect flow.</p>
 <p>See <a href="getting-started/">Getting Started</a> for configuration and first-run
-details, or <a href="guide/providers/">Providers</a> for authored and stored provider
-options.</p>
+details, <a href="guide/providers/">Providers</a> for managed and custom provider
+options, and <a href="reference/configuration/">Configuration</a> for every configurable
+item.</p>
 <div class="admonition warning">
 <p class="admonition-title">Keep credentials out of Git</p>
 <p>Prefer <code>/connect</code> or <code>${env:NAME}</code> interpolation. Do not commit <code>.env</code>, a

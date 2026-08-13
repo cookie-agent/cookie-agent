@@ -16,8 +16,6 @@
         <link rel="prev" href="../reference/api/">
       
       
-        <link rel="next" href="../design/">
-      
       
       <link rel="icon" href="../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.18">
@@ -76,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#cookie_code-architecture" class="md-skip">
+        <a href="#architecture" class="md-skip">
           Skip to content
         </a>
       
@@ -285,7 +283,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../reference/protocol/" class="md-tabs__link">
+        <a href="../reference/configuration/" class="md-tabs__link">
           
   
   
@@ -315,26 +313,6 @@
 
       </a>
     </li>
-  
-
-      
-        
-  
-  
-  
-  
-    
-    
-      <li class="md-tabs__item">
-        <a href="../design/" class="md-tabs__link">
-          
-  
-  
-  Design Notes
-
-        </a>
-      </li>
-    
   
 
       
@@ -546,6 +524,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../guide/agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Agents
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../guide/configuration/" class="md-nav__link">
         
   
@@ -575,6 +576,29 @@
   
   <span class="md-ellipsis">
     Providers
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/compaction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Compaction
     
   </span>
   
@@ -634,6 +658,29 @@
             Reference
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
             
               
                 
@@ -791,163 +838,28 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#1-core-invariants" class="md-nav__link">
+  <a href="#process-model" class="md-nav__link">
     <span class="md-ellipsis">
-      1. Core invariants
+      Process model
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-component-boundary" class="md-nav__link">
+  <a href="#crate-layering" class="md-nav__link">
     <span class="md-ellipsis">
-      2. Component boundary
+      Crate layering
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#3-filesystem-layout-and-protection" class="md-nav__link">
-    <span class="md-ellipsis">
-      3. Filesystem layout and protection
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#4-configuration-layering" class="md-nav__link">
-    <span class="md-ellipsis">
-      4. Configuration layering
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#5-catalog-architecture" class="md-nav__link">
-    <span class="md-ellipsis">
-      5. Catalog architecture
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#6-provider-and-endpoint-architecture" class="md-nav__link">
-    <span class="md-ellipsis">
-      6. Provider and endpoint architecture
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#7-authentication-architecture" class="md-nav__link">
-    <span class="md-ellipsis">
-      7. Authentication architecture
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#8-providers-and-models" class="md-nav__link">
-    <span class="md-ellipsis">
-      8. Providers and models
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#9-connect-disconnect-and-publication" class="md-nav__link">
-    <span class="md-ellipsis">
-      9. Connect, disconnect, and publication
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#10-runtime-snapshot-and-notifications" class="md-nav__link">
-    <span class="md-ellipsis">
-      10. Runtime snapshot and notifications
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#11-project-model-snapshot-manifests-and-exact-rehydration" class="md-nav__link">
-    <span class="md-ellipsis">
-      11. Project model-snapshot manifests and exact rehydration
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#12-context-compaction" class="md-nav__link">
-    <span class="md-ellipsis">
-      12. Context compaction
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#13-normative-startup-order" class="md-nav__link">
-    <span class="md-ellipsis">
-      13. Normative startup order
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#14-tui-contract" class="md-nav__link">
-    <span class="md-ellipsis">
-      14. TUI contract
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="14. TUI contract">
+    <nav class="md-nav" aria-label="Crate layering">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#141-live-per-session-permission-mode" class="md-nav__link">
+  <a href="#type-unification" class="md-nav__link">
     <span class="md-ellipsis">
-      14.1 Live per-session permission mode
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#142-pending-input-lane-strip" class="md-nav__link">
-    <span class="md-ellipsis">
-      14.2 Pending-input lane strip
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#143-user-message-action-menu" class="md-nav__link">
-    <span class="md-ellipsis">
-      14.3 User-message action menu
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#144-mouse-text-selection-and-clipboard" class="md-nav__link">
-    <span class="md-ellipsis">
-      14.4 Mouse text selection and clipboard
+      Type unification
     </span>
   </a>
   
@@ -959,9 +871,87 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#15-validation-ownership" class="md-nav__link">
+  <a href="#clientserver-protocol-flow" class="md-nav__link">
     <span class="md-ellipsis">
-      15. Validation ownership
+      Client/server protocol flow
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Client/server protocol flow">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#transport" class="md-nav__link">
+    <span class="md-ellipsis">
+      Transport
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#server-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      Server side
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#client-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      Client side
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-and-layering" class="md-nav__link">
+    <span class="md-ellipsis">
+      Configuration and layering
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provider-and-model-runtime" class="md-nav__link">
+    <span class="md-ellipsis">
+      Provider and model runtime
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#engine" class="md-nav__link">
+    <span class="md-ellipsis">
+      Engine
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sessions-and-persistence" class="md-nav__link">
+    <span class="md-ellipsis">
+      Sessions and persistence
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#protocol-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      Protocol surface
     </span>
   </a>
   
@@ -970,125 +960,6 @@
     </ul>
   
 </nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-      
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
-        
-          
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
-            
-  
-  
-  <span class="md-ellipsis">
-    Design Notes
-    
-  </span>
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
-            <span class="md-nav__icon md-icon"></span>
-            Design Notes
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../design/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Overview
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../docs/agent-model-variant-redesign/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Dynamic Provider Contract
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../docs/provider-conformance/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Provider Conformance
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
       
     </li>
   
@@ -1121,163 +992,28 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#1-core-invariants" class="md-nav__link">
+  <a href="#process-model" class="md-nav__link">
     <span class="md-ellipsis">
-      1. Core invariants
+      Process model
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-component-boundary" class="md-nav__link">
+  <a href="#crate-layering" class="md-nav__link">
     <span class="md-ellipsis">
-      2. Component boundary
+      Crate layering
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#3-filesystem-layout-and-protection" class="md-nav__link">
-    <span class="md-ellipsis">
-      3. Filesystem layout and protection
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#4-configuration-layering" class="md-nav__link">
-    <span class="md-ellipsis">
-      4. Configuration layering
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#5-catalog-architecture" class="md-nav__link">
-    <span class="md-ellipsis">
-      5. Catalog architecture
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#6-provider-and-endpoint-architecture" class="md-nav__link">
-    <span class="md-ellipsis">
-      6. Provider and endpoint architecture
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#7-authentication-architecture" class="md-nav__link">
-    <span class="md-ellipsis">
-      7. Authentication architecture
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#8-providers-and-models" class="md-nav__link">
-    <span class="md-ellipsis">
-      8. Providers and models
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#9-connect-disconnect-and-publication" class="md-nav__link">
-    <span class="md-ellipsis">
-      9. Connect, disconnect, and publication
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#10-runtime-snapshot-and-notifications" class="md-nav__link">
-    <span class="md-ellipsis">
-      10. Runtime snapshot and notifications
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#11-project-model-snapshot-manifests-and-exact-rehydration" class="md-nav__link">
-    <span class="md-ellipsis">
-      11. Project model-snapshot manifests and exact rehydration
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#12-context-compaction" class="md-nav__link">
-    <span class="md-ellipsis">
-      12. Context compaction
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#13-normative-startup-order" class="md-nav__link">
-    <span class="md-ellipsis">
-      13. Normative startup order
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#14-tui-contract" class="md-nav__link">
-    <span class="md-ellipsis">
-      14. TUI contract
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="14. TUI contract">
+    <nav class="md-nav" aria-label="Crate layering">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#141-live-per-session-permission-mode" class="md-nav__link">
+  <a href="#type-unification" class="md-nav__link">
     <span class="md-ellipsis">
-      14.1 Live per-session permission mode
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#142-pending-input-lane-strip" class="md-nav__link">
-    <span class="md-ellipsis">
-      14.2 Pending-input lane strip
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#143-user-message-action-menu" class="md-nav__link">
-    <span class="md-ellipsis">
-      14.3 User-message action menu
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#144-mouse-text-selection-and-clipboard" class="md-nav__link">
-    <span class="md-ellipsis">
-      14.4 Mouse text selection and clipboard
+      Type unification
     </span>
   </a>
   
@@ -1289,9 +1025,87 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#15-validation-ownership" class="md-nav__link">
+  <a href="#clientserver-protocol-flow" class="md-nav__link">
     <span class="md-ellipsis">
-      15. Validation ownership
+      Client/server protocol flow
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Client/server protocol flow">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#transport" class="md-nav__link">
+    <span class="md-ellipsis">
+      Transport
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#server-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      Server side
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#client-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      Client side
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-and-layering" class="md-nav__link">
+    <span class="md-ellipsis">
+      Configuration and layering
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provider-and-model-runtime" class="md-nav__link">
+    <span class="md-ellipsis">
+      Provider and model runtime
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#engine" class="md-nav__link">
+    <span class="md-ellipsis">
+      Engine
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sessions-and-persistence" class="md-nav__link">
+    <span class="md-ellipsis">
+      Sessions and persistence
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#protocol-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      Protocol surface
     </span>
   </a>
   
@@ -1316,1053 +1130,276 @@
   
 
 
-<h1 id="cookie_code-architecture">cookie_code Architecture<a class="headerlink" href="#cookie_code-architecture" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> frozen current implementation contract</p>
-<p><strong>Required versions:</strong> configuration schema 10; agent document schema 4;
-protocol 9; event schema 14; session JSONL 14; session metadata 9;
-delegation-journal schema 10; runtime snapshot schema 3; catalog cache schema 2;
-provider store schema 3; family recipe registry schema 1; project model-snapshot
-manifest schema 1.</p>
-<p>Only those versions are accepted. Configuration schema 9, agent schema 3,
-event/session schema 13, delegation-journal schema 9, protocol/persistence 8, catalog cache
-1, provider stores 1/2, and every unversioned or earlier replacement are
-rejected. There are no migrations, compatibility readers, aliases, or dual paths.</p>
-<p>Session metadata schema 9 adds required <code>last_activity: Timestamp</code>. Its value is
-the timestamp of the latest event in the session JSONL log; a session containing
-only <code>SessionCreated</code> therefore reports its creation-event timestamp. The event
-log is the single source of truth: list/get/tree responses derive the value from
-the in-memory log tail, so live appends are reflected immediately and restart
-replay reconstructs the same value. The rebuildable <code>meta.json</code> cache remains
-versioned by <code>SessionMetaSchemaVersion</code> but deliberately omits this derived
-field; metadata cache version 8 and every other non-9 version are rejected.</p>
-<p>New sessions begin as in-memory projections with a buffered event log. Creating
-a session, changing its live permission mode, renaming it, or appending other
-pre-message events creates no per-session directory, <code>meta.json</code>, or
-<code>events.jsonl</code>. The first <code>UserInputSubmitted</code> append is the persistence gate:
-under the session-store mutation lock, the engine appends that event to the
-buffer, rebuilds metadata, writes the complete contiguous log and cache into a
-temporary session directory, fsyncs it, and atomically renames it into place.
-All later events use normal append-per-event durability. Consequently live
-session list/get/tree calls include empty sessions, while restart forgets every
-session that never received a user message. Root empty-session creation does not
-write delegation or artifact entries. Predictive compaction is disabled for an
-unpersisted session, so the first run buffers <code>RunStarted</code>, skips compaction,
-then flushes <code>SessionCreated</code>, <code>RunStarted</code>, and <code>UserInputSubmitted</code> in sequence.</p>
-<p>Steering uses a durable pending-input lane. <code>run.steer</code> requires the target run
-to be active and immediately appends run-scoped <code>UserInputAdmitted</code>; admission
-does not add model history. Pending membership is replayed in event order as
-admissions minus LIFO <code>UserInputRecalled</code> events and FIFO promoted
-<code>UserInputSubmitted</code> events after each run's first submission. The first
-submission following <code>RunStarted</code> is derivably the run's initial input and never
-consumes an admission, even if a steer is admitted during start-time predictive
-compaction before that initial submission lands. At every completed tool batch and at the no-tool
-completion boundary, the engine promotes all currently pending inputs in
-admission order as separate <code>UserInputSubmitted</code> events before assembling the
-next provider request. A no-tool boundary with no pending input appends
-<code>RunCompleted</code>; a tool boundary with no pending input simply continues.
-<code>run.recall_steer { run_id }</code> removes the newest pending input, appends
-<code>UserInputRecalled</code>, and returns its text, or returns null without an event when
-the lane is empty. Terminal run events implicitly void any remaining lane; the
-TUI is responsible for retaining or restoring its local composer text. Initial
-and delegated run-start input remains an immediate submission because it is
-delivered in that run's first provider request. Delegate code that steers an
-already active run uses the same admission lane.</p>
-<p>Session history has an append-only physical stream and a derived visible branch.
-<code>session.revert { session_id, through_seq }</code> is idle-only and appends runless
-<code>SessionReverted { through_seq }</code>; no record is truncated and the next physical
-sequence continues from the current tip. The target must be an existing positive
-physical sequence. <code>last_event_seq</code> and <code>last_activity</code> continue to report that
-physical tail, including the revert marker, because revert is durable user
-activity; branch-derived title, status, usage, approvals, transcript, and model
-context use the visible stream. Replay maintains a monotonic historical ceiling equal to the
-minimum target of all revert markers seen so far: each marker removes previously
-visible records above that ceiling, remains as a physical control record, and
-later records form the new branch. Model context, transcript, metadata status,
-title and usage, approvals, pending input, and compaction select only that
-visible branch. A revert marker leaves the session idle even when its historical
-prefix ends inside a run, so the next user input starts a fresh run. Event
-subscriptions still carry every physical record, allowing clients to rebuild
-their complete disposable projection when a revert arrives.</p>
-<p><code>session.fork { session_id, through_seq }</code> may read an active source but requires
-a persisted prefix containing a submitted user message. It atomically creates a
-new session directory whose prefix preserves source schema versions,
-sequences, timestamps, run IDs, and payloads exactly while rebinding envelope
-<code>session_id</code> to the new directory identity. A fork-local revert marker closes
-any historical in-flight prefix, then a title commit appends <code>(fork)</code> to the
-visible title (or uses <code>Untitled (fork)</code>). The fork is independent and receives
-new physical sequences after its copied prefix. Artifacts are content-addressed
-in the project-global artifact store, so checkpoint, tool-output, and attachment
-references in a copied prefix remain resolvable without copying artifact bytes.</p>
-<p>This file is authoritative. Exact types, ordering, failure behavior, startup,
-RPC, persistence, and TUI semantics are in
-<a href="../docs/agent-model-variant-redesign/">docs/agent-model-variant-redesign.md</a>.
-Family registry 1 is described in
-<a href="../docs/provider-conformance/">docs/provider-conformance.md</a>.</p>
-<h2 id="1-core-invariants">1. Core invariants<a class="headerlink" href="#1-core-invariants" title="Permanent link">&para;</a></h2>
+<h1 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h1>
+<p>cookie agent is a subagent-first coding harness built as a Rust workspace of nine
+crates. A local daemon owns provider connections, sessions, model execution,
+permissions, and persistence; a terminal UI communicates with it over a versioned
+JSON-RPC WebSocket protocol. The project is current-only: each durable surface
+accepts exactly one schema version and there are no migration readers or legacy
+protocol paths.</p>
+<h2 id="process-model">Process model<a class="headerlink" href="#process-model" title="Permanent link">&para;</a></h2>
+<p>The <code>cookie</code> binary (<code>crates/cookie_agent</code>) is a thin composition root. Its CLI has
+four subcommands plus a default mode:</p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><em>(none)</em></td>
+<td>Start an in-process daemon and open the TUI over an in-memory stream</td>
+</tr>
+<tr>
+<td><code>daemon</code></td>
+<td>Run only the daemon, listening on <code>ws://127.0.0.1:7419/ws</code> by default</td>
+</tr>
+<tr>
+<td><code>attach [--url]</code></td>
+<td>Attach the TUI to an existing daemon WebSocket</td>
+</tr>
+<tr>
+<td><code>connect [provider_id]</code></td>
+<td>Interactive durable managed-provider connection (TTY only)</td>
+</tr>
+<tr>
+<td><code>disconnect [provider_id]</code></td>
+<td>Interactive durable managed-provider disconnection (TTY only)</td>
+</tr>
+</tbody>
+</table>
+<p>The daemon binds only to the configured port and authenticates every WebSocket
+with a bearer token stored at <code>~/.local/share/cookie_agent/daemon/token-v1</code>.
+<code>attach</code>, <code>connect</code>, and <code>disconnect</code> accept only loopback <code>ws</code>/<code>wss</code> URLs whose
+path is exactly <code>/ws</code>. All three use the same shared protocol client as the TUI,
+so the CLI keeps working even when built without the <code>tui</code> feature.</p>
+<h2 id="crate-layering">Crate layering<a class="headerlink" href="#crate-layering" title="Permanent link">&para;</a></h2>
+<p>The workspace is layered bottom-up by dependency:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>identity
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  └─ protocol        (wire types + session transport/client/server traits)
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>       ├─ models
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>       │    └─ config
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>       │         └─ engine
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>       │              ├─ tools
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>       │              └─ server
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>       │                   └─ tui
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>       └─ cookie_agent (binary: composes every layer)
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Crate</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>identity</code></td>
+<td>Strict shared identities: agent IDs, provider IDs, model keys, variants, wildcard patterns, revisions. The bottom of the stack with no <code>cookie_agent_*</code> dependencies.</td>
+</tr>
+<tr>
+<td><code>protocol</code></td>
+<td>Current-only wire contracts <strong>and the protocol session layer</strong>: RPC roots, events, session metadata, agent snapshots, JSON Schema and TypeScript bindings, the frame-level <code>Transport</code> trait, the <code>ClientProtocol</code>/<code>ServerProtocol</code> traits, the shared <code>Client</code>, <code>ServerContext</code>, protocol-owned <code>serve</code>, and shared setup-value parsing. Re-exports <code>identity</code> and hosts the unified wire types.</td>
+</tr>
+<tr>
+<td><code>models</code></td>
+<td>Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from <code>protocol</code>.</td>
+</tr>
+<tr>
+<td><code>config</code></td>
+<td>Strict schema-10 runtime configuration and schema-4 Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports <code>AgentMode</code>, <code>ToolName</code>, <code>PermissionAction</code>, <code>PermissionEffect</code>, <code>PermissionRule</code>, and <code>AgentDocumentSource</code> from <code>protocol</code>.</td>
+</tr>
+<tr>
+<td><code>engine</code></td>
+<td>Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence.</td>
+</tr>
+<tr>
+<td><code>tools</code></td>
+<td>Built-in <code>read</code>, <code>write</code>, <code>edit</code>, and <code>bash</code> tools plus the <code>delegate</code> tool provider.</td>
+</tr>
+<tr>
+<td><code>server</code></td>
+<td>The <code>ServerProtocol</code> implementation over <code>Engine</code>, concrete transports (WebSocket + <code>InProcessStream</code>), a thin connection wrapper, and the public <code>load_auth_token</code> / <code>validate_websocket_url</code> APIs.</td>
+</tr>
+<tr>
+<td><code>tui</code></td>
+<td>ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow. Its client is a thin adapter re-exporting the shared protocol client.</td>
+</tr>
+<tr>
+<td><code>cookie_agent</code></td>
+<td>CLI and composition root wiring every crate together. The only binary.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="type-unification">Type unification<a class="headerlink" href="#type-unification" title="Permanent link">&para;</a></h3>
+<p>The refactor consolidated shared wire types in <code>protocol</code>:</p>
+<ul>
+<li><strong>Unified:</strong> <code>config</code> re-exports <code>AgentMode</code>, <code>ToolName</code>, <code>PermissionAction</code>,
+  <code>PermissionEffect</code>, <code>PermissionRule</code>, and <code>AgentDocumentSource</code> from
+  <code>protocol</code>; <code>models</code> re-exports <code>Modality</code>, <code>MediaKind</code>, <code>MimeType</code>,
+  <code>MediaCapability</code>, <code>ReplayCapability</code>, <code>CancellationCapability</code>, <code>FiniteF32</code>,
+  and <code>ReasoningEffort</code> from <code>protocol</code>.</li>
+<li><strong>Deliberately separate:</strong> <code>Sha256Digest</code>, <code>ModelCapabilities</code>, <code>ToolChoice</code>,
+  <code>RequestDefaults</code>, <code>ResolvedRequestDefaults</code>, and <code>ProviderOptions</code> stay
+  <code>models</code>-side. Their decoding is intentionally more lenient so compiled model
+  state and manifests written by earlier versions keep loading.</li>
+</ul>
+<h2 id="clientserver-protocol-flow">Client/server protocol flow<a class="headerlink" href="#clientserver-protocol-flow" title="Permanent link">&para;</a></h2>
+<p>The session layer lives in the <code>protocol</code> crate so every frontend shares one
+implementation of the protocol mechanics.</p>
+<h3 id="transport">Transport<a class="headerlink" href="#transport" title="Permanent link">&para;</a></h3>
+<p><code>protocol::Transport</code> is a frame-level channel: <code>send(MessageFrame)</code> /
+<code>recv() -&gt; Option&lt;MessageFrame&gt;</code>, with <code>MessageFrame</code> either a <code>Text</code> string or a
+<code>Value</code>. It has no JSON-RPC semantics. The <code>server</code> crate provides the concrete
+transports: <code>WebSocketTransport</code> (tokio-tungstenite, used by the TUI and CLI to
+reach a daemon) and <code>InProcessStream</code> (used by the local frontend over an
+in-memory mpsc pair). The axum WebSocket accept path implements <code>MessageStream</code>
+(the <code>Transport</code> alias) server-side.</p>
+<h3 id="server-side">Server side<a class="headerlink" href="#server-side" title="Permanent link">&para;</a></h3>
+<p><code>protocol::ServerProtocol</code> is the server contract: one async method per RPC
+method plus <code>connected</code> and <code>subscribe_events</code> (which receives a
+<code>ServerContext</code>). The <code>server</code> crate implements it in <code>service/routes.rs</code>,
+delegating every call to <code>Engine</code>.</p>
+<p><code>protocol::serve</code> drives one complete server-side session over a <code>Transport</code>:</p>
+<ul>
+<li><strong>Handshake gating.</strong> Every request before a valid <code>handshake</code> is rejected with
+  error code <code>-32001</code>; the exact-version handshake is answered with
+  <code>ServerHello</code>, then <code>connected</code> is invoked on the implementation.</li>
+<li><strong>Request dispatch.</strong> Incoming requests are correlated by JSON-RPC id and
+  dispatched to the <code>ServerProtocol</code> implementation; <code>runtime.snapshot.get</code>,
+  <code>provider.connect</code>, and <code>provider.disconnect</code> additionally require a request id.</li>
+<li><strong>Notification demux.</strong> <code>ServerContext::notify</code> queues one JSON-RPC
+  notification per connection; the session loop interleaves it with incoming
+  frames. The server implementation uses this for <code>runtime.changed</code>, event
+  tails, and streamed tool output.</li>
+<li><strong>Shutdown.</strong> A per-connection cancellation token ends the loop and drops
+  outstanding state.</li>
+</ul>
+<h3 id="client-side">Client side<a class="headerlink" href="#client-side" title="Permanent link">&para;</a></h3>
+<p><code>protocol::ClientProtocol</code> is the client contract; the shared concrete <code>Client</code>
+implements it over any <code>Transport</code>. A connection task owns the stream and
+handles:</p>
+<ul>
+<li><strong>Request/response correlation</strong> by id, with a bounded command queue and a
+  sole ordered delivery channel.</li>
+<li><strong>Notification demux</strong> into <code>ClientDelivery</code> variants: live
+  <code>events.subscription</code>, tool-output snapshot/delta/gap, and <code>runtime.changed</code>.</li>
+<li><strong>Replay and gap recovery.</strong> <code>events.subscribe</code> runs a cursor replay that is
+  injected into the delivery stream before buffered live notifications; a
+  recovery worker re-subscribes with backoff and emits <code>RecoveryFailed</code> when it
+  exhausts its attempts.</li>
+<li><strong>Sensitive-frame wiping.</strong> <code>provider.connect</code> and other secret-bearing calls
+  serialize into a zeroizing buffer that is wiped on dispatch or cancellation.</li>
+<li><strong>Shutdown</strong> via a cancellation token that fails outstanding calls with
+  <code>ClientError::Closed</code>.</li>
+</ul>
+<p>The <code>server</code> crate wraps this in a thin <code>Client</code> (Deref to <code>protocol::Client</code>)
+and adds <code>connect_websocket</code>/<code>connect_in_process</code>/<code>connect_stream</code>. The <strong>TUI
+client is a ~6-line adapter</strong> re-exporting it, and the CLI uses the same <code>Client</code>
+through the <code>ClientProtocol</code> trait.</p>
+<h2 id="configuration-and-layering">Configuration and layering<a class="headerlink" href="#configuration-and-layering" title="Permanent link">&para;</a></h2>
+<p>The <code>config</code> crate reads two optional authored layers:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>~/.config/cookie_agent/config.toml          # user layer
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>~/.config/cookie_agent/agents/&lt;agent-id&gt;.md
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>&lt;exact-cwd&gt;/.cookie-agent/config.toml       # workspace layer
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>&lt;exact-cwd&gt;/.cookie-agent/agents/&lt;agent-id&gt;.md
+</code></pre></div>
+<p>There is no upward workspace search. A workspace setting replaces the
+corresponding user setting; a same-ID workspace provider or agent replaces the
+complete user definition. Unknown keys, wrong schema versions, and malformed
+values are rejected. The TUI additionally reads an independent
+<code>~/.config/cookie_agent/tui.toml</code> (or <code>$XDG_CONFIG_HOME/cookie_agent/tui.toml</code>).</p>
+<p>See <a href="../guide/configuration/">Configuration</a> and the
+<a href="../reference/configuration/">configuration reference</a> for every key.</p>
+<h2 id="provider-and-model-runtime">Provider and model runtime<a class="headerlink" href="#provider-and-model-runtime" title="Permanent link">&para;</a></h2>
+<p><code>crates/models</code> owns the full dynamic provider pipeline:</p>
 <ol>
-<li>The daemon refreshes only <code>https://models.dev/catalog.json</code>. The URL is
-   code-owned, receives no provider credentials, and never redirects.</li>
-<li>Catalog startup selection is exactly network, validated cache schema 2, then
-   bundled bootstrap. A selected body's revision is
-   <code>sha256:&lt;lowercase SHA-256 digest of the exact selected body bytes&gt;</code>.</li>
-<li>Structural candidate failure rejects one network/cache/bootstrap candidate.
-   A bounded, structurally valid candidate quarantines malformed or ambiguous
-   provider/model records independently so valid siblings survive.</li>
-<li><code>/connect</code> lists every valid current catalog provider and every configured
-   managed provider removed from the current catalog. “Configured managed” is
-   the union of authored <code>source = "models_dev"</code> definitions and provider-store
-   records. Custom providers never appear in <code>/connect</code> and never use store 3.</li>
-<li>Runtime TOML has exactly one <code>[providers.&lt;id&gt;]</code> namespace. Definitions are
-   tagged <code>source = "models_dev" | "custom"</code>. Custom IDs begin with <code>custom.</code>.</li>
-<li>A same-ID user/workspace provider definition is an atomic replacement. No
-   provider, model, map, array, auth, or override field merges across layers.</li>
-<li>A managed endpoint is an authored <code>base_url</code>, otherwise catalog <code>api</code>, otherwise
-   the npm-family default. Catalog endpoint metadata is authoritative. An authored
-   base URL requires authored auth in that same provider definition.</li>
-<li>Credentials are semantic values. <code>api_key</code> is permitted only for an
-   unambiguous one-secret default API-key method. <code>auth_override</code> is exactly
-   <code>{ method, values }</code>. A recipe owns the reviewed wire header/signing form;
-   registry 1 emits no credential query.</li>
-<li>Every authored/catalog endpoint is absolute, bounded, query-free,
-   userinfo-free, fragment-free, and HTTPS, except an exact code-reviewed
-   loopback HTTP policy. Query strings are rejected, including empty <code>?</code>.</li>
-<li>All managed supported, non-deprecated text-output models are automatic.
-    Managed TOML has sparse <code>model_overrides</code>; it has no inclusion map.</li>
-<li>Provider protocol/auth behavior comes from family registry schema 1, keyed by
-    catalog <code>npm</code>. Catalog endpoint, shape, capability, modality, limit, and nested
-    provider override values are compiled directly. Unknown npm families are unsupported.</li>
-<li><code>provider.connect</code> and <code>provider.disconnect</code> mutate only managed provider
-    store state. Connect compiles before a single durable transaction; after a
-    successful transaction publication is an infallible in-memory swap.</li>
-<li>Runtime snapshot schema 3 is the sole coherent discovery surface. Legacy
-    independently refreshed provider/model/agent list flows do not exist in
-    protocol 9.</li>
-<li>Runs persist exact safe model bindings, source kind, credential source, and
-    config-override fingerprint. Rehydration never changes credential source.</li>
-<li>Model keys split at the first <code>/</code>; a model ID may contain <code>/</code>.</li>
-<li>Secrets never enter caches, revisions, snapshots, events, errors, logs,
-    generated artifacts, session files, or TUI projections.</li>
-<li><strong>Empty setup is valid.</strong> Config schema 10 permits <code>providers</code> to be omitted
-    or empty. When provider store 3 is also empty and no effective authored
-    custom provider exists, startup publishes zero models/root-runnable agents
-    and opens the TUI so <code>/connect</code> can bootstrap setup. Empty TOML does not hide
-    existing per-user stored managed connections.</li>
-<li><strong>A model-bearing runtime is immediately runnable.</strong> After authored-agent
-    projection, if no authored agent is root-runnable and at least one model is
-    available, the engine adds the reserved built-in primary agent <code>default</code>.
-    Authored agents never use that ID and are never rewritten to use another
-    model.</li>
+<li><strong>Catalog.</strong> The daemon refreshes the fixed models.dev catalog
+   (<code>https://models.dev/catalog.json</code>) hourly, with a validated ETag cache and a
+   bundled integrity-checked bootstrap as fallbacks. Catalog selection is network,
+   cache, or bootstrap.</li>
+<li><strong>Family registry.</strong> A code-owned recipe registry (schema 1) maps the catalog's
+   npm package names to protocol families: OpenAI, OpenAI-compatible chat,
+   Anthropic, Google, Vertex, Bedrock, Azure, and Cohere. Each recipe declares a
+   default endpoint, allowed authentication methods, and credential shapes.</li>
+<li><strong>Compiler.</strong> <code>DynamicCompiler</code> compiles managed catalog rows (with optional
+   authored overrides) and authored custom providers into
+   <code>CompiledDynamicModel</code> entries with concrete endpoints, validated setup,
+   authentication, capabilities, request defaults, and variants.</li>
+<li><strong>Executable adapters.</strong> The Oven SDK crates
+   (<code>oven-sdk-openai</code>, <code>oven-sdk-anthropic</code>, <code>oven-sdk-google</code>,
+   <code>oven-sdk-google-vertex</code>, <code>oven-sdk-bedrock</code>, <code>oven-sdk-azure</code>,
+   <code>oven-sdk-cohere</code>, <code>oven-sdk-open-responses</code>) provide normalized language-model
+   implementations. The <code>models</code> crate selects the adapter for each compiled
+   model and freezes it into project manifests.</li>
+<li><strong>Provider store.</strong> Managed connections live in a global per-user provider
+   store (<code>~/.local/share/cookie_agent/providers/store-v3.json</code>) and are shared
+   across workspaces. Credentials are checked on first use, not at connect time.</li>
 </ol>
-<h2 id="2-component-boundary">2. Component boundary<a class="headerlink" href="#2-component-boundary" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>TUI / CLI
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    │ protocol 9
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    ▼
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>server ─────────────── runtime.changed notifications
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    │
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    ▼
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>engine ── version-10 events/sessions and frozen run policy
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    │
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    ▼
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>model manager ── atomic RuntimeSnapshot schema 1
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    │
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    ├── catalog manager ── fixed HTTPS / cache 2 / bootstrap
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    ├── family registry 1 ── npm-family/protocol/auth compilers
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    ├── config loader ── schema 10 and agent schema 4
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    └── provider store 3 ── managed durable connections only
-</code></pre></div>
-<p>The catalog manager validates catalog structure. The family registry classifies npm
-packages and decides protocol/auth semantics; catalog records decide endpoints and capabilities.
-and Oven construction. The model manager compiles a complete candidate runtime
-before one atomic publication. The engine freezes one published snapshot at run
-admission. Clients consume one coherent snapshot and notifications.</p>
-<h2 id="3-filesystem-layout-and-protection">3. Filesystem layout and protection<a class="headerlink" href="#3-filesystem-layout-and-protection" title="Permanent link">&para;</a></h2>
-<p>Workspace configuration is only:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>&lt;exact-cwd&gt;/.cookie-agent/
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  config.toml
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>  agents/
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    &lt;agent-id&gt;.md
-</code></pre></div>
-<p>User configuration is only:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>~/.config/cookie_agent/
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  config.toml
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  agents/
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    &lt;agent-id&gt;.md
-</code></pre></div>
-<p>There is no upward search. User and workspace configuration uses ordinary
-filesystem reads. Config and agent files may be reached through symlinks and do
-not have owner, mode, or hard-link restrictions. Wrong object types, oversize
-content, duplicate keys, and unknown fields still fail closed.</p>
-<p>On Unix, runtime user data is fixed below:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>~/.local/share/cookie_agent/
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>  catalog/
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    models-dev-v2.json
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    models-dev-v2.meta.json
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    models-dev-v2.lock
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>  providers/
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    store-v3.json
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    store-v3.lock
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>  sessions/
-</code></pre></div>
-<p>Each project may additionally contain the private runtime subtree:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>&lt;exact-cwd&gt;/.cookie-agent/model-snapshots/
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>  &lt;64-lowercase-hex&gt;.json
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>  model-snapshots-v1.lock
-</code></pre></div>
-<p>The project cwd anchor may be an ordinary shared or worktree directory with any
-owner-write/group-write mode. Its <code>.cookie-agent/model-snapshots</code> storage subtree,
-like the global <code>cookie_agent</code>, <code>catalog</code>, <code>providers</code>, and session directories,
-is current-user-owned mode <code>0700</code>. Cache/store/body/meta/manifest/lock/temp files
-are current-user-owned mode <code>0600</code>, regular, and single-link. Traversal is
-descriptor-relative and no-follow. A writable project anchor permits
-collaborators to remove the private subtree and deny service, but not to inject
-accepted storage objects. Every mutation locks and rereads, writes an exclusive
-same-directory temporary file, fsyncs it, atomically renames it, and fsyncs the
-parent. Unsafe private state fails closed; no permissive fallback path exists.</p>
-<h2 id="4-configuration-layering">4. Configuration layering<a class="headerlink" href="#4-configuration-layering" title="Permanent link">&para;</a></h2>
-<p>Runtime defaults and catalog/recipes are not TOML layers. The only authored
-layer precedence is:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>user config schema 10 &lt; exact-cwd workspace config schema 10
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>user agent document &lt; same-ID workspace agent document
-</code></pre></div>
-<p>A provider definition is atomic by <code>ProviderId</code>: if workspace TOML defines an
-ID, the entire user definition with that ID is discarded before parsing and
-semantic validation. Provider fields, model maps, overrides, variants, headers,
-auth values, and arrays never merge. Agent documents are likewise atomic.</p>
-<p>Agent schema 4 uses one ordered <code>permissions</code> map entry per
-<code>PermissionAction</code>. Each action value is either a bare <code>allow</code>, <code>ask</code>, or <code>deny</code>
-effect, or an ordered resource-pattern-to-effect map; the two forms cannot be
- mixed for one action. Bare effects compile to resource <code>"*"</code>. Within an action,
-matching precedence is deterministic: more literal characters wins, then fewer
-<code>*</code>/<code>?</code> wildcards wins, and an exact tie is won by the later declaration. The
-universal catch-all <code>*</code> therefore carries the lowest specificity.
-<code>${workspace_dir}</code> is the only permission-resource expression. It is accepted
-only for <code>read</code> and <code>write</code>; bash
-commands, delegation targets, unknown <code>${...}</code> expressions, and every other
-brace form reject. The token remains literal in configuration, frozen policy,
-serialization, and fingerprints. Its literal token characters count toward the
-specificity metric, so ordering is stable across machines and checkout paths.</p>
-<p>At permission evaluation, a resource pattern containing <code>${workspace_dir}</code> is
-expanded against the engine workspace root and matched against the resource's
-absolute path. A pattern without the token continues to match the existing
-workspace-relative label. The workspace root uses the same normalization choice
-as filesystem capability preparation: canonicalize the workspace directory
-when possible, otherwise retain it, then render path separators as <code>/</code>.
-Prepared read/write labels derive from canonical capability paths;
-joining a relative label does not require the target to exist, which preserves
-absent-write behavior. An expanded workspace pattern therefore cannot match an outside path; such rules
-are accepted because config loading is checkout-independent, and simply do not
-match outside resources. Ordinary absolute read/write patterns such as <code>/etc/*</code>
-or <code>*/.ssh/*</code> govern outside paths. There is no environment-variable expansion
-in permission patterns.</p>
-<p>Agent schema 4 extends <code>mode</code> with <code>internal</code>. Internal agents are never
-root-runnable, never valid <code>delegate</code> targets, and are filtered from every TUI
-agent picker even though runtime snapshot descriptors retain them for coherent
-discovery. They otherwise use the same document body, ordered model fallback,
-enabled flag, and bounded <code>limits</code> object (<code>timeout_ms</code>, <code>max_input_tokens</code>, and
-<code>max_output_tokens</code>). The reserved built-in internal documents are <code>approval</code>,
-<code>compaction</code>, and <code>title</code>; same-ID user/workspace documents replace them through
-the ordinary atomic layer precedence, with workspace winning over user and
-built-in.</p>
-<p>Only <code>mode: internal</code> fallback chains may contain the literal
-<code>${parent_model}</code>. It carries no authored variant because it resolves at internal
-policy freeze time to the parent run's exact active frozen binding, including
-variant and manifest identity. Parentless resolution skips that entry; an empty
-resolved chain uses the existing <code>unavailable</code> builtin lifecycle. Historical
-title regeneration reconstructs the parent policy from <code>RunStarted</code> and its
-persisted selected suffix, so <code>${parent_model}</code> never consults current model
-selection. Approval and title internal model requests use the shared tool-less
-request builder and always emit an empty tool list. Compaction is the deliberate
-exception described in section 12: it preserves the parent request's tool
-definitions for cache-prefix identity but rejects every non-text response.
-Internal input limits cover the complete assembled history and tool definitions.
-Approval enforces its authored limit against its single stateless request;
-compaction raises its effective input ceiling to at least the largest
-frozen parent-model context window in its resolved chain so a built-in 16,384
-default cannot reject the context it was invoked to compact.
-The built-in compaction chain begins with <code>${parent_model}</code>; the built-in
-approval and title chains preserve the same parent-model behavior used before
-schema 4. Title generation receives only the first user message, never assistant
-answer text.</p>
-<p>The approval internal agent is stateless and reasoning-blind. Every evaluation
-uses exactly two history turns: the frozen composed approval prompt as the
-byte-stable system turn, then one user turn containing a frozen framing wrapper,
-the latest exact persisted <code>UserInputSubmitted</code> bytes, and the current tool name
-plus normalized parameters last. The engine searches the current run newest-first
-and then the full session newest-first; if no user input exists it inserts the
-fixed <code>[no user message]</code> variant. It never supplies older messages, assistant
-prose, tool results, or prior approval decisions. Keeping tool parameters at the
-append-only tail preserves a cacheable <code>[system][latest user request]</code> prefix
-across consecutive approvals. Approval decisions are accepted only from
-pure-text model output; any tool call or other non-text part invalidates the
-response and fails safe to escalation. Event schema 13 removes the obsolete
-approval-conversation increment counter from <code>ApprovalEvaluated</code>.
-The parameter object comes from tool preparation, not the model-authored JSON:
-filesystem paths are resolved to prepared display paths, defaulted read bounds
-are explicit, and bash is the whole command string. Thus the classifier and
-permission pipeline inspect the same prepared operation semantics and raw
-traversal spellings never reach the classifier.
-<code>PreparedTool::new</code> requires this normalized-argument object at construction;
-parameterless tools pass <code>{}</code> explicitly, so external providers cannot silently
-omit classifier parameters. Construction is fallible and rejects JSON <code>null</code>;
-non-null scalar forms remain valid for tools whose normalized schema requires
-them.</p>
-<p>Unmatched resources ask. Generic read allows do not override the built-in
-default ask for <code>.env</code>/<code>.env.*</code>; exact or more-specific authored rules decide
-naturally. A bare deny hides the corresponding tool. Map form hides it only
-when <code>"*": deny</code> exists and there are no non-deny exceptions. <code>tools</code> remains a
-separate allowlist and both gates apply.</p>
-<p>Every tool implements two mandatory argument extractors. <code>get_primary_argument</code>
-is the exact permission resource label: <code>read</code>/<code>write</code>/<code>edit</code> use the file
-path, <code>bash</code> uses the full command, and
-<code>delegate</code> uses the target agent id. After preparation the engine calls
-<code>get_primary_argument</code> on the prepared <code>normalized_arguments</code> and uses that
-string as the primary policy label; providers cannot keep a different prepared
-label. <code>get_display_argument</code> is TUI-only compact-title display and must not
-feed permission matching. The display forms are: <code>write</code>/<code>edit</code> use a
-workspace-relative or home-abbreviated path; <code>read</code> uses that path plus any
-explicit zero-based offset and/or limit window; <code>bash</code> uses a compact
-one-line command that never elides <code>&amp;&amp;</code> segments, and <code>delegate</code> uses the
-same agent id both ways. Malformed arguments fail closed. The approval
-classifier still receives the full prepared <code>normalized_arguments</code> object.</p>
-<p><code>PreparedOperationIdentity</code> stores a non-empty resource vector. Its constructor,
-deserializer, and <code>PreparedTool::new</code> reject an empty vector, so no tool can reach
-permission evaluation without a resource; multiple resources remain available
-for future operations. Permission evaluation combines them deterministically:
-any deny wins, otherwise any ask wins, otherwise the operation is allowed. Each
-resource label is the prepared <code>get_primary_argument</code> result. Filesystem labels
-are workspace-relative for inside paths and absolute for outside paths; both use
-the same read/write permission action and matching pipeline. Current built-ins
-prepare exactly one resource per call.</p>
-<p>The <code>bash</code> tool no longer reroutes simple commands onto <code>read</code>/<code>write</code>. The
-permission engine only pattern-matches: each bash call is one resource whose
-label is the whole command string from <code>get_primary_argument</code>, matched only
-against <code>bash:</code> patterns. There is no AST split, no simple/complex
-classification, and no parse-fallback resource. A narrow allow such as
-<code>bash: "git *"</code> therefore also matches <code>git status &amp;&amp; rm -rf x</code>; users who
-want to block that must write containment patterns such as <code>*rm*</code>. That
-smuggle is the designed semantic, not a bug. Shell file access such as
-<code>cat .env</code> is governed by bash rules, not read/write rules.</p>
-<p>The removed agent <code>delegation</code> field has no decoder. Delegation targets are the
-keys of the <code>delegate</code> permission resource map, whose target effects are
-<code>allow</code> or <code>ask</code>; targets must resolve to enabled <code>subagent</code>/<code>all</code> agents.
-Runtime schema 10 owns <code>[delegation]</code>: <code>max_depth</code> defaults to 3 and
-<code>max_concurrency</code> defaults to unlimited. A frozen child ceiling is the parent
-ceiling bounded by runtime <code>max_depth</code>. Admission serializes the count of
-delegated sessions in the root tree that currently have an active run; reaching
-<code>max_concurrency</code> denies delegation and names the configured limit.</p>
-<p>Managed <code>source = "models_dev"</code> definitions may directly author credentials in
-either user or workspace TOML using <code>api_key</code> or typed <code>auth_override</code>. The
-effective atomic definition's authored credential always takes precedence over
-provider-store credentials. A workspace replacement never inherits a user-layer
-credential. On recomposition, removing authored auth from a definition that has
-no authored <code>base_url</code> makes an exact eligible provider-store credential
-effective. If authored <code>base_url</code> remains, removing same-definition authored
-auth is invalid rather than falling through to the store.</p>
-<p><code>${env:NAME}</code> interpolation is single-pass and allowed only in schema-approved
-secret values and authored endpoint strings. Environment variables do not form
-a config layer. Documentation recommends interpolation or <code>/connect</code> provider
-store input rather than plaintext. Parsed and interpolated secrets live in
-<code>SecretString</code>; owned buffers are best-effort zeroized on drop and after
-dispatch. Transport/kernel copies cannot be promised forensic erasure.</p>
-<h2 id="5-catalog-architecture">5. Catalog architecture<a class="headerlink" href="#5-catalog-architecture" title="Permanent link">&para;</a></h2>
-<p>The fixed request rejects redirects, cookies, configurable headers, auth,
-userinfo, fragments, and every query. If cache schema 2 has a validated ETag,
-only <code>If-None-Match</code> is added.</p>
-<p>The request sends <code>Accept-Encoding: identity</code>. Any non-identity
-<code>Content-Encoding</code> is rejected. A <code>Content-Length</code> greater than 16 MiB is
-rejected before body read; absent or acceptable length is still streamed through
-a hard 16 MiB counter before buffering, UTF-8 decoding, or JSON parsing. JSON is
-bounded to depth 32, 4096 providers, 65,536 provider models per provider, 65,536
-root canonical models, 1,000,000 total object/array entries, and 256 KiB per
-string before narrower field limits.</p>
-<p>Candidate boundaries are exact:</p>
+<p>Each accepted run freezes its model selection into a project manifest under
+<code>&lt;cwd&gt;/.cookie-agent/model-snapshots/</code>, so later catalog, configuration, or store
+changes cannot silently change an accepted run's model behavior.</p>
+<h2 id="engine">Engine<a class="headerlink" href="#engine" title="Permanent link">&para;</a></h2>
+<p><code>crates/engine</code> runs one actor per session. Actors serialize all mutations to a
+session and drive the run loop:</p>
 <ul>
-<li>the strict root is exactly <code>{ providers, models }</code>; both maps are required,
-  bounded, and nonempty, and every other root field is unknown;</li>
-<li>invalid UTF-8, invalid JSON, non-object root, missing/non-object/empty
-  <code>providers</code> or <code>models</code>, unknown top-level fields, root duplicate keys, or exceeded
-  candidate/depth/container/string bounds is a <strong>candidate failure</strong>;</li>
-<li>once the bounded root provider map is structurally recoverable, each provider
-  value is parsed independently;</li>
-<li>malformed provider-local shape, duplicate provider-local keys, invalid unique
-  provider identity, or ambiguous normalized provider identity quarantines that
-  provider and all of its models;</li>
-<li>within a valid provider, each model value is parsed independently; malformed
-  model-local shape, duplicate model-local keys, invalid identity, or ambiguous
-  normalized model identity quarantines only that model and all colliding peers;</li>
-<li>executable metadata is classified directly. Provider and nested
-  model <code>npm</code> values classify protocol families; <code>api</code> and <code>shape</code> are authority.
-  Unknown nested npm or shape values make only that model unsupported.</li>
+<li><strong>Run loop.</strong> Each run walks the agent's model fallback chain. On a retryable
+  provider failure it advances to the next fallback and emits a <code>model_fallback</code>
+  event; the fallback position is sticky for the rest of the run. Before each
+  request the loop runs predictive compaction and, after a completed turn,
+  post-check compaction (see <a href="../guide/compaction/">Compaction</a>).</li>
+<li><strong>Permissions.</strong> Every prepared tool call is matched against the agent's
+  ordered permission rules (see <a href="../guide/permissions/">Permissions</a>). The
+  permission pipeline is stateless; approvals and tree grants live in an
+  in-memory <code>ApprovalStore</code> rebuilt from durable events.</li>
+<li><strong>Approvals.</strong> A stateless approval evaluator (the <code>approval</code> internal agent)
+  classifies asks in <code>auto_approve</code> mode. <code>ask</code> skips the classifier, and <code>yolo</code>
+  approves immediately. A doom-loop guard rejects repeated identical approvals.</li>
+<li><strong>Delegation.</strong> The <code>delegate</code> tool reserves a child session under the parent,
+  journals the invocation, and runs the target subagent with an inherited model
+  suffix. Depth and concurrency limits come from <code>delegation</code> configuration.</li>
+<li><strong>Internal agents.</strong> The approval, context-compaction, and session-title
+  agents run with no tools and a strict text-only output contract, normally on
+  the parent run's model via <code>${parent_model}</code>. See
+  <a href="../guide/agents/#internal-agents">Internal agents</a>.</li>
 </ul>
-<p><code>providers</code> contains provider-scoped executable metadata: provider identity,
-npm/API/env values, provider model records, and optional model provider
-overrides. <code>models</code> contains canonical metadata/provenance keyed by canonical
-model ID. It never supplies endpoint, protocol, auth, setup, package selection,
-or executable inclusion. Provider model keys/embedded IDs and canonical model
-keys/embedded IDs must agree. An exact provider-model key match to <code>models</code> is an
-optional provenance cross-reference only; provider-scoped executable metadata wins
-on disagreement, absence of a canonical record is allowed, and a malformed
-canonical record quarantines only that canonical record/cross-reference.</p>
-<p>Quarantine entries are safe diagnostics and never executable. Valid siblings in
-the same candidate remain eligible. The candidate may publish when at least one
-provider record is valid or safely quarantined with a recoverable unique ID.</p>
-<p>Cache metadata schema 2 records the catalog revision exactly as
-<code>sha256:&lt;lowercase SHA-256 digest of the exact selected body bytes&gt;</code>, ETag, byte length,
-validation time, last-check time, source, stale flag, structural diagnostics,
-and <code>last_error { code, safe_message, occurred_at } | null</code>. Network/cache/
-bootstrap fallback updates stale/error metadata atomically even when body bytes
-remain unchanged. Errors never contain bodies, URLs with secrets, or credentials.</p>
-<h2 id="6-provider-and-endpoint-architecture">6. Provider and endpoint architecture<a class="headerlink" href="#6-provider-and-endpoint-architecture" title="Permanent link">&para;</a></h2>
-<p>All provider definitions live in <code>[providers.&lt;id&gt;]</code>:</p>
-<ul>
-<li><code>source = "models_dev"</code>: optional <code>base_url</code>, <code>shape = "chat" | "responses"</code>,
-  typed <code>setup</code>, <code>api_key</code>, <code>auth_override</code>, and sparse model overrides whose
-  per-model fields may also include <code>shape</code>;</li>
-<li><code>source = "custom"</code>: required <code>endpoint</code>, <code>adaptor</code>, <code>auth</code>, and nonempty
-  explicit <code>models</code>; optional typed adapter <code>setup</code> and strict <code>headers</code>.</li>
-</ul>
-<p>The top-level <code>providers</code> map defaults to <code>{}</code> and may be empty. It produces the
-zero-model setup state only when provider store 3 is empty and no effective
-authored custom provider exists; otherwise stored managed connections or
-authored custom providers still materialize. Empty setup is not a configuration
-error and must never produce <code>runtime providers must be nonempty</code>. Agent
-fallback references with no current model are retained as unavailable
-descriptors; their authored agents are not root-runnable. If no authored agent
-is root-runnable but at least one model is available, the engine separately
-materializes built-in agent <code>default</code> with the lexicographically first available
-model and that model's default variant (base when there is no named default).
-The synthetic agent disappears whenever an authored agent is root-runnable.</p>
-<p>Custom IDs must begin <code>custom.</code>; managed IDs must not. Custom providers are
-config-only, are not <code>/connect</code> rows, and never read or write provider store 3.</p>
-<p>Custom static headers are non-secret behavior metadata with bounded RFC-token
-names and control/CRLF/NUL-free safe values. They never interpolate and are
-included exactly, sorted by canonical lowercase name plus value, in custom
-behavior/config fingerprints and model-snapshot manifests. They reject
-case-insensitive duplicates and transport/protocol/auth-owned names, including at
-least authorization, host, content-length, transfer-encoding, connection,
-proxy-authorization, cookie/set-cookie, accept, content-type, and user-agent.
-Managed and custom model requests use opencode 1.18.2's provider compatibility
-identity, exactly <code>opencode/1.18.2 ai-sdk/provider-utils/4.0.27
-runtime/bun/1.3.14</code>, through the transport-owned user-agent header.
-Adaptor recipes extend the owned set. Secret header auth must use a typed auth
-method; static header values are never secret/redacted.</p>
-<p>For managed providers the endpoint precedence is exactly:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>same-definition authored base_url &gt; catalog api &gt; npm-family default
+<h2 id="sessions-and-persistence">Sessions and persistence<a class="headerlink" href="#sessions-and-persistence" title="Permanent link">&para;</a></h2>
+<p>Sessions are append-only event logs. A new session exists only in memory until
+its first user message, when its directory, <code>events.jsonl</code>, and <code>meta.json</code>
+cache are created atomically. Revert appends a <code>session_reverted</code> marker and
+fork copies a persisted prefix under a new session ID; neither truncates
+physical events.</p>
+<p>Session data lives under the user data directory keyed by a hash of the
+canonical working directory:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>~/.local/share/cookie_agent/
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  daemon/token-v1                  # daemon bearer token
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  providers/store-v3.json          # durable managed connections
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>  catalog/                         # validated models.dev cache
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>  projects/&lt;16-hex-cwd-hash&gt;/
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    cwd                            # canonical project path
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    sessions/&lt;session-id&gt;/         # events.jsonl + meta.json cache
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    artifacts/                     # content-addressed tool output
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    delegations.jsonl              # delegation journal (schema 10)
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    grant-invalidations.jsonl      # tree-grant invalidation journal
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    runtime-revisions-v8.jsonl     # runtime revision index
 </code></pre></div>
-<p>Neither provider store, another config layer's replaced definition, nor ambient
-environment values supply an endpoint. Catalog API metadata is authoritative.
-<code>${VAR}</code> placeholders derive required setup fields and are substituted before
-endpoint validation.</p>
-<p>An authored <code>base_url</code> requires <code>api_key</code> or <code>auth_override</code> in that same atomic
-definition unless the recipe's selected method is reviewed no-auth. It also
-requires every non-defaulted setup field in that same definition; only setup
-fields explicitly declared defaultable by the recipe may use recipe defaults.
-It cannot inherit store setup or credentials. This blocks store or replaced-user
-state from attaching to a new endpoint.</p>
-<h2 id="7-authentication-architecture">7. Authentication architecture<a class="headerlink" href="#7-authentication-architecture" title="Permanent link">&para;</a></h2>
-<p>Managed auth precedence is exact:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>same-definition api_key mapped by the recipe default method
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>&gt; same-definition auth_override
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>&gt; exact active provider-store-3 connection only without authored base_url
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>&gt; reviewed no-auth
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>&gt; unavailable
-</code></pre></div>
-<p><code>auth_override</code> and <code>api_key</code> are mutually exclusive. <code>auth_override</code> is exactly
-<code>{ method = &lt;AuthMethodId&gt;, values = { ... } }</code>; keys must exactly equal that
-auth method's credential schema. Provider <code>setup</code> is separate and owns only
-typed endpoint/resource fields. <code>api_key</code> is legal only when the recipe has one
-default auth method with exactly one required credential field classified
-<code>api_key</code>. Multiple auth methods, any additional required credential, or a
-differently classified credential is ambiguous and requires <code>auth_override</code>.</p>
-<p>Provider-store auth is considered only when there is no authored auth and no
-authored <code>base_url</code>. Its compatibility scope is provider ID, code-owned
-<code>recipe_fingerprint</code>, recipe default normalized base URL/endpoint identity,
-canonical safe setup fingerprint, and auth method/credential compatibility. For
-nested npm families, compatible methods and semantic fields are mapped explicitly
-(for example API-key to bearer API-key, or OAuth access token to bearer API-key).
-Azure Foundry models classified as <code>@ai-sdk/anthropic</code> use the package's
-<code>x-api-key</code> API-key behavior. Bedrock Converse uses SigV4 credentials, while
-nested Bedrock Mantle Responses requires a Bedrock API key as bearer material;
-models incompatible with the selected connection auth remain unavailable.
-No endpoint,
-host-family, method, provider-name, or identity fallback exists.</p>
-<p><code>source_record_digest</code> and <code>recipe_fingerprint</code> are independent secret-free
-identities. <code>source_record_digest</code> is immutable provenance: SHA-256 over the
-canonical exact validated catalog provider record selected to compile that
-runtime or manifest. <code>recipe_fingerprint</code> is compatibility: a canonical hash of
-Family registry 1 revision/schema, compiler version, selected family/adapter/
-setup/auth/endpoint identity, and catalog-derived model semantics.
-Provider store 3 persists both. A harmless catalog metadata refresh produces a
-new source-record digest but the same recipe fingerprint, so the unchanged
-stored setup and credentials remain eligible. Family, adapter, protocol, setup,
-auth, endpoint-policy, compiler, registry, or model-exception drift changes or
-quarantines the recipe identity and blocks reuse.</p>
-<p>Managed setup precedence is complete same-definition authored <code>setup</code>, then
-provider-store setup, then explicitly declared recipe defaults, then
-unavailable. An authored setup map never field-merges with store or the replaced
-user definition; it must supply every non-defaulted field, while recipe defaults
-may fill only fields declared defaultable. Provider store 3 stores normalized
-non-secret setup values and secret auth credentials plus policy/scope, exact
-source-record provenance, recipe compatibility fingerprint, generation, and
-receipt metadata. Store state revisions and connect receipt digests cover both
-fingerprints. Any non-schema-3 store, including <code>store-v2.json</code>, is rejected.
-Custom setup is authored-only and custom compilation/
-fingerprints/rehydration never depend on provider store. Every family-registry setup
-field is non-secret behavioral metadata and its normalized value participates
-directly in safe behavior/config fingerprints where relevant. Every secret or
-sensitive value belongs to auth, is excluded from fingerprints, and may rotate
-without behavior-fingerprint change. A future non-auth sensitive setup need
-requires a future schema/recipe version and independent mechanism.</p>
-<p>If a managed definition has no authored <code>setup</code> and no authored <code>base_url</code>, its
-exact stored setup may become effective. Removing authored setup, auth, and
-<code>base_url</code> on recomposition permits exact stored setup and stored auth to become
-effective. An authored <code>base_url</code> disables all stored setup and stored auth
-inheritance.</p>
-<h2 id="8-providers-and-models">8. Providers and models<a class="headerlink" href="#8-providers-and-models" title="Permanent link">&para;</a></h2>
-<p>Managed provider support is <code>npm</code>-family based. The static registry is keyed by
-the package values documented in <code>docs/provider-conformance.md</code>; unknown package
-families use <code>no_known_protocol_family</code>. Each model first applies its nested
-<code>provider { npm, api, shape }</code> override. Unknown nested families affect only that
-model. OpenAI defaults to Responses; authored provider/model shape may select
-Chat or Responses, and catalog <code>responses</code>/<code>completions</code> shapes route likewise.</p>
-<p>Capabilities are derived from catalog <code>tool_call</code>, <code>structured_output</code>,
-<code>temperature</code>, <code>reasoning</code>, <code>reasoning_options</code>, input modalities, and context/
-output limits, plus protocol-required native replay. Anthropic-compatible models
-with reasoning require native replay so signed thinking blocks survive tool-use
-continuations. Interleaved reasoning metadata selects the compatible reasoning
-field. Deprecated and non-text-output models are omitted.</p>
-<p><code>/connect</code> contains every current structurally valid/quarantined catalog provider
-with recoverable ID plus authored or store-backed managed providers absent from
-the current catalog. Removed configured providers use state <code>removed</code>; they are
-connectable only when family registry 1 still has an exact family/package/
-source recipe match retained in a prior durable connection or other validated
-safe source projection. Otherwise they remain visible with
-<code>removed_without_retained_recipe_match</code>. Custom providers never appear.</p>
-<p>For each supported managed provider, the runtime automatically includes every
-non-deprecated, text-output model that compiles honestly. Sparse model
-overrides may disable a model or alter only recipe-approved defaults, variants,
-and display text. They cannot invent an absent model, capabilities, protocol,
-auth, package, or endpoint.</p>
-<p>Custom providers manually define every model and complete honest capabilities.
-A custom model ID may contain <code>/</code>. A model key splits once at its first slash.</p>
-<h2 id="9-connect-disconnect-and-publication">9. Connect, disconnect, and publication<a class="headerlink" href="#9-connect-disconnect-and-publication" title="Permanent link">&para;</a></h2>
-<p><code>provider.connect</code> requires an expected catalog revision exactly equal to
-<code>sha256:&lt;lowercase SHA-256 digest of the exact selected body bytes&gt;</code>. It accepts current managed providers and
-configured managed providers absent from the catalog when recipe/source matching
-succeeds. Absence of a prior store record is a normal upsert.</p>
-<p>The service holds the serialized runtime-mutation lock, then the provider-store
-lock; rereads the store; assigns the final store revision, connection generation,
-and receipt into a proposed state; validates exact recipe-typed setup and auth
-fields; and compiles the complete provider/model/agent/runtime candidate against
-exactly that proposed state. Only then does one provider-store transaction write
-normalized setup, credentials, connection policy metadata, and idempotency
-receipt. After durable commit, publishing the already compiled
-<code>Arc&lt;RuntimeSnapshot&gt;</code> is an infallible atomic swap. No fallible refresh or
-revision allocation occurs between durable write and publication.</p>
-<p>The response contains <code>durable_connection</code>, <code>effective_auth_source</code>, the full
-coherent runtime snapshot, and <code>replayed</code>. A stored update never outranks
-same-definition authored auth; therefore a successful durable update may report
-effective source <code>authored_api_key</code> or <code>authored_override</code>.</p>
-<p><code>provider.disconnect</code> is managed/store-only. It removes the exact stored active
-setup and credentials with the connection and commits its receipt atomically,
-compiles before commit, then
-infallibly publishes. It never edits TOML, removes authored auth, touches custom
-providers, or deletes a different scope. Custom disconnect returns typed
-<code>custom_provider_not_store_backed</code>.</p>
-<p>Disconnect params contain provider ID, client idempotency ID, expected runtime
-and provider-state revisions, and optional expected connection generation. Same
-ID/same canonical payload replays the durable result; same ID/different payload
-is <code>idempotency_conflict</code>. An absent managed provider is a successful idempotent
-disconnect with a durable receipt. The result includes receipt, provider ID,
-<code>disconnected = true</code>, post-removal effective auth state, coherent
-<code>RuntimeSnapshotResult</code>, and <code>replayed</code>. Present removal or absent no-op plus
-receipt is one atomic store transaction after candidate compilation, followed by
-infallible publication with <code>ProviderDisconnected</code>; replay publishes nothing.</p>
-<h2 id="10-runtime-snapshot-and-notifications">10. Runtime snapshot and notifications<a class="headerlink" href="#10-runtime-snapshot-and-notifications" title="Permanent link">&para;</a></h2>
-<p>Runtime snapshot schema 3 contains the snapshot schema version, recipe registry
-revision, catalog revision/source/cache state, provider-state revision, model
-revision, provider-store generation, agent revision, aggregate runtime revision,
-provider descriptors, model descriptors, and materialized agent descriptors.
-Each model descriptor carries ID-sorted variant metadata plus a <code>variant_order</code>
-permutation containing every named variant exactly once. Base is implicit and
-precedes that list when cycling. Managed order follows catalog option traversal:
-effort values retain list order, toggles emit <code>off</code> then <code>on</code>, and token budgets
-emit minimum/automatic before maximum; duplicate generated IDs retain their
-first position. When generated toggle <code>on</code> coexists with any generated explicit
-effort or token-budget level, compilation removes <code>on</code> from the generated map
-and order as redundant. This suppression precedes managed override directives,
-so an authored addition can intentionally restore <code>on</code>. Managed authored
-additions append in directive key order, replacements retain position, and
-disables remove the position. Custom variant definitions are TOML table maps
-decoded into <code>BTreeMap</code>, so their declared semantic order is variant-ID key
-order.
-Materialized agents include authored descriptors unchanged plus the conditional
-built-in <code>default</code> descriptor when the runtime has available models but no
-root-runnable authored agent.</p>
-<p><code>runtime.snapshot.get</code> is mandatory and atomically returns the entire object.
-Protocol 9 removes legacy independently refreshed catalog/provider/model/agent
-list RPCs and list-refresh choreography. Every mutation returns the published
-snapshot. The server emits <code>runtime.changed { previous_revision, snapshot,
-reasons }</code>; Rust reason variants and wire values include
-<code>ProviderConnected</code>/<code>provider_connected</code>,
-<code>ProviderDisconnected</code>/<code>provider_disconnected</code>,
-<code>ProviderStoreChanged</code>/<code>provider_store_changed</code>, and
-<code>ProviderStoreReloaded</code>/<code>provider_store_reloaded</code>, in addition to startup,
-catalog, config, and agent reasons.</p>
-<p>The local durable connect transaction publishes <code>ProviderConnected</code>; local
-disconnect publishes <code>ProviderDisconnected</code>. Detecting another process's newer
-store generation publishes the pair <code>ProviderStoreChanged</code> and
-<code>ProviderStoreReloaded</code> after successful coherent recompilation.</p>
-<p>Provider store 3 is per-user global across workspaces. Before discovery RPCs,
-session admission, or root-run admission, the process locks and rereads the
-store generation. A changed generation blocks admission, recompiles and
-publishes a coherent runtime with both <code>ProviderStoreChanged</code> and
-<code>ProviderStoreReloaded</code>, then retries against that snapshot. Reload failure
-returns <code>provider_store_reload_failed</code>; accepted runs remain unchanged.</p>
-<h2 id="11-project-model-snapshot-manifests-and-exact-rehydration">11. Project model-snapshot manifests and exact rehydration<a class="headerlink" href="#11-project-model-snapshot-manifests-and-exact-rehydration" title="Permanent link">&para;</a></h2>
-<p>Project model-snapshot manifest schema 1 is stored only at
-<code>&lt;exact-cwd&gt;/.cookie-agent/model-snapshots/&lt;64-lowercase-hex&gt;.json</code>, with exact
-lock <code>model-snapshots-v1.lock</code>. The filename digest and manifest
-<code>revision = "sha256:&lt;digest&gt;"</code> are SHA-256 over RFC 8785 JCS bytes of the
-self-contained secret-free <code>payload</code> only; envelope schema/revision are excluded
-to avoid self-reference. Each manifest contains catalog, recipe
-registry, provider-state, and model revisions plus compiled safe blueprints.</p>
-<p>Each blueprint records exact model/variant selection, descriptor/capabilities,
-safe endpoint identity, provider/protocol/auth recipe IDs and compiler versions,
-source kind, exact source-record digest, independent recipe fingerprint,
-config-override fingerprint, credential
-binding source/method/semantic field names, normalized defaults/options/variants,
-and behavior fingerprints. Custom static header names/values are included as safe
-behavior metadata. Auth credential values, generated auth-owned header values,
-environment values, live handles, raw catalog records, and provider-native
-private payloads are forbidden.</p>
-<p>The cwd anchor need only be an actual directory and may be shared or writable;
-the <code>.cookie-agent/model-snapshots</code> subtree is current-user-owned <code>0700</code> and
-manifests/lock/temp files are current-user-owned <code>0600</code>, regular, single-link,
-descriptor-relative/no-follow, bounded, and atomically written by lock/reread,
-exclusive sibling temp, fsync, rename, and parent fsync. A manifest is durable
-before any event/session JSONL 14 record may reference its revision. Referenced manifests are
-retained for the lifetime of their sessions and delegation journals and are
-never garbage-collected; family registry 1 performs no automatic manifest GC.</p>
-<p>Startup scans direct matching filenames in sorted byte order, validates filename
-digest, strict schema, RFC-8785 reserialization/payload digest, unique blueprint
-fingerprints, and bounds, then indexes them by revision. Maps use JCS ordering;
-models/variants/setup/binding-name arrays are ID-sorted, semantically ordered
-arrays are preserved, JSON floats are forbidden, decimal domain values are
-normalized strings, integers are I-JSON-safe, and Unicode code points are
-preserved without normalization.
-Unsafe objects or malformed matching
-files fail project open. Session/journal references to absent manifests fail
-reconciliation without deleting history.</p>
-<p>Protocol-9 frozen bindings reference one manifest revision/blueprint and record
-the accepted exact selection. Their managed source carries both the immutable
-source-record provenance and recipe compatibility fingerprint. Runtime provider
-descriptors expose the safe recipe fingerprint, and persisted events/delegation
-journals retain it transitively through their exact frozen bindings. No secret
-value is stored.</p>
-<p>Credential source is frozen as <code>authored_api_key</code>, <code>authored_override</code>,
-<code>provider_store</code>, or <code>no_auth</code>. Rehydration never changes it:</p>
-<ul>
-<li>authored config sources require the current same-ID atomic provider definition
-  to have the same source kind and safe config-override fingerprint; missing or
-  changed config fails and never falls to provider store;</li>
-<li>provider-store sources require the exact managed provider, current
-  <code>recipe_fingerprint</code>, recipe endpoint policy, normalized setup values/
-  fingerprint, and auth method/shape; config is not substituted. They do not
-  require the store connection's historical <code>source_record_digest</code> to equal a
-  newly refreshed manifest's source digest;</li>
-<li>managed bindings reconstruct from persisted safe source projection only when
-  family registry 1 still has the exact family fingerprint/package/protocol/
-  compiler match. The binding and referenced blueprint must retain their own
-  exact source-record digest, but source provenance does not scope credential
-  compatibility; current catalog presence is unnecessary;</li>
-<li>custom bindings require a current <code>source = "custom"</code> definition whose safe
-  definition fingerprint exactly matches the frozen fingerprint; custom has no
-  store fallback;</li>
-<li>every reconstruction must reproduce the frozen behavior fingerprint.</li>
-</ul>
-<p>New root runs always resolve against the current coherent runtime and durably
-write/reference its manifest. A harmless catalog refresh therefore freezes the
-new source-record digest while retaining the same compatible store credentials.
-Previously accepted runs retain their older manifest/source provenance and may
-rehydrate the same store secret through the unchanged recipe/auth/setup identity.
-Delegated sessions remain pinned to the invoking parent's accepted manifest and
-frozen suffix. Once a run is accepted, catalog, config, provider-store,
-manifest-directory, or runtime changes do not reinterpret it.</p>
-<p>Typed failures leave history readable and never substitute another model:
-<code>snapshot_config_mismatch</code>, <code>snapshot_credentials_unavailable</code>,
-<code>unsupported_snapshot_recipe</code>, and <code>snapshot_rehydration_mismatch</code>.</p>
-<h2 id="12-context-compaction">12. Context compaction<a class="headerlink" href="#12-context-compaction" title="Permanent link">&para;</a></h2>
-<p>Runtime schema 10 exposes <code>context_compaction.auto</code> (default <code>true</code>),
-<code>buffer_tokens</code> (default 33,000), and <code>max_summary_bytes</code> (default 262,144).
-The effective trigger is <code>context_limit - buffer_tokens</code>, saturating at zero.
-Provider-native compaction and its authored capability are not part of the
-runtime; the Oven descriptor boundary is always frozen as unsupported.</p>
-<p>Two automatic signals feed one compaction path. The real-usage signal compares
-the latest committed turn's <code>input_tokens + output_tokens</code> with the effective
-trigger. The pre-send predictor retains the learned per-session tokens-per-byte
-ratio: after a committed turn, nonzero reported input tokens divided by the exact
-serialized history byte length replaces the ratio. At pending-input promotion,
-each input is projected in admission order against the same effective trigger;
-on crossing, compaction commits before any input in that promotion batch is
-submitted. A committed checkpoint resets the estimator baseline to its estimated
-post-compaction input size while preserving the learned ratio. A zero ratio does
-not predict. <code>auto = false</code> disables both automatic
-signals, while forced compaction and context-overflow recovery remain available.</p>
-<p>Compaction first stages old bulky completed tool outputs. Results attached to
-the newest two model turns are protected. Older outputs of at least 8 KiB are
-retained in the artifact store and represented in model history as
-<code>[tool output elided; retained at &lt;artifact-uri&gt;; &lt;original-bytes&gt; bytes]</code> via a
-durable <code>ToolOutputElided</code> event. Elision occurs only after a complete tool
-call/result pair and checkpoint boundaries never split the pair. If the reduced
-request estimate is below the trigger, automatic compaction stops without a
-paid summarizer call.</p>
-<p>The summarizer request is a fork of the exact next normal request: the assembled
-system prompt and history are unchanged, the same tool definitions remain, and
-one fixed detailed-summary user instruction is appended last. This compaction
-fork is the sole exception to the structural no-tools rule so its request prefix
-is byte-identical and cacheable. Any returned tool call or other non-text part is
-invalid internal-agent output and is never dispatched. Optional forced-focus
-text is appended only after the fixed instruction.
-The TUI <code>/compact [focus]</code> command calls strict <code>session.compact</code> for the
-selected idle session; its RPC focus field is required, nullable, and bounded.
-Manual, start-time predictive, and promotion-time predictive compaction reserve
-the session inside its actor, then run provider and tool futures outside the
-actor. While reserved, concurrent run starts and explicit compaction are
-rejected, but steering and recall remain cheap serialized actor appends. A steer
-is therefore admitted during compaction and is included before reservation
-release; promotion commits only after the checkpoint and replays the lane again
-so recalls during compaction are honored. This preserves pre-send/checkpoint
-ordering without blocking model stream appends, input admission, recall, or
-cancellation behind a slow summarizer. Manual compaction uses
-the run's persisted active fallback index when resolving <code>${parent_model}</code>.
-Barrier-sensitive <code>PromptSnapshot</code>, <code>PromotePendingOrComplete</code>, and <code>Resume</code> commands
-wait behind that completion barrier. The deferred set is bounded to one command
-of each kind and retains FIFO order among those first surviving commands. A
-duplicate snapshot or resume receives the same session-running retry signal used
-by competing start/compact requests, while a duplicate completion reports that it
-did not complete the run. Keeping the first command prevents a later observer
-from displacing the model loop's already-queued context barrier.
-For start-time prediction, the durable <code>RunStarted</code> event and the real active-run
-cancellation token are installed before the summarizer starts. Cancellation is
-therefore accepted during prediction, aborts the internal agent, records
-<code>RunCancelled</code>, and prevents the pending initial user input from being appended.</p>
-<p>The validated summary replaces the covered range as one user turn. The system
-turn remains index zero. The framing is frozen as
-<code>This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n&lt;summary&gt;\n{summary}\n&lt;/summary&gt;\n\nPlease continue the conversation from where we left off without asking the user any further questions.</code>
-Pending input remains after the checkpoint. Commit validation keeps monotonic
-boundaries and requires strict estimated shrinkage.</p>
-<p>After commit, the engine scans completed tool lifecycles newest-first and trusts
-only paths from persisted assistant tool-call parts whose exact originating tool
-identity is <code>read</code>. Up to five distinct candidates are re-prepared through the
-normal read provider, evaluated by the frozen permission pipeline, and executed
-through the prepared capability so path or symlink changes fail closed. Each
-readable UTF-8 file is capped at 32 KiB and the aggregate is capped at 128 KiB.
-Denied, changed, missing, unreadable, and non-UTF-8 files are skipped.
-<code>ContextRehydrated</code> durably records the bounded content; history projects it as
-ordinary synthetic <code>read</code> tool calls and tool results after the summary turn.</p>
-<p>A provider <code>ContextLength</code> failure with no meaningful output abandons the
-attempt, forces this same compaction path, and retries the turn exactly once; a
-second overflow is surfaced. After a checkpoint, the first later real-usage
-sample is the anti-thrash check. If it remains at or above the trigger,
-automatic compaction is latched off in memory for that session and a durable,
-user-visible <code>ContextCompactionAutoDisabled</code> notice is emitted. Forced/manual
-compaction remains available.</p>
-<h2 id="13-normative-startup-order">13. Normative startup order<a class="headerlink" href="#13-normative-startup-order" title="Permanent link">&para;</a></h2>
-<p>Startup order is frozen and must not be reordered:</p>
-<ol>
-<li><strong>Schema 10 and agents:</strong> securely open roots, load family registry 1, then
-   strictly load atomic config schema 10 and agent schema 4 documents.</li>
-<li><strong>Catalog:</strong> securely open cache schema 2, perform the bounded identity-only
-   network request, then select network, validated cache, or bundled bootstrap
-   and apply record quarantine.</li>
-<li><strong>Provider store:</strong> lock and load provider store 3 and its generation.</li>
-<li><strong>Effective providers:</strong> combine authored definitions, global stored managed
-   connections, catalog metadata, and code-owned recipes.</li>
-<li><strong>Coherent runtime:</strong> compile all effective providers/models/authored agents;
-   if models are available but no authored agent is root-runnable, synthesize
-   built-in <code>default</code>; then build one runtime snapshot 1. An empty effective
-   model set is valid.</li>
-<li><strong>Project manifests:</strong> scan/validate model-snapshot manifests 1 and rehydrate
-   every referenced safe blueprint needed by project sessions.</li>
-<li><strong>Engine:</strong> open version-11 session/event state and version-9 delegation state and reconcile it
-   against the manifest index; accepted/delegated bindings stay pinned.</li>
-<li><strong>Service:</strong> atomically publish runtime, open server/TUI, then emit startup
-   <code>runtime.changed</code>.</li>
-</ol>
-<p>Any failure before step 8 opens no server/TUI except the documented usable
-catalog fallback paths. Cross-process provider-store generation reconciliation
-is mandatory again before discovery, session admission, and root-run admission.</p>
-<h2 id="14-tui-contract">14. TUI contract<a class="headerlink" href="#14-tui-contract" title="Permanent link">&para;</a></h2>
-<p>The TUI consumes only runtime snapshot schema 3 and <code>runtime.changed</code>. Required
-global/row states are:</p>
-<p>Within the transcript, one assistant block spans all model attempts in one run;
-its header is frozen from the first attempt, and a mid-run resolved-model change
-adds a subtle inline <code>now using …</code> row. Committed turn content supersedes its
-streamed deltas, while abandoned attempts contribute no durable text or
-thinking content. The TUI state model represents these boundaries with
-<code>AssistantChild::Attribution</code>, and committed tool placeholders carry
-<code>CommittedTool.turn_seq</code> alongside their content index so tools from different
-turns cannot alias. A completed block closes with one muted, passive footer row
-(<code>╰─ ⚡ 42.0 tps · 12.5K ctx</code>): committed output tokens over generation wall
-time measured between durable event timestamps (the input-closing event at
-<code>input_through_seq</code> and the commit itself, so replays render identically), and
-the last committed turn's end-of-turn context (<code>input_tokens + output_tokens</code>)
-in the bottom bar's K convention.
-Blocks without usage data or a positive generation span render no footer.</p>
-<ul>
-<li><code>loading</code>: no snapshot yet; controls disabled;</li>
-<li><code>empty</code>: after authored providers and global store records are applied, a valid
-  snapshot has zero available models. The
-  Message model/draft display is exactly <code>type /connect to continue</code>; it has no
-  Model or Variant hit region, ordinary text/run submission is blocked with the
-  same guidance, and <code>/connect</code> remains accepted;</li>
-<li><code>ready</code>: live or not-modified catalog selected with no unresolved global error;</li>
-<li><code>stale</code>: validated cache used after refresh failure; existing rows remain
-  usable and a durable global explanation names the safe error/time;</li>
-<li><code>bootstrap</code>: bundled catalog used; durable global explanation remains visible;</li>
-<li><code>unsupported</code>: row has typed unsupported reason; Enter opens details only and
-  never starts connect;</li>
-<li><code>disconnected</code>: supported managed row lacks complete effective setup and/or
-  auth; Enter opens separate public setup and secret credential controls from
-  recipe descriptors;</li>
-<li><code>connected-reconnect</code>: effective stored state exists; Enter opens reconnect/
-  update with public setup prefilled and secret credentials blank; disconnect
-  removes both stored setup and credentials;</li>
-<li><code>removed</code>: configured managed provider or retained session model is absent
-  from current catalog; details explain whether recipe-matched connect or session
-  rehydration is available;</li>
-<li><code>error-retry</code>: no runtime snapshot or an operation failed without a usable
-  fallback; Enter/retry performs the explicit operation.</li>
-</ul>
-<p>Global stale/bootstrap/error explanations are durable application state, not
-toasts, and remain visible across picker navigation until a newer snapshot
-clears or replaces them. Active frozen runs never mutate on refresh/connect/
-disconnect. Unsupported Enter is details-only.</p>
-<p><code>loading</code>, <code>empty</code>, and <code>error-retry</code> are distinct: loading has no snapshot;
-empty has a valid coherent zero-model snapshot and no runnable draft; error-retry has no
-usable snapshot or a failed explicit operation. After connect publishes a
-coherent snapshot with any available model, an authored root-runnable agent or
-the synthetic built-in <code>default</code> supplies normal structured draft attribution
-and activates Model/Variant hit regions. No model is fabricated; authored
-fallbacks remain unresolved and unchanged.</p>
-<p>The built-in <code>default</code> agent has source <code>built_in</code>, mode <code>primary</code>, the standard
-coding tools (<code>read</code>, <code>write</code>, <code>edit</code>, <code>bash</code>), no delegation
-targets, and the same action-keyed ordered permission map as authored agents.
-Workspace reads are allowed; outside reads, write/edit, bash, and delegate ask;
-reads of <code>.env</code> variants, <code>store-v3.json</code>, <code>token-v1</code>, <code>id_*</code>, <code>.netrc</code>, and
-<code>application_default_credentials.json</code> are denied, with the existing exact
-<code>.env.example</code> read exceptions. <code>default</code> is a reserved authored-agent ID.</p>
-<p><code>/connect</code> always displays the exact durable copy
-<code>Stored setup, connections, and credentials are per-user and shared across workspaces.</code>
-Stored setup is non-secret and projected only where recipe policy permits;
-credential values remain secret/redacted.
-The provider picker renders a reusable, focused single-line <code>Search</code> input
-above the provider list and filters every visible provider state by
-case-insensitive substring over display name and provider ID. The input accepts
-Unicode key and paste events; Left/Right and Home/End move its grapheme-safe
-cursor, Backspace/Delete edit at the cursor, and Ctrl-U clears it. Down, Tab,
-or Enter transfers focus from input to results; Up from the first result,
-BackTab, or Esc transfers focus back to input. Enter activates only a focused
-matching result, and Esc from the input closes the picker and clears the query.
-The list title shows filtered/total count, a new <code>/connect</code> always starts with
-the full unfiltered list and input focus, and an empty result is rendered
-explicitly with no selected row.
-The provider connect form has one focus order: a selectable auth-method row
-when multiple descriptor methods exist, the selected method's credential input
-boxes, every projected setup input box, and Submit. A sole auth method is
-displayed read-only. Left/Right or Space cycles a focused method and
-best-effort wipes/rebuilds its credential buffers so values never cross method
-boundaries. Tab/Down and Shift-Tab/Up traverse the form; Enter dispatches the
-form from every focus position, matching Submit; Esc cancels and wipes
-secret-bearing buffers. Pointer interaction mirrors the same contract: clicking a credential
-or setup box focuses it and places its cursor at the clicked cell, clicking the
-auth-method row cycles the method with the same wipe/rebuild, clicking Submit
-dispatches, and hovered controls highlight without moving focus. All boxes use
-the shared grapheme-safe input state and accept Unicode
-typing and paste, cursor movement, Backspace/Delete, and Ctrl-U. Credential
-values and setup descriptors with <code>safe_to_project = false</code> are bullet-masked;
-the latter includes recipe-projected KEY/TOKEN/SECRET placeholder fields.
-Connect is store-and-go and performs no TUI-side provider request or credential
-test. The form states <code>Credentials are verified on first use.</code> because validity
-is exercised only when a conversation invokes the provider. Client-side
-validation failures keep the form open with the modal and focus unchanged and
-surface the error inline until the next edit, auth-method change, or submit
-attempt. A failed connect
-RPC opens a persistent full-message error state rather than a transient notice;
-Esc returns to the retained form for correction and retry. Public setup inputs
-remain populated, while credential and secret-classified setup inputs are
-best-effort wiped when the request is dispatched. User-facing JSON-RPC error
-formatting includes the RPC code/message and only scalar <code>data.code</code> and
-<code>data.message</code> fields; arbitrary error data remains redacted.
-Connect/disconnect changes become visible to other workspace daemons through
-provider-store generation reconciliation.</p>
-<h3 id="141-live-per-session-permission-mode">14.1 Live per-session permission mode<a class="headerlink" href="#141-live-per-session-permission-mode" title="Permanent link">&para;</a></h3>
-<p>Every session has a live permission mode, defaulting to <code>auto_approve</code> when no
-explicit value has been set. <code>auto_approve</code> invokes the stateless approval
-classifier and escalates when that agent asks, emits malformed output, times out,
-or fails. <code>ask</code> skips the internal
-approval agent and routes every policy-ask or model-requested approval through
-the durable escalation transaction and user modal. <code>yolo</code> skips both the
-internal agent and escalation, durably appends <code>ApprovalEvaluated { allow,
-source: policy, reason_code: yolo_approved }</code> followed by
-<code>ApprovalFinalized { approved, source: policy, reason_code: yolo_approved }</code>,
-and resolves the operation immediately. <code>policy</code> is the decision source because
-the mode is a live policy override rather than an internal-agent or user
-decision; protocol coherence permits <code>yolo_approved</code> only for policy-sourced
-Allow/Approved decisions.</p>
-<p>The mode short-circuit occurs inside <code>Engine::await_user_approval</code> only after
-the doom-loop guard, prior tree-grant lookup, and hard policy-deny evaluation.
-Consequently deny rules and doom-loop rejection take precedence under every
-mode. Existing pending user escalations are unaffected by a later mode change;
-the new value applies to subsequent approval evaluations immediately. Modes are
-keyed by the approval's own session ID. A delegated session therefore uses its
-own default or explicitly set mode, and a root session's mode never cascades.</p>
-<p>The JSON-RPC method <code>session.set_permission_mode</code> accepts
-<code>{ session_id, mode }</code>, where <code>mode</code> is <code>auto_approve</code>, <code>ask</code>, or <code>yolo</code>, and
-returns an empty success object. The engine validates that the session exists
-before updating its live in-memory mode. The TUI mirrors values per session for
-display while the engine remains authoritative. Its bottom bar renders the
-clickable mode immediately left of context usage, for example
-"auto-approve    ctx 48.2K (24%)    <code>ctrl+p</code> commands", and clicking cycles
-<code>auto-approve → ask → yolo → auto-approve</code>. The context value is the
-end-of-turn total (<code>input_tokens + output_tokens</code>) of the latest committed
-turn, hidden when the turn reported no usage, with the percentage taken
-against the model context limit. Narrow layouts remove the command
-hint, percentage, and context value in that order while retaining the mode
-control; the working-directory field truncates into the remaining left space.</p>
-<h3 id="142-pending-input-lane-strip">14.2 Pending-input lane strip<a class="headerlink" href="#142-pending-input-lane-strip" title="Permanent link">&para;</a></h3>
-<p>A prompt submitted while a run is active takes the <code>run.steer</code> path. The engine
-admits steered inputs into a per-session pending-input lane (admission succeeds
-even while a compaction reservation is held) and reports the lane through
-events: <code>UserInputAdmitted { input }</code> adds a pending entry,
-<code>UserInputSubmitted { input }</code> promotes one to the model-facing log (the
-transcript user row renders here, as always), and <code>UserInputRecalled { input }</code>
-withdraws one. The TUI reduces these into <code>SessionState.pending_inputs</code>
-(text + durable admission timestamp) as a pure event projection — no
-client-side FIFO text-matching and no send-retry logic — so live streams and
-replays build the lane identically. The reduction is strictly positional,
-mirroring the engine's own replay: promotion pops the oldest entry,
-recall pops the newest, and payload text is never consulted. A steer that
-fails at the transport level restores its text into the composer (parked
-per session when another session is being viewed).</p>
-<p>While a session's lane is non-empty, a strip renders between the conversation
-pane and the status line; its rows are reclaimed from the conversation like
-composer growth, the status line and composer stay pinned, and the
-conversation keeps at least one row. The strip is a bordered block in the
-standard panel chrome (crust border, muted text) titled
-<code>Pending · oldest &lt;age&gt;</code> with a coarse age label (<code>&lt;1m</code>, <code>Nm</code>, <code>Nh</code>). Each
-entry is one ellipsized, newline-flattened line with a 1-based index and a
-muted <code>⏳</code>; at most three text rows show, with overflow folded into a <code>+N more</code>
-row. The strip's meaning is exactly "the model has not seen this yet".</p>
-<p>Entry rows are hoverable and clickable because recall is a real action:
-clicking any row, or pressing Up in an empty composer with a non-empty lane,
-calls <code>run.recall_steer { run_id }</code>, which withdraws the engine's newest
-pending input and returns its text. The returned text restores into the
-composer for editing (parked per session if another session is being viewed,
-restored on selection); the <code>UserInputRecalled</code> event removes the entry from
-the strip itself. A <code>recalled: null</code> result means the lane raced ahead (a
-promotion landed first) and only updates the status.</p>
-<p>Run end (completed, failed, cancelled, interrupted) voids any still-pending
-inputs without per-entry events. The reducer moves their text aside into
-<code>SessionState.voided_inputs</code>, the strip clears, and the UI drains the voided
-text into the composer the moment its session is viewed — user text is never
-silently lost.</p>
-<h3 id="143-user-message-action-menu">14.3 User-message action menu<a class="headerlink" href="#143-user-message-action-menu" title="Permanent link">&para;</a></h3>
-<p>Clicking a past <code>USER</code> row opens the message action menu; assistant and tool
-rows never open it and keep their expand/collapse toggle. The menu is a
-small picker-style modal with three rows, driven by keyboard (↑↓/enter/esc
-plus the <code>c</code>/<code>r</code>/<code>f</code> accelerators) and clickable, hoverable rows:</p>
-<ul>
-<li><strong>copy</strong> sends the raw message text to the clipboard (§14.4).</li>
-<li><strong>revert</strong> is confirm-guarded. Confirming calls
-  <code>session.revert { session_id, through_seq = seq - 1 }</code>, rolling the
-  visible branch back to just before the message — the message and every
-  later turn leave the visible branch while the append-only log is kept.
-  On success the message text restores into the composer for editing and
-  resending (parked per session when another session is being viewed).
-  The transcript rebuild rides the <code>SessionReverted</code> event; the tree
-  refreshes because title, status, and usage are branch-derived.</li>
-<li><strong>fork</strong> calls <code>session.fork { session_id, through_seq = seq }</code>, keeping
-  the message inside the copied prefix, then selects the new session
-  (rerooting when it lies outside the current tree).</li>
-</ul>
-<p>The menu targets the physical sequence stored on the transcript item
-(<code>TranscriptItem::User.seq</code>, the <code>UserInputSubmitted</code> sequence) and captures
-the message text when the menu opens, so a concurrent rebuild can neither
-retarget the action nor change what copy/revert operate on.</p>
-<h3 id="144-mouse-text-selection-and-clipboard">14.4 Mouse text selection and clipboard<a class="headerlink" href="#144-mouse-text-selection-and-clipboard" title="Permanent link">&para;</a></h3>
-<p>A left-button press inside the conversation viewport or the composer text
-rect becomes a pending press; motion beyond one cell promotes it to a text
-selection, and a release without promotion dispatches the plain click
-(block toggles, the message menu, cursor placement) exactly as before.
-Scrollbar presses and overlays never start a selection; overlay ownership
-is read from state (modal, palette, approval), not from stale hit
-geometry, so a panel that opened since the last frame still owns its
-presses. Selections are stored in content coordinates — conversation
-<code>(logical line, display column)</code> into the rendered lines, composer buffer
-bytes — so they survive scrolling while held. The highlight is a pure
-cell-style patch over the rendered cells in the themed <code>text_selection</code>
-wash: background-only where subtle color exists (ANSI-256, true color), so
-foregrounds and code highlighting are preserved, and visually distinct
-from the keyboard <code>selected</code> row. ANSI-16 and high-contrast targets are
-the one exception: their text is always a bright color that a light wash
-would swallow, so the wash is pinned to a fixed black-on-light-cyan pair
-there. No-color targets use bold reverse video.</p>
-<p><code>ctrl+c</code> copies the selection and clears it; with no selection it keeps
-its run-cancel meaning. In the composer, <code>ctrl+x</code> additionally cuts the
-selected bytes from the draft. Esc or any plain press clears the
-selection without side effects; that Esc does not count toward the
-double-Esc run cancel.</p>
-<p>Extraction maps the coordinates back to real text, one copied line per
-rendered row. Conversation rows strip exactly their gutter spans (role
-gutters, quote bars, wrap continuations, narrow-mode tags). A row vanishes
-when it is gutterless header/border chrome (role headers, attribution,
-footers) or when every remaining span carries the code/table border
-signature (fence headers, table grids). The signature is the border's
-foreground <em>and</em> full added-modifier set, compared exactly: the parchment
-band only patches backgrounds, and in high contrast syntect's quantized
-plain-code foreground equals the border's white, so only the border's
-DIM|BOLD set — which syntect never emits — keeps single-color code rows
-from vanishing as chrome. Copied code is therefore the raw source with no
-band or glyph chrome, blank rows inside the range stay as paragraph
-breaks, and leading/trailing blanks drop. The composer leg slices the
-draft buffer between the mapped byte offsets.</p>
-<p>The clipboard write is an OSC 52 escape (<code>ESC ] 52 ; c ; &lt;base64&gt; BEL</code>)
-emitted to the terminal: no platform dependency, and it works over SSH
-because the terminal emulator — not the remote host — owns the clipboard.
-Terminals without OSC 52 support ignore the sequence; neither arboard nor
-copypasta is carried. Copy feedback is a status-line note.</p>
-<h2 id="15-validation-ownership">15. Validation ownership<a class="headerlink" href="#15-validation-ownership" title="Permanent link">&para;</a></h2>
-<p>Required validation covers every version rejection, secure file mode/ownership/
-link attack, exact startup order, identity-only streamed 16 MiB acquisition,
-ETag and stale/error metadata, candidate versus exact-record quarantine,
-strict root <code>providers</code>/<code>models</code> roles and cross-references, bundled/live npm/API/
-env/model-override metadata, Vertex family rejection, atomic provider replacement,
-separate provider setup schemas and auth methods, complete custom-model validation, endpoint/auth
-precedence, all-input-query rejection, connect/disconnect absent/replay/conflict
-transactions, cross-process store-generation reload, infallible publication,
-coherent notifications, RFC-8785 manifest digest/ordering/mismatch/retention/
-rehydration, slash-containing IDs, frozen credential-source rehydration, and
-every TUI state.</p>
-<p>TUI validation must exercise the actual rendered/input buffer and hit map, not
-only helper strings: absent/empty provider TOML plus empty provider store and no
-effective custom provider; nonempty store with empty TOML; zero-model snapshot;
-byte-exact guidance; no Model/Variant target; blocked ordinary submission with
-no run RPC; accepted <code>/connect</code>; all-provider discovery RPC; and guidance removal
-after a coherent model-bearing refresh, including selection of synthetic
-<code>default</code> when authored agents are absent or unrunnable. Engine tests must prove
-the synthetic agent's iff trigger, reserved ID, first-available/default-variant
-fallback, disappearance when an authored agent is runnable, permissions/source,
-and successful session admission. Connect tests must cover recipe-derived setup
-and auth descriptors, multi-method selection and per-method credential resets,
-boxed public/secret controls, masking, Unicode input, focus traversal, submit and
-cancel behavior, persistent full connect errors with public-value retry state,
-first-use verification copy, defaults, missing/extra rejection,
-absent-provider upsert, reconnect replacement, cross-workspace setup persistence,
-and disconnect removal of setup plus credentials. Server tests must prove empty
-zero-model startup and typed run rejection without <code>runtime providers must be
-nonempty</code>.</p>
+<p>Project model-snapshot manifests live inside the workspace at
+<code>.cookie-agent/model-snapshots/</code> and are the only per-project engine state the
+workspace owns.</p>
+<h2 id="protocol-surface">Protocol surface<a class="headerlink" href="#protocol-surface" title="Permanent link">&para;</a></h2>
+<p>The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
+an authenticated WebSocket at <code>/ws</code>, protocol 9 current-only, <code>handshake</code> first.
+Discovery is a single <code>runtime.snapshot.get</code> call that returns one coherent
+runtime snapshot (schema 3). Session events stream through <code>events.subscribe</code>
+and tool output streams through separate snapshot/delta/gap notifications.</p>
+<p>What moved is where the mechanics live: handshake, request/response
+correlation, notification demux, replay/gap recovery, and shutdown are now
+implemented once in the <code>protocol</code> crate and shared by the server, the TUI, and
+the CLI.</p>
+<p>See <a href="../reference/protocol/">Protocol</a>, <a href="../reference/events/">Events</a>, and
+<a href="../reference/schemas/">Schemas</a> for the wire details.</p>
 
 
 
