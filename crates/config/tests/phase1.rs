@@ -25,7 +25,7 @@ fn write_agent(root: &Path, name: &str, text: &str) {
 
 fn agent(description: &str, fallback: &str) -> String {
     format!(
-        "---\nschema: 3\ndescription: {description}\nmode: primary\nenabled: true\nmodel_fallback: {fallback}\ntools: []\npermissions: {{}}\n---\nPrompt.\n"
+        "---\nschema: 4\ndescription: {description}\nmode: primary\nenabled: true\nmodel_fallback: {fallback}\ntools: []\npermissions: {{}}\n---\nPrompt.\n"
     )
 }
 
@@ -143,7 +143,7 @@ fn schema10_adds_buffered_auto_compaction_and_rejects_schema9() {
 }
 
 #[test]
-fn agent_schema_three_internal_mode_and_parent_model_are_strict() {
+fn agent_schema_four_internal_mode_and_parent_model_are_strict() {
     let temp = TempDir::new().unwrap();
 
     let old = temp.path().join("old-agent");
@@ -151,7 +151,7 @@ fn agent_schema_three_internal_mode_and_parent_model_are_strict() {
     write_agent(
         &old,
         "old.md",
-        "---\nschema: 2\ndescription: Old\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/model\" }]\ntools: []\npermissions: {}\n---\nOld.\n",
+        "---\nschema: 3\ndescription: Old\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/model\" }]\ntools: []\npermissions: {}\n---\nOld.\n",
     );
     assert!(matches!(
         load_from_roots(None, Some(&old)),
@@ -163,7 +163,7 @@ fn agent_schema_three_internal_mode_and_parent_model_are_strict() {
     write_agent(
         &normal_parent,
         "normal.md",
-        "---\nschema: 3\ndescription: Normal\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\ntools: []\npermissions: {}\n---\nNormal.\n",
+        "---\nschema: 4\ndescription: Normal\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\ntools: []\npermissions: {}\n---\nNormal.\n",
     );
     assert!(matches!(
         load_from_roots(None, Some(&normal_parent)),
@@ -178,7 +178,7 @@ fn agent_schema_three_internal_mode_and_parent_model_are_strict() {
     write_agent(
         &legacy_type,
         "legacy.md",
-        "---\nschema: 3\ntype: internal\ndescription: Legacy\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/model\" }]\ntools: []\npermissions: {}\n---\nLegacy.\n",
+        "---\nschema: 4\ntype: internal\ndescription: Legacy\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/model\" }]\ntools: []\npermissions: {}\n---\nLegacy.\n",
     );
     assert!(matches!(
         load_from_roots(None, Some(&legacy_type)),
@@ -190,7 +190,7 @@ fn agent_schema_three_internal_mode_and_parent_model_are_strict() {
     write_agent(
         &internal,
         "approval.md",
-        "---\nschema: 3\ndescription: Internal approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1000, max_input_tokens: 2000, max_output_tokens: 100 }\ntools: [bash]\npermissions: {}\n---\nApprove safely.\n",
+        "---\nschema: 4\ndescription: Internal approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1000, max_input_tokens: 2000, max_output_tokens: 100 }\ntools: [bash]\npermissions: {}\n---\nApprove safely.\n",
     );
     let loaded = load_from_roots(None, Some(&internal)).unwrap();
     let approval = loaded
@@ -207,12 +207,12 @@ fn agent_schema_three_internal_mode_and_parent_model_are_strict() {
     write_agent(
         &delegation,
         "approval.md",
-        "---\nschema: 3\ndescription: Internal approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\ntools: []\npermissions: {}\n---\nApprove.\n",
+        "---\nschema: 4\ndescription: Internal approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\ntools: []\npermissions: {}\n---\nApprove.\n",
     );
     write_agent(
         &delegation,
         "primary.md",
-        "---\nschema: 3\ndescription: Primary\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/model\" }]\ntools: []\npermissions:\n  delegate:\n    approval: allow\n---\nPrimary.\n",
+        "---\nschema: 4\ndescription: Primary\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/model\" }]\ntools: []\npermissions:\n  delegate:\n    approval: allow\n---\nPrimary.\n",
     );
     assert!(matches!(
         load_from_roots(None, Some(&delegation)),

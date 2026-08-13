@@ -143,7 +143,7 @@
         },
         "schema": {
           "type": "integer",
-          "const": 3
+          "const": 4
         },
         "selected_suffix_start": {
           "type": "integer",
@@ -381,7 +381,8 @@
           "items": {
             "$ref": "#/$defs/ApprovalEvaluation"
           },
-          "maxItems": 256
+          "maxItems": 256,
+          "minItems": 1
         },
         "reason_code": {
           "$ref": "#/$defs/ApprovalReasonCode"
@@ -449,7 +450,8 @@
           "items": {
             "$ref": "#/$defs/ApprovalEvaluation"
           },
-          "maxItems": 256
+          "maxItems": 256,
+          "minItems": 1
         },
         "operation": {
           "$ref": "#/$defs/PreparedOperationIdentity"
@@ -482,7 +484,6 @@
       "enum": [
         "primary_operation",
         "secondary_operation",
-        "external_directory_guard",
         "model_request",
         "doom_loop_guard"
       ]
@@ -2990,10 +2991,7 @@
         "read",
         "write",
         "bash",
-        "grep",
-        "glob",
-        "delegate",
-        "external_directory"
+        "delegate"
       ]
     },
     "PermissionEffect": {
@@ -3728,7 +3726,8 @@
           "items": {
             "$ref": "#/$defs/PreparedApprovalResource"
           },
-          "maxItems": 256
+          "maxItems": 256,
+          "minItems": 1
         }
       },
       "additionalProperties": false,
@@ -4650,7 +4649,7 @@
       "properties": {
         "event_schema_version": {
           "type": "integer",
-          "const": 12
+          "const": 13
         },
         "payload": {
           "$ref": "#/$defs/EventPayload"
@@ -4785,9 +4784,7 @@
         "read",
         "write",
         "edit",
-        "bash",
-        "grep",
-        "glob"
+        "bash"
       ]
     },
     "ToolOutputTruncation": {
@@ -4854,7 +4851,8 @@
           "items": {
             "$ref": "#/$defs/PreparedApprovalResource"
           },
-          "maxItems": 256
+          "maxItems": 256,
+          "minItems": 1
         },
         "root_session_id": {
           "type": "string",

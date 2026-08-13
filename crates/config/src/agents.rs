@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AgentDocument, ConfigError};
 
-const AGENT_SCHEMA: u32 = 3;
+const AGENT_SCHEMA: u32 = 4;
 const MAX_LIST: usize = 256;
 pub const BUILT_IN_DEFAULT_AGENT_ID: &str = "default";
 pub const BUILT_IN_APPROVAL_AGENT_ID: &str = "approval";
@@ -14,7 +14,7 @@ pub const BUILT_IN_COMPACTION_AGENT_ID: &str = "compaction";
 pub const BUILT_IN_TITLE_AGENT_ID: &str = "title";
 pub const PARENT_MODEL_EXPRESSION: &str = "${parent_model}";
 
-/// Exact schema-3 agent marker.
+/// Exact schema-4 agent marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct AgentSchemaVersion;
 
@@ -27,7 +27,7 @@ impl<'de> Deserialize<'de> for AgentSchemaVersion {
         if value == AGENT_SCHEMA {
             Ok(Self)
         } else {
-            Err(serde::de::Error::custom("agent schema must be exactly 3"))
+            Err(serde::de::Error::custom("agent schema must be exactly 4"))
         }
     }
 }
@@ -48,8 +48,6 @@ pub enum ToolName {
     Write,
     Edit,
     Bash,
-    Grep,
-    Glob,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -58,10 +56,7 @@ pub enum PermissionAction {
     Read,
     Write,
     Bash,
-    Grep,
-    Glob,
     Delegate,
-    ExternalDirectory,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -428,14 +423,13 @@ fn validate_agent_document(
         }
     }
     for (action, value) in &frontmatter.permissions {
-        if !matches!(
-            action,
-            PermissionAction::Read | PermissionAction::Write | PermissionAction::ExternalDirectory
-        ) && value.rules(*action).iter().any(|rule| {
-            rule.resource
-                .as_str()
-                .contains(WildcardPattern::WORKSPACE_DIR_EXPRESSION)
-        }) {
+        if !matches!(action, PermissionAction::Read | PermissionAction::Write)
+            && value.rules(*action).iter().any(|rule| {
+                rule.resource
+                    .as_str()
+                    .contains(WildcardPattern::WORKSPACE_DIR_EXPRESSION)
+            })
+        {
             return Err(ConfigError::AgentPermissionExpression(document.id.clone()));
         }
     }

@@ -249,8 +249,6 @@ fn built_in_default_document(selection: &ModelSelection) -> Result<AgentDocument
         limits: AgentLimits::default(),
         tools: vec![
             ConfigToolName::Read,
-            ConfigToolName::Grep,
-            ConfigToolName::Glob,
             ConfigToolName::Write,
             ConfigToolName::Edit,
             ConfigToolName::Bash,
@@ -285,16 +283,10 @@ fn built_in_default_permissions() -> Result<IndexMap<PermissionAction, Permissio
 {
     let definitions = [
         (PermissionAction::Read, "*?*", PermissionEffect::Allow),
-        (PermissionAction::Grep, "*", PermissionEffect::Deny),
-        (PermissionAction::Glob, "*", PermissionEffect::Deny),
         (PermissionAction::Write, "*", PermissionEffect::Ask),
         (PermissionAction::Bash, "*", PermissionEffect::Ask),
         (PermissionAction::Delegate, "*", PermissionEffect::Ask),
-        (
-            PermissionAction::ExternalDirectory,
-            "*",
-            PermissionEffect::Ask,
-        ),
+        (PermissionAction::Read, "/*", PermissionEffect::Ask),
         (PermissionAction::Read, ".env", PermissionEffect::Deny),
         (PermissionAction::Read, "*/.env", PermissionEffect::Deny),
         (PermissionAction::Read, ".env.*", PermissionEffect::Deny),
@@ -391,7 +383,5 @@ fn wire_tool(tool: cookie_agent_config::ToolName) -> ToolName {
         cookie_agent_config::ToolName::Write => ToolName::Write,
         cookie_agent_config::ToolName::Edit => ToolName::Edit,
         cookie_agent_config::ToolName::Bash => ToolName::Bash,
-        cookie_agent_config::ToolName::Grep => ToolName::Grep,
-        cookie_agent_config::ToolName::Glob => ToolName::Glob,
     }
 }

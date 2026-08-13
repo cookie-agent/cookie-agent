@@ -360,8 +360,7 @@ impl Engine {
                         arguments: serde_json::json!({
                             "filePath": display_path,
                             "limit": null,
-                            "offset": null,
-                            "byteOffset": null
+                            "offset": null
                         }),
                     },
                     input.owner_policy,

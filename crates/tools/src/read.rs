@@ -19,19 +19,17 @@ pub struct ReadTool {
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ReadArgs {
     #[serde(rename = "filePath")]
     file_path: String,
     limit: Option<usize>,
     offset: Option<usize>,
-    #[serde(rename = "byteOffset")]
-    byte_offset: Option<usize>,
 }
 
 struct ReadExecutor {
     target: fs_cap::PreparedExisting,
     offset: usize,
-    byte_offset: usize,
     limit: usize,
 }
 
@@ -60,6 +58,33 @@ impl ToolProvider for ReadTool {
         }])
     }
 
+    fn get_primary_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        if name != "read" {
+            return Err(ToolError::execution("read provider received another tool"));
+        }
+        let args: ReadArgs = parse_args("read", arguments.clone())?;
+        if args.file_path.is_empty() {
+            return Err(ToolError::execution("filePath must not be empty"));
+        }
+        Ok(crate::permission_path_label(
+            &args.file_path,
+            &self.workspace,
+        ))
+    }
+
+    fn get_simplified_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        let path = self.get_primary_argument(name, arguments)?;
+        Ok(crate::simplified_display_path(&path, &self.workspace))
+    }
+
     async fn prepare(
         &self,
         ctx: ToolPreparationContext,
@@ -71,16 +96,14 @@ impl ToolProvider for ReadTool {
         let mut args: ReadArgs = parse_args("read", call.arguments)?;
         let offset = args.offset.unwrap_or(1);
         let limit = args.limit.unwrap_or(DEFAULT_LIMIT);
-        let byte_offset = args.byte_offset.unwrap_or(0);
         if offset == 0 || limit == 0 {
             return Err(ToolError::execution("offset and limit must be positive"));
         }
         args.offset = Some(offset);
         args.limit = Some(limit);
-        args.byte_offset = Some(byte_offset);
         let target = fs_cap::prepare_existing(&ctx.cwd, std::path::Path::new(&args.file_path))?;
         let binding = target.manifest_bytes()?;
-        let (resources, policy_labels, external) = prepared_path_resources(
+        let (resources, policy_labels) = prepared_path_resources(
             PermissionAction::Read,
             if target.directory {
                 "directory"
@@ -90,20 +113,12 @@ impl ToolProvider for ReadTool {
             &target.display_path,
             &self.workspace,
             &binding,
-            target.directory,
         )?;
         let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
         let operation = prepared_operation(
             "read",
             &args,
-            if external {
-                vec![
-                    (PermissionAction::Read, "read"),
-                    (PermissionAction::ExternalDirectory, "guard"),
-                ]
-            } else {
-                vec![(PermissionAction::Read, "read")]
-            },
+            vec![(PermissionAction::Read, "read")],
             resources,
             &context,
         )?;
@@ -111,7 +126,6 @@ impl ToolProvider for ReadTool {
             "filePath": target.display_path,
             "offset": offset,
             "limit": limit,
-            "byteOffset": byte_offset,
         });
         PreparedTool::new(
             operation,
@@ -120,7 +134,6 @@ impl ToolProvider for ReadTool {
             Box::new(ReadExecutor {
                 target,
                 offset,
-                byte_offset,
                 limit,
             }),
         )?
@@ -145,11 +158,6 @@ impl PreparedExecutor for ReadExecutor {
         }
         self.target.revalidate()?;
         if self.target.directory {
-            if self.byte_offset != 0 {
-                return Err(ToolError::execution(
-                    "byteOffset is invalid for directories",
-                ));
-            }
             let entries = self.target.directory_entries()?;
             let snapshot = serde_json::to_vec(&entries)
                 .map_err(|error| ToolError::execution(error.to_string()))?;
@@ -219,17 +227,7 @@ impl PreparedExecutor for ReadExecutor {
             self.target.display_path.display()
         );
         for (index, line) in lines.iter().enumerate().skip(start).take(self.limit) {
-            if index == start && self.byte_offset > line.len() {
-                return Err(ToolError::execution("byteOffset exceeds the starting line"));
-            }
-            let value = if index == start {
-                line.get(self.byte_offset..).ok_or_else(|| {
-                    ToolError::execution("byteOffset is not a UTF-8 character boundary")
-                })?
-            } else {
-                line
-            };
-            output.push_str(&format!("{}: {value}\n", index + 1));
+            output.push_str(&format!("{}: {line}\n", index + 1));
         }
         output.push_str("</content>");
         Ok(ToolResult {
@@ -246,13 +244,77 @@ impl PreparedExecutor for ReadExecutor {
 mod tests {
     use std::{fs, path::Path};
 
-    use cookie_agent_engine::{ToolCall, ToolPreparationContext, ToolProvider};
+    use cookie_agent_engine::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
     use cookie_agent_protocol::{
-        ApprovalResourceSource, OperationFingerprint, PermissionAction, RunId, SessionId,
-        ToolCallId,
+        OperationFingerprint, PermissionAction, RunId, SessionId, ToolCallId,
     };
 
     use super::ReadTool;
+
+    #[test]
+    fn primary_argument_is_the_file_path() {
+        let tool = ReadTool::new("/tmp");
+        assert_eq!(
+            tool.get_primary_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
+                .expect("primary"),
+            "src/lib.rs"
+        );
+        assert!(matches!(
+            tool.get_primary_argument("read", &serde_json::json!({})),
+            Err(ToolError::Failed(_))
+        ));
+        assert!(matches!(
+            tool.get_primary_argument(
+                "read",
+                &serde_json::json!({"filePath":"src/lib.rs","byteOffset":0})
+            ),
+            Err(ToolError::Failed(_))
+        ));
+    }
+
+    #[test]
+    fn simplified_argument_abbreviates_workspace_and_home_paths() {
+        let tool = ReadTool::new("/workspace");
+        assert_eq!(
+            tool.get_simplified_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
+                .expect("relative"),
+            "src/lib.rs"
+        );
+        assert_eq!(
+            tool.get_simplified_argument(
+                "read",
+                &serde_json::json!({"filePath":"/workspace/src/lib.rs"})
+            )
+            .expect("workspace"),
+            "src/lib.rs"
+        );
+        let home = std::env::var("HOME").expect("HOME");
+        assert_eq!(
+            tool.get_simplified_argument(
+                "read",
+                &serde_json::json!({"filePath": format!("{home}/.bashrc")})
+            )
+            .expect("home"),
+            "~/.bashrc"
+        );
+        assert!(matches!(
+            tool.get_simplified_argument("read", &serde_json::json!({})),
+            Err(ToolError::Failed(_))
+        ));
+        let presentation = tool.presentation(&ToolCall {
+            id: ToolCallId::new_v7(),
+            name: "read".into(),
+            arguments: serde_json::json!({"filePath":"/workspace/src/lib.rs"}),
+        });
+        assert_eq!(presentation.title.as_str(), "read");
+        assert_eq!(
+            presentation
+                .primary_argument
+                .as_ref()
+                .map(cookie_agent_protocol::SafeDisplayText::as_str),
+            Some("src/lib.rs")
+        );
+    }
 
     fn context(root: &Path) -> ToolPreparationContext {
         ToolPreparationContext {
@@ -302,7 +364,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn external_read_manifest_contains_explicit_guard() {
+    async fn outside_workspace_read_has_one_absolute_labeled_resource() {
         let workspace = tempfile::tempdir().expect("workspace");
         let external = tempfile::NamedTempFile::new().expect("external file");
         fs::write(external.path(), "external").expect("fixture");
@@ -322,24 +384,19 @@ mod tests {
             )
             .await
             .expect("prepare external read");
-        assert!(
-            prepared
-                .operation()
-                .capabilities()
-                .iter()
-                .any(|capability| capability.action == PermissionAction::ExternalDirectory)
-        );
-        assert!(prepared.operation().resources().iter().any(|resource| {
-            resource.capability == PermissionAction::ExternalDirectory
-                && resource.source == ApprovalResourceSource::ExternalDirectoryGuard
-        }));
-        let boundary = format!(
-            "{}/*",
-            external.path().parent().expect("external parent").display()
-        );
-        assert_eq!(prepared.policy_labels()[0], boundary);
+        assert_eq!(prepared.operation().capabilities().len(), 1);
         assert_eq!(
-            prepared.policy_labels()[1],
+            prepared.operation().resources()[0].capability,
+            PermissionAction::Read
+        );
+        assert_eq!(
+            prepared.policy_labels(),
+            [external.path().display().to_string()]
+        );
+        assert_eq!(
+            ReadTool::new(workspace.path())
+                .get_primary_argument("read", prepared.normalized_arguments())
+                .expect("primary from prepared args"),
             external.path().display().to_string()
         );
     }
@@ -351,6 +408,12 @@ mod tests {
         fs::write(workspace.path().join("nested/value.txt"), "value").expect("fixture");
         let prepared = prepared(workspace.path(), "nested/value.txt").await;
         assert_eq!(prepared.policy_labels(), ["nested/value.txt"]);
+        assert_eq!(
+            ReadTool::new(workspace.path())
+                .get_primary_argument("read", prepared.normalized_arguments())
+                .expect("primary from prepared args"),
+            "nested/value.txt"
+        );
     }
 
     #[cfg(unix)]

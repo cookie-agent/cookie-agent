@@ -32,8 +32,6 @@ rustix.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-tree-sitter = "0.25.10"
-tree-sitter-bash.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

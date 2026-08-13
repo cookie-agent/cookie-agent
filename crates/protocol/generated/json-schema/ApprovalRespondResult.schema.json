@@ -226,7 +226,8 @@
           "items": {
             "$ref": "#/$defs/ApprovalEvaluation"
           },
-          "maxItems": 256
+          "maxItems": 256,
+          "minItems": 1
         },
         "reason_code": {
           "$ref": "#/$defs/ApprovalReasonCode"
@@ -348,7 +349,8 @@
           "items": {
             "$ref": "#/$defs/ApprovalEvaluation"
           },
-          "maxItems": 256
+          "maxItems": 256,
+          "minItems": 1
         },
         "operation": {
           "$ref": "#/$defs/PreparedOperationIdentity"
@@ -381,7 +383,6 @@
       "enum": [
         "primary_operation",
         "secondary_operation",
-        "external_directory_guard",
         "model_request",
         "doom_loop_guard"
       ]
@@ -499,10 +500,7 @@
         "read",
         "write",
         "bash",
-        "grep",
-        "glob",
-        "delegate",
-        "external_directory"
+        "delegate"
       ]
     },
     "PermissionEffect": {
@@ -592,7 +590,8 @@
           "items": {
             "$ref": "#/$defs/PreparedApprovalResource"
           },
-          "maxItems": 256
+          "maxItems": 256,
+          "minItems": 1
         }
       },
       "additionalProperties": false,

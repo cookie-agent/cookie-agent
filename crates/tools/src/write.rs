@@ -53,6 +53,33 @@ impl ToolProvider for WriteTool {
         }])
     }
 
+    fn get_primary_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        if name != "write" {
+            return Err(ToolError::execution("write provider received another tool"));
+        }
+        let args: WriteArgs = parse_args("write", arguments.clone())?;
+        if args.file_path.is_empty() {
+            return Err(ToolError::execution("filePath must not be empty"));
+        }
+        Ok(crate::permission_path_label(
+            &args.file_path,
+            &self.workspace,
+        ))
+    }
+
+    fn get_simplified_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        let path = self.get_primary_argument(name, arguments)?;
+        Ok(crate::simplified_display_path(&path, &self.workspace))
+    }
+
     async fn prepare(
         &self,
         ctx: ToolPreparationContext,
@@ -84,27 +111,19 @@ impl ToolProvider for WriteTool {
             fs_cap::PreparedTarget::Existing(target) => &target.display_path,
             fs_cap::PreparedTarget::Absent(target) => &target.display_path,
         };
-        let (resources, policy_labels, external) = prepared_path_resources(
+        let (resources, policy_labels) = prepared_path_resources(
             PermissionAction::Write,
             "file",
             display_path,
             &self.workspace,
             &binding,
-            false,
         )?;
         let serialization_key = target.serialization_bytes()?;
         let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
         let operation = prepared_operation(
             "write",
             &args,
-            if external {
-                vec![
-                    (PermissionAction::Write, "replace"),
-                    (PermissionAction::ExternalDirectory, "guard"),
-                ]
-            } else {
-                vec![(PermissionAction::Write, "replace")]
-            },
+            vec![(PermissionAction::Write, "replace")],
             resources,
             &context,
         )?;
@@ -162,10 +181,59 @@ impl PreparedExecutor for WriteExecutor {
 
 #[cfg(test)]
 mod tests {
-    use cookie_agent_engine::{ToolCall, ToolPreparationContext, ToolProvider};
-    use cookie_agent_protocol::{OperationFingerprint, RunId, SessionId, ToolCallId};
+    use cookie_agent_engine::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
+    use cookie_agent_protocol::{
+        OperationFingerprint, PermissionAction, RunId, SessionId, ToolCallId,
+    };
 
     use super::WriteTool;
+
+    #[test]
+    fn primary_argument_is_the_file_path() {
+        let tool = WriteTool::new("/tmp");
+        assert_eq!(
+            tool.get_primary_argument(
+                "write",
+                &serde_json::json!({"filePath":"out.txt","content":"x"})
+            )
+            .expect("primary"),
+            "out.txt"
+        );
+        assert!(matches!(
+            tool.get_primary_argument("write", &serde_json::json!({"content":"x"})),
+            Err(ToolError::Failed(_))
+        ));
+    }
+
+    #[test]
+    fn simplified_argument_abbreviates_workspace_and_home_paths() {
+        let tool = WriteTool::new("/workspace");
+        assert_eq!(
+            tool.get_simplified_argument(
+                "write",
+                &serde_json::json!({"filePath":"out.txt","content":"x"})
+            )
+            .expect("relative"),
+            "out.txt"
+        );
+        assert_eq!(
+            tool.get_simplified_argument(
+                "write",
+                &serde_json::json!({"filePath":"/workspace/out.txt","content":"x"})
+            )
+            .expect("workspace"),
+            "out.txt"
+        );
+        let home = std::env::var("HOME").expect("HOME");
+        assert_eq!(
+            tool.get_simplified_argument(
+                "write",
+                &serde_json::json!({"filePath": format!("{home}/notes.txt"),"content":"x"})
+            )
+            .expect("home"),
+            "~/notes.txt"
+        );
+    }
 
     fn context(root: &std::path::Path) -> ToolPreparationContext {
         ToolPreparationContext {
@@ -223,6 +291,9 @@ mod tests {
             .await
             .expect("prepare");
         assert!(!root.path().join("a").exists());
-        assert_eq!(prepared.operation().resources().len(), 1);
+        assert_eq!(
+            prepared.operation().resources()[0].capability,
+            PermissionAction::Write
+        );
     }
 }

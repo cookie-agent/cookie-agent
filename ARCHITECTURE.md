@@ -2,14 +2,14 @@
 
 **Status:** frozen current implementation contract
 
-**Required versions:** configuration schema 10; agent document schema 3;
-protocol 8; event schema 12; session JSONL 12; session metadata 9;
-delegation-journal schema 9; runtime snapshot schema 2; catalog cache schema 2;
+**Required versions:** configuration schema 10; agent document schema 4;
+protocol 9; event schema 13; session JSONL 13; session metadata 9;
+delegation-journal schema 10; runtime snapshot schema 3; catalog cache schema 2;
 provider store schema 3; family recipe registry schema 1; project model-snapshot
 manifest schema 1.
 
-Only those versions are accepted. Configuration schema 9, agent schema 2,
-event/session schema 10, delegation-journal schema 8, protocol/persistence 7, catalog cache
+Only those versions are accepted. Configuration schema 9, agent schema 3,
+event/session schema 12, delegation-journal schema 9, protocol/persistence 8, catalog cache
 1, provider stores 1/2, and every unversioned or earlier replacement are
 rejected. There are no migrations, compatibility readers, aliases, or dual paths.
 
@@ -78,9 +78,9 @@ Family registry 1 is described in
 12. `provider.connect` and `provider.disconnect` mutate only managed provider
     store state. Connect compiles before a single durable transaction; after a
     successful transaction publication is an infallible in-memory swap.
-13. Runtime snapshot schema 2 is the sole coherent discovery surface. Legacy
+13. Runtime snapshot schema 3 is the sole coherent discovery surface. Legacy
     independently refreshed provider/model/agent list flows do not exist in
-    protocol 8.
+    protocol 9.
 14. Runs persist exact safe model bindings, source kind, credential source, and
     config-override fingerprint. Rehydration never changes credential source.
 15. Model keys split at the first `/`; a model ID may contain `/`.
@@ -101,7 +101,7 @@ Family registry 1 is described in
 
 ```text
 TUI / CLI
-    │ protocol 8
+    │ protocol 9
     ▼
 server ─────────────── runtime.changed notifications
     │
@@ -113,7 +113,7 @@ model manager ── atomic RuntimeSnapshot schema 1
     │
     ├── catalog manager ── fixed HTTPS / cache 2 / bootstrap
     ├── family registry 1 ── npm-family/protocol/auth compilers
-    ├── config loader ── schema 10 and agent schema 3
+    ├── config loader ── schema 10 and agent schema 4
     └── provider store 3 ── managed durable connections only
 ```
 
@@ -196,7 +196,7 @@ ID, the entire user definition with that ID is discarded before parsing and
 semantic validation. Provider fields, model maps, overrides, variants, headers,
 auth values, and arrays never merge. Agent documents are likewise atomic.
 
-Agent schema 3 uses one ordered `permissions` map entry per
+Agent schema 4 uses one ordered `permissions` map entry per
 `PermissionAction`. Each action value is either a bare `allow`, `ask`, or `deny`
 effect, or an ordered resource-pattern-to-effect map; the two forms cannot be
  mixed for one action. Bare effects compile to resource `"*"`. Within an action,
@@ -204,7 +204,7 @@ matching precedence is deterministic: more literal characters wins, then fewer
 `*`/`?` wildcards wins, and an exact tie is won by the later declaration. The
 universal catch-all `*` therefore carries the lowest specificity.
 `${workspace_dir}` is the only permission-resource expression. It is accepted
-only for `read`, `write`, and `external_directory`; grep/glob patterns, bash
+only for `read` and `write`; bash
 commands, delegation targets, unknown `${...}` expressions, and every other
 brace form reject. The token remains literal in configuration, frozen policy,
 serialization, and fingerprints. Its literal token characters count toward the
@@ -216,16 +216,15 @@ absolute path. A pattern without the token continues to match the existing
 workspace-relative label. The workspace root uses the same normalization choice
 as filesystem capability preparation: canonicalize the workspace directory
 when possible, otherwise retain it, then render path separators as `/`.
-Prepared read/write labels already derive from canonical capability paths;
+Prepared read/write labels derive from canonical capability paths;
 joining a relative label does not require the target to exist, which preserves
-absent-write behavior. External-directory labels are already absolute. An
-expanded workspace pattern therefore cannot match an outside path; such rules
+absent-write behavior. An expanded workspace pattern therefore cannot match an outside path; such rules
 are accepted because config loading is checkout-independent, and simply do not
-match outside resources. Ordinary absolute `external_directory` patterns remain
-the policy mechanism for outside paths. There is no environment-variable
-expansion in permission patterns.
+match outside resources. Ordinary absolute read/write patterns such as `/etc/*`
+or `*/.ssh/*` govern outside paths. There is no environment-variable expansion
+in permission patterns.
 
-Agent schema 3 extends `mode` with `internal`. Internal agents are never
+Agent schema 4 extends `mode` with `internal`. Internal agents are never
 root-runnable, never valid `delegate` targets, and are filtered from every TUI
 agent picker even though runtime snapshot descriptors retain them for coherent
 discovery. They otherwise use the same document body, ordered model fallback,
@@ -253,7 +252,7 @@ frozen parent-model context window in its resolved chain so a built-in 16,384
 default cannot reject the context it was invoked to compact.
 The built-in compaction chain begins with `${parent_model}`; the built-in
 approval and title chains preserve the same parent-model behavior used before
-schema 3. Title generation receives only the first user message, never assistant
+schema 4. Title generation receives only the first user message, never assistant
 answer text.
 
 The approval internal agent is stateless and reasoning-blind. Every evaluation
@@ -267,13 +266,13 @@ prose, tool results, or prior approval decisions. Keeping tool parameters at the
 append-only tail preserves a cacheable `[system][latest user request]` prefix
 across consecutive approvals. Approval decisions are accepted only from
 pure-text model output; any tool call or other non-text part invalidates the
-response and fails safe to escalation. Event schema 12 removes the obsolete
+response and fails safe to escalation. Event schema 13 removes the obsolete
 approval-conversation increment counter from `ApprovalEvaluated`.
 The parameter object comes from tool preparation, not the model-authored JSON:
 filesystem paths are resolved to prepared display paths, defaulted read bounds
-are explicit, and shell input is reduced to the parsed permission subcommand
-labels. Thus the classifier and permission pipeline inspect the same prepared
-operation semantics and raw traversal spellings never reach the classifier.
+are explicit, and bash is the whole command string. Thus the classifier and
+permission pipeline inspect the same prepared operation semantics and raw
+traversal spellings never reach the classifier.
 `PreparedTool::new` requires this normalized-argument object at construction;
 parameterless tools pass `{}` explicitly, so external providers cannot silently
 omit classifier parameters. Construction is fallible and rejects JSON `null`;
@@ -286,30 +285,38 @@ naturally. A bare deny hides the corresponding tool. Map form hides it only
 when `"*": deny` exists and there are no non-deny exceptions. `tools` remains a
 separate allowlist and both gates apply.
 
-The standard `bash` tool reroutes simple commands by exact first token. Read
-commands are `ls`, `cat`, `head`, `tail`, `pwd`, `echo`, `find`, `grep`, `rg`,
-`wc`, `file`, `stat`, and `tree`; write commands are `rm`, `rmdir`, `mv`, `cp`,
-`mkdir`, `touch`, `chmod`, `chown`, `ln`, `tee`, and `truncate`. Every other
-first token, including `git`, remains `bash`. A single command or a pipeline
-whose segments are all plain commands joined only by `|` is simple, and each
-segment is classified independently. Lists (`&&`/`||`), semicolon-separated or
-background commands, `|&`, redirections, command substitutions (both `$(...)`
-and backticks), subshells/grouping, and command lines containing newlines are
-complex; every command resource parsed from such a line retains the `bash`
-action. The existing tree-sitter traversal emits every `command` node in source
-order for complex lines, so list/semicolon members and nested substitution
-commands remain separate bash resources even though none are rerouted.
+Every tool implements two mandatory argument extractors. `get_primary_argument`
+is the exact permission resource label: `read`/`write`/`edit` use the file
+path, `bash` uses the full command, and
+`delegate` uses the target agent id. After preparation the engine calls
+`get_primary_argument` on the prepared `normalized_arguments` and uses that
+string as the primary policy label; providers cannot keep a different prepared
+label. `get_simplified_argument` is TUI-only compact-title display and must
+not feed permission matching. The simplified forms are: `read`/`write`/`edit`
+use a workspace-relative or home-abbreviated path, `bash` uses a compact
+one-line command that never elides `&&` segments, and `delegate` uses the
+same agent id both ways. Malformed arguments fail closed. The approval
+classifier still receives the full prepared `normalized_arguments` object.
 
-For a rerouted segment, policy labels are its bare file/path arguments rather
-than its command text, with one resource per path. Flags are omitted, `--`
-ends option handling, and known options that take a separate value omit that
-value. Command-specific positional syntax also omits grep/rg's pattern (unless
-`-e`/`-f` supplies it), find expressions, chmod's mode, and chown's owner/group.
-Shell expansions are not treated as bare paths; there is no glob expansion or
-filesystem existence check. If no file/path argument remains, the segment's raw
-subcommand text is the single label. Approval traces and inspector/event views
-therefore expose the rerouted `read`/`write` action with the same normalized
-labels used for policy matching.
+`PreparedOperationIdentity` stores a non-empty resource vector. Its constructor,
+deserializer, and `PreparedTool::new` reject an empty vector, so no tool can reach
+permission evaluation without a resource; multiple resources remain available
+for future operations. Permission evaluation combines them deterministically:
+any deny wins, otherwise any ask wins, otherwise the operation is allowed. Each
+resource label is the prepared `get_primary_argument` result. Filesystem labels
+are workspace-relative for inside paths and absolute for outside paths; both use
+the same read/write permission action and matching pipeline. Current built-ins
+prepare exactly one resource per call.
+
+The `bash` tool no longer reroutes simple commands onto `read`/`write`. The
+permission engine only pattern-matches: each bash call is one resource whose
+label is the whole command string from `get_primary_argument`, matched only
+against `bash:` patterns. There is no AST split, no simple/complex
+classification, and no parse-fallback resource. A narrow allow such as
+`bash: "git *"` therefore also matches `git status && rm -rf x`; users who
+want to block that must write containment patterns such as `*rm*`. That
+smuggle is the designed semantic, not a bug. Shell file access such as
+`cat .env` is governed by bash rules, not read/write rules.
 
 The removed agent `delegation` field has no decoder. Delegation targets are the
 keys of the `delegate` permission resource map, whose target effects are
@@ -588,7 +595,7 @@ infallible publication with `ProviderDisconnected`; replay publishes nothing.
 
 ## 10. Runtime snapshot and notifications
 
-Runtime snapshot schema 2 contains the snapshot schema version, recipe registry
+Runtime snapshot schema 3 contains the snapshot schema version, recipe registry
 revision, catalog revision/source/cache state, provider-state revision, model
 revision, provider-store generation, agent revision, aggregate runtime revision,
 provider descriptors, model descriptors, and materialized agent descriptors.
@@ -610,7 +617,7 @@ built-in `default` descriptor when the runtime has available models but no
 root-runnable authored agent.
 
 `runtime.snapshot.get` is mandatory and atomically returns the entire object.
-Protocol 8 removes legacy independently refreshed catalog/provider/model/agent
+Protocol 9 removes legacy independently refreshed catalog/provider/model/agent
 list RPCs and list-refresh choreography. Every mutation returns the published
 snapshot. The server emits `runtime.changed { previous_revision, snapshot,
 reasons }`; Rust reason variants and wire values include
@@ -657,7 +664,7 @@ the `.cookie-agent/model-snapshots` subtree is current-user-owned `0700` and
 manifests/lock/temp files are current-user-owned `0600`, regular, single-link,
 descriptor-relative/no-follow, bounded, and atomically written by lock/reread,
 exclusive sibling temp, fsync, rename, and parent fsync. A manifest is durable
-before any version-8 event may reference its revision. Referenced manifests are
+before any event/session JSONL 13 record may reference its revision. Referenced manifests are
 retained for the lifetime of their sessions and delegation journals and are
 never garbage-collected; family registry 1 performs no automatic manifest GC.
 
@@ -672,7 +679,7 @@ Unsafe objects or malformed matching
 files fail project open. Session/journal references to absent manifests fail
 reconciliation without deleting history.
 
-Version-8 frozen bindings reference one manifest revision/blueprint and record
+Protocol-9 frozen bindings reference one manifest revision/blueprint and record
 the accepted exact selection. Their managed source carries both the immutable
 source-record provenance and recipe compatibility fingerprint. Runtime provider
 descriptors expose the safe recipe fingerprint, and persisted events/delegation
@@ -795,7 +802,7 @@ compaction remains available.
 Startup order is frozen and must not be reordered:
 
 1. **Schema 10 and agents:** securely open roots, load family registry 1, then
-   strictly load atomic config schema 10 and agent schema 3 documents.
+   strictly load atomic config schema 10 and agent schema 4 documents.
 2. **Catalog:** securely open cache schema 2, perform the bounded identity-only
    network request, then select network, validated cache, or bundled bootstrap
    and apply record quarantine.
@@ -819,7 +826,7 @@ is mandatory again before discovery, session admission, and root-run admission.
 
 ## 14. TUI contract
 
-The TUI consumes only runtime snapshot schema 2 and `runtime.changed`. Required
+The TUI consumes only runtime snapshot schema 3 and `runtime.changed`. Required
 global/row states are:
 
 Within the transcript, one assistant block spans all model attempts in one run;
@@ -875,10 +882,9 @@ and activates Model/Variant hit regions. No model is fabricated; authored
 fallbacks remain unresolved and unchanged.
 
 The built-in `default` agent has source `built_in`, mode `primary`, the standard
-coding tools (`read`, `grep`, `glob`, `write`, `edit`, `bash`), no delegation
+coding tools (`read`, `write`, `edit`, `bash`), no delegation
 targets, and the same action-keyed ordered permission map as authored agents.
-Workspace reads are allowed and grep/glob enumeration is denied; write/edit,
-bash, delegate, and external-directory access ask;
+Workspace reads are allowed; outside reads, write/edit, bash, and delegate ask;
 reads of `.env` variants, `store-v3.json`, `token-v1`, `id_*`, `.netrc`, and
 `application_default_credentials.json` are denied, with the existing exact
 `.env.example` read exceptions. `default` is a reserved authored-agent ID.

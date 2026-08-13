@@ -42,7 +42,7 @@ pub enum ConfigError {
     #[error("invalid frontmatter for agent `{0}`")]
     AgentFrontmatter(AgentId),
     #[error(
-        "agent `{0}` permission resources support only `${{workspace_dir}}`, and only for read, write, or external_directory"
+        "agent `{0}` permission resources support only `${{workspace_dir}}`, and only for read or write"
     )]
     AgentPermissionExpression(AgentId),
     #[error("agent YAML resource limit exceeded")]

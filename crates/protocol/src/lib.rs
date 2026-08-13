@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 8, event schema 12, and session metadata schema 9.
+//! Exact cookie-agent protocol 9, event schema 13, and session metadata schema 9.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders.
 
@@ -123,15 +123,15 @@ pub use rpc::*;
 pub use runtime::*;
 
 /// The only protocol version supported by this build.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 /// The only durable event/session-JSONL schema supported by this build.
-pub const EVENT_SCHEMA_VERSION: u32 = 12;
+pub const EVENT_SCHEMA_VERSION: u32 = 13;
 /// The only session metadata schema supported by this build.
 pub const SESSION_META_SCHEMA_VERSION: u32 = 9;
 /// The only delegation-journal schema supported by this build.
-pub const DELEGATION_JOURNAL_SCHEMA_VERSION: u32 = 9;
+pub const DELEGATION_JOURNAL_SCHEMA_VERSION: u32 = 10;
 /// The only coherent runtime snapshot schema supported by this build.
-pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 3;
 
 /// Returns the TypeScript generation configuration required by this JSON wire.
 #[must_use]
@@ -200,11 +200,11 @@ macro_rules! exact_numeric_wire_type {
     };
 }
 
-exact_numeric_wire_type!(ProtocolVersion, 8, "8", "The exact protocol wire version.");
+exact_numeric_wire_type!(ProtocolVersion, 9, "9", "The exact protocol wire version.");
 exact_numeric_wire_type!(
     EventSchemaVersion,
-    12,
-    "12",
+    13,
+    "13",
     "The exact event/session-JSONL schema version."
 );
 exact_numeric_wire_type!(
@@ -215,14 +215,14 @@ exact_numeric_wire_type!(
 );
 exact_numeric_wire_type!(
     DelegationJournalSchemaVersion,
-    9,
-    "9",
+    10,
+    "10",
     "The exact delegation-journal schema version."
 );
 exact_numeric_wire_type!(
     RuntimeSnapshotSchemaVersion,
-    2,
-    "2",
+    3,
+    "3",
     "The exact coherent runtime snapshot schema version."
 );
 

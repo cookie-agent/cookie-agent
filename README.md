@@ -60,7 +60,7 @@ not merge. Managed models are automatic: every family-supported,
 non-deprecated text-output model is included unless disabled by a sparse
 override.
 
-Agent Markdown documents use exact schema 3. Their `mode` is `primary`,
+Agent Markdown documents use exact schema 4. Their `mode` is `primary`,
 `subagent`, `all`, or `internal`. Internal agents are engine-only: they cannot be
 selected as roots or delegation targets and do not appear in TUI agent pickers.
 The runtime supplies built-in `approval`, `compaction`, and `title` internal
@@ -77,9 +77,20 @@ only the frozen approval prompt, the latest persisted user message (or a fixed
 no-message marker), and the current tool name plus normalized parameters last;
 older history, assistant prose, tool results, and prior decisions are excluded.
 The parameters are preparation-derived rather than raw model JSON, so canonical
-paths and parsed permission labels match what the permission pipeline evaluated.
+paths and permission labels match what the permission pipeline evaluated.
 Every prepared tool must provide this object explicitly; parameterless tools use
-an empty object, and construction rejects `null`.
+an empty object, and construction rejects `null`. Permission labels use each
+tool's mandatory primary argument: file path, whole command, or delegate target.
+TUI compact titles use a separate simplified
+argument: abbreviated paths, a one-line bash command that keeps `&&` segments,
+or the same delegate agent id. Bash no longer
+reroutes `cat`/`rm` onto read/write; each call is one bash resource whose
+label is the whole command string. Search uses bash (`rg`/`find`); there is
+no dedicated grep or glob tool.
+Every tool call has exactly one permission resource. Filesystem resources use a
+workspace-relative label inside the workspace and an absolute label outside it;
+absolute read/write patterns such as `/etc/*` and `*/.ssh/*` control outside
+access.
 
 Managed providers may author credentials directly in user or workspace config
 with `api_key` or typed `auth_override`. The effective authored credential
@@ -312,12 +323,12 @@ session admission, or root-run admission.
 
 ## Runtime and sessions
 
-`runtime.snapshot.get` returns runtime snapshot schema 2 containing recipe,
+`runtime.snapshot.get` returns runtime snapshot schema 3 containing recipe,
 catalog, provider-state, model, agent, and aggregate runtime revisions plus all
-descriptors. Protocol 8 has no independently racing list-refresh flow. Every
+descriptors. Protocol 9 has no independently racing list-refresh flow. Every
 publication emits `runtime.changed` with a complete snapshot and typed reasons.
 
-Version-8 sessions freeze source kind, config-override fingerprint, exact recipe
+Protocol-9 sessions freeze source kind, config-override fingerprint, exact recipe
 and compiler IDs, endpoint identity, credential source, model behavior, and
 fingerprints. Rehydration never changes credential source: authored config never
 falls to store, managed snapshots require exact recipe/source matching, and

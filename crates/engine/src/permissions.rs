@@ -1,4 +1,4 @@
-//! Permission evaluation over immutable protocol-v7 prepared-operation manifests.
+//! Permission evaluation over immutable prepared-operation manifests.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -99,10 +99,7 @@ impl PermissionPipeline {
             "read" => Ok(PermissionAction::Read),
             "write" | "edit" => Ok(PermissionAction::Write),
             "bash" => Ok(PermissionAction::Bash),
-            "grep" => Ok(PermissionAction::Grep),
-            "glob" => Ok(PermissionAction::Glob),
             "delegate" => Ok(PermissionAction::Delegate),
-            "external_directory" => Ok(PermissionAction::ExternalDirectory),
             other => Err(PermissionError::UnknownAction(other.into())),
         }
     }
@@ -115,6 +112,7 @@ impl PermissionPipeline {
         policy_labels: &[String],
         workspace: &Path,
     ) -> PermissionDecision {
+        assert!(!operation.resources().is_empty());
         assert_eq!(operation.resources().len(), policy_labels.len());
         let evaluations = operation
             .resources()
@@ -139,12 +137,12 @@ impl PermissionPipeline {
             .collect::<Vec<_>>();
         let effect = if evaluations
             .iter()
-            .any(|item| item.effect == PermissionEffect::Deny)
+            .any(|evaluation| evaluation.effect == PermissionEffect::Deny)
         {
             PermissionEffect::Deny
         } else if evaluations
             .iter()
-            .any(|item| item.effect == PermissionEffect::Ask)
+            .any(|evaluation| evaluation.effect == PermissionEffect::Ask)
         {
             PermissionEffect::Ask
         } else {
@@ -412,28 +410,15 @@ mod tests {
             boundary: ApprovalBoundary::CommandPrefix {
                 prefix: label.into(),
             },
-            source: if action == PermissionAction::ExternalDirectory {
-                ApprovalResourceSource::ExternalDirectoryGuard
-            } else {
-                ApprovalResourceSource::PrimaryOperation
-            },
+            source: ApprovalResourceSource::PrimaryOperation,
         }
     }
 
     fn operation(resources: Vec<PreparedApprovalResource>) -> PreparedOperationIdentity {
-        let mut capabilities = vec![ApprovalCapability {
+        let capabilities = vec![ApprovalCapability {
             action: PermissionAction::Read,
             operation: PreparedCapabilityOperation::new("read:read").expect("operation"),
         }];
-        if resources
-            .iter()
-            .any(|resource| resource.capability == PermissionAction::ExternalDirectory)
-        {
-            capabilities.push(ApprovalCapability {
-                action: PermissionAction::ExternalDirectory,
-                operation: PreparedCapabilityOperation::new("read:external").expect("operation"),
-            });
-        }
         PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(b"args"),
             capabilities,
@@ -444,6 +429,13 @@ mod tests {
     }
 
     fn decide(
+        policy: &AgentSnapshot,
+        resource: PreparedApprovalResource,
+    ) -> super::PermissionDecision {
+        decide_many(policy, vec![resource])
+    }
+
+    fn decide_many(
         policy: &AgentSnapshot,
         resources: Vec<PreparedApprovalResource>,
     ) -> super::PermissionDecision {
@@ -471,11 +463,7 @@ mod tests {
                 "/workspace/a.txt",
                 PermissionEffect::Allow,
             )]),
-            vec![resource(
-                PermissionAction::Read,
-                "/workspace/a.txt",
-                b"file",
-            )],
+            resource(PermissionAction::Read, "/workspace/a.txt", b"file"),
         );
         assert_eq!(decision.effect, PermissionEffect::Allow);
         assert_eq!(
@@ -501,11 +489,7 @@ mod tests {
                     PermissionEffect::Deny,
                 ),
             ]),
-            vec![resource(
-                PermissionAction::Read,
-                "/workspace/secret.txt",
-                b"secret",
-            )],
+            resource(PermissionAction::Read, "/workspace/secret.txt", b"secret"),
         );
         assert_eq!(decision.effect, PermissionEffect::Deny);
         assert_eq!(decision.evaluations[0].trace.candidates.len(), 2);
@@ -528,11 +512,7 @@ mod tests {
                     PermissionEffect::Deny,
                 ),
             ]),
-            vec![resource(
-                PermissionAction::Read,
-                "nested/.env.local",
-                b"secret",
-            )],
+            resource(PermissionAction::Read, "nested/.env.local", b"secret"),
         );
         assert_eq!(decision.effect, PermissionEffect::Deny);
         assert_eq!(decision.evaluations[0].trace.candidates.len(), 2);
@@ -555,11 +535,7 @@ mod tests {
                     PermissionEffect::Allow,
                 ),
             ]),
-            vec![resource(
-                PermissionAction::Read,
-                "/workspace/public.txt",
-                b"public",
-            )],
+            resource(PermissionAction::Read, "/workspace/public.txt", b"public"),
         );
         assert_eq!(decision.effect, PermissionEffect::Allow);
         assert_eq!(decision.evaluations[0].trace.candidates.len(), 2);
@@ -578,40 +554,57 @@ mod tests {
                 "/workspace/*",
                 PermissionEffect::Allow,
             )]),
-            vec![resource(
-                PermissionAction::Read,
-                "/workspace/public.txt",
-                b"public",
-            )],
+            resource(PermissionAction::Read, "/workspace/public.txt", b"public"),
         );
         assert_eq!(decision.effect, PermissionEffect::Allow);
     }
 
     #[test]
-    fn external_guard_requires_separate_approval_despite_read_wildcard() {
-        let decision = decide(
-            &policy(vec![rule(
-                "read-all",
-                PermissionAction::Read,
-                "*",
-                PermissionEffect::Allow,
-            )]),
-            vec![
-                resource(PermissionAction::Read, "/etc/passwd", b"passwd"),
-                resource(
-                    PermissionAction::ExternalDirectory,
-                    "/etc/passwd",
-                    b"external",
+    fn multi_resource_deny_wins_over_allow() {
+        let decision = decide_many(
+            &policy(vec![
+                rule(
+                    "allow-public",
+                    PermissionAction::Read,
+                    "/workspace/public.txt",
+                    PermissionEffect::Allow,
                 ),
+                rule(
+                    "deny-secret",
+                    PermissionAction::Read,
+                    "/workspace/secret.txt",
+                    PermissionEffect::Deny,
+                ),
+            ]),
+            vec![
+                resource(PermissionAction::Read, "/workspace/public.txt", b"public"),
+                resource(PermissionAction::Read, "/workspace/secret.txt", b"secret"),
             ],
         );
-        assert_eq!(decision.evaluations[0].effect, PermissionEffect::Allow);
-        assert_eq!(decision.evaluations[1].effect, PermissionEffect::Ask);
-        assert_eq!(decision.effect, PermissionEffect::Ask);
+        assert_eq!(decision.effect, PermissionEffect::Deny);
+        assert_eq!(decision.evaluations.len(), 2);
     }
 
     #[test]
-    fn explicit_external_rule_can_allow_external_read() {
+    fn multi_resource_ask_beats_allow() {
+        let decision = decide_many(
+            &policy(vec![rule(
+                "allow-public",
+                PermissionAction::Read,
+                "/workspace/public.txt",
+                PermissionEffect::Allow,
+            )]),
+            vec![
+                resource(PermissionAction::Read, "/workspace/public.txt", b"public"),
+                resource(PermissionAction::Read, "/workspace/review.txt", b"review"),
+            ],
+        );
+        assert_eq!(decision.effect, PermissionEffect::Ask);
+        assert_eq!(decision.evaluations.len(), 2);
+    }
+
+    #[test]
+    fn absolute_rule_controls_outside_read() {
         let decision = decide(
             &policy(vec![
                 rule(
@@ -621,22 +614,41 @@ mod tests {
                     PermissionEffect::Allow,
                 ),
                 rule(
-                    "external-etc",
-                    PermissionAction::ExternalDirectory,
+                    "outside-etc",
+                    PermissionAction::Read,
                     "/etc/*",
-                    PermissionEffect::Allow,
+                    PermissionEffect::Ask,
                 ),
             ]),
-            vec![
-                resource(PermissionAction::Read, "/etc/passwd", b"passwd"),
-                resource(
-                    PermissionAction::ExternalDirectory,
-                    "/etc/passwd",
-                    b"external",
-                ),
-            ],
+            resource(PermissionAction::Read, "/etc/passwd", b"passwd"),
         );
-        assert_eq!(decision.effect, PermissionEffect::Allow);
+        assert_eq!(decision.effect, PermissionEffect::Ask);
+    }
+
+    #[test]
+    fn absolute_deny_pattern_catches_outside_ssh_read() {
+        let decision = decide(
+            &policy(vec![
+                rule(
+                    "read-all",
+                    PermissionAction::Read,
+                    "*",
+                    PermissionEffect::Allow,
+                ),
+                rule(
+                    "deny-ssh",
+                    PermissionAction::Read,
+                    "*/.ssh/*",
+                    PermissionEffect::Deny,
+                ),
+            ]),
+            resource(
+                PermissionAction::Read,
+                "/home/other/.ssh/id_ed25519",
+                b"ssh-key",
+            ),
+        );
+        assert_eq!(decision.effect, PermissionEffect::Deny);
     }
 
     #[test]
@@ -650,7 +662,7 @@ mod tests {
         for path in [".env", "nested/.env.local"] {
             let decision = decide(
                 &allow_all,
-                vec![resource(PermissionAction::Read, path, path.as_bytes())],
+                resource(PermissionAction::Read, path, path.as_bytes()),
             );
             assert_eq!(decision.effect, PermissionEffect::Ask, "{path}");
             assert_eq!(
@@ -676,7 +688,7 @@ mod tests {
                     ),
                     rule("exact-env", PermissionAction::Read, ".env", effect),
                 ]),
-                vec![resource(PermissionAction::Read, ".env", b"env")],
+                resource(PermissionAction::Read, ".env", b"env"),
             );
             assert_eq!(decision.effect, expected);
         }
@@ -699,11 +711,7 @@ mod tests {
                     PermissionEffect::Allow,
                 ),
             ]),
-            vec![resource(
-                PermissionAction::Read,
-                "nested/.env.local",
-                b"env",
-            )],
+            resource(PermissionAction::Read, "nested/.env.local", b"env"),
         );
         assert_eq!(decision.effect, PermissionEffect::Deny);
     }
@@ -717,11 +725,11 @@ mod tests {
                 "*",
                 PermissionEffect::Allow,
             )]),
-            vec![resource(
+            resource(
                 PermissionAction::Read,
                 "nested/.env.production.example",
                 b"example",
-            )],
+            ),
         );
         assert_eq!(decision.effect, PermissionEffect::Allow);
     }
@@ -833,26 +841,6 @@ mod tests {
             )
             .0,
             PermissionEffect::Allow
-        );
-    }
-
-    #[test]
-    fn workspace_dir_external_rule_does_not_match_outside_boundary() {
-        let policy = policy(vec![rule(
-            "workspace-external",
-            PermissionAction::ExternalDirectory,
-            "${workspace_dir}/*",
-            PermissionEffect::Allow,
-        )]);
-        assert_eq!(
-            super::effective_permission(
-                &policy,
-                PermissionAction::ExternalDirectory,
-                "/outside/*",
-                std::path::Path::new("/workspace"),
-            )
-            .0,
-            PermissionEffect::Ask
         );
     }
 

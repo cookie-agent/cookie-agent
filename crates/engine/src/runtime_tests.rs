@@ -88,6 +88,29 @@ impl ToolProvider for TestDelegateProvider {
             .collect())
     }
 
+    fn get_primary_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        if name != "delegate" {
+            return Err(ToolError::execution(
+                "delegate provider received another tool",
+            ));
+        }
+        let args: TestDelegateArgs = serde_json::from_value(arguments.clone())
+            .map_err(|error| ToolError::execution(error.to_string()))?;
+        Ok(args.agent.to_string())
+    }
+
+    fn get_simplified_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        self.get_primary_argument(name, arguments)
+    }
+
     async fn prepare(
         &self,
         _ctx: ToolPreparationContext,
@@ -189,6 +212,25 @@ impl ToolProvider for TestWriteProvider {
         }])
     }
 
+    fn get_primary_argument(
+        &self,
+        name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        if name != "write" {
+            return Err(ToolError::execution("write provider received another tool"));
+        }
+        Ok("approval-test.txt".into())
+    }
+
+    fn get_simplified_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        self.get_primary_argument(name, arguments)
+    }
+
     async fn prepare(
         &self,
         _ctx: ToolPreparationContext,
@@ -274,6 +316,29 @@ impl ToolProvider for TestRehydrationReadProvider {
                 "required":["filePath"]
             }),
         }])
+    }
+
+    fn get_primary_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        if name != "read" {
+            return Err(ToolError::execution("read provider received another tool"));
+        }
+        arguments
+            .get("filePath")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| ToolError::execution("missing filePath"))
+    }
+
+    fn get_simplified_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        self.get_primary_argument(name, arguments)
     }
 
     async fn prepare(
@@ -534,7 +599,7 @@ fn empty_provider_workspace(path: &std::path::Path) -> LoadedConfiguration {
     fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
     fs::write(
         agents.join("primary.md"),
-        "---\nschema: 3\ndescription: Bedrock test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0\", variant: base }]\ntools: []\npermissions: {}\n---\nUse Bedrock.\n",
+        "---\nschema: 4\ndescription: Bedrock test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0\", variant: base }]\ntools: []\npermissions: {}\n---\nUse Bedrock.\n",
     )
     .expect("agent");
     fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
@@ -880,21 +945,21 @@ async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly(
 fn custom_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\nschema: 3\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions:\n  delegate:\n    worker: allow\n---\nTest prompt.\n",
+        "---\nschema: 4\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions:\n  delegate:\n    worker: allow\n---\nTest prompt.\n",
     )
 }
 
 fn approval_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\nschema: 3\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
+        "---\nschema: 4\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
     )
 }
 
 fn denied_approval_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\nschema: 3\ndescription: Denied approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: deny\n---\nTest denied approval flow.\n",
+        "---\nschema: 4\ndescription: Denied approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: deny\n---\nTest denied approval flow.\n",
     )
 }
 
@@ -962,7 +1027,7 @@ media = {}
         .expect("private agent");
     fs::write(
         agents.join("worker.md"),
-        "---\nschema: 3\ndescription: Worker test agent\nmode: subagent\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: {}\n---\nWorker prompt.\n",
+        "---\nschema: 4\ndescription: Worker test agent\nmode: subagent\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: {}\n---\nWorker prompt.\n",
     )
     .expect("worker agent");
     fs::set_permissions(agents.join("worker.md"), fs::Permissions::from_mode(0o600))
@@ -1143,7 +1208,7 @@ fn completed_read_events(
 async fn rehydration_skips_reads_denied_by_the_frozen_permission_pipeline() {
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         "http://127.0.0.1:9/v1",
-        "---\nschema: 3\ndescription: Rehydration deny test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [read]\npermissions:\n  read: deny\n---\nTest denied rehydration.\n",
+        "---\nschema: 4\ndescription: Rehydration deny test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [read]\npermissions:\n  read: deny\n---\nTest denied rehydration.\n",
     );
     let executed = Arc::new(AtomicBool::new(false));
     fixture
@@ -1175,7 +1240,7 @@ async fn rehydration_skips_reads_denied_by_the_frozen_permission_pipeline() {
 async fn rehydration_skips_a_symlink_swapped_after_capability_preparation() {
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         "http://127.0.0.1:9/v1",
-        "---\nschema: 3\ndescription: Rehydration swap test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [read]\npermissions:\n  read: allow\n---\nTest swapped rehydration.\n",
+        "---\nschema: 4\ndescription: Rehydration swap test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [read]\npermissions:\n  read: allow\n---\nTest swapped rehydration.\n",
     );
     fs::write(fixture._directory.path().join("allowed.txt"), "allowed").expect("allowed file");
     fs::write(fixture._directory.path().join("denied.txt"), "denied").expect("denied file");
@@ -1316,10 +1381,10 @@ fn manual_compaction_resolves_parent_model_from_nonzero_active_fallback() {
 fn workspace_internal_agent_replaces_builtin_document_and_limits() {
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         "http://127.0.0.1:9/v1",
-        "---\nschema: 3\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: {}\n---\nPrimary.\n",
+        "---\nschema: 4\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: {}\n---\nPrimary.\n",
         Some((
             "approval.md",
-            "---\nschema: 3\ndescription: Workspace approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1234, max_input_tokens: 2345, max_output_tokens: 345 }\ntools: [bash]\npermissions: {}\n---\nWorkspace approval prompt.\n",
+            "---\nschema: 4\ndescription: Workspace approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1234, max_input_tokens: 2345, max_output_tokens: 345 }\ntools: [bash]\npermissions: {}\n---\nWorkspace approval prompt.\n",
         )),
         None,
     );
@@ -1463,6 +1528,48 @@ async fn scripted_model_server() -> (String, tokio::task::JoinHandle<String>) {
             .await
             .expect("scripted response");
         String::from_utf8(request).expect("UTF-8 request")
+    });
+    (format!("http://{address}/v1"), task)
+}
+
+async fn scripted_zero_resource_tool_server() -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("zero-resource listener");
+    let address = listener.local_addr().expect("listener address");
+    let bodies = [
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"zero-resource-write\",\"type\":\"function\",\"function\":{\"name\":\"write\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"resource-free write rejected\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+    ];
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for body in bodies {
+            let (mut socket, _) = listener.accept().await.expect("zero-resource accept");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 8192];
+            loop {
+                let read = socket.read(&mut buffer).await.expect("zero-resource read");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("zero-resource response");
+            requests.push(String::from_utf8(request).expect("UTF-8 request"));
+        }
+        requests
     });
     (format!("http://{address}/v1"), task)
 }
@@ -1903,8 +2010,6 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
         frozen.tools,
         vec![
             cookie_agent_protocol::ToolName::Read,
-            cookie_agent_protocol::ToolName::Grep,
-            cookie_agent_protocol::ToolName::Glob,
             cookie_agent_protocol::ToolName::Write,
             cookie_agent_protocol::ToolName::Edit,
             cookie_agent_protocol::ToolName::Bash,
@@ -1973,16 +2078,6 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
             cookie_agent_protocol::PermissionEffect::Allow,
         ),
         (
-            PermissionAction::Grep,
-            "*",
-            cookie_agent_protocol::PermissionEffect::Deny,
-        ),
-        (
-            PermissionAction::Glob,
-            "*",
-            cookie_agent_protocol::PermissionEffect::Deny,
-        ),
-        (
             PermissionAction::Write,
             "src/lib.rs",
             cookie_agent_protocol::PermissionEffect::Ask,
@@ -1995,11 +2090,6 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
         (
             PermissionAction::Delegate,
             "worker",
-            cookie_agent_protocol::PermissionEffect::Ask,
-        ),
-        (
-            PermissionAction::ExternalDirectory,
-            "/tmp",
             cookie_agent_protocol::PermissionEffect::Ask,
         ),
     ] {
@@ -2038,7 +2128,7 @@ fn runtime_snapshot_model_descriptor_preserves_compiled_variant_order() {
 #[test]
 fn synthetic_default_replaces_no_authored_agent_and_unrunnable_authored_agents_only() {
     let unrunnable = synthetic_default_fixture(Some(
-        "---\nschema: 3\ndescription: Unrunnable primary\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/missing\", variant: base }]\ntools: []\npermissions: {}\n---\nUnrunnable prompt.\n",
+        "---\nschema: 4\ndescription: Unrunnable primary\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/missing\", variant: base }]\ntools: []\npermissions: {}\n---\nUnrunnable prompt.\n",
     ));
     let snapshot = unrunnable
         .engine
@@ -2787,15 +2877,15 @@ fn external_store_generation_is_reloaded_before_discovery() {
 }
 
 #[test]
-fn event_schema_eleven_persistence_fails_deserialization() {
+fn event_schema_twelve_persistence_fails_deserialization() {
     let directory = TempDir::new().expect("temp directory");
     let path = directory.path().join("events.jsonl");
     fs::write(
         &path,
-        b"{\"event_schema_version\":11,\"payload\":{\"type\":\"session_created\"}}\n",
+        b"{\"event_schema_version\":12,\"payload\":{\"type\":\"session_created\"}}\n",
     )
     .expect("legacy event");
-    let error = EventLog::open(path, SessionId::new_v7()).expect_err("version 11 rejected");
+    let error = EventLog::open(path, SessionId::new_v7()).expect_err("version 12 rejected");
     assert!(matches!(error, EventLogError::Json { .. }));
 }
 
@@ -2991,7 +3081,7 @@ async fn steer_compaction_defers_snapshot_and_completion_before_next_model_reque
         scripted_server_with_delayed_response(bodies, 2).await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\nschema: 3\ndescription: Steering compaction test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: ask\n---\nTest steering compaction.\n",
+        "---\nschema: 4\ndescription: Steering compaction test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: ask\n---\nTest steering compaction.\n",
         None,
         Some(500),
     );
@@ -3138,7 +3228,7 @@ async fn cancel_during_start_prediction_aborts_compaction_without_appending_inpu
         scripted_server_with_delayed_response(bodies, 1).await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\nschema: 3\ndescription: Start cancellation test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: {}\n---\nTest start cancellation.\n",
+        "---\nschema: 4\ndescription: Start cancellation test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: {}\n---\nTest start cancellation.\n",
         None,
         Some(500),
     );
@@ -3260,10 +3350,10 @@ async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix()
     let (endpoint, captured) = scripted_two_approved_writes_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\nschema: 3\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
+        "---\nschema: 4\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
         Some((
             "approval.md",
-            "---\nschema: 3\ndescription: Persistent approval evaluator\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_input_tokens: 4096, max_output_tokens: 128 }\ntools: []\npermissions: {}\n---\nEvaluate approval requests conservatively.\n",
+            "---\nschema: 4\ndescription: Persistent approval evaluator\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_input_tokens: 4096, max_output_tokens: 128 }\ntools: []\npermissions: {}\n---\nEvaluate approval requests conservatively.\n",
         )),
         None,
     );
@@ -3864,6 +3954,72 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
 }
 
 #[tokio::test]
+async fn registered_external_tool_must_declare_resource_and_cannot_bypass_deny() {
+    let (endpoint, captured) = scripted_zero_resource_tool_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\nschema: 4\ndescription: Resource-bound test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: deny\n---\nReject denied tools.\n",
+    );
+    let executed = Arc::new(AtomicBool::new(false));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("zero-resource session");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("zero-resource-run").expect("run ID"),
+            selection,
+            input: "attempt the write tool".into(),
+        })
+        .await
+        .expect("accepted run");
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let projection = fixture
+                .engine
+                .inner
+                .store
+                .get(session.session_id)
+                .expect("resource-bound projection");
+            if projection.status == SessionStatus::Completed {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("zero-resource run completion");
+
+    assert!(!executed.load(Ordering::Acquire));
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("completed resource-bound projection")
+        .log
+        .events();
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolCallTerminated { termination }
+            if termination.outcome == ToolTerminationOutcome::Failed
+                && termination.error.as_ref().is_some_and(|error| {
+                    error.code.as_str() == "execution_failed"
+                })
+    )));
+    assert_eq!(captured.await.expect("resource-bound server").len(), 2);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn scripted_parent_delegate_child_run_completes_and_reopens() {
     let (endpoint, captured) = scripted_delegation_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
@@ -3953,7 +4109,7 @@ async fn scripted_parent_delegate_child_run_completes_and_reopens() {
 }
 
 #[tokio::test]
-async fn root_run_and_schema_nine_delegation_reservation_reopen_exactly() {
+async fn root_run_and_schema_ten_delegation_reservation_reopen_exactly() {
     let (fixture, selection) = custom_fixture();
     let session = fixture
         .engine
@@ -4033,7 +4189,7 @@ async fn root_run_and_schema_nine_delegation_reservation_reopen_exactly() {
     assert_eq!(schema["title"], "StoredDelegationJournalRecord");
     assert_eq!(
         schema["properties"]["delegation_journal_schema_version"]["const"],
-        9
+        10
     );
     assert_eq!(schema["additionalProperties"], false);
     let required_keys = |value: &serde_json::Value| {
@@ -4122,4 +4278,179 @@ async fn root_run_and_schema_nine_delegation_reservation_reopen_exactly() {
         tools: Vec::new(),
     });
     assert!(matches!(rejected, Err(EngineError::RuntimeCompileFailed)));
+}
+
+#[test]
+fn test_providers_expose_mandatory_primary_arguments() {
+    let write = TestWriteProvider {
+        executed: Arc::new(AtomicBool::new(false)),
+    };
+    assert_eq!(
+        write
+            .get_primary_argument("write", &serde_json::json!({}))
+            .expect("write primary"),
+        "approval-test.txt"
+    );
+    let read = TestRehydrationReadProvider {
+        executed: Arc::new(AtomicBool::new(false)),
+        swap_after_prepare: false,
+    };
+    assert_eq!(
+        read.get_primary_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
+            .expect("read primary"),
+        "src/lib.rs"
+    );
+    assert!(
+        read.get_primary_argument("read", &serde_json::json!({}))
+            .is_err()
+    );
+    assert_eq!(
+        write
+            .get_simplified_argument("write", &serde_json::json!({}))
+            .expect("write simplified"),
+        "approval-test.txt"
+    );
+    assert_eq!(
+        read.get_simplified_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
+            .expect("read simplified"),
+        "src/lib.rs"
+    );
+}
+
+struct DivergentReadProvider;
+
+struct DivergentReadExecutor;
+
+#[async_trait]
+impl ToolProvider for DivergentReadProvider {
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok(vec![ToolSpec {
+            name: "read".into(),
+            description: "Divergent prepared-label test".into(),
+            parameters: serde_json::json!({
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{"filePath":{"type":"string"}},
+                "required":["filePath"]
+            }),
+        }])
+    }
+
+    fn get_primary_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        if name != "read" {
+            return Err(ToolError::execution("read provider received another tool"));
+        }
+        arguments
+            .get("filePath")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| ToolError::execution("missing filePath"))
+    }
+
+    fn get_simplified_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        self.get_primary_argument(name, arguments)
+    }
+
+    async fn prepare(
+        &self,
+        _ctx: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        let raw = call
+            .arguments
+            .get("filePath")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ToolError::execution("missing filePath"))?;
+        let prepared_path = format!("canonical/{raw}");
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(prepared_path.as_bytes()),
+            vec![ApprovalCapability {
+                action: PermissionAction::Read,
+                operation: PreparedCapabilityOperation::new("read:file")
+                    .map_err(|error| ToolError::execution(error.to_string()))?,
+            }],
+            vec![PreparedApprovalResource {
+                capability: PermissionAction::Read,
+                canonical: PreparedResourceIdentity::new(format!(
+                    "file:{}",
+                    Sha256Digest::of_bytes(b"divergent-raw")
+                ))
+                .map_err(|error| ToolError::execution(error.to_string()))?,
+                binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"divergent"),
+                binding_lifetime: PreparedBindingLifetime::ProcessLocal,
+                boundary: ApprovalBoundary::Exact,
+                source: ApprovalResourceSource::PrimaryOperation,
+            }],
+            Sha256Digest::of_bytes(b"divergent context"),
+        )
+        .map_err(|error| ToolError::execution(error.to_string()))?;
+        PreparedTool::new(
+            operation,
+            serde_json::json!({"filePath": prepared_path}),
+            None,
+            Box::new(DivergentReadExecutor),
+        )?
+        .with_policy_labels(vec!["divergent-raw".into()])
+    }
+}
+
+#[async_trait]
+impl PreparedExecutor for DivergentReadExecutor {
+    async fn revalidate(&self) -> Result<(), ToolError> {
+        Ok(())
+    }
+
+    async fn execute(
+        self: Box<Self>,
+        _context: ToolExecutionContext,
+    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
+        unreachable!("divergence test never executes")
+    }
+}
+
+#[tokio::test]
+async fn permission_labels_come_from_get_primary_argument_on_prepared_arguments() {
+    let provider = DivergentReadProvider;
+    let raw = serde_json::json!({"filePath":"src/lib.rs"});
+    assert_eq!(
+        provider
+            .get_primary_argument("read", &raw)
+            .expect("raw primary"),
+        "src/lib.rs"
+    );
+    let prepared = provider
+        .prepare(
+            ToolPreparationContext {
+                session: SessionId::new_v7(),
+                run: cookie_agent_protocol::RunId::new_v7(),
+                cwd: "/tmp".into(),
+                workspace_root: "/tmp".into(),
+            },
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: "read".into(),
+                arguments: raw,
+            },
+        )
+        .await
+        .expect("prepare");
+    assert_eq!(prepared.policy_labels(), ["divergent-raw"]);
+    let labeled =
+        crate::runtime::tool_execution::apply_primary_argument_labels(&provider, "read", prepared)
+            .expect("overwrite");
+    assert_eq!(
+        provider
+            .get_primary_argument("read", labeled.normalized_arguments())
+            .expect("prepared primary"),
+        "canonical/src/lib.rs"
+    );
+    assert_eq!(labeled.policy_labels(), ["canonical/src/lib.rs"]);
 }

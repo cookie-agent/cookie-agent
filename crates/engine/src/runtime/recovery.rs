@@ -437,6 +437,7 @@ impl Engine {
         for session in self.inner.store.all() {
             for envelope in session.log.events() {
                 if let Event::TreeApprovalGrantCommitted { grant } = envelope.payload
+                    && !grant.resources.is_empty()
                     && grant.resources.iter().all(|resource| {
                         resource.binding_lifetime
                             == cookie_agent_protocol::PreparedBindingLifetime::RestartStable

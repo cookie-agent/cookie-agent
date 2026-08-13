@@ -1,5 +1,5 @@
 ---
-schema: 3
+schema: 4
 description: General implementation agent with model fallback and worker delegation
 mode: primary
 enabled: true
@@ -7,10 +7,11 @@ model_fallback:
   - { model: "kimi-for-coding/kimi-for-coding", variant: base }
   - { model: "openai/gpt-5.6-luna", variant: high }
   - { model: "quantumcookie.gateway/deepseek-v4-flash", variant: base }
-tools: [read, grep, glob, write, edit, bash]
+tools: [read, write, edit, bash]
 permissions:
   read:
     "*": allow
+    "/*": ask
     ".env": deny
     "*/.env": deny
     ".env.*": deny
@@ -27,12 +28,13 @@ permissions:
     "*/.netrc": deny
     "application_default_credentials.json": deny
     "*/application_default_credentials.json": deny
-  grep: deny
-  glob: deny
   write: ask
-  bash: ask
+  bash:
+    "*": ask
+    "*cat*": deny
+    "*rm*": deny
+    "*rmdir*": deny
   delegate:
     worker: ask
-  external_directory: ask
 ---
 You are the primary implementation agent. Solve the requested software task precisely, use the available tools safely, and delegate focused work to the worker agent when that improves execution.

@@ -57,6 +57,33 @@ impl ToolProvider for EditTool {
         }])
     }
 
+    fn get_primary_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        if name != "edit" {
+            return Err(ToolError::execution("edit provider received another tool"));
+        }
+        let args: EditArgs = parse_args("edit", arguments.clone())?;
+        if args.file_path.is_empty() {
+            return Err(ToolError::execution("filePath must not be empty"));
+        }
+        Ok(crate::permission_path_label(
+            &args.file_path,
+            &self.workspace,
+        ))
+    }
+
+    fn get_simplified_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        let path = self.get_primary_argument(name, arguments)?;
+        Ok(crate::simplified_display_path(&path, &self.workspace))
+    }
+
     async fn prepare(
         &self,
         ctx: ToolPreparationContext,
@@ -106,26 +133,18 @@ impl ToolProvider for EditTool {
         binding.extend_from_slice(&(count as u64).to_be_bytes());
         binding.extend_from_slice(Sha256Digest::of_bytes(&new_bytes).as_str().as_bytes());
         binding.extend_from_slice(&target.manifest_bytes()?);
-        let (resources, policy_labels, external) = prepared_path_resources(
+        let (resources, policy_labels) = prepared_path_resources(
             PermissionAction::Write,
             "file",
             &target.display_path,
             &self.workspace,
             &binding,
-            false,
         )?;
         let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
         let operation = prepared_operation(
             "edit",
             &args,
-            if external {
-                vec![
-                    (PermissionAction::Write, "edit"),
-                    (PermissionAction::ExternalDirectory, "guard"),
-                ]
-            } else {
-                vec![(PermissionAction::Write, "edit")]
-            },
+            vec![(PermissionAction::Write, "edit")],
             resources,
             &context,
         )?;
@@ -181,6 +200,58 @@ mod tests {
     use cookie_agent_protocol::{RunId, SessionId, ToolCallId};
 
     use super::EditTool;
+
+    #[test]
+    fn primary_argument_is_the_file_path() {
+        let tool = EditTool::new("/tmp");
+        assert_eq!(
+            tool.get_primary_argument(
+                "edit",
+                &serde_json::json!({
+                    "filePath":"value.txt",
+                    "oldString":"a",
+                    "newString":"b"
+                })
+            )
+            .expect("primary"),
+            "value.txt"
+        );
+        assert!(matches!(
+            tool.get_primary_argument(
+                "edit",
+                &serde_json::json!({"oldString":"a","newString":"b"})
+            ),
+            Err(ToolError::Failed(_))
+        ));
+    }
+
+    #[test]
+    fn simplified_argument_abbreviates_workspace_and_home_paths() {
+        let tool = EditTool::new("/workspace");
+        let args = serde_json::json!({
+            "filePath":"/workspace/value.txt",
+            "oldString":"a",
+            "newString":"b"
+        });
+        assert_eq!(
+            tool.get_simplified_argument("edit", &args)
+                .expect("workspace"),
+            "value.txt"
+        );
+        let home = std::env::var("HOME").expect("HOME");
+        assert_eq!(
+            tool.get_simplified_argument(
+                "edit",
+                &serde_json::json!({
+                    "filePath": format!("{home}/value.txt"),
+                    "oldString":"a",
+                    "newString":"b"
+                })
+            )
+            .expect("home"),
+            "~/value.txt"
+        );
+    }
 
     #[tokio::test]
     async fn ambiguous_single_replacement_is_rejected_before_approval() {

@@ -2174,7 +2174,23 @@ mod tests {
                                         )
                                         .expect("capability operation"),
                                 }],
-                                Vec::new(),
+                                vec![cookie_agent_protocol::PreparedApprovalResource {
+                                    capability: cookie_agent_protocol::PermissionAction::Bash,
+                                    canonical:
+                                        cookie_agent_protocol::PreparedResourceIdentity::new(
+                                            "command:replay",
+                                        )
+                                        .expect("resource identity"),
+                                    binding_digest:
+                                        cookie_agent_protocol::PreparedResourceDigest::from_canonical_binding_bytes(
+                                            b"replay",
+                                        ),
+                                    binding_lifetime:
+                                        cookie_agent_protocol::PreparedBindingLifetime::ProcessLocal,
+                                    boundary: cookie_agent_protocol::ApprovalBoundary::Exact,
+                                    source:
+                                        cookie_agent_protocol::ApprovalResourceSource::PrimaryOperation,
+                                }],
                                 cookie_agent_protocol::Sha256Digest::of_bytes(b"context"),
                             )
                             .expect("prepared operation"),

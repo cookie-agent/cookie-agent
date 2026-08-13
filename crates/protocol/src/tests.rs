@@ -141,17 +141,136 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn exact_versions_are_current_only() {
-    assert_eq!(PROTOCOL_VERSION, 8);
-    assert_eq!(EVENT_SCHEMA_VERSION, 12);
+    assert_eq!(PROTOCOL_VERSION, 9);
+    assert_eq!(EVENT_SCHEMA_VERSION, 13);
     assert_eq!(SESSION_META_SCHEMA_VERSION, 9);
-    assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 9);
-    assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 2);
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(7)).is_err());
-    assert!(serde_json::from_value::<AgentSchemaVersion>(json!(2)).is_err());
-    assert!(serde_json::from_value::<EventSchemaVersion>(json!(11)).is_err());
-    assert!(serde_json::from_value::<DelegationJournalSchemaVersion>(json!(8)).is_err());
-    assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(1)).is_err());
+    assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 10);
+    assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 3);
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(8)).is_err());
+    assert!(serde_json::from_value::<AgentSchemaVersion>(json!(3)).is_err());
+    assert!(serde_json::from_value::<EventSchemaVersion>(json!(12)).is_err());
+    assert!(serde_json::from_value::<DelegationJournalSchemaVersion>(json!(9)).is_err());
+    assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(2)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
+}
+
+fn test_resource(binding: &[u8]) -> PreparedApprovalResource {
+    PreparedApprovalResource {
+        capability: PermissionAction::Read,
+        canonical: PreparedResourceIdentity::new(format!(
+            "file:{}",
+            Sha256Digest::of_bytes(binding)
+        ))
+        .expect("resource identity"),
+        binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(binding),
+        binding_lifetime: PreparedBindingLifetime::ProcessLocal,
+        boundary: ApprovalBoundary::Exact,
+        source: ApprovalResourceSource::PrimaryOperation,
+    }
+}
+
+#[test]
+fn prepared_operation_wire_requires_nonempty_resources_and_accepts_multiple() {
+    let capability = ApprovalCapability {
+        action: PermissionAction::Read,
+        operation: PreparedCapabilityOperation::new("read:file").expect("capability operation"),
+    };
+    let operation = PreparedOperationIdentity::new(
+        Sha256Digest::of_bytes(b"arguments"),
+        vec![capability],
+        vec![test_resource(b"first"), test_resource(b"second")],
+        Sha256Digest::of_bytes(b"context"),
+    )
+    .expect("multiple resources");
+    let valid = serde_json::to_value(operation).expect("operation JSON");
+    assert_eq!(valid["resources"].as_array().expect("resources").len(), 2);
+    assert!(valid.get("resource").is_none());
+    assert!(serde_json::from_value::<PreparedOperationIdentity>(valid.clone()).is_ok());
+
+    let mut missing = valid.clone();
+    missing
+        .as_object_mut()
+        .expect("operation object")
+        .remove("resources");
+    assert!(serde_json::from_value::<PreparedOperationIdentity>(missing).is_err());
+
+    let mut empty = valid.clone();
+    empty["resources"] = json!([]);
+    assert!(serde_json::from_value::<PreparedOperationIdentity>(empty).is_err());
+
+    let mut singular = valid;
+    let object = singular.as_object_mut().expect("operation object");
+    object.remove("resources");
+    object.insert("resource".into(), json!(test_resource(b"first")));
+    assert!(serde_json::from_value::<PreparedOperationIdentity>(singular).is_err());
+}
+
+fn test_evaluation(binding: &[u8]) -> ApprovalEvaluation {
+    let resource = test_resource(binding);
+    ApprovalEvaluation {
+        resource_digest: resource.binding_digest,
+        effect: PermissionEffect::Ask,
+        trace: DecisionTrace {
+            action: PermissionAction::Read,
+            normalized_resource: "README.md".into(),
+            candidates: Vec::new(),
+            effect: PermissionEffect::Ask,
+            precedence_reason: "test".into(),
+        },
+    }
+}
+
+#[test]
+fn approval_wire_requires_nonempty_evaluations_and_accepts_multiple() {
+    let first = b"request-first";
+    let second = b"request-second";
+    let operation = PreparedOperationIdentity::new(
+        Sha256Digest::of_bytes(b"arguments"),
+        vec![ApprovalCapability {
+            action: PermissionAction::Read,
+            operation: PreparedCapabilityOperation::new("read:file").expect("capability operation"),
+        }],
+        vec![test_resource(first), test_resource(second)],
+        Sha256Digest::of_bytes(b"context"),
+    )
+    .expect("operation");
+    let request = ApprovalRequest::new(
+        ApprovalId::new_v7(),
+        1,
+        ApprovalTrigger::PermissionPolicy,
+        operation,
+        vec![test_evaluation(first), test_evaluation(second)],
+        ApprovalConstraints {
+            allow_once: true,
+            allow_tree_grant: false,
+            cancellable: true,
+            expires_at: None,
+        },
+    )
+    .expect("approval request");
+    let valid = serde_json::to_value(request).expect("request JSON");
+    assert_eq!(
+        valid["evaluations"].as_array().expect("evaluations").len(),
+        2
+    );
+    assert!(valid.get("evaluation").is_none());
+    assert!(serde_json::from_value::<ApprovalRequest>(valid.clone()).is_ok());
+
+    let mut empty = valid.clone();
+    empty["evaluations"] = json!([]);
+    assert!(serde_json::from_value::<ApprovalRequest>(empty).is_err());
+
+    let decision = ApprovalInternalDecision {
+        decision: ApprovalInternalDecisionKind::Ask,
+        source: ApprovalDecisionSource::Policy,
+        reason_code: ApprovalReasonCode::PolicyRequiresApproval,
+        evaluations: vec![test_evaluation(first), test_evaluation(second)],
+    };
+    let valid_decision = serde_json::to_value(decision).expect("decision JSON");
+    assert!(serde_json::from_value::<ApprovalInternalDecision>(valid_decision.clone()).is_ok());
+    let mut empty_decision = valid_decision;
+    empty_decision["evaluations"] = json!([]);
+    assert!(serde_json::from_value::<ApprovalInternalDecision>(empty_decision).is_err());
 }
 
 #[test]
@@ -294,7 +413,7 @@ fn internal_approval_decision(
         decision,
         source,
         reason_code,
-        evaluations: Vec::new(),
+        evaluations: vec![test_evaluation(b"decision")],
     }
 }
 
@@ -501,7 +620,7 @@ fn frozen_sources_and_credentials_are_strict() {
 }
 
 #[test]
-fn delegation_journal_schema_nine_roundtrips_actual_start_record() {
+fn delegation_journal_schema_ten_roundtrips_actual_start_record() {
     let binding = frozen_binding();
     let manifest_revision = binding.manifest_revision.clone();
     let record = StoredDelegationJournalRecord {

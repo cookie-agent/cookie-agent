@@ -1,4 +1,4 @@
-//! Coherent protocol-8 runtime snapshot state machine.
+//! Coherent protocol-9 runtime snapshot state machine.
 
 use cookie_agent_protocol::{
     CatalogSource, RuntimeChangedNotification, RuntimeRevision, RuntimeSnapshotV1,

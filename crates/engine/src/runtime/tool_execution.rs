@@ -9,7 +9,7 @@ impl Engine {
         call: ToolCall,
         policy: &FrozenRunPolicy,
     ) -> PreparedToolCall {
-        let fallback_presentation = safe_tool_presentation(&call);
+        let fallback_presentation = tool_title_only(&call.name);
         let session = match self.inner.store.get(session_id) {
             Ok(session) => session,
             Err(error) => {
@@ -83,10 +83,11 @@ impl Engine {
             cwd: self.inner.store.cwd().to_owned(),
             workspace_root: self.inner.store.cwd().to_owned(),
         };
-        let prepared = provider
-            .prepare(context, call.clone())
-            .await
-            .map_err(Into::into);
+        let prepared = match provider.prepare(context, call.clone()).await {
+            Ok(prepared) => apply_primary_argument_labels(provider.as_ref(), &call.name, prepared)
+                .map_err(Into::into),
+            Err(error) => Err(error.into()),
+        };
         PreparedToolCall {
             call,
             presentation,
@@ -126,9 +127,6 @@ impl Engine {
                                 resource.capability,
                                 cookie_agent_protocol::PermissionAction::Read
                                     | cookie_agent_protocol::PermissionAction::Write
-                                    | cookie_agent_protocol::PermissionAction::Grep
-                                    | cookie_agent_protocol::PermissionAction::Glob
-                                    | cookie_agent_protocol::PermissionAction::ExternalDirectory
                             )
                     });
                     let approval_policy = engine
@@ -375,10 +373,9 @@ impl Engine {
 pub(super) fn fallback_operation_fingerprint(call: &ToolCall) -> OperationFingerprint {
     let action = PermissionPipeline::action_for_tool(&call.name)
         .unwrap_or(cookie_agent_protocol::PermissionAction::Read);
+    let binding = serde_json::to_vec(&call.arguments).expect("tool arguments serialize");
     let operation = PreparedOperationIdentity::new(
-        Sha256Digest::of_bytes(
-            &serde_json::to_vec(&call.arguments).expect("tool arguments serialize"),
-        ),
+        Sha256Digest::of_bytes(&binding),
         vec![cookie_agent_protocol::ApprovalCapability {
             action,
             operation: cookie_agent_protocol::PreparedCapabilityOperation::new(format!(
@@ -391,47 +388,44 @@ pub(super) fn fallback_operation_fingerprint(call: &ToolCall) -> OperationFinger
                     .expect("static operation")
             }),
         }],
-        Vec::new(),
+        vec![cookie_agent_protocol::PreparedApprovalResource {
+            capability: action,
+            canonical: cookie_agent_protocol::PreparedResourceIdentity::new("tool:prepare-failed")
+                .expect("static resource identity"),
+            binding_digest:
+                cookie_agent_protocol::PreparedResourceDigest::from_canonical_binding_bytes(
+                    &binding,
+                ),
+            binding_lifetime: cookie_agent_protocol::PreparedBindingLifetime::ProcessLocal,
+            boundary: cookie_agent_protocol::ApprovalBoundary::Exact,
+            source: cookie_agent_protocol::ApprovalResourceSource::PrimaryOperation,
+        }],
         Sha256Digest::of_bytes(b"prepare-failed"),
     )
     .expect("fallback prepared identity");
     OperationFingerprint::from_prepared_operation(&operation)
 }
 
-pub(crate) fn safe_tool_presentation(call: &ToolCall) -> ToolCallPresentation {
-    let primary = match call.name.as_str() {
-        "bash" => call.arguments.get("command").and_then(Value::as_str),
-        "read" | "write" | "edit" => call
-            .arguments
-            .get("filePath")
-            .or_else(|| call.arguments.get("file_path"))
-            .or_else(|| call.arguments.get("path"))
-            .and_then(Value::as_str),
-        "grep" => call.arguments.get("pattern").and_then(Value::as_str),
-        "glob" => call.arguments.get("pattern").and_then(Value::as_str),
-        "delegate" => {
-            let agent = call.arguments.get("agent").and_then(Value::as_str);
-            let task = call.arguments.get("task").and_then(Value::as_str);
-            return ToolCallPresentation {
-                title: safe_display(&call.name),
-                primary_argument: agent.map(|agent| {
-                    let agent = redact_presentation(agent);
-                    let task = task
-                        .map(|task| redact_presentation(&truncate_utf8(task, 160)))
-                        .filter(|task| !task.is_empty());
-                    safe_display(&sanitize_safe_text(
-                        &task.map_or(agent.clone(), |task| format!("{agent}: {task}")),
-                        SafeDisplayText::MAX_BYTES,
-                    ))
-                }),
-            };
-        }
-        _ => None,
-    }
-    .map(redact_presentation);
+pub(crate) fn apply_primary_argument_labels(
+    provider: &dyn ToolProvider,
+    name: &str,
+    prepared: PreparedTool,
+) -> Result<PreparedTool, ToolError> {
+    let primary = provider.get_primary_argument(name, prepared.normalized_arguments())?;
+    prepared.with_primary_argument_label(primary)
+}
+
+pub(crate) fn tool_title_only(name: &str) -> ToolCallPresentation {
     ToolCallPresentation {
-        title: safe_display(&call.name),
-        primary_argument: primary.as_deref().map(safe_display),
+        title: safe_display(name),
+        primary_argument: None,
+    }
+}
+
+pub(crate) fn tool_presentation(name: &str, primary: &str) -> ToolCallPresentation {
+    ToolCallPresentation {
+        title: safe_display(name),
+        primary_argument: Some(safe_display(&redact_presentation(primary))),
     }
 }
 

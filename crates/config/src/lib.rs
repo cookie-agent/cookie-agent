@@ -1,4 +1,4 @@
-//! Strict schema-10 runtime configuration and schema-3 Markdown agents.
+//! Strict schema-10 runtime configuration and schema-4 Markdown agents.
 
 mod agent_document;
 mod agents;

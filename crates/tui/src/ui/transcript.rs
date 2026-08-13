@@ -992,7 +992,7 @@ fn assistant_child_layout(
 }
 
 /// A compact or expanded tool row inside its owning assistant item. Compact
-/// rows render the persisted sanitized title and primary argument: running
+/// rows render the persisted sanitized title and simplified argument: running
 /// pulses a `…`/dot suffix with the animation clock, success adds no
 /// suffix, and failed/cancelled/interrupted use their exact concise
 /// markers. `COMPLETED` is never rendered. Exactly one chevron per row,
@@ -2167,7 +2167,7 @@ mod tests {
         )
     }
 
-    // Test fixtures stay explicit about each protocol-8 turn field; grouping them
+    // Test fixtures stay explicit about each protocol-9 turn field; grouping them
     // would obscure the event shape without reducing call-site complexity.
     #[allow(clippy::too_many_arguments)]
     fn turn_committed(
@@ -2318,14 +2318,22 @@ mod tests {
                     operation: PreparedCapabilityOperation::new("execute")
                         .expect("capability operation"),
                 }],
-                Vec::new(),
+                vec![PreparedApprovalResource {
+                    capability: PermissionAction::Bash,
+                    canonical: PreparedResourceIdentity::new("command:test")
+                        .expect("resource identity"),
+                    binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"test"),
+                    binding_lifetime: PreparedBindingLifetime::ProcessLocal,
+                    boundary: ApprovalBoundary::Exact,
+                    source: ApprovalResourceSource::PrimaryOperation,
+                }],
                 Sha256Digest::of_bytes(b"context"),
             )
             .expect("prepared operation"),
         )
     }
 
-    // Fixture mirrors the exact protocol-8 ownership/presentation fields; grouping
+    // Fixture mirrors the exact protocol-9 ownership/presentation fields; grouping
     // them would obscure the event shape.
     #[allow(clippy::too_many_arguments)]
     fn tool_started_at(
@@ -4050,7 +4058,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Streaming reduction against protocol-8 events
+    // Streaming reduction against protocol-9 events
     // ------------------------------------------------------------------
 
     #[test]

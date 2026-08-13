@@ -19,8 +19,6 @@ pub mod bash;
 pub mod delegate;
 pub mod edit;
 pub mod fs_cap;
-pub mod glob;
-pub mod grep;
 pub mod read;
 pub mod write;
 
@@ -129,21 +127,12 @@ pub(crate) fn prepared_path_resources(
     canonical_path: &Path,
     workspace: &Path,
     binding_bytes: &[u8],
-    is_directory: bool,
-) -> Result<(Vec<PreparedApprovalResource>, Vec<String>, bool), ToolError> {
+) -> Result<(Vec<PreparedApprovalResource>, Vec<String>), ToolError> {
     let workspace = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_owned());
-    let external = !canonical_path.starts_with(&workspace);
-    let label = if external {
-        normalized_path(canonical_path)
-    } else {
-        canonical_path
-            .strip_prefix(&workspace)
-            .map(normalized_path)
-            .unwrap_or_else(|_| normalized_path(canonical_path))
-    };
-    let primary = prepared_resource(
+    let label = permission_path_label(&normalized_path(canonical_path), &workspace);
+    let resource = prepared_resource(
         action,
         logical_kind,
         label.as_bytes(),
@@ -151,66 +140,7 @@ pub(crate) fn prepared_path_resources(
         PreparedBindingLifetime::ProcessLocal,
         ApprovalResourceSource::PrimaryOperation,
     )?;
-    let mut resources = Vec::with_capacity(if external { 2 } else { 1 });
-    let mut labels = Vec::with_capacity(resources.capacity());
-    if external {
-        let directory = if is_directory {
-            canonical_path
-        } else {
-            canonical_path.parent().unwrap_or(Path::new("/"))
-        };
-        let boundary = external_directory_boundary(directory);
-        resources.push(prepared_resource(
-            PermissionAction::ExternalDirectory,
-            "external-directory",
-            boundary.as_bytes(),
-            binding_bytes,
-            PreparedBindingLifetime::ProcessLocal,
-            ApprovalResourceSource::ExternalDirectoryGuard,
-        )?);
-        labels.push(boundary);
-    }
-    resources.push(primary);
-    labels.push(label);
-    Ok((resources, labels, external))
-}
-
-pub(crate) fn prepared_pattern_resources(
-    action: PermissionAction,
-    logical_kind: &str,
-    pattern: &str,
-    traversal_root: &Path,
-    workspace: &Path,
-    binding_bytes: &[u8],
-) -> Result<(Vec<PreparedApprovalResource>, Vec<String>, bool), ToolError> {
-    let workspace = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_owned());
-    let external = !traversal_root.starts_with(&workspace);
-    let mut resources = Vec::with_capacity(if external { 2 } else { 1 });
-    let mut labels = Vec::with_capacity(resources.capacity());
-    if external {
-        let boundary = external_directory_boundary(traversal_root);
-        resources.push(prepared_resource(
-            PermissionAction::ExternalDirectory,
-            "external-directory",
-            boundary.as_bytes(),
-            binding_bytes,
-            PreparedBindingLifetime::ProcessLocal,
-            ApprovalResourceSource::ExternalDirectoryGuard,
-        )?);
-        labels.push(boundary);
-    }
-    resources.push(prepared_resource(
-        action,
-        logical_kind,
-        pattern.as_bytes(),
-        binding_bytes,
-        PreparedBindingLifetime::ProcessLocal,
-        ApprovalResourceSource::PrimaryOperation,
-    )?);
-    labels.push(pattern.to_owned());
-    Ok((resources, labels, external))
+    Ok((vec![resource], vec![label]))
 }
 
 fn normalized_path(path: &Path) -> String {
@@ -218,13 +148,49 @@ fn normalized_path(path: &Path) -> String {
     if value.is_empty() { ".".into() } else { value }
 }
 
-fn external_directory_boundary(directory: &Path) -> String {
-    let directory = normalized_path(directory);
-    if directory == "/" {
-        "/*".into()
-    } else {
-        format!("{}/*", directory.trim_end_matches('/'))
+pub(crate) fn permission_path_label(path: &str, workspace: &Path) -> String {
+    let path = normalized_path(Path::new(path));
+    let workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_owned());
+    if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(&workspace)) {
+        return relative;
     }
+    path
+}
+
+pub(crate) fn simplified_display_path(path: &str, workspace: &Path) -> String {
+    let path = normalized_path(Path::new(path));
+    if !Path::new(&path).is_absolute() {
+        return path;
+    }
+    if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(workspace)) {
+        return relative;
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = normalized_path(Path::new(&home));
+        if let Some(relative) = strip_absolute_prefix(&path, &home) {
+            return if relative == "." {
+                "~".into()
+            } else {
+                format!("~/{relative}")
+            };
+        }
+    }
+    path
+}
+
+fn strip_absolute_prefix(path: &str, prefix: &str) -> Option<String> {
+    let prefix = prefix.trim_end_matches('/');
+    if prefix.is_empty() {
+        return None;
+    }
+    if path == prefix {
+        return Some(".".into());
+    }
+    path.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .map(str::to_owned)
 }
 
 #[derive(Debug)]
@@ -233,8 +199,6 @@ pub struct BuiltinTools {
     write: write::WriteTool,
     edit: edit::EditTool,
     bash: bash::BashTool,
-    grep: grep::GrepTool,
-    glob: glob::GlobTool,
 }
 
 impl BuiltinTools {
@@ -245,9 +209,7 @@ impl BuiltinTools {
             read: read::ReadTool::new(workspace.clone()),
             write: write::WriteTool::new(workspace.clone()),
             edit: edit::EditTool::new(workspace.clone()),
-            bash: bash::BashTool::new(workspace.clone()),
-            grep: grep::GrepTool::new(workspace.clone()),
-            glob: glob::GlobTool::new(workspace),
+            bash: bash::BashTool::new(workspace),
         }
     }
 }
@@ -266,9 +228,35 @@ impl ToolProvider for BuiltinTools {
         tools.extend(self.write.tools_for_session(ctx)?);
         tools.extend(self.edit.tools_for_session(ctx)?);
         tools.extend(self.bash.tools_for_session(ctx)?);
-        tools.extend(self.grep.tools_for_session(ctx)?);
-        tools.extend(self.glob.tools_for_session(ctx)?);
         Ok(tools)
+    }
+
+    fn get_primary_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        match name {
+            "read" => self.read.get_primary_argument(name, arguments),
+            "write" => self.write.get_primary_argument(name, arguments),
+            "edit" => self.edit.get_primary_argument(name, arguments),
+            "bash" => self.bash.get_primary_argument(name, arguments),
+            _ => Err(tool_error(format!("unknown built-in tool `{name}`"))),
+        }
+    }
+
+    fn get_simplified_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        match name {
+            "read" => self.read.get_simplified_argument(name, arguments),
+            "write" => self.write.get_simplified_argument(name, arguments),
+            "edit" => self.edit.get_simplified_argument(name, arguments),
+            "bash" => self.bash.get_simplified_argument(name, arguments),
+            _ => Err(tool_error(format!("unknown built-in tool `{name}`"))),
+        }
     }
 
     async fn prepare(
@@ -281,8 +269,6 @@ impl ToolProvider for BuiltinTools {
             "write" => self.write.prepare(ctx, call).await,
             "edit" => self.edit.prepare(ctx, call).await,
             "bash" => self.bash.prepare(ctx, call).await,
-            "grep" => self.grep.prepare(ctx, call).await,
-            "glob" => self.glob.prepare(ctx, call).await,
             _ => Err(tool_error(format!("unknown built-in tool `{}`", call.name))),
         }
     }
@@ -290,12 +276,73 @@ impl ToolProvider for BuiltinTools {
 
 #[cfg(test)]
 mod tests {
+    use cookie_agent_engine::{
+        SessionToolContext, ToolCall, ToolError, ToolPreparationContext, ToolProvider,
+    };
     use cookie_agent_protocol::{
         ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, OperationFingerprint,
         PermissionAction, PreparedApprovalResource, PreparedBindingLifetime,
         PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
-        PreparedResourceIdentity, Sha256Digest,
+        PreparedResourceIdentity, RunId, SessionId, Sha256Digest, ToolCallId,
     };
+
+    #[test]
+    fn builtin_tools_do_not_expose_grep_or_glob() {
+        let tools = super::BuiltinTools::new("/tmp");
+        let names = tools
+            .tools_for_session(&SessionToolContext {
+                session: SessionId::new_v7(),
+            })
+            .expect("built-in tools")
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["read", "write", "edit", "bash"]);
+        for name in ["grep", "glob"] {
+            let arguments = serde_json::json!({});
+            assert!(
+                matches!(
+                    tools.get_primary_argument(name, &arguments),
+                    Err(ToolError::Failed(_))
+                ),
+                "{name} primary"
+            );
+            assert!(
+                matches!(
+                    tools.get_simplified_argument(name, &arguments),
+                    Err(ToolError::Failed(_))
+                ),
+                "{name} simplified"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_grep_and_glob_calls_fail_closed() {
+        let tools = super::BuiltinTools::new("/tmp");
+        let context = ToolPreparationContext {
+            session: SessionId::new_v7(),
+            run: RunId::new_v7(),
+            cwd: "/tmp".into(),
+            workspace_root: "/tmp".into(),
+        };
+        for name in ["grep", "glob"] {
+            let result = tools
+                .prepare(
+                    context.clone(),
+                    ToolCall {
+                        id: ToolCallId::new_v7(),
+                        name: name.into(),
+                        arguments: serde_json::json!({"pattern":"TODO"}),
+                    },
+                )
+                .await;
+            assert!(
+                matches!(result, Err(ToolError::Failed(message)) if message.contains("unknown built-in tool")),
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn fixed_identity_v7_fingerprint_is_golden_and_deterministic() {
@@ -328,6 +375,30 @@ mod tests {
         assert_eq!(
             fingerprint,
             OperationFingerprint::from_prepared_operation(&operation)
+        );
+    }
+
+    #[test]
+    fn simplified_display_path_prefers_workspace_then_home() {
+        assert_eq!(
+            super::simplified_display_path("src/lib.rs", std::path::Path::new("/workspace")),
+            "src/lib.rs"
+        );
+        assert_eq!(
+            super::simplified_display_path(
+                "/workspace/src/lib.rs",
+                std::path::Path::new("/workspace")
+            ),
+            "src/lib.rs"
+        );
+        assert_eq!(
+            super::simplified_display_path("/workspace", std::path::Path::new("/workspace")),
+            "."
+        );
+        let home = std::env::var("HOME").expect("HOME");
+        assert_eq!(
+            super::simplified_display_path(&home, std::path::Path::new("/workspace")),
+            "~"
         );
     }
 

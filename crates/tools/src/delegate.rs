@@ -70,6 +70,22 @@ impl ToolProvider for DelegateToolProvider {
             .collect())
     }
 
+    fn get_primary_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        delegate_argument(name, arguments)
+    }
+
+    fn get_simplified_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        delegate_argument(name, arguments)
+    }
+
     async fn prepare(
         &self,
         ctx: ToolPreparationContext,
@@ -156,5 +172,36 @@ impl PreparedExecutor for DelegateExecutor {
             .await_delegate(handle)
             .await
             .map_err(|error| ToolError::execution(error.to_string()))
+    }
+}
+
+fn delegate_argument(name: &str, arguments: &serde_json::Value) -> Result<String, ToolError> {
+    if name != "delegate" {
+        return Err(ToolError::execution(
+            "delegate provider received another tool",
+        ));
+    }
+    let args: DelegateArgs = serde_json::from_value(arguments.clone())
+        .map_err(|error| ToolError::execution(error.to_string()))?;
+    Ok(args.agent.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use cookie_agent_engine::ToolError;
+
+    use super::delegate_argument;
+
+    #[test]
+    fn primary_and_simplified_arguments_are_the_agent_id() {
+        let arguments = serde_json::json!({"task":"review","agent":"reviewer"});
+        assert_eq!(
+            delegate_argument("delegate", &arguments).expect("delegate argument"),
+            "reviewer"
+        );
+        assert!(matches!(
+            delegate_argument("delegate", &serde_json::json!({"task":"review"})),
+            Err(ToolError::Failed(_))
+        ));
     }
 }

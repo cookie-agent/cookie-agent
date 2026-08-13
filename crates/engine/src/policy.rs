@@ -351,12 +351,7 @@ fn wire_permission(
             cookie_agent_config::PermissionAction::Read => protocol::PermissionAction::Read,
             cookie_agent_config::PermissionAction::Write => protocol::PermissionAction::Write,
             cookie_agent_config::PermissionAction::Bash => protocol::PermissionAction::Bash,
-            cookie_agent_config::PermissionAction::Grep => protocol::PermissionAction::Grep,
-            cookie_agent_config::PermissionAction::Glob => protocol::PermissionAction::Glob,
             cookie_agent_config::PermissionAction::Delegate => protocol::PermissionAction::Delegate,
-            cookie_agent_config::PermissionAction::ExternalDirectory => {
-                protocol::PermissionAction::ExternalDirectory
-            }
         },
         resource: protocol::WildcardPattern::new(rule.resource.as_str())
             .map_err(|_| EngineError::RuntimeCompileFailed)?,
@@ -414,8 +409,6 @@ fn wire_tool(tool: cookie_agent_config::ToolName) -> protocol::ToolName {
         cookie_agent_config::ToolName::Write => protocol::ToolName::Write,
         cookie_agent_config::ToolName::Edit => protocol::ToolName::Edit,
         cookie_agent_config::ToolName::Bash => protocol::ToolName::Bash,
-        cookie_agent_config::ToolName::Grep => protocol::ToolName::Grep,
-        cookie_agent_config::ToolName::Glob => protocol::ToolName::Glob,
     }
 }
 
@@ -425,8 +418,6 @@ pub(crate) const fn tool_name(tool: protocol::ToolName) -> &'static str {
         protocol::ToolName::Write => "write",
         protocol::ToolName::Edit => "edit",
         protocol::ToolName::Bash => "bash",
-        protocol::ToolName::Grep => "grep",
-        protocol::ToolName::Glob => "glob",
     }
 }
 

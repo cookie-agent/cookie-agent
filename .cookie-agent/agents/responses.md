@@ -1,14 +1,15 @@
 ---
-schema: 3
+schema: 4
 description: Primary agent pinned to the OpenAI Responses model and high variant
 mode: primary
 enabled: true
 model_fallback:
   - { model: "openai/gpt-5.6-luna", variant: high }
-tools: [read, grep, glob, write, edit, bash]
+tools: [read, write, edit, bash]
 permissions:
   read:
     "*": allow
+    "/*": ask
     ".env": deny
     "*/.env": deny
     ".env.*": deny
@@ -25,12 +26,13 @@ permissions:
     "*/.netrc": deny
     "application_default_credentials.json": deny
     "*/application_default_credentials.json": deny
-  grep: deny
-  glob: deny
   write: ask
-  bash: ask
+  bash:
+    "*": ask
+    "*cat*": deny
+    "*rm*": deny
+    "*rmdir*": deny
   delegate:
     worker: ask
-  external_directory: ask
 ---
 You are the OpenAI Responses implementation agent. Execute precisely with the configured high reasoning variant and use worker delegation only for bounded subtasks.

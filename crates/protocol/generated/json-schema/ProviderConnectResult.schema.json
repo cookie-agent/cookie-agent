@@ -826,7 +826,7 @@
         },
         "snapshot_schema_version": {
           "type": "integer",
-          "const": 2
+          "const": 3
         }
       },
       "additionalProperties": false,
@@ -985,9 +985,7 @@
         "read",
         "write",
         "edit",
-        "bash",
-        "grep",
-        "glob"
+        "bash"
       ]
     },
     "VariantOrigin": {

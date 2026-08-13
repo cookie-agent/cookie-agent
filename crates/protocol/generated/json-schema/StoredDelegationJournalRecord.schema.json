@@ -5,7 +5,7 @@
   "properties": {
     "delegation_journal_schema_version": {
       "type": "integer",
-      "const": 9
+      "const": 10
     },
     "record": {
       "$ref": "#/$defs/DelegationJournalRecord"
@@ -100,7 +100,7 @@
         },
         "schema": {
           "type": "integer",
-          "const": 3
+          "const": 4
         },
         "selected_suffix_start": {
           "type": "integer",
@@ -1011,10 +1011,7 @@
         "read",
         "write",
         "bash",
-        "grep",
-        "glob",
-        "delegate",
-        "external_directory"
+        "delegate"
       ]
     },
     "PermissionEffect": {
@@ -1401,9 +1398,7 @@
         "read",
         "write",
         "edit",
-        "bash",
-        "grep",
-        "glob"
+        "bash"
       ]
     }
   }

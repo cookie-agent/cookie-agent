@@ -156,7 +156,6 @@ pub enum ApprovalBoundary {
 pub enum ApprovalResourceSource {
     PrimaryOperation,
     SecondaryOperation,
-    ExternalDirectoryGuard,
     ModelRequest,
     DoomLoopGuard,
 }
@@ -240,7 +239,7 @@ pub struct PreparedOperationIdentity {
     normalized_arguments_digest: Sha256Digest,
     #[schemars(length(min = 1, max = 256))]
     capabilities: Vec<ApprovalCapability>,
-    #[schemars(length(max = 256))]
+    #[schemars(length(min = 1, max = 256))]
     resources: Vec<PreparedApprovalResource>,
     execution_context_digest: Sha256Digest,
     capability_lifetime: PreparedCapabilityLifetime,
@@ -254,6 +253,9 @@ impl PreparedOperationIdentity {
     ) -> Result<Self, ApprovalSchemaError> {
         if capabilities.is_empty() || capabilities.len() > 256 {
             return Err(ApprovalSchemaError::MissingCapability);
+        }
+        if resources.is_empty() {
+            return Err(ApprovalSchemaError::MissingResource);
         }
         if resources.len() > 256 {
             return Err(ApprovalSchemaError::TooManyResources);
@@ -422,11 +424,14 @@ pub struct ApprovalInternalDecision {
     pub decision: ApprovalInternalDecisionKind,
     pub source: ApprovalDecisionSource,
     pub reason_code: ApprovalReasonCode,
-    #[schemars(length(max = 256))]
+    #[schemars(length(min = 1, max = 256))]
     pub evaluations: Vec<ApprovalEvaluation>,
 }
 impl ApprovalInternalDecision {
     pub fn validate(&self) -> Result<(), ApprovalSchemaError> {
+        if self.evaluations.is_empty() {
+            return Err(ApprovalSchemaError::MissingEvaluation);
+        }
         if self.evaluations.len() > 256 {
             return Err(ApprovalSchemaError::TooManyEvaluations);
         }
@@ -644,7 +649,7 @@ pub struct ApprovalRequest {
     trigger: ApprovalTrigger,
     operation_fingerprint: OperationFingerprint,
     operation: PreparedOperationIdentity,
-    #[schemars(length(max = 256))]
+    #[schemars(length(min = 1, max = 256))]
     evaluations: Vec<ApprovalEvaluation>,
     constraints: ApprovalConstraints,
 }
@@ -659,6 +664,9 @@ impl ApprovalRequest {
     ) -> Result<Self, ApprovalSchemaError> {
         if revision == 0 {
             return Err(ApprovalSchemaError::ZeroRevision);
+        }
+        if evaluations.is_empty() {
+            return Err(ApprovalSchemaError::MissingEvaluation);
         }
         if evaluations.len() > 256 {
             return Err(ApprovalSchemaError::TooManyEvaluations);
@@ -682,11 +690,7 @@ impl ApprovalRequest {
                 resource.binding_lifetime == PreparedBindingLifetime::ProcessLocal
                     || matches!(
                         resource.capability,
-                        PermissionAction::Read
-                            | PermissionAction::Write
-                            | PermissionAction::Grep
-                            | PermissionAction::Glob
-                            | PermissionAction::ExternalDirectory
+                        PermissionAction::Read | PermissionAction::Write
                     )
             })
         {
@@ -761,7 +765,7 @@ pub struct TreeApprovalGrant {
     pub operation_fingerprint: OperationFingerprint,
     #[schemars(length(min = 1, max = 256))]
     pub capabilities: Vec<ApprovalCapability>,
-    #[schemars(length(max = 256))]
+    #[schemars(length(min = 1, max = 256))]
     pub resources: Vec<PreparedApprovalResource>,
     pub created_at: Timestamp,
 }
@@ -769,6 +773,9 @@ impl TreeApprovalGrant {
     pub fn validate(&self) -> Result<(), ApprovalSchemaError> {
         if self.capabilities.is_empty() || self.capabilities.len() > 256 {
             return Err(ApprovalSchemaError::MissingCapability);
+        }
+        if self.resources.is_empty() {
+            return Err(ApprovalSchemaError::MissingResource);
         }
         if self.resources.len() > 256 {
             return Err(ApprovalSchemaError::TooManyResources);
@@ -783,11 +790,7 @@ impl TreeApprovalGrant {
         if self.resources.iter().any(|resource| {
             matches!(
                 resource.capability,
-                PermissionAction::Read
-                    | PermissionAction::Write
-                    | PermissionAction::Grep
-                    | PermissionAction::Glob
-                    | PermissionAction::ExternalDirectory
+                PermissionAction::Read | PermissionAction::Write
             )
         }) {
             return Err(ApprovalSchemaError::FilesystemTreeGrant);
@@ -984,10 +987,12 @@ impl<'de> Deserialize<'de> for ApprovalRecord {
 pub enum ApprovalSchemaError {
     InvalidPreparedIdentity,
     MissingCapability,
+    MissingResource,
     TooManyResources,
     UnboundResourceCapability,
     DuplicateResourceBinding,
     ZeroRevision,
+    MissingEvaluation,
     IncompleteEvaluations,
     InvalidTreeGrantConstraint,
     ProcessLocalTreeGrant,
@@ -1001,12 +1006,14 @@ impl fmt::Display for ApprovalSchemaError {
         f.write_str(match self {
             Self::InvalidPreparedIdentity => "invalid stable prepared resource identity",
             Self::MissingCapability => "prepared operation requires at least one capability",
+            Self::MissingResource => "prepared operation requires at least one resource",
             Self::TooManyResources => "prepared operation exceeds 256 resources",
             Self::UnboundResourceCapability => {
                 "prepared resource capability is not present in operation capabilities"
             }
             Self::DuplicateResourceBinding => "prepared resource binding digests must be unique",
             Self::ZeroRevision => "approval revision must be positive",
+            Self::MissingEvaluation => "approval requires at least one evaluation",
             Self::IncompleteEvaluations => {
                 "approval evaluations must exactly cover prepared resources"
             }

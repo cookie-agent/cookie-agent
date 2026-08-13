@@ -1,14 +1,15 @@
 ---
-schema: 3
+schema: 4
 description: Primary agent pinned to the Anthropic-wire model and high variant
 mode: primary
 enabled: true
 model_fallback:
   - { model: "kimi-for-coding/kimi-for-coding", variant: base }
-tools: [read, grep, glob, write, edit, bash]
+tools: [read, write, edit, bash]
 permissions:
   read:
     "*": allow
+    "/*": ask
     ".env": deny
     "*/.env": deny
     ".env.*": deny
@@ -25,12 +26,13 @@ permissions:
     "*/.netrc": deny
     "application_default_credentials.json": deny
     "*/application_default_credentials.json": deny
-  grep: deny
-  glob: deny
   write: ask
-  bash: ask
+  bash:
+    "*": ask
+    "*cat*": deny
+    "*rm*": deny
+    "*rmdir*": deny
   delegate:
     worker: ask
-  external_directory: ask
 ---
 You are the Anthropic-wire implementation agent. Complete the task with the exact configured model behavior and delegate only focused supporting work.

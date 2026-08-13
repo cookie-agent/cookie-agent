@@ -680,7 +680,7 @@ impl App {
         self.refresh_coherent_lists().await;
     }
 
-    /// Fetch and install the sole protocol-8 discovery object.
+    /// Fetch and install the sole protocol-9 discovery object.
     pub(super) async fn refresh_coherent_lists(&mut self) {
         match self.client.runtime_snapshot().await {
             Ok(result) => self.install_initial_runtime(result.snapshot),
@@ -5385,13 +5385,7 @@ pub(super) fn approval_content(approval: &ApprovalState) -> String {
     writeln!(
         content,
         "consent target: {}",
-        approval
-            .evaluations
-            .first()
-            .map_or("<no resource>", |evaluation| evaluation
-                .trace
-                .normalized_resource
-                .as_str())
+        approval.evaluations[0].trace.normalized_resource
     )
     .expect("writing to a String cannot fail");
     writeln!(content, "approval id: {}", approval.approval_id)
@@ -5445,9 +5439,10 @@ pub(super) fn approval_content(approval: &ApprovalState) -> String {
             .evaluations
             .iter()
             .find(|evaluation| evaluation.resource_digest == resource.binding_digest)
-            .map_or("<missing evaluation>", |evaluation| {
-                evaluation.trace.normalized_resource.as_str()
-            });
+            .expect("validated approval evaluations cover every resource")
+            .trace
+            .normalized_resource
+            .as_str();
         writeln!(
             content,
             "{}. action: {:?}\n   normalized identity: {}\n   canonical identity: {}\n   binding digest: {}\n   boundary: {}\n   binding lifetime: {:?}\n   source: {:?}",

@@ -7,7 +7,7 @@ use ts_rs::TS;
 use crate::{AgentId, FrozenModelBinding, ModelKey, ModelSelection, Sha256Digest, WildcardPattern};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
-#[ts(type = "3")]
+#[ts(type = "4")]
 pub struct AgentSchemaVersion(());
 impl AgentSchemaVersion {
     #[must_use]
@@ -16,7 +16,7 @@ impl AgentSchemaVersion {
     }
     #[must_use]
     pub const fn value(self) -> u32 {
-        3
+        4
     }
 }
 impl Serialize for AgentSchemaVersion {
@@ -24,7 +24,7 @@ impl Serialize for AgentSchemaVersion {
     where
         S: serde::Serializer,
     {
-        s.serialize_u32(3)
+        s.serialize_u32(4)
     }
 }
 impl<'de> Deserialize<'de> for AgentSchemaVersion {
@@ -33,11 +33,11 @@ impl<'de> Deserialize<'de> for AgentSchemaVersion {
         D: serde::Deserializer<'de>,
     {
         let v = u32::deserialize(d)?;
-        if v == 3 {
+        if v == 4 {
             Ok(Self::current())
         } else {
             Err(serde::de::Error::custom(format!(
-                "unsupported exact agent schema {v}; expected 3"
+                "unsupported exact agent schema {v}; expected 4"
             )))
         }
     }
@@ -50,7 +50,7 @@ impl JsonSchema for AgentSchemaVersion {
         Cow::Borrowed("AgentSchemaVersion")
     }
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"integer","const":3})
+        json_schema!({"type":"integer","const":4})
     }
 }
 
@@ -74,8 +74,6 @@ pub enum ToolName {
     Write,
     Edit,
     Bash,
-    Grep,
-    Glob,
 }
 
 #[derive(
@@ -86,10 +84,7 @@ pub enum PermissionAction {
     Read,
     Write,
     Bash,
-    Grep,
-    Glob,
     Delegate,
-    ExternalDirectory,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]

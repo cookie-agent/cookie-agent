@@ -100,8 +100,8 @@ fn validate_permission_expressions(
         for resource in resources.keys().filter_map(serde_yaml::Value::as_str) {
             let remainder = resource.replace("${workspace_dir}", "");
             let malformed_expression = remainder.contains("${");
-            let unsupported_action = resource.contains("${workspace_dir}")
-                && !matches!(action, "read" | "write" | "external_directory");
+            let unsupported_action =
+                resource.contains("${workspace_dir}") && !matches!(action, "read" | "write");
             if malformed_expression || unsupported_action {
                 return Err(ConfigError::AgentPermissionExpression(agent.clone()));
             }

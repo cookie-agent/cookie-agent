@@ -277,10 +277,10 @@ async fn connect(server: Arc<Server>) -> InProcessStream {
         &mut client,
         1,
         "handshake",
-        json!({ "protocol_version": 8 }),
+        json!({ "protocol_version": 9 }),
     )
     .await;
-    assert_eq!(hello["result"]["protocol_version"], 8);
+    assert_eq!(hello["result"]["protocol_version"], 9);
     client
 }
 
@@ -592,7 +592,7 @@ async fn catalog_shape_is_compiled_without_provider_quarantine() {
 }
 
 #[tokio::test]
-async fn protocol_seven_and_unknown_params_are_rejected() {
+async fn protocol_eight_and_unknown_params_are_rejected() {
     let harness = harness();
     let (mut client, service) = in_process_pair(8);
     tokio::spawn(async move {
@@ -606,7 +606,7 @@ async fn protocol_seven_and_unknown_params_are_rejected() {
         &mut client,
         1,
         "handshake",
-        json!({ "protocol_version": 7 }),
+        json!({ "protocol_version": 8 }),
     )
     .await;
     assert_eq!(response["error"]["code"], -32602);

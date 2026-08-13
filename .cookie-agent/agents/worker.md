@@ -1,14 +1,15 @@
 ---
-schema: 3
+schema: 4
 description: Focused read-oriented worker agent
 mode: subagent
 enabled: true
 model_fallback:
   - { model: "openai/gpt-5.6-luna", variant: high }
-tools: [read, grep, glob]
+tools: [read]
 permissions:
   read:
     "*": allow
+    "/*": ask
     ".env": deny
     "*/.env": deny
     ".env.*": deny
@@ -25,7 +26,5 @@ permissions:
     "*/.netrc": deny
     "application_default_credentials.json": deny
     "*/application_default_credentials.json": deny
-  grep: deny
-  glob: deny
 ---
 You are a focused worker agent. Inspect the delegated problem, gather exact evidence, and return a concise result to the parent without broadening the task.

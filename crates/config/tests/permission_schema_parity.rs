@@ -71,7 +71,7 @@ fn old_rule_list_and_delegation_field_are_rejected() {
     fs::create_dir_all(root.join("agents")).unwrap();
     fs::write(
         root.join("agents/worker.md"),
-        "---\nschema: 3\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  - { id: old, action: read, resource: \"*\", effect: allow }\ndelegation: { agents: [worker], max_depth: 1 }\n---\nWorker.\n",
+        "---\nschema: 4\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  - { id: old, action: read, resource: \"*\", effect: allow }\ndelegation: { agents: [worker], max_depth: 1 }\n---\nWorker.\n",
     )
     .unwrap();
     assert!(matches!(
@@ -83,7 +83,7 @@ fn old_rule_list_and_delegation_field_are_rejected() {
 #[test]
 fn frontmatter_uses_action_keyed_ordered_permissions() {
     let frontmatter: AgentFrontmatter = serde_yaml::from_str(
-        "schema: 3\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read:\n    \"*\": ask\n    \"file?.rs\": allow\n  bash: deny\n",
+        "schema: 4\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read:\n    \"*\": ask\n    \"file?.rs\": allow\n  bash: deny\n",
     )
     .unwrap();
     let read = frontmatter
@@ -104,11 +104,41 @@ fn frontmatter_uses_action_keyed_ordered_permissions() {
 
 #[test]
 fn duplicate_action_and_resource_keys_are_rejected() {
-    let duplicate_action = "schema: 3\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read: allow\n  read: deny\n";
+    let duplicate_action = "schema: 4\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read: allow\n  read: deny\n";
     assert!(serde_yaml::from_str::<AgentFrontmatter>(duplicate_action).is_err());
 
-    let duplicate_resource = "schema: 3\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read:\n    \"*\": allow\n    \"*\": deny\n";
+    let duplicate_resource = "schema: 4\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read:\n    \"*\": allow\n    \"*\": deny\n";
     assert!(serde_yaml::from_str::<AgentFrontmatter>(duplicate_resource).is_err());
+}
+
+#[test]
+fn grep_and_glob_permission_keys_are_rejected() {
+    for action in ["grep", "glob"] {
+        assert!(
+            serde_yaml::from_str::<AgentFrontmatter>(&format!(
+                "schema: 4\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  {action}: deny\n"
+            ))
+            .is_err(),
+            "{action} permission key must be unknown"
+        );
+        assert!(
+            serde_yaml::from_str::<AgentFrontmatter>(&format!(
+                "schema: 4\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: [{action}]\npermissions: {{}}\n"
+            ))
+            .is_err(),
+            "{action} tool name must be unknown"
+        );
+    }
+}
+
+#[test]
+fn old_agent_schema_three_is_rejected() {
+    assert!(
+        serde_yaml::from_str::<AgentFrontmatter>(
+            "schema: 3\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions: {}\n"
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -156,8 +186,6 @@ fn checked_workspace_agents_preserve_permission_outcomes() {
                 "src/lib.rs",
                 PermissionEffect::Allow,
             ),
-            (PermissionAction::Grep, "*", PermissionEffect::Deny),
-            (PermissionAction::Glob, "*", PermissionEffect::Deny),
         ];
         for (action, resource, expected) in cases {
             assert_eq!(
@@ -178,17 +206,30 @@ fn checked_workspace_agents_preserve_permission_outcomes() {
                 configured_effect(&document.frontmatter, PermissionAction::Delegate, "worker"),
                 PermissionEffect::Ask
             );
-            for action in [
-                PermissionAction::Write,
-                PermissionAction::Bash,
-                PermissionAction::ExternalDirectory,
-            ] {
-                assert_eq!(
-                    configured_effect(&document.frontmatter, action, "operation"),
-                    PermissionEffect::Ask,
-                    "{id} {action:?}"
-                );
-            }
+            assert_eq!(
+                configured_effect(&document.frontmatter, PermissionAction::Write, "operation"),
+                PermissionEffect::Ask
+            );
+            assert_eq!(
+                configured_effect(&document.frontmatter, PermissionAction::Bash, "git status"),
+                PermissionEffect::Ask
+            );
+            assert_eq!(
+                configured_effect(&document.frontmatter, PermissionAction::Bash, "cat .env"),
+                PermissionEffect::Deny
+            );
+            assert_eq!(
+                configured_effect(&document.frontmatter, PermissionAction::Bash, "rm -rf x"),
+                PermissionEffect::Deny
+            );
+            assert_eq!(
+                configured_effect(
+                    &document.frontmatter,
+                    PermissionAction::Bash,
+                    "git status && rm -rf x"
+                ),
+                PermissionEffect::Deny
+            );
         }
     }
 }
@@ -223,14 +264,14 @@ fn configured_effect(
                 .filter(|character| matches!(character, '*' | '?'))
                 .count();
             let literals = rule.resource.as_str().chars().count() - wildcards;
-            (std::cmp::Reverse(wildcards), literals, *index)
+            (literals, std::cmp::Reverse(wildcards), *index)
         })
         .map_or(PermissionEffect::Ask, |(_, rule)| rule.effect)
 }
 
 #[test]
 fn workspace_dir_expression_is_action_scoped_and_unknown_expressions_are_rejected() {
-    for action in ["grep", "glob", "bash", "delegate"] {
+    for action in ["bash", "delegate"] {
         let temp = TempDir::new().unwrap();
         let root = temp.path().join(".cookie-agent");
         fs::create_dir_all(root.join("agents")).unwrap();
@@ -238,7 +279,7 @@ fn workspace_dir_expression_is_action_scoped_and_unknown_expressions_are_rejecte
         fs::write(
             root.join("agents/worker.md"),
             format!(
-                "---\nschema: 3\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  {action}:\n    \"${{workspace_dir}}/*\": allow\n---\nWorker.\n"
+                "---\nschema: 4\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  {action}:\n    \"${{workspace_dir}}/*\": allow\n---\nWorker.\n"
             ),
         )
         .unwrap();
@@ -256,7 +297,7 @@ fn workspace_dir_expression_is_action_scoped_and_unknown_expressions_are_rejecte
         fs::write(
             root.join("agents/worker.md"),
             format!(
-                "---\nschema: 3\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read:\n    \"{resource}\": allow\n---\nWorker.\n"
+                "---\nschema: 4\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read:\n    \"{resource}\": allow\n---\nWorker.\n"
             ),
         )
         .unwrap();
@@ -268,9 +309,9 @@ fn workspace_dir_expression_is_action_scoped_and_unknown_expressions_are_rejecte
 }
 
 #[test]
-fn workspace_dir_expression_is_portable_and_external_directory_is_accepted() {
+fn workspace_dir_expression_is_portable_for_filesystem_permissions() {
     let temp = TempDir::new().unwrap();
-    let document = "---\nschema: 3\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read:\n    \"${workspace_dir}/src/*\": allow\n  write:\n    \"${workspace_dir}/src/*\": allow\n  external_directory:\n    \"${workspace_dir}/*\": ask\n---\nWorker.\n";
+    let document = "---\nschema: 4\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: []\npermissions:\n  read:\n    \"${workspace_dir}/src/*\": allow\n  write:\n    \"${workspace_dir}/src/*\": allow\n---\nWorker.\n";
     let mut fingerprints = Vec::new();
     for name in ["workspace-a", "workspace-b"] {
         let root = temp.path().join(name).join(".cookie-agent");

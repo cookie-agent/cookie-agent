@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     events::OutputHub,
-    runtime::tool_execution::{safe_tool_presentation, validate_attachment},
+    runtime::tool_execution::validate_attachment,
     runtime::{ArtifactStore, OutputCapture, ToolCallFailureCode},
 };
 
@@ -254,6 +254,11 @@ impl PreparedTool {
         serialization_key: Option<PreparedSerializationKey>,
         executor: Box<dyn PreparedExecutor>,
     ) -> Result<Self, ToolError> {
+        if operation.resources().is_empty() {
+            return Err(ToolError::execution(
+                "prepared tool requires at least one permission resource",
+            ));
+        }
         if normalized_arguments.is_null() {
             return Err(ToolError::execution(
                 "prepared normalized arguments must not be null",
@@ -279,9 +284,9 @@ impl PreparedTool {
     }
 
     pub fn with_policy_labels(mut self, labels: Vec<String>) -> Result<Self, ToolError> {
-        if labels.len() != self.operation.resources().len() {
+        if labels.is_empty() || labels.len() != self.operation.resources().len() {
             return Err(ToolError::execution(
-                "prepared policy labels do not cover every resource",
+                "prepared policy labels must cover every resource",
             ));
         }
         for (resource, label) in self.operation.resources().iter().zip(&labels) {
@@ -301,6 +306,14 @@ impl PreparedTool {
         Ok(self)
     }
 
+    pub fn with_primary_argument_label(mut self, primary: String) -> Result<Self, ToolError> {
+        if primary.is_empty() {
+            return Err(ToolError::execution("primary argument must not be empty"));
+        }
+        self.policy_labels.fill(primary);
+        Ok(self)
+    }
+
     #[must_use]
     pub const fn normalized_arguments(&self) -> &serde_json::Value {
         &self.normalized_arguments
@@ -315,8 +328,16 @@ impl PreparedTool {
 #[async_trait]
 pub trait ToolProvider: Send + Sync {
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError>;
+    fn get_primary_argument(&self, name: &str, arguments: &Value) -> Result<String, ToolError>;
+    fn get_simplified_argument(&self, name: &str, arguments: &Value) -> Result<String, ToolError>;
+
     fn presentation(&self, call: &ToolCall) -> ToolCallPresentation {
-        safe_tool_presentation(call)
+        match self.get_simplified_argument(&call.name, &call.arguments) {
+            Ok(simplified) => {
+                crate::runtime::tool_execution::tool_presentation(&call.name, &simplified)
+            }
+            Err(_) => crate::runtime::tool_execution::tool_title_only(&call.name),
+        }
     }
     async fn prepare(
         &self,
@@ -345,21 +366,39 @@ mod tests {
         }
     }
 
-    #[test]
-    fn prepared_tool_rejects_null_normalized_arguments() {
-        let operation = PreparedOperationIdentity::new(
+    fn operation() -> PreparedOperationIdentity {
+        let label = "command:test";
+        PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(b"arguments"),
             vec![cookie_agent_protocol::ApprovalCapability {
                 action: cookie_agent_protocol::PermissionAction::Bash,
                 operation: cookie_agent_protocol::PreparedCapabilityOperation::new("bash:execute")
                     .expect("capability operation"),
             }],
-            Vec::new(),
+            vec![cookie_agent_protocol::PreparedApprovalResource {
+                capability: cookie_agent_protocol::PermissionAction::Bash,
+                canonical: cookie_agent_protocol::PreparedResourceIdentity::new(format!(
+                    "command:{}",
+                    Sha256Digest::of_bytes(label.as_bytes())
+                ))
+                .expect("resource identity"),
+                binding_digest:
+                    cookie_agent_protocol::PreparedResourceDigest::from_canonical_binding_bytes(
+                        label.as_bytes(),
+                    ),
+                binding_lifetime: cookie_agent_protocol::PreparedBindingLifetime::ProcessLocal,
+                boundary: cookie_agent_protocol::ApprovalBoundary::Exact,
+                source: cookie_agent_protocol::ApprovalResourceSource::PrimaryOperation,
+            }],
             Sha256Digest::of_bytes(b"context"),
         )
-        .expect("prepared operation");
+        .expect("prepared operation")
+    }
+
+    #[test]
+    fn prepared_tool_rejects_null_normalized_arguments() {
         let error = match PreparedTool::new(
-            operation,
+            operation(),
             serde_json::Value::Null,
             None,
             Box::new(NoopExecutor),

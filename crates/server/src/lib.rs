@@ -1,4 +1,4 @@
-//! Transport-neutral protocol-8 JSON-RPC service.
+//! Transport-neutral protocol-9 JSON-RPC service.
 
 mod auth_token;
 mod providers;

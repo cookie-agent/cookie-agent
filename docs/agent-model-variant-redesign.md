@@ -668,11 +668,11 @@ payload `idempotency_conflict`, stale expected revisions/generation, custom
 provider rejection, one durable removal/no-op-plus-receipt transaction, one
 `ProviderDisconnected` publication, and no publication on replay.
 
-## 9. Runtime snapshot schema 2
+## 9. Runtime snapshot schema 3
 
 ```rust
 pub struct RuntimeSnapshotV1 {
-    pub snapshot_schema_version: RuntimeSnapshotSchemaVersion, // exactly 2
+    pub snapshot_schema_version: RuntimeSnapshotSchemaVersion, // exactly 3
     pub recipe_registry_revision: RecipeRegistryRevision,
     pub catalog_revision: CatalogRevision,
     pub catalog_source: CatalogSource,
@@ -696,7 +696,7 @@ All revisions are opaque, content-derived, deterministic, and secret-free.
 Each store-backed `ProviderDescriptor.durable_connection` carries the same safe
 `recipe_fingerprint` used for compatibility projection; it does not expose
 `source_record_digest` or any secret value.
-`runtime.snapshot.get` is the only discovery RPC. Protocol 8 removes legacy
+`runtime.snapshot.get` is the only discovery RPC. Protocol 9 removes legacy
 catalog/provider/model/agent list RPCs and racing refresh sequences. Connect,
 disconnect, startup, catalog refresh, and config reload return a complete
 snapshot.
@@ -821,7 +821,7 @@ strict schema, RFC-8785 reserialization, filename/revision/payload digest equali
 blueprints, and safe identities. Unsafe objects or malformed matching files fail
 project open with `invalid_model_snapshot_manifest` or
 `model_snapshot_digest_mismatch`; no partial acceptance or filename fallback is
-allowed. Every version-8 session/journal reference must resolve. Referenced
+allowed. Every protocol-9 session/journal reference must resolve. Referenced
 manifests are never garbage-collected; Family registry 1 performs no automatic manifest
 GC.
 
@@ -940,7 +940,7 @@ manifest-directory, or runtime changes do not reinterpret it.
    root-runnable, and build runtime snapshot 1; an empty model set is valid.
 6. **Project manifests:** scan/validate model-snapshot manifests 1 and rehydrate
    referenced safe blueprints.
-7. **Engine:** open/reconcile version-8 sessions/events/delegation against the
+7. **Engine:** open/reconcile protocol-9 / event-schema-13 sessions/events/delegation against the
    manifest index.
 8. **Service:** publish runtime, then open server/TUI and emit startup
    notification.
@@ -989,8 +989,9 @@ is fabricated and authored fallback chains are never rewritten.
 
 Built-in `default` uses source `built_in`, mode `primary`, the standard coding
 tools, no delegation targets, and normal ordered agent permission rules:
-workspace read/search/glob allow; write/edit, bash, delegate, and external
-directory ask; secret-file reads deny for `.env` variants, `store-v3.json`,
+workspace read allow; outside read, write/edit, bash, and delegate ask; outside
+filesystem access is controlled by absolute read/write patterns; secret-file
+reads deny for `.env` variants, `store-v3.json`,
 `token-v1`, `id_*`, `.netrc`, and
 `application_default_credentials.json`, retaining the exact `.env.example`
 allow exceptions.
@@ -1037,7 +1038,7 @@ and protocol client:
 ## 13. Current-only protocol and persistence
 
 Protocol handshake, events, session JSONL, metadata, and delegation journal are
-exactly version 8. Every run admission records runtime snapshot schema 2 revision
+exactly version 9. Every run admission records runtime snapshot schema 3 revision
 and complete frozen safe bindings. Version 7 input and config schema 6 are
 rejected; no migration tool exists. Provider store 1 and unversioned cache/store
 files are rejected rather than renamed or imported. Project model-snapshot
