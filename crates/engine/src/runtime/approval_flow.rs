@@ -1,4 +1,20 @@
-use super::*;
+use cookie_agent_protocol::{
+    ApprovalConstraints, ApprovalDecisionSource, ApprovalEvaluation, ApprovalFinalDecision,
+    ApprovalFinalOutcome, ApprovalId, ApprovalInternalDecision, ApprovalInternalDecisionKind,
+    ApprovalReasonCode, ApprovalRequest, ApprovalTrigger, PermissionMode,
+    PreparedOperationIdentity, RunId, StoredEvent,
+};
+use serde_json::Value;
+
+use super::{
+    ActiveRun, ApprovalEvaluationTransition, ApprovalOutcome, ApprovalTerminal, ApprovalToolInput,
+    Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
+    InternalAgentHistoryInput, ModelApprovalInput, SessionCommand,
+    approval_projection::doom_loop_repetitions, helpers::root_id,
+    internal_agents::parse_internal_approval,
+};
+use crate::tool_api::PreparedExecutorCell;
+use cookie_agent_protocol::InternalAgentKind;
 
 pub(super) const APPROVAL_USER_REQUEST_PREFIX: &str = "Evaluate only the current approval request. Return strict JSON only: {\"decision\":\"allow\"|\"deny\"|\"ask\"}.\n\n<latest_user_request>\n";
 pub(super) const APPROVAL_USER_REQUEST_SUFFIX: &str = "\n</latest_user_request>";
@@ -480,7 +496,13 @@ pub(super) fn approval_expiry_wait(expires_at: Option<jiff::Timestamp>) -> std::
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use oven_sdk::Request as ModelRequest;
+
+    use super::{
+        APPROVAL_NO_USER_MESSAGE, APPROVAL_TOOL_CALL_PREFIX, APPROVAL_TOOL_CALL_SUFFIX,
+        APPROVAL_USER_REQUEST_PREFIX, APPROVAL_USER_REQUEST_SUFFIX, ApprovalToolInput,
+        approval_stateless_history, approval_stateless_input,
+    };
 
     #[test]
     fn approval_framing_string_is_frozen() {

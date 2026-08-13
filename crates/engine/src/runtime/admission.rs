@@ -1,4 +1,20 @@
-use super::*;
+use std::{
+    future::Future,
+    sync::{Arc, atomic::Ordering},
+};
+
+use cookie_agent_protocol::{
+    AgentId, InvocationId, RunId, RunSelection, SessionId, SessionMeta, SessionOrigin,
+    SessionStatus, Sha256Digest, ToolCallId,
+};
+use tokio::sync::oneshot;
+
+use super::{
+    Engine, EngineError, Event, Inner, SessionCommand,
+    delegation::{cancelled_delegate_result_with_reason, enforce_delegation_concurrency},
+    helpers::{invocation_id, session_depth},
+};
+use crate::{journal, policy::FrozenRunPolicy};
 
 impl Engine {
     pub(crate) fn spawn_admission_task<F>(&self, runtime: &tokio::runtime::Handle, task: F) -> bool
@@ -109,7 +125,7 @@ impl Engine {
         let invocation_id = invocation_id(parent_session_id, parent_run_id, parent_tool_call_id);
         let journal = self.inner.journal.clone();
         let journal_agent = child_policy.agent.clone();
-        let journal_suffix = child_policy.selected_suffix_wire.clone();
+        let journal_suffix = child_policy.selected_suffix.clone();
         let snapshot = &child_runtime.result.snapshot;
         let journal_revisions = journal::DelegationRuntimeRevisions {
             manifest_revision: journal_suffix

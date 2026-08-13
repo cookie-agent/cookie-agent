@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cookie_agent_identity::{AgentId, ConfiguredVariantRef, ModelKey, WildcardPattern};
+pub use cookie_agent_protocol::{
+    AgentMode, PermissionAction, PermissionEffect, PermissionRule, ToolName,
+};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
@@ -30,49 +33,6 @@ impl<'de> Deserialize<'de> for AgentSchemaVersion {
             Err(serde::de::Error::custom("agent schema must be exactly 4"))
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AgentMode {
-    Primary,
-    Subagent,
-    All,
-    Internal,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ToolName {
-    Read,
-    Write,
-    Edit,
-    Bash,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PermissionAction {
-    Read,
-    Write,
-    Bash,
-    Delegate,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PermissionEffect {
-    Allow,
-    Ask,
-    Deny,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PermissionRule {
-    pub action: PermissionAction,
-    pub resource: WildcardPattern,
-    pub effect: PermissionEffect,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

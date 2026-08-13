@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 
 use cookie_agent_protocol::{
-    AuthCredentialDescriptor, AuthMethodId, AvailableModelDescriptor, BoundedSetupString,
-    EffectiveAuthState, ProviderConfigurationState, ProviderCredentialValues, ProviderDescriptor,
-    ProviderPresence, ProviderSupportState, SafeCode, SafeSetupValue, SetupFieldDescriptor,
-    SetupFieldId, SetupFieldType, SetupFieldValidation,
+    AuthCredentialDescriptor, AuthMethodId, AvailableModelDescriptor, EffectiveAuthState,
+    ProviderConfigurationState, ProviderCredentialValues, ProviderDescriptor, ProviderPresence,
+    ProviderSupportState, SafeSetupValue, SetupFieldDescriptor, SetupFieldId, parse_setup_value,
+    setup_value_text,
 };
 use serde::{Serialize, ser::SerializeMap as _};
 use zeroize::Zeroizing;
@@ -256,7 +256,7 @@ impl ProviderForm {
             }
             values.insert(
                 field.descriptor.id.clone(),
-                parse_setup_value(raw, &field.descriptor.validation)
+                parse_setup_value(&field.descriptor, raw)
                     .map_err(|error| format!("{}: {error}", field.descriptor.display_name))?,
             );
         }
@@ -408,61 +408,5 @@ pub(crate) const fn action_name(action: ProviderAction) -> &'static str {
         ProviderAction::Connect => "connect",
         ProviderAction::Reconnect => "reconnect",
         ProviderAction::Disconnect => "disconnect",
-    }
-}
-
-fn parse_setup_value(
-    raw: &str,
-    validation: &SetupFieldValidation,
-) -> Result<SafeSetupValue, String> {
-    validate_length(raw, validation)?;
-    match validation.value_type {
-        SetupFieldType::String => BoundedSetupString::new(raw.to_owned())
-            .map(SafeSetupValue::String)
-            .map_err(|error| error.to_string()),
-        SetupFieldType::Code => SafeCode::new(raw.to_owned())
-            .map(SafeSetupValue::Code)
-            .map_err(|error| error.to_string()),
-        SetupFieldType::Integer => {
-            let value = raw
-                .parse::<i64>()
-                .map_err(|_| "must be an integer".to_owned())?;
-            if validation.minimum.is_some_and(|minimum| value < minimum)
-                || validation.maximum.is_some_and(|maximum| value > maximum)
-            {
-                return Err("is outside the allowed range".into());
-            }
-            Ok(SafeSetupValue::Integer(value))
-        }
-        SetupFieldType::Bool => raw
-            .parse::<bool>()
-            .map(SafeSetupValue::Bool)
-            .map_err(|_| "must be true or false".into()),
-    }
-}
-
-fn validate_length(raw: &str, validation: &SetupFieldValidation) -> Result<(), String> {
-    let length = u32::try_from(raw.len()).unwrap_or(u32::MAX);
-    if validation
-        .min_length
-        .is_some_and(|minimum| length < minimum)
-    {
-        return Err("is shorter than the allowed minimum".into());
-    }
-    if validation
-        .max_length
-        .is_some_and(|maximum| length > maximum)
-    {
-        return Err("is longer than the allowed maximum".into());
-    }
-    Ok(())
-}
-
-fn setup_value_text(value: &SafeSetupValue) -> String {
-    match value {
-        SafeSetupValue::Bool(value) => value.to_string(),
-        SafeSetupValue::Integer(value) => value.to_string(),
-        SafeSetupValue::Code(value) => value.to_string(),
-        SafeSetupValue::String(value) => value.as_str().to_owned(),
     }
 }

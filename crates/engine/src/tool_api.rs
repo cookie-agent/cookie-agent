@@ -346,7 +346,11 @@ pub trait ToolProvider: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use cookie_agent_protocol::{
+        PersistedToolResult as ToolResult, PreparedOperationIdentity, Sha256Digest,
+    };
+
+    use super::{PreparedExecutor, PreparedTool, ToolError, ToolExecutionContext, async_trait};
 
     struct NoopExecutor;
 

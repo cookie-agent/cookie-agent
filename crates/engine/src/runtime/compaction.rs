@@ -1,5 +1,28 @@
+use std::collections::{HashMap, HashSet};
+
+use cookie_agent_protocol::{
+    ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
+    ContextCheckpointCommit, ContextRehydratedFile, InternalAgentKind, InternalSummaryCheckpoint,
+    PersistedAssistantPart, RunId, SessionId, SessionStatus, Sha256Digest, StoredEvent,
+    SummaryByteLimit, ToolCallId,
+};
+use oven_sdk::{ModelError, ToolDefinition};
+use serde_json::Value;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+
 use super::titles::active_fallback_index;
-use super::*;
+use super::{
+    Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
+    InternalAgentHistoryInput, SessionCommand,
+    helpers::{safe_display, truncate_utf8},
+};
+use crate::{
+    events::OutputHub,
+    model_history::{self, assemble_model_context},
+    policy::FrozenRunPolicy,
+    tool_api::{ProgressSink, ToolCall, ToolExecutionContext},
+};
 
 pub(super) const COMPACTION_INSTRUCTION: &str = "Create a detailed technical summary of the conversation so work can continue without the earlier context. Include: the goal/objective; decisions and their rationale; files changed and current code state; commands run and their outcomes; errors encountered and fixes applied; and the pending next step. Preserve exact identifiers, paths, constraints, and unresolved questions. Return summary text only and do not call tools.";
 pub(super) const TOOL_OUTPUT_ELISION_MIN_BYTES: usize = 8 * 1024;
@@ -629,7 +652,30 @@ fn recent_read_candidates(events: &[StoredEvent]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::HashSet;
+
+    use cookie_agent_protocol::{
+        PersistedAssistantPart, PersistedModelTurn, PersistedToolResult as ToolResult, RunId,
+        SessionId, StoredEvent, ToolCallId, ToolCallPresentation, ToolCallStart,
+        ToolCallTermination, ToolTerminationOutcome,
+    };
+    use oven_sdk::{JsonSchema, Request as ModelRequest, ToolDefinition};
+
+    use super::{
+        COMPACTION_INSTRUCTION, TOOL_OUTPUT_ELISION_MIN_BYTES, compaction_gate, compaction_history,
+        compaction_instruction, effective_compaction_limit, recent_read_candidates,
+        should_elide_tool_output, should_latch_auto_compaction,
+    };
+    use crate::{
+        model_history::{assemble_model_context, wire_model},
+        runtime::{
+            Event,
+            artifacts::ArtifactStore,
+            helpers::{safe_code, safe_display},
+            tool_execution::fallback_operation_fingerprint,
+        },
+        tool_api::ToolCall,
+    };
 
     #[test]
     fn compaction_buffer_math_is_saturating() {

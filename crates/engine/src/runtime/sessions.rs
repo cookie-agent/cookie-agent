@@ -1,4 +1,16 @@
-use super::*;
+use std::{collections::HashSet, sync::Arc};
+
+use cookie_agent_protocol::{
+    AgentId, ChildSummary, PermissionMode, RunSelection, SessionForkResult, SessionId, SessionMeta,
+    SessionOrigin, SessionRenameChange, SessionRenameParams, SessionRenameResult,
+    SessionRevertResult,
+};
+
+use super::{
+    Engine, EngineError, Event, SessionCommand,
+    helpers::{cwd_identity, session_depth},
+};
+use crate::policy::{self, freeze_root_agent_policy, resolve_agent};
 
 impl Engine {
     pub(super) fn rebuild_visible_tree_grants(&self) {

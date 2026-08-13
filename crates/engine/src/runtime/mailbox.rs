@@ -1,4 +1,28 @@
-use super::*;
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::atomic::Ordering,
+};
+
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use cookie_agent_protocol::{
+    ApprovalStatus, EventSubscriptionMessage, EventsSubscribeResult,
+    PersistedToolResult as ToolResult, RunCancelResult, RunId, RunRecallSteerResult,
+    RunSteerResult, RunToolStdinResult, SafeToolError, SessionForkResult, SessionId,
+    SessionRenameChange, SessionRenameResult, SessionRevertResult, SessionStatus,
+    SessionTitleChange, StoredEvent, ToolCallId, ToolCallTermination, ToolTerminationOutcome,
+};
+use tokio::sync::{mpsc, oneshot};
+
+use super::ToolCallFailureCode;
+use super::{
+    ApprovalTerminal, Engine, EngineError, Event, MAX_COMPACTION_DEFERRED_COMMANDS,
+    PERSISTED_SUBSCRIBER_QUEUE_CAPACITY, PendingInput, PendingPromotionState, PersistedSubscriber,
+    PredictiveCompactionInput, SESSION_MAILBOX_CAPACITY, SessionCommand, ToolFailure,
+    approval_projection::{approval_records, approval_run_id},
+    helpers::safe_error,
+    model_loop,
+};
+use crate::{actor::SessionActor, events, session::SessionError, tool_api::StdinWrite};
 
 impl Engine {
     pub async fn subscribe(
@@ -1110,7 +1134,9 @@ fn pending_inputs(events: &[StoredEvent], run: RunId) -> Vec<PendingInput> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use cookie_agent_protocol::{RunId, SessionId, StoredEvent};
+
+    use super::{Event, PendingInput, pending_inputs};
 
     fn event(run: RunId, seq: u64, payload: Event) -> StoredEvent {
         StoredEvent {

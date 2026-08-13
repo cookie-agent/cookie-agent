@@ -91,7 +91,6 @@ impl JsonSchema for RequiredModelSelectionSchema {
 mod agent;
 mod approval;
 mod bindings;
-mod catalog;
 mod event;
 mod identity;
 mod journal;
@@ -100,11 +99,12 @@ mod model;
 mod provider;
 mod rpc;
 mod runtime;
+mod session;
+mod setup_value;
 
 pub use agent::*;
 pub use approval::*;
 pub use bindings::*;
-pub use catalog::*;
 pub use cookie_agent_identity::{
     AdapterId, AgentId, AgentRevision, AuthFieldName, AuthMethodId, AuthParameterId, AuthRecipeId,
     CacheEntryId, CacheRevision, CanonicalModelId, CatalogRevision, IdentityError, ManifestEntryId,
@@ -121,6 +121,8 @@ pub use model::*;
 pub use provider::*;
 pub use rpc::*;
 pub use runtime::*;
+pub use session::*;
+pub use setup_value::*;
 
 /// The only protocol version supported by this build.
 pub const PROTOCOL_VERSION: u32 = 9;

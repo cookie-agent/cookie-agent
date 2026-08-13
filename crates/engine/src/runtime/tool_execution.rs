@@ -1,5 +1,34 @@
+use std::{collections::HashSet, path::Path, sync::Arc};
+
+use cookie_agent_protocol::{
+    ApprovalConstraints, ApprovalDecisionSource, ApprovalId, ApprovalRequest, ApprovalTrigger,
+    InternalAgentKind, OperationFingerprint, PersistedToolResult as ToolResult,
+    PreparedOperationIdentity, RunId, SessionId, Sha256Digest, ToolCallId, ToolCallPresentation,
+    ToolOutputTruncation,
+};
+use oven_sdk::{JsonSchema, ToolDefinition};
+use serde_json::Value;
+use tokio::sync::mpsc;
+
 use super::artifacts::MAX_ATTACHMENT_BYTES;
-use super::*;
+use super::{
+    ActiveRun, ApprovalToolInput, Engine, EngineError, Event, PreparedToolCall,
+    ToolCallFailureCode, ToolFailure,
+    approval_flow::approval_expiry,
+    approval_projection::denied_tool_failure,
+    artifacts::{ArtifactStore, OutputCapture},
+    helpers::{safe_display, sanitize_safe_text, session_depth},
+};
+use crate::{
+    events::OutputHub,
+    media::approved_media_type,
+    permissions::PermissionPipeline,
+    policy::FrozenRunPolicy,
+    tool_api::{
+        PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
+        ToolPreparationContext, ToolProvider, ToolStdin,
+    },
+};
 
 impl Engine {
     pub(super) async fn prepare_tool_call(

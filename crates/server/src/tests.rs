@@ -19,13 +19,15 @@ use cookie_agent_models::{
 };
 use cookie_agent_protocol::{
     AuthFieldName, AuthMethodId, CatalogRevision, ProviderId, ProviderSetupRecipeId,
-    RUNTIME_CHANGED_METHOD, RecipeCompilerVersion,
+    RUNTIME_CHANGED_METHOD, RecipeCompilerVersion, SessionListParams,
 };
 use jiff::Timestamp;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use crate::{InProcessStream, MessageFrame, MessageStream, Server, in_process_pair};
+use crate::{
+    Client, ClientDelivery, InProcessStream, MessageFrame, MessageStream, Server, in_process_pair,
+};
 
 struct Harness {
     _directory: TempDir,
@@ -282,6 +284,36 @@ async fn connect(server: Arc<Server>) -> InProcessStream {
     .await;
     assert_eq!(hello["result"]["protocol_version"], 9);
     client
+}
+
+#[tokio::test]
+async fn shared_client_handshakes_calls_and_receives_events_in_process() {
+    let harness = harness();
+    let client = Client::connect_in_process(Arc::clone(&harness.server));
+    let mut deliveries = client.subscribe_deliveries().expect("delivery stream");
+
+    let hello = client.handshake().await.expect("handshake");
+    assert_eq!(
+        hello.protocol_version,
+        cookie_agent_protocol::ProtocolVersion::current()
+    );
+    let sessions = client
+        .list_sessions(SessionListParams::default())
+        .await
+        .expect("session.list");
+    assert!(sessions.sessions.is_empty());
+
+    let delivery = tokio::time::timeout(std::time::Duration::from_secs(1), deliveries.recv())
+        .await
+        .expect("runtime event timeout")
+        .expect("runtime event");
+    assert!(matches!(delivery, ClientDelivery::RuntimeChanged(changed)
+        if changed.previous_revision.is_none()
+            && changed.reasons == vec![cookie_agent_protocol::RuntimeChangeReason::Startup]));
+
+    client.shutdown();
+    harness.server.shutdown();
+    harness.engine.shutdown().await;
 }
 
 #[tokio::test]

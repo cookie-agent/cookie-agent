@@ -1,4 +1,23 @@
-use super::*;
+use std::collections::HashMap;
+
+use cookie_agent_protocol::{
+    ApprovalDecisionSource, ApprovalFinalDecision, ApprovalFinalOutcome, ApprovalId,
+    ApprovalInternalDecision, ApprovalInternalDecisionKind, ApprovalReasonCode, ApprovalRecord,
+    ApprovalRequest, ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalRespondResult,
+    ApprovalStatus, ApprovalUserDecision, OperationFingerprint, RunId, SessionId, StoredEvent,
+    ToolCallId, ToolTerminationOutcome, TreeApprovalGrant,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tokio::sync::oneshot;
+
+use super::{
+    ApprovalEvaluationTransition, ApprovalOutcome, ApprovalRespondFailure, ApprovalTerminal,
+    Engine, EngineError, Event, PendingApproval, PreparedApprovalInvalidation,
+    approval_flow::{approval_constraints, approval_deadline_exhausted, approval_evaluations},
+    helpers::root_id,
+};
+use crate::tool_api::PreparedExecutorCell;
 
 impl Engine {
     pub(super) fn approval_evaluation_complete_direct(

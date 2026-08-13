@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 cookie_agent_identity = { version = "=0.1.0", path = "../identity" }
 cookie_agent_models = { version = "=0.1.0", path = "../models" }
+cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
 indexmap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -22,7 +23,6 @@ toml.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
 insta.workspace = true
 oven-sdk.workspace = true
 serde_json.workspace = true

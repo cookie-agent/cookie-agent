@@ -1,4 +1,30 @@
-use super::*;
+use std::{
+    collections::HashSet,
+    sync::{Arc, atomic::Ordering},
+};
+
+use cookie_agent_protocol::{
+    InvocationId, PersistedToolResult as ToolResult, RunId, RunStartParams, SafeToolError,
+    SessionId, SessionOrigin, SessionStatus, Sha256Digest, ToolCallId, ToolCallTermination,
+    ToolTerminationOutcome,
+};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use tokio::sync::oneshot;
+
+use super::{
+    Engine, EngineError, Event, SessionCommand,
+    admission::AdmissionGuard,
+    artifacts::ArtifactStore,
+    helpers::{invocation_id, safe_code, safe_display, safe_error, session_depth},
+    tool_execution::bound_tool_result,
+};
+use crate::{
+    delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation},
+    journal::{self, JournalError},
+    policy::{self, FrozenRunPolicy, freeze_delegated_agent_policy, resolve_agent},
+    session,
+};
 
 impl Engine {
     /// Serializes the durable parent backlink per invocation. Every admission
@@ -234,7 +260,7 @@ impl Engine {
             &invocation.success_criteria,
             &invocation.expected_output,
             &child_policy.agent,
-            &child_policy.selected_suffix_wire,
+            &child_policy.selected_suffix,
         ))
         .map_err(|_| EngineError::RuntimeCompileFailed)?;
         let fingerprint = Sha256Digest::new(format!("{:x}", Sha256::digest(&fingerprint_payload)))

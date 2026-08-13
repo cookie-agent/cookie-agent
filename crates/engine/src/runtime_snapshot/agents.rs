@@ -1,15 +1,14 @@
 use std::collections::BTreeMap;
 
 use cookie_agent_config::{
-    AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentLimits,
-    AgentMode as ConfigAgentMode, AgentModelFallback, AgentModelRef,
-    AgentRegistry as ConfigAgentRegistry, AgentSchemaVersion, BUILT_IN_APPROVAL_AGENT_ID,
-    BUILT_IN_COMPACTION_AGENT_ID, BUILT_IN_DEFAULT_AGENT_ID, BUILT_IN_TITLE_AGENT_ID,
-    PermissionAction, PermissionEffect, PermissionValue, ToolName as ConfigToolName,
+    AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentLimits, AgentMode,
+    AgentModelFallback, AgentModelRef, AgentRegistry as ConfigAgentRegistry, AgentSchemaVersion,
+    BUILT_IN_APPROVAL_AGENT_ID, BUILT_IN_COMPACTION_AGENT_ID, BUILT_IN_DEFAULT_AGENT_ID,
+    BUILT_IN_TITLE_AGENT_ID, PermissionAction, PermissionEffect, PermissionValue, ToolName,
 };
 use cookie_agent_identity::{AgentId as IdentityAgentId, WildcardPattern};
 use cookie_agent_models::{CompiledModelRuntime, compiler::CompiledModelStatus};
-use cookie_agent_protocol::{AgentDescriptor, AgentId, AgentMode, ModelSelection, ToolName};
+use cookie_agent_protocol::{AgentDescriptor, AgentId, ModelSelection};
 use indexmap::IndexMap;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -85,7 +84,7 @@ impl AgentRegistry {
             let runnable_as_root = document.frontmatter.enabled
                 && matches!(
                     document.frontmatter.mode,
-                    ConfigAgentMode::Primary | ConfigAgentMode::All
+                    AgentMode::Primary | AgentMode::All
                 )
                 && available;
             agents.insert(
@@ -115,7 +114,7 @@ impl AgentRegistry {
             .map(|(id, agent)| AgentDescriptor {
                 id: id.clone(),
                 description: agent.document.frontmatter.description.clone(),
-                mode: wire_mode(agent.document.frontmatter.mode),
+                mode: agent.document.frontmatter.mode,
                 enabled: agent.document.frontmatter.enabled,
                 runnable_as_root: agent.runnable_as_root,
                 resolved_fallback: agent
@@ -126,14 +125,7 @@ impl AgentRegistry {
                         ResolvedAgentFallback::ParentModel => None,
                     })
                     .collect(),
-                tools: agent
-                    .document
-                    .frontmatter
-                    .tools
-                    .iter()
-                    .copied()
-                    .map(wire_tool)
-                    .collect(),
+                tools: agent.document.frontmatter.tools.clone(),
                 delegation_targets: delegation_targets(&agent.document.frontmatter.permissions),
             })
             .collect();
@@ -205,7 +197,7 @@ fn built_in_internal_document(
     let frontmatter = AgentFrontmatter {
         schema: AgentSchemaVersion,
         description: description.to_owned(),
-        mode: ConfigAgentMode::Internal,
+        mode: AgentMode::Internal,
         enabled: true,
         model_fallback: vec![AgentModelFallback {
             model: AgentModelRef::ParentModel,
@@ -237,7 +229,7 @@ fn built_in_default_document(selection: &ModelSelection) -> Result<AgentDocument
     let frontmatter = AgentFrontmatter {
         schema: AgentSchemaVersion,
         description: "Built-in default coding agent".to_owned(),
-        mode: ConfigAgentMode::Primary,
+        mode: AgentMode::Primary,
         enabled: true,
         model_fallback: vec![AgentModelFallback {
             model: AgentModelRef::Model(selection.model.clone()),
@@ -248,10 +240,10 @@ fn built_in_default_document(selection: &ModelSelection) -> Result<AgentDocument
         }],
         limits: AgentLimits::default(),
         tools: vec![
-            ConfigToolName::Read,
-            ConfigToolName::Write,
-            ConfigToolName::Edit,
-            ConfigToolName::Bash,
+            ToolName::Read,
+            ToolName::Write,
+            ToolName::Edit,
+            ToolName::Bash,
         ],
         permissions: built_in_default_permissions()?,
     };
@@ -344,7 +336,9 @@ fn built_in_default_permissions() -> Result<IndexMap<PermissionAction, Permissio
     Ok(permissions)
 }
 
-fn delegation_targets(permissions: &IndexMap<PermissionAction, PermissionValue>) -> Vec<AgentId> {
+pub(crate) fn delegation_targets(
+    permissions: &IndexMap<PermissionAction, PermissionValue>,
+) -> Vec<AgentId> {
     let Some(PermissionValue::Resources(resources)) = permissions.get(&PermissionAction::Delegate)
     else {
         return Vec::new();
@@ -366,22 +360,4 @@ fn selection_available(models: &CompiledModelRuntime, selection: &ModelSelection
                 .as_ref()
                 .is_none_or(|variant| model.model.variants.contains_key(variant))
     })
-}
-
-fn wire_mode(mode: ConfigAgentMode) -> AgentMode {
-    match mode {
-        ConfigAgentMode::Primary => AgentMode::Primary,
-        ConfigAgentMode::Subagent => AgentMode::Subagent,
-        ConfigAgentMode::All => AgentMode::All,
-        ConfigAgentMode::Internal => AgentMode::Internal,
-    }
-}
-
-fn wire_tool(tool: cookie_agent_config::ToolName) -> ToolName {
-    match tool {
-        cookie_agent_config::ToolName::Read => ToolName::Read,
-        cookie_agent_config::ToolName::Write => ToolName::Write,
-        cookie_agent_config::ToolName::Edit => ToolName::Edit,
-        cookie_agent_config::ToolName::Bash => ToolName::Bash,
-    }
 }

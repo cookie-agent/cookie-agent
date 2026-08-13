@@ -26,13 +26,15 @@ serde_json.workspace = true
 subtle = "2.6"
 thiserror.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 tokio-util.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
+url.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 jiff.workspace = true
 oven-sdk.workspace = true
 tempfile.workspace = true
-tokio-tungstenite = "0.29"
 tracing-subscriber.workspace = true

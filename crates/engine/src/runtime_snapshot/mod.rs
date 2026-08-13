@@ -8,7 +8,7 @@ use std::sync::Arc;
 use cookie_agent_models::{CompiledModelRuntime, manifests::ModelSnapshotManifestIndex};
 use cookie_agent_protocol::{RuntimeChangedNotification, RuntimeSnapshotResult};
 
-pub(crate) use agents::{AgentRegistry, ResolvedAgent, ResolvedAgentFallback};
+pub(crate) use agents::{AgentRegistry, ResolvedAgent, ResolvedAgentFallback, delegation_targets};
 pub(crate) use projection::build_runtime_snapshot;
 
 /// Exact executable and wire state published as one atomic value.

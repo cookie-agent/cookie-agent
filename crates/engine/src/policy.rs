@@ -5,7 +5,9 @@ use cookie_agent_protocol as protocol;
 use crate::{
     EngineError,
     model_snapshots::binding_for_selection,
-    runtime_snapshot::{AgentRegistry, PublishedRuntime, ResolvedAgent, ResolvedAgentFallback},
+    runtime_snapshot::{
+        AgentRegistry, PublishedRuntime, ResolvedAgent, ResolvedAgentFallback, delegation_targets,
+    },
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -18,7 +20,6 @@ pub(crate) struct ResultLimits {
 pub(crate) struct FrozenRunPolicy {
     pub agent: protocol::AgentSnapshot,
     pub selected_suffix: Vec<protocol::FrozenModelBinding>,
-    pub selected_suffix_wire: Vec<protocol::FrozenModelBinding>,
     pub runtime: Arc<PublishedRuntime>,
     pub registry: Arc<AgentRegistry>,
     pub result_limits: ResultLimits,
@@ -204,35 +205,27 @@ fn freeze_with_bindings(
         return Err(EngineError::NoRunnableModel);
     }
     let document = &agent.document;
-    let delegation = delegation_targets(&document.frontmatter.permissions).map(|targets| {
-        protocol::FrozenDelegationPolicy {
-            targets,
-            effective_depth_ceiling: inherited_depth_ceiling.unwrap_or_default(),
-        }
+    let targets = delegation_targets(&document.frontmatter.permissions);
+    let delegation = (!targets.is_empty()).then(|| protocol::FrozenDelegationPolicy {
+        targets,
+        effective_depth_ceiling: inherited_depth_ceiling.unwrap_or_default(),
     });
     let snapshot = protocol::AgentSnapshot {
         agent: document.id.clone(),
         schema: protocol::AgentSchemaVersion::current(),
-        mode: wire_agent_mode(document.frontmatter.mode),
+        mode: document.frontmatter.mode,
         description: document.frontmatter.description.clone(),
-        document_source: wire_document_source(document.source),
+        document_source: document.source,
         document_fingerprint: wire_digest(&document.document_fingerprint)?,
         composed_prompt: document.body.clone(),
         prompt_fingerprint: wire_digest(&document.prompt_fingerprint)?,
-        tools: document
-            .frontmatter
-            .tools
-            .iter()
-            .copied()
-            .map(wire_tool)
-            .collect(),
+        tools: document.frontmatter.tools.clone(),
         permissions: document
             .frontmatter
             .permissions
             .iter()
             .flat_map(|(action, value)| value.rules(*action))
-            .map(|rule| wire_permission(&rule))
-            .collect::<Result<Vec<_>, _>>()?,
+            .collect(),
         delegation,
         fallback_chain: bindings.clone(),
         selected_suffix_start: 0,
@@ -246,8 +239,7 @@ fn freeze_with_bindings(
         .map_err(|_| EngineError::NoRunnableModel)?;
     Ok(FrozenRunPolicy {
         agent: snapshot,
-        selected_suffix: bindings.clone(),
-        selected_suffix_wire: bindings,
+        selected_suffix: bindings,
         runtime,
         registry,
         result_limits,
@@ -295,8 +287,7 @@ pub(crate) fn policy_from_snapshot(
     }
     Ok(FrozenRunPolicy {
         agent,
-        selected_suffix: selected_suffix.clone(),
-        selected_suffix_wire: selected_suffix,
+        selected_suffix,
         runtime,
         registry,
         result_limits: ResultLimits {
@@ -341,75 +332,6 @@ pub(crate) fn resolve_model(
         ));
     }
     Ok(resolved)
-}
-
-fn wire_permission(
-    rule: &cookie_agent_config::PermissionRule,
-) -> Result<protocol::PermissionRule, EngineError> {
-    Ok(protocol::PermissionRule {
-        action: match rule.action {
-            cookie_agent_config::PermissionAction::Read => protocol::PermissionAction::Read,
-            cookie_agent_config::PermissionAction::Write => protocol::PermissionAction::Write,
-            cookie_agent_config::PermissionAction::Bash => protocol::PermissionAction::Bash,
-            cookie_agent_config::PermissionAction::Delegate => protocol::PermissionAction::Delegate,
-        },
-        resource: protocol::WildcardPattern::new(rule.resource.as_str())
-            .map_err(|_| EngineError::RuntimeCompileFailed)?,
-        effect: match rule.effect {
-            cookie_agent_config::PermissionEffect::Allow => protocol::PermissionEffect::Allow,
-            cookie_agent_config::PermissionEffect::Ask => protocol::PermissionEffect::Ask,
-            cookie_agent_config::PermissionEffect::Deny => protocol::PermissionEffect::Deny,
-        },
-    })
-}
-
-fn delegation_targets(
-    permissions: &indexmap::IndexMap<
-        cookie_agent_config::PermissionAction,
-        cookie_agent_config::PermissionValue,
-    >,
-) -> Option<Vec<protocol::AgentId>> {
-    let value = permissions.get(&cookie_agent_config::PermissionAction::Delegate)?;
-    let cookie_agent_config::PermissionValue::Resources(resources) = value else {
-        return None;
-    };
-    let mut targets = resources
-        .iter()
-        .filter(|(_, effect)| **effect != cookie_agent_config::PermissionEffect::Deny)
-        .filter_map(|(resource, _)| protocol::AgentId::new(resource.as_str()).ok())
-        .collect::<Vec<_>>();
-    targets.sort();
-    (!targets.is_empty()).then_some(targets)
-}
-
-fn wire_agent_mode(mode: cookie_agent_config::AgentMode) -> protocol::AgentMode {
-    match mode {
-        cookie_agent_config::AgentMode::Primary => protocol::AgentMode::Primary,
-        cookie_agent_config::AgentMode::Subagent => protocol::AgentMode::Subagent,
-        cookie_agent_config::AgentMode::All => protocol::AgentMode::All,
-        cookie_agent_config::AgentMode::Internal => protocol::AgentMode::Internal,
-    }
-}
-
-fn wire_document_source(
-    source: cookie_agent_config::AgentDocumentSource,
-) -> protocol::AgentDocumentSource {
-    match source {
-        cookie_agent_config::AgentDocumentSource::BuiltIn => protocol::AgentDocumentSource::BuiltIn,
-        cookie_agent_config::AgentDocumentSource::User => protocol::AgentDocumentSource::User,
-        cookie_agent_config::AgentDocumentSource::Workspace => {
-            protocol::AgentDocumentSource::Workspace
-        }
-    }
-}
-
-fn wire_tool(tool: cookie_agent_config::ToolName) -> protocol::ToolName {
-    match tool {
-        cookie_agent_config::ToolName::Read => protocol::ToolName::Read,
-        cookie_agent_config::ToolName::Write => protocol::ToolName::Write,
-        cookie_agent_config::ToolName::Edit => protocol::ToolName::Edit,
-        cookie_agent_config::ToolName::Bash => protocol::ToolName::Bash,
-    }
 }
 
 pub(crate) const fn tool_name(tool: protocol::ToolName) -> &'static str {

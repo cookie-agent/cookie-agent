@@ -41,14 +41,14 @@ use tempfile::TempDir;
 
 use crate::events::{EventLog, EventLogError};
 use crate::{
-    DelegateInvocation, Engine, EngineClient, EngineError, EngineOptions, PreparedExecutor,
-    PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProvider, ToolSpec,
+    DelegateInvocation, Engine, EngineError, EngineOptions, PreparedExecutor, PreparedTool,
+    SessionToolContext, ToolCall, ToolError, ToolExecutionContext, ToolPreparationContext,
+    ToolProvider, ToolSpec,
 };
 
 #[derive(Clone)]
 struct TestDelegateProvider {
-    engine: EngineClient,
+    engine: Engine,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -58,7 +58,7 @@ struct TestDelegateArgs {
 }
 
 struct TestDelegateExecutor {
-    engine: EngineClient,
+    engine: Engine,
     call_id: ToolCallId,
     args: TestDelegateArgs,
 }
@@ -1350,7 +1350,6 @@ fn manual_compaction_resolves_parent_model_from_nonzero_active_fallback() {
     let mut owner = frozen_root_policy(&fixture, &selection);
     let fallback = crate::test_support::model_binding_named("fallback-one");
     owner.selected_suffix.push(fallback.clone());
-    owner.selected_suffix_wire.push(fallback.clone());
     let run = cookie_agent_protocol::RunId::new_v7();
     let events = vec![cookie_agent_protocol::StoredEvent {
         event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
@@ -4535,7 +4534,7 @@ async fn scripted_parent_delegate_child_run_completes_and_reopens() {
     fixture
         .engine
         .register_tool_provider(Arc::new(TestDelegateProvider {
-            engine: fixture.engine.client(),
+            engine: fixture.engine.clone(),
         }));
     let parent = fixture
         .engine

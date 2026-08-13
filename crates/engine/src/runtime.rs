@@ -1,9 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    fs,
-    future::Future,
-    io::{Read, Seek, SeekFrom, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -14,72 +11,47 @@ use std::{
 use std::sync::mpsc as std_mpsc;
 
 use arc_swap::ArcSwap;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_config::LoadedConfiguration;
 use cookie_agent_models::{
     ModelManager,
     manifests::{ManifestError, ModelSnapshotManifestStore, RehydrationError},
 };
 use cookie_agent_protocol::{
-    AgentId, AgentMode, ApprovalConstraints, ApprovalDecisionSource, ApprovalEvaluation,
-    ApprovalFinalDecision, ApprovalFinalOutcome, ApprovalId, ApprovalInternalDecision,
-    ApprovalInternalDecisionKind, ApprovalListResult, ApprovalReasonCode, ApprovalRecord,
-    ApprovalRequest, ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalRespondResult,
-    ApprovalStatus, ApprovalTrigger, ApprovalUserDecision, ArtifactReference, ChildSummary,
-    ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
-    ContextCheckpointCommit, ContextRehydratedFile, EventPayload as Event,
-    EventSubscriptionMessage, EventsSubscribeResult, InternalAgentBackend, InternalAgentFailure,
-    InternalAgentInvocationId, InternalAgentKind, InternalAgentRunId, InternalSummaryCheckpoint,
-    InvocationId, OperationFingerprint, OutputStream, PermissionMode, PersistedAssistantPart,
-    PersistedModelTurn, PersistedToolResult as ToolResult, PreparedOperationIdentity,
-    ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
-    ProviderDisconnectResult, RunCancelResult, RunId, RunRecallSteerResult, RunSelection,
-    RunStartParams, RunStartResult, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
-    RuntimeChangeReason, RuntimeChangedNotification, RuntimeSnapshotResult, SafeCode,
-    SafeDisplayText, SafeErrorMessage, SafeInternalAgentCall, SafeInternalAgentResult,
-    SafeToolError, SessionForkResult, SessionId, SessionMeta, SessionOrigin, SessionRenameChange,
-    SessionRenameParams, SessionRenameResult, SessionRevertResult, SessionStatus, SessionTitle,
-    SessionTitleChange, Sha256Digest, StoredEvent, SummaryByteLimit, ToolAttachment, ToolCallId,
-    ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolOutputTruncation,
-    ToolTerminationOutcome, TreeApprovalGrant,
+    AgentId, ApprovalId, ApprovalInternalDecisionKind, ApprovalRequest, ApprovalRespondErrorCode,
+    ApprovalRespondParams, ApprovalRespondResult, ApprovalStatus, EventPayload as Event,
+    EventSubscriptionMessage, EventsSubscribeResult, InternalAgentInvocationId, InternalAgentRunId,
+    InvocationId, OperationFingerprint, PermissionMode, PersistedModelTurn,
+    PersistedToolResult as ToolResult, PreparedOperationIdentity, ProviderConnectParams,
+    ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, RunCancelResult,
+    RunId, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerResult,
+    RunToolStdinParams, RunToolStdinResult, RuntimeChangeReason, RuntimeChangedNotification,
+    RuntimeSnapshotResult, SafeCode, SessionForkResult, SessionId, SessionMeta,
+    SessionRenameParams, SessionRenameResult, SessionRevertResult, StoredEvent, ToolCallId,
+    ToolCallPresentation,
 };
-use futures_util::StreamExt;
-use oven_sdk::{JsonSchema, ModelError, Request as ModelRequest, ToolDefinition};
-use rustix::fs::{
-    AtFlags, Dir, FileType, Mode, OFlags, fchmod, fsync, openat, renameat, statat, unlinkat,
-};
+use oven_sdk::{ModelError, ToolDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{
     sync::{broadcast, mpsc, oneshot},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
 use crate::{
     actor::SessionActor,
     events::{self, EventLogError, OutputHub},
     grant_journal::{GrantInvalidationJournal, GrantJournalError},
-    journal::{self, DelegationJournal, JournalError},
-    media::approved_media_type,
-    model_bridge::{AbortBridge, TurnAccumulator},
-    model_history::{
-        self, assemble_model_context, persist_turn, replay_decisions_with_preflight, wire_model,
-    },
-    model_policy::{ErrorPolicy, classify as classify_model_error, summary as model_error_summary},
+    journal::{DelegationJournal, JournalError},
+    model_history,
     model_snapshots::{prepare_runtime_manifest, validate_referenced_binding},
     permissions::{ApprovalStore, PermissionPipeline},
-    policy::{
-        self, FrozenRunPolicy, freeze_delegated_agent_policy, freeze_root_agent_policy,
-        policy_for_session_selection, policy_from_snapshot, resolve_agent,
-    },
+    policy::FrozenRunPolicy,
     runtime_snapshot::{
         AgentRegistry, PublishedRuntime, RuntimePublication, build_runtime_snapshot,
     },
-    session::{self, SessionError, SessionStore},
+    session::{SessionError, SessionStore},
 };
 
 mod admission;
@@ -99,23 +71,13 @@ mod sessions;
 mod titles;
 pub(crate) mod tool_execution;
 
-use admission::*;
-use approval_flow::*;
-use approval_projection::*;
+use admission::InflightDelegation;
 pub(crate) use artifacts::{ArtifactStore, OutputCapture};
-use compaction::*;
-use delegation::*;
-use helpers::*;
-use internal_agents::*;
-use tool_execution::*;
+use helpers::safe_code;
 
-use crate::{
-    delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation},
-    tool_api::{
-        PreparedExecutorCell, PreparedSerializationKey, PreparedTool, ProgressSink,
-        SessionToolContext, StdinWrite, ToolCall, ToolError, ToolExecutionContext,
-        ToolPreparationContext, ToolProvider, ToolStdin,
-    },
+use crate::tool_api::{
+    PreparedExecutorCell, PreparedSerializationKey, PreparedTool, StdinWrite, ToolCall, ToolError,
+    ToolProvider,
 };
 
 #[derive(Clone)]
@@ -750,13 +712,12 @@ pub(crate) struct Inner {
     pub(crate) publication_failure: AtomicBool,
 }
 
-/// Cloneable in-process client facade. It contains no transport concerns and
+/// Cloneable in-process engine handle. It contains no transport concerns and
 /// is safe for tool providers to call while their parent call is executing.
 #[derive(Clone)]
 pub struct Engine {
     pub(crate) inner: Arc<Inner>,
 }
-pub type EngineClient = Engine;
 
 impl Engine {
     pub fn open(options: EngineOptions) -> Result<Self, EngineError> {
@@ -1235,11 +1196,6 @@ impl Engine {
         Ok(())
     }
 
-    #[must_use]
-    pub fn client(&self) -> EngineClient {
-        self.clone()
-    }
-
     pub(super) fn mutation_lock(
         &self,
         key: &PreparedSerializationKey,
@@ -1254,7 +1210,7 @@ impl Engine {
     }
 
     /// Registers a tool provider after engine open, allowing providers that
-    /// require an EngineClient (notably delegate) to break the construction cycle.
+    /// require an Engine (notably delegate) to break the construction cycle.
     pub fn register_tool_provider(&self, provider: Arc<dyn ToolProvider>) {
         self.inner
             .tools

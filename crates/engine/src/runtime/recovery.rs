@@ -1,4 +1,21 @@
-use super::*;
+use std::collections::{HashMap, HashSet};
+
+use cookie_agent_protocol::{
+    ApprovalDecisionSource, ApprovalFinalDecision, ApprovalFinalOutcome, ApprovalReasonCode,
+    ApprovalStatus, SafeToolError, SessionId, SessionOrigin, SessionStatus, ToolCallTermination,
+    ToolTerminationOutcome,
+};
+
+use super::{
+    Engine, EngineError, Event, ToolCallFailureCode, ToolFailure,
+    approval_projection::{approval_records, approval_run_id},
+    delegation::{
+        cancelled_delegate_result, cancelled_delegate_result_with_reason,
+        completed_delegate_result, delegate_failure_result, is_journal_append_failure,
+    },
+    helpers::{invocation_id, safe_code, safe_error},
+};
+use crate::delegation_api::DelegateHandle;
 
 impl Engine {
     pub(super) fn reconcile(&self) -> Result<(), EngineError> {

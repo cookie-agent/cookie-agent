@@ -7,7 +7,9 @@ pub mod state;
 pub mod theme;
 pub mod ui;
 
-pub use client::{Client, ClientDelivery, ClientError, read_daemon_token, validate_websocket_url};
+pub use client::{
+    Client, ClientDelivery, ClientError, ClientProtocol, read_daemon_token, validate_websocket_url,
+};
 pub use ui::{run_with_client, run_with_new_session};
 
 #[cfg(test)]

@@ -1,4 +1,11 @@
-use super::*;
+use std::collections::HashSet;
+
+use cookie_agent_protocol::{
+    RunCancelResult, RunId, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerResult,
+    RunToolStdinParams, RunToolStdinResult, SessionId, SessionStatus,
+};
+
+use super::{ActiveRun, Engine, EngineError, Event, SessionCommand, helpers::safe_error};
 
 impl Engine {
     pub async fn start_run(&self, params: RunStartParams) -> Result<RunStartResult, EngineError> {

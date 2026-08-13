@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use cookie_agent_engine::{
-    DelegateInvocation, EngineClient, PreparedExecutor, PreparedTool, SessionToolContext, ToolCall,
+    DelegateInvocation, Engine, PreparedExecutor, PreparedTool, SessionToolContext, ToolCall,
     ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
 use cookie_agent_protocol::{
@@ -14,7 +14,7 @@ use crate::{fs_cap, prepared_operation, prepared_resource};
 const CONTEXT_LIMIT_BYTES: usize = 32 * 1024;
 
 pub struct DelegateToolProvider {
-    engine: EngineClient,
+    engine: Engine,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -31,14 +31,14 @@ struct DelegateArgs {
 }
 
 struct DelegateExecutor {
-    engine: EngineClient,
+    engine: Engine,
     call_id: cookie_agent_protocol::ToolCallId,
     args: DelegateArgs,
 }
 
 impl DelegateToolProvider {
     #[must_use]
-    pub fn new(engine: EngineClient) -> Self {
+    pub fn new(engine: Engine) -> Self {
         Self { engine }
     }
 

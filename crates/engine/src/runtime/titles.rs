@@ -1,4 +1,18 @@
-use super::*;
+use std::sync::Arc;
+
+use cookie_agent_protocol::{
+    InternalAgentKind, RunId, SessionId, SessionTitle, SessionTitleChange, StoredEvent,
+};
+use tokio_util::sync::CancellationToken;
+
+use super::{
+    Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
+    helpers::truncate_utf8,
+};
+use crate::{
+    policy::{FrozenRunPolicy, policy_from_snapshot},
+    runtime_snapshot::PublishedRuntime,
+};
 
 impl Engine {
     pub(crate) fn historical_run_runtime(
@@ -42,16 +56,27 @@ impl Engine {
         if !automatic_title_eligible(&events) {
             return Ok(());
         }
+        let inputs = events
+            .iter()
+            .filter(|event| event.seq <= input_through_seq)
+            .filter_map(|event| match &event.payload {
+                Event::UserInputSubmitted { input } => Some(input),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let input = events
             .iter()
             .find_map(|event| match &event.payload {
                 Event::UserInputSubmitted { input } if event.run_id == Some(run) => {
-                    Some(input.clone())
+                    Some(input.as_str())
                 }
                 _ => None,
             })
             .unwrap_or_default();
-        let prompt = title_prompt(&input);
+        let prompt = title_prompt(
+            inputs.iter().map(|input| input.as_str()),
+            policy.max_input_messages,
+        );
         let generated = self
             .run_internal_text_agent(
                 session,
@@ -74,13 +99,13 @@ impl Engine {
                 .or_else(|| {
                     policy
                         .fallback_to_input_excerpt
-                        .then(|| fallback_title(&input, policy.max_chars))
+                        .then(|| fallback_title(input, policy.max_chars))
                         .flatten()
                         .map(|title| SessionTitleChange::FallbackSet { title })
                 }),
             Err(_) => policy
                 .fallback_to_input_excerpt
-                .then(|| fallback_title(&input, policy.max_chars))
+                .then(|| fallback_title(input, policy.max_chars))
                 .flatten()
                 .map(|title| SessionTitleChange::FallbackSet { title }),
         };
@@ -128,10 +153,25 @@ impl Engine {
     }
 }
 
-fn title_prompt(input: &str) -> String {
+fn title_prompt<'a>(
+    inputs: impl IntoIterator<Item = &'a str>,
+    max_input_messages: usize,
+) -> String {
+    let inputs = inputs
+        .into_iter()
+        .take(max_input_messages)
+        .enumerate()
+        .map(|(index, input)| {
+            format!(
+                "User message {}: {}",
+                index + 1,
+                truncate_utf8(input, 8 * 1024)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
-        "Return only a short plain-text session title for this first user message. No quotes, markup, or explanation.\nUser: {}",
-        truncate_utf8(input, 8 * 1024)
+        "Return only a short plain-text session title for these opening user messages. No quotes, markup, or explanation.\n{inputs}"
     )
 }
 
@@ -236,10 +276,17 @@ mod tests {
     use super::title_prompt;
 
     #[test]
-    fn title_prompt_contains_only_the_first_user_message() {
-        let prompt = title_prompt("first user message");
+    fn title_prompt_limits_opening_user_messages() {
+        let prompt = title_prompt(
+            [
+                "first user message",
+                "second user message",
+                "excluded user message",
+            ],
+            2,
+        );
         assert!(prompt.contains("first user message"));
-        assert!(!prompt.contains("Assistant:"));
-        assert!(!prompt.contains("assistant answer"));
+        assert!(prompt.contains("second user message"));
+        assert!(!prompt.contains("excluded user message"));
     }
 }

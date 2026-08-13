@@ -1,267 +1,225 @@
-use cookie_agent_engine::EngineError;
+use async_trait::async_trait;
+use cookie_agent_engine::{EngineError, session::SessionError};
 use cookie_agent_protocol::{
-    ApprovalListParams, ApprovalRespondErrorCode, ApprovalRespondParams, ClientHello, EventPayload,
-    EventsSubscribeParams, PROVIDER_CONNECT_METHOD, PROVIDER_DISCONNECT_METHOD,
-    RUNTIME_SNAPSHOT_GET_METHOD, RunCancelParams, RunRecallSteerParams, RunStartParams,
-    RunSteerParams, RunToolStdinParams, RuntimeSnapshotGetParams, SessionChildrenParams,
-    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
-    SessionCreateResult, SessionForkParams, SessionGetParams, SessionGetResult, SessionListParams,
-    SessionListResult, SessionRenameErrorCode, SessionRenameParams, SessionResumeParams,
-    SessionResumeResult, SessionRevertParams, SessionSetPermissionModeParams,
+    ApprovalListParams, ApprovalListResult, ApprovalRespondErrorCode, ApprovalRespondParams,
+    ApprovalRespondResult, EventsSubscribeParams, EventsSubscribeResult, ProviderConnectParams,
+    ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, RunCancelParams,
+    RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult,
+    RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
+    RuntimeSnapshotGetParams, RuntimeSnapshotResult, ServerContext, ServerFault, ServerProtocol,
+    SessionChildrenParams, SessionChildrenResult, SessionCompactParams, SessionCompactResult,
+    SessionCreateParams, SessionCreateResult, SessionForkParams, SessionForkResult,
+    SessionGetParams, SessionGetResult, SessionListParams, SessionListResult,
+    SessionRenameErrorCode, SessionRenameParams, SessionRenameResult, SessionResumeParams,
+    SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
     SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult,
 };
-use serde_json::Value;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
 use super::Server;
-use crate::rpc::{
-    RouteResult, RpcFault, decode_params, decode_rename_params, engine_fault, params_or_default,
-    value,
-};
+use crate::rpc::{RpcFault, engine_fault};
 
-impl Server {
-    pub(super) async fn route_after_handshake(
-        &self,
-        handshaken: &mut bool,
-        method: &str,
-        params: Option<Value>,
-        has_request_id: bool,
-        notifications: mpsc::Sender<Value>,
-        shutdown: &CancellationToken,
-    ) -> Result<RouteResult, RpcFault> {
-        let result = if !*handshaken && method != "handshake" {
-            Err(RpcFault::handshake_required())
-        } else {
-            self.route(method, params, has_request_id, notifications, shutdown)
-                .await
-        };
-        if matches!(result, Ok(RouteResult::Handshake)) {
-            *handshaken = true;
-        }
-        result
+type Result<T> = std::result::Result<T, ServerFault>;
+
+#[async_trait]
+impl ServerProtocol for Server {
+    async fn connected(&self, context: ServerContext) {
+        self.start_runtime_notifications(context);
     }
 
-    async fn route(
+    async fn create_session(&self, params: SessionCreateParams) -> Result<SessionCreateResult> {
+        self.engine
+            .create_session(params.selection)
+            .map(|session| SessionCreateResult { session })
+            .map_err(protocol_fault)
+    }
+
+    async fn list_sessions(&self, params: SessionListParams) -> Result<SessionListResult> {
+        let sessions = self
+            .engine
+            .list_sessions()
+            .into_iter()
+            .filter(|session| {
+                params
+                    .cwd_identity
+                    .as_ref()
+                    .is_none_or(|cwd| &session.cwd_identity == cwd)
+            })
+            .collect();
+        Ok(SessionListResult { sessions })
+    }
+
+    async fn get_session(&self, params: SessionGetParams) -> Result<SessionGetResult> {
+        self.engine
+            .get_session(params.session_id)
+            .map(|session| SessionGetResult { session })
+            .map_err(protocol_fault)
+    }
+
+    async fn session_children(
         &self,
-        method: &str,
-        params: Option<Value>,
-        has_request_id: bool,
-        notifications: mpsc::Sender<Value>,
-        shutdown: &CancellationToken,
-    ) -> Result<RouteResult, RpcFault> {
-        match method {
-            "handshake" => {
-                if !has_request_id {
-                    return Err(RpcFault::request_id_required());
-                }
-                let _: ClientHello = decode_params(params)?;
-                Ok(RouteResult::Handshake)
+        params: SessionChildrenParams,
+    ) -> Result<SessionChildrenResult> {
+        Ok(SessionChildrenResult {
+            children: self.engine.children(params.session_id),
+        })
+    }
+
+    async fn session_tree(&self, params: SessionTreeParams) -> Result<SessionTreeResult> {
+        self.engine
+            .tree(params.session_id)
+            .map(|tree| SessionTreeResult { tree })
+            .map_err(protocol_fault)
+    }
+
+    async fn resume_session(&self, params: SessionResumeParams) -> Result<SessionResumeResult> {
+        self.engine
+            .resume(params.session_id)
+            .await
+            .map(|session| SessionResumeResult { session })
+            .map_err(protocol_fault)
+    }
+
+    async fn rename_session(&self, params: SessionRenameParams) -> Result<SessionRenameResult> {
+        self.engine
+            .rename_session(params.clone())
+            .await
+            .map_err(|error| rename_fault(&params, error).into())
+    }
+
+    async fn set_permission_mode(
+        &self,
+        params: SessionSetPermissionModeParams,
+    ) -> Result<SessionSetPermissionModeResult> {
+        self.engine
+            .set_permission_mode(params.session_id, params.mode)
+            .map_err(protocol_fault)?;
+        Ok(SessionSetPermissionModeResult {})
+    }
+
+    async fn compact_session(&self, params: SessionCompactParams) -> Result<SessionCompactResult> {
+        self.engine
+            .compact_session(
+                params.session_id,
+                params.focus.as_ref().map(|focus| focus.as_str()),
+            )
+            .await
+            .map(|compacted| SessionCompactResult { compacted })
+            .map_err(protocol_fault)
+    }
+
+    async fn revert_session(&self, params: SessionRevertParams) -> Result<SessionRevertResult> {
+        self.engine
+            .revert_session(params.session_id, params.through_seq)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn fork_session(&self, params: SessionForkParams) -> Result<SessionForkResult> {
+        self.engine
+            .fork_session(params.session_id, params.through_seq)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn start_run(&self, params: RunStartParams) -> Result<RunStartResult> {
+        match self.engine.start_run(params.clone()).await {
+            Ok(result) => Ok(result),
+            Err(EngineError::RunIdempotencyConflict) => {
+                Err(RpcFault::run_start_conflict(&params).into())
             }
-            "session.create" => {
-                let request: SessionCreateParams = decode_params(params)?;
-                let session = self
-                    .engine
-                    .create_session(request.selection)
-                    .map_err(engine_fault)?;
-                value(SessionCreateResult { session })
-            }
-            "session.list" => {
-                let request: SessionListParams = params_or_default(params)?;
-                let sessions = self
-                    .engine
-                    .list_sessions()
-                    .into_iter()
-                    .filter(|session| {
-                        request
-                            .cwd_identity
-                            .as_ref()
-                            .is_none_or(|cwd| &session.cwd_identity == cwd)
-                    })
-                    .collect();
-                value(SessionListResult { sessions })
-            }
-            "session.get" => {
-                let request: SessionGetParams = decode_params(params)?;
-                value(SessionGetResult {
-                    session: self
-                        .engine
-                        .get_session(request.session_id)
-                        .map_err(engine_fault)?,
-                })
-            }
-            "session.children" => {
-                let request: SessionChildrenParams = decode_params(params)?;
-                value(SessionChildrenResult {
-                    children: self.engine.children(request.session_id),
-                })
-            }
-            "session.tree" => {
-                let request: SessionTreeParams = decode_params(params)?;
-                value(SessionTreeResult {
-                    tree: self.engine.tree(request.session_id).map_err(engine_fault)?,
-                })
-            }
-            "session.resume" => {
-                let request: SessionResumeParams = decode_params(params)?;
-                let session = self
-                    .engine
-                    .resume(request.session_id)
-                    .await
-                    .map_err(engine_fault)?;
-                value(SessionResumeResult { session })
-            }
-            "session.rename" => {
-                let request = decode_rename_params(params)?;
-                let result = self
-                    .engine
-                    .rename_session(request.clone())
-                    .await
-                    .map_err(|error| rename_fault(&request, error))?;
-                value(result)
-            }
-            "session.set_permission_mode" => {
-                let request: SessionSetPermissionModeParams = decode_params(params)?;
-                self.engine
-                    .set_permission_mode(request.session_id, request.mode)
-                    .map_err(engine_fault)?;
-                value(SessionSetPermissionModeResult {})
-            }
-            "session.compact" => {
-                let request: SessionCompactParams = decode_params(params)?;
-                let compacted = self
-                    .engine
-                    .compact_session(
-                        request.session_id,
-                        request.focus.as_ref().map(|focus| focus.as_str()),
-                    )
-                    .await
-                    .map_err(engine_fault)?;
-                value(SessionCompactResult { compacted })
-            }
-            "session.revert" => {
-                let request: SessionRevertParams = decode_params(params)?;
-                value(
-                    self.engine
-                        .revert_session(request.session_id, request.through_seq)
-                        .await
-                        .map_err(engine_fault)?,
-                )
-            }
-            "session.fork" => {
-                let request: SessionForkParams = decode_params(params)?;
-                value(
-                    self.engine
-                        .fork_session(request.session_id, request.through_seq)
-                        .await
-                        .map_err(engine_fault)?,
-                )
-            }
-            "run.start" => {
-                let request: RunStartParams = decode_params(params)?;
-                match self.engine.start_run(request.clone()).await {
-                    Ok(result) => value(result),
-                    Err(EngineError::RunIdempotencyConflict) => {
-                        Err(RpcFault::run_start_conflict(&request))
-                    }
-                    Err(error) => Err(engine_fault(error)),
-                }
-            }
-            "run.steer" => {
-                let request: RunSteerParams = decode_params(params)?;
-                value(
-                    self.engine
-                        .steer(request.run_id, request.input)
-                        .await
-                        .map_err(engine_fault)?,
-                )
-            }
-            "run.recall_steer" => {
-                let request: RunRecallSteerParams = decode_params(params)?;
-                value(
-                    self.engine
-                        .recall_steer(request.run_id)
-                        .await
-                        .map_err(engine_fault)?,
-                )
-            }
-            "run.cancel" => {
-                let request: RunCancelParams = decode_params(params)?;
-                value(
-                    self.engine
-                        .cancel_run(request.run_id)
-                        .await
-                        .map_err(engine_fault)?,
-                )
-            }
-            "run.tool_stdin" => value(
-                self.engine
-                    .tool_stdin(decode_params::<RunToolStdinParams>(params)?)
-                    .await
-                    .map_err(engine_fault)?,
-            ),
-            "events.subscribe" => {
-                let request: EventsSubscribeParams = decode_params(params)?;
-                let (result, receiver) = self
-                    .engine
-                    .subscribe(request.session_id, request.cursor)
-                    .await
-                    .map_err(engine_fault)?;
-                self.start_event_tail(receiver, notifications.clone(), shutdown.child_token());
-                for event in &result.events {
-                    if let EventPayload::ToolCallStarted { start } = &event.payload {
-                        self.start_output_tail(
-                            start.tool_call_id,
-                            notifications.clone(),
-                            shutdown.child_token(),
-                        );
-                    }
-                }
-                value(result)
-            }
-            "approval.respond" => {
-                let request: ApprovalRespondParams = decode_params(params)?;
-                match self.engine.approval_respond(request.clone()).await {
-                    Ok(result) => value(result),
-                    Err(error) => Err(approval_fault(&request, error)),
-                }
-            }
-            "approval.list" => {
-                let request: ApprovalListParams = decode_params(params)?;
-                value(
-                    self.engine
-                        .list_approvals(request.root_session_id, request.status),
-                )
-            }
-            RUNTIME_SNAPSHOT_GET_METHOD => {
-                if !has_request_id {
-                    return Err(RpcFault::request_id_required());
-                }
-                let _: RuntimeSnapshotGetParams = params_or_default(params)?;
-                value(self.engine.runtime_snapshot().map_err(engine_fault)?)
-            }
-            PROVIDER_CONNECT_METHOD => {
-                if !has_request_id {
-                    return Err(RpcFault::request_id_required());
-                }
-                value(self.connect_provider(decode_params(params)?)?)
-            }
-            PROVIDER_DISCONNECT_METHOD => {
-                if !has_request_id {
-                    return Err(RpcFault::request_id_required());
-                }
-                value(self.disconnect_provider(decode_params(params)?)?)
-            }
-            _ => Err(RpcFault::method_not_found()),
+            Err(error) => Err(protocol_fault(error)),
         }
     }
+
+    async fn steer_run(&self, params: RunSteerParams) -> Result<RunSteerResult> {
+        self.engine
+            .steer(params.run_id, params.input)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn recall_steer(&self, params: RunRecallSteerParams) -> Result<RunRecallSteerResult> {
+        self.engine
+            .recall_steer(params.run_id)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn cancel_run(&self, params: RunCancelParams) -> Result<RunCancelResult> {
+        self.engine
+            .cancel_run(params.run_id)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn tool_stdin(&self, params: RunToolStdinParams) -> Result<RunToolStdinResult> {
+        self.engine.tool_stdin(params).await.map_err(protocol_fault)
+    }
+
+    async fn subscribe_events(
+        &self,
+        params: EventsSubscribeParams,
+        context: &ServerContext,
+    ) -> Result<EventsSubscribeResult> {
+        let (result, receiver) = self
+            .engine
+            .subscribe(params.session_id, params.cursor)
+            .await
+            .map_err(protocol_fault)?;
+        self.start_event_tail(receiver, context.clone());
+        for event in &result.events {
+            if let cookie_agent_protocol::EventPayload::ToolCallStarted { start } = &event.payload {
+                self.start_output_tail(start.tool_call_id, context.clone());
+            }
+        }
+        Ok(result)
+    }
+
+    async fn respond_approval(
+        &self,
+        params: ApprovalRespondParams,
+    ) -> Result<ApprovalRespondResult> {
+        self.engine
+            .approval_respond(params.clone())
+            .await
+            .map_err(|error| approval_fault(&params, error).into())
+    }
+
+    async fn list_approvals(&self, params: ApprovalListParams) -> Result<ApprovalListResult> {
+        Ok(self
+            .engine
+            .list_approvals(params.root_session_id, params.status))
+    }
+
+    async fn runtime_snapshot(&self, _: RuntimeSnapshotGetParams) -> Result<RuntimeSnapshotResult> {
+        self.engine.runtime_snapshot().map_err(protocol_fault)
+    }
+
+    async fn connect_provider(
+        &self,
+        params: ProviderConnectParams,
+    ) -> Result<ProviderConnectResult> {
+        Server::connect_provider(self, params).map_err(Into::into)
+    }
+
+    async fn disconnect_provider(
+        &self,
+        params: ProviderDisconnectParams,
+    ) -> Result<ProviderDisconnectResult> {
+        Server::disconnect_provider(self, params).map_err(Into::into)
+    }
+}
+
+fn protocol_fault(error: EngineError) -> ServerFault {
+    engine_fault(error).into()
 }
 
 fn rename_fault(request: &SessionRenameParams, error: EngineError) -> RpcFault {
     let code = match error {
         EngineError::RenameConflict => SessionRenameErrorCode::IdempotencyConflict,
-        EngineError::Session(cookie_agent_engine::session::SessionError::Missing(_))
-        | EngineError::MissingActor(_) => SessionRenameErrorCode::SessionNotFound,
+        EngineError::Session(SessionError::Missing(_)) | EngineError::MissingActor(_) => {
+            SessionRenameErrorCode::SessionNotFound
+        }
         _ => return engine_fault(error),
     };
     RpcFault::rename(request, code)
@@ -276,13 +234,14 @@ fn approval_fault(request: &ApprovalRespondParams, error: EngineError) -> RpcFau
             None,
             None,
         ),
-        EngineError::Session(cookie_agent_engine::session::SessionError::Missing(_))
-        | EngineError::MissingActor(_) => RpcFault::approval(
-            request,
-            ApprovalRespondErrorCode::ApprovalNotFound,
-            None,
-            None,
-        ),
+        EngineError::Session(SessionError::Missing(_)) | EngineError::MissingActor(_) => {
+            RpcFault::approval(
+                request,
+                ApprovalRespondErrorCode::ApprovalNotFound,
+                None,
+                None,
+            )
+        }
         _ => engine_fault(error),
     }
 }

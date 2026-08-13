@@ -461,7 +461,7 @@ fn validate_custom_options(
         || options.deployment.is_some();
     let valid = !has_setup_leak
         && match adaptor {
-            "anthropic" => !has_openai && !has_compatible,
+            "anthropic" | "anthropic-compatible" => !has_openai && !has_compatible,
             "openai-chat" | "openai-responses" => !has_anthropic && !has_compatible,
             "openai-compatible" => !has_anthropic && !has_openai,
             "google-gemini"
@@ -506,7 +506,7 @@ fn validate_auth_shape(auth: &AuthDefinition, adaptor: &str) -> Result<(), Autho
         "openai-chat" | "openai-responses" => {
             ["bearer-api-key-v1", "no-auth-v1"].into_iter().collect()
         }
-        "anthropic" => ["anthropic-api-key-v1"].into_iter().collect(),
+        "anthropic" | "anthropic-compatible" => ["anthropic-api-key-v1"].into_iter().collect(),
         "google-gemini" => ["google-api-key-header-v1"].into_iter().collect(),
         "google-vertex-gemini" => ["oauth-access-token-v1"].into_iter().collect(),
         "aws-bedrock-converse" => ["aws-sigv4-credentials-v1"].into_iter().collect(),
@@ -675,4 +675,41 @@ pub enum AuthoringError {
     AuthShape,
     #[error("static header is transport, protocol, or auth owned")]
     HeaderOwned,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn anthropic_compatible_provider(method: &str) -> CustomProvider {
+        CustomProvider {
+            endpoint: EndpointUrl::new("https://api.example.invalid/v1").expect("valid endpoint"),
+            adaptor: AdapterId::new("anthropic-compatible").expect("valid adaptor ID"),
+            setup: BTreeMap::new(),
+            auth: AuthDefinition {
+                method: AuthMethodId::new(method).expect("valid auth method ID"),
+                parameters: BTreeMap::new(),
+                values: BTreeMap::from([(
+                    AuthFieldName::new("api_key").expect("valid auth field name"),
+                    SecretString::new("secret").expect("nonempty secret"),
+                )]),
+            },
+            headers: BTreeMap::new(),
+            models: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn anthropic_compatible_accepts_only_anthropic_api_key_auth() {
+        let supported = anthropic_compatible_provider("anthropic-api-key-v1");
+        assert_eq!(
+            validate_auth_shape(&supported.auth, supported.adaptor.as_str()),
+            Ok(())
+        );
+        let unsupported = anthropic_compatible_provider("bearer-api-key-v1");
+        assert_eq!(
+            validate_auth_shape(&unsupported.auth, unsupported.adaptor.as_str()),
+            Err(AuthoringError::AuthMethod)
+        );
+    }
 }

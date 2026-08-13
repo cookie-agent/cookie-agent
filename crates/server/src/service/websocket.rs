@@ -16,10 +16,7 @@ use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 
 use super::{RunningServer, Server, ServerError};
-use crate::{
-    auth_token::load_or_create_token,
-    transport::{MessageFrame, MessageStream, TransportError},
-};
+use crate::{MessageFrame, MessageStream, TransportError, auth_token::load_or_create_token};
 
 struct WebSocketStream {
     socket: axum::extract::ws::WebSocket,
@@ -37,7 +34,7 @@ impl MessageStream for WebSocketStream {
         self.socket
             .send(axum::extract::ws::Message::Text(text.into()))
             .await
-            .map_err(TransportError::from)
+            .map_err(|error| TransportError::Other(error.to_string()))
     }
 
     async fn recv(&mut self) -> Result<Option<MessageFrame>, TransportError> {
@@ -48,7 +45,7 @@ impl MessageStream for WebSocketStream {
                 }
                 Some(Ok(axum::extract::ws::Message::Close(_))) | None => return Ok(None),
                 Some(Ok(_)) => {}
-                Some(Err(error)) => return Err(TransportError::from(error)),
+                Some(Err(error)) => return Err(TransportError::Other(error.to_string())),
             }
         }
     }

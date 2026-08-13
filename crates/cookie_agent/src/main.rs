@@ -2,14 +2,12 @@ use std::{
     collections::BTreeMap,
     env, fmt,
     io::{self, IsTerminal, Write},
-    net::IpAddr,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
 use anyhow::Context as _;
-use async_trait::async_trait;
 use clap::{Parser, Subcommand};
 use cookie_agent_engine::{Engine, EngineOptions};
 use cookie_agent_models::{
@@ -18,27 +16,22 @@ use cookie_agent_models::{
     provider_store::ProviderStore,
 };
 use cookie_agent_protocol::{
-    AuthMethodDescriptor, BoundedSetupString, ClientConnectId, ClientHello, ClientRequestId,
-    EffectiveAuthState, JsonRpcId, Notification, ProtocolVersion, ProviderConfigurationState,
-    ProviderConnectResult, ProviderDescriptor, ProviderDisconnectParams, ProviderDisconnectResult,
-    ProviderId, ProviderSupportState, Request, Response, RuntimeSnapshotGetParams,
-    RuntimeSnapshotResult, SafeCode, SafeSetupValue, SetupFieldDescriptor, SetupFieldType,
+    AuthMethodDescriptor, ClientConnectId, ClientRequestId, EffectiveAuthState,
+    ProviderConfigurationState, ProviderConnectResult, ProviderDescriptor,
+    ProviderDisconnectParams, ProviderDisconnectResult, ProviderId, ProviderSupportState,
+    RuntimeSnapshotResult, SafeCode, SafeSetupValue, parse_setup_value, setup_value_text,
 };
 #[cfg(feature = "tui")]
 use cookie_agent_server::in_process_pair;
-use cookie_agent_server::{Server, load_auth_token};
+use cookie_agent_server::{Client, ClientProtocol, Server, validate_websocket_url};
 use cookie_agent_tools::{BuiltinTools, delegate::DelegateToolProvider};
-use futures_util::{SinkExt as _, StreamExt as _};
-use serde::{Serialize, de::DeserializeOwned};
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async,
-    tungstenite::{Message, client::IntoClientRequest as _},
-};
+use serde::Serialize;
 use tokio_util::sync::CancellationToken;
-use url::{Host, Url};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
+#[cfg(test)]
+use cookie_agent_protocol::{SetupFieldDescriptor, SetupFieldType};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize as TestAtomicUsize, Ordering as TestOrdering};
 
@@ -57,7 +50,7 @@ struct Cli {
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 enum Command {
-    /// Serve the protocol-v8 JSON-RPC WebSocket daemon on localhost.
+    /// Serve the protocol-v9 JSON-RPC WebSocket daemon on localhost.
     Daemon,
     /// Attach the TUI to an existing daemon.
     Attach {
@@ -103,8 +96,6 @@ impl Drop for Runtime {
     }
 }
 
-type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
-
 #[derive(Default, Serialize)]
 #[serde(transparent)]
 struct SecretValues(BTreeMap<String, String>);
@@ -135,14 +126,6 @@ struct SensitiveProviderConnectParams {
     client_connect_id: ClientConnectId,
 }
 
-#[derive(Serialize)]
-struct SensitiveRequest<'a, P> {
-    jsonrpc: &'static str,
-    id: i64,
-    method: &'static str,
-    params: &'a P,
-}
-
 trait ConnectIo {
     fn write_line(&mut self, line: &str) -> anyhow::Result<()>;
     fn read_public(&mut self, prompt: &str) -> anyhow::Result<String>;
@@ -163,155 +146,6 @@ impl ConnectIo for StdioConnectIo {
 
     fn read_secret(&mut self, prompt: &str) -> anyhow::Result<Zeroizing<String>> {
         read_secret_line(prompt)
-    }
-}
-
-#[async_trait]
-trait RpcTransport {
-    async fn send_text(&mut self, text: String) -> anyhow::Result<()>;
-    async fn next_text(&mut self) -> anyhow::Result<Option<String>>;
-}
-
-struct WebSocketRpcTransport(Socket);
-
-#[async_trait]
-impl RpcTransport for WebSocketRpcTransport {
-    async fn send_text(&mut self, text: String) -> anyhow::Result<()> {
-        self.0
-            .send(Message::Text(text.into()))
-            .await
-            .context("send RPC request")
-    }
-
-    async fn next_text(&mut self) -> anyhow::Result<Option<String>> {
-        while let Some(message) = self.0.next().await {
-            let message = message.context("read RPC response")?;
-            if let Message::Text(text) = message {
-                return Ok(Some(text.to_string()));
-            }
-        }
-        Ok(None)
-    }
-}
-
-struct RpcClient<T> {
-    transport: T,
-    next_id: i64,
-}
-
-impl RpcClient<WebSocketRpcTransport> {
-    async fn connect(url: &str) -> anyhow::Result<Self> {
-        validate_websocket_url(url)?;
-        let token = Zeroizing::new(load_auth_token().context("load daemon authentication token")?);
-        let mut request = url
-            .into_client_request()
-            .context("construct daemon WebSocket request")?;
-        let authorization = Zeroizing::new(format!("Bearer {}", token.as_str()));
-        request.headers_mut().insert(
-            "authorization",
-            authorization
-                .as_str()
-                .parse()
-                .context("construct daemon authorization header")?,
-        );
-        let (socket, _) = connect_async(request)
-            .await
-            .context("connect to authenticated daemon WebSocket")?;
-        Ok(Self {
-            transport: WebSocketRpcTransport(socket),
-            next_id: 1,
-        })
-    }
-}
-
-impl<T: RpcTransport> RpcClient<T> {
-    async fn handshake(&mut self) -> anyhow::Result<()> {
-        let _: cookie_agent_protocol::ServerHello = self
-            .call(
-                "handshake",
-                &ClientHello {
-                    protocol_version: ProtocolVersion::current(),
-                },
-            )
-            .await?;
-        Ok(())
-    }
-
-    async fn call<P, R>(&mut self, method: &str, params: &P) -> anyhow::Result<R>
-    where
-        P: Serialize + ?Sized,
-        R: DeserializeOwned,
-    {
-        let id = self.next_id;
-        self.next_id += 1;
-        let request = Request::new(
-            JsonRpcId::Number(id),
-            method,
-            Some(serde_json::to_value(params).context("encode RPC params")?),
-        );
-        self.transport
-            .send_text(serde_json::to_string(&request).context("encode RPC request")?)
-            .await?;
-        self.receive_response(id).await
-    }
-
-    async fn call_provider_connect(
-        &mut self,
-        params: SensitiveProviderConnectParams,
-    ) -> anyhow::Result<ProviderConnectResult> {
-        let id = self.next_id;
-        self.next_id += 1;
-        let request = SensitiveRequest {
-            jsonrpc: "2.0",
-            id,
-            method: "provider.connect",
-            params: &params,
-        };
-        let mut encoded = Zeroizing::new(
-            serde_json::to_string(&request).context("encode sensitive RPC request")?,
-        );
-        // Structured and serialized process-owned credential buffers are wiped.
-        // Copies accepted by WebSocket/TLS/socket layers are transport-owned.
-        let outbound = std::mem::take(&mut *encoded);
-        self.transport
-            .send_text(outbound)
-            .await
-            .context("send sensitive RPC request")?;
-        drop(encoded);
-        drop(params);
-        self.receive_response(id).await
-    }
-
-    async fn receive_response<R>(&mut self, id: i64) -> anyhow::Result<R>
-    where
-        R: DeserializeOwned,
-    {
-        while let Some(text) = self.transport.next_text().await? {
-            let value: serde_json::Value =
-                serde_json::from_str(&text).context("decode RPC response")?;
-            if value.get("id") != Some(&serde_json::json!(id)) {
-                let _: Result<Notification, _> = serde_json::from_value(value);
-                continue;
-            }
-            return match serde_json::from_value::<Response>(value)
-                .context("validate RPC response")?
-            {
-                Response::Success(response) => {
-                    serde_json::from_value(response.result).context("decode RPC result")
-                }
-                Response::Error(response) => anyhow::bail!(
-                    "{} ({}){}",
-                    response.error.message,
-                    response.error.code,
-                    response
-                        .error
-                        .data
-                        .map(|data| format!(": {data}"))
-                        .unwrap_or_default()
-                ),
-            };
-        }
-        anyhow::bail!("daemon closed the WebSocket before replying")
     }
 }
 
@@ -402,7 +236,7 @@ async fn compose_with<T: CatalogTransport + 'static>(
     })
     .context("open manifests, rehydrate project state, and reconcile engine")?;
     engine.register_tool_provider(Arc::new(BuiltinTools::new(workspace)));
-    engine.register_tool_provider(Arc::new(DelegateToolProvider::new(engine.client())));
+    engine.register_tool_provider(Arc::new(DelegateToolProvider::new(engine.clone())));
     let server = Arc::new(Server::new(engine.clone()));
     let catalog_refresh_shutdown = CancellationToken::new();
     let catalog_refresh_task = tokio::spawn(run_catalog_refresh_loop(
@@ -505,11 +339,11 @@ async fn run_attached_tui(url: &str) -> anyhow::Result<()> {
     anyhow::bail!("cookie was built without TUI support")
 }
 
-async fn runtime_snapshot<T: RpcTransport>(
-    client: &mut RpcClient<T>,
+async fn runtime_snapshot(
+    client: &(impl ClientProtocol + ?Sized),
 ) -> anyhow::Result<RuntimeSnapshotResult> {
     client
-        .call("runtime.snapshot.get", &RuntimeSnapshotGetParams {})
+        .runtime_snapshot()
         .await
         .context("runtime.snapshot.get failed")
 }
@@ -521,13 +355,13 @@ async fn run_connect(url: &str, provider_id: Option<String>) -> anyhow::Result<(
         io::stderr().is_terminal(),
         "connect",
     )?;
-    let mut client = RpcClient::connect(url).await?;
+    let client = Client::connect_websocket(url).await?;
     let mut io = StdioConnectIo;
-    run_connect_with(&mut client, provider_id, &mut io).await
+    run_connect_with(&client, provider_id, &mut io).await
 }
 
-async fn run_connect_with<T: RpcTransport, I: ConnectIo>(
-    client: &mut RpcClient<T>,
+async fn run_connect_with<I: ConnectIo>(
+    client: &Client,
     provider_id: Option<String>,
     io: &mut I,
 ) -> anyhow::Result<()> {
@@ -549,16 +383,19 @@ async fn run_connect_with<T: RpcTransport, I: ConnectIo>(
     let setup_values = collect_setup_values(provider, |prompt| io.read_public(prompt))?;
     let auth_method = choose_auth_method(provider, io)?;
     let auth_values = collect_auth_values(auth_method, |prompt| io.read_secret(prompt))?;
-    let result = client
-        .call_provider_connect(SensitiveProviderConnectParams {
-            provider_id: provider.id.clone(),
-            expected_catalog_revision: runtime.snapshot.catalog_revision,
-            setup_values,
-            auth_method: auth_method.id.clone(),
-            auth_values,
-            client_connect_id: ClientConnectId::new(Uuid::now_v7().to_string())
-                .expect("UUID is a valid connect ID"),
-        })
+    let result: ProviderConnectResult = client
+        .call_sensitive(
+            "provider.connect",
+            SensitiveProviderConnectParams {
+                provider_id: provider.id.clone(),
+                expected_catalog_revision: runtime.snapshot.catalog_revision,
+                setup_values,
+                auth_method: auth_method.id.clone(),
+                auth_values,
+                client_connect_id: ClientConnectId::new(Uuid::now_v7().to_string())
+                    .expect("UUID is a valid connect ID"),
+            },
+        )
         .await
         .context("provider.connect failed")?;
     io.write_line(&format!(
@@ -577,10 +414,10 @@ async fn run_disconnect(url: &str, provider_id: Option<String>) -> anyhow::Resul
         io::stderr().is_terminal(),
         "disconnect",
     )?;
-    let mut client = RpcClient::connect(url).await?;
+    let client = Client::connect_websocket(url).await?;
     let mut io = StdioConnectIo;
     client.handshake().await.context("handshake with daemon")?;
-    let runtime = runtime_snapshot(&mut client).await?;
+    let runtime = runtime_snapshot(&client).await?;
     let provider = choose_provider(&runtime.snapshot.providers, provider_id, &mut io)?;
     print_provider_details(
         provider,
@@ -592,20 +429,17 @@ async fn run_disconnect(url: &str, provider_id: Option<String>) -> anyhow::Resul
         anyhow::bail!("provider disconnection cancelled");
     }
     let result: ProviderDisconnectResult = client
-        .call(
-            "provider.disconnect",
-            &ProviderDisconnectParams {
-                provider_id: provider.id.clone(),
-                expected_runtime_revision: runtime.snapshot.runtime_revision,
-                expected_provider_state_revision: runtime.snapshot.provider_state_revision,
-                expected_connection_generation: provider
-                    .durable_connection
-                    .as_ref()
-                    .map(|connection| connection.connection_generation),
-                client_request_id: ClientRequestId::new(Uuid::now_v7().to_string())
-                    .expect("UUID is a valid request ID"),
-            },
-        )
+        .disconnect_provider(ProviderDisconnectParams {
+            provider_id: provider.id.clone(),
+            expected_runtime_revision: runtime.snapshot.runtime_revision,
+            expected_provider_state_revision: runtime.snapshot.provider_state_revision,
+            expected_connection_generation: provider
+                .durable_connection
+                .as_ref()
+                .map(|connection| connection.connection_generation),
+            client_request_id: ClientRequestId::new(Uuid::now_v7().to_string())
+                .expect("UUID is a valid request ID"),
+        })
         .await
         .context("provider.disconnect failed")?;
     println!(
@@ -679,43 +513,13 @@ fn collect_setup_values(
                         })
                     });
             }
-            Some(parse_setup_value(field, answer).map(|value| (field.id.clone(), value)))
+            Some(
+                parse_setup_value(field, &answer)
+                    .map_err(anyhow::Error::from)
+                    .map(|value| (field.id.clone(), value)),
+            )
         })
         .collect()
-}
-
-fn parse_setup_value(
-    field: &SetupFieldDescriptor,
-    value: String,
-) -> anyhow::Result<SafeSetupValue> {
-    let parsed = match field.validation.value_type {
-        SetupFieldType::String => {
-            SafeSetupValue::String(BoundedSetupString::new(value).context("invalid setup string")?)
-        }
-        SetupFieldType::Code => {
-            SafeSetupValue::Code(SafeCode::new(value).context("invalid setup code")?)
-        }
-        SetupFieldType::Integer => SafeSetupValue::Integer(
-            value
-                .parse::<i64>()
-                .with_context(|| format!("setup field `{}` requires an integer", field.id))?,
-        ),
-        SetupFieldType::Bool => SafeSetupValue::Bool(match value.to_ascii_lowercase().as_str() {
-            "true" | "yes" | "y" | "1" => true,
-            "false" | "no" | "n" | "0" => false,
-            _ => anyhow::bail!("setup field `{}` requires true or false", field.id),
-        }),
-    };
-    Ok(parsed)
-}
-
-fn setup_value_text(value: &SafeSetupValue) -> String {
-    match value {
-        SafeSetupValue::Bool(value) => value.to_string(),
-        SafeSetupValue::Integer(value) => value.to_string(),
-        SafeSetupValue::Code(value) => value.as_str().to_owned(),
-        SafeSetupValue::String(value) => value.as_str().to_owned(),
-    }
 }
 
 fn choose_auth_method<'a>(
@@ -773,28 +577,6 @@ fn collect_auth_values(
         }
     }
     Ok(values)
-}
-
-fn validate_websocket_url(value: &str) -> anyhow::Result<()> {
-    let url = Url::parse(value).context("parse daemon WebSocket URL")?;
-    if !matches!(url.scheme(), "ws" | "wss") {
-        anyhow::bail!("daemon WebSocket URL scheme must be ws or wss");
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        anyhow::bail!("daemon WebSocket URL must not contain credentials");
-    }
-    let loopback = match url.host().context("daemon WebSocket URL requires a host")? {
-        Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
-        Host::Ipv4(address) => IpAddr::V4(address).is_loopback(),
-        Host::Ipv6(address) => IpAddr::V6(address).is_loopback(),
-    };
-    if !loopback {
-        anyhow::bail!("daemon WebSocket URL host must be loopback");
-    }
-    if url.path() != "/ws" || url.query().is_some() || url.fragment().is_some() {
-        anyhow::bail!("daemon WebSocket URL path must be exactly /ws without query or fragment");
-    }
-    Ok(())
 }
 
 fn require_interactive_tty(
@@ -1012,34 +794,6 @@ mod tests {
     struct ScriptedTransport {
         fetches: Arc<AtomicUsize>,
         steps: Arc<Mutex<VecDeque<CatalogStep>>>,
-    }
-
-    struct InProcessRpcTransport(cookie_agent_server::InProcessStream);
-
-    #[async_trait]
-    impl RpcTransport for InProcessRpcTransport {
-        async fn send_text(&mut self, text: String) -> anyhow::Result<()> {
-            cookie_agent_server::MessageStream::send(
-                &mut self.0,
-                cookie_agent_server::MessageFrame::Text(text),
-            )
-            .await
-            .context("send in-process RPC request")
-        }
-
-        async fn next_text(&mut self) -> anyhow::Result<Option<String>> {
-            let frame = cookie_agent_server::MessageStream::recv(&mut self.0)
-                .await
-                .context("receive in-process RPC response")?;
-            frame
-                .map(|frame| match frame {
-                    cookie_agent_server::MessageFrame::Text(text) => Ok(text),
-                    cookie_agent_server::MessageFrame::Value(value) => {
-                        serde_json::to_string(&value).context("encode in-process RPC response")
-                    }
-                })
-                .transpose()
-        }
     }
 
     #[derive(Default)]
@@ -1725,16 +1479,13 @@ mod tests {
         let before_wipe = SECRET_VALUES_WIPED.load(TestOrdering::SeqCst);
         let (client_stream, server_stream) = cookie_agent_server::in_process_pair(32);
         let server_task = tokio::spawn(runtime.server.clone().serve_stream(server_stream));
-        let mut client = RpcClient {
-            transport: InProcessRpcTransport(client_stream),
-            next_id: 1,
-        };
+        let client = Client::connect_stream(client_stream);
         let mut io = ScriptedConnectIo {
             public: VecDeque::from(["openai".into(), "yes".into()]),
             secrets: VecDeque::from([Zeroizing::new("invented-reconnect-placeholder".into())]),
             output: Vec::new(),
         };
-        run_connect_with(&mut client, None, &mut io).await.unwrap();
+        run_connect_with(&client, None, &mut io).await.unwrap();
         let output = io.output.join("\n");
         assert!(output.contains("openai"));
         assert!(output.contains("Presence: Removed"));
@@ -1785,12 +1536,9 @@ mod tests {
                 .to_owned();
             let (client_stream, server_stream) = cookie_agent_server::in_process_pair(32);
             let server_task = tokio::spawn(runtime.server.clone().serve_stream(server_stream));
-            let mut client = RpcClient {
-                transport: InProcessRpcTransport(client_stream),
-                next_id: 1,
-            };
+            let client = Client::connect_stream(client_stream);
             let mut io = ScriptedConnectIo::default();
-            let error = run_connect_with(&mut client, Some(provider_id.into()), &mut io)
+            let error = run_connect_with(&client, Some(provider_id.into()), &mut io)
                 .await
                 .unwrap_err();
             assert!(error.to_string().contains(&reason), "{error:#}");

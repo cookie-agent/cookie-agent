@@ -1,5 +1,6 @@
 use cookie_agent_identity::AgentId;
 use cookie_agent_models::Sha256Digest;
+pub use cookie_agent_protocol::AgentDocumentSource;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
@@ -8,14 +9,6 @@ use crate::{AgentFrontmatter, ConfigError};
 const MAX_FRONTMATTER_BYTES: usize = 128 * 1024;
 const MAX_BODY_BYTES: usize = 128 * 1024;
 const MAX_LIST: usize = 256;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentDocumentSource {
-    BuiltIn,
-    User,
-    Workspace,
-}
 
 #[derive(Clone, Debug)]
 pub struct AgentDocument {

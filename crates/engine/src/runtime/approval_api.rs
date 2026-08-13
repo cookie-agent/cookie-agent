@@ -1,4 +1,12 @@
-use super::*;
+use cookie_agent_protocol::{
+    ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult, ApprovalStatus, SessionId,
+};
+
+use super::{
+    Engine, EngineError, PreparedApprovalInvalidation, SessionCommand,
+    approval_projection::approval_records, helpers::root_id,
+};
+use crate::tool_api::ToolError;
 
 impl Engine {
     pub async fn approval_respond(

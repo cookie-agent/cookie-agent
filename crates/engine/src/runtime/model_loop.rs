@@ -1,4 +1,43 @@
-use super::*;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
+use cookie_agent_protocol::{
+    ApprovalDecisionSource, InternalAgentKind, InvocationId, OperationFingerprint,
+    PersistedAssistantPart, RunId, RunStartParams, RunStartResult, SessionId, SessionOrigin,
+    SessionStatus, StoredEvent, ToolCallId, ToolCallStart,
+};
+use futures_util::StreamExt;
+use oven_sdk::{ModelError, Request as ModelRequest, ToolDefinition};
+use tokio_util::sync::CancellationToken;
+
+use super::{
+    ActiveRun, ApprovalToolInput, AttemptTurn, Engine, EngineError, Event,
+    MAX_PENDING_PREPARED_TOOLS, ModelApprovalInput, PendingTool, PredictiveCompactionInput,
+    SessionCommand, ToolCallFailureCode, ToolFailure,
+    approval_projection::denied_tool_failure,
+    compaction::{CompactionInput, effective_compaction_limit, latest_checkpoint_seq},
+    helpers::safe_error,
+    should_run_predictive_compaction,
+    tool_execution::fallback_operation_fingerprint,
+};
+use crate::{
+    events::OutputHub,
+    model_bridge::{AbortBridge, TurnAccumulator},
+    model_history::{
+        assemble_model_context, persist_turn, replay_decisions_with_preflight, wire_model,
+    },
+    model_policy::{ErrorPolicy, classify as classify_model_error, summary as model_error_summary},
+    policy::{
+        self, FrozenRunPolicy, freeze_root_agent_policy, policy_for_session_selection,
+        resolve_agent,
+    },
+    tool_api::ToolCall,
+};
 
 impl Engine {
     pub(super) async fn start_run_direct(
@@ -88,8 +127,8 @@ impl Engine {
                     .snapshot
                     .recipe_registry_revision
                     .clone(),
-                manifest_revision: run_policy.selected_suffix_wire[0].manifest_revision.clone(),
-                selected_suffix: run_policy.selected_suffix_wire.clone(),
+                manifest_revision: run_policy.selected_suffix[0].manifest_revision.clone(),
+                selected_suffix: run_policy.selected_suffix.clone(),
                 input_through_seq,
             },
         )

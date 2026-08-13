@@ -12,7 +12,6 @@ mod model_policy;
 mod model_snapshots;
 pub mod permissions;
 mod policy;
-pub mod run;
 mod runtime;
 mod runtime_snapshot;
 #[cfg(test)]
@@ -25,7 +24,7 @@ mod tool_api;
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
 pub use media::approved_media_type;
-pub use runtime::{ApprovalRespondFailure, Engine, EngineClient, EngineError, EngineOptions};
+pub use runtime::{ApprovalRespondFailure, Engine, EngineError, EngineOptions};
 pub use runtime_snapshot::PublishedRuntime;
 pub use tool_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, ProgressSink, SessionToolContext,

@@ -1,4 +1,25 @@
-use super::*;
+use std::sync::{Arc, atomic::Ordering};
+
+use cookie_agent_protocol::{
+    AgentId, AgentMode, ApprovalInternalDecisionKind, InternalAgentBackend, InternalAgentFailure,
+    InternalAgentInvocationId, InternalAgentKind, InternalAgentRunId, RunId, SafeInternalAgentCall,
+    SafeInternalAgentResult, SessionId, Sha256Digest,
+};
+use oven_sdk::{ModelError, Request as ModelRequest, ToolDefinition};
+use serde::Deserialize;
+
+use super::{
+    ActiveRun, Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
+    InternalAgentHistoryInput, InternalAgentLimits, InternalAgentTextResult,
+    UNAVAILABLE_BUILTIN_REVISION,
+    helpers::{safe_code, safe_display, safe_error, truncate_utf8},
+};
+use crate::{
+    model_bridge::AbortBridge,
+    model_history::wire_model,
+    model_policy::summary as model_error_summary,
+    policy::{self, FrozenRunPolicy},
+};
 
 impl Engine {
     pub(super) async fn run_internal_text_agent(

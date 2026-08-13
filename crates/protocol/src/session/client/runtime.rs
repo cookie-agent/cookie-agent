@@ -1,6 +1,6 @@
-//! Protocol-8 coherent runtime and provider mutation RPCs.
+//! Protocol-9 coherent runtime and provider mutation RPCs.
 
-use cookie_agent_protocol::{
+use crate::{
     ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
     ProviderDisconnectResult, RuntimeSnapshotGetParams, RuntimeSnapshotResult,
 };
@@ -21,7 +21,7 @@ impl Drop for ProviderConnectGuard {
 impl Client {
     pub async fn runtime_snapshot(&self) -> Result<RuntimeSnapshotResult, ClientError> {
         self.call(
-            cookie_agent_protocol::RUNTIME_SNAPSHOT_GET_METHOD,
+            crate::RUNTIME_SNAPSHOT_GET_METHOD,
             &RuntimeSnapshotGetParams {},
         )
         .await
@@ -34,12 +34,9 @@ impl Client {
         let params = ProviderConnectGuard(params);
         async move {
             let value = provider_connect_value(&params.0)?;
-            let result = send_sensitive_command(
-                &self.commands,
-                cookie_agent_protocol::PROVIDER_CONNECT_METHOD,
-                value,
-            )
-            .await?;
+            let result =
+                send_sensitive_command(&self.commands, crate::PROVIDER_CONNECT_METHOD, value)
+                    .await?;
             Ok(serde_json::from_value(result)?)
         }
     }
@@ -48,8 +45,7 @@ impl Client {
         &self,
         params: ProviderDisconnectParams,
     ) -> Result<ProviderDisconnectResult, ClientError> {
-        self.call(cookie_agent_protocol::PROVIDER_DISCONNECT_METHOD, &params)
-            .await
+        self.call(crate::PROVIDER_DISCONNECT_METHOD, &params).await
     }
 }
 
@@ -75,7 +71,7 @@ fn provider_connect_value(params: &ProviderConnectParams) -> Result<SensitiveJso
         .and_then(Value::as_object_mut)
         .expect("auth values were initialized as an object");
     for field in params.auth_values.field_names() {
-        let id = cookie_agent_protocol::AuthFieldName::new(field.to_owned())
+        let id = crate::AuthFieldName::new(field.to_owned())
             .expect("protocol credential field names are validated");
         if let Some(secret) = params.auth_values.get(&id) {
             auth_values.insert(field.to_owned(), Value::String(secret.to_owned()));

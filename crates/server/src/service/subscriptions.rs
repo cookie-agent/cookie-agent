@@ -1,14 +1,11 @@
 use cookie_agent_engine::events::OutputMessage;
 use cookie_agent_protocol::{
-    EventPayload, EventSubscriptionMessage, OutputSnapshotEnvelope, OutputStream,
+    EventPayload, EventSubscriptionMessage, OutputSnapshotEnvelope, OutputStream, ServerContext,
 };
-use serde::Serialize;
-use serde_json::Value;
 use tokio::{
     sync::mpsc,
     time::{Duration, sleep},
 };
-use tokio_util::sync::CancellationToken;
 
 use super::Server;
 
@@ -16,11 +13,11 @@ impl Server {
     pub(super) fn start_event_tail(
         &self,
         mut receiver: mpsc::Receiver<EventSubscriptionMessage>,
-        notifications: mpsc::Sender<Value>,
-        shutdown: CancellationToken,
+        context: ServerContext,
     ) {
         let server = self.clone();
         tokio::spawn(async move {
+            let shutdown = context.shutdown();
             loop {
                 let message = tokio::select! {
                     _ = shutdown.cancelled() => return,
@@ -36,18 +33,15 @@ impl Server {
                     },
                     EventSubscriptionMessage::Gap { .. } => None,
                 };
-                if send_notification(&notifications, &shutdown, "events.subscription", &message)
+                if context
+                    .notify("events.subscription", &message)
                     .await
                     .is_err()
                 {
                     return;
                 }
                 if let Some(tool_call_id) = tool_call_id {
-                    server.start_output_tail(
-                        tool_call_id,
-                        notifications.clone(),
-                        shutdown.child_token(),
-                    );
+                    server.start_output_tail(tool_call_id, context.clone());
                 }
             }
         });
@@ -56,11 +50,11 @@ impl Server {
     pub(super) fn start_output_tail(
         &self,
         tool_call_id: cookie_agent_protocol::ToolCallId,
-        notifications: mpsc::Sender<Value>,
-        shutdown: CancellationToken,
+        context: ServerContext,
     ) {
         let engine = self.engine.clone();
         tokio::spawn(async move {
+            let shutdown = context.shutdown();
             for _ in 0..10 {
                 let stdout = engine.subscribe_tool_output(tool_call_id, OutputStream::Stdout);
                 let stderr = engine.subscribe_tool_output(tool_call_id, OutputStream::Stderr);
@@ -70,8 +64,7 @@ impl Server {
                             OutputStream::Stdout,
                             snapshot,
                             receiver,
-                            notifications.clone(),
-                            shutdown.child_token(),
+                            context.clone(),
                         ));
                     }
                     if let Some((snapshot, receiver)) = stderr {
@@ -79,8 +72,7 @@ impl Server {
                             OutputStream::Stderr,
                             snapshot,
                             receiver,
-                            notifications,
-                            shutdown.child_token(),
+                            context,
                         ));
                     }
                     return;
@@ -94,33 +86,17 @@ impl Server {
     }
 }
 
-async fn send_notification<T: Serialize>(
-    sender: &mpsc::Sender<Value>,
-    shutdown: &CancellationToken,
-    method: &str,
-    params: &T,
-) -> Result<(), ()> {
-    let notification = serde_json::to_value(cookie_agent_protocol::Notification::new(
-        method,
-        Some(serde_json::to_value(params).map_err(|_| ())?),
-    ))
-    .map_err(|_| ())?;
-    tokio::select! {
-        _ = shutdown.cancelled() => Err(()),
-        result = sender.send(notification) => result.map_err(|_| ()),
-    }
-}
-
 async fn forward_output(
     stream: OutputStream,
     snapshot: cookie_agent_protocol::OutputSnapshot,
     mut receiver: mpsc::Receiver<OutputMessage>,
-    notifications: mpsc::Sender<Value>,
-    shutdown: CancellationToken,
+    context: ServerContext,
 ) {
+    let shutdown = context.shutdown();
     let held_delta = match receiver.try_recv() {
         Ok(OutputMessage::Gap(gap)) => {
-            if send_notification(&notifications, &shutdown, "events.tool_output_gap", &gap)
+            if context
+                .notify("events.tool_output_gap", &gap)
                 .await
                 .is_err()
             {
@@ -131,26 +107,21 @@ async fn forward_output(
         Ok(OutputMessage::Delta(delta)) => Some(delta),
         Err(_) => None,
     };
-    if send_notification(
-        &notifications,
-        &shutdown,
-        "events.tool_output_snapshot",
-        &OutputSnapshotEnvelope { stream, snapshot },
-    )
-    .await
-    .is_err()
+    if context
+        .notify(
+            "events.tool_output_snapshot",
+            &OutputSnapshotEnvelope { stream, snapshot },
+        )
+        .await
+        .is_err()
     {
         return;
     }
     if let Some(delta) = held_delta
-        && send_notification(
-            &notifications,
-            &shutdown,
-            "events.tool_output_delta",
-            &delta,
-        )
-        .await
-        .is_err()
+        && context
+            .notify("events.tool_output_delta", &delta)
+            .await
+            .is_err()
     {
         return;
     }
@@ -163,18 +134,8 @@ async fn forward_output(
             },
         };
         let result = match message {
-            OutputMessage::Delta(delta) => {
-                send_notification(
-                    &notifications,
-                    &shutdown,
-                    "events.tool_output_delta",
-                    &delta,
-                )
-                .await
-            }
-            OutputMessage::Gap(gap) => {
-                send_notification(&notifications, &shutdown, "events.tool_output_gap", &gap).await
-            }
+            OutputMessage::Delta(delta) => context.notify("events.tool_output_delta", &delta).await,
+            OutputMessage::Gap(gap) => context.notify("events.tool_output_gap", &gap).await,
         };
         if result.is_err() {
             return;
