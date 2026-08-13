@@ -361,6 +361,69 @@ impl InputState {
         self.reanchor_cursor();
     }
 
+    /// The buffer byte nearest a display position (row within the visible
+    /// window, column within the text rect) — the same mapping a click uses
+    /// to place the cursor, exposed for mouse selection anchors.
+    pub(crate) fn byte_at_display_position(&self, row: u16, column: u16) -> usize {
+        if self.layout_width == 0 || self.layout_height == 0 {
+            return self.cursor;
+        }
+        let rows = visual_rows(&self.value, self.layout_width);
+        if rows.is_empty() {
+            return 0;
+        }
+        let target_row = (self.viewport_row + usize::from(row)).min(rows.len() - 1);
+        cursor_at_column(&rows[target_row], column)
+    }
+
+    /// Display cells covered by a normalized byte range, as
+    /// `(row within the visible window, column start, column end)` triples.
+    /// Soft-wrap boundaries are exact: a wrapped row selected to its end
+    /// covers its full width, and the next row starts at the same byte.
+    pub(crate) fn selection_cells(&self, start: usize, end: usize) -> Vec<(u16, u16, u16)> {
+        let mut cells = Vec::new();
+        if self.layout_width == 0 || self.layout_height == 0 || start >= end {
+            return cells;
+        }
+        let rows = visual_rows(&self.value, self.layout_width);
+        let visible = usize::from(self.layout_height);
+        for (index, row) in rows
+            .iter()
+            .enumerate()
+            .skip(self.viewport_row)
+            .take(visible)
+        {
+            let cover_start = start.max(row.start);
+            let cover_end = end.min(row.end);
+            if cover_start >= cover_end {
+                continue;
+            }
+            let column_start = width_between(row, cover_start);
+            let column_end = width_between(row, cover_end);
+            if column_start < column_end {
+                cells.push((
+                    u16::try_from(index - self.viewport_row).unwrap_or(u16::MAX),
+                    column_start,
+                    column_end,
+                ));
+            }
+        }
+        cells
+    }
+
+    /// Remove a normalized byte range (the composer cut): the cursor moves
+    /// to the removal point and the viewport follows it.
+    pub(crate) fn delete_byte_range(&mut self, start: usize, end: usize) {
+        if start >= end || end > self.value.len() {
+            return;
+        }
+        self.value.replace_range(start..end, "");
+        self.cursor = start;
+        self.snap_cursor_forward();
+        self.preferred_column = None;
+        self.reanchor_cursor();
+    }
+
     fn move_vertical(&mut self, up: bool) {
         self.move_visual_rows(up, 1);
     }
@@ -1496,5 +1559,78 @@ mod tests {
         input.insert('x');
         draw(&mut terminal, &mut input);
         assert_eq!(input.viewport_row(), 3);
+    }
+
+    #[test]
+    fn byte_at_display_position_matches_the_click_cursor_mapping() {
+        let mut input = InputState::default();
+        input.set_buffer("hello\nwrappedworld".to_owned());
+        // Lay out at a width that soft-wraps the second logical line.
+        let _ = input.visible_rows(6, 4);
+        // Same display position feeds cursor placement and selection
+        // anchors, so both must agree byte-for-byte.
+        for row in 0u16..3 {
+            for column in 0u16..7 {
+                let byte = input.byte_at_display_position(row, column);
+                let mut probe = InputState::default();
+                probe.set_buffer("hello\nwrappedworld".to_owned());
+                let _ = probe.visible_rows(6, 4);
+                probe.set_cursor_from_display_position(row, column);
+                assert_eq!(byte, probe.cursor_byte(), "row {row} column {column}");
+            }
+        }
+        // An empty buffer maps every position to byte 0.
+        let mut empty = InputState::default();
+        let _ = empty.visible_rows(6, 2);
+        assert_eq!(empty.byte_at_display_position(0, 4), 0);
+    }
+
+    #[test]
+    fn selection_cells_cover_soft_wraps_and_hard_breaks_exactly() {
+        let mut input = InputState::default();
+        input.set_buffer("abcdefgh".to_owned());
+        // set_buffer leaves the cursor (and the viewport chasing it) at the
+        // end; hold the viewport at the top so all rows stay addressable.
+        input.scroll_to(0);
+        let _ = input.visible_rows(4, 2);
+        // Bytes 2..6 span the soft wrap: the first row covers its tail, the
+        // second its head; the boundary byte belongs to the next row.
+        assert_eq!(
+            input.selection_cells(2, 6),
+            vec![(0, 2, 4), (1, 0, 2)],
+            "soft-wrapped rows"
+        );
+        // An empty range reports nothing.
+        assert!(input.selection_cells(0, 0).is_empty());
+
+        let mut broken = InputState::default();
+        broken.set_buffer("abcd\nefgh".to_owned());
+        broken.scroll_to(0);
+        let _ = broken.visible_rows(4, 3);
+        // Bytes 1..7 cover both rows and the newline between them; the
+        // newline itself owns no cells on either row.
+        assert_eq!(
+            broken.selection_cells(1, 7),
+            vec![(0, 1, 4), (1, 0, 2)],
+            "hard-break rows"
+        );
+        // Viewport clipping: a one-row window at the top reports only the
+        // first row's cells.
+        let _ = broken.visible_rows(4, 1);
+        assert_eq!(broken.selection_cells(1, 7), vec![(0, 1, 4)]);
+    }
+
+    #[test]
+    fn delete_byte_range_cuts_and_moves_the_cursor_to_the_gap() {
+        let mut input = InputState::default();
+        input.set_buffer("hello world".to_owned());
+        let _ = input.visible_rows(11, 1);
+        input.delete_byte_range(6, 9);
+        assert_eq!(input.as_str(), "hello ld");
+        assert_eq!(input.cursor_byte(), 6);
+        // Bounds and empty ranges are ignored.
+        input.delete_byte_range(4, 4);
+        input.delete_byte_range(7, 99);
+        assert_eq!(input.as_str(), "hello ld");
     }
 }

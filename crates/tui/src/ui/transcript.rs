@@ -21,7 +21,7 @@ use crate::{
     theme::{Theme, ThemeKey},
 };
 
-use super::app::App;
+use super::app::{App, TextSelection, UserMessageHit};
 
 /// Scrollbar geometry over the total rendered line height.
 ///
@@ -211,11 +211,22 @@ pub struct BlockRegion {
     pub(super) end_line: usize,
 }
 
+/// The logical-line range of one user message row, paired with the physical
+/// sequence of its `UserInputSubmitted` event. Clicking the range opens the
+/// copy/revert/fork menu, which targets the sequence with `through_seq`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct UserRegion {
+    pub(super) seq: u64,
+    pub(super) start_line: usize,
+    pub(super) end_line: usize,
+}
+
 /// Width-resolved transcript output and its stage-4 block hit map.
 #[derive(Clone, Default)]
 pub(super) struct TranscriptLayout {
     pub(super) lines: Vec<Line<'static>>,
     pub(super) regions: Vec<BlockRegion>,
+    pub(super) user_regions: Vec<UserRegion>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -252,6 +263,8 @@ struct ItemLayoutKey {
 struct ItemLayout {
     lines: Vec<Line<'static>>,
     regions: Vec<BlockRegion>,
+    /// Physical event sequence when this item is a user message row.
+    user_seq: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -379,60 +392,11 @@ pub(super) fn ensure_cached_transcript_layout(
 }
 
 impl App {
-    pub(super) fn render_conversation(&mut self, frame: &mut ratatui::Frame, area: Rect) {
-        // The rightmost inner column is reserved for the scrollbar whenever
-        // the content can overflow; content layout and block hit regions never
-        // extend into it, so the track can be grabbed without hitting blocks.
-        let scrollable = self.selected.is_some_and(|session_id| {
-            self.store
-                .sessions
-                .get(&session_id)
-                .is_some_and(|state| !state.transcript.is_empty())
-        }) || !self.transient_notices.is_empty()
-            || (self.tui_config.minimum_event_level <= crate::state::EventLevel::Warning
-                && self
-                    .selected
-                    .is_some_and(|selected| !self.descendant_warnings(selected).is_empty()));
-        let width = area
-            .width
-            .saturating_sub(2)
-            .saturating_sub(u16::from(scrollable));
-        let session_present = self
-            .selected
-            .is_some_and(|session_id| self.store.sessions.contains_key(&session_id));
-        let empty_layout = TranscriptLayout {
-            lines: empty_conversation_lines(session_present, width, &self.theme),
-            regions: Vec::new(),
-        };
-        let clock_bucket = self.clock_bucket();
-        let layout = if let Some((session_id, state)) = self.selected.and_then(|session_id| {
-            self.store
-                .sessions
-                .get(&session_id)
-                .map(|state| (session_id, state))
-        }) {
-            ensure_cached_transcript_layout(
-                &mut self.layout_cache,
-                session_id,
-                state,
-                self.expanded_blocks.get(&session_id),
-                width,
-                &self.theme,
-                self.highlighter.as_ref(),
-                self.tui_config.minimum_event_level,
-                clock_bucket,
-            );
-            // A fresh session greets with guidance instead of a blank pane;
-            // a filtered-down transcript (lines hidden by the event level)
-            // keeps its own rows, empty-looking or not.
-            if state.transcript.is_empty() {
-                &empty_layout
-            } else {
-                &self.layout_cache.layout
-            }
-        } else {
-            &empty_layout
-        };
+    /// The transient notice rows rendered after the transcript (notices and
+    /// aggregated descendant warnings), exactly as [`Self::render_conversation`]
+    /// appends them. Selection extraction consumes the same chain so copied
+    /// text matches what is on screen.
+    pub(super) fn notice_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut notice_lines = Vec::new();
         for notice in &self.transient_notices {
             // Multiline notices (e.g. /help) keep their structure: the
@@ -469,6 +433,116 @@ impl App {
                 ));
             }
         }
+        notice_lines
+    }
+
+    /// The full rendered conversation chain — transcript lines plus the
+    /// notice block — for selection extraction. The cached layout is exactly
+    /// what the last frame rendered at this width, so logical-line
+    /// coordinates from the mouse map one-to-one.
+    pub(super) fn conversation_chain(&self, width: u16) -> Vec<Line<'static>> {
+        let session_present = self
+            .selected
+            .is_some_and(|session_id| self.store.sessions.contains_key(&session_id));
+        let transcript_empty = self
+            .selected
+            .and_then(|session_id| self.store.sessions.get(&session_id))
+            .is_none_or(|state| state.transcript.is_empty());
+        let mut lines = if session_present && !transcript_empty {
+            self.layout_cache.layout.lines.clone()
+        } else {
+            empty_conversation_lines(session_present, width, &self.theme)
+        };
+        let mut notices = self.notice_lines(width);
+        if !lines.is_empty() && !notices.is_empty() {
+            notices.insert(0, Line::default());
+        }
+        lines.extend(notices);
+        lines
+    }
+
+    /// The currently selected text, mapped from content coordinates back to
+    /// real text: chrome (gutters, bands, box-drawing headers) is stripped,
+    /// code copies raw, and the composer leg slices the draft buffer.
+    pub(super) fn selected_text(&self) -> Option<String> {
+        let selection = self.selection?;
+        Some(match selection {
+            TextSelection::Conversation { .. } => {
+                let (start, end) = selection.ordered();
+                let width = self
+                    .hit_map
+                    .conversation
+                    .map_or(0, |viewport| viewport.width);
+                let lines = self.conversation_chain(width);
+                extract_selection(&lines, start, end, &self.theme)
+            }
+            TextSelection::Composer { .. } => {
+                let (start, end) = selection.byte_range();
+                self.input
+                    .as_str()
+                    .get(start..end)
+                    .unwrap_or_default()
+                    .to_owned()
+            }
+        })
+    }
+
+    pub(super) fn render_conversation(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        // The rightmost inner column is reserved for the scrollbar whenever
+        // the content can overflow; content layout and block hit regions never
+        // extend into it, so the track can be grabbed without hitting blocks.
+        let scrollable = self.selected.is_some_and(|session_id| {
+            self.store
+                .sessions
+                .get(&session_id)
+                .is_some_and(|state| !state.transcript.is_empty())
+        }) || !self.transient_notices.is_empty()
+            || (self.tui_config.minimum_event_level <= crate::state::EventLevel::Warning
+                && self
+                    .selected
+                    .is_some_and(|selected| !self.descendant_warnings(selected).is_empty()));
+        let width = area
+            .width
+            .saturating_sub(2)
+            .saturating_sub(u16::from(scrollable));
+        let session_present = self
+            .selected
+            .is_some_and(|session_id| self.store.sessions.contains_key(&session_id));
+        let empty_layout = TranscriptLayout {
+            lines: empty_conversation_lines(session_present, width, &self.theme),
+            regions: Vec::new(),
+            user_regions: Vec::new(),
+        };
+        let clock_bucket = self.clock_bucket();
+        let layout = if let Some((session_id, state)) = self.selected.and_then(|session_id| {
+            self.store
+                .sessions
+                .get(&session_id)
+                .map(|state| (session_id, state))
+        }) {
+            ensure_cached_transcript_layout(
+                &mut self.layout_cache,
+                session_id,
+                state,
+                self.expanded_blocks.get(&session_id),
+                width,
+                &self.theme,
+                self.highlighter.as_ref(),
+                self.tui_config.minimum_event_level,
+                clock_bucket,
+            );
+            // A fresh session greets with guidance instead of a blank pane;
+            // a filtered-down transcript (lines hidden by the event level)
+            // keeps its own rows, empty-looking or not.
+            if state.transcript.is_empty() {
+                &empty_layout
+            } else {
+                &self.layout_cache.layout
+            }
+        } else {
+            &empty_layout
+        };
+        let mut notice_lines = self.notice_lines(width);
         // Notices follow the same rhythm as transcript items: one blank row
         // between real content and the first notice block.
         if !layout.lines.is_empty() && !notice_lines.is_empty() {
@@ -502,6 +576,13 @@ impl App {
             .regions
             .iter()
             .filter_map(|region| block_hit(*region, viewport, self.conversation_scroll.offset))
+            .collect();
+        self.hit_map.user_messages = layout
+            .user_regions
+            .iter()
+            .filter_map(|region| {
+                user_message_hit(*region, viewport, self.conversation_scroll.offset)
+            })
             .collect();
         let visible_lines = layout
             .lines
@@ -684,12 +765,20 @@ fn append_item_layout(assembled: &mut TranscriptLayout, item_layout: ItemLayout)
         assembled.lines.push(Line::default());
     }
     let start_line = assembled.lines.len();
+    let end_line = start_line + item_layout.lines.len();
     assembled.lines.extend(item_layout.lines);
     for region in item_layout.regions {
         assembled.regions.push(BlockRegion {
             id: region.id,
             start_line: start_line + region.start_line,
             end_line: start_line + region.end_line,
+        });
+    }
+    if let Some(seq) = item_layout.user_seq {
+        assembled.user_regions.push(UserRegion {
+            seq,
+            start_line,
+            end_line,
         });
     }
 }
@@ -761,7 +850,7 @@ fn transcript_item_layout(
     context: &mut TranscriptRenderContext<'_>,
 ) -> ItemLayout {
     match item {
-        TranscriptItem::User { text, .. } => ItemLayout {
+        TranscriptItem::User { text, seq, .. } => ItemLayout {
             lines: role_block(
                 Role::User,
                 text.lines()
@@ -771,6 +860,7 @@ fn transcript_item_layout(
                 context.theme,
             ),
             regions: Vec::new(),
+            user_seq: Some(*seq),
         },
         TranscriptItem::Assistant {
             id,
@@ -798,6 +888,7 @@ fn transcript_item_layout(
                     context.theme,
                 ),
                 regions: Vec::new(),
+                user_seq: None,
             }
         }
     }
@@ -813,6 +904,7 @@ fn assistant_item_layout(
     let mut layout = ItemLayout {
         lines: assistant_header(attribution.header().as_str(), context.width, context.theme),
         regions: Vec::new(),
+        user_seq: None,
     };
     for child in children {
         match child {
@@ -945,6 +1037,7 @@ fn assistant_child_layout(
                 .flat_map(|line| assistant_body_line(line, width, theme))
                 .collect(),
             regions: Vec::new(),
+            user_seq: None,
         },
         AssistantChild::Thinking { id, text, .. } => {
             let block_id = BlockId::Thinking(*id);
@@ -981,6 +1074,7 @@ fn assistant_child_layout(
                     end_line: lines.len(),
                 }],
                 lines,
+                user_seq: None,
             }
         }
         AssistantChild::Tool { .. }
@@ -1031,6 +1125,7 @@ fn tool_child_layout(
                 end_line: lines.len(),
             }],
             lines,
+            user_seq: None,
         };
     };
     let (suffix, role) = match tool.status {
@@ -1084,6 +1179,7 @@ fn tool_child_layout(
             end_line: lines.len(),
         }],
         lines,
+        user_seq: None,
     }
 }
 
@@ -1631,6 +1727,165 @@ pub(super) fn block_hit(
     })
 }
 
+/// The user-message analogue of [`block_hit`]: clip a message's logical-line
+/// range to the visible window so its rows open the copy/revert/fork menu.
+pub(super) fn user_message_hit(
+    region: UserRegion,
+    viewport: Rect,
+    scroll_offset: usize,
+) -> Option<UserMessageHit> {
+    let viewport_end = scroll_offset.saturating_add(usize::from(viewport.height));
+    let start = region.start_line.max(scroll_offset);
+    let end = region.end_line.min(viewport_end);
+    (start < end).then(|| UserMessageHit {
+        rect: Rect::new(
+            viewport.x,
+            viewport.y + u16::try_from(start - scroll_offset).unwrap_or(u16::MAX),
+            viewport.width,
+            u16::try_from(end - start).unwrap_or(u16::MAX),
+        ),
+        seq: region.seq,
+    })
+}
+
+/// Span contents that are pure row chrome (gutters and quote bars) in any
+/// leading position. [`FIRST_SPAN_GUTTERS`] additionally holds wrap
+/// continuations and narrow-mode tags, which are chrome only in span
+/// position 0: a two-space span after a real gutter is code indentation,
+/// never a wrap continuation. Text extraction skips exactly these spans,
+/// so copied text is the raw content with no band or glyph chrome.
+const GUTTER_SPANS: &[&str] = &["│ ", "┆ ", "┃ ", "· ", "! ", "> "];
+const FIRST_SPAN_GUTTERS: &[&str] = &[
+    "  ",
+    "    ",
+    "[U] ",
+    "[T\u{2026}] ",
+    "[T\u{2713}] ",
+    "[T!] ",
+    "[T] ",
+    "[D] ",
+    "[W] ",
+    "[E] ",
+    "[I] ",
+];
+
+/// First characters of gutterless header/border/footer rows (role headers,
+/// assistant attribution and footer, code fences, table grids). Such rows
+/// are chrome-only: they vanish from an extraction rather than leaking
+/// border glyphs into copied text.
+const CHROME_ROW_PREFIXES: &[&str] = &["┌", "└", "┏", "╭", "╰", "├", "··", "!!", "⚠", "--"];
+
+/// Extract the copyable text of one rendered line inside the display-column
+/// window `[col_start, col_end)`: gutter spans are stripped, chrome-only
+/// rows yield `None`, and the remaining text is cut on grapheme boundaries.
+/// `col_end` beyond the line width selects to the line end; trailing
+/// padding is trimmed.
+///
+/// A row is chrome-only when it is gutterless (or only quote-barred) and
+/// starts with a header/border glyph — role headers, attribution, footers —
+/// or when every remaining span carries the code/table border signature:
+/// fence headers and table grids vanish even inside a role gutter, while
+/// code content (syntax-styled, even when it starts with a box glyph)
+/// stays. The signature is the border's foreground *and* modifier set,
+/// compared exactly: the parchment band only ever patches backgrounds, and
+/// in high contrast a quantized plain-code foreground equals the border's
+/// white, so only the border's DIM|BOLD set tells a chrome row apart from
+/// content there (syntect never emits DIM).
+fn extract_line(
+    line: &Line<'static>,
+    col_start: u16,
+    col_end: u16,
+    theme: &Theme,
+) -> Option<String> {
+    if col_start >= col_end {
+        return None;
+    }
+    let border_style = theme.code_border();
+    let mut span_index = 0usize;
+    let mut spans = line.spans.iter().peekable();
+    let mut gutter_width = 0u16;
+    // Quoted content rows keep only "> " gutters; a border row inside a
+    // quote ("> ┌──┬──") is therefore still recognized as chrome.
+    let mut only_quote_gutters = true;
+    while let Some(span) = spans.peek() {
+        let content = span.content.as_ref();
+        let is_gutter = GUTTER_SPANS.contains(&content)
+            || (span_index == 0 && FIRST_SPAN_GUTTERS.contains(&content));
+        if !is_gutter {
+            break;
+        }
+        gutter_width = gutter_width.saturating_add(UnicodeWidthStr::width(content) as u16);
+        if content != "> " {
+            only_quote_gutters = false;
+        }
+        span_index += 1;
+        spans.next();
+    }
+    let remaining: Vec<&ratatui::text::Span<'static>> = spans.collect();
+    let rest: String = remaining.iter().map(|span| span.content.as_ref()).collect();
+    if (gutter_width == 0 || only_quote_gutters)
+        && CHROME_ROW_PREFIXES
+            .iter()
+            .any(|prefix| rest.starts_with(prefix))
+    {
+        return None;
+    }
+    if !rest.is_empty()
+        && border_style.fg.is_some()
+        && remaining.iter().all(|span| {
+            span.style.fg == border_style.fg && span.style.add_modifier == border_style.add_modifier
+        })
+    {
+        return None;
+    }
+    // The window shifts into content coordinates: cells left of the gutter
+    // hold no copyable text.
+    let start = col_start.saturating_sub(gutter_width);
+    let end = col_end.saturating_sub(gutter_width);
+    let mut extracted = String::new();
+    let mut column = 0u16;
+    for grapheme in rest.graphemes(true) {
+        let width = UnicodeWidthStr::width(grapheme).max(1) as u16;
+        let next = column.saturating_add(width);
+        if next > start && column < end {
+            extracted.push_str(grapheme);
+        }
+        column = next;
+    }
+    Some(extracted.trim_end().to_owned())
+}
+
+/// Extract a normalized multi-line selection (start before end, both
+/// `(logical line, display column)`) from the rendered conversation lines.
+/// Chrome-only rows vanish; blank rows inside the range stay as paragraph
+/// breaks; leading/trailing blank rows are dropped.
+pub(super) fn extract_selection(
+    lines: &[Line<'static>],
+    start: (usize, u16),
+    end: (usize, u16),
+    theme: &Theme,
+) -> String {
+    if start.0 >= lines.len() || start >= end {
+        return String::new();
+    }
+    let last = end.0.min(lines.len() - 1);
+    let mut extracted = Vec::new();
+    for (index, line) in lines.iter().enumerate().take(last + 1).skip(start.0) {
+        let col_start = if index == start.0 { start.1 } else { 0 };
+        let col_end = if index == end.0 { end.1 } else { u16::MAX };
+        if let Some(text) = extract_line(line, col_start, col_end, theme) {
+            extracted.push(text);
+        }
+    }
+    while extracted.first().is_some_and(String::is_empty) {
+        extracted.remove(0);
+    }
+    while extracted.last().is_some_and(String::is_empty) {
+        extracted.pop();
+    }
+    extracted.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1665,13 +1920,14 @@ mod tests {
         AgentId, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
         ApprovalId, ApprovalRecord, ApprovalRequest, ApprovalResourceSource, ApprovalStatus,
         ApprovalTrigger, ApprovalUserDecision, AssistantToolCallRef, AttemptId, DecisionTrace,
-        EventPayload, EventSchemaVersion, ModelCallId, ModelKey, ModelSelection,
-        OperationFingerprint, OutputDelta, OutputStream, PermissionAction, PermissionEffect,
-        PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
-        PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, ProviderId,
-        RunId, RunSelection, SafeCode, SafeDisplayText, SafeErrorMessage, SessionId, SessionMeta,
-        SessionMetaSchemaVersion, SessionOrigin, SessionStatus, SessionTitle, SessionTree,
-        Sha256Digest, StoredEvent, ToolCallId, ToolCallStart, Usage,
+        EventPayload, EventSchemaVersion, EventSubscriptionMessage, ModelCallId, ModelKey,
+        ModelSelection, OperationFingerprint, OutputDelta, OutputStream, PermissionAction,
+        PermissionEffect, PreparedApprovalResource, PreparedBindingLifetime,
+        PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
+        PreparedResourceIdentity, ProviderId, RunId, RunSelection, SafeCode, SafeDisplayText,
+        SafeErrorMessage, SessionId, SessionMeta, SessionMetaSchemaVersion, SessionOrigin,
+        SessionStatus, SessionTitle, SessionTree, Sha256Digest, StoredEvent, ToolCallId,
+        ToolCallStart, Usage,
     };
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -2976,7 +3232,7 @@ mod tests {
     #[test]
     fn terminal_layout_has_exact_rects_for_wide_square_tall_and_tiny_terminals() {
         for (width, height) in [(160, 50), (80, 24), (40, 12), (20, 8), (8, 2), (4, 1)] {
-            let layout = terminal_layout_with_tree_rows(Rect::new(0, 0, width, height), 3, 1);
+            let layout = terminal_layout_with_tree_rows(Rect::new(0, 0, width, height), 3, 0, 1);
             assert_eq!(layout.agent.y, 0);
             assert_eq!(layout.conversation.y, layout.agent.height);
             assert_eq!(layout.bar.height, 1.min(height));
@@ -3100,7 +3356,7 @@ mod tests {
         for (sessions, expected_rows) in [(0usize, 3u16), (1, 3), (2, 4), (3, 5), (8, 10), (9, 10)]
         {
             let layout =
-                terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions.max(1), 1);
+                terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions.max(1), 0, 1);
             app.tree = (sessions > 0).then(|| SessionTree {
                 session: session_meta(SessionId::new_v7()),
                 children: (1..sessions)
@@ -3123,7 +3379,7 @@ mod tests {
             assert!(bottom, "sessions {sessions}");
             assert!(!below, "sessions {sessions}");
         }
-        let tiny = terminal_layout_with_tree_rows(Rect::new(0, 0, 20, 8), 20, 1);
+        let tiny = terminal_layout_with_tree_rows(Rect::new(0, 0, 20, 8), 20, 0, 1);
         // The single-row composer is three rows tall, so the eight-row
         // terminal leaves four rows above the bar: one for the status line,
         // one guaranteed conversation row, and the rest for the agent panel
@@ -3135,9 +3391,9 @@ mod tests {
     #[test]
     fn composer_grows_with_text_rows_and_reclaims_conversation() {
         let area = Rect::new(0, 0, 80, 24);
-        let single = terminal_layout_with_tree_rows(area, 3, 1);
+        let single = terminal_layout_with_tree_rows(area, 3, 0, 1);
         assert_eq!(single.input.height, 3);
-        let grown = terminal_layout_with_tree_rows(area, 3, 4);
+        let grown = terminal_layout_with_tree_rows(area, 3, 0, 4);
         assert_eq!(grown.input.height, 6);
         // Every added composer row comes out of the conversation pane; the
         // agent panel, status line, and bar keep their geometry.
@@ -3149,7 +3405,7 @@ mod tests {
         assert_eq!(grown.bar, single.bar);
         // The ceiling is five text rows plus borders, and the box stays
         // glued to the bar above it.
-        let ceiling = terminal_layout_with_tree_rows(area, 3, 99);
+        let ceiling = terminal_layout_with_tree_rows(area, 3, 0, 99);
         assert_eq!(ceiling.input.height, 7);
         assert_eq!(ceiling.input.y + ceiling.input.height, ceiling.bar.y);
     }
@@ -5510,6 +5766,7 @@ mod tests {
             let title_y = terminal_layout_with_tree_rows(
                 Rect::new(0, 0, 28, 24),
                 app.tree_entries().len(),
+                0,
                 input_text_rows,
             )
             .input
@@ -6685,6 +6942,621 @@ mod tests {
         }
         rendered_frame(&mut app, 80, 50);
         assert_eq!(app.input.viewport_row(), 3);
+    }
+
+    // ------------------------------------------------------------------
+    // Pending-input lane: the strip between transcript and composer
+    // ------------------------------------------------------------------
+
+    /// An app with one selected session whose run is active, so submitting
+    /// takes the steer path.
+    async fn app_with_active_run() -> (App, SessionId, RunId) {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        let run = run_id();
+        app.selected = Some(session);
+        app.store.sessions.insert(
+            session,
+            SessionState {
+                active_run: Some(run),
+                run_agent: Some(agent_id()),
+                initial_input_submitted: HashSet::from([run]),
+                ..SessionState::default()
+            },
+        );
+        (app, session, run)
+    }
+
+    /// A live delivery carrying one event, the path subscription echoes
+    /// take through `handle_delivery`.
+    fn live_event(event: StoredEvent) -> ClientDelivery {
+        ClientDelivery::Live {
+            message: Box::new(EventSubscriptionMessage::Event {
+                event: Box::new(event),
+            }),
+            generation: 0,
+        }
+    }
+
+    fn admitted(session: SessionId, seq: u64, run: RunId, input: &str) -> StoredEvent {
+        event(
+            session,
+            seq,
+            run,
+            EventPayload::UserInputAdmitted {
+                input: input.into(),
+            },
+        )
+    }
+
+    fn recalled(session: SessionId, seq: u64, run: RunId, input: &str) -> StoredEvent {
+        event(
+            session,
+            seq,
+            run,
+            EventPayload::UserInputRecalled {
+                input: input.into(),
+            },
+        )
+    }
+
+    fn user_input(session: SessionId, seq: u64, run: RunId, input: &str) -> StoredEvent {
+        event(
+            session,
+            seq,
+            run,
+            EventPayload::UserInputSubmitted {
+                input: input.into(),
+            },
+        )
+    }
+
+    fn pending_texts(app: &App, session: SessionId) -> Vec<&str> {
+        app.store
+            .sessions
+            .get(&session)
+            .map(|state| {
+                state
+                    .pending_inputs
+                    .iter()
+                    .map(|pending| pending.text.as_str())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Poll the recording sink until `count` requests of `method` have been
+    /// sent, returning the newest request's JSON-RPC id.
+    async fn wait_for_recorded_request(
+        recorded: &Arc<Mutex<Vec<Value>>>,
+        method: &str,
+        count: usize,
+    ) -> i64 {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let found = recorded
+                    .lock()
+                    .expect("recorded")
+                    .iter()
+                    .filter(|value| value["method"].as_str() == Some(method))
+                    .count();
+                if found >= count {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("recorded request timeout");
+        recorded
+            .lock()
+            .expect("recorded")
+            .iter()
+            .rfind(|value| value["method"].as_str() == Some(method))
+            .and_then(|value| value["id"].as_i64())
+            .expect("request id")
+    }
+
+    #[tokio::test]
+    async fn pending_lane_tracks_admit_promote_and_recall_events() {
+        let (mut app, session, run) = app_with_active_run().await;
+        for (seq, input) in ["alpha", "beta", "gamma"].iter().enumerate() {
+            assert!(
+                app.store
+                    .apply_event(admitted(session, seq as u64 + 1, run, input))
+            );
+        }
+        assert_eq!(pending_texts(&app, session), ["alpha", "beta", "gamma"]);
+        assert_eq!(app.queue_strip_height(), 5);
+
+        // Promotion removes the oldest lane entry positionally and renders
+        // the user row exactly once, as it always has.
+        app.handle_delivery(live_event(user_input(session, 4, run, "alpha")))
+            .await;
+        assert_eq!(pending_texts(&app, session), ["beta", "gamma"]);
+        let rendered: Vec<&str> = app.store.sessions[&session]
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::User { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rendered, ["alpha"]);
+
+        // Recall removes the newest entry positionally.
+        app.handle_delivery(live_event(recalled(session, 5, run, "gamma")))
+            .await;
+        assert_eq!(pending_texts(&app, session), ["beta"]);
+
+        // The reduction never consults payload text — promotion pops the
+        // front, recall pops the back, mirroring the engine's own replay
+        // exactly. A payload that names no lane entry still withdraws the
+        // newest one, so nothing the engine says is gone can be stranded.
+        app.handle_delivery(live_event(recalled(session, 6, run, "ghost")))
+            .await;
+        assert!(pending_texts(&app, session).is_empty());
+        assert_eq!(app.queue_strip_height(), 0);
+    }
+
+    #[tokio::test]
+    async fn recall_ignores_payload_text_and_pops_the_newest_entry() {
+        let (mut app, session, run) = app_with_active_run().await;
+        assert!(app.store.apply_event(admitted(session, 1, run, "alpha")));
+        assert!(app.store.apply_event(admitted(session, 2, run, "beta")));
+        // The recalled payload names the OLDEST entry; positional replay
+        // still withdraws the newest, exactly like the engine.
+        app.handle_delivery(live_event(recalled(session, 3, run, "alpha")))
+            .await;
+        assert_eq!(pending_texts(&app, session), ["alpha"]);
+        // A promotion payload naming the newest entry still graduates the
+        // oldest.
+        app.handle_delivery(live_event(user_input(session, 4, run, "anything")))
+            .await;
+        assert!(pending_texts(&app, session).is_empty());
+    }
+
+    #[tokio::test]
+    async fn duplicate_texts_resolve_by_position_not_identity() {
+        let (mut app, session, run) = app_with_active_run().await;
+        assert!(app.store.apply_event(admitted(session, 1, run, "same")));
+        assert!(app.store.apply_event(admitted(session, 2, run, "same")));
+        // Promotion takes the oldest duplicate; recall takes the newest.
+        app.handle_delivery(live_event(user_input(session, 3, run, "same")))
+            .await;
+        assert_eq!(pending_texts(&app, session), ["same"]);
+        app.handle_delivery(live_event(recalled(session, 4, run, "same")))
+            .await;
+        assert!(pending_texts(&app, session).is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_sends_steer_and_the_strip_waits_for_admission() {
+        let (mut app, session, _run) = app_with_active_run().await;
+        app.submit_prompt("hold on".into()).await;
+        // No optimistic entry: the strip derives from engine events only.
+        assert!(pending_texts(&app, session).is_empty());
+        assert_eq!(app.queue_strip_height(), 0);
+        assert!(app.input.as_str().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pending_lane_rebuilds_from_replay_alone() {
+        let (mut app, session, run) = app_with_active_run().await;
+        // A rebuild replay derives the lane purely from events: no client
+        // state survives or is consulted.
+        app.handle_delivery(ClientDelivery::ReplayStart {
+            session_id: session,
+            generation: 0,
+            final_seq: 2,
+            rebuild: true,
+        })
+        .await;
+        for seq in 1..=2 {
+            app.handle_delivery(ClientDelivery::ReplayEvent {
+                session_id: session,
+                generation: 0,
+                final_seq: 2,
+                event: Box::new(admitted(session, seq, run, &format!("m{seq}"))),
+            })
+            .await;
+        }
+        app.handle_delivery(ClientDelivery::ReplayEnd {
+            session_id: session,
+            generation: 0,
+            final_seq: 2,
+        })
+        .await;
+        assert_eq!(pending_texts(&app, session), ["m1", "m2"]);
+        assert_eq!(app.queue_strip_height(), 4);
+    }
+
+    #[tokio::test]
+    async fn run_end_voids_pending_and_restores_the_composer() {
+        let (mut app, session, run) = app_with_active_run().await;
+        assert!(app.store.apply_event(admitted(session, 1, run, "first")));
+        assert!(app.store.apply_event(admitted(session, 2, run, "second")));
+        app.handle_delivery(live_event(event(
+            session,
+            3,
+            run,
+            EventPayload::RunCompleted { final_text: None },
+        )))
+        .await;
+        // The engine voided the lane without per-entry events: the strip
+        // clears and the text returns to the composer, FIFO order intact.
+        assert!(pending_texts(&app, session).is_empty());
+        assert_eq!(app.input.as_str(), "first\nsecond");
+        assert!(app.status.contains("restored to the composer"));
+    }
+
+    #[tokio::test]
+    async fn run_end_in_a_background_session_restores_on_select() {
+        let (mut app, session_a, _run_a) = app_with_active_run().await;
+        let session_b = SessionId::new_v7();
+        let run_b = run_id();
+        app.store.sessions.insert(
+            session_b,
+            SessionState {
+                active_run: Some(run_b),
+                run_agent: Some(agent_id()),
+                ..SessionState::default()
+            },
+        );
+        assert!(
+            app.store
+                .apply_event(admitted(session_b, 1, run_b, "for b"))
+        );
+        app.handle_delivery(live_event(event(
+            session_b,
+            2,
+            run_b,
+            EventPayload::RunCancelled { reason: None },
+        )))
+        .await;
+        // The composer belongs to session A right now: B's text is parked,
+        // not leaked, and its strip is cleared.
+        assert!(app.input.as_str().is_empty());
+        assert!(pending_texts(&app, session_b).is_empty());
+        app.set_selected_session(session_b);
+        assert_eq!(app.input.as_str(), "for b");
+        let _ = session_a;
+    }
+
+    #[tokio::test]
+    async fn steer_transport_failure_restores_the_submitted_text() {
+        let (mut app, session, _run) = app_with_active_run().await;
+        app.input.set_buffer("next draft".into());
+        app.handle_rpc_update(RpcUpdate::SteerFailed {
+            session_id: session,
+            input: "keep me".into(),
+            error: "transport closed".into(),
+        });
+        assert_eq!(app.input.as_str(), "keep me\nnext draft");
+        assert!(app.status.contains("restored to the composer"));
+    }
+
+    #[tokio::test]
+    async fn clicking_a_strip_entry_recalls_and_restores_the_returned_text() {
+        // Startup uses the short-lived recording client; the live client
+        // swaps in afterwards so the recall RPC can be answered.
+        let (startup_client, _startup) = recording_client();
+        let mut app = App::new(startup_client).await.expect("test app");
+        let (client, recorded, incoming) = live_recording_client();
+        app.client = client;
+        app.install_initial_runtime(runtime_snapshot(
+            "1",
+            Vec::new(),
+            vec![model_descriptor()],
+            vec![descriptor("primary", true)],
+        ));
+        let session = SessionId::new_v7();
+        let run = run_id();
+        app.selected = Some(session);
+        app.store.sessions.insert(
+            session,
+            SessionState {
+                active_run: Some(run),
+                run_agent: Some(agent_id()),
+                ..SessionState::default()
+            },
+        );
+        assert!(app.store.apply_event(admitted(session, 1, run, "first")));
+        assert!(app.store.apply_event(admitted(session, 2, run, "second")));
+        rendered_frame(&mut app, 80, 24);
+        let hit = app.hit_map.queue_entries[0];
+        app.handle_click(hit.rect.x, hit.rect.y).await;
+        // Any row click recalls the newest pending input.
+        let id = wait_for_recorded_request(&recorded, "run.recall_steer", 1).await;
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "recalled": "second" }
+            })))
+            .expect("script recall response");
+        let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
+            .await
+            .expect("recall update timeout")
+            .expect("recall update");
+        app.handle_rpc_update(update);
+        assert_eq!(app.input.as_str(), "second");
+        assert!(app.status.contains("recalled message restored"));
+        // The recalled event removes the entry from the strip itself.
+        app.handle_delivery(live_event(recalled(session, 3, run, "second")))
+            .await;
+        assert_eq!(pending_texts(&app, session), ["first"]);
+    }
+
+    #[tokio::test]
+    async fn recall_reports_when_the_engine_lane_is_already_empty() {
+        let (startup_client, _startup) = recording_client();
+        let mut app = App::new(startup_client).await.expect("test app");
+        let (client, recorded, incoming) = live_recording_client();
+        app.client = client;
+        app.install_initial_runtime(runtime_snapshot(
+            "1",
+            Vec::new(),
+            vec![model_descriptor()],
+            vec![descriptor("primary", true)],
+        ));
+        let session = SessionId::new_v7();
+        let run = run_id();
+        app.selected = Some(session);
+        app.store.sessions.insert(
+            session,
+            SessionState {
+                active_run: Some(run),
+                run_agent: Some(agent_id()),
+                ..SessionState::default()
+            },
+        );
+        assert!(app.store.apply_event(admitted(session, 1, run, "raced")));
+        app.recall_newest_pending();
+        let id = wait_for_recorded_request(&recorded, "run.recall_steer", 1).await;
+        // A promotion raced the recall: the engine has nothing to withdraw.
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "recalled": null }
+            })))
+            .expect("script empty recall response");
+        let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
+            .await
+            .expect("recall update timeout")
+            .expect("recall update");
+        app.handle_rpc_update(update);
+        assert!(app.input.as_str().is_empty());
+        assert!(app.status.contains("nothing pending to recall"));
+    }
+
+    #[tokio::test]
+    async fn press_same_frame_as_overlay_arrival_hits_nothing_underneath() {
+        let (mut app, session, run) = app_with_active_run().await;
+        assert!(app.store.apply_event(admitted(session, 1, run, "first")));
+        assert!(app.store.apply_event(admitted(session, 2, run, "second")));
+        rendered_frame(&mut app, 80, 24);
+        let hit = app.hit_map.queue_entries[0];
+        // An approval arrives AFTER the frame was rendered: state knows the
+        // panel, the hit map does not. A press landing where a queue entry
+        // was must be swallowed by the panel's ownership, not leak through
+        // to the recall action underneath.
+        app.store
+            .sessions
+            .entry(session)
+            .or_default()
+            .approvals
+            .push(approval(session));
+        assert!(app.current_approval().is_some());
+        let status_before = app.status.clone();
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hit.rect.x,
+            hit.rect.y,
+        ))
+        .await;
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            hit.rect.x,
+            hit.rect.y,
+        ))
+        .await;
+        assert_eq!(app.modal, Modal::None, "nothing underneath opened");
+        assert_eq!(
+            pending_texts(&app, session),
+            ["first", "second"],
+            "no recall fired underneath the panel"
+        );
+        assert_eq!(app.status, status_before, "no content action ran");
+        assert!(
+            app.current_approval().is_some(),
+            "the approval was not answered either"
+        );
+        // Hover is state-owned the same way: no content target shows
+        // through the not-yet-rendered panel.
+        assert!(app.hover_target_at(hit.rect.x, hit.rect.y).is_none());
+    }
+
+    #[tokio::test]
+    async fn up_in_an_empty_composer_recalls_instead_of_moving_the_cursor() {
+        let (startup_client, _startup) = recording_client();
+        let mut app = App::new(startup_client).await.expect("test app");
+        let (client, recorded, _incoming) = live_recording_client();
+        app.client = client;
+        app.install_initial_runtime(runtime_snapshot(
+            "1",
+            Vec::new(),
+            vec![model_descriptor()],
+            vec![descriptor("primary", true)],
+        ));
+        let session = SessionId::new_v7();
+        let run = run_id();
+        app.selected = Some(session);
+        app.store.sessions.insert(
+            session,
+            SessionState {
+                active_run: Some(run),
+                run_agent: Some(agent_id()),
+                ..SessionState::default()
+            },
+        );
+        assert!(app.store.apply_event(admitted(session, 1, run, "pending")));
+        app.input_focused = true;
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+            .await;
+        wait_for_recorded_request(&recorded, "run.recall_steer", 1).await;
+        // With text in the composer, Up keeps its plain cursor semantics.
+        app.input.set_buffer("draft".into());
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+            .await;
+        assert_eq!(recorded_method_count(&recorded, "run.recall_steer"), 1);
+    }
+
+    #[tokio::test]
+    async fn strip_entries_highlight_on_hover() {
+        let (mut app, session, run) = app_with_active_run().await;
+        assert!(app.store.apply_event(admitted(session, 1, run, "first")));
+        assert!(app.store.apply_event(admitted(session, 2, run, "second")));
+        rendered_frame(&mut app, 80, 24);
+        let second = app.hit_map.queue_entries[1].rect;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: second.x,
+            row: second.y,
+            modifiers: KeyModifiers::NONE,
+        })
+        .await;
+        assert_eq!(app.hover, Some(HoverTarget::QueueEntry(1)));
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| app.draw_for_test(frame))
+            .expect("render");
+        let buffer = terminal.backend().buffer();
+        let first_row = app.hit_map.queue_entries[0].rect;
+        let hovered = buffer[(second.x + 2, second.y)].style();
+        let plain = buffer[(first_row.x + 2, first_row.y)].style();
+        // The hover patch merges over the row: the glaze background lands
+        // while the muted foreground stays.
+        assert_eq!(hovered.bg, app.theme.hover().bg);
+        assert_ne!(plain.bg, app.theme.hover().bg);
+    }
+
+    #[test]
+    fn queue_strip_reclaims_conversation_rows_and_keeps_status_pinned() {
+        let area = Rect::new(0, 0, 80, 24);
+        let plain = terminal_layout_with_tree_rows(area, 3, 0, 1);
+        let queued = terminal_layout_with_tree_rows(area, 3, 5, 1);
+        assert_eq!(queued.queue.height, 5);
+        assert_eq!(plain.conversation.height - queued.conversation.height, 5);
+        // Status line, composer, bar, and the agent panel never move.
+        assert_eq!(queued.status, plain.status);
+        assert_eq!(queued.input, plain.input);
+        assert_eq!(queued.bar, plain.bar);
+        assert_eq!(queued.agent, plain.agent);
+        // The strip sits flush between conversation and status.
+        assert_eq!(
+            queued.queue.y,
+            queued.conversation.y + queued.conversation.height
+        );
+        assert_eq!(queued.queue.y + queued.queue.height, queued.status.y);
+        // On a cramped terminal the strip shrinks away rather than taking
+        // the conversation's last row.
+        let tiny = terminal_layout_with_tree_rows(Rect::new(0, 0, 20, 8), 20, 5, 1);
+        assert!(tiny.conversation.height >= 1);
+        assert!(tiny.queue.height < 5);
+        // Zero demand reserves nothing.
+        assert_eq!(plain.queue.height, 0);
+    }
+
+    #[tokio::test]
+    async fn queue_strip_is_hidden_when_empty_and_folds_overflow_into_more_row() {
+        let (mut app, session, run) = app_with_active_run().await;
+        // Empty lane: no rows reserved, no title anywhere in the frame.
+        assert_eq!(app.queue_strip_height(), 0);
+        let frame = rendered_frame(&mut app, 80, 24);
+        assert!(!frame.contains("Pending"));
+        // Five entries render the capped three text rows: two entries and
+        // the folded overflow count.
+        for index in 1..=5 {
+            assert!(app.store.apply_event(admitted(
+                session,
+                index,
+                run,
+                &format!("message {index}")
+            )));
+        }
+        assert_eq!(app.queue_strip_height(), 5);
+        let frame = rendered_frame(&mut app, 80, 24);
+        assert!(frame.contains("Pending"));
+        assert!(frame.contains("message 1"));
+        assert!(frame.contains("message 2"));
+        assert!(!frame.contains("message 3"));
+        assert!(frame.contains("+3 more"));
+        assert!(!frame.contains("message 5"));
+    }
+
+    #[tokio::test]
+    async fn queue_strip_ellipsizes_long_messages_and_flattens_newlines() {
+        let (mut app, session, run) = app_with_active_run().await;
+        assert!(
+            app.store
+                .apply_event(admitted(session, 1, run, &"x".repeat(200)))
+        );
+        assert!(
+            app.store
+                .apply_event(admitted(session, 2, run, "first\nsecond line"))
+        );
+        let frame = rendered_frame(&mut app, 60, 24);
+        // The overlong entry truncates with an ellipsis…
+        assert!(frame.contains('…'));
+        // …and the multiline entry renders flattened onto one row.
+        assert!(frame.contains("first second line"));
+        // Two entries keep the strip at two text rows plus borders.
+        assert_eq!(app.queue_strip_height(), 4);
+    }
+
+    #[test]
+    fn ellipsize_single_line_flattens_and_truncates_grapheme_safely() {
+        assert_eq!(ellipsize_single_line("a\nb  c", 80), "a b c");
+        assert_eq!(ellipsize_single_line("short", 80), "short");
+        let truncated = ellipsize_single_line(&"東京タワー".repeat(10), 10);
+        assert!(truncated.ends_with('…'));
+        assert!(UnicodeWidthStr::width(truncated.as_str()) <= 10);
+        // Width zero still emits the ellipsis marker only.
+        assert_eq!(ellipsize_single_line("abc", 0), "…");
+    }
+
+    #[test]
+    fn queue_age_label_is_coarse_and_monotonic() {
+        assert_eq!(queue_age_label(0), "<1m");
+        assert_eq!(queue_age_label(59), "<1m");
+        assert_eq!(queue_age_label(60), "1m");
+        assert_eq!(queue_age_label(3599), "59m");
+        assert_eq!(queue_age_label(3600), "1h");
+        assert_eq!(queue_age_label(9000), "2h");
+    }
+
+    #[tokio::test]
+    async fn queue_strip_renders_the_pending_lane() {
+        let (mut app, session, run) = app_with_active_run().await;
+        assert!(
+            app.store
+                .apply_event(admitted(session, 1, run, "first pending message"))
+        );
+        assert!(
+            app.store
+                .apply_event(admitted(session, 2, run, "second pending message"))
+        );
+        assert!(
+            app.store
+                .apply_event(admitted(session, 3, run, "third pending message"))
+        );
+        // Admission timestamps are the durable event timestamps: always
+        // fresh here, so the coarse "<1m" age keeps the snapshot stable.
+        let rendered = rendered_frame(&mut app, 60, 24);
+        insta::assert_snapshot!(rendered);
     }
 
     // ------------------------------------------------------------------
@@ -9773,5 +10645,930 @@ mod tests {
         let rendered = rendered_frame(&mut app, 100, 30);
         assert!(rendered.contains("hello"), "{rendered}");
         assert!(!rendered.contains("Fresh session"), "{rendered}");
+    }
+
+    // ------------------------------------------------------------------
+    // User-message action menu (copy / revert / fork)
+    // ------------------------------------------------------------------
+
+    /// An app with a capture clipboard and one selected session holding two
+    /// user messages (physical sequences 1 and 2), so menu actions can be
+    /// checked against exact `through_seq` values.
+    async fn app_with_user_messages() -> (App, SessionId, Arc<Mutex<Vec<String>>>) {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let copied = Arc::new(Mutex::new(Vec::new()));
+        app.clipboard_sink = ClipboardSink::Capture(copied.clone());
+        app.selected = Some(session);
+        app.tree_root = Some(session);
+        app.store.sessions.insert(session, SessionState::default());
+        assert!(
+            app.store
+                .apply_event(user_input(session, 1, run, "first question"))
+        );
+        assert!(
+            app.store
+                .apply_event(user_input(session, 2, run, "second question"))
+        );
+        (app, session, copied)
+    }
+
+    /// The visible-row rect of the user message with `seq`, rendered.
+    fn user_hit(app: &App, seq: u64) -> UserMessageHit {
+        app.hit_map
+            .user_messages
+            .iter()
+            .copied()
+            .find(|hit| hit.seq == seq)
+            .expect("user message hit")
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[tokio::test]
+    async fn user_message_click_opens_the_menu_only_on_user_rows() {
+        let (mut app, session, _) = app_with_user_messages().await;
+        // A thinking block gives an assistant-owned row with a real click
+        // action of its own; it must never open the message menu.
+        app.store
+            .sessions
+            .get_mut(&session)
+            .expect("session")
+            .transcript
+            .push(crate::state::TranscriptItem::Assistant {
+                id: 9,
+                version: 0,
+                attribution: attribution(None),
+                committed_turn_seq: Some(1),
+                children: vec![AssistantChild::Thinking {
+                    id: 1,
+                    version: 0,
+                    text: "thought".into(),
+                }],
+            });
+        rendered_frame(&mut app, 80, 24);
+        let hit = user_hit(&app, 1);
+        app.handle_click(hit.rect.x + 2, hit.rect.y).await;
+        assert_eq!(app.modal, Modal::UserMessage);
+        let menu = app.user_menu.as_ref().expect("menu state");
+        assert_eq!(menu.seq, 1);
+        assert_eq!(menu.text, "first question");
+        // The menu does not open from assistant/tool rows; they keep their
+        // expand/collapse toggle. (The menu closes first so its overlay
+        // does not swallow the click.)
+        app.modal = Modal::None;
+        app.user_menu = None;
+        let block = app.hit_map.blocks.first().copied().expect("block hit");
+        app.handle_click(block.rect.x, block.rect.y).await;
+        assert_eq!(app.modal, Modal::None);
+        assert!(app.user_menu.is_none());
+        assert!(
+            app.expanded_blocks
+                .get(&session)
+                .is_some_and(|set| set.contains(&block.id)),
+            "the block kept its toggle"
+        );
+    }
+
+    #[tokio::test]
+    async fn menu_copy_captures_the_message_text() {
+        let (mut app, _, copied) = app_with_user_messages().await;
+        rendered_frame(&mut app, 80, 24);
+        let hit = user_hit(&app, 2);
+        app.handle_click(hit.rect.x + 2, hit.rect.y).await;
+        assert_eq!(app.modal, Modal::UserMessage);
+        // Copy is the first row: Enter activates the keyboard selection.
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::None);
+        assert_eq!(
+            copied.lock().expect("capture").as_slice(),
+            ["second question"]
+        );
+    }
+
+    #[tokio::test]
+    async fn menu_revert_is_confirm_guarded_and_targets_seq_minus_one() {
+        let (mut app, session, _) = app_with_user_messages().await;
+        let (client, recorded, _incoming) = live_recording_client();
+        app.client = client;
+        rendered_frame(&mut app, 80, 24);
+        let hit = user_hit(&app, 2);
+        app.handle_click(hit.rect.x + 2, hit.rect.y).await;
+        // Choosing revert opens the confirm guard; Esc backs out to the
+        // menu without any RPC.
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::RevertConfirm);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::UserMessage);
+        assert_eq!(recorded_method_count(&recorded, "session.revert"), 0);
+        // Confirming dispatches with through_seq = seq - 1: the message
+        // itself leaves the visible branch.
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::None);
+        let id = wait_for_recorded_request(&recorded, "session.revert", 1).await;
+        let request = recorded
+            .lock()
+            .expect("recorded")
+            .iter()
+            .find(|value| value["id"].as_i64() == Some(id))
+            .cloned()
+            .expect("revert request");
+        assert_eq!(
+            request["params"]["session_id"].as_str(),
+            Some(session.to_string().as_str())
+        );
+        assert_eq!(request["params"]["through_seq"].as_u64(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn menu_fork_targets_the_message_seq_and_switches_sessions() {
+        let (mut app, session, _) = app_with_user_messages().await;
+        let (client, recorded, _incoming) = live_recording_client();
+        app.client = client;
+        rendered_frame(&mut app, 80, 24);
+        let hit = user_hit(&app, 2);
+        app.handle_click(hit.rect.x + 2, hit.rect.y).await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::None);
+        let id = wait_for_recorded_request(&recorded, "session.fork", 1).await;
+        let request = recorded
+            .lock()
+            .expect("recorded")
+            .iter()
+            .find(|value| value["id"].as_i64() == Some(id))
+            .cloned()
+            .expect("fork request");
+        assert_eq!(
+            request["params"]["session_id"].as_str(),
+            Some(session.to_string().as_str())
+        );
+        // Fork keeps the message in the copied prefix: through_seq = seq.
+        assert_eq!(request["params"]["through_seq"].as_u64(), Some(2));
+        // The committed fork switches the viewed session.
+        let forked = SessionId::new_v7();
+        app.handle_rpc_update(RpcUpdate::Forked { forked });
+        assert_eq!(app.selected, Some(forked));
+    }
+
+    #[tokio::test]
+    async fn reverted_update_restores_the_message_text_into_the_composer() {
+        let (mut app, session, _) = app_with_user_messages().await;
+        app.handle_rpc_update(RpcUpdate::Reverted {
+            session_id: session,
+            text: "second question".into(),
+        });
+        assert_eq!(app.input.as_str(), "second question");
+        assert!(app.input_focused);
+    }
+
+    // ------------------------------------------------------------------
+    // Mouse text selection and clipboard
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn user_message_hit_rects_clip_and_shift_like_block_hits() {
+        let region = UserRegion {
+            seq: 7,
+            start_line: 10,
+            end_line: 20,
+        };
+        let viewport = Rect::new(0, 0, 40, 5);
+        let hit = user_message_hit(region, viewport, 8).expect("hit");
+        assert_eq!(hit.rect.y, 2);
+        assert_eq!(hit.rect.height, 3);
+        assert_eq!(hit.seq, 7);
+        assert!(user_message_hit(region, viewport, 25).is_none());
+    }
+
+    #[test]
+    fn osc52_sequence_frames_base64_clipboard_text() {
+        assert_eq!(osc52_sequence("hello"), "\x1b]52;c;aGVsbG8=\x07");
+        assert_eq!(osc52_sequence(""), "\x1b]52;c;\x07");
+    }
+
+    #[test]
+    fn extraction_strips_chrome_and_copies_raw_content() {
+        let theme = Theme::default();
+        // One user block, then an assistant block with prose and a fenced
+        // code block — exactly what render_conversation chains.
+        let mut lines = role_block(
+            Role::User,
+            vec![Line::from("raw question".to_owned())],
+            60,
+            &theme,
+        );
+        lines.push(Line::default());
+        lines.extend(assistant_header("primary • test-model", 60, &theme));
+        lines.extend(
+            crate::markdown::render_markdown_width(
+                &MarkdownDocument::new(
+                    "some prose\n\n```rust\nfn main() {\n    let x = 1;\n}\n```\n\ntrail".into(),
+                ),
+                &theme,
+                &PlainHighlighter,
+                58,
+            )
+            .into_iter()
+            .flat_map(|line| assistant_body_line(line, 60, &theme)),
+        );
+        let end = (lines.len() - 1, u16::MAX);
+        let extracted = extract_selection(&lines, (0, 0), end, &theme);
+        assert_eq!(
+            extracted, "raw question\n\nsome prose\nfn main() {\n    let x = 1;\n}\ntrail",
+            "gutters stripped, fence borders and role headers gone, code raw:\n{extracted:?}"
+        );
+    }
+
+    #[test]
+    fn extraction_column_windows_cut_on_grapheme_boundaries() {
+        let theme = Theme::default();
+        let lines = role_block(
+            Role::User,
+            vec![Line::from("abcdef".to_owned())],
+            60,
+            &theme,
+        );
+        // The body row is "│ abcdef": display column 2 is 'a'. Selecting
+        // columns 4..7 of the rendered line yields "cde" — the gutter is
+        // skipped by the coordinate shift, never copied.
+        let body_row = 1;
+        assert_eq!(
+            extract_selection(&lines, (body_row, 4), (body_row, 7), &theme),
+            "cde"
+        );
+        // An empty window extracts nothing.
+        assert!(extract_selection(&lines, (body_row, 4), (body_row, 4), &theme).is_empty());
+    }
+
+    #[test]
+    fn extraction_keeps_code_indentation_behind_real_gutters() {
+        let theme = Theme::default();
+        // A fenced code line whose content begins with a two-space span
+        // (indentation split from the rest by highlighting): continuation
+        // indents are chrome only in span position 0, so the code keeps
+        // its leading spaces.
+        let mut lines = crate::markdown::render_markdown_width(
+            &MarkdownDocument::new("```\n  indented\n```".into()),
+            &theme,
+            &PlainHighlighter,
+            58,
+        )
+        .into_iter()
+        .flat_map(|line| assistant_body_line(line, 60, &theme))
+        .collect::<Vec<_>>();
+        // A wrapped user row's continuation indent still strips.
+        lines.extend(role_block(
+            Role::User,
+            vec![Line::from(
+                "a user line long enough to wrap at this width for sure".to_owned(),
+            )],
+            24,
+            &theme,
+        ));
+        let end = (lines.len() - 1, u16::MAX);
+        let extracted = extract_selection(&lines, (0, 0), end, &theme);
+        assert!(
+            extracted.contains("  indented"),
+            "code indentation preserved: {extracted:?}"
+        );
+        // One copied line per rendered row: the wrapped user row's
+        // continuations strip their two-space indent and join with
+        // newlines, exactly as displayed.
+        assert!(
+            extracted.contains("\nenough to wrap at this"),
+            "continuation indent stripped: {extracted:?}"
+        );
+    }
+
+    #[test]
+    fn extraction_keeps_high_contrast_content_sharing_the_border_foreground() {
+        let theme = Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16);
+        let border = theme.code_border();
+        // High contrast paints fence grids and syntect's quantized plain
+        // code foreground the same white; only the border's DIM|BOLD set
+        // still distinguishes a chrome row from content.
+        assert_eq!(border.fg, Some(ratatui::style::Color::White));
+        let plain_code = Style::default().fg(ratatui::style::Color::White);
+        let lines = vec![
+            Line::from(vec![
+                Span::styled("│ ", border),
+                Span::styled("┌─ code: rust", border),
+            ]),
+            Line::from(vec![
+                Span::styled("│ ", border),
+                Span::styled("let answer = 42;", plain_code),
+            ]),
+            Line::from(vec![Span::styled("│ ", border), Span::styled("└─", border)]),
+        ];
+        let extracted = extract_selection(&lines, (0, 0), (2, u16::MAX), &theme);
+        assert_eq!(
+            extracted, "let answer = 42;",
+            "border rows vanish, same-foreground content stays: {extracted:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_drag_selects_and_ctrl_c_copies_raw_text() {
+        let (mut app, _, copied) = app_with_user_messages().await;
+        rendered_frame(&mut app, 80, 24);
+        let viewport = app.hit_map.conversation.expect("viewport");
+        let body_row = viewport.y + 1; // first body line of message seq 2
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            viewport.x,
+            body_row,
+        ))
+        .await;
+        assert!(app.selection.is_none(), "a press alone selects nothing");
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            viewport.x + 20,
+            body_row,
+        ))
+        .await;
+        assert_eq!(
+            app.selection,
+            Some(TextSelection::Conversation {
+                anchor: (1, 0),
+                head: (1, 20),
+            })
+        );
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            viewport.x + 20,
+            body_row,
+        ))
+        .await;
+        assert!(
+            app.selection.is_some(),
+            "a finished drag keeps its selection"
+        );
+        // ctrl+c copies the raw content and retires the selection.
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .await;
+        assert!(app.selection.is_none());
+        assert_eq!(
+            copied.lock().expect("capture").as_slice(),
+            ["first question"]
+        );
+    }
+
+    #[tokio::test]
+    async fn sub_threshold_drag_stays_a_click_and_opens_the_menu() {
+        let (mut app, _, _) = app_with_user_messages().await;
+        rendered_frame(&mut app, 80, 24);
+        let hit = user_hit(&app, 2);
+        let (x, y) = (hit.rect.x + 2, hit.rect.y);
+        // A one-cell wobble between press and release is a click, not a
+        // selection: the press dispatches on release.
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await;
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), x + 1, y))
+            .await;
+        assert!(app.selection.is_none());
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), x + 1, y))
+            .await;
+        assert!(app.selection.is_none());
+        assert_eq!(app.modal, Modal::UserMessage, "the click dispatched");
+    }
+
+    /// One full conversation drag gesture (press, move, release) across
+    /// `rows` starting at the viewport's top-left content cell.
+    async fn drag_selection(app: &mut App, viewport: Rect, dx: u16, dy: u16) {
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            viewport.x,
+            viewport.y + 1,
+        ))
+        .await;
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            viewport.x + dx,
+            viewport.y + 1 + dy,
+        ))
+        .await;
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            viewport.x + dx,
+            viewport.y + 1 + dy,
+        ))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn plain_click_and_esc_each_clear_a_finished_selection() {
+        let (mut app, _, _) = app_with_user_messages().await;
+        rendered_frame(&mut app, 80, 24);
+        let viewport = app.hit_map.conversation.expect("viewport");
+        drag_selection(&mut app, viewport, 8, 1).await;
+        assert!(app.selection.is_some());
+        // A fresh press anywhere clears the selection before doing its
+        // work. (The blank spacer row between the two messages carries no
+        // click action of its own.)
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            viewport.x,
+            viewport.y + 2,
+        ))
+        .await;
+        assert!(app.selection.is_none());
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            viewport.x,
+            viewport.y + 2,
+        ))
+        .await;
+        assert_eq!(app.modal, Modal::None, "nothing opened from a blank row");
+        drag_selection(&mut app, viewport, 8, 1).await;
+        assert!(app.selection.is_some());
+        // Esc retires the selection without touching the escape-cancel
+        // streak or the run.
+        app.last_escape = Some(std::time::Instant::now());
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert!(app.selection.is_none());
+        assert_eq!(app.last_escape, None);
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_without_a_selection_still_cancels_the_active_run() {
+        let (mut app, _session, _run) = app_with_active_run().await;
+        let (client, recorded, _incoming) = live_recording_client();
+        app.client = client;
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .await;
+        wait_for_recorded_request(&recorded, "run.cancel", 1).await;
+        assert!(app.selection.is_none());
+    }
+
+    #[tokio::test]
+    async fn composer_drag_and_ctrl_x_cuts_the_selected_draft_text() {
+        let mut app = test_app().await;
+        let copied = Arc::new(Mutex::new(Vec::new()));
+        app.clipboard_sink = ClipboardSink::Capture(copied.clone());
+        app.selected = Some(SessionId::new_v7());
+        app.input.set_buffer("hello world".to_owned());
+        rendered_frame(&mut app, 80, 24);
+        let text_rect = app.hit_map.input.expect("input").text_rect;
+        // The draft is a single visual row: drag from the 'w' cell to past
+        // the 'r' cell to select "wor".
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            text_rect.x + 6,
+            text_rect.y,
+        ))
+        .await;
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            text_rect.x + 9,
+            text_rect.y,
+        ))
+        .await;
+        assert_eq!(
+            app.selection,
+            Some(TextSelection::Composer { anchor: 6, head: 9 })
+        );
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            text_rect.x + 9,
+            text_rect.y,
+        ))
+        .await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL))
+            .await;
+        assert_eq!(copied.lock().expect("capture").as_slice(), ["wor"]);
+        assert_eq!(app.input.as_str(), "hello ld");
+        assert!(app.selection.is_none());
+    }
+
+    #[tokio::test]
+    async fn composer_click_without_drag_places_the_cursor_as_before() {
+        let mut app = test_app().await;
+        app.selected = Some(SessionId::new_v7());
+        app.input.set_buffer("hello world".to_owned());
+        rendered_frame(&mut app, 80, 24);
+        let text_rect = app.hit_map.input.expect("input").text_rect;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            text_rect.x + 5,
+            text_rect.y,
+        ))
+        .await;
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            text_rect.x + 5,
+            text_rect.y,
+        ))
+        .await;
+        assert!(app.selection.is_none());
+        assert_eq!(app.input.cursor_byte(), 5, "the click moved the cursor");
+        assert!(app.input_focused);
+    }
+
+    #[tokio::test]
+    async fn conversation_selection_retires_on_session_switch() {
+        let (mut app, _session_a, copied) = app_with_user_messages().await;
+        let session_b = SessionId::new_v7();
+        app.store
+            .sessions
+            .insert(session_b, SessionState::default());
+        rendered_frame(&mut app, 80, 24);
+        let viewport = app.hit_map.conversation.expect("viewport");
+        drag_selection(&mut app, viewport, 8, 1).await;
+        assert!(
+            matches!(app.selection, Some(TextSelection::Conversation { .. })),
+            "the drag selected conversation rows"
+        );
+        app.set_selected_session(session_b);
+        assert!(
+            app.selection.is_none(),
+            "watching another session retires the stale conversation leg"
+        );
+        // ctrl+c after the switch has no selection: nothing is copied from
+        // the newly watched session's transcript.
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .await;
+        assert!(
+            copied.lock().expect("capture").is_empty(),
+            "no stale text copied after the switch"
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_selection_retires_on_transcript_rebuild() {
+        let (mut app, session, copied) = app_with_user_messages().await;
+        rendered_frame(&mut app, 80, 24);
+        let viewport = app.hit_map.conversation.expect("viewport");
+        drag_selection(&mut app, viewport, 8, 1).await;
+        assert!(
+            matches!(app.selection, Some(TextSelection::Conversation { .. })),
+            "the drag selected conversation rows"
+        );
+        // A revert marker rebuilds the visible transcript onto a new
+        // branch; the pre-rebuild selection coordinates are meaningless.
+        app.handle_delivery(live_event(runless_event(
+            session,
+            3,
+            EventPayload::SessionReverted { through_seq: 1 },
+        )))
+        .await;
+        assert!(
+            app.selection.is_none(),
+            "the rebuild retired the stale conversation leg"
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .await;
+        assert!(
+            copied.lock().expect("capture").is_empty(),
+            "no stale text copied after the rebuild"
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_selection_retires_on_recovery_replay() {
+        let (mut app, session, copied) = app_with_user_messages().await;
+        rendered_frame(&mut app, 80, 24);
+        let viewport = app.hit_map.conversation.expect("viewport");
+        drag_selection(&mut app, viewport, 8, 1).await;
+        assert!(
+            matches!(app.selection, Some(TextSelection::Conversation { .. })),
+            "the drag selected conversation rows"
+        );
+        // A recovery replay swaps in a whole new projection; the
+        // selection's coordinates address the replaced one.
+        app.handle_delivery(ClientDelivery::ReplayStart {
+            session_id: session,
+            generation: 0,
+            final_seq: 2,
+            rebuild: true,
+        })
+        .await;
+        for seq in 1..=2 {
+            app.handle_delivery(ClientDelivery::ReplayEvent {
+                session_id: session,
+                generation: 0,
+                final_seq: 2,
+                event: Box::new(user_input(session, seq, run_id(), "replayed")),
+            })
+            .await;
+        }
+        app.handle_delivery(ClientDelivery::ReplayEnd {
+            session_id: session,
+            generation: 0,
+            final_seq: 2,
+        })
+        .await;
+        assert!(
+            app.selection.is_none(),
+            "the recovery replay retired the stale conversation leg"
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .await;
+        assert!(
+            copied.lock().expect("capture").is_empty(),
+            "no stale text copied after the replay"
+        );
+    }
+
+    #[tokio::test]
+    async fn wheel_during_overlay_transition_is_owned_by_state_not_stale_geometry() {
+        let (mut app, session, _) = app_with_user_messages().await;
+        rendered_frame(&mut app, 80, 12);
+        let viewport = app.hit_map.conversation.expect("viewport");
+        assert!(app.hit_map.approval.is_none());
+        let (x, y) = (viewport.x + 1, viewport.y + 1);
+        // Baseline: the conversation wheel-scrolls with no panel around.
+        app.handle_wheel(x, y, false);
+        let scrolled = app.conversation_scroll.offset;
+        assert!(scrolled > 0, "content overflows the cramped viewport");
+        app.conversation_scroll.offset = 0;
+        // Arrival side: a panel that opened since the frame owns the wheel
+        // even though its geometry does not exist yet.
+        app.store
+            .sessions
+            .entry(session)
+            .or_default()
+            .approvals
+            .push(approval(session));
+        assert!(app.current_approval().is_some());
+        app.handle_wheel(x, y, false);
+        assert_eq!(
+            app.conversation_scroll.offset, 0,
+            "the state-open panel swallowed the wheel"
+        );
+        // Steady state: geometry rendered, the rect targets the panel
+        // scroll.
+        rendered_frame(&mut app, 80, 12);
+        let approval_rect = app.hit_map.approval.expect("approval geometry");
+        let (px, py) = (approval_rect.x + 1, approval_rect.y + 1);
+        app.handle_wheel(px, py, false);
+        assert_eq!(
+            app.conversation_scroll.offset, 0,
+            "the rendered panel still owns the wheel over its rect"
+        );
+        // Close side: the approval resolved but the hit map still
+        // describes the gone panel — the wheel must reach the content.
+        app.store
+            .sessions
+            .get_mut(&session)
+            .expect("session")
+            .approvals
+            .clear();
+        assert!(app.current_approval().is_none());
+        app.handle_wheel(px, py, false);
+        assert!(
+            app.conversation_scroll.offset > 0,
+            "stale panel geometry did not eat the wheel"
+        );
+    }
+
+    #[tokio::test]
+    async fn wheel_follows_topmost_first_ownership_when_modal_and_approval_coexist() {
+        let (mut app, session, _) = app_with_user_messages().await;
+        app.store
+            .sessions
+            .entry(session)
+            .or_default()
+            .approvals
+            .push(approval(session));
+        app.modal = Modal::Sessions;
+        // Both panels render, stacked modal-over-approval like every other
+        // pointer path.
+        rendered_frame(&mut app, 80, 24);
+        let approval_rect = app.hit_map.approval.expect("approval geometry");
+        let picker_rect = app.hit_map.picker.expect("picker geometry");
+        let left = approval_rect.x.max(picker_rect.x);
+        let top = approval_rect.y.max(picker_rect.y);
+        let right = approval_rect.right().min(picker_rect.right());
+        let bottom = approval_rect.bottom().min(picker_rect.bottom());
+        assert!(
+            left < right && top < bottom,
+            "centered panels overlap: {approval_rect:?} {picker_rect:?}"
+        );
+        // A wheel over the overlap reaches the topmost modal — the
+        // obscured approval panel never scrolls.
+        app.handle_wheel(left, top, false);
+        assert_eq!(
+            app.approval_scroll, 0,
+            "the modal owns the overlap; the approval beneath never scrolled"
+        );
+        assert_eq!(
+            app.conversation_scroll.offset, 0,
+            "nothing leaked through to the content"
+        );
+    }
+
+    #[tokio::test]
+    async fn composer_selection_survives_a_watch_and_retires_on_mutation() {
+        let mut app = test_app().await;
+        app.selected = Some(SessionId::new_v7());
+        app.input.set_buffer("hello world".to_owned());
+        rendered_frame(&mut app, 80, 24);
+        let text_rect = app.hit_map.input.expect("input").text_rect;
+        composer_drag_selection(&mut app, text_rect, 1, 5).await;
+        assert!(
+            matches!(app.selection, Some(TextSelection::Composer { .. })),
+            "the drag selected draft bytes"
+        );
+        // The draft buffer persists across a session watch, so the leg
+        // stays valid.
+        let session_b = SessionId::new_v7();
+        app.store
+            .sessions
+            .insert(session_b, SessionState::default());
+        app.set_selected_session(session_b);
+        assert!(
+            matches!(app.selection, Some(TextSelection::Composer { .. })),
+            "a watch alone keeps the composer leg"
+        );
+        // Typing mutates the buffer: the stale byte range retires.
+        app.handle_input_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE))
+            .await;
+        assert!(app.selection.is_none(), "typing retired the composer leg");
+        // A paste retires it the same way.
+        composer_drag_selection(&mut app, text_rect, 1, 5).await;
+        assert!(matches!(
+            app.selection,
+            Some(TextSelection::Composer { .. })
+        ));
+        app.handle_paste("pasted");
+        assert!(app.selection.is_none(), "pasting retired the composer leg");
+    }
+
+    #[tokio::test]
+    async fn composer_selection_retires_on_multibyte_type_then_cut_is_sane() {
+        let mut app = test_app().await;
+        let copied = Arc::new(Mutex::new(Vec::new()));
+        app.clipboard_sink = ClipboardSink::Capture(copied.clone());
+        app.selected = Some(SessionId::new_v7());
+        app.input.set_buffer("hello world".to_owned());
+        rendered_frame(&mut app, 80, 24);
+        let text_rect = app.hit_map.input.expect("input").text_rect;
+        composer_drag_selection(&mut app, text_rect, 6, 9).await;
+        assert_eq!(
+            app.selection,
+            Some(TextSelection::Composer { anchor: 6, head: 9 }),
+            "the drag selected \"wor\""
+        );
+        // A multibyte insertion shifts every later byte offset: the stale
+        // range 6..9 must retire, not silently retarget.
+        app.handle_input_key(KeyEvent::new(KeyCode::Char('é'), KeyModifiers::NONE))
+            .await;
+        assert!(
+            app.selection.is_none(),
+            "multibyte insertion retired the stale byte range"
+        );
+        assert_eq!(app.input.as_str(), "hello worldé");
+        // ctrl+x with no selection cuts and copies nothing.
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL))
+            .await;
+        assert_eq!(app.input.as_str(), "hello worldé", "nothing was cut");
+        assert!(
+            copied.lock().expect("capture").is_empty(),
+            "nothing was copied"
+        );
+        // Cursor navigation retires a selection the same way.
+        composer_drag_selection(&mut app, text_rect, 6, 9).await;
+        assert!(matches!(
+            app.selection,
+            Some(TextSelection::Composer { .. })
+        ));
+        app.handle_input_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            .await;
+        assert!(
+            app.selection.is_none(),
+            "cursor navigation retired the composer leg"
+        );
+    }
+
+    /// One full composer drag gesture selecting the byte range covered by
+    /// display columns `from`..`to` on the first text row.
+    async fn composer_drag_selection(app: &mut App, text_rect: Rect, from: u16, to: u16) {
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            text_rect.x + from,
+            text_rect.y,
+        ))
+        .await;
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            text_rect.x + to,
+            text_rect.y,
+        ))
+        .await;
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            text_rect.x + to,
+            text_rect.y,
+        ))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn selection_highlight_paints_covered_cells_and_preserves_foregrounds() {
+        let (mut app, _, _) = app_with_user_messages().await;
+        rendered_frame(&mut app, 80, 24);
+        let viewport = app.hit_map.conversation.expect("viewport");
+        let body_row = viewport.y + 1;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            viewport.x,
+            body_row,
+        ))
+        .await;
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            viewport.x + 10,
+            body_row,
+        ))
+        .await;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| app.draw_for_test(frame))
+            .expect("app render");
+        let buffer = terminal.backend().buffer();
+        let selection = app.theme.text_selection();
+        let covered = buffer[(viewport.x + 4, body_row)].style();
+        assert_eq!(covered.bg, selection.bg, "covered cells take the wash");
+        assert_eq!(
+            covered.fg,
+            buffer[(viewport.x + 12, body_row)].style().fg,
+            "foregrounds are preserved across the boundary"
+        );
+        let outside = buffer[(viewport.x + 12, body_row)].style();
+        assert_ne!(outside.bg, selection.bg, "uncovered cells keep their fill");
+    }
+
+    #[tokio::test]
+    async fn user_message_menu_snapshot() {
+        let (mut app, _, _) = app_with_user_messages().await;
+        rendered_frame(&mut app, 80, 24);
+        let hit = user_hit(&app, 2);
+        app.handle_click(hit.rect.x + 2, hit.rect.y).await;
+        insta::assert_snapshot!(rendered_frame(&mut app, 80, 24));
+    }
+
+    #[tokio::test]
+    async fn selection_overlay_snapshot() {
+        let (mut app, _, _) = app_with_user_messages().await;
+        rendered_frame(&mut app, 80, 24);
+        let viewport = app.hit_map.conversation.expect("viewport");
+        // Drag from mid-first-message down into the second: covered rows
+        // highlight from the drag column to the row end on the first row,
+        // and from the row start to the drag column on the last.
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            viewport.x + 6,
+            viewport.y + 1,
+        ))
+        .await;
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            viewport.x + 10,
+            viewport.y + 4,
+        ))
+        .await;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| app.draw_for_test(frame))
+            .expect("app render");
+        let buffer = terminal.backend().buffer();
+        let selected_bg = app.theme.text_selection().bg;
+        // Text with selected cells marked '#': the overlay shows the exact
+        // covered region, gutters included, with no layout disturbance.
+        let overlay = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| {
+                        if selected_bg.is_some() && buffer[(x, y)].style().bg == selected_bg {
+                            '#'
+                        } else {
+                            buffer[(x, y)].symbol().chars().next().unwrap_or(' ')
+                        }
+                    })
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!(overlay);
     }
 }

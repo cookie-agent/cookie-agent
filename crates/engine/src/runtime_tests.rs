@@ -1910,6 +1910,22 @@ async fn wait_for_tool_execution(executed: &AtomicBool) {
     .expect("approved tool execution");
 }
 
+async fn wait_for_session_not_running(engine: &Engine, session_id: SessionId) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if engine
+                .get_session(session_id)
+                .is_ok_and(|meta| meta.status != SessionStatus::Running)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("session completion");
+}
+
 fn reopen_engine(fixture: &Fixture) -> Engine {
     let current = fixture.manager.current();
     let manager = Arc::new(
@@ -2877,15 +2893,15 @@ fn external_store_generation_is_reloaded_before_discovery() {
 }
 
 #[test]
-fn event_schema_twelve_persistence_fails_deserialization() {
+fn event_schema_thirteen_persistence_fails_deserialization() {
     let directory = TempDir::new().expect("temp directory");
     let path = directory.path().join("events.jsonl");
     fs::write(
         &path,
-        b"{\"event_schema_version\":12,\"payload\":{\"type\":\"session_created\"}}\n",
+        b"{\"event_schema_version\":13,\"payload\":{\"type\":\"session_created\"}}\n",
     )
     .expect("legacy event");
-    let error = EventLog::open(path, SessionId::new_v7()).expect_err("version 12 rejected");
+    let error = EventLog::open(path, SessionId::new_v7()).expect_err("version 13 rejected");
     assert!(matches!(error, EventLogError::Json { .. }));
 }
 
@@ -3070,7 +3086,7 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
 }
 
 #[tokio::test]
-async fn steer_compaction_defers_snapshot_and_completion_before_next_model_request() {
+async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order() {
     let bodies = vec![
         "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"write-call\",\"type\":\"function\",\"function\":{\"name\":\"write\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":4000,\"completion_tokens\":1,\"total_tokens\":4001}}\n\n".to_owned(),
         "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"decision\\\":\\\"ask\\\"}\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
@@ -3107,80 +3123,99 @@ async fn steer_compaction_defers_snapshot_and_completion_before_next_model_reque
         .await
         .expect("started steering run");
     let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
-    let steering = "steer after checkpoint";
-    let steer_engine = fixture.engine.clone();
-    let steer = tokio::spawn(async move { steer_engine.steer(run.run_id, steering.into()).await });
-    compaction_reached.await.expect("compaction started");
-    let complete_engine = fixture.engine.clone();
-    let complete = tokio::spawn(async move {
-        complete_engine
-            .complete_if_no_steering_for_test(session.session_id, run.run_id)
-            .await
-    });
-    let prompt_engine = fixture.engine.clone();
-    let prompt = tokio::spawn(async move {
-        prompt_engine
-            .prompt_events_for_test(session.session_id, run.run_id)
-            .await
-    });
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            if fixture
-                .engine
-                .deferred_compaction_commands_for_test(session.session_id)
-                == 2
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("barrier commands deferred");
     assert!(
-        !fixture
-            .engine
-            .complete_if_no_steering_for_test(session.session_id, run.run_id)
-            .await
-            .expect("duplicate completion is coalesced")
-    );
-    assert!(matches!(
         fixture
             .engine
-            .prompt_events_for_test(session.session_id, run.run_id)
-            .await,
-        Err(EngineError::SessionRunning(id)) if id == session.session_id
-    ));
+            .steer(run.run_id, "recall me".into())
+            .await
+            .expect("first admission")
+            .accepted
+    );
     assert_eq!(
         fixture
             .engine
-            .deferred_compaction_commands_for_test(session.session_id),
-        2
-    );
-    release_compaction.notify_one();
-    assert!(
-        steer
+            .recall_steer(run.run_id)
             .await
-            .expect("steer task")
-            .expect("steering accepted")
+            .expect("recall pending input")
+            .recalled
+            .as_deref(),
+        Some("recall me")
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .recall_steer(run.run_id)
+            .await
+            .expect("empty recall")
+            .recalled,
+        None
+    );
+    let first_pending = "first pending input with enough additional text to cross the learned predictive compaction threshold";
+    for input in [first_pending, "second pending", "third pending"] {
+        assert!(
+            fixture
+                .engine
+                .steer(run.run_id, input.into())
+                .await
+                .expect("admission")
+                .accepted
+        );
+    }
+    assert_eq!(
+        fixture
+            .engine
+            .recall_steer(run.run_id)
+            .await
+            .expect("LIFO recall")
+            .recalled
+            .as_deref(),
+        Some("third pending")
+    );
+    assert!(
+        fixture
+            .engine
+            .steer(run.run_id, "third pending".into())
+            .await
+            .expect("replacement admission")
             .accepted
     );
-    assert!(
-        complete
-            .await
-            .expect("completion task")
-            .expect("completion barrier")
-    );
-    let prompt_events = prompt.await.expect("prompt task").expect("prompt snapshot");
-    assert!(prompt_events.iter().any(|event| matches!(
+    let before_boundary = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("pending projection")
+        .log
+        .events();
+    assert!(before_boundary.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::UserInputSubmitted { input } if input == steering
+        EventPayload::UserInputAdmitted { input } if input == first_pending
+    )));
+    assert!(!before_boundary.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputSubmitted { input } if input != "begin"
     )));
     approve_once(&fixture.engine, &approval, "steering-race-approval").await;
     wait_for_tool_execution(&executed).await;
+    compaction_reached
+        .await
+        .expect("promotion compaction started");
+    let during_reservation = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        fixture.engine.steer(run.run_id, "fourth pending".into()),
+    )
+    .await
+    .expect("steer is not blocked by compaction")
+    .expect("steer during compaction");
+    assert!(during_reservation.accepted);
+    release_compaction.notify_one();
     let requests = captured.await.expect("steering server task");
     assert_eq!(requests.len(), 4);
-    assert!(requests[3].contains(steering));
+    assert!(!requests[0].contains("first pending"));
+    for input in [first_pending, "third pending", "fourth pending"] {
+        assert!(requests[3].contains(input));
+    }
+    assert!(!requests[3].contains("recall me"));
     let events = fixture
         .engine
         .inner
@@ -3199,22 +3234,47 @@ async fn steer_compaction_defers_snapshot_and_completion_before_next_model_reque
             .then_some(event.seq)
         })
         .expect("predictive checkpoint");
-    let steering_seq = events
+    let tool_result_seq = events
         .iter()
-        .find_map(|event| match &event.payload {
-            EventPayload::UserInputSubmitted { input } if input == steering => Some(event.seq),
+        .find_map(|event| {
+            matches!(event.payload, EventPayload::ToolCallTerminated { .. }).then_some(event.seq)
+        })
+        .expect("tool result");
+    let submitted = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::UserInputSubmitted { input } if input != "begin" => {
+                Some((event.seq, input.as_str()))
+            }
             _ => None,
         })
-        .expect("steering input");
+        .collect::<Vec<_>>();
+    assert_eq!(
+        submitted
+            .iter()
+            .map(|(_, input)| *input)
+            .collect::<Vec<_>>(),
+        vec![
+            first_pending,
+            "second pending",
+            "third pending",
+            "fourth pending"
+        ]
+    );
+    let first_steering_seq = submitted[0].0;
     let next_attempt_seq = events
         .iter()
         .find_map(|event| {
-            (event.seq > steering_seq
+            (event.seq > first_steering_seq
                 && matches!(event.payload, EventPayload::ModelAttemptStarted { .. }))
             .then_some(event.seq)
         })
         .expect("next model request");
-    assert!(checkpoint_seq < steering_seq && steering_seq < next_attempt_seq);
+    assert!(
+        tool_result_seq < checkpoint_seq
+            && checkpoint_seq < first_steering_seq
+            && submitted.last().expect("submitted inputs").0 < next_attempt_seq
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -3342,6 +3402,128 @@ async fn cancel_during_start_prediction_aborts_compaction_without_appending_inpu
             .compaction_reserved_for_test(session.session_id)
     );
     assert_eq!(captured.await.expect("cancel server task").len(), 2);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn steer_during_start_prediction_survives_initial_submission_and_reaches_model() {
+    let bodies = vec![
+        "data: {\"choices\":[{\"delta\":{\"content\":\"prime complete\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":4000,\"completion_tokens\":1,\"total_tokens\":4001}}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
+        "data: {\"choices\":[{\"delta\":{\"content\":\"start-time summary\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
+        "data: {\"choices\":[{\"delta\":{\"content\":\"initial turn\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
+        "data: {\"choices\":[{\"delta\":{\"content\":\"steered turn\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
+    ];
+    let (endpoint, captured, compaction_reached, release_compaction) =
+        scripted_server_with_delayed_response(bodies, 1).await;
+    let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
+        &endpoint,
+        "---\nschema: 4\ndescription: Start steering race test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: {}\n---\nTest start steering.\n",
+        None,
+        Some(500),
+    );
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("steering race session");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("prime-start-steer").expect("client run ID"),
+            selection: selection.clone(),
+            input: "prime predictor".into(),
+        })
+        .await
+        .expect("prime run");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    let start_engine = fixture.engine.clone();
+    let start = tokio::spawn(async move {
+        start_engine
+            .start_run(RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("start-steer-race").expect("client run ID"),
+                selection,
+                input: "initial second-run input".into(),
+            })
+            .await
+    });
+    compaction_reached.await.expect("start compaction reached");
+    let run = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("start projection")
+        .log
+        .events()
+        .iter()
+        .rev()
+        .find_map(|event| {
+            matches!(event.payload, EventPayload::RunStarted { .. }).then_some(event.run_id)
+        })
+        .flatten()
+        .expect("second run ID");
+    let steering = "steer admitted before initial submission";
+    assert!(
+        fixture
+            .engine
+            .steer(run, steering.into())
+            .await
+            .expect("steer during start compaction")
+            .accepted
+    );
+    let during_compaction = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("admitted projection")
+        .log
+        .events();
+    assert!(during_compaction.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputAdmitted { input } if input == steering
+    )));
+    assert!(!during_compaction.iter().any(|event| {
+        event.run_id == Some(run)
+            && matches!(event.payload, EventPayload::UserInputSubmitted { .. })
+    }));
+    release_compaction.notify_one();
+    assert_eq!(
+        start
+            .await
+            .expect("start task")
+            .expect("started run")
+            .run_id,
+        run
+    );
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    let requests = captured.await.expect("scripted requests");
+    assert_eq!(requests.len(), 4);
+    assert!(requests[2].contains("initial second-run input"));
+    assert!(!requests[2].contains(steering));
+    assert!(requests[3].contains("initial second-run input"));
+    assert!(requests[3].contains(steering));
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("completed projection")
+        .log
+        .events();
+    let submissions = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::UserInputSubmitted { input } if event.run_id == Some(run) => {
+                Some(input.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(submissions, vec!["initial second-run input", steering]);
     fixture.engine.shutdown().await;
 }
 
@@ -3949,6 +4131,333 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
             .expect("reopened scripted session")
             .status,
         cookie_agent_protocol::SessionStatus::Completed
+    );
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
+    let response = |text: &str| {
+        format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n"
+        )
+    };
+    let (endpoint, captured, second_request_reached, release_second) =
+        scripted_server_with_delayed_response(
+            vec![
+                response("first answer"),
+                response("second answer"),
+                response("branch answer"),
+            ],
+            1,
+        )
+        .await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("source session");
+
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("revert-first").expect("client run ID"),
+            selection: selection.clone(),
+            input: "first input".into(),
+        })
+        .await
+        .expect("first run");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let through_seq = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("first projection")
+        .log
+        .all_events()
+        .last()
+        .expect("first tip")
+        .seq;
+
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("revert-second").expect("client run ID"),
+            selection: selection.clone(),
+            input: "second input must disappear".into(),
+        })
+        .await
+        .expect("second run");
+    second_request_reached
+        .await
+        .expect("second request reached");
+    assert!(matches!(
+        fixture
+            .engine
+            .revert_session(session.session_id, through_seq)
+            .await,
+        Err(EngineError::SessionRunning(id)) if id == session.session_id
+    ));
+    let fork = fixture
+        .engine
+        .fork_session(session.session_id, through_seq)
+        .await
+        .expect("fork active source");
+    let (artifact, digest) = fixture
+        .engine
+        .inner
+        .artifacts
+        .retain(b"fork-shared-artifact")
+        .expect("retain shared artifact");
+    assert_eq!(artifact.uri, format!("artifact://sha256/{digest}"));
+    assert!(
+        fixture
+            .engine
+            .inner
+            .artifacts
+            .open_existing(&digest)
+            .expect("resolve shared artifact")
+            .is_some()
+    );
+    let source_prefix = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("source prefix")
+        .log
+        .all_events()
+        .into_iter()
+        .filter(|event| event.seq <= through_seq)
+        .collect::<Vec<_>>();
+    let fork_physical = fixture
+        .engine
+        .inner
+        .store
+        .get(fork.session_id)
+        .expect("fork projection")
+        .log
+        .all_events();
+    assert_eq!(fork_physical.len(), source_prefix.len() + 2);
+    for (source_event, fork_event) in source_prefix.iter().zip(&fork_physical) {
+        assert_eq!(fork_event.session_id, fork.session_id);
+        assert_eq!(
+            fork_event.event_schema_version,
+            source_event.event_schema_version
+        );
+        assert_eq!(fork_event.run_id, source_event.run_id);
+        assert_eq!(fork_event.seq, source_event.seq);
+        assert_eq!(fork_event.timestamp, source_event.timestamp);
+        assert_eq!(fork_event.payload, source_event.payload);
+    }
+    assert!(matches!(
+        fork_physical[source_prefix.len()].payload,
+        EventPayload::SessionReverted { through_seq: target } if target == through_seq
+    ));
+    assert!(matches!(
+        fork_physical[source_prefix.len() + 1].payload,
+        EventPayload::SessionTitleCommitted { .. }
+    ));
+    release_second.notify_one();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    let reverted = fixture
+        .engine
+        .revert_session(session.session_id, through_seq)
+        .await
+        .expect("revert completed source");
+    let first_revert_event = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("reverted source")
+        .log
+        .all_events()
+        .last()
+        .expect("revert tip")
+        .clone();
+    assert!(matches!(
+        first_revert_event.payload,
+        EventPayload::SessionReverted { through_seq: target } if target == through_seq
+    ));
+    assert_eq!(reverted.session.last_event_seq, first_revert_event.seq);
+    assert_eq!(reverted.session.last_activity, first_revert_event.timestamp);
+    let first_revert_tip = first_revert_event.seq;
+    fixture
+        .engine
+        .rename_session(cookie_agent_protocol::SessionRenameParams {
+            session_id: session.session_id,
+            client_rename_id: ClientRenameId::new("branch-title").expect("rename ID"),
+            change: cookie_agent_protocol::SessionRenameChange::Set {
+                title: SessionTitle::new("temporary branch").expect("title"),
+            },
+        })
+        .await
+        .expect("branch title");
+    fixture
+        .engine
+        .revert_session(session.session_id, first_revert_tip)
+        .await
+        .expect("stacked revert");
+    let fork_after_revert = fixture
+        .engine
+        .fork_session(session.session_id, through_seq)
+        .await
+        .expect("fork reverted source at original boundary");
+    let first_fork_prefix = fixture
+        .engine
+        .inner
+        .store
+        .get(fork.session_id)
+        .expect("first fork")
+        .log
+        .all_events()
+        .into_iter()
+        .filter(|event| event.seq <= through_seq)
+        .collect::<Vec<_>>();
+    let reverted_fork_prefix = fixture
+        .engine
+        .inner
+        .store
+        .get(fork_after_revert.session_id)
+        .expect("fork after revert")
+        .log
+        .all_events()
+        .into_iter()
+        .filter(|event| event.seq <= through_seq)
+        .collect::<Vec<_>>();
+    assert_eq!(first_fork_prefix.len(), reverted_fork_prefix.len());
+    for (first, second) in first_fork_prefix.iter().zip(&reverted_fork_prefix) {
+        assert_eq!(first.event_schema_version, second.event_schema_version);
+        assert_eq!(first.run_id, second.run_id);
+        assert_eq!(first.seq, second.seq);
+        assert_eq!(first.timestamp, second.timestamp);
+        assert_eq!(first.payload, second.payload);
+    }
+    let visible = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("stacked projection")
+        .log
+        .events();
+    assert!(visible.iter().all(|event| !matches!(
+        &event.payload,
+        EventPayload::UserInputSubmitted { input } if input == "second input must disappear"
+    )));
+
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("revert-branch").expect("client run ID"),
+            selection,
+            input: "branch input".into(),
+        })
+        .await
+        .expect("branch run");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let requests = captured.await.expect("scripted requests");
+    assert_eq!(requests.len(), 3);
+    assert!(requests[2].contains("first input"));
+    assert!(requests[2].contains("branch input"));
+    assert!(!requests[2].contains("second input must disappear"));
+
+    let source_tip_before_fork_rename = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("source")
+        .log
+        .all_events()
+        .len();
+    let fork_meta = fixture
+        .engine
+        .get_session(fork.session_id)
+        .expect("fork meta");
+    assert!(
+        fork_meta
+            .title
+            .is_some_and(|title| title.as_str().ends_with(" (fork)"))
+    );
+    fixture
+        .engine
+        .rename_session(cookie_agent_protocol::SessionRenameParams {
+            session_id: fork.session_id,
+            client_rename_id: ClientRenameId::new("fork-independent").expect("rename ID"),
+            change: cookie_agent_protocol::SessionRenameChange::Set {
+                title: SessionTitle::new("independent fork").expect("title"),
+            },
+        })
+        .await
+        .expect("rename fork");
+    assert_eq!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("unchanged source")
+            .log
+            .all_events()
+            .len(),
+        source_tip_before_fork_rename
+    );
+
+    fixture.engine.shutdown().await;
+    let reopened = reopen_engine(&fixture);
+    assert!(
+        reopened
+            .inner
+            .artifacts
+            .open_existing(&digest)
+            .expect("resolve shared artifact after restart")
+            .is_some()
+    );
+    let reopened_visible = reopened
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("reopened source")
+        .log
+        .events();
+    let reopened_physical_tip = reopened
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("reopened physical source")
+        .log
+        .all_events()
+        .last()
+        .expect("reopened physical tip")
+        .clone();
+    let reopened_meta = reopened
+        .get_session(session.session_id)
+        .expect("reopened source metadata");
+    assert_eq!(reopened_meta.last_event_seq, reopened_physical_tip.seq);
+    assert_eq!(reopened_meta.last_activity, reopened_physical_tip.timestamp);
+    assert!(reopened_visible.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputSubmitted { input } if input == "branch input"
+    )));
+    assert!(reopened_visible.iter().all(|event| !matches!(
+        &event.payload,
+        EventPayload::UserInputSubmitted { input } if input == "second input must disappear"
+    )));
+    assert_eq!(
+        reopened
+            .get_session(fork.session_id)
+            .expect("reopened fork")
+            .title
+            .expect("fork title")
+            .as_str(),
+        "independent fork"
     );
     reopened.shutdown().await;
 }

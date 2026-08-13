@@ -100,7 +100,6 @@ impl Engine {
             cancellation: CancellationToken::new(),
             cancelled_committed: Mutex::new(false),
             stdin: Mutex::new(HashMap::new()),
-            prompt_seq: AtomicU64::new(0),
             fallback_index: AtomicU64::new(0),
         });
         self.inner
@@ -108,11 +107,12 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(run_id, active.clone());
+        let serialized_message_bytes = serialized_input_bytes(&params.input)?;
         let compacted = self
             .maybe_predictive_compact_before_input(PredictiveCompactionInput {
                 session: params.session_id,
                 run: run_id,
-                input: &params.input,
+                serialized_message_bytes,
                 policy: &active.policy,
                 fallback_index: 0,
                 cancellation: &active.cancellation,
@@ -199,18 +199,15 @@ impl Engine {
     pub(super) async fn maybe_predictive_compact_before_input(
         &self,
         input: PredictiveCompactionInput<'_>,
-    ) -> Result<(), EngineError> {
+    ) -> Result<bool, EngineError> {
         let Some(binding) = input.policy.selected_suffix.get(input.fallback_index) else {
-            return Ok(());
+            return Ok(false);
         };
         let Some(context_limit) = binding.descriptor.capabilities.limits.context else {
-            return Ok(());
+            return Ok(false);
         };
         let config = &self.inner.config.runtime.context_compaction;
         let trigger_tokens = effective_compaction_limit(context_limit, config.buffer_tokens);
-        let message_bytes = serde_json::to_vec(input.input)
-            .map_err(|error| ModelError::invalid_request(error.to_string()))?
-            .len();
         let estimator = self
             .inner
             .context_token_estimators
@@ -229,35 +226,37 @@ impl Engine {
                 .contains(&input.session)
             || !should_run_predictive_compaction(
                 estimator,
-                message_bytes,
+                input.serialized_message_bytes,
                 trigger_tokens,
                 self.inner.store.is_persisted(input.session)?,
             )
         {
-            return Ok(());
+            return Ok(false);
         }
         let events = self.inner.store.get(input.session)?.log.events();
+        let before = latest_checkpoint_seq(&events);
         let tools = self.tool_definitions(input.session, input.policy)?;
         let internal_policy = self.internal_agent_policy(
             InternalAgentKind::ContextCompaction,
             input.policy,
             Some(binding),
         )?;
-        self.maybe_compact_context(CompactionInput {
-            session: input.session,
-            run: input.run,
-            cancellation: input.cancellation,
-            binding,
-            owner_policy: input.policy,
-            internal_policy: &internal_policy,
-            tools: &tools,
-            events,
-            force: true,
-            focus: None,
-            actor_direct: input.actor_direct,
-        })
-        .await?;
-        Ok(())
+        let compacted = self
+            .maybe_compact_context(CompactionInput {
+                session: input.session,
+                run: input.run,
+                cancellation: input.cancellation,
+                binding,
+                owner_policy: input.policy,
+                internal_policy: &internal_policy,
+                tools: &tools,
+                events,
+                force: true,
+                focus: None,
+                actor_direct: input.actor_direct,
+            })
+            .await?;
+        Ok(latest_checkpoint_seq(&compacted) > before)
     }
 
     pub(super) async fn run_loop(
@@ -372,16 +371,17 @@ impl Engine {
                 return Ok(());
             }
             if calls.is_empty() {
-                let steering = self
+                let promoted = self
                     .request(active.session, |reply| {
-                        SessionCommand::CompleteIfNoSteering {
+                        SessionCommand::PromotePendingOrComplete {
                             run: run_id,
                             final_text: (!final_text.is_empty()).then_some(final_text.clone()),
+                            complete_if_empty: true,
                             reply,
                         }
                     })
                     .await?;
-                if steering {
+                if promoted {
                     continue;
                 }
                 return Ok(());
@@ -517,6 +517,15 @@ impl Engine {
                 self.append_run_cancelled_once(&active, run_id, None)?;
                 return Ok(());
             }
+            self.request(active.session, |reply| {
+                SessionCommand::PromotePendingOrComplete {
+                    run: run_id,
+                    final_text: None,
+                    complete_if_empty: false,
+                    reply,
+                }
+            })
+            .await?;
         }
     }
 
@@ -871,4 +880,10 @@ impl Engine {
         }
         Err(last_error.into())
     }
+}
+
+pub(super) fn serialized_input_bytes(input: &str) -> Result<usize, EngineError> {
+    serde_json::to_vec(input)
+        .map(|bytes| bytes.len())
+        .map_err(|error| ModelError::invalid_request(error.to_string()).into())
 }

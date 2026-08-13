@@ -852,6 +852,25 @@
         {
           "type": "object",
           "properties": {
+            "through_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "session_reverted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "through_seq"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "agent": {
               "$ref": "#/$defs/AgentSnapshot"
             },
@@ -950,7 +969,41 @@
             },
             "type": {
               "type": "string",
+              "const": "user_input_admitted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "input"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
               "const": "user_input_submitted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "input"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "user_input_recalled"
             }
           },
           "additionalProperties": false,
@@ -4619,7 +4672,7 @@
       "properties": {
         "event_schema_version": {
           "type": "integer",
-          "const": 13
+          "const": 14
         },
         "payload": {
           "$ref": "#/$defs/EventPayload"

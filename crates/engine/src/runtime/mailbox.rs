@@ -225,39 +225,6 @@ impl Engine {
     }
 
     #[cfg(test)]
-    pub(crate) async fn prompt_events_for_test(
-        &self,
-        session: SessionId,
-        run: RunId,
-    ) -> Result<Vec<StoredEvent>, EngineError> {
-        self.prompt_events(session, run).await
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn complete_if_no_steering_for_test(
-        &self,
-        session: SessionId,
-        run: RunId,
-    ) -> Result<bool, EngineError> {
-        self.request(session, |reply| SessionCommand::CompleteIfNoSteering {
-            run,
-            final_text: Some("test completion".into()),
-            reply,
-        })
-        .await
-    }
-
-    #[cfg(test)]
-    pub(crate) fn deferred_compaction_commands_for_test(&self, session: SessionId) -> usize {
-        self.inner
-            .compaction_deferred
-            .lock()
-            .expect("compaction deferred lock poisoned")
-            .get(&session)
-            .map_or(0, VecDeque::len)
-    }
-
-    #[cfg(test)]
     pub(crate) fn compaction_reserved_for_test(&self, session: SessionId) -> bool {
         self.inner
             .compaction_in_progress
@@ -338,6 +305,24 @@ impl Engine {
             reply,
         })
         .await
+    }
+
+    async fn release_compaction_direct(&self, session: SessionId) {
+        self.inner
+            .compaction_in_progress
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&session);
+        let deferred = self
+            .inner
+            .compaction_deferred
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&session)
+            .unwrap_or_default();
+        for command in deferred {
+            Box::pin(self.handle_actor_command(session, command)).await;
+        }
     }
 
     pub(super) async fn handle_actor_command(&self, session: SessionId, command: SessionCommand) {
@@ -466,7 +451,7 @@ impl Engine {
                     .ok_or(EngineError::MissingRun(run));
                 let result = match active {
                     Err(error) => Err(error),
-                    Ok(active) => {
+                    Ok(_) => {
                         let projection = self.inner.store.get(session);
                         match projection {
                             Err(error) => Err(error.into()),
@@ -478,50 +463,100 @@ impl Engine {
                             {
                                 Ok(RunSteerResult { accepted: false })
                             }
-                            Ok(_) if !self.reserve_compaction(session) => {
-                                Err(EngineError::SessionRunning(session))
-                            }
-                            Ok(_) => {
-                                let fallback_index =
-                                    active.fallback_index.load(Ordering::Acquire) as usize;
-                                let engine = self.clone();
-                                tokio::spawn(async move {
-                                    let compacted = engine
-                                        .maybe_predictive_compact_before_input(
-                                            PredictiveCompactionInput {
-                                                session,
-                                                run,
-                                                input: &input,
-                                                policy: &active.policy,
-                                                fallback_index,
-                                                cancellation: &active.cancellation,
-                                                actor_direct: false,
-                                            },
-                                        )
-                                        .await;
-                                    let mut result = match compacted {
-                                        Ok(()) => engine
-                                            .append(
-                                                session,
-                                                Some(run),
-                                                Event::UserInputSubmitted { input },
-                                            )
-                                            .await
-                                            .map(|()| RunSteerResult { accepted: true }),
-                                        Err(error) => Err(error),
-                                    };
-                                    if let Err(error) = engine.finish_compaction(session).await
-                                        && result.is_ok()
-                                    {
-                                        result = Err(error);
-                                    }
-                                    let _ = reply.send(result);
-                                });
-                                return;
-                            }
+                            Ok(_) => self
+                                .append_direct(
+                                    session,
+                                    Some(run),
+                                    Event::UserInputAdmitted { input },
+                                )
+                                .map(|()| RunSteerResult { accepted: true }),
                         }
                     }
                 };
+                let _ = reply.send(result);
+            }
+            SessionCommand::RecallSteer { run, reply } => {
+                let result = (|| {
+                    self.inner
+                        .active
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .get(&run)
+                        .cloned()
+                        .filter(|active| active.session == session)
+                        .ok_or(EngineError::MissingRun(run))?;
+                    let projection = self.inner.store.get(session)?;
+                    if !projection
+                        .runs
+                        .get(&run)
+                        .is_some_and(|run| run.status == SessionStatus::Running)
+                    {
+                        return Ok(RunRecallSteerResult { recalled: None });
+                    }
+                    let recalled = pending_inputs(&projection.log.events(), run)
+                        .pop()
+                        .map(|pending| pending.input);
+                    if let Some(input) = &recalled {
+                        self.append_direct(
+                            session,
+                            Some(run),
+                            Event::UserInputRecalled {
+                                input: input.clone(),
+                            },
+                        )?;
+                    }
+                    Ok(RunRecallSteerResult { recalled })
+                })();
+                let _ = reply.send(result);
+            }
+            SessionCommand::CommitPendingPromotion {
+                run,
+                through_admission_seq,
+                final_text,
+                complete_if_empty,
+                already_promoted,
+                reply,
+            } => {
+                let result = (|| {
+                    let projection = self.inner.store.get(session)?;
+                    if !projection
+                        .runs
+                        .get(&run)
+                        .is_some_and(|run| run.status == SessionStatus::Running)
+                    {
+                        return Ok(PendingPromotionState {
+                            promoted: already_promoted,
+                            pending: Vec::new(),
+                            continue_run: false,
+                        });
+                    }
+                    let eligible = pending_inputs(&projection.log.events(), run)
+                        .into_iter()
+                        .take_while(|pending| pending.admission_seq <= through_admission_seq)
+                        .collect::<Vec<_>>();
+                    for pending in &eligible {
+                        self.append_direct(
+                            session,
+                            Some(run),
+                            Event::UserInputSubmitted {
+                                input: pending.input.clone(),
+                            },
+                        )?;
+                    }
+                    let promoted = already_promoted || !eligible.is_empty();
+                    let pending = pending_inputs(&self.inner.store.get(session)?.log.events(), run);
+                    if pending.is_empty() && !promoted && complete_if_empty {
+                        self.append_direct(session, Some(run), Event::RunCompleted { final_text })?;
+                    }
+                    Ok(PendingPromotionState {
+                        promoted,
+                        continue_run: promoted,
+                        pending,
+                    })
+                })();
+                if result.as_ref().is_ok_and(|state| state.pending.is_empty()) {
+                    self.release_compaction_direct(session).await;
+                }
                 let _ = reply.send(result);
             }
             SessionCommand::Compact { focus, reply } => {
@@ -542,22 +577,65 @@ impl Engine {
                     });
                 }
             }
-            SessionCommand::CompactionFinished { reply } => {
-                self.inner
-                    .compaction_in_progress
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .remove(&session);
-                let deferred = self
-                    .inner
-                    .compaction_deferred
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .remove(&session)
-                    .unwrap_or_default();
-                for command in deferred {
-                    Box::pin(self.handle_actor_command(session, command)).await;
+            SessionCommand::Revert { through_seq, reply } => {
+                if !self.reserve_compaction(session) {
+                    let _ = reply.send(Err(EngineError::SessionRunning(session)));
+                } else {
+                    let result = (|| {
+                        let projection = self.inner.store.get(session)?;
+                        if projection.status == SessionStatus::Running {
+                            return Err(EngineError::SessionRunning(session));
+                        }
+                        let tip = projection
+                            .log
+                            .all_events()
+                            .last()
+                            .map_or(0, |event| event.seq);
+                        if through_seq == 0 || through_seq > tip {
+                            return Err(SessionError::InvalidSequence {
+                                session_id: session,
+                                through_seq,
+                            }
+                            .into());
+                        }
+                        self.append_direct(session, None, Event::SessionReverted { through_seq })?;
+                        self.inner
+                            .context_token_estimators
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .remove(&session);
+                        self.inner
+                            .compaction_auto_disabled
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .remove(&session);
+                        self.inner
+                            .compaction_postcheck_pending
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .remove(&session);
+                        self.rebuild_visible_tree_grants();
+                        Ok(SessionRevertResult {
+                            session: self.inner.store.get(session)?.metadata(),
+                        })
+                    })();
+                    self.release_compaction_direct(session).await;
+                    let _ = reply.send(result);
                 }
+            }
+            SessionCommand::Fork { through_seq, reply } => {
+                let result = self
+                    .inner
+                    .store
+                    .fork(session, through_seq)
+                    .map(|session_id| {
+                        self.spawn_actor(session_id);
+                        SessionForkResult { session_id }
+                    });
+                let _ = reply.send(result.map_err(EngineError::from));
+            }
+            SessionCommand::CompactionFinished { reply } => {
+                self.release_compaction_direct(session).await;
                 let _ = reply.send(Ok(()));
             }
             SessionCommand::Cancel { run, reply } => {
@@ -654,7 +732,7 @@ impl Engine {
                 let result = self.inner.store.get(session).map(|projection| {
                     let events = projection
                         .log
-                        .events()
+                        .all_events()
                         .into_iter()
                         .filter(|event| cursor.is_none_or(|cursor| event.seq > cursor))
                         .collect();
@@ -701,8 +779,11 @@ impl Engine {
                             client_rename_id: params.client_rename_id.clone(),
                         },
                     };
-                    let input_through_seq =
-                        projection.log.events().last().map_or(0, |event| event.seq);
+                    let input_through_seq = projection
+                        .log
+                        .all_events()
+                        .last()
+                        .map_or(0, |event| event.seq);
                     self.append_direct(
                         session,
                         None,
@@ -828,12 +909,13 @@ impl Engine {
                 );
                 let _ = reply.send(result);
             }
-            SessionCommand::CompleteIfNoSteering {
+            SessionCommand::PromotePendingOrComplete {
                 run,
                 final_text,
+                complete_if_empty,
                 reply,
             } => {
-                let result = self
+                let active = self
                     .inner
                     .active
                     .lock()
@@ -841,33 +923,112 @@ impl Engine {
                     .get(&run)
                     .cloned()
                     .filter(|active| active.session == session)
-                    .ok_or(EngineError::MissingRun(run))
-                    .and_then(|active| {
-                        let prompt_seq = active.prompt_seq.load(Ordering::Acquire);
-                        let has_unseen_steering = self
-                            .inner
-                            .store
-                            .get(session)?
-                            .log
-                            .events()
-                            .iter()
-                            .any(|event| {
-                                event.seq > prompt_seq
-                                    && event.run_id == Some(run)
-                                    && matches!(event.payload, Event::UserInputSubmitted { .. })
-                            });
-                        if !has_unseen_steering {
-                            self.append_direct(
-                                session,
-                                Some(run),
-                                Event::RunCompleted { final_text },
-                            )?;
-                            Ok(false)
-                        } else {
-                            Ok(true)
+                    .ok_or(EngineError::MissingRun(run));
+                let active = match active {
+                    Ok(active) => active,
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                        return;
+                    }
+                };
+                let pending = match self.inner.store.get(session) {
+                    Ok(projection) => pending_inputs(&projection.log.events(), run),
+                    Err(error) => {
+                        let _ = reply.send(Err(error.into()));
+                        return;
+                    }
+                };
+                if pending.is_empty() {
+                    let result = if complete_if_empty {
+                        self.append_direct(session, Some(run), Event::RunCompleted { final_text })
+                    } else {
+                        Ok(())
+                    }
+                    .map(|()| false);
+                    let _ = reply.send(result);
+                } else if !self.reserve_compaction(session) {
+                    let _ = reply.send(Err(EngineError::SessionRunning(session)));
+                } else {
+                    let engine = self.clone();
+                    tokio::spawn(async move {
+                        let mut pending = pending;
+                        let mut promoted = false;
+                        let result = loop {
+                            let fallback_index =
+                                active.fallback_index.load(Ordering::Acquire) as usize;
+                            let through_admission_seq = pending
+                                .last()
+                                .expect("pending batch is nonempty")
+                                .admission_seq;
+                            let mut failed = None;
+                            let mut serialized_message_bytes = 0_usize;
+                            for pending_input in &pending {
+                                let input_bytes = match model_loop::serialized_input_bytes(
+                                    &pending_input.input,
+                                ) {
+                                    Ok(input_bytes) => input_bytes,
+                                    Err(error) => {
+                                        failed = Some(error);
+                                        break;
+                                    }
+                                };
+                                serialized_message_bytes =
+                                    serialized_message_bytes.saturating_add(input_bytes);
+                                match engine
+                                    .maybe_predictive_compact_before_input(
+                                        PredictiveCompactionInput {
+                                            session,
+                                            run,
+                                            serialized_message_bytes,
+                                            policy: &active.policy,
+                                            fallback_index,
+                                            cancellation: &active.cancellation,
+                                            actor_direct: false,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(true) => break,
+                                    Ok(false) => {}
+                                    Err(error) => {
+                                        failed = Some(error);
+                                        break;
+                                    }
+                                }
+                            }
+                            if let Some(error) = failed {
+                                break Err(error);
+                            }
+                            match engine
+                                .request(session, |reply| SessionCommand::CommitPendingPromotion {
+                                    run,
+                                    through_admission_seq,
+                                    final_text: final_text.clone(),
+                                    complete_if_empty,
+                                    already_promoted: promoted,
+                                    reply,
+                                })
+                                .await
+                            {
+                                Ok(state) if state.pending.is_empty() => {
+                                    break Ok(state.continue_run);
+                                }
+                                Ok(state) => {
+                                    promoted = state.promoted;
+                                    pending = state.pending;
+                                }
+                                Err(error) => break Err(error),
+                            }
+                        };
+                        let mut result = result;
+                        if result.is_err()
+                            && let Err(error) = engine.finish_compaction(session).await
+                        {
+                            result = Err(error);
                         }
+                        let _ = reply.send(result);
                     });
-                let _ = reply.send(result);
+                }
             }
             SessionCommand::PromptSnapshot { run, reply } => {
                 let result = self
@@ -879,7 +1040,7 @@ impl Engine {
                     .cloned()
                     .filter(|active| active.session == session)
                     .ok_or(EngineError::MissingRun(run))
-                    .and_then(|active| {
+                    .and_then(|_| {
                         let events = self.inner.store.get(session)?.log.events();
                         let applied: HashSet<u64> = events
                             .iter()
@@ -910,14 +1071,120 @@ impl Engine {
                             )?;
                         }
                         let events = self.inner.store.get(session)?.log.events();
-                        active.prompt_seq.store(
-                            events.last().map_or(0, |event| event.seq),
-                            Ordering::Release,
-                        );
                         Ok(events)
                     });
                 let _ = reply.send(result);
             }
         }
+    }
+}
+
+fn pending_inputs(events: &[StoredEvent], run: RunId) -> Vec<PendingInput> {
+    let mut pending = VecDeque::new();
+    let mut initial_input_submitted = false;
+    for event in events.iter().filter(|event| event.run_id == Some(run)) {
+        match &event.payload {
+            Event::UserInputAdmitted { input } => pending.push_back(PendingInput {
+                admission_seq: event.seq,
+                input: input.clone(),
+            }),
+            Event::UserInputRecalled { .. } => {
+                pending.pop_back();
+            }
+            Event::UserInputSubmitted { .. } => {
+                if initial_input_submitted {
+                    pending.pop_front();
+                } else {
+                    initial_input_submitted = true;
+                }
+            }
+            Event::RunCompleted { .. }
+            | Event::RunFailed { .. }
+            | Event::RunCancelled { .. }
+            | Event::RunInterrupted { .. } => pending.clear(),
+            _ => {}
+        }
+    }
+    pending.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(run: RunId, seq: u64, payload: Event) -> StoredEvent {
+        StoredEvent {
+            event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+            session_id: SessionId::new_v7(),
+            run_id: Some(run),
+            seq,
+            timestamp: jiff::Timestamp::now(),
+            payload,
+        }
+    }
+
+    #[test]
+    fn pending_lane_replays_fifo_promotion_lifo_recall_and_terminal_voiding() {
+        let run = RunId::new_v7();
+        let events = vec![
+            event(
+                run,
+                1,
+                Event::UserInputSubmitted {
+                    input: "initial".into(),
+                },
+            ),
+            event(
+                run,
+                2,
+                Event::UserInputAdmitted {
+                    input: "one".into(),
+                },
+            ),
+            event(
+                run,
+                3,
+                Event::UserInputAdmitted {
+                    input: "two".into(),
+                },
+            ),
+            event(
+                run,
+                4,
+                Event::UserInputRecalled {
+                    input: "two".into(),
+                },
+            ),
+            event(
+                run,
+                5,
+                Event::UserInputAdmitted {
+                    input: "three".into(),
+                },
+            ),
+            event(
+                run,
+                6,
+                Event::UserInputSubmitted {
+                    input: "one".into(),
+                },
+            ),
+        ];
+        assert_eq!(
+            pending_inputs(&events, run),
+            vec![PendingInput {
+                admission_seq: 5,
+                input: "three".into(),
+            }]
+        );
+        let replayed = serde_json::from_slice::<Vec<StoredEvent>>(
+            &serde_json::to_vec(&events).expect("serialize replay events"),
+        )
+        .expect("deserialize replay events");
+        assert_eq!(pending_inputs(&replayed, run), pending_inputs(&events, run));
+
+        let mut terminal = replayed;
+        terminal.push(event(run, 7, Event::RunCancelled { reason: None }));
+        assert!(pending_inputs(&terminal, run).is_empty());
     }
 }

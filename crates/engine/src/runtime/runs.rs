@@ -62,6 +62,22 @@ impl Engine {
         })
     }
 
+    pub async fn recall_steer(&self, run_id: RunId) -> Result<RunRecallSteerResult, EngineError> {
+        let active = self
+            .inner
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&run_id)
+            .cloned()
+            .ok_or(EngineError::MissingRun(run_id))?;
+        self.request(active.session, |reply| SessionCommand::RecallSteer {
+            run: run_id,
+            reply,
+        })
+        .await
+    }
+
     pub async fn cancel_run(&self, run_id: RunId) -> Result<RunCancelResult, EngineError> {
         let active = self
             .inner

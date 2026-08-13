@@ -297,6 +297,32 @@ pub struct SessionCompactResult {
     pub compacted: bool,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRevertParams {
+    pub session_id: SessionId,
+    #[schemars(range(min = 1))]
+    pub through_seq: u64,
+}
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRevertResult {
+    pub session: SessionMeta,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionForkParams {
+    pub session_id: SessionId,
+    #[schemars(range(min = 1))]
+    pub through_seq: u64,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionForkResult {
+    pub session_id: SessionId,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionRenameChange {
@@ -383,6 +409,18 @@ pub struct RunSteerParams {
 #[serde(deny_unknown_fields)]
 pub struct RunSteerResult {
     pub accepted: bool,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RunRecallSteerParams {
+    pub run_id: RunId,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RunRecallSteerResult {
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<String>", required)]
+    pub recalled: Option<String>,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]

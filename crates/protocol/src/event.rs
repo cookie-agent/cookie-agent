@@ -1386,6 +1386,10 @@ pub enum EventPayload {
         #[ts(type = "ModelSnapshotRevision")]
         manifest_revision: ModelSnapshotRevision,
     },
+    SessionReverted {
+        #[schemars(range(min = 1))]
+        through_seq: u64,
+    },
     RunStarted {
         client_run_id: ClientRunId,
         selection: RunSelection,
@@ -1408,7 +1412,13 @@ pub enum EventPayload {
         selected_suffix: Vec<FrozenModelBinding>,
         input_through_seq: u64,
     },
+    UserInputAdmitted {
+        input: String,
+    },
     UserInputSubmitted {
+        input: String,
+    },
+    UserInputRecalled {
         input: String,
     },
     UserInputApplied {
@@ -1606,7 +1616,9 @@ impl EventPayload {
     fn requires_run_id(&self) -> bool {
         !matches!(
             self,
-            Self::SessionCreated { .. } | Self::SessionTitleCommitted { .. }
+            Self::SessionCreated { .. }
+                | Self::SessionReverted { .. }
+                | Self::SessionTitleCommitted { .. }
         )
     }
     fn validate(&self) -> Result<(), EventSchemaError> {
@@ -1619,6 +1631,11 @@ impl EventPayload {
                 creation_agent
                     .validate_selection(creation_selection)
                     .map_err(|_| EventSchemaError::SelectionAgentMismatch)?;
+            }
+            Self::SessionReverted { through_seq } => {
+                if *through_seq == 0 {
+                    return Err(EventSchemaError::InvalidRevertSequence);
+                }
             }
             Self::RunStarted {
                 selection,
@@ -1807,6 +1824,24 @@ impl StoredEvent {
         Ok(())
     }
 }
+
+/// Reduces an append-only event stream to the currently visible branch.
+/// Revert markers are physical control records and are not model/transcript content.
+#[must_use]
+pub fn visible_events(events: &[StoredEvent]) -> Vec<StoredEvent> {
+    let mut visible = Vec::new();
+    let mut historical_ceiling = u64::MAX;
+    for event in events {
+        if let EventPayload::SessionReverted { through_seq } = &event.payload {
+            historical_ceiling = historical_ceiling.min(*through_seq);
+            visible.retain(|candidate: &StoredEvent| candidate.seq <= historical_ceiling);
+            visible.push(event.clone());
+        } else {
+            visible.push(event.clone());
+        }
+    }
+    visible
+}
 impl<'de> Deserialize<'de> for StoredEvent {
     fn deserialize<D>(d: D) -> Result<Self, D::Error>
     where
@@ -1917,6 +1952,7 @@ pub enum EventSchemaError {
     TooManyReplayDecisions,
     InvalidModelTurnCommit,
     InvalidFallback,
+    InvalidRevertSequence,
     ZeroEventSequence,
     InvalidSessionCreatedEnvelope,
     MissingRunId,
@@ -1967,6 +2003,7 @@ impl fmt::Display for EventSchemaError {
             Self::InvalidFallback => {
                 "fallback must advance to a distinct later model after at least one attempt"
             }
+            Self::InvalidRevertSequence => "session revert sequence must be positive",
             Self::ZeroEventSequence => "event sequence must be positive",
             Self::InvalidSessionCreatedEnvelope => {
                 "SessionCreated must be sequence 1 with no run_id"

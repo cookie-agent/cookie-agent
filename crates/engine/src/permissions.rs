@@ -32,6 +32,23 @@ pub struct ApprovalStore {
 }
 
 impl ApprovalStore {
+    pub fn replace(&self, grants: impl IntoIterator<Item = TreeApprovalGrant>) {
+        let mut stored = self
+            .grants
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        stored.clear();
+        for grant in grants {
+            stored.insert(
+                ApprovalKey {
+                    root: grant.root_session_id,
+                    fingerprint: grant.operation_fingerprint.clone(),
+                },
+                grant,
+            );
+        }
+    }
+
     pub fn grant(&self, grant: TreeApprovalGrant) {
         self.grants
             .lock()

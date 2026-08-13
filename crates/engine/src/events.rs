@@ -145,6 +145,11 @@ impl EventLog {
 
     #[must_use]
     pub fn events(&self) -> Vec<StoredEvent> {
+        cookie_agent_protocol::visible_events(&self.all_events())
+    }
+
+    #[must_use]
+    pub fn all_events(&self) -> Vec<StoredEvent> {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -244,6 +249,14 @@ fn validate_records(
             return corrupt(path, "SessionCreated appeared after sequence 1");
         }
         match &record.payload {
+            EventPayload::SessionReverted { through_seq } => {
+                if record.run_id.is_some() || *through_seq == 0 || *through_seq >= record.seq {
+                    return corrupt(
+                        path,
+                        "SessionReverted target is not an existing prior event",
+                    );
+                }
+            }
             EventPayload::RunStarted {
                 agent,
                 selected_suffix,

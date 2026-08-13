@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 9, event schema 13, and session metadata schema 9.
+//! Exact cookie-agent protocol 9, event schema 14, and session metadata schema 9.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders.
 
@@ -125,7 +125,7 @@ pub use runtime::*;
 /// The only protocol version supported by this build.
 pub const PROTOCOL_VERSION: u32 = 9;
 /// The only durable event/session-JSONL schema supported by this build.
-pub const EVENT_SCHEMA_VERSION: u32 = 13;
+pub const EVENT_SCHEMA_VERSION: u32 = 14;
 /// The only session metadata schema supported by this build.
 pub const SESSION_META_SCHEMA_VERSION: u32 = 9;
 /// The only delegation-journal schema supported by this build.
@@ -203,8 +203,8 @@ macro_rules! exact_numeric_wire_type {
 exact_numeric_wire_type!(ProtocolVersion, 9, "9", "The exact protocol wire version.");
 exact_numeric_wire_type!(
     EventSchemaVersion,
-    13,
-    "13",
+    14,
+    "14",
     "The exact event/session-JSONL schema version."
 );
 exact_numeric_wire_type!(

@@ -1,6 +1,25 @@
 use super::*;
 
 impl Engine {
+    pub(super) fn rebuild_visible_tree_grants(&self) {
+        let invalidated = self.inner.grant_journal.invalidated_ids();
+        let grants = self
+            .inner
+            .store
+            .all()
+            .into_iter()
+            .flat_map(|session| session.log.events())
+            .filter_map(|event| match event.payload {
+                Event::TreeApprovalGrantCommitted { grant }
+                    if !invalidated.contains(&grant.grant_id) =>
+                {
+                    Some(grant)
+                }
+                _ => None,
+            });
+        self.inner.approvals.replace(grants);
+    }
+
     pub fn create_session(&self, selection: RunSelection) -> Result<SessionMeta, EngineError> {
         self.reconcile_provider_store()?;
         let runtime = self.current_runtime();
@@ -155,6 +174,28 @@ impl Engine {
     pub async fn resume(&self, id: SessionId) -> Result<SessionMeta, EngineError> {
         self.request(id, |reply| SessionCommand::Resume { reply })
             .await
+    }
+    pub async fn revert_session(
+        &self,
+        session_id: SessionId,
+        through_seq: u64,
+    ) -> Result<SessionRevertResult, EngineError> {
+        self.request(session_id, |reply| SessionCommand::Revert {
+            through_seq,
+            reply,
+        })
+        .await
+    }
+    pub async fn fork_session(
+        &self,
+        session_id: SessionId,
+        through_seq: u64,
+    ) -> Result<SessionForkResult, EngineError> {
+        self.request(session_id, |reply| SessionCommand::Fork {
+            through_seq,
+            reply,
+        })
+        .await
     }
     pub fn set_permission_mode(
         &self,

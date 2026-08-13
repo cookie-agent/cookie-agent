@@ -3,13 +3,13 @@
 **Status:** frozen current implementation contract
 
 **Required versions:** configuration schema 10; agent document schema 4;
-protocol 9; event schema 13; session JSONL 13; session metadata 9;
+protocol 9; event schema 14; session JSONL 14; session metadata 9;
 delegation-journal schema 10; runtime snapshot schema 3; catalog cache schema 2;
 provider store schema 3; family recipe registry schema 1; project model-snapshot
 manifest schema 1.
 
 Only those versions are accepted. Configuration schema 9, agent schema 3,
-event/session schema 12, delegation-journal schema 9, protocol/persistence 8, catalog cache
+event/session schema 13, delegation-journal schema 9, protocol/persistence 8, catalog cache
 1, provider stores 1/2, and every unversioned or earlier replacement are
 rejected. There are no migrations, compatibility readers, aliases, or dual paths.
 
@@ -35,6 +35,54 @@ session that never received a user message. Root empty-session creation does not
 write delegation or artifact entries. Predictive compaction is disabled for an
 unpersisted session, so the first run buffers `RunStarted`, skips compaction,
 then flushes `SessionCreated`, `RunStarted`, and `UserInputSubmitted` in sequence.
+
+Steering uses a durable pending-input lane. `run.steer` requires the target run
+to be active and immediately appends run-scoped `UserInputAdmitted`; admission
+does not add model history. Pending membership is replayed in event order as
+admissions minus LIFO `UserInputRecalled` events and FIFO promoted
+`UserInputSubmitted` events after each run's first submission. The first
+submission following `RunStarted` is derivably the run's initial input and never
+consumes an admission, even if a steer is admitted during start-time predictive
+compaction before that initial submission lands. At every completed tool batch and at the no-tool
+completion boundary, the engine promotes all currently pending inputs in
+admission order as separate `UserInputSubmitted` events before assembling the
+next provider request. A no-tool boundary with no pending input appends
+`RunCompleted`; a tool boundary with no pending input simply continues.
+`run.recall_steer { run_id }` removes the newest pending input, appends
+`UserInputRecalled`, and returns its text, or returns null without an event when
+the lane is empty. Terminal run events implicitly void any remaining lane; the
+TUI is responsible for retaining or restoring its local composer text. Initial
+and delegated run-start input remains an immediate submission because it is
+delivered in that run's first provider request. Delegate code that steers an
+already active run uses the same admission lane.
+
+Session history has an append-only physical stream and a derived visible branch.
+`session.revert { session_id, through_seq }` is idle-only and appends runless
+`SessionReverted { through_seq }`; no record is truncated and the next physical
+sequence continues from the current tip. The target must be an existing positive
+physical sequence. `last_event_seq` and `last_activity` continue to report that
+physical tail, including the revert marker, because revert is durable user
+activity; branch-derived title, status, usage, approvals, transcript, and model
+context use the visible stream. Replay maintains a monotonic historical ceiling equal to the
+minimum target of all revert markers seen so far: each marker removes previously
+visible records above that ceiling, remains as a physical control record, and
+later records form the new branch. Model context, transcript, metadata status,
+title and usage, approvals, pending input, and compaction select only that
+visible branch. A revert marker leaves the session idle even when its historical
+prefix ends inside a run, so the next user input starts a fresh run. Event
+subscriptions still carry every physical record, allowing clients to rebuild
+their complete disposable projection when a revert arrives.
+
+`session.fork { session_id, through_seq }` may read an active source but requires
+a persisted prefix containing a submitted user message. It atomically creates a
+new session directory whose prefix preserves source schema versions,
+sequences, timestamps, run IDs, and payloads exactly while rebinding envelope
+`session_id` to the new directory identity. A fork-local revert marker closes
+any historical in-flight prefix, then a title commit appends ` (fork)` to the
+visible title (or uses `Untitled (fork)`). The fork is independent and receives
+new physical sequences after its copied prefix. Artifacts are content-addressed
+in the project-global artifact store, so checkpoint, tool-output, and attachment
+references in a copied prefix remain resolvable without copying artifact bytes.
 
 This file is authoritative. Exact types, ordering, failure behavior, startup,
 RPC, persistence, and TUI semantics are in
@@ -664,7 +712,7 @@ the `.cookie-agent/model-snapshots` subtree is current-user-owned `0700` and
 manifests/lock/temp files are current-user-owned `0600`, regular, single-link,
 descriptor-relative/no-follow, bounded, and atomically written by lock/reread,
 exclusive sibling temp, fsync, rename, and parent fsync. A manifest is durable
-before any event/session JSONL 13 record may reference its revision. Referenced manifests are
+before any event/session JSONL 14 record may reference its revision. Referenced manifests are
 retained for the lifetime of their sessions and delegation journals and are
 never garbage-collected; family registry 1 performs no automatic manifest GC.
 
@@ -732,9 +780,12 @@ Two automatic signals feed one compaction path. The real-usage signal compares
 the latest committed turn's `input_tokens + output_tokens` with the effective
 trigger. The pre-send predictor retains the learned per-session tokens-per-byte
 ratio: after a committed turn, nonzero reported input tokens divided by the exact
-serialized history byte length replaces the ratio, and the next user input is
-projected against the same effective trigger before `UserInputSubmitted` is
-appended. A zero ratio does not predict. `auto = false` disables both automatic
+serialized history byte length replaces the ratio. At pending-input promotion,
+each input is projected in admission order against the same effective trigger;
+on crossing, compaction commits before any input in that promotion batch is
+submitted. A committed checkpoint resets the estimator baseline to its estimated
+post-compaction input size while preserving the learned ratio. A zero ratio does
+not predict. `auto = false` disables both automatic
 signals, while forced compaction and context-overflow recovery remain available.
 
 Compaction first stages old bulky completed tool outputs. Results attached to
@@ -755,17 +806,21 @@ invalid internal-agent output and is never dispatched. Optional forced-focus
 text is appended only after the fixed instruction.
 The TUI `/compact [focus]` command calls strict `session.compact` for the
 selected idle session; its RPC focus field is required, nullable, and bounded.
-Manual and predictive compaction reserve the session inside its actor, then run
-provider and tool futures outside the actor. While reserved, concurrent run
-starts and steering are rejected; completion clears the reservation through the
-actor. This preserves the pre-send/checkpoint ordering without blocking model
-stream appends or cancellation behind a slow summarizer. Manual compaction uses
+Manual, start-time predictive, and promotion-time predictive compaction reserve
+the session inside its actor, then run provider and tool futures outside the
+actor. While reserved, concurrent run starts and explicit compaction are
+rejected, but steering and recall remain cheap serialized actor appends. A steer
+is therefore admitted during compaction and is included before reservation
+release; promotion commits only after the checkpoint and replays the lane again
+so recalls during compaction are honored. This preserves pre-send/checkpoint
+ordering without blocking model stream appends, input admission, recall, or
+cancellation behind a slow summarizer. Manual compaction uses
 the run's persisted active fallback index when resolving `${parent_model}`.
-Barrier-sensitive `PromptSnapshot`, `CompleteIfNoSteering`, and `Resume` commands
+Barrier-sensitive `PromptSnapshot`, `PromotePendingOrComplete`, and `Resume` commands
 wait behind that completion barrier. The deferred set is bounded to one command
 of each kind and retains FIFO order among those first surviving commands. A
 duplicate snapshot or resume receives the same session-running retry signal used
-by competing start/steer requests, while a duplicate completion reports that it
+by competing start/compact requests, while a duplicate completion reports that it
 did not complete the run. Keeping the first command prevents a later observer
 from displacing the model loop's already-queued context barrier.
 For start-time prediction, the durable `RunStarted` event and the real active-run
@@ -971,6 +1026,120 @@ turn, hidden when the turn reported no usage, with the percentage taken
 against the model context limit. Narrow layouts remove the command
 hint, percentage, and context value in that order while retaining the mode
 control; the working-directory field truncates into the remaining left space.
+
+### 14.2 Pending-input lane strip
+
+A prompt submitted while a run is active takes the `run.steer` path. The engine
+admits steered inputs into a per-session pending-input lane (admission succeeds
+even while a compaction reservation is held) and reports the lane through
+events: `UserInputAdmitted { input }` adds a pending entry,
+`UserInputSubmitted { input }` promotes one to the model-facing log (the
+transcript user row renders here, as always), and `UserInputRecalled { input }`
+withdraws one. The TUI reduces these into `SessionState.pending_inputs`
+(text + durable admission timestamp) as a pure event projection — no
+client-side FIFO text-matching and no send-retry logic — so live streams and
+replays build the lane identically. The reduction is strictly positional,
+mirroring the engine's own replay: promotion pops the oldest entry,
+recall pops the newest, and payload text is never consulted. A steer that
+fails at the transport level restores its text into the composer (parked
+per session when another session is being viewed).
+
+While a session's lane is non-empty, a strip renders between the conversation
+pane and the status line; its rows are reclaimed from the conversation like
+composer growth, the status line and composer stay pinned, and the
+conversation keeps at least one row. The strip is a bordered block in the
+standard panel chrome (crust border, muted text) titled
+`Pending · oldest <age>` with a coarse age label (`<1m`, `Nm`, `Nh`). Each
+entry is one ellipsized, newline-flattened line with a 1-based index and a
+muted `⏳`; at most three text rows show, with overflow folded into a `+N more`
+row. The strip's meaning is exactly "the model has not seen this yet".
+
+Entry rows are hoverable and clickable because recall is a real action:
+clicking any row, or pressing Up in an empty composer with a non-empty lane,
+calls `run.recall_steer { run_id }`, which withdraws the engine's newest
+pending input and returns its text. The returned text restores into the
+composer for editing (parked per session if another session is being viewed,
+restored on selection); the `UserInputRecalled` event removes the entry from
+the strip itself. A `recalled: null` result means the lane raced ahead (a
+promotion landed first) and only updates the status.
+
+Run end (completed, failed, cancelled, interrupted) voids any still-pending
+inputs without per-entry events. The reducer moves their text aside into
+`SessionState.voided_inputs`, the strip clears, and the UI drains the voided
+text into the composer the moment its session is viewed — user text is never
+silently lost.
+
+### 14.3 User-message action menu
+
+Clicking a past `USER` row opens the message action menu; assistant and tool
+rows never open it and keep their expand/collapse toggle. The menu is a
+small picker-style modal with three rows, driven by keyboard (↑↓/enter/esc
+plus the `c`/`r`/`f` accelerators) and clickable, hoverable rows:
+
+- **copy** sends the raw message text to the clipboard (§14.4).
+- **revert** is confirm-guarded. Confirming calls
+  `session.revert { session_id, through_seq = seq - 1 }`, rolling the
+  visible branch back to just before the message — the message and every
+  later turn leave the visible branch while the append-only log is kept.
+  On success the message text restores into the composer for editing and
+  resending (parked per session when another session is being viewed).
+  The transcript rebuild rides the `SessionReverted` event; the tree
+  refreshes because title, status, and usage are branch-derived.
+- **fork** calls `session.fork { session_id, through_seq = seq }`, keeping
+  the message inside the copied prefix, then selects the new session
+  (rerooting when it lies outside the current tree).
+
+The menu targets the physical sequence stored on the transcript item
+(`TranscriptItem::User.seq`, the `UserInputSubmitted` sequence) and captures
+the message text when the menu opens, so a concurrent rebuild can neither
+retarget the action nor change what copy/revert operate on.
+
+### 14.4 Mouse text selection and clipboard
+
+A left-button press inside the conversation viewport or the composer text
+rect becomes a pending press; motion beyond one cell promotes it to a text
+selection, and a release without promotion dispatches the plain click
+(block toggles, the message menu, cursor placement) exactly as before.
+Scrollbar presses and overlays never start a selection; overlay ownership
+is read from state (modal, palette, approval), not from stale hit
+geometry, so a panel that opened since the last frame still owns its
+presses. Selections are stored in content coordinates — conversation
+`(logical line, display column)` into the rendered lines, composer buffer
+bytes — so they survive scrolling while held. The highlight is a pure
+cell-style patch over the rendered cells in the themed `text_selection`
+wash: background-only where subtle color exists (ANSI-256, true color), so
+foregrounds and code highlighting are preserved, and visually distinct
+from the keyboard `selected` row. ANSI-16 and high-contrast targets are
+the one exception: their text is always a bright color that a light wash
+would swallow, so the wash is pinned to a fixed black-on-light-cyan pair
+there. No-color targets use bold reverse video.
+
+`ctrl+c` copies the selection and clears it; with no selection it keeps
+its run-cancel meaning. In the composer, `ctrl+x` additionally cuts the
+selected bytes from the draft. Esc or any plain press clears the
+selection without side effects; that Esc does not count toward the
+double-Esc run cancel.
+
+Extraction maps the coordinates back to real text, one copied line per
+rendered row. Conversation rows strip exactly their gutter spans (role
+gutters, quote bars, wrap continuations, narrow-mode tags). A row vanishes
+when it is gutterless header/border chrome (role headers, attribution,
+footers) or when every remaining span carries the code/table border
+signature (fence headers, table grids). The signature is the border's
+foreground *and* full added-modifier set, compared exactly: the parchment
+band only patches backgrounds, and in high contrast syntect's quantized
+plain-code foreground equals the border's white, so only the border's
+DIM|BOLD set — which syntect never emits — keeps single-color code rows
+from vanishing as chrome. Copied code is therefore the raw source with no
+band or glyph chrome, blank rows inside the range stay as paragraph
+breaks, and leading/trailing blanks drop. The composer leg slices the
+draft buffer between the mapped byte offsets.
+
+The clipboard write is an OSC 52 escape (`ESC ] 52 ; c ; <base64> BEL`)
+emitted to the terminal: no platform dependency, and it works over SSH
+because the terminal emulator — not the remote host — owns the clipboard.
+Terminals without OSC 52 support ignore the sequence; neither arboard nor
+copypasta is carried. Copy feedback is a status-line note.
 
 ## 15. Validation ownership
 

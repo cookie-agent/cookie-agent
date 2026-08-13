@@ -54,7 +54,7 @@ impl Engine {
             .store
             .get(session_id)?
             .log
-            .events()
+            .all_events()
             .iter()
             .filter(|event| matches!(event.payload, Event::ModelTurnCommitted { .. }))
             .count() as u64

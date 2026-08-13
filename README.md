@@ -126,9 +126,12 @@ port = 17419
 Automatic context compaction is enabled by default. Its effective trigger is
 the model context limit minus `buffer_tokens` (default 33,000). The real-usage
 signal compares the latest committed `input_tokens + output_tokens` with that
-trigger. The existing learned tokens-per-byte predictor checks new input against
-the same trigger before appending it, so the checkpoint precedes the pending
-message. Set `auto = false` to disable automatic signals; forced/manual and
+trigger. Steering is first admitted to a durable pending lane and remains
+recallable until the next turn boundary. At that boundary, the learned
+tokens-per-byte predictor checks pending inputs in admission order; if it crosses
+the same trigger, the checkpoint commits before the inputs are promoted as
+separate model-visible messages. Steering remains accepted during compaction and
+promotes after its checkpoint. Set `auto = false` to disable automatic signals; forced/manual and
 context-overflow recovery compaction remain available. `max_summary_bytes`
 defaults to 262,144.
 
@@ -358,6 +361,13 @@ all-provider discovery. A coherent refresh that yields a root-runnable
 agent/model replaces the guidance with normal draft selection. If models exist
 without a runnable authored agent, built-in `default` supplies that selection;
 the empty state remains only while no models are available.
+
+Mouse: dragging in the conversation or the composer selects text; `ctrl+c`
+copies it (code copies raw, without borders or gutters) and `ctrl+x` cuts in
+the composer. Clicking a past `USER` message opens an action menu — copy,
+revert (rolls the session back to just before that message and returns its
+text to the composer for editing), or fork (branches a new session from that
+message). Clipboard writes use OSC 52, so they also work over SSH.
 
 ## Running
 

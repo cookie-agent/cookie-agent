@@ -81,6 +81,7 @@ const CREAM_256: u8 = 231; // (255, 255, 255)
 const PARCHMENT_256: u8 = 230; // (255, 255, 215)
 const GLAZE_256: u8 = 223; // (255, 215, 175)
 const TOASTED_256: u8 = 222; // (255, 215, 135)
+const CRUST_256: u8 = 180; // (215, 175, 135)
 
 #[derive(Clone, Debug)]
 pub struct Theme {
@@ -217,6 +218,27 @@ impl Theme {
             ColorLevel::TrueColor => style
                 .fg(Color::Rgb(ESPRESSO.0, ESPRESSO.1, ESPRESSO.2))
                 .bg(Color::Rgb(TOASTED.0, TOASTED.1, TOASTED.2)),
+        }
+    }
+
+    /// Mouse-drag text selection: a deeper crust wash than the keyboard
+    /// `selected` row and never bold, so the two selection kinds never read
+    /// alike. Where subtle color exists (ANSI-256, true color) only the
+    /// background is set — patched cells keep their foregrounds, so
+    /// selected code keeps its syntax colors. ANSI-16 and high-contrast
+    /// targets are the one documented exception: their text is always a
+    /// bright color, which a light-cyan wash would swallow, so the pair is
+    /// pinned to black-on-light-cyan. Cruder targets add bold on top of
+    /// reverse video to stay distinct.
+    pub fn text_selection(&self) -> Style {
+        match self.key.colors {
+            ColorLevel::None => Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            _ if self.key.kind == ThemeKind::HighContrast => {
+                Style::default().fg(Color::Black).bg(Color::LightCyan)
+            }
+            ColorLevel::Ansi16 => Style::default().fg(Color::Black).bg(Color::LightCyan),
+            ColorLevel::Ansi256 => Style::default().bg(Color::Indexed(CRUST_256)),
+            ColorLevel::TrueColor => Style::default().bg(Color::Rgb(CRUST.0, CRUST.1, CRUST.2)),
         }
     }
 
@@ -705,6 +727,51 @@ mono.hover: fg=None bg=None bold=false italic=false underline=true dim=false rev
                 .hover()
                 .add_modifier
                 .contains(Modifier::UNDERLINED)
+        );
+    }
+
+    #[test]
+    fn text_selection_is_background_only_except_on_crude_targets() {
+        // The documented contract: where subtle color exists the wash
+        // touches only the background, so selected code keeps its syntax
+        // colors.
+        for theme in [
+            Theme::new(ThemeKind::Default, ColorLevel::Ansi256),
+            Theme::new(ThemeKind::Default, ColorLevel::TrueColor),
+        ] {
+            let style = theme.text_selection();
+            assert_eq!(style.fg, None, "foreground preserved: {:?}", theme.key());
+            assert!(style.bg.is_some(), "crust wash: {:?}", theme.key());
+            assert!(!style.add_modifier.contains(Modifier::BOLD));
+        }
+        // The one documented exception: ANSI-16 and high-contrast text is
+        // always bright, which a light-cyan wash would swallow, so the
+        // pair is pinned black-on-light-cyan.
+        for theme in [
+            Theme::new(ThemeKind::Default, ColorLevel::Ansi16),
+            Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
+        ] {
+            let style = theme.text_selection();
+            assert_eq!(
+                style.fg,
+                Some(Color::Black),
+                "pinned pair: {:?}",
+                theme.key()
+            );
+            assert_eq!(
+                style.bg,
+                Some(Color::LightCyan),
+                "pinned pair: {:?}",
+                theme.key()
+            );
+        }
+        // No color at all: bold reverse video, no color channels set.
+        let mono = Theme::new(ThemeKind::Mono, ColorLevel::None).text_selection();
+        assert_eq!(mono.fg, None);
+        assert_eq!(mono.bg, None);
+        assert!(
+            mono.add_modifier
+                .contains(Modifier::REVERSED | Modifier::BOLD)
         );
     }
 

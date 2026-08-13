@@ -20,11 +20,13 @@ use cookie_agent_protocol::{
     ClientHello, EventPayload, EventSubscriptionMessage, EventsSubscribeParams,
     EventsSubscribeResult, JsonRpcError, JsonRpcId, Notification, OutputDelta, OutputGap,
     OutputSnapshotEnvelope, OutputStream, ProtocolVersion, Response, RunCancelParams,
-    RunCancelResult, RunStartParams, RunStartResult, RunSteerParams, RunSteerResult,
-    RunToolStdinParams, RunToolStdinResult, ServerHello, SessionCompactParams,
-    SessionCompactResult, SessionCreateParams, SessionCreateResult, SessionId, SessionListParams,
-    SessionListResult, SessionRenameParams, SessionRenameResult, SessionSetPermissionModeParams,
-    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, StoredEvent, ToolCallId,
+    RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult,
+    RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult, ServerHello,
+    SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
+    SessionForkParams, SessionForkResult, SessionId, SessionListParams, SessionListResult,
+    SessionRenameParams, SessionRenameResult, SessionRevertParams, SessionRevertResult,
+    SessionSetPermissionModeParams, SessionSetPermissionModeResult, SessionTreeParams,
+    SessionTreeResult, StoredEvent, ToolCallId,
 };
 use cookie_agent_server::{MessageFrame, MessageStream, Server, TransportError, in_process_pair};
 use futures_util::{SinkExt, StreamExt};
@@ -391,12 +393,33 @@ impl Client {
         self.call("session.compact", &params).await
     }
 
+    pub async fn revert_session(
+        &self,
+        params: SessionRevertParams,
+    ) -> Result<SessionRevertResult, ClientError> {
+        self.call("session.revert", &params).await
+    }
+
+    pub async fn fork_session(
+        &self,
+        params: SessionForkParams,
+    ) -> Result<SessionForkResult, ClientError> {
+        self.call("session.fork", &params).await
+    }
+
     pub async fn start_run(&self, params: RunStartParams) -> Result<RunStartResult, ClientError> {
         self.call("run.start", &params).await
     }
 
     pub async fn steer_run(&self, params: RunSteerParams) -> Result<RunSteerResult, ClientError> {
         self.call("run.steer", &params).await
+    }
+
+    pub async fn recall_steer(
+        &self,
+        params: RunRecallSteerParams,
+    ) -> Result<RunRecallSteerResult, ClientError> {
+        self.call("run.recall_steer", &params).await
     }
 
     pub async fn cancel_run(

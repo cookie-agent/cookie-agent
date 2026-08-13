@@ -156,6 +156,17 @@ impl FrozenAssistantAttribution {
     }
 }
 
+/// One steered message the engine admitted into its pending-input lane but
+/// has not yet promoted to the model-facing log. Pure event reduction: the
+/// lane is exactly what `UserInputAdmitted`/`UserInputSubmitted`/
+/// `UserInputRecalled` describe, so replays rebuild it identically.
+#[derive(Clone, Debug)]
+pub struct PendingInput {
+    pub text: String,
+    /// Durable admission timestamp from the admitting event.
+    pub admitted_at: jiff::Timestamp,
+}
+
 /// One rendered conversation item.
 #[derive(Clone, Debug)]
 pub enum TranscriptItem {
@@ -163,6 +174,9 @@ pub enum TranscriptItem {
         id: u64,
         version: u64,
         text: String,
+        /// Physical sequence of the `UserInputSubmitted` event that created
+        /// the row: the revert/fork menu targets it with `through_seq`.
+        seq: u64,
     },
     Assistant {
         id: u64,
@@ -269,6 +283,9 @@ impl TranscriptItem {
             id: 1,
             version: 0,
             text: text.into(),
+            // Layout fixtures never target the row; any plausible physical
+            // sequence (SessionCreated owns 1) keeps the field inhabited.
+            seq: 2,
         }
     }
 
@@ -366,6 +383,18 @@ pub struct SessionState {
     /// delegated pickers use.
     pub run_selected_suffix: Option<Vec<cookie_agent_protocol::FrozenModelBinding>>,
     pub transcript: Vec<TranscriptItem>,
+    /// The engine's pending-input lane for this session, reduced purely
+    /// from admission/promotion/recall events: steered messages the model
+    /// has not seen yet. Source of the queue strip between the conversation
+    /// pane and the composer.
+    pub pending_inputs: VecDeque<PendingInput>,
+    /// Runs whose initial (non-lane) input has already been submitted.
+    /// Later submissions for the same run are pending-lane promotions.
+    pub(crate) initial_input_submitted: HashSet<RunId>,
+    /// Pending inputs the engine voided at run end (no per-entry events),
+    /// parked here until the UI restores their text into the composer —
+    /// user text is never silently lost. Drained by the UI on sight.
+    pub voided_inputs: Vec<String>,
     pub(crate) next_transcript_id: u64,
     pub(crate) open_assistant: Option<OpenAssistantProjection>,
     /// Elapsed thinking time per sealed thinking part, keyed by
@@ -428,6 +457,7 @@ impl SessionState {
 #[derive(Clone, Debug, Default)]
 pub struct StateStore {
     pub sessions: HashMap<SessionId, SessionState>,
+    physical_events: HashMap<SessionId, Vec<StoredEvent>>,
     pending_output: HashMap<ToolCallId, Vec<PendingOutput>>,
     pending_output_order: VecDeque<ToolCallId>,
     lost_output: HashMap<ToolCallId, HashSet<bool>>,
@@ -442,6 +472,7 @@ struct ReplayProgress {
     generation: u64,
     final_seq: u64,
     scratch: SessionState,
+    physical_events: Vec<StoredEvent>,
     deadline: Instant,
 }
 
@@ -523,6 +554,14 @@ impl StateStore {
                         generation,
                         final_seq,
                         scratch,
+                        physical_events: if rebuild {
+                            Vec::new()
+                        } else {
+                            self.physical_events
+                                .get(&session_id)
+                                .cloned()
+                                .unwrap_or_default()
+                        },
                         deadline: Instant::now() + REPLAY_END_TIMEOUT,
                     },
                 );
@@ -552,15 +591,21 @@ impl StateStore {
                     if event.seq != replay.scratch.last_seq + 1 {
                         return false;
                     }
-                    replay.scratch.last_seq = event.seq;
-                    reduce_event(
-                        &mut replay.scratch,
-                        event.session_id,
-                        event.run_id,
-                        event.seq,
-                        event.timestamp,
-                        event.payload,
-                    );
+                    replay.physical_events.push(event.clone());
+                    if matches!(event.payload, EventPayload::SessionReverted { .. }) {
+                        replay.scratch =
+                            reduce_session_events(session_id, generation, &replay.physical_events);
+                    } else {
+                        replay.scratch.last_seq = event.seq;
+                        reduce_event(
+                            &mut replay.scratch,
+                            event.session_id,
+                            event.run_id,
+                            event.seq,
+                            event.timestamp,
+                            event.payload,
+                        );
+                    }
                     replay.scratch.version = replay.scratch.version.wrapping_add(1);
                     true
                 });
@@ -600,6 +645,8 @@ impl StateStore {
                                 previous.version.max(replay.scratch.version).wrapping_add(1)
                             })
                             .unwrap_or(replay.scratch.version);
+                        self.physical_events
+                            .insert(session_id, replay.physical_events);
                         self.sessions.insert(session_id, replay.scratch);
                         DeliveryOutcome::Applied
                     }
@@ -694,6 +741,23 @@ impl StateStore {
         }
     }
 
+    /// Drain a session's voided inputs for restoration into the composer.
+    /// Returns them in admission (FIFO) order; empty when nothing is owed.
+    pub fn take_voided_inputs(&mut self, session_id: SessionId) -> Vec<String> {
+        self.sessions
+            .get_mut(&session_id)
+            .map(|state| std::mem::take(&mut state.voided_inputs))
+            .unwrap_or_default()
+    }
+
+    /// Park text as voided for a session (e.g. a recall resolved while a
+    /// different session was being viewed); the UI restores it on sight.
+    pub fn park_voided_input(&mut self, session_id: SessionId, text: String) {
+        if let Some(state) = self.sessions.get_mut(&session_id) {
+            state.voided_inputs.push(text);
+        }
+    }
+
     /// Apply a persisted event. Replayed duplicates are ignored by sequence.
     pub fn apply_event(&mut self, event: StoredEvent) -> bool {
         self.apply_event_for_generation(event, 0)
@@ -720,16 +784,32 @@ impl StateStore {
         if event.seq != state.last_seq + 1 {
             return false;
         }
-        state.last_seq = event.seq;
-        reduce_event(
-            state,
-            event.session_id,
-            event.run_id,
-            event.seq,
-            event.timestamp,
-            event.payload,
-        );
-        state.version = state.version.wrapping_add(1);
+        self.physical_events
+            .entry(event.session_id)
+            .or_default()
+            .push(event.clone());
+        if matches!(event.payload, EventPayload::SessionReverted { .. }) {
+            let previous_version = state.version;
+            *state = reduce_session_events(
+                event.session_id,
+                generation,
+                self.physical_events
+                    .get(&event.session_id)
+                    .expect("physical event was inserted"),
+            );
+            state.version = previous_version.max(state.version).wrapping_add(1);
+        } else {
+            state.last_seq = event.seq;
+            reduce_event(
+                state,
+                event.session_id,
+                event.run_id,
+                event.seq,
+                event.timestamp,
+                event.payload,
+            );
+            state.version = state.version.wrapping_add(1);
+        }
         if let Some(call_id) = started_call {
             self.flush_pending_output(call_id);
         }
@@ -780,6 +860,7 @@ impl StateStore {
                 ..SessionState::default()
             },
         );
+        self.physical_events.remove(&session_id);
         true
     }
 
@@ -796,14 +877,13 @@ impl StateStore {
                 return false;
             }
         }
-        if !self.reset_session(session_id, generation) {
+        if self.quarantined_sessions.contains(&session_id) || self.replays.contains_key(&session_id)
+        {
             return false;
         }
-        for event in events {
-            if !self.apply_event_for_generation(event, generation) {
-                return false;
-            }
-        }
+        let state = reduce_session_events(session_id, generation, &events);
+        self.physical_events.insert(session_id, events);
+        self.sessions.insert(session_id, state);
         true
     }
 
@@ -1042,13 +1122,34 @@ fn reduce_event(
             state.run_snapshot = Some(agent);
             state.run_selected_suffix = Some(selected_suffix);
         }
+        EventPayload::UserInputAdmitted { input } => {
+            close_open_assistant(state, timestamp);
+            state.pending_inputs.push_back(PendingInput {
+                text: input,
+                admitted_at: timestamp,
+            });
+        }
         EventPayload::UserInputSubmitted { input } => {
             close_open_assistant(state, timestamp);
+            if run_id.is_some_and(|run_id| !state.initial_input_submitted.insert(run_id)) {
+                // Promotion: only a submission after the run's initial input
+                // graduates a lane entry — the oldest, strictly positionally,
+                // exactly like the engine's own replay.
+                state.pending_inputs.pop_front();
+            }
             push_item(state, |id| TranscriptItem::User {
                 id,
                 version: 0,
                 text: input,
+                seq: sequence,
             });
+        }
+        EventPayload::UserInputRecalled { .. } => {
+            close_open_assistant(state, timestamp);
+            // The engine withdrew the newest pending entry positionally;
+            // its text comes back through the recall RPC result and is
+            // never consulted here.
+            state.pending_inputs.pop_back();
         }
         EventPayload::ModelAttemptStarted {
             attempt_id,
@@ -1476,6 +1577,7 @@ fn reduce_event(
             state.active_run = None;
             state.attempts.clear();
             state.pending_tool_rows.clear();
+            void_pending_inputs(state);
             state.approvals.clear();
             push_event(state, EventLevel::Info, "run completed".into());
         }
@@ -1485,6 +1587,7 @@ fn reduce_event(
             state.active_run = None;
             state.attempts.clear();
             state.pending_tool_rows.clear();
+            void_pending_inputs(state);
             state.approvals.clear();
             push_event(state, EventLevel::Error, format!("run failed: {error}"));
         }
@@ -1494,6 +1597,7 @@ fn reduce_event(
             state.active_run = None;
             state.attempts.clear();
             state.pending_tool_rows.clear();
+            void_pending_inputs(state);
             state.approvals.clear();
             push_event(
                 state,
@@ -1510,6 +1614,7 @@ fn reduce_event(
             state.active_run = None;
             state.attempts.clear();
             state.pending_tool_rows.clear();
+            void_pending_inputs(state);
             state.approvals.clear();
             push_event(
                 state,
@@ -1628,6 +1733,10 @@ fn reduce_event(
         EventPayload::SessionTitleCommitted { change, .. } => {
             push_event(state, EventLevel::Info, render_title_commit(&change));
         }
+        EventPayload::SessionReverted { .. } => {
+            close_open_assistant(state, timestamp);
+            state.active_run = None;
+        }
         EventPayload::UserInputApplied { .. } => close_open_assistant(state, timestamp),
         EventPayload::SessionCreated {
             cwd_identity,
@@ -1644,6 +1753,29 @@ fn reduce_event(
         }
         EventPayload::ToolStdinSubmitted { .. } | EventPayload::ToolCallLinked { .. } => {}
     }
+}
+
+fn reduce_session_events(
+    session_id: SessionId,
+    generation: u64,
+    physical_events: &[StoredEvent],
+) -> SessionState {
+    let mut state = SessionState {
+        generation,
+        last_seq: physical_events.last().map_or(0, |event| event.seq),
+        ..SessionState::default()
+    };
+    for event in cookie_agent_protocol::visible_events(physical_events) {
+        reduce_event(
+            &mut state,
+            session_id,
+            event.run_id,
+            event.seq,
+            event.timestamp,
+            event.payload,
+        );
+    }
+    state
 }
 
 /// Open a fresh assistant item for a run or run-less streaming attempt.
@@ -2044,6 +2176,18 @@ fn link_tool_child(
         }
     }
     false
+}
+
+/// Remove one pending lane entry after a promotion (oldest position) or a
+/// recall (newest). The event's text correlates the entry; the FIFO
+/// position is the fallback should payloads and lane ever diverge, so the
+/// lane never strands an entry the engine says is gone.
+/// Run end voids every still-pending steered input without per-entry
+/// events: move their text aside so the UI can restore it into the composer
+/// rather than ever losing it.
+fn void_pending_inputs(state: &mut SessionState) {
+    let drained = state.pending_inputs.drain(..).map(|pending| pending.text);
+    state.voided_inputs.extend(drained.collect::<Vec<_>>());
 }
 
 fn close_open_assistant(state: &mut SessionState, sealed_at: jiff::Timestamp) {
@@ -2797,5 +2941,42 @@ mod tests {
             state.thinking_duration(item_id, committed_id),
             Some(Duration::from_secs(7))
         );
+    }
+
+    #[test]
+    fn session_revert_rebuilds_transcript_but_keeps_physical_cursor() {
+        let session_id = SessionId::new_v7();
+        let run_id = RunId::new_v7();
+        let event = |seq, payload| StoredEvent {
+            event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+            session_id,
+            run_id: Some(run_id),
+            seq,
+            timestamp: jiff::Timestamp::now(),
+            payload,
+        };
+        let mut store = StateStore::default();
+        assert!(store.apply_event(event(
+            1,
+            EventPayload::UserInputSubmitted {
+                input: "kept".into(),
+            },
+        )));
+        assert!(store.apply_event(event(
+            2,
+            EventPayload::UserInputSubmitted {
+                input: "removed".into(),
+            },
+        )));
+        let mut reverted = event(3, EventPayload::SessionReverted { through_seq: 1 });
+        reverted.run_id = None;
+        assert!(store.apply_event(reverted));
+        let state = store.sessions.get(&session_id).expect("session state");
+        assert_eq!(state.last_seq, 3);
+        assert_eq!(state.transcript.len(), 1);
+        assert!(matches!(
+            &state.transcript[0],
+            TranscriptItem::User { text, .. } if text == "kept"
+        ));
     }
 }

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionForkParams",
+  "type": "object",
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "through_seq": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "through_seq"
+  ]
+}

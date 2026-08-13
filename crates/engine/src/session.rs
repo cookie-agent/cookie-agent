@@ -14,9 +14,9 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    AgentSnapshot, ChildSummary, ClientRunId, EventPayload, RunId, RunSelection, SessionId,
-    SessionMeta, SessionMetaSchemaVersion, SessionOrigin, SessionRenameRecord, SessionStatus,
-    SessionTitleChange, SessionTree, ToolCallId, Usage,
+    AgentSnapshot, ChildSummary, ClientRenameId, ClientRunId, EventPayload, RunId, RunSelection,
+    SessionId, SessionMeta, SessionMetaSchemaVersion, SessionOrigin, SessionRenameRecord,
+    SessionStatus, SessionTitle, SessionTitleChange, SessionTree, ToolCallId, Usage,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -44,6 +44,13 @@ pub enum SessionError {
     },
     #[error("session {0} not found")]
     Missing(SessionId),
+    #[error("sequence {through_seq} is not a valid event in session {session_id}")]
+    InvalidSequence {
+        session_id: SessionId,
+        through_seq: u64,
+    },
+    #[error("invalid fork title: {0}")]
+    InvalidForkTitle(String),
 }
 
 #[derive(Clone, Debug)]
@@ -72,13 +79,7 @@ pub struct SessionProjection {
 impl SessionProjection {
     #[must_use]
     pub fn metadata(&self) -> SessionMeta {
-        let mut meta = self.meta.clone();
-        let latest = self
-            .log
-            .last_event()
-            .expect("session event log always has SessionCreated");
-        meta.last_activity = latest.timestamp;
-        meta
+        self.meta.clone()
     }
 }
 
@@ -241,6 +242,104 @@ impl SessionStore {
         Ok(envelope)
     }
 
+    pub fn fork(&self, source_id: SessionId, through_seq: u64) -> Result<SessionId, SessionError> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let source = self.get(source_id)?;
+        if !source.log.is_persisted() {
+            return Err(SessionError::InvalidSequence {
+                session_id: source_id,
+                through_seq,
+            });
+        }
+        let source_events = source.log.all_events();
+        let prefix = source_events
+            .iter()
+            .filter(|event| event.seq <= through_seq)
+            .cloned()
+            .collect::<Vec<_>>();
+        if through_seq == 0
+            || through_seq > source_events.last().map_or(0, |event| event.seq)
+            || !cookie_agent_protocol::visible_events(&prefix)
+                .iter()
+                .any(|event| matches!(event.payload, EventPayload::UserInputSubmitted { .. }))
+        {
+            return Err(SessionError::InvalidSequence {
+                session_id: source_id,
+                through_seq,
+            });
+        }
+
+        let session_id = SessionId::new_v7();
+        let final_dir = self.sessions_dir.join(session_id.to_string());
+        let temporary = self
+            .sessions_dir
+            .join(format!(".{session_id}.{}.tmp", SessionId::new_v7()));
+        fs::create_dir(&temporary).map_err(|source| SessionError::Io {
+            path: temporary.clone(),
+            source,
+        })?;
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o700)).map_err(|source| {
+            SessionError::Io {
+                path: temporary.clone(),
+                source,
+            }
+        })?;
+        let result = (|| {
+            let log_path = temporary.join("events.jsonl");
+            for event in source_events
+                .iter()
+                .filter(|event| event.seq <= through_seq)
+            {
+                let mut copied = event.clone();
+                copied.session_id = session_id;
+                crate::events::append_jsonl(&log_path, &copied)?;
+            }
+            fs::set_permissions(&log_path, fs::Permissions::from_mode(0o600)).map_err(
+                |source| SessionError::Io {
+                    path: log_path.clone(),
+                    source,
+                },
+            )?;
+            let log = EventLog::open(log_path, session_id)?;
+            log.append(None, EventPayload::SessionReverted { through_seq })?;
+            let prefix_projection = projection(log.clone())?;
+            let title = fork_title(prefix_projection.meta.title.as_ref())?;
+            log.append(
+                None,
+                EventPayload::SessionTitleCommitted {
+                    change: SessionTitleChange::UserSet {
+                        title,
+                        client_rename_id: ClientRenameId::new(format!("fork-{session_id}"))
+                            .expect("fork rename ID is bounded"),
+                    },
+                    input_through_seq: through_seq,
+                },
+            )?;
+            let fork_projection = projection(log)?;
+            write_cache(&temporary.join("meta.json"), &fork_projection.meta)?;
+            fsync_directory(&temporary)?;
+            fs::rename(&temporary, &final_dir).map_err(|source| SessionError::Io {
+                path: final_dir.clone(),
+                source,
+            })?;
+            fsync_directory(&self.sessions_dir)?;
+            let log = EventLog::open(final_dir.join("events.jsonl"), session_id)?;
+            let fork_projection = projection(log)?;
+            self.sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(session_id, fork_projection);
+            Ok(session_id)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&temporary);
+        }
+        result
+    }
+
     fn persist_buffered(
         &self,
         session_id: SessionId,
@@ -256,7 +355,7 @@ impl SessionStore {
         })?;
         let result = (|| {
             let log_path = temporary.join("events.jsonl");
-            for event in projection.log.events() {
+            for event in projection.log.all_events() {
                 crate::events::append_jsonl(&log_path, &event)?;
             }
             write_cache(&temporary.join("meta.json"), &projection.meta)?;
@@ -336,6 +435,11 @@ impl SessionStore {
 
 fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
     let events = log.events();
+    let physical_tip = log
+        .all_events()
+        .last()
+        .cloned()
+        .expect("creation checked by EventLog");
     let (
         origin,
         cwd_identity,
@@ -395,14 +499,11 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
         manifest_revision,
         title: None,
         title_updated_seq: 0,
-        last_event_seq: events.last().map_or(1, |event| event.seq),
-        last_activity: events
-            .last()
-            .expect("creation checked by EventLog")
-            .timestamp,
+        last_event_seq: physical_tip.seq,
+        last_activity: physical_tip.timestamp,
         status: SessionStatus::Idle,
     };
-    let mut runs = HashMap::new();
+    let mut runs = HashMap::<RunId, RunProjection>::new();
     let mut status = SessionStatus::Idle;
     let mut usage = None;
     let mut rename_records = HashMap::new();
@@ -428,6 +529,16 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
             if let Some(record) = change.user_rename_record() {
                 rename_records.insert(record.client_rename_id.clone(), record);
             }
+        }
+        if matches!(envelope.payload, EventPayload::SessionReverted { .. }) {
+            status = SessionStatus::Idle;
+            for run in runs.values_mut() {
+                if run.status == SessionStatus::Running {
+                    run.status = SessionStatus::Interrupted;
+                    run.pending_calls.clear();
+                }
+            }
+            continue;
         }
         let Some(run_id) = envelope.run_id else {
             continue;
@@ -535,6 +646,18 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
         rename_records,
         log,
     })
+}
+
+fn fork_title(title: Option<&SessionTitle>) -> Result<SessionTitle, SessionError> {
+    const SUFFIX: &str = " (fork)";
+    let base = title.map_or("Untitled", SessionTitle::as_str);
+    let max_base = SessionTitle::MAX_BYTES.saturating_sub(SUFFIX.len());
+    let mut boundary = base.len().min(max_base);
+    while !base.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    SessionTitle::new(format!("{}{SUFFIX}", &base[..boundary]))
+        .map_err(|error| SessionError::InvalidForkTitle(error.to_string()))
 }
 
 fn add_usage(total: &mut Option<u64>, value: Option<u64>) {

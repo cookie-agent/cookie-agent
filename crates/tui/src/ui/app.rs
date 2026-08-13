@@ -1,9 +1,9 @@
 //! Application state, event handling, and terminal loop.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fmt::Write as _,
-    io,
+    io::{self, Write as _},
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -15,10 +15,11 @@ use cookie_agent_protocol::{
     ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision,
     AvailableModelDescriptor, ClientConnectId, ClientRequestId, ClientResponseId, ClientRunId,
     EventPayload, ModelKey, ModelSelection, PermissionMode, ProviderConnectParams,
-    ProviderDescriptor, ProviderDisconnectParams, RunCancelParams, RunSelection, RunStartParams,
-    RunSteerParams, RunToolStdinParams, SafeDisplayText, SessionCompactParams, SessionCreateParams,
-    SessionId, SessionListParams, SessionMeta, SessionSetPermissionModeParams, SessionStatus,
-    SessionTitle, SessionTitleChange, SessionTree, SessionTreeParams, VariantId,
+    ProviderDescriptor, ProviderDisconnectParams, RunCancelParams, RunRecallSteerParams,
+    RunSelection, RunStartParams, RunSteerParams, RunToolStdinParams, SafeDisplayText,
+    SessionCompactParams, SessionCreateParams, SessionForkParams, SessionId, SessionListParams,
+    SessionMeta, SessionRevertParams, SessionSetPermissionModeParams, SessionStatus, SessionTitle,
+    SessionTitleChange, SessionTree, SessionTreeParams, VariantId,
 };
 use crossterm::{
     event::{
@@ -48,8 +49,8 @@ use crate::{
     config::TuiConfig,
     markdown::{Highlighter, SyntectHighlighter},
     state::{
-        ApprovalState, DeliveryOutcome, EMPTY_RUNTIME_GUIDANCE, RuntimePhase, RuntimeState,
-        StateStore, ToolStatus, TranscriptItem, approval_state_from_record,
+        ApprovalState, DeliveryOutcome, EMPTY_RUNTIME_GUIDANCE, PendingInput, RuntimePhase,
+        RuntimeState, StateStore, ToolStatus, TranscriptItem, approval_state_from_record,
     },
     theme::Theme,
 };
@@ -82,7 +83,95 @@ pub(super) enum Modal {
     ConnectSetup,
     ConnectError,
     DisconnectConfirm,
+    /// The copy/revert/fork menu for one clicked user message row.
+    UserMessage,
+    /// Confirm guard behind the menu's revert action.
+    RevertConfirm,
 }
+
+/// Where copied text goes: the terminal's OSC 52 clipboard escape in
+/// production, a shared capture buffer in tests.
+#[derive(Default)]
+pub(super) enum ClipboardSink {
+    #[default]
+    Osc52,
+    #[cfg(test)]
+    Capture(Arc<std::sync::Mutex<Vec<String>>>),
+}
+
+/// The user-message action the menu/confirm guard acts on. The message's
+/// text rides along so copy and the revert's composer restoration never
+/// re-derive it from a transcript that may have rebuilt underneath.
+#[derive(Clone, Debug)]
+pub(super) struct UserMenuState {
+    pub(super) session_id: SessionId,
+    /// Physical sequence of the message's `UserInputSubmitted` event.
+    pub(super) seq: u64,
+    pub(super) text: String,
+}
+
+/// Mouse text selection, stored in content coordinates so it survives
+/// scrolling: the conversation leg addresses `(logical line, display
+/// column)` inside the rendered lines, the composer leg addresses draft
+/// buffer bytes. Extraction maps these back to real text — wrapped rows,
+/// raw code without band chrome, user rows, draft text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TextSelection {
+    Conversation {
+        anchor: (usize, u16),
+        head: (usize, u16),
+    },
+    Composer {
+        anchor: usize,
+        head: usize,
+    },
+}
+
+impl TextSelection {
+    /// Normalized endpoints with the start before the end in reading order.
+    pub(super) fn ordered(&self) -> ((usize, u16), (usize, u16)) {
+        match *self {
+            Self::Conversation { anchor, head } => {
+                if anchor <= head {
+                    (anchor, head)
+                } else {
+                    (head, anchor)
+                }
+            }
+            Self::Composer { .. } => unreachable!("composer endpoints are byte offsets"),
+        }
+    }
+
+    /// Normalized composer byte range `(start, end)`.
+    pub(super) fn byte_range(&self) -> (usize, usize) {
+        match *self {
+            Self::Composer { anchor, head } => (anchor.min(head), anchor.max(head)),
+            Self::Conversation { .. } => {
+                unreachable!("conversation endpoints are line/column pairs")
+            }
+        }
+    }
+}
+
+/// A left-button press inside a selectable pane, held until motion decides
+/// between a click (dispatched on release) and a selection drag.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PendingPress {
+    pub(super) column: u16,
+    pub(super) row: u16,
+    pub(super) target: PressTarget,
+}
+
+/// Which pane a pending press can start a selection in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PressTarget {
+    Conversation,
+    Composer,
+}
+
+/// Cell movement beyond this turns a pending press into a selection drag;
+/// at or below it the release still counts as a plain click.
+const DRAG_THRESHOLD_CELLS: u16 = 1;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct InputHit {
@@ -130,6 +219,22 @@ pub(super) struct TitleSegmentHit {
     pub(super) segment: TitleSegment,
 }
 
+/// One clickable queue-strip row. The index identifies the row for hover;
+/// clicks recall the newest pending input regardless of the row hit.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct QueueEntryHit {
+    pub(super) rect: Rect,
+    pub(super) index: usize,
+}
+
+/// The visible rows of one past user message: a click opens the
+/// copy/revert/fork menu targeting the message's physical event sequence.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct UserMessageHit {
+    pub(super) rect: Rect,
+    pub(super) seq: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TitleSegment {
     Agent,
@@ -167,15 +272,18 @@ pub(super) enum HoverTarget {
     PermissionMode,
     EventLevelFilter,
     TreeRow(SessionId),
+    QueueEntry(usize),
     ProviderField(ProviderFormFocus),
     ProviderSubmit,
 }
 
 /// Per-frame hit targets built from the same geometry and transcript layout
-/// that were rendered. Mouse events only consult this cached map.
+/// that were rendered. Mouse events consult this cached map for hit-testing
+/// within a surface; overlay *ownership* is read from current state (modal,
+/// palette, approval), so a panel that opened since the last frame still
+/// claims its pointer events instead of leaking them to the content beneath.
 #[derive(Default)]
 pub(super) struct UiHitMap {
-    pub(super) modal_open: bool,
     pub(super) input: Option<InputHit>,
     pub(super) conversation: Option<Rect>,
     pub(super) scrollbar: Option<Rect>,
@@ -190,6 +298,11 @@ pub(super) struct UiHitMap {
     pub(super) approval_actions: Vec<ApprovalHit>,
     pub(super) approval: Option<Rect>,
     pub(super) title_segments: Vec<TitleSegmentHit>,
+    /// One clickable row per rendered queue-strip line (entries and the
+    /// overflow fold alike): any click recalls the newest pending input.
+    pub(super) queue_entries: Vec<QueueEntryHit>,
+    /// Visible user-message rows that open the copy/revert/fork menu.
+    pub(super) user_messages: Vec<UserMessageHit>,
     pub(super) permission_mode: Option<Rect>,
     pub(super) event_level_filter: Option<Rect>,
     pub(super) provider_fields: Vec<ProviderFieldHit>,
@@ -308,14 +421,60 @@ pub struct App {
     pub(super) stdin_target: Option<cookie_agent_protocol::ToolCallId>,
     pub(super) status: String,
     pub(super) should_quit: bool,
+    /// Active mouse text selection (conversation or composer); cleared by
+    /// Esc, a plain click anywhere, or a copy.
+    pub(super) selection: Option<TextSelection>,
+    /// A left-button press awaiting the click-or-drag decision.
+    pub(super) pending_press: Option<PendingPress>,
+    /// State of the user-message copy/revert/fork menu and its confirm.
+    pub(super) user_menu: Option<UserMenuState>,
+    /// Clipboard destination for copy/cut (OSC 52 in production).
+    pub(super) clipboard_sink: ClipboardSink,
     /// Latest authoritative title sequence per session: patches apply only a
     /// strictly newer sequence, so stale tree/list responses cannot
     /// overwrite a newer title event.
     pub(super) title_sequences: HashMap<SessionId, u64>,
 }
 
+/// Maximum queue entries shown by the strip between the conversation pane
+/// and the composer; a "+N more" row folds the remainder into that budget.
+const MAX_VISIBLE_QUEUE_ROWS: usize = 3;
+
+/// The user-message action menu rows, in display/keyboard order:
+/// copy, revert (confirm-guarded), fork.
+const USER_MENU_ITEMS: &[(&str, &str)] = &[
+    ("copy", "message text to the clipboard"),
+    (
+        "revert",
+        "roll back to before this message; its text returns to the composer",
+    ),
+    ("fork", "branch a new session from this message"),
+];
+
 pub(super) enum RpcUpdate {
     Status(String),
+    /// A steer RPC failed at the transport level (admission itself never
+    /// rejects anymore): the submitted text is owed back to the composer.
+    SteerFailed {
+        session_id: SessionId,
+        input: String,
+        error: String,
+    },
+    /// A recall RPC returned the withdrawn pending input's text.
+    SteerRecalled {
+        session_id: SessionId,
+        text: String,
+    },
+    /// A revert RPC committed; the `SessionReverted` event rebuilds the
+    /// transcript, and the message text is owed back to the composer.
+    Reverted {
+        session_id: SessionId,
+        text: String,
+    },
+    /// A fork RPC committed; the new session becomes the viewed one.
+    Forked {
+        forked: SessionId,
+    },
     Tree {
         session_id: SessionId,
         generation: u64,
@@ -512,6 +671,10 @@ impl App {
             stdin_target: None,
             status: "Connected. Type /help for commands.".into(),
             should_quit: false,
+            selection: None,
+            pending_press: None,
+            user_menu: None,
+            clipboard_sink: ClipboardSink::default(),
             title_sequences: HashMap::new(),
         };
         app.refresh_lists().await;
@@ -1466,6 +1629,51 @@ impl App {
     pub(super) fn handle_rpc_update(&mut self, update: RpcUpdate) {
         match update {
             RpcUpdate::Status(status) => self.status = status,
+            RpcUpdate::SteerFailed {
+                session_id,
+                input,
+                error,
+            } => {
+                if self.selected == Some(session_id) {
+                    self.restore_composer_text(vec![input]);
+                    self.status = format!("message not sent ({error}); restored to the composer");
+                } else {
+                    self.store.park_voided_input(session_id, input);
+                    self.status =
+                        format!("a message failed to send ({error}); kept for its session");
+                }
+            }
+            RpcUpdate::SteerRecalled { session_id, text } => {
+                if self.selected == Some(session_id) {
+                    self.restore_composer_text(vec![text]);
+                    self.status = "recalled message restored to the composer".into();
+                } else {
+                    // The composer belongs to another session right now;
+                    // park the text so it is restored when that session is
+                    // viewed rather than leaking across sessions.
+                    self.store.park_voided_input(session_id, text);
+                    self.status = "recalled message kept for its session".into();
+                }
+            }
+            RpcUpdate::Reverted { session_id, text } => {
+                // The transcript rebuild rides the SessionReverted event;
+                // here only the composer's share and the tree's
+                // branch-derived rows (title/status/usage) need attention.
+                if self.selected == Some(session_id) {
+                    self.restore_composer_text(vec![text]);
+                    self.status = "reverted; the message text is back in the composer".into();
+                } else {
+                    self.store.park_voided_input(session_id, text);
+                    self.status = "reverted; the message text is kept for its session".into();
+                }
+                self.refresh_tree_background();
+            }
+            RpcUpdate::Forked { forked } => {
+                self.status = "forked the session; switching to it".into();
+                self.refresh_tree_background();
+                // Outside the current tree this intentionally reroots.
+                self.watch_session(forked);
+            }
             RpcUpdate::Tree {
                 session_id,
                 generation,
@@ -1653,9 +1861,19 @@ impl App {
             self.conversation_scroll = ConversationScroll::default();
             self.scrollbar_geometry = None;
             self.scrollbar_drag = None;
+            // A conversation-leg selection addresses rendered lines of the
+            // session being left; kept across the switch it would paint and
+            // copy rows of the newly watched session. The composer leg
+            // survives: the draft buffer persists across watches.
+            if matches!(self.selection, Some(TextSelection::Conversation { .. })) {
+                self.selection = None;
+            }
         }
         self.selected = Some(session_id);
         self.rebind_draft_to_selected_session();
+        // Voided inputs (run-end casualties, cross-session recalls) are
+        // restored exactly when their session is being viewed.
+        self.restore_voided_inputs();
     }
 
     /// Rebind the draft to the newly watched session. A root session drafts
@@ -1759,7 +1977,32 @@ impl App {
             &delivery,
             ClientDelivery::ReplayEnd { session_id, .. } if Some(*session_id) == self.selected
         );
-        match self.store.apply_delivery(delivery) {
+        let revert_rebuild = event.is_some_and(|event| {
+            Some(event.session_id) == self.selected
+                && matches!(&event.payload, EventPayload::SessionReverted { .. })
+        });
+        let outcome = self.store.apply_delivery(delivery);
+        if (revert_rebuild || replay_finished)
+            && matches!(self.selection, Some(TextSelection::Conversation { .. }))
+        {
+            // The viewed transcript was replaced — a revert rebuilds the
+            // visible branch, a recovery replay swaps in a whole new
+            // projection — so the conversation leg's content coordinates
+            // address lines that no longer exist and would paint and copy
+            // the wrong text. The composer leg survives: the draft buffer
+            // is untouched by either rebuild (its own restoring mutations
+            // retire it separately).
+            self.selection = None;
+        }
+        if matches!(outcome, DeliveryOutcome::Applied) {
+            // The pending lane itself is a pure event reduction (admitted,
+            // promoted, recalled, replayed identically); only the composer's
+            // share needs a hook here: run-end events void pending inputs
+            // without per-entry events, so drain whatever the viewed session
+            // is owed back into the composer.
+            self.restore_voided_inputs();
+        }
+        match outcome {
             DeliveryOutcome::Applied => {}
             DeliveryOutcome::Gap { cursor, .. } => {
                 self.status = format!("event gap after sequence {cursor}; replaying");
@@ -1852,6 +2095,8 @@ impl App {
             Modal::ConnectSetup => self.handle_connect_setup_key(key),
             Modal::ConnectError => self.handle_connect_error_key(key),
             Modal::DisconnectConfirm => self.handle_disconnect_confirm_key(key),
+            Modal::UserMessage => self.handle_user_menu_key(key).await,
+            Modal::RevertConfirm => self.handle_revert_confirm_key(key).await,
             Modal::None
                 if self.current_approval().is_none()
                     && !self.command_palette_visible()
@@ -1873,6 +2118,12 @@ impl App {
                     self.answer_approval(ApprovalUserDecision::Cancel).await;
                 }
             }
+            Modal::None if key.code == KeyCode::Esc && self.selection.is_some() => {
+                // Esc retires a selection before it ever counts toward the
+                // double-Esc run cancel.
+                self.selection = None;
+                self.last_escape = None;
+            }
             Modal::None if key.code == KeyCode::Esc => {
                 if self.register_escape(Instant::now()) {
                     self.cancel_active_run();
@@ -1882,7 +2133,37 @@ impl App {
                 if key.code == KeyCode::Char('c')
                     && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
-                self.cancel_active_run();
+                // With an active selection ctrl+c is copy; without one it
+                // keeps its long-standing meaning (cancel the active run).
+                if let Some(text) = self.selected_text() {
+                    self.selection = None;
+                    if text.is_empty() {
+                        self.status = "nothing to copy in the selection".into();
+                    } else {
+                        self.copy_to_clipboard(text);
+                    }
+                } else {
+                    self.cancel_active_run();
+                }
+            }
+            Modal::None
+                if key.code == KeyCode::Char('x')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(self.selection, Some(TextSelection::Composer { .. })) =>
+            {
+                // Composer-only cut: copy the selected draft text, then
+                // remove it from the buffer.
+                if let Some(text) = self.selected_text()
+                    && !text.is_empty()
+                {
+                    let (start, end) = self
+                        .selection
+                        .map(|selection| selection.byte_range())
+                        .unwrap_or((0, 0));
+                    self.selection = None;
+                    self.copy_to_clipboard(text);
+                    self.input.delete_byte_range(start, end);
+                }
             }
             Modal::None => self.handle_input_key(key).await,
         }
@@ -1955,10 +2236,12 @@ impl App {
             Modal::Agents => self.selectable_agents().len(),
             Modal::Models => self.draft_models().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
+            Modal::UserMessage => USER_MENU_ITEMS.len(),
             Modal::ConnectDetails
             | Modal::ConnectSetup
             | Modal::ConnectError
             | Modal::DisconnectConfirm
+            | Modal::RevertConfirm
             | Modal::None => 0,
         }
     }
@@ -2003,7 +2286,7 @@ impl App {
 
     pub(super) async fn handle_palette_key(&mut self, key: KeyEvent) {
         if is_newline_key(key) {
-            self.input.insert_newline();
+            self.mutate_input(|input| input.insert_newline());
             self.clamp_palette_selection();
             return;
         }
@@ -2043,13 +2326,15 @@ impl App {
         };
         self.palette_dismissed = true;
         self.palette_state.select(Some(0));
-        self.input.set_buffer(if spec.requires_arguments {
-            format!(
-                "{} ",
-                spec.usage.split_whitespace().next().expect("command usage")
-            )
-        } else {
-            spec.usage.into()
+        self.mutate_input(|input| {
+            input.set_buffer(if spec.requires_arguments {
+                format!(
+                    "{} ",
+                    spec.usage.split_whitespace().next().expect("command usage")
+                )
+            } else {
+                spec.usage.into()
+            });
         });
         if !spec.requires_arguments {
             self.submit_input().await;
@@ -2062,15 +2347,15 @@ impl App {
     pub(super) async fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                self.handle_click(mouse.column, mouse.row).await;
+                self.handle_press(mouse.column, mouse.row).await;
                 true
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                self.handle_drag(mouse.column, mouse.row);
+                self.handle_pointer_drag(mouse.column, mouse.row);
                 true
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                self.scrollbar_drag = None;
+                self.handle_release().await;
                 true
             }
             MouseEventKind::ScrollUp => {
@@ -2084,6 +2369,149 @@ impl App {
             MouseEventKind::Moved => self.update_hover(mouse.column, mouse.row),
             _ => false,
         }
+    }
+
+    /// Left-button press: a plain click anywhere clears a finished
+    /// selection. Presses inside the conversation viewport or the composer
+    /// text rect (with no overlay owning the pointer) are held as pending
+    /// presses until motion decides click-or-drag; every other press is an
+    /// immediate click, preserving scrollbar capture and panel behavior.
+    async fn handle_press(&mut self, column: u16, row: u16) {
+        self.selection = None;
+        self.pending_press = None;
+        // Overlay ownership comes from state, not hit geometry: a modal or
+        // approval that opened since the last frame still owns its presses.
+        let overlay = self.command_palette_visible()
+            || self.modal != Modal::None
+            || self.current_approval().is_some();
+        if !overlay {
+            if self
+                .hit_map
+                .conversation
+                .is_some_and(|viewport| contains(viewport, column, row))
+            {
+                self.pending_press = Some(PendingPress {
+                    column,
+                    row,
+                    target: PressTarget::Conversation,
+                });
+                return;
+            }
+            if let Some(hit) = self
+                .hit_map
+                .input
+                .filter(|hit| contains(hit.rect, column, row))
+            {
+                // The composer's scrollbar column keeps its immediate
+                // behavior (page/thumb capture); only text cells can start
+                // a selection.
+                let on_scrollbar = hit
+                    .scrollbar
+                    .is_some_and(|geometry| contains(geometry.track, column, row));
+                if !on_scrollbar && contains(hit.text_rect, column, row) {
+                    self.input_focused = true;
+                    self.pending_press = Some(PendingPress {
+                        column,
+                        row,
+                        target: PressTarget::Composer,
+                    });
+                    return;
+                }
+            }
+        }
+        self.handle_click(column, row).await;
+    }
+
+    /// Pointer motion with the button held: scrollbar drags stay scrollbar
+    /// drags; a pending press moved past the threshold becomes a selection
+    /// whose head follows the pointer.
+    fn handle_pointer_drag(&mut self, column: u16, row: u16) {
+        if self.scrollbar_drag.is_some() {
+            self.handle_drag(column, row);
+            return;
+        }
+        let Some(press) = self.pending_press else {
+            return;
+        };
+        match press.target {
+            PressTarget::Conversation => {
+                let Some(viewport) = self.hit_map.conversation else {
+                    self.pending_press = None;
+                    return;
+                };
+                let point = self.conversation_point(viewport, column, row);
+                if let Some(TextSelection::Conversation { head, .. }) = &mut self.selection {
+                    *head = point;
+                    return;
+                }
+                if column.abs_diff(press.column) > DRAG_THRESHOLD_CELLS
+                    || row.abs_diff(press.row) > DRAG_THRESHOLD_CELLS
+                {
+                    let anchor = self.conversation_point(viewport, press.column, press.row);
+                    self.selection = Some(TextSelection::Conversation {
+                        anchor,
+                        head: point,
+                    });
+                }
+            }
+            PressTarget::Composer => {
+                let Some(hit) = self.hit_map.input else {
+                    self.pending_press = None;
+                    return;
+                };
+                let point = self.composer_point(hit, column, row);
+                if let Some(TextSelection::Composer { head, .. }) = &mut self.selection {
+                    *head = point;
+                    return;
+                }
+                if column.abs_diff(press.column) > DRAG_THRESHOLD_CELLS
+                    || row.abs_diff(press.row) > DRAG_THRESHOLD_CELLS
+                {
+                    let anchor = self.composer_point(hit, press.column, press.row);
+                    self.selection = Some(TextSelection::Composer {
+                        anchor,
+                        head: point,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Button release: a finished drag keeps its selection; a pending press
+    /// that never became a drag dispatches its click at the press position.
+    async fn handle_release(&mut self) {
+        self.scrollbar_drag = None;
+        if self.selection.is_some() {
+            self.pending_press = None;
+            return;
+        }
+        let Some(press) = self.pending_press.take() else {
+            return;
+        };
+        self.handle_click(press.column, press.row).await;
+    }
+
+    /// A conversation cell in content coordinates: `(logical line, display
+    /// column)` inside the rendered lines, so the selection survives
+    /// scrolling while it is held.
+    fn conversation_point(&self, viewport: Rect, column: u16, row: u16) -> (usize, u16) {
+        let line = self
+            .conversation_scroll
+            .offset
+            .saturating_add(usize::from(row.saturating_sub(viewport.y)));
+        let column = column.saturating_sub(viewport.x).min(viewport.width);
+        (line, column)
+    }
+
+    /// A composer cell as the nearest draft byte offset.
+    fn composer_point(&self, hit: InputHit, column: u16, row: u16) -> usize {
+        self.input.byte_at_display_position(
+            row.saturating_sub(hit.text_rect.y)
+                .min(hit.text_rect.height.saturating_sub(1)),
+            column
+                .saturating_sub(hit.text_rect.x)
+                .min(hit.text_rect.width),
+        )
     }
 
     /// Recompute the hovered element from the current hit map. Returns true
@@ -2102,10 +2530,11 @@ impl App {
     }
 
     /// Resolve the interactive element under a point using the exact same
-    /// hit-map priority order as click handling.
+    /// state-owned overlay priority as click handling: an open overlay owns
+    /// the pointer even before its geometry renders.
     pub(super) fn hover_target_at(&self, column: u16, row: u16) -> Option<HoverTarget> {
         let over = |rect: Rect| contains(rect, column, row);
-        if self.hit_map.palette.is_some() {
+        if self.command_palette_visible() {
             return self
                 .hit_map
                 .palette_rows
@@ -2113,7 +2542,7 @@ impl App {
                 .find(|hit| over(hit.rect))
                 .map(|hit| HoverTarget::PaletteRow(hit.index));
         }
-        if self.hit_map.modal_open {
+        if self.modal != Modal::None {
             if self.hit_map.provider_submit.is_some_and(over) {
                 return Some(HoverTarget::ProviderSubmit);
             }
@@ -2132,7 +2561,7 @@ impl App {
                 .find(|hit| over(hit.rect))
                 .map(|hit| HoverTarget::PickerRow(hit.index));
         }
-        if self.hit_map.approval.is_some() || !self.hit_map.approval_actions.is_empty() {
+        if self.current_approval().is_some() {
             return self
                 .hit_map
                 .approval_actions
@@ -2154,6 +2583,9 @@ impl App {
         {
             return Some(HoverTarget::TitleSegment(hit.segment));
         }
+        if let Some(hit) = self.hit_map.queue_entries.iter().find(|hit| over(hit.rect)) {
+            return Some(HoverTarget::QueueEntry(hit.index));
+        }
         if let Some(hit) = self.hit_map.tree_rows.iter().find(|hit| over(hit.rect)) {
             return Some(HoverTarget::TreeRow(hit.session_id));
         }
@@ -2163,6 +2595,60 @@ impl App {
     /// Patch the hover affordance onto the resolved target's cells. Text
     /// targets get the glaze text style; approval buttons get the fill-only
     /// variant so their glyphs stay put.
+    /// Patch the mouse text selection over the already-rendered cells,
+    /// exactly like hover: a pure style pass that can never change layout.
+    /// The selection background leaves cell foregrounds (code highlighting)
+    /// intact, and keyboard selection keeps its own distinct style.
+    fn apply_selection(&self, frame: &mut ratatui::Frame) {
+        let Some(selection) = self.selection else {
+            return;
+        };
+        let style = self.theme.text_selection();
+        match selection {
+            TextSelection::Conversation { .. } => {
+                let (start, end) = selection.ordered();
+                let Some(viewport) = self.hit_map.conversation else {
+                    return;
+                };
+                let offset = self.conversation_scroll.offset;
+                for line in start.0..=end.0 {
+                    let Some(row_in_view) = line.checked_sub(offset) else {
+                        continue;
+                    };
+                    if row_in_view >= usize::from(viewport.height) {
+                        break;
+                    }
+                    let y = viewport.y.saturating_add(row_in_view as u16);
+                    let column_start = if line == start.0 { start.1 } else { 0 };
+                    let column_end = if line == end.0 { end.1 } else { viewport.width };
+                    let column_start = column_start.min(viewport.width);
+                    let column_end = column_end.min(viewport.width);
+                    for x in column_start..column_end {
+                        let cell = &mut frame.buffer_mut()[(viewport.x.saturating_add(x), y)];
+                        cell.set_style(style);
+                    }
+                }
+            }
+            TextSelection::Composer { .. } => {
+                let (start, end) = selection.byte_range();
+                let Some(hit) = self.hit_map.input else {
+                    return;
+                };
+                for (row, column_start, column_end) in self.input.selection_cells(start, end) {
+                    if row >= hit.text_rect.height {
+                        continue;
+                    }
+                    let y = hit.text_rect.y.saturating_add(row);
+                    let column_end = column_end.min(hit.text_rect.width);
+                    for x in column_start..column_end {
+                        let cell = &mut frame.buffer_mut()[(hit.text_rect.x.saturating_add(x), y)];
+                        cell.set_style(style);
+                    }
+                }
+            }
+        }
+    }
+
     fn apply_hover(&self, frame: &mut ratatui::Frame) {
         let Some(hover) = self.hover else {
             return;
@@ -2245,6 +2731,16 @@ impl App {
                     patch(frame, rect, text_style);
                 }
             }
+            HoverTarget::QueueEntry(index) => {
+                if let Some(hit) = self
+                    .hit_map
+                    .queue_entries
+                    .iter()
+                    .find(|hit| hit.index == index)
+                {
+                    patch(frame, hit.rect, text_style);
+                }
+            }
             HoverTarget::TreeRow(session_id) => {
                 if let Some(hit) = self
                     .hit_map
@@ -2309,7 +2805,14 @@ impl App {
     }
 
     pub(super) async fn handle_click(&mut self, column: u16, row: u16) {
-        if self.hit_map.palette.is_some() {
+        // Overlay ownership comes from current state, never from hit-map
+        // geometry: an overlay that opened since the last frame still owns
+        // its presses (its geometry may not exist yet), and one that just
+        // closed leaves content geometry underneath intact and clickable.
+        // Each overlay branch therefore always returns — geometry only
+        // picks the element within the panel, never whether the panel owns
+        // the click.
+        if self.command_palette_visible() {
             if let Some(hit) = self
                 .hit_map
                 .palette_rows
@@ -2321,7 +2824,7 @@ impl App {
             }
             return;
         }
-        if self.hit_map.modal_open {
+        if self.modal != Modal::None {
             if let Some(hit) = self
                 .hit_map
                 .picker_input
@@ -2379,7 +2882,7 @@ impl App {
             }
             return;
         }
-        if self.hit_map.approval.is_some() || !self.hit_map.approval_actions.is_empty() {
+        if self.current_approval().is_some() {
             if let Some(hit) = self
                 .hit_map
                 .approval_actions
@@ -2458,6 +2961,19 @@ impl App {
             );
             return;
         }
+        // Queue-strip entries are the recall affordance: any row click
+        // withdraws the engine's newest pending input back into the
+        // composer, which also takes focus for the edit.
+        if self
+            .hit_map
+            .queue_entries
+            .iter()
+            .any(|hit| contains(hit.rect, column, row))
+        {
+            self.input_focused = true;
+            self.recall_newest_pending();
+            return;
+        }
         // The scrollbar column is reserved from content and block hit regions;
         // presses there page (track) or capture the thumb for dragging.
         if let Some(track) = self
@@ -2480,6 +2996,18 @@ impl App {
             return;
         }
         self.input_focused = false;
+        // Past user-message rows open the copy/revert/fork menu — never
+        // assistant/tool rows, which keep their expand/collapse toggle.
+        if let Some(hit) = self
+            .hit_map
+            .user_messages
+            .iter()
+            .find(|hit| contains(hit.rect, column, row))
+            .copied()
+        {
+            self.open_user_menu(hit);
+            return;
+        }
         if let Some(hit) = self
             .hit_map
             .blocks
@@ -2537,24 +3065,25 @@ impl App {
     }
 
     pub(super) fn handle_wheel(&mut self, column: u16, row: u16, up: bool) {
-        if self
-            .hit_map
-            .approval
-            .is_some_and(|rect| contains(rect, column, row))
-        {
-            self.scroll_approval(up, 3);
-            return;
-        }
-        if self
-            .hit_map
-            .palette
-            .is_some_and(|rect| contains(rect, column, row))
+        // Wheel ownership comes from current state, never stale geometry:
+        // during an overlay transition the hit map can describe a panel
+        // that is already gone (or miss one that just opened), so a rect
+        // only targets the scroll *within* a surface state says is open.
+        // Ownership order matches the render stacking and click/hover
+        // routing exactly — palette, modal, approval, content — so a wheel
+        // over overlapping panels reaches the topmost one, never the panel
+        // it obscures.
+        if self.command_palette_visible()
+            && self
+                .hit_map
+                .palette
+                .is_some_and(|rect| contains(rect, column, row))
         {
             let count = self.palette_entries().len();
             move_selection(&mut self.palette_state, count, up);
             return;
         }
-        if self.hit_map.modal_open {
+        if self.modal != Modal::None {
             if self
                 .hit_map
                 .picker
@@ -2567,17 +3096,29 @@ impl App {
                     }
                     Modal::Agents | Modal::Models => self.picker_entry_count(),
                     Modal::ConnectProviders => self.filtered_providers().len(),
+                    Modal::UserMessage => USER_MENU_ITEMS.len(),
                     Modal::ConnectDetails
                     | Modal::ConnectSetup
                     | Modal::ConnectError
                     | Modal::DisconnectConfirm
+                    | Modal::RevertConfirm
                     | Modal::None => 0,
                 };
                 move_picker_selection(&mut self.picker_state, len, up);
             }
             return;
         }
-        if self.hit_map.approval.is_some() || !self.hit_map.approval_actions.is_empty() {
+        // A visible approval panel swallows the wheel wherever it lands,
+        // owned by state so the panel claims the gesture even before its
+        // geometry renders; its rect only targets the panel scroll.
+        if self.current_approval().is_some() {
+            if self
+                .hit_map
+                .approval
+                .is_some_and(|rect| contains(rect, column, row))
+            {
+                self.scroll_approval(up, 3);
+            }
             return;
         }
         if self
@@ -2685,6 +3226,29 @@ impl App {
         self.clamp_tree_view();
     }
 
+    /// Retire any composer-leg selection: its byte offsets address the
+    /// draft as it was when the drag happened, so a later buffer mutation
+    /// or cursor move would leave it painting and cutting the wrong slice.
+    /// Conversation selections address rendered lines and are unaffected.
+    fn retire_composer_selection(&mut self) {
+        if matches!(self.selection, Some(TextSelection::Composer { .. })) {
+            self.selection = None;
+        }
+    }
+
+    /// Mutate the composer draft, retiring any composer-leg selection.
+    fn mutate_input(&mut self, mutation: impl FnOnce(&mut InputState)) {
+        mutation(&mut self.input);
+        self.retire_composer_selection();
+    }
+
+    /// Move the composer cursor, retiring any composer-leg selection the
+    /// same way a mutation does.
+    fn navigate_input(&mut self, navigation: impl FnOnce(&mut InputState)) {
+        navigation(&mut self.input);
+        self.retire_composer_selection();
+    }
+
     pub(super) async fn handle_input_key(&mut self, key: KeyEvent) {
         if self.runtime.phase() == RuntimePhase::ErrorRetry
             && key.code == KeyCode::Enter
@@ -2700,12 +3264,12 @@ impl App {
         }
         if is_newline_key(key) {
             self.input_focused = true;
-            self.input.insert_newline();
+            self.mutate_input(|input| input.insert_newline());
             return;
         }
         if key.code == KeyCode::Char('p') && key.modifiers == KeyModifiers::CONTROL {
             self.input_focused = true;
-            self.input.set_buffer("/".into());
+            self.mutate_input(|input| input.set_buffer("/".into()));
             self.palette_dismissed = false;
             self.palette_state.select(Some(0));
             return;
@@ -2718,7 +3282,7 @@ impl App {
                     if self.input.as_str().is_empty() && character == '/' {
                         self.palette_dismissed = false;
                     }
-                    self.input.insert(character);
+                    self.mutate_input(|input| input.insert(character));
                 }
                 _ => {}
             }
@@ -2727,27 +3291,37 @@ impl App {
         match key.code {
             KeyCode::Enter => self.submit_input().await,
             KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.input.delete_word_left();
+                self.mutate_input(|input| input.delete_word_left());
             }
             KeyCode::Backspace => {
-                self.input.backspace();
+                self.mutate_input(|input| input.backspace());
             }
             KeyCode::Delete if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.input.delete_word_right();
+                self.mutate_input(|input| input.delete_word_right());
             }
             KeyCode::Delete => {
-                self.input.delete();
+                self.mutate_input(|input| input.delete());
             }
             KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.input.move_word_left()
+                self.navigate_input(|input| input.move_word_left());
             }
-            KeyCode::Left => self.input.move_left(),
+            KeyCode::Left => self.navigate_input(|input| input.move_left()),
             KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.input.move_word_right()
+                self.navigate_input(|input| input.move_word_right());
             }
-            KeyCode::Right => self.input.move_right(),
-            KeyCode::Up => self.input.move_up(),
-            KeyCode::Down => self.input.move_down(),
+            KeyCode::Right => self.navigate_input(|input| input.move_right()),
+            KeyCode::Up => {
+                // Recall gesture: with an empty composer and a non-empty
+                // pending lane, Up withdraws the newest pending message back
+                // for editing instead of moving a cursor that has nothing
+                // to move through.
+                if self.input.as_str().is_empty() && self.selected_pending_inputs().is_some() {
+                    self.recall_newest_pending();
+                } else {
+                    self.navigate_input(|input| input.move_up());
+                }
+            }
+            KeyCode::Down => self.navigate_input(|input| input.move_down()),
             KeyCode::PageUp => {
                 let page = self
                     .hit_map
@@ -2763,20 +3337,24 @@ impl App {
                 self.conversation_scroll.down(usize::from(page));
             }
             KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.input.move_buffer_home();
+                self.navigate_input(|input| input.move_buffer_home());
             }
-            KeyCode::Home => self.input.move_home(),
+            KeyCode::Home => self.navigate_input(|input| input.move_home()),
             KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.input.move_buffer_end();
+                self.navigate_input(|input| input.move_buffer_end());
             }
-            KeyCode::End => self.input.move_end(),
-            KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => self.input.move_home(),
-            KeyCode::Char('e') if key.modifiers == KeyModifiers::CONTROL => self.input.move_end(),
+            KeyCode::End => self.navigate_input(|input| input.move_end()),
+            KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
+                self.navigate_input(|input| input.move_home());
+            }
+            KeyCode::Char('e') if key.modifiers == KeyModifiers::CONTROL => {
+                self.navigate_input(|input| input.move_end());
+            }
             KeyCode::Char(character) if is_printable_key(key) => {
                 if self.input.as_str().is_empty() && character == '/' {
                     self.palette_dismissed = false;
                 }
-                self.input.insert(character);
+                self.mutate_input(|input| input.insert(character));
             }
             _ => {}
         }
@@ -2826,7 +3404,7 @@ impl App {
             self.palette_dismissed = false;
         }
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-        self.input.insert_text(&normalized);
+        self.mutate_input(|input| input.insert_text(&normalized));
     }
 
     pub(super) async fn handle_session_picker(&mut self, key: KeyEvent) {
@@ -3360,6 +3938,8 @@ impl App {
             | Modal::ConnectSetup
             | Modal::ConnectError
             | Modal::DisconnectConfirm => {}
+            Modal::UserMessage => self.activate_user_menu_entry(index),
+            Modal::RevertConfirm => {}
             Modal::None => {}
         }
     }
@@ -3371,7 +3951,9 @@ impl App {
         let submission = match parse_submission(self.input.as_str()) {
             Ok(submission) => submission,
             Err(error) => {
-                self.input.take();
+                self.mutate_input(|input| {
+                    input.take();
+                });
                 self.palette_dismissed = false;
                 self.status = error;
                 return;
@@ -3379,7 +3961,9 @@ impl App {
         };
         match submission {
             Submission::Command(command) => {
-                self.input.take();
+                self.mutate_input(|input| {
+                    input.take();
+                });
                 self.palette_dismissed = false;
                 self.run_command(command).await;
             }
@@ -3401,7 +3985,9 @@ impl App {
             return;
         }
         if self.runtime.is_empty() {
-            self.input.take();
+            self.mutate_input(|input| {
+                input.take();
+            });
             self.palette_dismissed = false;
             self.status = EMPTY_RUNTIME_GUIDANCE.into();
             return;
@@ -3410,7 +3996,9 @@ impl App {
             self.status = "create or select a session first".into();
             return;
         };
-        self.input.take();
+        self.mutate_input(|input| {
+            input.take();
+        });
         self.palette_dismissed = false;
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
@@ -3425,26 +4013,398 @@ impl App {
             return;
         }
         self.spawn_rpc(async move {
-            let result = if let Some(run_id) = active_run {
-                client
-                    .steer_run(RunSteerParams { run_id, input })
-                    .await
-                    .map(|_| ())
-            } else {
-                client
-                    .start_run(RunStartParams {
-                        session_id,
-                        client_run_id: client_run_id(),
-                        selection: selection.expect("draft selection checked"),
-                        input,
+            if let Some(run_id) = active_run {
+                // The engine admits steered inputs even across compaction
+                // reservations now and reports the pending lane through
+                // events; only a transport failure can strand the text, and
+                // that is owed back to the composer.
+                if let Err(error) = client
+                    .steer_run(RunSteerParams {
+                        run_id,
+                        input: input.clone(),
                     })
                     .await
-                    .map(|_| ())
-            };
-            if let Err(error) = result {
+                {
+                    let _ = updates.send(RpcUpdate::SteerFailed {
+                        session_id,
+                        input,
+                        error: error.to_string(),
+                    });
+                }
+            } else if let Err(error) = client
+                .start_run(RunStartParams {
+                    session_id,
+                    client_run_id: client_run_id(),
+                    selection: selection.expect("draft selection checked"),
+                    input,
+                })
+                .await
+            {
                 let _ = updates.send(RpcUpdate::Status(error.to_string()));
             }
         });
+    }
+
+    /// The viewed session's pending steered inputs, when the lane is
+    /// non-empty. The lane itself is a pure event reduction inside
+    /// `SessionState`; the strip is only a projection of it.
+    fn selected_pending_inputs(&self) -> Option<&VecDeque<PendingInput>> {
+        self.selected
+            .and_then(|session_id| self.store.sessions.get(&session_id))
+            .map(|state| &state.pending_inputs)
+            .filter(|pending| !pending.is_empty())
+    }
+
+    /// Strip height in rows for the selected session's pending lane: zero
+    /// while empty so the layout never leaves a stray border behind.
+    pub(super) fn queue_strip_height(&self) -> u16 {
+        let Some(pending) = self.selected_pending_inputs() else {
+            return 0;
+        };
+        // Visible entries plus block borders; the "+N more" folding row
+        // shares the entry budget, so the cap never grows past it.
+        (pending.len().min(MAX_VISIBLE_QUEUE_ROWS) as u16).saturating_add(2)
+    }
+
+    /// Render the pending-input strip between the conversation pane and the
+    /// status line. Entries are hoverable and clickable: clicking recalls
+    /// the engine's newest pending input for editing.
+    pub(super) fn render_queue_strip(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        self.hit_map.queue_entries.clear();
+        if area.height == 0 || area.width < 3 {
+            return;
+        }
+        let Some(pending) = self.selected_pending_inputs() else {
+            return;
+        };
+        let oldest_age = jiff::Timestamp::now()
+            .duration_since(pending[0].admitted_at)
+            .as_secs()
+            .max(0);
+        let title = format!("Pending · oldest {}", queue_age_label(oldest_age));
+        let block = Block::bordered()
+            .title(Span::styled(title, self.theme.muted()))
+            .border_style(self.theme.panel_border())
+            .style(self.theme.panel());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let entry_rows = inner.height as usize;
+        if entry_rows == 0 {
+            return;
+        }
+        // Entries fill the budget; one row folds the remainder into
+        // "+N more" so the strip never grows past its cap.
+        let shown = if pending.len() > entry_rows {
+            entry_rows.saturating_sub(1)
+        } else {
+            pending.len()
+        };
+        let overflow = pending.len() - shown;
+        let mut lines = Vec::new();
+        for (index, entry) in pending.iter().enumerate().take(shown) {
+            let prefix = format!("⏳ {} ", index + 1);
+            let available =
+                usize::from(inner.width).saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
+            lines.push(Line::from(vec![
+                Span::styled(prefix, self.theme.muted()),
+                Span::styled(
+                    ellipsize_single_line(&entry.text, available),
+                    self.theme.muted(),
+                ),
+            ]));
+        }
+        if overflow > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("+{overflow} more"),
+                self.theme.muted(),
+            )));
+        }
+        let line_count = lines.len();
+        frame.render_widget(Paragraph::new(lines), inner);
+        // Every body row is a recall affordance: the engine withdraws the
+        // newest pending input regardless of which row is clicked.
+        self.hit_map.queue_entries = (0..line_count)
+            .map(|index| QueueEntryHit {
+                rect: Rect::new(
+                    inner.x,
+                    inner.y.saturating_add(index as u16),
+                    inner.width,
+                    1,
+                ),
+                index,
+            })
+            .collect();
+    }
+
+    /// Copy text to the system clipboard via an OSC 52 escape written to
+    /// the terminal: no platform dependency, and it works over SSH (the
+    /// terminal emulator owns the clipboard, not the host). Terminals that
+    /// ignore OSC 52 simply leave the clipboard untouched.
+    fn copy_to_clipboard(&mut self, text: String) {
+        let characters = text.chars().count();
+        let result = match &self.clipboard_sink {
+            ClipboardSink::Osc52 => io::stdout()
+                .lock()
+                .write_all(osc52_sequence(&text).as_bytes())
+                .and_then(|()| io::stdout().flush()),
+            #[cfg(test)]
+            ClipboardSink::Capture(copied) => {
+                copied.lock().expect("clipboard capture").push(text);
+                Ok(())
+            }
+        };
+        self.status = match result {
+            Ok(()) => format!("copied {characters} characters to the clipboard"),
+            Err(error) => format!("clipboard write failed: {error}"),
+        };
+    }
+
+    /// Prepend restored text to the composer, preserving FIFO order for
+    /// multiple entries. Never called with an empty batch.
+    fn restore_composer_text(&mut self, texts: Vec<String>) {
+        debug_assert!(!texts.is_empty());
+        let mut restored = texts.join("\n");
+        let existing = self.input.as_str();
+        if !existing.is_empty() {
+            restored.push('\n');
+            restored.push_str(existing);
+        }
+        self.mutate_input(|input| input.set_buffer(restored));
+        self.input_focused = true;
+    }
+
+    /// Restore any voided pending inputs of the viewed session into the
+    /// composer: run-end casualties and recalls that resolved while another
+    /// session was being viewed. The store holds them until this drain.
+    fn restore_voided_inputs(&mut self) {
+        let Some(session_id) = self.selected else {
+            return;
+        };
+        let texts = self.store.take_voided_inputs(session_id);
+        if texts.is_empty() {
+            return;
+        }
+        self.restore_composer_text(texts);
+        self.status = "unsent message restored to the composer".into();
+    }
+
+    /// Recall the engine's newest pending steered input so its text returns
+    /// to the composer for editing (`run.recall_steer`). Triggered by
+    /// clicking a strip entry or pressing Up in an empty composer; the
+    /// `UserInputRecalled` event removes the entry from the strip itself.
+    pub(super) fn recall_newest_pending(&mut self) {
+        let Some(session_id) = self.selected else {
+            return;
+        };
+        let Some(state) = self.store.sessions.get(&session_id) else {
+            return;
+        };
+        let Some(run_id) = state.active_run else {
+            self.status = "no active run to recall from".into();
+            return;
+        };
+        if state.pending_inputs.is_empty() {
+            self.status = "no pending message to recall".into();
+            return;
+        }
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let message = match client.recall_steer(RunRecallSteerParams { run_id }).await {
+                Ok(result) => match result.recalled {
+                    Some(text) => {
+                        let _ = updates.send(RpcUpdate::SteerRecalled { session_id, text });
+                        return;
+                    }
+                    // The lane raced ahead (a promotion landed first):
+                    // nothing is owed; the strip is already catching up.
+                    None => "nothing pending to recall".to_owned(),
+                },
+                Err(error) => error.to_string(),
+            };
+            let _ = updates.send(RpcUpdate::Status(message));
+        });
+    }
+
+    /// Open the copy/revert/fork menu for a clicked user-message row. The
+    /// message text is captured now: a rebuild (e.g. a concurrent revert)
+    /// can change the transcript before the action runs.
+    fn open_user_menu(&mut self, hit: UserMessageHit) {
+        let Some(session_id) = self.selected else {
+            return;
+        };
+        let text = self.store.sessions.get(&session_id).and_then(|state| {
+            state.transcript.iter().find_map(|item| match item {
+                TranscriptItem::User { seq, text, .. } if *seq == hit.seq => Some(text.clone()),
+                _ => None,
+            })
+        });
+        let Some(text) = text else {
+            self.status = "message is no longer in the visible branch".into();
+            return;
+        };
+        self.user_menu = Some(UserMenuState {
+            session_id,
+            seq: hit.seq,
+            text,
+        });
+        self.picker_state.select(Some(0));
+        self.modal = Modal::UserMessage;
+    }
+
+    async fn handle_user_menu_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.modal = Modal::None;
+                self.user_menu = None;
+            }
+            KeyCode::Up => {
+                move_picker_selection(&mut self.picker_state, USER_MENU_ITEMS.len(), true);
+            }
+            KeyCode::Down => {
+                move_picker_selection(&mut self.picker_state, USER_MENU_ITEMS.len(), false);
+            }
+            KeyCode::Enter => {
+                self.choose_picker_entry(self.picker_state.selected().unwrap_or(0))
+                    .await;
+            }
+            KeyCode::Char('c') => self.activate_user_menu_entry(0),
+            KeyCode::Char('r') => self.activate_user_menu_entry(1),
+            KeyCode::Char('f') => self.activate_user_menu_entry(2),
+            _ => {}
+        }
+    }
+
+    /// Run one menu row: copy, revert (behind its confirm guard), or fork.
+    fn activate_user_menu_entry(&mut self, index: usize) {
+        let Some(menu) = self.user_menu.clone() else {
+            self.modal = Modal::None;
+            return;
+        };
+        match index {
+            0 => {
+                self.modal = Modal::None;
+                self.user_menu = None;
+                self.copy_to_clipboard(menu.text);
+            }
+            1 => self.modal = Modal::RevertConfirm,
+            2 => {
+                self.modal = Modal::None;
+                self.user_menu = None;
+                self.dispatch_session_fork(menu);
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_revert_confirm_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('n' | 'N') => self.modal = Modal::UserMessage,
+            KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
+                let Some(menu) = self.user_menu.take() else {
+                    self.modal = Modal::None;
+                    return;
+                };
+                self.modal = Modal::None;
+                self.dispatch_session_revert(menu);
+            }
+            _ => {}
+        }
+    }
+
+    /// Revert the session to just before the menu's message (`through_seq =
+    /// seq - 1`), voiding it and every later turn from the visible branch.
+    /// The physical log is append-only; the `SessionReverted` marker drives
+    /// the transcript rebuild through the normal event flow. On success the
+    /// message text restores into the composer for editing and resending.
+    fn dispatch_session_revert(&mut self, menu: UserMenuState) {
+        // User messages always follow `SessionCreated` (sequence 1), so
+        // `seq - 1` is a positive existing physical sequence.
+        let through_seq = menu.seq.saturating_sub(1).max(1);
+        let session_id = menu.session_id;
+        let text = menu.text;
+        self.status = "reverting to before the message…".into();
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let message = match client
+                .revert_session(SessionRevertParams {
+                    session_id,
+                    through_seq,
+                })
+                .await
+            {
+                Ok(_) => {
+                    let _ = updates.send(RpcUpdate::Reverted { session_id, text });
+                    return;
+                }
+                Err(error) => format!("revert failed: {error}"),
+            };
+            let _ = updates.send(RpcUpdate::Status(message));
+        });
+    }
+
+    /// Fork the session at the menu's message (`through_seq = seq`, keeping
+    /// the message in the copied prefix), then switch to the new session.
+    fn dispatch_session_fork(&mut self, menu: UserMenuState) {
+        let session_id = menu.session_id;
+        self.status = "forking the session from the message…".into();
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let message = match client
+                .fork_session(SessionForkParams {
+                    session_id,
+                    through_seq: menu.seq,
+                })
+                .await
+            {
+                Ok(result) => {
+                    let _ = updates.send(RpcUpdate::Forked {
+                        forked: result.session_id,
+                    });
+                    return;
+                }
+                Err(error) => format!("fork failed: {error}"),
+            };
+            let _ = updates.send(RpcUpdate::Status(message));
+        });
+    }
+
+    fn render_user_menu(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        paint_panel(frame, area, &self.theme);
+        let entries = USER_MENU_ITEMS
+            .iter()
+            .map(|(action, description)| format!("{action} — {description}"))
+            .collect();
+        self.render_picker(
+            frame,
+            "Message actions",
+            entries,
+            None,
+            area,
+            Some("↑↓ move · enter/c/r/f: run · esc: close"),
+        );
+    }
+
+    fn render_revert_confirm(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        paint_panel(frame, area, &self.theme);
+        let Some(menu) = self.user_menu.as_ref() else {
+            return;
+        };
+        let preview = ellipsize_single_line(&menu.text, 48);
+        let content = format!(
+            "Revert to before \"{preview}\"?\n\nThe message and every later turn leave the visible branch; the append-only log is kept. The message text returns to the composer for editing and resending.\n\nPress Enter/Y to revert or Esc/N to go back."
+        );
+        frame.render_widget(
+            Paragraph::new(content).wrap(Wrap { trim: false }).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(self.theme.panel_border())
+                    .title("Confirm revert"),
+            ),
+            area,
+        );
     }
 
     pub async fn send_stdin(&mut self, input: String, eof: bool) {
@@ -3906,7 +4866,6 @@ impl App {
         // their own panels over it instead of clearing to the terminal.
         frame.render_widget(Block::default().style(self.theme.surface()), frame.area());
         self.hit_map = UiHitMap::default();
-        self.hit_map.modal_open = self.modal != Modal::None;
         // The composer takes one text row by default and grows with its
         // soft-wrapped content up to the ceiling; the layout reclaims those
         // rows from the conversation pane.
@@ -3919,10 +4878,12 @@ impl App {
         let layout = super::terminal_layout_with_tree_rows(
             frame.area(),
             self.tree_entries().len(),
+            self.queue_strip_height(),
             input_text_rows,
         );
         self.render_tree(frame, layout.agent);
         self.render_conversation(frame, layout.conversation);
+        self.render_queue_strip(frame, layout.queue);
         let title_spans = self.message_title_spans();
         let rendered_input = super::input::render(
             frame,
@@ -4153,11 +5114,20 @@ impl App {
             Modal::DisconnectConfirm => {
                 self.render_disconnect_confirm(frame, centered(frame.area(), 72, 42));
             }
+            Modal::UserMessage => {
+                self.render_user_menu(frame, centered(frame.area(), 52, 26));
+            }
+            Modal::RevertConfirm => {
+                self.render_revert_confirm(frame, centered(frame.area(), 64, 30));
+            }
             Modal::None => {}
         }
         if self.command_palette_visible() {
             self.render_command_palette(frame, centered(frame.area(), 68, 60));
         }
+        // Selection sits beneath hover: both are pure cell-style patches,
+        // and the hover affordance always wins where they overlap.
+        self.apply_selection(frame);
         // Hover is the very last pass: a pure cell-style patch over whatever
         // was rendered, so it can never change layout or hit geometry.
         self.apply_hover(frame);
@@ -5747,6 +6717,47 @@ fn client_run_id() -> ClientRunId {
         .unwrap_or_default()
         .as_nanos();
     ClientRunId::new(format!("tui-{ticks}")).expect("bounded client run id")
+}
+
+/// The OSC 52 clipboard escape for `text`: `ESC ] 52 ; c ; <base64> BEL`.
+/// The `c` target is the system clipboard selection in every terminal that
+/// implements the sequence.
+pub(super) fn osc52_sequence(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", STANDARD.encode(text.as_bytes()))
+}
+
+/// Coarse age label for the strip title: precise enough to show a stuck
+/// queue, coarse enough to avoid false precision (and flicker).
+pub(super) fn queue_age_label(age_secs: i64) -> String {
+    if age_secs < 60 {
+        "<1m".to_owned()
+    } else if age_secs < 3600 {
+        format!("{}m", age_secs / 60)
+    } else {
+        format!("{}h", age_secs / 3600)
+    }
+}
+
+/// Collapse a queued message to one display line of at most `width` cells:
+/// newlines flatten to spaces and overlong text ends in an ellipsis.
+pub(super) fn ellipsize_single_line(text: &str, width: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if UnicodeWidthStr::width(flat.as_str()) <= width {
+        return flat;
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for grapheme in flat.graphemes(true) {
+        let cell = UnicodeWidthStr::width(grapheme);
+        // The ellipsis itself needs one cell.
+        if used + cell + 1 > width {
+            break;
+        }
+        used += cell;
+        out.push_str(grapheme);
+    }
+    out.push('…');
+    out
 }
 
 fn client_response_id() -> ClientResponseId {

@@ -142,16 +142,141 @@ fn runtime() -> RuntimeSnapshotV1 {
 #[test]
 fn exact_versions_are_current_only() {
     assert_eq!(PROTOCOL_VERSION, 9);
-    assert_eq!(EVENT_SCHEMA_VERSION, 13);
+    assert_eq!(EVENT_SCHEMA_VERSION, 14);
     assert_eq!(SESSION_META_SCHEMA_VERSION, 9);
     assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 10);
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 3);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(8)).is_err());
     assert!(serde_json::from_value::<AgentSchemaVersion>(json!(3)).is_err());
-    assert!(serde_json::from_value::<EventSchemaVersion>(json!(12)).is_err());
+    assert!(serde_json::from_value::<EventSchemaVersion>(json!(13)).is_err());
     assert!(serde_json::from_value::<DelegationJournalSchemaVersion>(json!(9)).is_err());
     assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(2)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
+}
+
+#[test]
+fn pending_input_events_and_recall_rpc_round_trip() {
+    let run_id = RunId::new_v7();
+    for payload in [
+        EventPayload::UserInputAdmitted {
+            input: "pending".into(),
+        },
+        EventPayload::UserInputRecalled {
+            input: "pending".into(),
+        },
+        EventPayload::UserInputSubmitted {
+            input: "pending".into(),
+        },
+    ] {
+        let value = serde_json::to_value(&payload).expect("serialize pending-input event");
+        assert_eq!(
+            serde_json::from_value::<EventPayload>(value).expect("deserialize pending-input event"),
+            payload
+        );
+    }
+    let params = RunRecallSteerParams { run_id };
+    assert_eq!(
+        serde_json::from_value::<RunRecallSteerParams>(
+            serde_json::to_value(params).expect("serialize recall params")
+        )
+        .expect("deserialize recall params")
+        .run_id,
+        run_id
+    );
+    for recalled in [Some("pending".to_owned()), None] {
+        let result = RunRecallSteerResult {
+            recalled: recalled.clone(),
+        };
+        assert_eq!(
+            serde_json::from_value::<RunRecallSteerResult>(
+                serde_json::to_value(result).expect("serialize recall result")
+            )
+            .expect("deserialize recall result")
+            .recalled,
+            recalled
+        );
+    }
+}
+
+#[test]
+fn session_revert_reduces_visible_branch_and_rpc_types_round_trip() {
+    let session_id = SessionId::new_v7();
+    let event = |seq, payload| StoredEvent {
+        event_schema_version: EventSchemaVersion::current(),
+        session_id,
+        run_id: None,
+        seq,
+        timestamp: jiff::Timestamp::now(),
+        payload,
+    };
+    let events = vec![
+        event(
+            1,
+            EventPayload::SessionTitleCommitted {
+                change: SessionTitleChange::FallbackSet {
+                    title: SessionTitle::new("creation").expect("title"),
+                },
+                input_through_seq: 1,
+            },
+        ),
+        event(
+            2,
+            EventPayload::SessionTitleCommitted {
+                change: SessionTitleChange::FallbackSet {
+                    title: SessionTitle::new("first").expect("title"),
+                },
+                input_through_seq: 1,
+            },
+        ),
+        event(3, EventPayload::SessionReverted { through_seq: 1 }),
+        event(
+            4,
+            EventPayload::SessionTitleCommitted {
+                change: SessionTitleChange::FallbackSet {
+                    title: SessionTitle::new("branch").expect("title"),
+                },
+                input_through_seq: 1,
+            },
+        ),
+        event(5, EventPayload::SessionReverted { through_seq: 3 }),
+    ];
+    assert_eq!(
+        visible_events(&events)
+            .iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>(),
+        vec![1, 5]
+    );
+    let invalid = StoredEvent {
+        event_schema_version: EventSchemaVersion::current(),
+        session_id,
+        run_id: None,
+        seq: 6,
+        timestamp: jiff::Timestamp::now(),
+        payload: EventPayload::SessionReverted { through_seq: 0 },
+    };
+    assert!(serde_json::from_value::<StoredEvent>(serde_json::to_value(invalid).unwrap()).is_err());
+
+    let revert = SessionRevertParams {
+        session_id,
+        through_seq: 1,
+    };
+    assert_eq!(
+        serde_json::from_value::<SessionRevertParams>(serde_json::to_value(revert).unwrap())
+            .unwrap()
+            .through_seq,
+        1
+    );
+    let fork = SessionForkParams {
+        session_id,
+        through_seq: 1,
+    };
+    assert_eq!(
+        serde_json::from_value::<SessionForkParams>(serde_json::to_value(fork).unwrap())
+            .unwrap()
+            .session_id,
+        session_id
+    );
 }
 
 fn test_resource(binding: &[u8]) -> PreparedApprovalResource {

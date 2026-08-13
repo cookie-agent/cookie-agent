@@ -2,13 +2,13 @@ use cookie_agent_engine::EngineError;
 use cookie_agent_protocol::{
     ApprovalListParams, ApprovalRespondErrorCode, ApprovalRespondParams, ClientHello, EventPayload,
     EventsSubscribeParams, PROVIDER_CONNECT_METHOD, PROVIDER_DISCONNECT_METHOD,
-    RUNTIME_SNAPSHOT_GET_METHOD, RunCancelParams, RunStartParams, RunSteerParams,
-    RunToolStdinParams, RuntimeSnapshotGetParams, SessionChildrenParams, SessionChildrenResult,
-    SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
-    SessionGetParams, SessionGetResult, SessionListParams, SessionListResult,
-    SessionRenameErrorCode, SessionRenameParams, SessionResumeParams, SessionResumeResult,
-    SessionSetPermissionModeParams, SessionSetPermissionModeResult, SessionTreeParams,
-    SessionTreeResult,
+    RUNTIME_SNAPSHOT_GET_METHOD, RunCancelParams, RunRecallSteerParams, RunStartParams,
+    RunSteerParams, RunToolStdinParams, RuntimeSnapshotGetParams, SessionChildrenParams,
+    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
+    SessionCreateResult, SessionForkParams, SessionGetParams, SessionGetResult, SessionListParams,
+    SessionListResult, SessionRenameErrorCode, SessionRenameParams, SessionResumeParams,
+    SessionResumeResult, SessionRevertParams, SessionSetPermissionModeParams,
+    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult,
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -139,6 +139,24 @@ impl Server {
                     .map_err(engine_fault)?;
                 value(SessionCompactResult { compacted })
             }
+            "session.revert" => {
+                let request: SessionRevertParams = decode_params(params)?;
+                value(
+                    self.engine
+                        .revert_session(request.session_id, request.through_seq)
+                        .await
+                        .map_err(engine_fault)?,
+                )
+            }
+            "session.fork" => {
+                let request: SessionForkParams = decode_params(params)?;
+                value(
+                    self.engine
+                        .fork_session(request.session_id, request.through_seq)
+                        .await
+                        .map_err(engine_fault)?,
+                )
+            }
             "run.start" => {
                 let request: RunStartParams = decode_params(params)?;
                 match self.engine.start_run(request.clone()).await {
@@ -154,6 +172,15 @@ impl Server {
                 value(
                     self.engine
                         .steer(request.run_id, request.input)
+                        .await
+                        .map_err(engine_fault)?,
+                )
+            }
+            "run.recall_steer" => {
+                let request: RunRecallSteerParams = decode_params(params)?;
+                value(
+                    self.engine
+                        .recall_steer(request.run_id)
                         .await
                         .map_err(engine_fault)?,
                 )

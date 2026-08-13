@@ -1711,6 +1711,85 @@ mod tests {
     }
 
     #[test]
+    fn revert_voids_checkpoint_beyond_boundary_and_keeps_older_checkpoint() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let binding = binding();
+        let run = RunId::new_v7();
+        let summary_limit = SummaryByteLimit::new(1024).expect("limit");
+        let checkpoint = |summary: &str, through_seq| ContextCheckpointCommit {
+            checkpoint: ContextCheckpoint::InternalSummary {
+                checkpoint: InternalSummaryCheckpoint::new(
+                    summary.into(),
+                    InternalAgentInvocationId::new_v7(),
+                    InternalAgentRunId::new_v7(),
+                    summary_limit,
+                )
+                .expect("checkpoint"),
+            },
+            boundaries: ContextCheckpointBoundaries {
+                source_from_seq: 1,
+                source_through_seq: through_seq,
+                input_through_seq: through_seq,
+                prior_checkpoint_seq: None,
+            },
+            budgets: ContextCheckpointBudgets {
+                context_limit_tokens: 100,
+                trigger_tokens: 70,
+                input_tokens_before: 60,
+                input_tokens_after: 5,
+                max_summary_bytes: summary_limit,
+            },
+        };
+        let session = SessionId(uuid::Uuid::from_u128(1));
+        let mut events = vec![
+            event(
+                1,
+                run,
+                EventPayload::UserInputSubmitted {
+                    input: "old input".into(),
+                },
+            ),
+            event(
+                2,
+                run,
+                EventPayload::ContextCheckpointCommitted {
+                    commit: checkpoint("older summary", 1),
+                },
+            ),
+            event(
+                3,
+                run,
+                EventPayload::UserInputSubmitted {
+                    input: "void input".into(),
+                },
+            ),
+            event(
+                4,
+                run,
+                EventPayload::ContextCheckpointCommitted {
+                    commit: checkpoint("void summary", 3),
+                },
+            ),
+        ];
+        events.push(StoredEvent {
+            event_schema_version: EventSchemaVersion::current(),
+            session_id: session,
+            run_id: None,
+            seq: 5,
+            timestamp: jiff::Timestamp::new(5, 0).expect("timestamp"),
+            payload: EventPayload::SessionReverted { through_seq: 2 },
+        });
+        let visible = cookie_agent_protocol::visible_events(&events);
+        let context = assemble_model_context(&visible, &store, &binding, "System prompt.")
+            .expect("assembled context");
+        let serialized = serde_json::to_string(&context.history).expect("serialized history");
+        assert!(serialized.contains("older summary"));
+        assert!(!serialized.contains("void summary"));
+        assert!(!serialized.contains("void input"));
+    }
+
+    #[test]
     fn assembled_tool_transcript_snapshot_is_stable() {
         let directory = tempfile::tempdir().expect("tempdir");
         let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");

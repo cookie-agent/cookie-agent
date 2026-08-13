@@ -20,20 +20,27 @@ const MAX_INPUT_HEIGHT: u16 = 7;
 pub(crate) struct UiLayout {
     pub(crate) agent: Rect,
     pub(crate) conversation: Rect,
+    /// The steer-queue strip between the conversation pane and the status
+    /// line; zero height while the selected session's queue is empty.
+    pub(crate) queue: Rect,
     pub(crate) input: Rect,
     pub(crate) status: Rect,
     pub(crate) bar: Rect,
 }
 
 /// Resolve the single top-to-bottom pane geometry for a known visible tree
-/// row count and composer text-row demand. The Agents panel is exactly
-/// `clamp(visible_tree_row_count, 1, 8)` text rows with its borders outside
-/// that count, so the conversation starts immediately below it. The
-/// composer takes one text row by default and grows with its content up to
-/// five; every added composer row is reclaimed from the conversation pane.
+/// row count, queue-strip row demand, and composer text-row demand. The
+/// Agents panel is exactly `clamp(visible_tree_row_count, 1, 8)` text rows
+/// with its borders outside that count, so the conversation starts
+/// immediately below it. The composer takes one text row by default and
+/// grows with its content up to five; every added composer row is reclaimed
+/// from the conversation pane. The queue strip reclaims conversation rows
+/// the same way, keeping the status line and composer pinned and always
+/// leaving the conversation at least one row.
 pub(crate) fn terminal_layout_with_tree_rows(
     area: Rect,
     visible_tree_rows: usize,
+    queue_rows: u16,
     input_text_rows: u16,
 ) -> UiLayout {
     let agent_text_rows = visible_tree_rows.clamp(1, 8) as u16;
@@ -55,7 +62,11 @@ pub(crate) fn terminal_layout_with_tree_rows(
     } else {
         content_height
     };
-    let conversation_height = content_height.saturating_sub(agent_height);
+    let conversation_available = content_height.saturating_sub(agent_height);
+    // The strip never starves the conversation completely: on a cramped
+    // terminal it shrinks away rather than taking the last row.
+    let queue_height = queue_rows.min(conversation_available.saturating_sub(1));
+    let conversation_height = conversation_available.saturating_sub(queue_height);
     let agent = Rect::new(area.x, area.y, area.width, agent_height);
     let conversation = Rect::new(
         area.x,
@@ -63,9 +74,15 @@ pub(crate) fn terminal_layout_with_tree_rows(
         area.width,
         conversation_height,
     );
-    let status = Rect::new(
+    let queue = Rect::new(
         area.x,
         conversation.y.saturating_add(conversation_height),
+        area.width,
+        queue_height,
+    );
+    let status = Rect::new(
+        area.x,
+        queue.y.saturating_add(queue_height),
         area.width,
         status_height,
     );
@@ -86,6 +103,7 @@ pub(crate) fn terminal_layout_with_tree_rows(
     UiLayout {
         agent,
         conversation,
+        queue,
         status,
         input,
         bar,

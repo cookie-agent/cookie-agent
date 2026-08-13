@@ -33,13 +33,14 @@ use cookie_agent_protocol::{
     InvocationId, OperationFingerprint, OutputStream, PermissionMode, PersistedAssistantPart,
     PersistedModelTurn, PersistedToolResult as ToolResult, PreparedOperationIdentity,
     ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
-    ProviderDisconnectResult, RunCancelResult, RunId, RunSelection, RunStartParams, RunStartResult,
-    RunSteerResult, RunToolStdinParams, RunToolStdinResult, RuntimeChangeReason,
-    RuntimeChangedNotification, RuntimeSnapshotResult, SafeCode, SafeDisplayText, SafeErrorMessage,
-    SafeInternalAgentCall, SafeInternalAgentResult, SafeToolError, SessionId, SessionMeta,
-    SessionOrigin, SessionRenameChange, SessionRenameParams, SessionRenameResult, SessionStatus,
-    SessionTitle, SessionTitleChange, Sha256Digest, StoredEvent, SummaryByteLimit, ToolAttachment,
-    ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolOutputTruncation,
+    ProviderDisconnectResult, RunCancelResult, RunId, RunRecallSteerResult, RunSelection,
+    RunStartParams, RunStartResult, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
+    RuntimeChangeReason, RuntimeChangedNotification, RuntimeSnapshotResult, SafeCode,
+    SafeDisplayText, SafeErrorMessage, SafeInternalAgentCall, SafeInternalAgentResult,
+    SafeToolError, SessionForkResult, SessionId, SessionMeta, SessionOrigin, SessionRenameChange,
+    SessionRenameParams, SessionRenameResult, SessionRevertResult, SessionStatus, SessionTitle,
+    SessionTitleChange, Sha256Digest, StoredEvent, SummaryByteLimit, ToolAttachment, ToolCallId,
+    ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolOutputTruncation,
     ToolTerminationOutcome, TreeApprovalGrant,
 };
 use futures_util::StreamExt;
@@ -217,8 +218,6 @@ struct ActiveRun {
     cancellation: CancellationToken,
     cancelled_committed: Mutex<bool>,
     stdin: Mutex<HashMap<ToolCallId, mpsc::Sender<StdinWrite>>>,
-    /// Last persisted event included in the current provider request.
-    prompt_seq: AtomicU64,
     fallback_index: AtomicU64,
 }
 
@@ -236,11 +235,23 @@ struct ContextTokenEstimator {
 struct PredictiveCompactionInput<'a> {
     session: SessionId,
     run: RunId,
-    input: &'a str,
+    serialized_message_bytes: usize,
     policy: &'a FrozenRunPolicy,
     fallback_index: usize,
     cancellation: &'a CancellationToken,
     actor_direct: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PendingInput {
+    admission_seq: u64,
+    input: String,
+}
+
+struct PendingPromotionState {
+    promoted: bool,
+    pending: Vec<PendingInput>,
+    continue_run: bool,
 }
 
 impl ContextTokenEstimator {
@@ -267,6 +278,10 @@ impl ContextTokenEstimator {
     fn should_compact(self, serialized_message_bytes: usize, soft_tokens: u64) -> bool {
         self.projected_tokens(serialized_message_bytes)
             .is_some_and(|projected| projected >= soft_tokens)
+    }
+
+    fn record_compaction(&mut self, estimated_input_tokens: u64) {
+        self.last_committed_input_tokens = estimated_input_tokens;
     }
 }
 
@@ -537,9 +552,29 @@ enum SessionCommand {
         input: String,
         reply: oneshot::Sender<Result<RunSteerResult, EngineError>>,
     },
+    RecallSteer {
+        run: RunId,
+        reply: oneshot::Sender<Result<RunRecallSteerResult, EngineError>>,
+    },
+    CommitPendingPromotion {
+        run: RunId,
+        through_admission_seq: u64,
+        final_text: Option<String>,
+        complete_if_empty: bool,
+        already_promoted: bool,
+        reply: oneshot::Sender<Result<PendingPromotionState, EngineError>>,
+    },
     Compact {
         focus: Option<String>,
         reply: oneshot::Sender<Result<bool, EngineError>>,
+    },
+    Revert {
+        through_seq: u64,
+        reply: oneshot::Sender<Result<SessionRevertResult, EngineError>>,
+    },
+    Fork {
+        through_seq: u64,
+        reply: oneshot::Sender<Result<SessionForkResult, EngineError>>,
     },
     CompactionFinished {
         reply: oneshot::Sender<Result<(), EngineError>>,
@@ -614,9 +649,10 @@ enum SessionCommand {
         result: ToolResult,
         reply: oneshot::Sender<Result<bool, EngineError>>,
     },
-    CompleteIfNoSteering {
+    PromotePendingOrComplete {
         run: RunId,
         final_text: Option<String>,
+        complete_if_empty: bool,
         reply: oneshot::Sender<Result<bool, EngineError>>,
     },
     PromptSnapshot {
@@ -629,7 +665,9 @@ impl SessionCommand {
     fn compaction_deferred_kind(&self) -> Option<CompactionDeferredKind> {
         match self {
             Self::PromptSnapshot { .. } => Some(CompactionDeferredKind::PromptSnapshot),
-            Self::CompleteIfNoSteering { .. } => Some(CompactionDeferredKind::CompleteIfNoSteering),
+            Self::PromotePendingOrComplete { .. } => {
+                Some(CompactionDeferredKind::PromotePendingOrComplete)
+            }
             Self::Resume { .. } => Some(CompactionDeferredKind::Resume),
             _ => None,
         }
@@ -640,7 +678,7 @@ impl SessionCommand {
             Self::PromptSnapshot { reply, .. } => {
                 let _ = reply.send(Err(EngineError::SessionRunning(session)));
             }
-            Self::CompleteIfNoSteering { reply, .. } => {
+            Self::PromotePendingOrComplete { reply, .. } => {
                 let _ = reply.send(Ok(false));
             }
             Self::Resume { reply } => {
@@ -654,7 +692,7 @@ impl SessionCommand {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum CompactionDeferredKind {
     PromptSnapshot,
-    CompleteIfNoSteering,
+    PromotePendingOrComplete,
     Resume,
 }
 

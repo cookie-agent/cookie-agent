@@ -251,6 +251,13 @@ impl Engine {
         )
         .await?;
         self.inner
+            .context_token_estimators
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(input.session)
+            .or_default()
+            .record_compaction(input_tokens_after);
+        self.inner
             .compaction_postcheck_pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -481,7 +488,7 @@ fn latest_real_usage(events: &[StoredEvent]) -> Option<(u64, u64)> {
     })
 }
 
-fn latest_checkpoint_seq(events: &[StoredEvent]) -> u64 {
+pub(super) fn latest_checkpoint_seq(events: &[StoredEvent]) -> u64 {
     events
         .iter()
         .rev()
