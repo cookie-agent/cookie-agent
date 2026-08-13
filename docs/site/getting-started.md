@@ -69,7 +69,8 @@ runnable, the engine supplies the built-in `default` coding agent.
 
 Useful first commands are `/help`, `/sessions`, `/new`, `/compact`, and
 `/cancel`. The [TUI guide](guide/tui.md) covers editing, steering, approvals,
-selection, and message actions.
+selection, and message actions. [Agents](guide/agents.md) explains the built-in
+internal agents and how to author your own.
 
 ## Separate daemon and TUI
 

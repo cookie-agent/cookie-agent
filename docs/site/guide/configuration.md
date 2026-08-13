@@ -1,8 +1,17 @@
 # Configuration
 
-## Locations and layering
+cookie agent reads three independent configuration surfaces:
 
-cookie agent reads two optional authored layers:
+| Surface | Location | Schema |
+|---|---|---|
+| Runtime and providers | `~/.config/cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` | 10 |
+| Agents | `~/.config/cookie_agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` | 4 |
+| TUI | `$XDG_CONFIG_HOME/cookie_agent/tui.toml` or `~/.config/cookie_agent/tui.toml` | 1 |
+
+This page covers where configuration lives and how it behaves. For the complete
+key-by-key reference, see [Configuration Reference](../reference/configuration.md).
+
+## Locations and layering
 
 ```text
 ~/.config/cookie_agent/config.toml
@@ -11,14 +20,31 @@ cookie agent reads two optional authored layers:
 <exact-cwd>/.cookie-agent/agents/<agent-id>.md
 ```
 
-There is no upward workspace search. Workspace settings replace corresponding
-user settings. A same-ID workspace provider or agent replaces the complete user
-definition; nested fields do not merge. Unknown fields and wrong schema versions
-are rejected.
+There is no upward workspace search: configuration is loaded from the exact
+working directory the daemon started in. The user layer and the workspace layer
+are both optional. Workspace settings replace the corresponding user settings. A
+same-ID workspace provider or agent replaces the complete user definition;
+nested fields never merge. Unknown fields, wrong schema versions, and malformed
+values are rejected.
+
+## Minimum runtime configuration
+
+`schema_version = 10` is required; every other top-level section is optional.
+An empty provider map is valid.
+
+```toml
+schema_version = 10
+
+[providers]
+```
+
+If the global provider store is also empty, the TUI starts in setup mode and
+keeps `/connect` available.
 
 ## Runtime settings
 
-`schema_version = 10` is required. All other top-level sections are optional.
+All runtime sections default to safe values; you only need to write the ones you
+want to change:
 
 ```toml
 schema_version = 10
@@ -52,21 +78,37 @@ max_depth = 3
 [providers]
 ```
 
-The daemon requires `server.host` to be exactly `127.0.0.1`. Positive limits are
-required; `max_summary_bytes` may not exceed 2 MiB. Provider definitions are
-covered in [Providers](providers.md).
+Validation rules that apply regardless of what you set:
+
+- The `cookie` binary requires `server.host` to be exactly `127.0.0.1`.
+- Positive limits are required everywhere; `context_compaction.max_summary_bytes`
+  may not exceed 2 MiB.
+- `delegation.max_concurrency` of `0` is rejected; omitting it means unlimited.
+- Provider definitions are validated per provider ID (see
+  [Providers](providers.md)).
 
 ## Environment interpolation
 
-`${env:NAME}` is a single-pass interpolation available only in approved secret
-values and authored endpoint strings. It is not available in permission
-patterns, agent documents, or custom static headers. Prefer interpolation or
-`/connect` over plaintext credentials.
+`${env:NAME}` is a single-pass interpolation available only in approved provider
+secret values (`api_key`, `auth`/`auth_override` credential values, `setup`
+fields) and authored endpoint strings (`endpoint`, `base_url`). It is not
+available in permission patterns, agent documents, or custom static headers.
+Interpolation is applied at load time; a missing variable fails startup with the
+offending path.
+
+```toml
+[providers.openai]
+source = "models_dev"
+api_key = "${env:OPENAI_API_KEY}"
+```
+
+Prefer interpolation or `/connect` over plaintext credentials, and never commit
+`.env` or a credential-bearing config.
 
 ## Agent documents
 
-The filename is the agent ID. Each Markdown file has schema-4 YAML frontmatter
-and a nonempty Markdown body used as the system prompt:
+Agents are Markdown files whose filename is the agent ID. Each file has schema-4
+YAML frontmatter and a nonempty Markdown body used as the system prompt:
 
 ```markdown
 ---
@@ -75,8 +117,7 @@ description: Reviews changes for correctness
 mode: subagent
 enabled: true
 model_fallback:
-  - model: openai/gpt-5
-    variant: null
+  - { model: "openai/gpt-5", variant: null }
 limits:
   timeout_ms: 30000
   max_input_tokens: 16384
@@ -96,5 +137,25 @@ Review the requested change and report concrete findings.
 Modes are `primary`, `subagent`, `all`, and `internal`. Internal agents are
 engine-only and cannot be selected as roots or delegation targets. The reserved
 built-ins are `approval`, `compaction`, and `title`; same-ID authored internal
-documents replace them through normal layering. Only internal agents may use
+documents replace them through normal layering, and only internal agents may use
 `${parent_model}` in a model fallback.
+
+See [Agents](agents.md) for the full frontmatter reference and the built-in
+internal agents.
+
+## TUI configuration
+
+The TUI reads `tui.toml` from `$XDG_CONFIG_HOME/cookie_agent/` when XDG is set,
+otherwise `~/.config/cookie_agent/`. It is independent of the runtime config:
+there is no workspace layer and no environment-variable override. A missing file
+uses defaults; unknown keys or malformed values are rejected naming the path and
+key.
+
+```toml
+minimum_event_level = "warning"   # debug | info | warning | error
+theme = "default"                 # default | mono | high-contrast
+```
+
+`theme` takes precedence over `COOKIE_THEME` and terminal detection, but
+`NO_COLOR` and `TERM=dumb` always force monochrome. See
+`docs/tui.toml.example` for the fully commented example.

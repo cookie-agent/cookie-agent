@@ -14,7 +14,7 @@ configuration, or provider-store state changes later.
 ## Revert
 
 Revert is available only while the session is idle. It appends a
-`SessionReverted` control event; it never truncates the physical event log.
+`session_reverted` control event; it never truncates the physical event log.
 Events through the selected positive sequence remain visible, and subsequent
 events form a new branch. Title, status, usage, approvals, transcript, and model
 context are derived from that visible branch.
@@ -52,3 +52,6 @@ Steering remains available while compaction runs. Admitted inputs stay pending
 and are promoted only after the checkpoint, honoring any recalls made during
 compaction. Set `context_compaction.auto = false` to disable automatic signals;
 manual and context-overflow recovery compaction remain available.
+
+See [Compaction](compaction.md) for the trigger math, the internal agent that
+performs it, rehydration, and anti-thrash behavior.

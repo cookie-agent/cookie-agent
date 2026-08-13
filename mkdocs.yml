@@ -53,18 +53,17 @@ nav:
       - TUI: guide/tui.md
       - Sessions: guide/sessions.md
       - Permissions: guide/permissions.md
+      - Agents: guide/agents.md
       - Configuration: guide/configuration.md
       - Providers: guide/providers.md
+      - Compaction: guide/compaction.md
   - Reference:
+      - Configuration: reference/configuration.md
       - Protocol: reference/protocol.md
       - Events: reference/events.md
       - Schemas: reference/schemas.md
       - Rust API: reference/api.md
   - Architecture: architecture.md
-  - Design Notes:
-      - Overview: design/index.md
-      - Dynamic Provider Contract: docs/agent-model-variant-redesign.md
-      - Provider Conformance: docs/provider-conformance.md
 
 extra:
   version:

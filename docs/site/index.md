@@ -5,9 +5,9 @@ connections, sessions, model execution, permissions, and persistence; the
 terminal UI communicates with it over the versioned JSON-RPC protocol.
 
 The project accepts only its current schemas. There are no migration readers or
-legacy protocol paths. [Architecture](architecture.md) is the authoritative
-implementation contract; this site turns that contract into task-oriented
-guides and reference material.
+legacy protocol paths. [Architecture](architecture.md) describes how the pieces
+fit together; this site turns that implementation into task-oriented guides and
+reference material.
 
 ## Quickstart
 
@@ -17,7 +17,7 @@ You need Rust 1.88 or newer and Python 3 for the documentation tooling.
 git clone https://github.com/cookie-agent/cookie-agent.git
 cd cookie-agent
 mkdir -p .cookie-agent
-printf 'schema_version = 10\n' > .cookie-agent/config.toml
+printf 'schema_version = 10\n[providers]\n' > .cookie-agent/config.toml
 cargo run --locked -p cookie_agent -- daemon
 ```
 
@@ -32,8 +32,9 @@ credentials are per-user and shared across workspaces. Credentials are checked
 when the provider is first used, not during the connect flow.
 
 See [Getting Started](getting-started.md) for configuration and first-run
-details, or [Providers](guide/providers.md) for authored and stored provider
-options.
+details, [Providers](guide/providers.md) for managed and custom provider
+options, and [Configuration](reference/configuration.md) for every configurable
+item.
 
 !!! warning "Keep credentials out of Git"
     Prefer `/connect` or `${env:NAME}` interpolation. Do not commit `.env`, a

@@ -4,6 +4,32 @@ The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
 Protocol 9 is current-only. A client must call `handshake` with
 `{ "protocol_version": 9 }` before any other method.
 
+## Session mechanics
+
+The JSON-RPC session layer lives in the `protocol` crate so the server, the TUI,
+and the CLI share one implementation of the protocol mechanics.
+
+- **Transport.** `protocol::Transport` is a frame-level channel:
+  `send(MessageFrame)` / `recv() -> Option<MessageFrame>`, with `MessageFrame`
+  either a `Text` string or a `Value`. It carries no JSON-RPC semantics. The
+  `server` crate provides `WebSocketTransport` and `InProcessStream`
+  implementations; the daemon's axum accept path implements the same trait
+  server-side.
+- **ServerProtocol.** The server contract is one async method per RPC plus
+  `connected`. The `server` crate implements it over `Engine`. `protocol::serve`
+  drives one complete session over a transport: it rejects every method before
+  the exact-version handshake with error code `-32001`, correlates requests by
+  id, dispatches to the implementation, and delivers notifications through a
+  `ServerContext`.
+- **ClientProtocol.** The client contract is implemented by the shared
+  `protocol::Client`. Its connection task correlates requests by id, demuxes
+  notifications into an ordered `ClientDelivery` stream, injects cursor replays
+  and gap recovery before buffered live notifications, wipes secret-bearing
+  serialized frames, and fails outstanding calls on shutdown.
+- **TUI and CLI.** The TUI client is a thin adapter re-exporting the server's
+  `Client` wrapper; the CLI uses the same client through the `ClientProtocol`
+  trait. Both still work without the `tui` feature.
+
 ## Methods
 
 | Method | Parameters | Result summary |
@@ -70,5 +96,9 @@ the title, and continues with new physical sequences.
 | `events.tool_output_snapshot` | Stream and retained output snapshot |
 | `events.tool_output_delta` | Tool call, stream, byte offset, data |
 | `events.tool_output_gap` | Tool call, stream, next available offset |
+
+The shared client maps these to `ClientDelivery` variants (`Live`, replay
+deliveries, output stream events, `RuntimeChanged`, `RecoveryFailed`), so a UI
+consumes one ordered stream and never parses raw JSON-RPC frames.
 
 See [Events](events.md) for schema-14 event payloads.
