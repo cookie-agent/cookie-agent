@@ -1,0 +1,74 @@
+# Protocol Reference
+
+The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
+Protocol 9 is current-only. A client must call `handshake` with
+`{ "protocol_version": 9 }` before any other method.
+
+## Methods
+
+| Method | Parameters | Result summary |
+|---|---|---|
+| `handshake` | `protocol_version` | Server protocol version |
+| `runtime.snapshot.get` | Empty object | One coherent runtime snapshot |
+| `provider.connect` | Provider, expected catalog revision, setup/auth values, client ID | Durable connection, effective auth, snapshot, replay state |
+| `provider.disconnect` | Provider, expected revisions/generation, client ID | Disconnect receipt, effective auth, snapshot, replay state |
+| `session.create` | Run selection | Session metadata |
+| `session.list` | Optional cwd identity | Session metadata list |
+| `session.get` | Session ID | Session metadata |
+| `session.children` | Session ID | Direct child summaries |
+| `session.tree` | Session ID | Recursive session tree |
+| `session.resume` | Session ID | Resumed session metadata |
+| `session.rename` | Session ID, client rename ID, set/clear/reset change | Session metadata and client ID |
+| `session.set_permission_mode` | Session ID, `auto_approve`/`ask`/`yolo` | Empty object |
+| `session.compact` | Session ID, required nullable focus | Whether a checkpoint was committed |
+| `session.revert` | Session ID, positive `through_seq` | Updated session metadata |
+| `session.fork` | Session ID, positive `through_seq` | New session ID |
+| `run.start` | Session ID, client run ID, selection, input | Run ID |
+| `run.steer` | Run ID, input | `accepted` boolean |
+| `run.recall_steer` | Run ID | Required nullable recalled text |
+| `run.cancel` | Run ID | `cancelled` boolean |
+| `run.tool_stdin` | Run ID, tool call ID, optional data, EOF flag | `accepted` boolean |
+| `events.subscribe` | Session ID, optional cursor | Initial stored events; starts notifications |
+| `approval.list` | Root session ID, optional status | Approval records and tree grants |
+| `approval.respond` | Approval identity/revision/fingerprint, client ID, decision, optional rejection feedback | Updated approval record |
+
+Discovery is only `runtime.snapshot.get`; protocol 9 has no independent model,
+agent, or catalog list RPCs.
+
+## Steering
+
+`run.steer` requires an active target run. It immediately appends
+`user_input_admitted` and returns `{ "accepted": true }`; admission does not
+change model history. At each completed tool batch and no-tool completion
+boundary, all pending inputs are promoted FIFO as separate
+`user_input_submitted` events before the next request. A no-tool boundary with
+no pending input completes the run.
+
+`run.recall_steer` removes the newest pending input (LIFO), appends
+`user_input_recalled`, and returns its text. It returns `{ "recalled": null }`
+without an event if the lane is empty. Terminal run events void anything still
+pending.
+
+## Revert and fork
+
+`session.revert` is idle-only and appends a `session_reverted` marker. The target
+must be a positive existing physical sequence. The physical log remains
+append-only; branch-derived transcript, context, title, usage, and approvals use
+the visible prefix plus events after the marker.
+
+`session.fork` may read an active source but requires a persisted prefix that
+contains a submitted user message. The fork copies that prefix exactly under a
+new session ID, closes any copied in-flight run locally, appends ` (fork)` to
+the title, and continues with new physical sequences.
+
+## Notifications
+
+| Notification | Payload |
+|---|---|
+| `runtime.changed` | Previous revision, complete snapshot, sorted change reasons |
+| `events.subscription` | One stored event or a session sequence gap |
+| `events.tool_output_snapshot` | Stream and retained output snapshot |
+| `events.tool_output_delta` | Tool call, stream, byte offset, data |
+| `events.tool_output_gap` | Tool call, stream, next available offset |
+
+See [Events](events.md) for schema-14 event payloads.

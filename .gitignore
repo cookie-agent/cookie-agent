@@ -24,3 +24,7 @@ target
 .env
 .env.local
 .cookie-agent/model-snapshots/
+
+# Generated documentation
+/site/
+/docs/site/api/

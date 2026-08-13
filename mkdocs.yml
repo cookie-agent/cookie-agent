@@ -1,0 +1,71 @@
+site_name: cookie agent
+site_url: https://cookie-agent.github.io/cookie-agent/
+site_description: Documentation for the cookie agent coding harness
+repo_url: https://github.com/cookie-agent/cookie-agent
+repo_name: cookie-agent/cookie-agent
+docs_dir: docs/site
+site_dir: site
+exclude_docs: |
+  api/**/*.md
+strict: true
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.sections
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+  - include-markdown:
+      rewrite_relative_urls: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Guide:
+      - TUI: guide/tui.md
+      - Sessions: guide/sessions.md
+      - Permissions: guide/permissions.md
+      - Configuration: guide/configuration.md
+      - Providers: guide/providers.md
+  - Reference:
+      - Protocol: reference/protocol.md
+      - Events: reference/events.md
+      - Schemas: reference/schemas.md
+      - Rust API: reference/api.md
+  - Architecture: architecture.md
+  - Design Notes:
+      - Overview: design/index.md
+      - Dynamic Provider Contract: docs/agent-model-variant-redesign.md
+      - Provider Conformance: docs/provider-conformance.md
+
+extra:
+  version:
+    provider: mike

@@ -1,0 +1,54 @@
+# Sessions
+
+## Lifecycle and persistence
+
+A new empty session exists only in memory. Its directory, metadata cache, and
+event JSONL are created atomically when the first user message is submitted.
+Closing an empty session leaves no persisted session.
+
+Use `/new` to create a fresh root session and `/sessions` to search and switch
+between sessions. Delegated sessions form a tree beneath the root that created
+them. Accepted runs retain their frozen model binding even if catalog,
+configuration, or provider-store state changes later.
+
+## Revert
+
+Revert is available only while the session is idle. It appends a
+`SessionReverted` control event; it never truncates the physical event log.
+Events through the selected positive sequence remain visible, and subsequent
+events form a new branch. Title, status, usage, approvals, transcript, and model
+context are derived from that visible branch.
+
+In the TUI, click a past user message, choose **Revert**, and confirm. The TUI
+targets the sequence immediately before that user message and restores the
+message text to the composer for editing.
+
+## Fork
+
+Fork copies a persisted prefix containing at least one submitted user message
+into a new independent session. It may read an active source session. Copied
+events retain their sequence numbers, timestamps, run IDs, and payloads, while
+their envelope is rebound to the new session ID. Shared content-addressed
+artifacts remain resolvable without copying their bytes.
+
+In the TUI, choose **Fork** from a user message. That message is included in the
+copied prefix, the new title receives ` (fork)`, and the new session is selected.
+
+## Compaction
+
+Automatic compaction is enabled by default. It triggers from actual token usage
+or a learned pre-send estimate relative to the model context limit. Old bulky
+tool outputs may first be replaced with artifact references; if that is enough,
+no summarizer call is made.
+
+Use `/compact` to force compaction for the selected idle session. Add optional
+focus text, for example:
+
+```text
+/compact preserve the parser decisions and failing test evidence
+```
+
+Steering remains available while compaction runs. Admitted inputs stay pending
+and are promoted only after the checkpoint, honoring any recalls made during
+compaction. Set `context_compaction.auto = false` to disable automatic signals;
+manual and context-overflow recovery compaction remain available.

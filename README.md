@@ -4,6 +4,13 @@
 
 Subagent-first coding harness.
 
+[![Documentation](https://img.shields.io/badge/docs-cookie--agent.github.io-blue)](https://cookie-agent.github.io/cookie-agent/)
+
+## Documentation
+
+The versioned user guide, protocol reference, and Rust API documentation are at
+[cookie-agent.github.io/cookie-agent](https://cookie-agent.github.io/cookie-agent/).
+
 The authoritative contract is [ARCHITECTURE.md](ARCHITECTURE.md). Exact schema
 and runtime behavior are in
 [docs/agent-model-variant-redesign.md](docs/agent-model-variant-redesign.md), and
@@ -14,19 +21,20 @@ the implemented npm-family/provider/auth baseline is described in
 
 | Surface | Version |
 |---|---:|
-| Runtime configuration | 8 |
-| Agent document | 2 |
-| Protocol | 8 |
-| Events, session JSONL, delegation journal | 9 |
+| Runtime configuration | 10 |
+| Agent document | 4 |
+| Protocol | 9 |
+| Events and session JSONL | 14 |
 | Session metadata | 9 |
-| Runtime snapshot | 2 |
+| Delegation journal | 10 |
+| Runtime snapshot | 3 |
 | Catalog cache | 2 |
 | Provider store | 3 |
 | Family recipe registry | 1 |
 | Project model-snapshot manifest | 1 |
 
-Earlier project formats are rejected. There is no schema-7 or protocol-7
-migration.
+Earlier project formats are rejected. There are no migrations or compatibility
+readers.
 
 ## Dynamic catalog
 
@@ -81,7 +89,7 @@ paths and permission labels match what the permission pipeline evaluated.
 Every prepared tool must provide this object explicitly; parameterless tools use
 an empty object, and construction rejects `null`. Permission labels use each
 tool's mandatory primary argument: file path, whole command, or delegate target.
-TUI compact titles use a separate simplified
+TUI compact titles use a separate display
 argument: abbreviated paths, a one-line bash command that keeps `&&` segments,
 or the same delegate agent id. Bash no longer
 reroutes `cat`/`rm` onto read/write; each call is one bash resource whose
