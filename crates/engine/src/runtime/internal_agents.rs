@@ -59,8 +59,7 @@ impl Engine {
         let max_input_tokens = internal_agent_input_limit(kind, &policy);
         if input_tokens > max_input_tokens {
             return Err(ModelError::invalid_request(format!(
-                "internal agent input is {input_tokens} estimated tokens, exceeding the frozen {}-token limit",
-                max_input_tokens
+                "internal agent input is {input_tokens} estimated tokens, exceeding the frozen {max_input_tokens}-token limit"
             ))
             .into());
         }

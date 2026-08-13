@@ -443,8 +443,7 @@ impl OutputCapture {
             self.store.preview(&stdout.sha256, preview_budget)?;
         let (stderr_preview, stderr_truncated) =
             self.store.preview(&stderr.sha256, preview_budget)?;
-        let complete_for_budget =
-            format!("stdout:\n{}\n\nstderr:\n{}", stdout_preview, stderr_preview);
+        let complete_for_budget = format!("stdout:\n{stdout_preview}\n\nstderr:\n{stderr_preview}");
         let preview = truncate_tool_output(&complete_for_budget, max_lines, max_bytes)
             .map_or(complete_for_budget.clone(), |preview| preview.content);
         let stream_truncated = stdout_truncated || stderr_truncated;
