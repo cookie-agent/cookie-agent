@@ -20,7 +20,7 @@ use super::{
     MAX_PENDING_PREPARED_TOOLS, ModelApprovalInput, PendingTool, PredictiveCompactionInput,
     SessionCommand, ToolCallFailureCode, ToolFailure,
     approval_projection::denied_tool_failure,
-    compaction::{CompactionInput, effective_compaction_limit, latest_checkpoint_seq},
+    compaction::{CompactionInput, latest_checkpoint_seq, resolve_compaction_trigger},
     helpers::safe_error,
     should_run_predictive_compaction,
     tool_execution::fallback_operation_fingerprint,
@@ -246,7 +246,7 @@ impl Engine {
             return Ok(false);
         };
         let config = &self.inner.config.runtime.context_compaction;
-        let trigger_tokens = effective_compaction_limit(context_limit, config.buffer_tokens);
+        let trigger_tokens = resolve_compaction_trigger(context_limit, &config.trigger);
         let estimator = self
             .inner
             .context_token_estimators
@@ -658,7 +658,10 @@ impl Engine {
                     .map_err(|error| ModelError::invalid_request(error.to_string()))?
                     .len();
                 let replay_preflight = context.replay_decisions;
-                let request = ModelRequest::new(context.history).with_tools(tools.clone());
+                let mut request = ModelRequest::new(context.history).with_tools(tools.clone());
+                if let Some(native_context) = context.native_context {
+                    request = request.with_native_context(native_context);
+                }
                 let request = model.prepare_request(request);
                 let abort = AbortBridge::new(cancellation.clone());
                 let response = tokio::select! {

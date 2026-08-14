@@ -107,6 +107,7 @@ export * from "./ModelSnapshotManifestV1.js";
 export * from "./ModelSnapshotPayloadV1.js";
 export * from "./ModelToolName.js";
 export * from "./NativeContextScope.js";
+export * from "./NativeContextWindow.js";
 export * from "./NativeReplayArtifact.js";
 export * from "./NormalizedDecimal.js";
 export * from "./Notification.js";

@@ -96,6 +96,7 @@ fn validate_field(id: &str, value: &str) -> Result<(), SetupValidationError> {
     let valid = match id {
         "project" => lower_token && value.as_bytes()[0].is_ascii_alphanumeric(),
         "location" | "region" | "resource_name" | "deployment" => lower_token,
+        "model" | "version" | "deployment_type" => bounded && !value.chars().any(char::is_control),
         "resource" => value == "publishers/google",
         "api_version" => {
             value.len() == 10

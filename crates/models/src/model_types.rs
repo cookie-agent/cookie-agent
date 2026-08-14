@@ -9,6 +9,41 @@ pub use cookie_agent_protocol::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionCapability {
+    #[default]
+    Unsupported,
+    Native,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub enum NativeCompactionConfig {
+    #[default]
+    Unsupported,
+    OpenAiResponsesCompact,
+    AzureResponsesCompact,
+}
+
+impl<'de> Deserialize<'de> for NativeCompactionConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match String::deserialize(deserializer)?.as_str() {
+            "unsupported" => Ok(Self::Unsupported),
+            "openai-responses-compact" => Ok(Self::OpenAiResponsesCompact),
+            "azure-responses-compact" => Ok(Self::AzureResponsesCompact),
+            "v1" => Err(serde::de::Error::custom(
+                "compaction = \"v1\" was renamed to an adapter-specific Responses compaction value",
+            )),
+            _ => Err(serde::de::Error::custom(
+                "compaction must be \"unsupported\", \"openai-responses-compact\", or \"azure-responses-compact\"",
+            )),
+        }
+    }
+}
+
 /// Internal digest decoding remains permissive for existing compiled model state.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
@@ -57,6 +92,8 @@ pub struct ModelCapabilities {
     pub temperature: bool,
     pub top_p: bool,
     pub seed: bool,
+    #[serde(default)]
+    pub compaction: CompactionCapability,
     pub native_replay: ReplayCapability,
     pub cancellation: CancellationCapability,
     pub media: BTreeMap<MediaKind, MediaCapability>,

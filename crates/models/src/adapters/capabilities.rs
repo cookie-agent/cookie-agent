@@ -34,6 +34,13 @@ pub fn validate_capability_ceiling(
     if capabilities.native_replay != ReplayCapability::Unsupported && !replay_supported {
         return Err(AdapterCapabilityError::Unsupported);
     }
+    let compaction_supported = matches!(
+        family,
+        OvenAdapterFamily::OpenaiResponses | OvenAdapterFamily::AzureOpenaiResponses
+    );
+    if capabilities.compaction == crate::CompactionCapability::Native && !compaction_supported {
+        return Err(AdapterCapabilityError::Unsupported);
+    }
     for (kind, media) in &capabilities.media {
         let modality = match kind {
             MediaKind::Image => Modality::Image,

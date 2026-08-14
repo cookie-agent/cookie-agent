@@ -16,9 +16,9 @@ use url::Url;
 use zeroize::Zeroize;
 
 pub use crate::model_types::{
-    CancellationCapability, FiniteF32, MediaCapability, MediaKind, MimeType, Modality,
-    ModelCapabilities, ProviderOptions as CustomProviderOptions, ReasoningBehavior,
-    ReplayCapability, RequestDefaults, ToolChoice, VariantDirective,
+    CancellationCapability, CompactionCapability, FiniteF32, MediaCapability, MediaKind, MimeType,
+    Modality, ModelCapabilities, NativeCompactionConfig, ProviderOptions as CustomProviderOptions,
+    ReasoningBehavior, ReplayCapability, RequestDefaults, ToolChoice, VariantDirective,
 };
 
 const MAX_ENDPOINT_BYTES: usize = 2048;
@@ -285,6 +285,8 @@ pub struct ManagedModelOverride {
     pub variants: BTreeMap<VariantId, VariantDirective>,
     pub default_variant: Option<ConfiguredModelDefault>,
     pub shape: Option<ManagedModelShape>,
+    #[serde(default)]
+    pub compaction: NativeCompactionConfig,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -425,6 +427,7 @@ fn validate_capabilities(value: &ModelCapabilities) -> Result<(), AuthoringError
         || value.output_tokens == 0
         || value.output_tokens > value.context_tokens
         || value.parallel_tool_calls && !value.tool_calling
+        || value.compaction != CompactionCapability::Unsupported
     {
         return Err(AuthoringError::Capabilities);
     }

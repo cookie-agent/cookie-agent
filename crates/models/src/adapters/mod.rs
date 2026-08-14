@@ -195,6 +195,27 @@ const AZURE_CUSTOM_FIELDS: &[crate::recipes::SetupFieldRecipe] = &[
         default: None,
         environment_alias: None,
     },
+    crate::recipes::SetupFieldRecipe {
+        id: "model",
+        value_type: crate::recipes::SetupFieldType::String,
+        required: false,
+        default: None,
+        environment_alias: None,
+    },
+    crate::recipes::SetupFieldRecipe {
+        id: "version",
+        value_type: crate::recipes::SetupFieldType::String,
+        required: false,
+        default: None,
+        environment_alias: None,
+    },
+    crate::recipes::SetupFieldRecipe {
+        id: "deployment_type",
+        value_type: crate::recipes::SetupFieldType::String,
+        required: false,
+        default: None,
+        environment_alias: None,
+    },
 ];
 const AZURE_CUSTOM_SETUP: crate::recipes::SetupRecipe = crate::recipes::SetupRecipe {
     id: "custom-azure-openai-setup-v1",

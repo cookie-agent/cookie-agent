@@ -147,6 +147,61 @@ fn authored_shape_selects_chat() {
 }
 
 #[test]
+fn managed_responses_compaction_setting_derives_native_capability() {
+    let mut provider = record("@ai-sdk/openai", None);
+    provider.id = ProviderId::new("openai").unwrap();
+    let model_id = provider.models.keys().next().unwrap().clone();
+    let authored: ModelsDevProvider = toml::from_str(&format!(
+        r#"shape = "responses"
+
+[model_overrides."{model_id}"]
+compaction = "openai-responses-compact"
+"#
+    ))
+    .unwrap();
+    let compiled = DynamicCompiler::family_registry()
+        .compile_managed("sha256:test", &provider, Some(&authored))
+        .unwrap();
+    assert_eq!(
+        compiled
+            .models
+            .values()
+            .next()
+            .unwrap()
+            .capabilities
+            .compaction,
+        cookie_agent_models::CompactionCapability::Native
+    );
+}
+
+#[test]
+fn managed_compaction_setting_rejects_wrong_recipe_and_legacy_value() {
+    let legacy = toml::from_str::<ModelsDevProvider>(
+        r#"[model_overrides."model/1"]
+compaction = "v1"
+"#,
+    )
+    .expect_err("legacy value must fail");
+    assert!(legacy.to_string().contains("adapter-specific"));
+
+    let authored: ModelsDevProvider = toml::from_str(
+        r#"shape = "chat"
+
+[model_overrides."model/1"]
+compaction = "openai-responses-compact"
+"#,
+    )
+    .unwrap();
+    let mut provider = record("@ai-sdk/openai", None);
+    provider.id = ProviderId::new("openai").unwrap();
+    assert!(
+        DynamicCompiler::family_registry()
+            .compile_managed("sha256:test", &provider, Some(&authored))
+            .is_err()
+    );
+}
+
+#[test]
 fn unresolved_placeholder_requires_setup() {
     let compiled = DynamicCompiler::family_registry()
         .compile_managed(

@@ -62,7 +62,7 @@ timeout_ms = 30000
 
 [context_compaction]
 auto = true
-buffer_tokens = 33000
+trigger = { percent = 70 }
 max_summary_bytes = 262144
 
 [session_title]
@@ -81,8 +81,9 @@ max_depth = 3
 Validation rules that apply regardless of what you set:
 
 - The `cookie` binary requires `server.host` to be exactly `127.0.0.1`.
-- Positive limits are required everywhere; `context_compaction.max_summary_bytes`
-  may not exceed 2 MiB.
+- Positive limits are required everywhere; compaction trigger percentages must
+  be from 1 through 99, and `context_compaction.max_summary_bytes` may not exceed
+  2 MiB.
 - `delegation.max_concurrency` of `0` is rejected; omitting it means unlimited.
 - Provider definitions are validated per provider ID (see
   [Providers](providers.md)).

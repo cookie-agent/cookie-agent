@@ -1,12 +1,17 @@
 use std::collections::{HashMap, HashSet};
 
+use cookie_agent_config::ContextCompactionTrigger;
 use cookie_agent_protocol::{
     ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
     ContextCheckpointCommit, ContextRehydratedFile, InternalAgentKind, InternalSummaryCheckpoint,
     PersistedAssistantPart, RunId, SessionId, SessionStatus, Sha256Digest, StoredEvent,
     SummaryByteLimit, ToolCallId,
 };
-use oven_sdk::{ModelError, ToolDefinition};
+use oven_sdk::{
+    CompactionCapability, CompactionRequest, ModelError, Request as ModelRequest, ToolDefinition,
+};
+use oven_sdk_azure::{AzureOpenAiCompactionOptions, AzureOpenAiCompactionRequestExt as _};
+use oven_sdk_openai::{OpenAiResponsesCompactionOptions, OpenAiResponsesCompactionRequestExt as _};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -19,8 +24,9 @@ use super::{
 };
 use crate::{
     events::OutputHub,
+    model_bridge::AbortBridge,
     model_history::{self, assemble_model_context},
-    policy::FrozenRunPolicy,
+    policy::{self, FrozenRunPolicy},
     tool_api::{ProgressSink, ToolCall, ToolExecutionContext},
 };
 
@@ -116,7 +122,7 @@ impl Engine {
             return Ok(input.events);
         };
         let config = &self.inner.config.runtime.context_compaction;
-        let trigger_tokens = effective_compaction_limit(context_limit, config.buffer_tokens);
+        let trigger_tokens = resolve_compaction_trigger(context_limit, &config.trigger);
         let auto_disabled = self
             .inner
             .compaction_auto_disabled
@@ -148,7 +154,7 @@ impl Engine {
             } else {
                 false
             };
-            if observed_tokens < trigger_tokens {
+            if !usage_reaches_compaction_trigger(observed_tokens, trigger_tokens) {
                 return Ok(input.events);
             }
             if should_latch_auto_compaction(
@@ -177,7 +183,7 @@ impl Engine {
             }
         }
 
-        let mut events = self
+        let events = self
             .stage_tool_output_elision(input.session, input.events.clone(), input.actor_direct)
             .await?;
         let composed_prompt = self.run_agent_prompt(input.session, input.run)?;
@@ -216,6 +222,81 @@ impl Engine {
         };
         let summary_limit = SummaryByteLimit::new(config.max_summary_bytes as u64)
             .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
+        let native_checkpoint = if input.binding.descriptor.capabilities.compaction
+            == CompactionCapability::Native
+        {
+            if let Ok(model) = policy::resolve_model(input.binding, &input.owner_policy.runtime) {
+                let mut request =
+                    ModelRequest::new(context.history.clone()).with_tools(input.tools.to_vec());
+                if let Some(native_context) = context.native_context.clone() {
+                    request = request.with_native_context(native_context);
+                }
+                let request = model.prepare_request(request);
+                let mut compact_request = CompactionRequest::new(request);
+                let instructions = input.focus.map(str::to_owned);
+                compact_request = match input.binding.protocol_recipe.as_str() {
+                    "oven.openai.responses" => compact_request
+                        .with_openai_responses_compaction_options(
+                            OpenAiResponsesCompactionOptions {
+                                instructions,
+                                ..OpenAiResponsesCompactionOptions::default()
+                            },
+                        ),
+                    "oven.azure.openai.responses" => compact_request
+                        .with_azure_openai_compaction_options(AzureOpenAiCompactionOptions {
+                            instructions,
+                            ..AzureOpenAiCompactionOptions::default()
+                        }),
+                    _ => compact_request,
+                };
+                if model.model().supports_compaction(&compact_request) {
+                    let abort = AbortBridge::new(input.cancellation.child_token());
+                    match model.model().compact(compact_request, abort.signal()).await {
+                        Ok(result) => model_history::persist_native_context(
+                            result.native_context,
+                            input.binding,
+                        )
+                        .ok(),
+                        Err(_) => None,
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(window) = native_checkpoint {
+            let retained_history = context.history.get(..1).unwrap_or(&context.history);
+            let input_tokens_after = estimated_request_tokens(retained_history, input.tools)?;
+            let budgets = ContextCheckpointBudgets {
+                context_limit_tokens: context_limit,
+                trigger_tokens: trigger_tokens.max(1).min(context_limit),
+                input_tokens_before,
+                input_tokens_after,
+                max_summary_bytes: summary_limit,
+            };
+            let commit = ContextCheckpointCommit {
+                checkpoint: ContextCheckpoint::NativeWindow { window },
+                boundaries: boundaries.clone(),
+                budgets,
+            };
+            if commit.validate_for_binding(input.binding).is_ok() {
+                self.append_compaction_event(
+                    input.session,
+                    Some(input.run),
+                    Event::ContextCheckpointCommitted { commit },
+                    input.actor_direct,
+                )
+                .await?;
+                return self
+                    .finalize_context_checkpoint(input, events, input_tokens_after)
+                    .await;
+            }
+        }
+
         let (history, instruction) = compaction_history(context.history, input.focus);
         let summary = self
             .run_internal_history_agent(
@@ -273,6 +354,16 @@ impl Engine {
             input.actor_direct,
         )
         .await?;
+        self.finalize_context_checkpoint(input, events, input_tokens_after)
+            .await
+    }
+
+    async fn finalize_context_checkpoint(
+        &self,
+        input: CompactionInput<'_>,
+        mut events: Vec<StoredEvent>,
+        input_tokens_after: u64,
+    ) -> Result<Vec<StoredEvent>, EngineError> {
         self.inner
             .context_token_estimators
             .lock()
@@ -485,12 +576,26 @@ pub(crate) fn active_compaction_binding<'a>(
         .ok_or(EngineError::NoRunnableModel)
 }
 
-pub(super) fn effective_compaction_limit(context_limit: u64, buffer_tokens: u64) -> u64 {
-    context_limit.saturating_sub(buffer_tokens)
+pub(super) fn resolve_compaction_trigger(
+    context_limit: u64,
+    trigger: &ContextCompactionTrigger,
+) -> u64 {
+    match trigger {
+        ContextCompactionTrigger::Percent { percent } => context_limit
+            .saturating_mul(u64::from(*percent))
+            .saturating_div(100),
+        ContextCompactionTrigger::BufferTokens { buffer_tokens } => {
+            context_limit.saturating_sub(*buffer_tokens)
+        }
+    }
 }
 
 fn compaction_gate(force: bool, auto: bool, auto_disabled: bool, trigger_tokens: u64) -> bool {
     force || (auto && !auto_disabled && trigger_tokens > 0)
+}
+
+fn usage_reaches_compaction_trigger(observed_tokens: u64, trigger_tokens: u64) -> bool {
+    observed_tokens >= trigger_tokens
 }
 
 fn latest_real_usage(events: &[StoredEvent]) -> Option<(u64, u64)> {
@@ -663,8 +768,8 @@ mod tests {
 
     use super::{
         COMPACTION_INSTRUCTION, TOOL_OUTPUT_ELISION_MIN_BYTES, compaction_gate, compaction_history,
-        compaction_instruction, effective_compaction_limit, recent_read_candidates,
-        should_elide_tool_output, should_latch_auto_compaction,
+        compaction_instruction, recent_read_candidates, resolve_compaction_trigger,
+        should_elide_tool_output, should_latch_auto_compaction, usage_reaches_compaction_trigger,
     };
     use crate::{
         model_history::{assemble_model_context, wire_model},
@@ -676,11 +781,41 @@ mod tests {
         },
         tool_api::ToolCall,
     };
+    use cookie_agent_config::ContextCompactionTrigger;
 
     #[test]
-    fn compaction_buffer_math_is_saturating() {
-        assert_eq!(effective_compaction_limit(200_000, 33_000), 167_000);
-        assert_eq!(effective_compaction_limit(8_192, 33_000), 0);
+    fn compaction_trigger_math_supports_percent_and_saturating_buffer() {
+        assert_eq!(
+            resolve_compaction_trigger(200_000, &ContextCompactionTrigger::Percent { percent: 70 }),
+            140_000
+        );
+        assert_eq!(
+            resolve_compaction_trigger(
+                200_000,
+                &ContextCompactionTrigger::BufferTokens {
+                    buffer_tokens: 33_000
+                }
+            ),
+            167_000
+        );
+        assert_eq!(
+            resolve_compaction_trigger(
+                8_192,
+                &ContextCompactionTrigger::BufferTokens {
+                    buffer_tokens: 33_000
+                }
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn automatic_compaction_gate_changes_at_proportional_threshold() {
+        let trigger =
+            resolve_compaction_trigger(200_000, &ContextCompactionTrigger::Percent { percent: 70 });
+        assert!(compaction_gate(false, true, false, trigger));
+        assert!(!usage_reaches_compaction_trigger(139_999, trigger));
+        assert!(usage_reaches_compaction_trigger(140_000, trigger));
     }
 
     #[test]

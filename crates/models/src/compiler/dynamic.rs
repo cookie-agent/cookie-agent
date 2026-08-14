@@ -267,9 +267,18 @@ impl DynamicCompiler {
             }
             _ => adapter.protocol_recipe().to_owned(),
         };
-        let capabilities = capabilities_from_catalog(model, adapter).map_err(|_| {
+        let mut capabilities = capabilities_from_catalog(model, adapter).map_err(|_| {
             ModelLocalError::Unsupported("unsupported_model_capabilities".to_owned())
         })?;
+        apply_compaction_config(
+            &mut capabilities,
+            adapter,
+            provider_id,
+            override_.map_or(crate::NativeCompactionConfig::Unsupported, |value| {
+                value.compaction
+            }),
+        )
+        .map_err(ModelLocalError::Provider)?;
         if !validate_capability_shape(&capabilities)
             || validate_capability_ceiling(adapter, &capabilities).is_err()
         {
@@ -412,9 +421,10 @@ impl DynamicCompiler {
         let auth = custom_auth_shape(&provider.auth, auth_method);
         let mut models = BTreeMap::new();
         for (id, model) in &provider.models {
-            if !validate_capability_shape(&model.capabilities)
-                || validate_capability_ceiling(adapter, &model.capabilities).is_err()
-                || !validate_defaults(&model.defaults, &model.capabilities)
+            let capabilities = model.capabilities.clone();
+            if !validate_capability_shape(&capabilities)
+                || validate_capability_ceiling(adapter, &capabilities).is_err()
+                || !validate_defaults(&model.defaults, &capabilities)
                 || !validate_custom_options(&model.options, adapter)
                 || !validate_no_auth_profile(&auth, adapter, &model.capabilities, &model.options)
             {
@@ -424,8 +434,8 @@ impl DynamicCompiler {
                 custom_variants(&model.variants, model.default_variant.as_ref())
                     .map_err(|_| DynamicCompileError::Variant)?;
             if variants.values().any(|variant| {
-                !validate_defaults(&variant.defaults, &model.capabilities)
-                    || variant.reasoning.is_some() && !model.capabilities.reasoning
+                !validate_defaults(&variant.defaults, &capabilities)
+                    || variant.reasoning.is_some() && !capabilities.reasoning
                     || !validate_custom_options(&variant.options, adapter)
                     || !reasoning_supported(variant.reasoning.as_ref(), adapter)
             }) {
@@ -454,7 +464,7 @@ impl DynamicCompiler {
                     &setup,
                     &auth,
                     &safe_headers,
-                    &model.capabilities,
+                    &capabilities,
                     &model.defaults,
                     &options,
                     (&variants, &variant_order, &default_variant),
@@ -482,7 +492,7 @@ impl DynamicCompiler {
                     endpoint: Some(endpoint),
                     setup: Some(setup.clone()),
                     auth: auth.clone(),
-                    capabilities: model.capabilities.clone(),
+                    capabilities,
                     defaults: model.defaults.clone(),
                     options,
                     variants,
@@ -522,6 +532,27 @@ impl DynamicCompiler {
             fingerprint: provider_fingerprint,
         })
     }
+}
+
+fn apply_compaction_config(
+    capabilities: &mut ModelCapabilities,
+    adapter: OvenAdapterFamily,
+    provider_id: &ProviderId,
+    config: crate::NativeCompactionConfig,
+) -> Result<(), DynamicCompileError> {
+    capabilities.compaction = match (adapter, config) {
+        (_, crate::NativeCompactionConfig::Unsupported) => crate::CompactionCapability::Unsupported,
+        (
+            OvenAdapterFamily::OpenaiResponses,
+            crate::NativeCompactionConfig::OpenAiResponsesCompact,
+        ) if provider_id.as_str() == "openai" => crate::CompactionCapability::Native,
+        (
+            OvenAdapterFamily::AzureOpenaiResponses,
+            crate::NativeCompactionConfig::AzureResponsesCompact,
+        ) if provider_id.as_str() == "azure.openai" => crate::CompactionCapability::Native,
+        _ => return Err(DynamicCompileError::CustomModel),
+    };
+    Ok(())
 }
 
 enum ModelLocalError {

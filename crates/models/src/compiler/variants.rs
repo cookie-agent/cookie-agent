@@ -348,6 +348,7 @@ mod tests {
             variants,
             default_variant,
             shape: None,
+            compaction: crate::NativeCompactionConfig::Unsupported,
         }
     }
 

@@ -121,7 +121,7 @@ max_depth = 3
 
 [context_compaction]
 auto = true
-buffer_tokens = 33000
+trigger = { percent = 70 }
 # max_summary_bytes = 262144
 
 [server]
@@ -132,9 +132,10 @@ port = 17419
 ```
 
 Automatic context compaction is enabled by default. Its effective trigger is
-the model context limit minus `buffer_tokens` (default 33,000). The real-usage
-signal compares the latest committed `input_tokens + output_tokens` with that
-trigger. Steering is first admitted to a durable pending lane and remains
+70% of the model context limit by default. Set
+`trigger = { buffer_tokens = 33000 }` to reserve fixed headroom instead. The
+real-usage signal compares the latest committed `input_tokens + output_tokens`
+with that trigger. Steering is first admitted to a durable pending lane and remains
 recallable until the next turn boundary. At that boundary, the learned
 tokens-per-byte predictor checks pending inputs in admission order; if it crosses
 the same trigger, the checkpoint commits before the inputs are promoted as
@@ -152,8 +153,9 @@ elision gets under the trigger, no summary call is made. Otherwise the summarize
 receives the exact normal assembled context and tool definitions plus one final
 summary instruction, allowing the shared prefix to hit provider prompt caches.
 The committed summary uses fixed continuation framing, then up to five recently
-read UTF-8 files are re-read within bounded byte limits. Provider-native
-compaction is unsupported.
+read UTF-8 files are re-read within bounded byte limits. Opted-in OpenAI
+Responses and Azure Responses models try provider-native compaction first and
+fall back automatically to the same internal summarizer path.
 
 New empty sessions are memory-only. Their session directory, metadata cache, and
 event JSONL are created atomically when the first user message is submitted;

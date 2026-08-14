@@ -1116,7 +1116,12 @@ impl FrozenModelBinding {
         {
             return Err(ModelSchemaError::DescriptorIdentityMismatch);
         }
-        if self.descriptor.capabilities.compaction != oven_sdk::CompactionCapability::Unsupported {
+        if self.descriptor.capabilities.compaction == oven_sdk::CompactionCapability::Native
+            && !matches!(
+                self.protocol_recipe.as_str(),
+                "oven.openai.responses" | "oven.azure.openai.responses"
+            )
+        {
             return Err(ModelSchemaError::NativeCompactionUnsupported);
         }
         self.defaults
@@ -1302,7 +1307,7 @@ impl fmt::Display for ModelSchemaError {
                 "frozen descriptor key does not match resolved selection"
             }
             Self::NativeCompactionUnsupported => {
-                "provider-native compaction is not part of the current runtime"
+                "provider-native compaction requires an OpenAI or Azure Responses recipe"
             }
             Self::ProviderOptionsAdapterMismatch => {
                 "provider options do not match the resolved adapter"

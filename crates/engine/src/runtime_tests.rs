@@ -637,6 +637,152 @@ fn custom_fixture() -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint("http://127.0.0.1:9/v1")
 }
 
+fn managed_openai_compaction_fixture(endpoint: &str) -> (Fixture, RunSelection) {
+    let directory = TempDir::new().expect("temp directory");
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+        .expect("private temp directory");
+    let project = directory.path().join(".cookie-agent");
+    fs::create_dir(&project).expect("project directory");
+    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
+    fs::write(
+        project.join("config.toml"),
+        r#"schema_version = 10
+
+[providers.openai]
+source = "models_dev"
+api_key = "test-secret"
+shape = "responses"
+
+[providers.openai.model_overrides."gpt-test"]
+compaction = "openai-responses-compact"
+"#,
+    )
+    .expect("config");
+    fs::set_permissions(
+        project.join("config.toml"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .expect("private config");
+    let agents = project.join("agents");
+    fs::create_dir(&agents).expect("agents directory");
+    fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
+    fs::write(
+        agents.join("primary.md"),
+        "---\nschema: 4\ndescription: Native compaction test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"openai/gpt-test\", variant: base }]\ntools: []\npermissions: {}\n---\nTest native compaction.\n",
+    )
+    .expect("agent");
+    fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
+        .expect("private agent");
+    let mut config = load_from_roots(None, Some(&project)).expect("loaded config");
+    config.runtime.session_title.generate_on_first_turn = false;
+    let provider_id = ProviderId::new("openai").expect("provider ID");
+    let model_id = ProviderModelId::new("gpt-test").expect("model ID");
+    let model = CatalogModelRecord {
+        id: model_id.clone(),
+        name: "GPT Test".into(),
+        description: "native compaction test".into(),
+        family: None,
+        attachment: false,
+        reasoning: false,
+        tool_call: false,
+        structured_output: Some(false),
+        temperature: Some(true),
+        open_weights: false,
+        status: CatalogModelStatus::Stable,
+        release_date: "2026-01-01".into(),
+        last_updated: "2026-01-01".into(),
+        modalities: CatalogModalities {
+            input: vec!["text".into()],
+            output: vec!["text".into()],
+        },
+        limits: CatalogLimits {
+            context: 4096,
+            input: None,
+            output: 1024,
+        },
+        shape: None,
+        provider: None,
+        reasoning_options: Vec::new(),
+        interleaved: None,
+        canonical_provenance: None,
+    };
+    let record = CatalogProviderRecord {
+        id: provider_id.clone(),
+        name: "OpenAI".into(),
+        environment: vec!["OPENAI_API_KEY".into()],
+        npm: "@ai-sdk/openai".into(),
+        api: Some(endpoint.into()),
+        shape: None,
+        documentation_url: "https://example.test/openai".into(),
+        models: BTreeMap::from([(
+            model_id.clone(),
+            CatalogModelEntry {
+                id: model_id,
+                record: Some(model),
+                quarantine: None,
+            },
+        )]),
+    };
+    let now = Timestamp::now();
+    let catalog = Arc::new(CatalogSnapshot {
+        revision: CatalogRevision::new(format!("sha256:{}", "c".repeat(64))).unwrap(),
+        source: CatalogSource::Network,
+        state: CatalogRuntimeState {
+            availability: CatalogAvailability::Ready,
+            age: CatalogAgeState::Current,
+            last_error: None,
+        },
+        validated_at: now,
+        last_checked_at: now,
+        etag: None,
+        providers: BTreeMap::from([(
+            provider_id.clone(),
+            CatalogProviderEntry {
+                id: provider_id,
+                record: Some(record),
+                quarantine: None,
+            },
+        )]),
+        canonical_models: BTreeMap::new(),
+        quarantine: Vec::new(),
+    });
+    let provider_store = directory.path().join("provider-store");
+    fs::create_dir(&provider_store).expect("provider store");
+    fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
+        .expect("private provider store");
+    let manager = Arc::new(
+        ModelManager::new(
+            config.runtime.providers.clone(),
+            catalog,
+            ProviderStore::open(provider_store).expect("provider store"),
+        )
+        .expect("managed manager"),
+    );
+    let engine = Engine::open(EngineOptions {
+        data_dir: directory.path().join("data"),
+        cwd: directory.path().to_owned(),
+        config: config.clone(),
+        model_manager: Arc::clone(&manager),
+        tools: Vec::new(),
+    })
+    .expect("managed engine");
+    (
+        Fixture {
+            _directory: directory,
+            engine,
+            config,
+            manager,
+        },
+        RunSelection {
+            agent: AgentId::new("primary").unwrap(),
+            model: ModelSelection {
+                model: "openai/gpt-test".parse().unwrap(),
+                variant: None,
+            },
+        },
+    )
+}
+
 #[tokio::test]
 async fn session_metadata_tracks_log_tail_for_create_get_list_tree_and_append() {
     let (fixture, selection) = custom_fixture();
@@ -1040,7 +1186,8 @@ media = {}
     let mut config = load_from_roots(None, Some(&project)).expect("loaded config");
     config.runtime.session_title.generate_on_first_turn = false;
     if let Some(buffer_tokens) = compaction_buffer_tokens {
-        config.runtime.context_compaction.buffer_tokens = buffer_tokens;
+        config.runtime.context_compaction.trigger =
+            cookie_agent_config::ContextCompactionTrigger::BufferTokens { buffer_tokens };
     }
     let provider_store = directory.path().join("provider-store");
     fs::create_dir(&provider_store).expect("provider store directory");
@@ -1531,6 +1678,97 @@ async fn scripted_model_server() -> (String, tokio::task::JoinHandle<String>) {
     (format!("http://{address}/v1"), task)
 }
 
+async fn native_compaction_server(
+    fail_native: bool,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("native compaction listener");
+    let address = listener.local_addr().expect("listener address");
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        let count = if fail_native { 3 } else { 2 };
+        for index in 0..count {
+            let (mut socket, _) = listener.accept().await.expect("native compaction accept");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 8192];
+            loop {
+                let read = socket
+                    .read(&mut buffer)
+                    .await
+                    .expect("native compaction read");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = if index == 0 {
+                let body = concat!(
+                    "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-test\"}}\n\n",
+                    "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[]}}\n\n",
+                    "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"initial complete\"}\n\n",
+                    "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"initial complete\"}]}}\n\n",
+                    "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"initial complete\"}]}]}}\n\n"
+                );
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            } else if fail_native && index == 1 {
+                "HTTP/1.1 500 Internal Server Error\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}".into()
+            } else if fail_native {
+                let body = concat!(
+                    "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_summary\",\"model\":\"gpt-test\"}}\n\n",
+                    "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_summary\",\"role\":\"assistant\",\"content\":[]}}\n\n",
+                    "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"fallback summary\"}\n\n",
+                    "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_summary\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"fallback summary\"}]}}\n\n",
+                    "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg_summary\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"fallback summary\"}]}]}}\n\n"
+                );
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            } else {
+                let body = serde_json::json!({
+                    "id": "cmp_1",
+                    "created_at": 1_754_000_000_u64,
+                    "object": "response.compaction",
+                    "output": [{
+                        "type": "compaction",
+                        "id": "cmp_item_1",
+                        "encrypted_content": "opaque-compacted-state",
+                        "created_by": "openai"
+                    }],
+                    "usage": {
+                        "input_tokens": 120,
+                        "input_tokens_details": {"cached_tokens": 20},
+                        "output_tokens": 8,
+                        "output_tokens_details": {"reasoning_tokens": 3},
+                        "total_tokens": 128
+                    }
+                })
+                .to_string();
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            };
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("native compaction response");
+            requests.push(String::from_utf8(request).expect("UTF-8 request"));
+        }
+        requests
+    });
+    (format!("http://{address}/v1"), task)
+}
+
 async fn scripted_zero_resource_tool_server() -> (String, tokio::task::JoinHandle<Vec<String>>) {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -1923,6 +2161,72 @@ async fn wait_for_session_not_running(engine: &Engine, session_id: SessionId) {
     })
     .await
     .expect("session completion");
+}
+
+#[tokio::test]
+async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
+    for fail_native in [false, true] {
+        let (endpoint, captured) = native_compaction_server(fail_native).await;
+        let (fixture, selection) = managed_openai_compaction_fixture(&endpoint);
+        let session = fixture
+            .engine
+            .create_session(selection.clone())
+            .expect("session");
+        fixture
+            .engine
+            .start_run(RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new(if fail_native {
+                    "native-fallback"
+                } else {
+                    "native-success"
+                })
+                .unwrap(),
+                selection,
+                input: "compact this context".into(),
+            })
+            .await
+            .expect("run");
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+        assert!(
+            fixture
+                .engine
+                .compact_session(session.session_id, Some("preserve focus"))
+                .await
+                .expect("compaction")
+        );
+        let events = fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("projection")
+            .log
+            .events();
+        let checkpoint = events.iter().find_map(|event| match &event.payload {
+            EventPayload::ContextCheckpointCommitted { commit } => Some(&commit.checkpoint),
+            _ => None,
+        });
+        if fail_native {
+            let Some(cookie_agent_protocol::ContextCheckpoint::InternalSummary { checkpoint }) =
+                checkpoint
+            else {
+                panic!("native failure must commit the harness checkpoint");
+            };
+            assert_eq!(checkpoint.summary(), "fallback summary");
+        } else {
+            assert!(matches!(
+                checkpoint,
+                Some(cookie_agent_protocol::ContextCheckpoint::NativeWindow { .. })
+            ));
+        }
+        let requests = captured.await.expect("captured requests");
+        assert!(requests[1].starts_with("POST /v1/responses/compact "));
+        if fail_native {
+            assert!(requests[2].starts_with("POST /v1/responses "));
+        }
+        fixture.engine.shutdown().await;
+    }
 }
 
 fn reopen_engine(fixture: &Fixture) -> Engine {

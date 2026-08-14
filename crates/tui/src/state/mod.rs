@@ -1693,6 +1693,7 @@ fn reduce_event(
                 cookie_agent_protocol::ContextCheckpoint::InternalSummary { .. } => {
                     "internal summary"
                 }
+                cookie_agent_protocol::ContextCheckpoint::NativeWindow { .. } => "native window",
             };
             push_event(
                 state,

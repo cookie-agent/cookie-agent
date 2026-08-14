@@ -617,7 +617,7 @@ impl<'de> Deserialize<'de> for NativeReplayArtifact {
     }
 }
 
-#[derive(Clone, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct NativeContextWindow {
     adapter_id: SafeCode,
@@ -1310,6 +1310,9 @@ pub enum ContextCheckpoint {
         #[serde(flatten)]
         checkpoint: InternalSummaryCheckpoint,
     },
+    NativeWindow {
+        window: NativeContextWindow,
+    },
 }
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -1337,6 +1340,19 @@ impl ContextCheckpointCommit {
             }
             _ => Ok(()),
         }
+    }
+
+    pub fn validate_for_binding(
+        &self,
+        binding: &FrozenModelBinding,
+    ) -> Result<(), EventSchemaError> {
+        self.validate()?;
+        if let ContextCheckpoint::NativeWindow { window } = &self.checkpoint {
+            window
+                .validate_for_binding(binding, window.scope())
+                .map_err(|_| EventSchemaError::NativeSelectionMismatch)?;
+        }
+        Ok(())
     }
 }
 impl<'de> Deserialize<'de> for ContextCheckpointCommit {

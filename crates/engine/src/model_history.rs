@@ -14,11 +14,11 @@ use cookie_agent_protocol::{
 use oven_sdk::{
     AdapterId, AssistantMessage, AssistantPart, CompletedTurn, ContentValue, CustomPart, FilePart,
     FileSource, Finish, FinishReason, HistoryTurn, InputPart, ModelError,
-    NativeContextScope as OvenNativeContextScope, NativeReplayArtifact as OvenReplayArtifact,
-    ProviderId, ReasoningPart, ReplayDecision as OvenReplayDecision,
-    ReplayDisposition as OvenReplayDisposition, ResourceId, SourcePart, SystemMessage, SystemPart,
-    TextPart, ToolApprovalPart, ToolCallPart, ToolContent, ToolMessage, ToolResultPart,
-    UserMessage,
+    NativeContextScope as OvenNativeContextScope, NativeContextWindow as OvenNativeContextWindow,
+    NativeReplayArtifact as OvenReplayArtifact, ProviderId, ReasoningPart,
+    ReplayDecision as OvenReplayDecision, ReplayDisposition as OvenReplayDisposition, ResourceId,
+    SourcePart, SystemMessage, SystemPart, TextPart, ToolApprovalPart, ToolCallPart, ToolContent,
+    ToolMessage, ToolResultPart, UserMessage,
 };
 use thiserror::Error;
 
@@ -225,6 +225,7 @@ struct CallRecord {
 
 pub(crate) struct ModelContext {
     pub(crate) history: Vec<HistoryTurn>,
+    pub(crate) native_context: Option<OvenNativeContextWindow>,
     pub(crate) replay_decisions: Vec<ReplayDecision>,
 }
 
@@ -247,6 +248,7 @@ pub(crate) fn assemble_model_context(
         let assembled = assemble_history_with_replay(events, store, binding, composed_prompt)?;
         return Ok(ModelContext {
             history: assembled.history,
+            native_context: None,
             replay_decisions: assembled.replay_decisions,
         });
     };
@@ -270,6 +272,18 @@ pub(crate) fn assemble_model_context(
             }
             Ok(ModelContext {
                 history: assembled.history,
+                native_context: None,
+                replay_decisions: assembled.replay_decisions,
+            })
+        }
+        ContextCheckpoint::NativeWindow { window } => {
+            commit
+                .validate_for_binding(binding)
+                .map_err(|error| HistoryError::Corrupt(error.to_string()))?;
+            let assembled = assemble_history_with_replay(&after, store, binding, composed_prompt)?;
+            Ok(ModelContext {
+                history: assembled.history,
+                native_context: Some(restore_native_context(window)?),
                 replay_decisions: assembled.replay_decisions,
             })
         }
@@ -1047,6 +1061,30 @@ fn restore_scope(scope: &NativeContextScope) -> Result<OvenNativeContextScope, H
     .map_err(HistoryError::from)
 }
 
+pub(crate) fn persist_native_context(
+    window: OvenNativeContextWindow,
+    binding: &FrozenModelBinding,
+) -> Result<cookie_agent_protocol::NativeContextWindow, HistoryError> {
+    cookie_agent_protocol::NativeContextWindow::new(
+        exact_adapter_code(window.adapter_id().as_str()),
+        binding.blueprint_fingerprint.clone(),
+        persist_scope(window.scope()),
+        window.payload().clone(),
+    )
+    .map_err(|error| HistoryError::Corrupt(error.to_string()))
+}
+
+fn restore_native_context(
+    window: &cookie_agent_protocol::NativeContextWindow,
+) -> Result<OvenNativeContextWindow, HistoryError> {
+    OvenNativeContextWindow::new(
+        AdapterId::new(window.adapter_id().as_str()),
+        restore_scope(window.scope())?,
+        window.payload().clone(),
+    )
+    .map_err(|error| HistoryError::Corrupt(error.to_string()))
+}
+
 fn persist_usage(usage: oven_sdk::Usage) -> Usage {
     Usage {
         input_tokens: usage.input_tokens,
@@ -1227,7 +1265,8 @@ mod tests {
         ToolTerminationOutcome, Usage,
     };
     use oven_sdk::{
-        NativeContextScope as OvenNativeContextScope, ReplayDecision as OvenReplayDecision,
+        AdapterId, NativeContextScope as OvenNativeContextScope,
+        NativeContextWindow as OvenNativeContextWindow, ReplayDecision as OvenReplayDecision,
         ReplayDisposition as OvenReplayDisposition, ResourceId,
     };
 
@@ -1708,6 +1747,78 @@ mod tests {
         assert!(serialized.contains("predictive summary"));
         assert!(serialized.contains("extremely long live user input"));
         assert!(!serialized.contains("old compacted input"));
+    }
+
+    #[test]
+    fn native_checkpoint_carries_window_and_drops_pre_checkpoint_history() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let mut binding = binding();
+        binding.descriptor.capabilities.compaction = oven_sdk::CompactionCapability::Native;
+        let run = RunId::new_v7();
+        let sdk_window = OvenNativeContextWindow::new(
+            AdapterId::new(binding.descriptor.adapter_id.as_str()),
+            OvenNativeContextScope::new(
+                oven_sdk::ProviderId::new(binding.selection.model.provider_id().as_str()),
+                oven_sdk::ModelId::new(binding.selection.model.model_id().as_str()),
+                ResourceId::new("native-window-v1").expect("resource"),
+            )
+            .expect("scope"),
+            serde_json::json!({"type": "compaction", "id": "cmp_1"}),
+        )
+        .expect("SDK window");
+        let window =
+            super::persist_native_context(sdk_window.clone(), &binding).expect("persisted window");
+        let summary_limit = SummaryByteLimit::new(1024).expect("limit");
+        let events = vec![
+            event(
+                1,
+                run,
+                EventPayload::UserInputSubmitted {
+                    input: "old compacted input".into(),
+                },
+            ),
+            event(
+                2,
+                run,
+                EventPayload::ContextCheckpointCommitted {
+                    commit: ContextCheckpointCommit {
+                        checkpoint: ContextCheckpoint::NativeWindow { window },
+                        boundaries: ContextCheckpointBoundaries {
+                            source_from_seq: 1,
+                            source_through_seq: 1,
+                            input_through_seq: 1,
+                            prior_checkpoint_seq: None,
+                        },
+                        budgets: ContextCheckpointBudgets {
+                            context_limit_tokens: 100,
+                            trigger_tokens: 70,
+                            input_tokens_before: 60,
+                            input_tokens_after: 5,
+                            max_summary_bytes: summary_limit,
+                        },
+                    },
+                },
+            ),
+            event(
+                3,
+                run,
+                EventPayload::UserInputSubmitted {
+                    input: "live input".into(),
+                },
+            ),
+            event(4, run, EventPayload::UserInputApplied { user_input_seq: 3 }),
+        ];
+
+        let context = assemble_model_context(&events, &store, &binding, "System prompt.")
+            .expect("assembled context");
+        let serialized = serde_json::to_string(&context.history).expect("serialized history");
+        assert!(!serialized.contains("old compacted input"));
+        assert!(serialized.contains("live input"));
+        assert_eq!(context.native_context, Some(sdk_window));
+        let request = oven_sdk::Request::new(context.history)
+            .with_native_context(context.native_context.expect("native context"));
+        assert!(request.native_context.is_some());
     }
 
     #[test]

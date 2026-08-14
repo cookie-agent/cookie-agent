@@ -106,10 +106,27 @@ impl ConcreteModel {
     /// Constructs one exact concrete Oven model and immutable request defaults.
     pub fn build(&self) -> Result<ConstructedAdapter, ModelBuildError> {
         let provider = self.provider()?;
-        let declaration = ModelDeclaration::new(
-            ModelId::new(self.model_id.clone()),
-            self.capabilities.clone(),
-        )?;
+        let mut capabilities = self.capabilities.clone();
+        capabilities.compaction = match &self.adapter {
+            AdapterConfig::OpenaiResponses { settings, .. }
+                if matches!(
+                    settings.compaction,
+                    OpenAiResponsesCompactionConfig::OpenAiResponsesCompact
+                ) =>
+            {
+                oven_sdk::CompactionCapability::Native
+            }
+            AdapterConfig::AzureResponses { settings, .. }
+                if matches!(
+                    settings.compaction,
+                    AzureResponsesCompactionConfig::AzureResponsesCompact { .. }
+                ) =>
+            {
+                oven_sdk::CompactionCapability::Native
+            }
+            _ => oven_sdk::CompactionCapability::Unsupported,
+        };
+        let declaration = ModelDeclaration::new(ModelId::new(self.model_id.clone()), capabilities)?;
         let (model, provider_options): (Arc<dyn LanguageModel>, BTreeMap<String, Value>) =
             match &self.adapter {
                 AdapterConfig::Anthropic { settings, options } => (
@@ -965,19 +982,38 @@ impl OpenAiResponsesSettingsConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Default, Serialize)]
 pub enum OpenAiResponsesCompactionConfig {
+    #[serde(rename = "unsupported")]
     #[default]
     Unsupported,
-    V1,
+    #[serde(rename = "openai-responses-compact")]
+    OpenAiResponsesCompact,
+}
+
+impl<'de> Deserialize<'de> for OpenAiResponsesCompactionConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match String::deserialize(deserializer)?.as_str() {
+            "unsupported" => Ok(Self::Unsupported),
+            "openai-responses-compact" => Ok(Self::OpenAiResponsesCompact),
+            "v1" => Err(serde::de::Error::custom(
+                "compaction = \"v1\" was renamed to compaction = \"openai-responses-compact\"",
+            )),
+            _ => Err(serde::de::Error::custom(
+                "compaction must be \"unsupported\" or \"openai-responses-compact\"",
+            )),
+        }
+    }
 }
 
 impl From<OpenAiResponsesCompactionConfig> for OpenAiResponsesCompaction {
     fn from(value: OpenAiResponsesCompactionConfig) -> Self {
         match value {
             OpenAiResponsesCompactionConfig::Unsupported => Self::Unsupported,
-            OpenAiResponsesCompactionConfig::V1 => Self::V1,
+            OpenAiResponsesCompactionConfig::OpenAiResponsesCompact => Self::V1,
         }
     }
 }
@@ -1663,20 +1699,20 @@ impl AzureResponsesSettingsConfig {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", deny_unknown_fields)]
 pub enum AzureResponsesCompactionConfig {
+    #[serde(rename = "unsupported")]
     #[default]
     Unsupported,
-    V1 {
-        routing_discriminator: String,
-    },
+    #[serde(rename = "azure-responses-compact")]
+    AzureResponsesCompact { routing_discriminator: String },
 }
 
 impl AzureResponsesCompactionConfig {
     fn to_oven(&self) -> AzureOpenAiResponsesCompaction {
         match self {
             Self::Unsupported => AzureOpenAiResponsesCompaction::Unsupported,
-            Self::V1 {
+            Self::AzureResponsesCompact {
                 routing_discriminator,
             } => AzureOpenAiResponsesCompaction::V1 {
                 routing_discriminator: routing_discriminator.clone(),
@@ -1840,5 +1876,40 @@ mod tests {
                 .get(http::header::USER_AGENT),
             Some(&HeaderValue::from_static(CLIENT_USER_AGENT))
         );
+    }
+
+    #[test]
+    fn responses_compaction_settings_use_explicit_adapter_names() {
+        let openai: OpenAiResponsesSettingsConfig = serde_json::from_value(json!({
+            "routing_discriminator": null,
+            "compaction": "openai-responses-compact"
+        }))
+        .expect("OpenAI compaction setting");
+        assert!(matches!(
+            openai.compaction,
+            OpenAiResponsesCompactionConfig::OpenAiResponsesCompact
+        ));
+        let azure: AzureResponsesCompactionConfig = serde_json::from_value(json!({
+            "kind": "azure-responses-compact",
+            "routing_discriminator": "stable-route"
+        }))
+        .expect("Azure compaction setting");
+        assert!(matches!(
+            azure,
+            AzureResponsesCompactionConfig::AzureResponsesCompact { .. }
+        ));
+    }
+
+    #[test]
+    fn legacy_v1_compaction_settings_fail_with_migration_message() {
+        let error = serde_json::from_value::<OpenAiResponsesCompactionConfig>(json!("v1"))
+            .expect_err("legacy OpenAI setting must fail");
+        assert!(error.to_string().contains("openai-responses-compact"));
+        let error = serde_json::from_value::<AzureResponsesCompactionConfig>(json!({
+            "kind": "v1",
+            "routing_discriminator": "stable-route"
+        }))
+        .expect_err("legacy Azure setting must fail");
+        assert!(error.to_string().contains("azure-responses-compact"));
     }
 }

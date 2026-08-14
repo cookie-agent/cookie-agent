@@ -386,11 +386,14 @@ fn auth_descriptor(
 fn model_descriptor(
     model: &cookie_agent_models::CompiledRuntimeModel,
 ) -> Result<protocol::AvailableModelDescriptor, EngineError> {
-    let capabilities = serde_json::from_value(
-        serde_json::to_value(&model.model.capabilities)
-            .map_err(|_| EngineError::RuntimeCompileFailed)?,
-    )
-    .map_err(|_| EngineError::RuntimeCompileFailed)?;
+    let mut capability_value = serde_json::to_value(&model.model.capabilities)
+        .map_err(|_| EngineError::RuntimeCompileFailed)?;
+    capability_value
+        .as_object_mut()
+        .ok_or(EngineError::RuntimeCompileFailed)?
+        .remove("compaction");
+    let capabilities =
+        serde_json::from_value(capability_value).map_err(|_| EngineError::RuntimeCompileFailed)?;
     let variants = model
         .model
         .variants

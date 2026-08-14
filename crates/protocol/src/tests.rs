@@ -142,7 +142,7 @@ fn runtime() -> RuntimeSnapshotV1 {
 #[test]
 fn exact_versions_are_current_only() {
     assert_eq!(PROTOCOL_VERSION, 9);
-    assert_eq!(EVENT_SCHEMA_VERSION, 14);
+    assert_eq!(EVENT_SCHEMA_VERSION, 15);
     assert_eq!(SESSION_META_SCHEMA_VERSION, 9);
     assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 10);
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 3);
@@ -429,6 +429,22 @@ fn checkpoint_validation_allows_predictive_trigger_and_requires_shrink() {
     assert_eq!(
         commit.validate(),
         Err(EventSchemaError::InvalidCheckpointBoundaries)
+    );
+}
+
+#[test]
+fn native_compaction_is_limited_to_responses_recipes() {
+    let mut binding = frozen_binding();
+    binding.descriptor.capabilities.compaction = oven_sdk::CompactionCapability::Native;
+    assert!(binding.validate().is_ok());
+
+    binding.protocol_recipe = ProtocolRecipeId::new("oven.azure.openai.responses").unwrap();
+    assert!(binding.validate().is_ok());
+
+    binding.protocol_recipe = ProtocolRecipeId::new("oven.openai.chat").unwrap();
+    assert_eq!(
+        binding.validate(),
+        Err(ModelSchemaError::NativeCompactionUnsupported)
     );
 }
 

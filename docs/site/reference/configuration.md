@@ -85,7 +85,8 @@ Controls the automatic context-limit behavior documented in
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `auto` | boolean | `true` | Enable automatic compaction signals (post-check usage and predictive pre-send estimation). Manual `/compact` and context-overflow recovery compaction remain available when `false`. |
-| `buffer_tokens` | integer | `33000` | Headroom subtracted from the model context limit. The trigger threshold is `context_limit - buffer_tokens`; compaction runs when actual or estimated usage reaches it. Must be greater than zero. |
+| `trigger` | inline table | `{ percent = 70 }` | Trigger threshold selection. `{ percent = N }` uses `N%` of the model context limit, where `N` must be from 1 through 99. `{ buffer_tokens = N }` subtracts positive `N` from the context limit, saturating at zero. |
+| `buffer_tokens` | integer | unset | Legacy alias for `trigger = { buffer_tokens = N }`. Must be greater than zero and cannot be set together with `trigger`. |
 | `max_summary_bytes` | integer | `262144` (`256 * 1024`) | Hard byte limit for a compaction summary produced by the internal `compaction` agent. Must be greater than zero and at most `2 * 1024 * 1024` (2 MiB). |
 
 ## `[session_title]`
@@ -124,11 +125,20 @@ api_key = "${env:OPENAI_API_KEY}"
 |---|---|---|---|
 | `source` | string | *(required)* | Must be `"models_dev"`. |
 | `base_url` | string | *(none)* | HTTPS endpoint override. Requires same-definition auth (`api_key` or `auth_override`) and never inherits provider-store setup or credentials. Forbidden for families that compute their endpoint from setup (Vertex, Bedrock, Azure). |
-| `setup` | map of string values | empty | Setup fields the provider recipe requires (for example `project`, `location`, `region`, `resource_name`). Interpolates `${env:NAME}`. |
+| `setup` | map of string values | empty | Setup fields the provider recipe requires (for example `project`, `location`, `region`, `resource_name`). Native Azure Responses compaction also requires `model`, `version`, and `deployment_type`. Interpolates `${env:NAME}`. |
 | `api_key` | string | *(none)* | Single-secret default auth. Allowed only for providers whose default method is an unambiguous single API key. Interpolates `${env:NAME}`. |
 | `auth_override` | table | *(none)* | Explicit auth method override. Mutually exclusive with `api_key`. |
 | `shape` | string | catalog shape | `"chat"` or `"responses"` model shape override. |
-| `model_overrides` | map | empty | Sparse per-model overrides: `enabled`, `display_name`, `defaults`, `variants`, `default_variant`, `shape`. Cannot invent a model absent from the catalog or change capabilities. |
+| `model_overrides` | map | empty | Sparse per-model overrides: `enabled`, `display_name`, `defaults`, `variants`, `default_variant`, `shape`, `compaction`. Cannot invent a model absent from the catalog or directly change capabilities. |
+
+Within a model override, `compaction` defaults to `"unsupported"`. Set it to
+`"openai-responses-compact"` for the OpenAI Responses recipe or
+`"azure-responses-compact"` for the Azure Responses recipe. The compiler derives
+the native capability from this setting and rejects it for other recipes. The
+Azure provider identity must be `azure.openai` to match Oven's native scope.
+Frozen manifests store the compiled native/unsupported capability, not this
+setting string, so they never contain the retired `"v1"` value. Authored `"v1"`
+fails with a migration error naming the adapter-specific replacement.
 
 `auth_override`:
 

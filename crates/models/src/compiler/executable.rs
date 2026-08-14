@@ -250,7 +250,14 @@ fn adapter_config(
         }),
         OvenAdapterFamily::OpenaiResponses => json!({
             "adaptor": "openai-responses",
-            "settings": { "routing_discriminator": Value::Null },
+            "settings": {
+                "routing_discriminator": Value::Null,
+                "compaction": if model.capabilities.compaction == crate::CompactionCapability::Native {
+                    "openai-responses-compact"
+                } else {
+                    "unsupported"
+                }
+            },
             "options": {
                 "reasoning_mode": reasoning.and_then(reasoning_effort),
                 "parallel_tool_calls": model.capabilities.parallel_tool_calls
@@ -325,7 +332,23 @@ fn adapter_config(
             "adaptor": "azure-responses",
             "settings": {
                 "route": { "kind": "v1" },
-                "revision": Value::Null
+                "revision": if model.capabilities.compaction == crate::CompactionCapability::Native {
+                    json!({
+                        "model": setup(model, "model")?,
+                        "version": setup(model, "version")?,
+                        "deployment_type": setup(model, "deployment_type")?
+                    })
+                } else {
+                    Value::Null
+                },
+                "compaction": if model.capabilities.compaction == crate::CompactionCapability::Native {
+                    json!({
+                        "kind": "azure-responses-compact",
+                        "routing_discriminator": model.adapter_id
+                    })
+                } else {
+                    json!({ "kind": "unsupported" })
+                }
             },
             "options": { "reasoning_mode": reasoning.and_then(reasoning_effort) }
         }),

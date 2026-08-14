@@ -655,6 +655,23 @@
             "invocation_id",
             "internal_run_id"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "native_window"
+            },
+            "window": {
+              "$ref": "#/$defs/NativeContextWindow"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "window"
+          ]
         }
       ]
     },
@@ -2990,6 +3007,37 @@
         "provider_id",
         "model_id",
         "resource_id"
+      ]
+    },
+    "NativeContextWindow": {
+      "type": "object",
+      "properties": {
+        "adapter_id": {
+          "description": "Stable lowercase machine-readable code.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "payload": {
+          "x-max-serialized-bytes": 33554432
+        },
+        "scope": {
+          "$ref": "#/$defs/NativeContextScope"
+        },
+        "selection_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "adapter_id",
+        "selection_fingerprint",
+        "scope",
+        "payload"
       ]
     },
     "NativeReplayArtifact": {

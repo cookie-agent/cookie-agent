@@ -165,6 +165,18 @@ fn decode_runtime_layer(value: &mut toml::Value) -> Result<RawRuntimeLayer, Conf
             "configuration TOML is invalid".to_owned(),
         ));
     }
+    if table
+        .get("context_compaction")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|context| {
+            context.contains_key("trigger") && context.contains_key("buffer_tokens")
+        })
+    {
+        return Err(ConfigError::Toml(
+            "context_compaction.trigger and context_compaction.buffer_tokens cannot both be set"
+                .to_owned(),
+        ));
+    }
     let providers = match table.remove("providers") {
         None => SensitiveProviderValues::new(),
         Some(toml::Value::Table(values)) => values

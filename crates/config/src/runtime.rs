@@ -168,27 +168,66 @@ const fn default_approval_timeout() -> u64 {
     30_000
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub struct ContextCompactionConfig {
-    #[serde(default = "yes", rename = "auto")]
     pub auto_compaction: bool,
-    #[serde(default = "default_compaction_buffer_tokens")]
-    pub buffer_tokens: u64,
-    #[serde(default = "default_summary")]
+    pub trigger: ContextCompactionTrigger,
     pub max_summary_bytes: usize,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum ContextCompactionTrigger {
+    Percent { percent: u8 },
+    BufferTokens { buffer_tokens: u64 },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawContextCompactionConfig {
+    #[serde(default = "yes", rename = "auto")]
+    auto_compaction: bool,
+    trigger: Option<ContextCompactionTrigger>,
+    buffer_tokens: Option<u64>,
+    #[serde(default = "default_summary")]
+    max_summary_bytes: usize,
+}
+
+impl<'de> Deserialize<'de> for ContextCompactionConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawContextCompactionConfig::deserialize(deserializer)?;
+        let trigger = match (raw.trigger, raw.buffer_tokens) {
+            (Some(_), Some(_)) => {
+                return Err(serde::de::Error::custom(
+                    "trigger and buffer_tokens cannot both be set",
+                ));
+            }
+            (Some(trigger), None) => trigger,
+            (None, Some(buffer_tokens)) => ContextCompactionTrigger::BufferTokens { buffer_tokens },
+            (None, None) => default_compaction_trigger(),
+        };
+        Ok(Self {
+            auto_compaction: raw.auto_compaction,
+            trigger,
+            max_summary_bytes: raw.max_summary_bytes,
+        })
+    }
+}
+
 impl Default for ContextCompactionConfig {
     fn default() -> Self {
         Self {
             auto_compaction: true,
-            buffer_tokens: default_compaction_buffer_tokens(),
+            trigger: default_compaction_trigger(),
             max_summary_bytes: default_summary(),
         }
     }
 }
-const fn default_compaction_buffer_tokens() -> u64 {
-    33_000
+const fn default_compaction_trigger() -> ContextCompactionTrigger {
+    ContextCompactionTrigger::Percent { percent: 70 }
 }
 const fn default_summary() -> usize {
     256 * 1024
@@ -260,7 +299,11 @@ pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigErro
         return Err(ConfigError::InvalidRuntime);
     }
     let context = &runtime.context_compaction;
-    if context.buffer_tokens == 0
+    let invalid_trigger = match &context.trigger {
+        ContextCompactionTrigger::Percent { percent } => !(1..=99).contains(percent),
+        ContextCompactionTrigger::BufferTokens { buffer_tokens } => *buffer_tokens == 0,
+    };
+    if invalid_trigger
         || context.max_summary_bytes == 0
         || context.max_summary_bytes > 2 * 1024 * 1024
     {

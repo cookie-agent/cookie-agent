@@ -127,7 +127,7 @@ pub use setup_value::*;
 /// The only protocol version supported by this build.
 pub const PROTOCOL_VERSION: u32 = 9;
 /// The only durable event/session-JSONL schema supported by this build.
-pub const EVENT_SCHEMA_VERSION: u32 = 14;
+pub const EVENT_SCHEMA_VERSION: u32 = 15;
 /// The only session metadata schema supported by this build.
 pub const SESSION_META_SCHEMA_VERSION: u32 = 9;
 /// The only delegation-journal schema supported by this build.

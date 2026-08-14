@@ -20,7 +20,7 @@ pub use agents::{
 pub use error::ConfigError;
 pub use loader::{LoadedConfiguration, load, load_from_roots};
 pub use runtime::{
-    ApprovalConfig, ConfigSchemaVersion, ContextCompactionConfig, DelegationConfig, RuntimeConfig,
-    ServerConfig, SessionTitleConfig, ToolOutputConfig,
+    ApprovalConfig, ConfigSchemaVersion, ContextCompactionConfig, ContextCompactionTrigger,
+    DelegationConfig, RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
 };
 pub use wildcard::simple_wildcard_match;

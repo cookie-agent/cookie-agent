@@ -81,6 +81,7 @@ pub(crate) fn capabilities_from_catalog(
         "temperature": model.temperature.unwrap_or(false),
         "top_p": false,
         "seed": false,
+        "compaction": "unsupported",
         "native_replay": native_replay,
         "cancellation": "local_only",
         "media": media
@@ -102,6 +103,10 @@ pub(crate) fn validate_capability_shape(capabilities: &ModelCapabilities) -> boo
         && capabilities.output_tokens > 0
         && capabilities.output_tokens <= capabilities.context_tokens
         && (!capabilities.parallel_tool_calls || capabilities.tool_calling)
+        && matches!(
+            capabilities.compaction,
+            crate::CompactionCapability::Unsupported | crate::CompactionCapability::Native
+        )
         && capabilities.cancellation == CancellationCapability::LocalOnly
         && matches!(
             capabilities.native_replay,

@@ -4,17 +4,49 @@ Compaction replaces a long session history with a checkpoint: a summarizer call
 whose output becomes the context for the next request. It keeps long sessions
 inside the model's context window without discarding the work done so far.
 
+## Native provider compaction
+
+OpenAI Responses and Azure OpenAI Responses models can opt into provider-native
+compaction. The native operation runs first. If the adapter rejects the
+assembled request, the provider call fails, or the returned opaque window is
+invalid, Cookie Agent automatically runs the existing internal compaction agent.
+
+Enable it on a managed provider model override with
+`compaction = "openai-responses-compact"` or
+`compaction = "azure-responses-compact"`. Cookie Agent derives the native model
+capability from that setting. Other adaptors reject the setting. Azure also
+requires the managed provider identity `azure.openai` plus `model`, `version`,
+and `deployment_type` in the provider `setup` table so the window is scoped to
+an explicit deployment.
+
+A native checkpoint stores a bounded opaque provider window rather than summary
+text. Events through the checkpoint boundary are omitted from normal history,
+no framed summary message is inserted, and the window is attached to the next
+request. Later native compactions are seeded with the previous window. The
+window has a 32 MiB cap; `max_summary_bytes` applies only to text summaries.
+
 ## The trigger threshold
 
-Compaction is driven by `buffer_tokens`. The trigger threshold is:
+By default, compaction uses a proportional trigger:
+
+```text
+trigger_tokens = model_context_limit * percent / 100
+```
+
+`percent` defaults to 70, so a model with a 200,000-token context window
+triggers at 140,000 tokens. Valid percentages are 1 through 99; 100 is rejected
+because compaction at the model limit does not preserve useful request
+headroom.
+
+The fixed-buffer form preserves the earlier behavior:
 
 ```text
 trigger_tokens = model_context_limit - buffer_tokens
 ```
 
-`buffer_tokens` defaults to 33,000, so a model with a 200,000-token context
-window triggers at 167,000 tokens. If the buffer exceeds the context limit, the
-trigger becomes 0 and automatic compaction is disabled for that model.
+This subtraction saturates at zero. If the buffer equals or exceeds the context
+limit, the trigger becomes 0 and automatic compaction is disabled for that
+model.
 
 The threshold is compared against two signals:
 
@@ -33,14 +65,17 @@ The threshold is compared against two signals:
    references. If elision alone brings the estimated size under the threshold,
    no summarizer call is made — the session continues with the elided events and
    a `tool_output_elided` event is recorded for each.
-2. **Summarizer call.** The internal `compaction` agent (see
+2. **Native or summarizer call.** An opted-in Responses model first attempts
+   native compaction. Otherwise, or after any native failure, the internal
+   `compaction` agent (see
    [Internal agents](agents.md#internal-agents)) receives the assembled history
    plus the fixed instruction, optionally extended with the user's focus text.
    It must return summary text only, at most `max_summary_bytes` (256 KiB by
    default). Non-text output is rejected.
 3. **Checkpoint commit.** A `context_checkpoint_committed` event records the
-   summary, its source boundaries, and the budget math (context limit, trigger
-   threshold, input tokens before, estimated tokens after).
+   text summary or opaque native window, its source boundaries, and the budget
+   math (context limit, trigger threshold, input tokens before, estimated tokens
+   after).
 4. **Rehydration.** After the checkpoint, the engine re-reads up to 5 distinct
    files most recently opened by the `read` tool (32 KiB each, 128 KiB total,
    permission-checked against the owner policy) and appends a
@@ -59,10 +94,20 @@ context-overflow recovery will run again. This prevents compacting in a loop.
 
 ```toml
 [context_compaction]
-auto = true            # enable automatic signals
-buffer_tokens = 33000  # headroom below the context limit
+auto = true
+trigger = { percent = 70 }
 max_summary_bytes = 262144  # 256 KiB, max 2 MiB
 ```
+
+To reserve a fixed amount of headroom instead:
+
+```toml
+[context_compaction]
+trigger = { buffer_tokens = 33000 }
+```
+
+The legacy top-level `buffer_tokens = 33000` spelling remains accepted as an
+alias for the fixed trigger. It cannot be combined with `trigger`.
 
 - `auto = false` disables the automatic post-check and predictive signals.
   Manual `/compact` and context-overflow recovery compaction remain available.

@@ -4,7 +4,7 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-use cookie_agent_config::{ConfigError, load_from_roots};
+use cookie_agent_config::{ConfigError, ContextCompactionTrigger, load_from_roots};
 use cookie_agent_identity::{AgentId, ProviderId};
 use cookie_agent_models::ProviderDefinition;
 use tempfile::TempDir;
@@ -77,29 +77,88 @@ media = {{}}
 }
 
 #[test]
-fn schema10_adds_buffered_auto_compaction_and_rejects_schema9() {
+fn schema10_compaction_triggers_are_strict_and_legacy_buffer_is_supported() {
     let temp = TempDir::new().unwrap();
-    let omitted = temp.path().join("omitted");
+    let legacy = temp.path().join("legacy");
     write_config(
-        &omitted,
+        &legacy,
         "schema_version = 10\n[context_compaction]\nauto = true\nbuffer_tokens = 33000\n",
     );
-    let loaded = load_from_roots(None, Some(&omitted)).unwrap();
+    let loaded = load_from_roots(None, Some(&legacy)).unwrap();
     assert!(loaded.runtime.context_compaction.auto_compaction);
-    assert_eq!(loaded.runtime.context_compaction.buffer_tokens, 33_000);
+    assert_eq!(
+        loaded.runtime.context_compaction.trigger,
+        ContextCompactionTrigger::BufferTokens {
+            buffer_tokens: 33_000
+        }
+    );
     assert!(loaded.runtime.providers.is_empty());
     assert!(loaded.agents.is_empty());
     assert_eq!(loaded.agent_registry().agents().len(), 0);
 
-    let empty = temp.path().join("empty");
-    write_config(&empty, "schema_version = 10\nproviders = {}\n");
-    assert!(
-        load_from_roots(None, Some(&empty))
+    let defaults = temp.path().join("defaults");
+    write_config(&defaults, "schema_version = 10\nproviders = {}\n");
+    let loaded = load_from_roots(None, Some(&defaults)).unwrap();
+    assert!(loaded.runtime.providers.is_empty());
+    assert_eq!(
+        loaded.runtime.context_compaction.trigger,
+        ContextCompactionTrigger::Percent { percent: 70 }
+    );
+
+    let percent = temp.path().join("percent");
+    write_config(
+        &percent,
+        "schema_version = 10\n[context_compaction]\ntrigger = { percent = 80 }\n",
+    );
+    assert_eq!(
+        load_from_roots(None, Some(&percent))
             .unwrap()
             .runtime
-            .providers
-            .is_empty()
+            .context_compaction
+            .trigger,
+        ContextCompactionTrigger::Percent { percent: 80 }
     );
+
+    let fixed = temp.path().join("fixed");
+    write_config(
+        &fixed,
+        "schema_version = 10\n[context_compaction]\ntrigger = { buffer_tokens = 12000 }\n",
+    );
+    assert_eq!(
+        load_from_roots(None, Some(&fixed))
+            .unwrap()
+            .runtime
+            .context_compaction
+            .trigger,
+        ContextCompactionTrigger::BufferTokens {
+            buffer_tokens: 12_000
+        }
+    );
+
+    for invalid_percent in [0, 100] {
+        let invalid = temp
+            .path()
+            .join(format!("invalid-percent-{invalid_percent}"));
+        write_config(
+            &invalid,
+            &format!(
+                "schema_version = 10\n[context_compaction]\ntrigger = {{ percent = {invalid_percent} }}\n"
+            ),
+        );
+        assert!(matches!(
+            load_from_roots(None, Some(&invalid)),
+            Err(ConfigError::InvalidRuntime)
+        ));
+    }
+
+    let both = temp.path().join("both");
+    write_config(
+        &both,
+        "schema_version = 10\n[context_compaction]\ntrigger = { percent = 70 }\nbuffer_tokens = 33000\n",
+    );
+    let error = load_from_roots(None, Some(&both)).unwrap_err();
+    assert!(matches!(&error, ConfigError::Toml(_)));
+    assert!(error.to_string().contains("cannot both be set"));
 
     let old = temp.path().join("old");
     write_config(&old, "schema_version = 9\n");
