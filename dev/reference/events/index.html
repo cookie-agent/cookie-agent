@@ -981,6 +981,8 @@ run ID reject a null envelope value.</p>
 </tr>
 </tbody>
 </table>
+<p><code>context_compaction_auto_disabled</code> is a legacy durable event retained for old
+session logs. Current engines no longer emit it.</p>
 <p>Schema 14 introduces the pending-input and branch control records used by the
 current steering and revert behavior: <code>user_input_admitted</code>,
 <code>user_input_recalled</code>, and <code>session_reverted</code>. <code>user_input_submitted</code> remains the

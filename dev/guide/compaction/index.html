@@ -677,15 +677,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#anti-thrash-latching" class="md-nav__link">
-    <span class="md-ellipsis">
-      Anti-thrash latching
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#configuration" class="md-nav__link">
     <span class="md-ellipsis">
       Configuration
@@ -969,15 +960,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#anti-thrash-latching" class="md-nav__link">
-    <span class="md-ellipsis">
-      Anti-thrash latching
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#configuration" class="md-nav__link">
     <span class="md-ellipsis">
       Configuration
@@ -1070,11 +1052,20 @@ model.</p>
 </ul>
 <h2 id="what-happens-when-it-triggers">What happens when it triggers<a class="headerlink" href="#what-happens-when-it-triggers" title="Permanent link">&para;</a></h2>
 <ol>
-<li><strong>Tool-output elision.</strong> Bulky tool outputs (8 KiB or more) from turns older
-   than the last two are first replaced with content-addressed artifact
-   references. If elision alone brings the estimated size under the threshold,
-   no summarizer call is made — the session continues with the elided events and
-   a <code>tool_output_elided</code> event is recorded for each.</li>
+<li><strong>Raw-context fit check.</strong> The engine first assembles the unmodified history.
+   It uses the session's calibrated tokens-per-byte estimate when available and
+   otherwise estimates tokens as serialized bytes ÷ 4. A latest real usage value
+   at or below the budget is accepted without estimating. The budget is the
+   compaction agent's effective input limit, or the bound model's context limit
+   for native compaction, minus the compaction agent's output-token allowance.
+   If a replayed policy has no output allowance, the engine reserves 20,000
+   tokens as conservative summary-output headroom.</li>
+<li><strong>Overflow elision.</strong> When the raw context exceeds that budget, or when a
+   normal model request has already failed for context length, bulky tool outputs
+   (8 KiB or more) from turns older than the last two are replaced with
+   content-addressed artifact references. The context is then reassembled from
+   the elided events. If elision brings an automatic compaction below its trigger
+   threshold, no summarizer call is made.</li>
 <li><strong>Native or summarizer call.</strong> An opted-in Responses model first attempts
    native compaction. Otherwise, or after any native failure, the internal
    <code>compaction</code> agent (see
@@ -1092,12 +1083,6 @@ model.</p>
    <code>context_rehydrated</code> event with their contents, so the fresh context still
    has the important file contents available.</li>
 </ol>
-<h2 id="anti-thrash-latching">Anti-thrash latching<a class="headerlink" href="#anti-thrash-latching" title="Permanent link">&para;</a></h2>
-<p>After a compaction, the engine runs a post-check on the next committed turn. If
-usage is still at or above the trigger threshold — meaning the summary plus new
-work is already too big — automatic compaction latches off for that session,
-emits a <code>context_compaction_auto_disabled</code> event, and only manual compaction or
-context-overflow recovery will run again. This prevents compacting in a loop.</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[context_compaction]</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">auto</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
@@ -1125,8 +1110,8 @@ summary emphasizes the areas you care about. Steering remains available while
 compaction runs; admitted pending inputs are promoted only after the checkpoint,
 honoring any recalls made during compaction.</p>
 <p><code>session.compact</code> returns whether a checkpoint was actually committed. Manual
-compaction always runs elision first and still skips the summarizer call if the
-elided context is already under the threshold.</p>
+compaction uses raw history when it fits the compaction budget and uses
+tool-output elision only as overflow recovery.</p>
 <h2 id="events">Events<a class="headerlink" href="#events" title="Permanent link">&para;</a></h2>
 <p>Compaction produces these event payloads:</p>
 <ul>
@@ -1135,7 +1120,6 @@ elided context is already under the threshold.</p>
   / <code>internal_agent_fallback</code> — the compaction agent invocation</li>
 <li><code>context_checkpoint_committed</code> — the checkpoint with boundaries and budgets</li>
 <li><code>context_rehydrated</code> — file contents re-read into the fresh context</li>
-<li><code>context_compaction_auto_disabled</code> — automatic compaction latched off</li>
 </ul>
 
 
