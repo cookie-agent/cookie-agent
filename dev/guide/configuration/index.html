@@ -1074,7 +1074,7 @@ want to change:</p>
 <a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>
 <a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="k">[context_compaction]</span>
 <a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="n">auto</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="n">buffer_tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">33000</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="n">trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">percent</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">70</span><span class="w"> </span><span class="p">}</span>
 <a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="n">max_summary_bytes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">262144</span>
 <a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>
 <a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="k">[session_title]</span>
@@ -1092,8 +1092,9 @@ want to change:</p>
 <p>Validation rules that apply regardless of what you set:</p>
 <ul>
 <li>The <code>cookie</code> binary requires <code>server.host</code> to be exactly <code>127.0.0.1</code>.</li>
-<li>Positive limits are required everywhere; <code>context_compaction.max_summary_bytes</code>
-  may not exceed 2 MiB.</li>
+<li>Positive limits are required everywhere; compaction trigger percentages must
+  be from 1 through 99, and <code>context_compaction.max_summary_bytes</code> may not exceed
+  2 MiB.</li>
 <li><code>delegation.max_concurrency</code> of <code>0</code> is rejected; omitting it means unlimited.</li>
 <li>Provider definitions are validated per provider ID (see
   <a href="../providers/">Providers</a>).</li>

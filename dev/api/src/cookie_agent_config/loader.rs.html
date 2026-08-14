@@ -165,35 +165,47 @@
 <a href=#165 id=165 data-nosnippet>165</a>            <span class="string">"configuration TOML is invalid"</span>.to_owned(),
 <a href=#166 id=166 data-nosnippet>166</a>        ));
 <a href=#167 id=167 data-nosnippet>167</a>    }
-<a href=#168 id=168 data-nosnippet>168</a>    <span class="kw">let </span>providers = <span class="kw">match </span>table.remove(<span class="string">"providers"</span>) {
-<a href=#169 id=169 data-nosnippet>169</a>        <span class="prelude-val">None </span>=&gt; SensitiveProviderValues::new(),
-<a href=#170 id=170 data-nosnippet>170</a>        <span class="prelude-val">Some</span>(toml::Value::Table(values)) =&gt; values
-<a href=#171 id=171 data-nosnippet>171</a>            .into_iter()
-<a href=#172 id=172 data-nosnippet>172</a>            .map(|(id, value)| {
-<a href=#173 id=173 data-nosnippet>173</a>                <span class="kw">let </span>value = SensitiveTomlValue::new(value);
-<a href=#174 id=174 data-nosnippet>174</a>                ProviderId::new(id)
-<a href=#175 id=175 data-nosnippet>175</a>                    .map(|id| (id, value))
-<a href=#176 id=176 data-nosnippet>176</a>                    .map_err(|<span class="kw">_</span>| ConfigError::Toml(<span class="string">"configuration TOML is invalid"</span>.to_owned()))
-<a href=#177 id=177 data-nosnippet>177</a>            })
-<a href=#178 id=178 data-nosnippet>178</a>            .collect::&lt;<span class="prelude-ty">Result</span>&lt;<span class="kw">_</span>, <span class="kw">_</span>&gt;&gt;()<span class="question-mark">?</span>,
-<a href=#179 id=179 data-nosnippet>179</a>        <span class="prelude-val">Some</span>(<span class="kw-2">mut </span>other) =&gt; {
-<a href=#180 id=180 data-nosnippet>180</a>            zeroize_toml_value(<span class="kw-2">&amp;mut </span>other);
-<a href=#181 id=181 data-nosnippet>181</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(ConfigError::Toml(
-<a href=#182 id=182 data-nosnippet>182</a>                <span class="string">"configuration TOML is invalid"</span>.to_owned(),
-<a href=#183 id=183 data-nosnippet>183</a>            ));
-<a href=#184 id=184 data-nosnippet>184</a>        }
-<a href=#185 id=185 data-nosnippet>185</a>    };
-<a href=#186 id=186 data-nosnippet>186</a>    <span class="kw">let </span>owned = std::mem::replace(value, toml::Value::Table(Default::default()));
-<a href=#187 id=187 data-nosnippet>187</a>    <span class="kw">let </span>json = SensitiveJsonValue::from_toml(owned);
-<a href=#188 id=188 data-nosnippet>188</a>    <span class="kw">let </span><span class="kw-2">mut </span>layer = RawRuntimeLayer::deserialize(json.value())
-<a href=#189 id=189 data-nosnippet>189</a>        .map_err(|<span class="kw">_</span>| ConfigError::Toml(<span class="string">"configuration TOML is invalid"</span>.to_owned()))<span class="question-mark">?</span>;
-<a href=#190 id=190 data-nosnippet>190</a>    layer.providers = providers;
-<a href=#191 id=191 data-nosnippet>191</a>    <span class="prelude-val">Ok</span>(layer)
-<a href=#192 id=192 data-nosnippet>192</a>}
-<a href=#193 id=193 data-nosnippet>193</a>
-<a href=#194 id=194 data-nosnippet>194</a><span class="kw">fn </span>user_root() -&gt; <span class="prelude-ty">Option</span>&lt;PathBuf&gt; {
-<a href=#195 id=195 data-nosnippet>195</a>    env::var_os(<span class="string">"HOME"</span>)
-<a href=#196 id=196 data-nosnippet>196</a>        .map(PathBuf::from)
-<a href=#197 id=197 data-nosnippet>197</a>        .map(|home| home.join(<span class="string">".config/cookie_agent"</span>))
-<a href=#198 id=198 data-nosnippet>198</a>}
+<a href=#168 id=168 data-nosnippet>168</a>    <span class="kw">if </span>table
+<a href=#169 id=169 data-nosnippet>169</a>        .get(<span class="string">"context_compaction"</span>)
+<a href=#170 id=170 data-nosnippet>170</a>        .and_then(toml::Value::as_table)
+<a href=#171 id=171 data-nosnippet>171</a>        .is_some_and(|context| {
+<a href=#172 id=172 data-nosnippet>172</a>            context.contains_key(<span class="string">"trigger"</span>) &amp;&amp; context.contains_key(<span class="string">"buffer_tokens"</span>)
+<a href=#173 id=173 data-nosnippet>173</a>        })
+<a href=#174 id=174 data-nosnippet>174</a>    {
+<a href=#175 id=175 data-nosnippet>175</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(ConfigError::Toml(
+<a href=#176 id=176 data-nosnippet>176</a>            <span class="string">"context_compaction.trigger and context_compaction.buffer_tokens cannot both be set"
+<a href=#177 id=177 data-nosnippet>177</a>                </span>.to_owned(),
+<a href=#178 id=178 data-nosnippet>178</a>        ));
+<a href=#179 id=179 data-nosnippet>179</a>    }
+<a href=#180 id=180 data-nosnippet>180</a>    <span class="kw">let </span>providers = <span class="kw">match </span>table.remove(<span class="string">"providers"</span>) {
+<a href=#181 id=181 data-nosnippet>181</a>        <span class="prelude-val">None </span>=&gt; SensitiveProviderValues::new(),
+<a href=#182 id=182 data-nosnippet>182</a>        <span class="prelude-val">Some</span>(toml::Value::Table(values)) =&gt; values
+<a href=#183 id=183 data-nosnippet>183</a>            .into_iter()
+<a href=#184 id=184 data-nosnippet>184</a>            .map(|(id, value)| {
+<a href=#185 id=185 data-nosnippet>185</a>                <span class="kw">let </span>value = SensitiveTomlValue::new(value);
+<a href=#186 id=186 data-nosnippet>186</a>                ProviderId::new(id)
+<a href=#187 id=187 data-nosnippet>187</a>                    .map(|id| (id, value))
+<a href=#188 id=188 data-nosnippet>188</a>                    .map_err(|<span class="kw">_</span>| ConfigError::Toml(<span class="string">"configuration TOML is invalid"</span>.to_owned()))
+<a href=#189 id=189 data-nosnippet>189</a>            })
+<a href=#190 id=190 data-nosnippet>190</a>            .collect::&lt;<span class="prelude-ty">Result</span>&lt;<span class="kw">_</span>, <span class="kw">_</span>&gt;&gt;()<span class="question-mark">?</span>,
+<a href=#191 id=191 data-nosnippet>191</a>        <span class="prelude-val">Some</span>(<span class="kw-2">mut </span>other) =&gt; {
+<a href=#192 id=192 data-nosnippet>192</a>            zeroize_toml_value(<span class="kw-2">&amp;mut </span>other);
+<a href=#193 id=193 data-nosnippet>193</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(ConfigError::Toml(
+<a href=#194 id=194 data-nosnippet>194</a>                <span class="string">"configuration TOML is invalid"</span>.to_owned(),
+<a href=#195 id=195 data-nosnippet>195</a>            ));
+<a href=#196 id=196 data-nosnippet>196</a>        }
+<a href=#197 id=197 data-nosnippet>197</a>    };
+<a href=#198 id=198 data-nosnippet>198</a>    <span class="kw">let </span>owned = std::mem::replace(value, toml::Value::Table(Default::default()));
+<a href=#199 id=199 data-nosnippet>199</a>    <span class="kw">let </span>json = SensitiveJsonValue::from_toml(owned);
+<a href=#200 id=200 data-nosnippet>200</a>    <span class="kw">let </span><span class="kw-2">mut </span>layer = RawRuntimeLayer::deserialize(json.value())
+<a href=#201 id=201 data-nosnippet>201</a>        .map_err(|<span class="kw">_</span>| ConfigError::Toml(<span class="string">"configuration TOML is invalid"</span>.to_owned()))<span class="question-mark">?</span>;
+<a href=#202 id=202 data-nosnippet>202</a>    layer.providers = providers;
+<a href=#203 id=203 data-nosnippet>203</a>    <span class="prelude-val">Ok</span>(layer)
+<a href=#204 id=204 data-nosnippet>204</a>}
+<a href=#205 id=205 data-nosnippet>205</a>
+<a href=#206 id=206 data-nosnippet>206</a><span class="kw">fn </span>user_root() -&gt; <span class="prelude-ty">Option</span>&lt;PathBuf&gt; {
+<a href=#207 id=207 data-nosnippet>207</a>    env::var_os(<span class="string">"HOME"</span>)
+<a href=#208 id=208 data-nosnippet>208</a>        .map(PathBuf::from)
+<a href=#209 id=209 data-nosnippet>209</a>        .map(|home| home.join(<span class="string">".config/cookie_agent"</span>))
+<a href=#210 id=210 data-nosnippet>210</a>}
 </code></pre></div></section></main></body></html>

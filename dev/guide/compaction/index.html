@@ -650,6 +650,15 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#native-provider-compaction" class="md-nav__link">
+    <span class="md-ellipsis">
+      Native provider compaction
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-trigger-threshold" class="md-nav__link">
     <span class="md-ellipsis">
       The trigger threshold
@@ -933,6 +942,15 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#native-provider-compaction" class="md-nav__link">
+    <span class="md-ellipsis">
+      Native provider compaction
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-trigger-threshold" class="md-nav__link">
     <span class="md-ellipsis">
       The trigger threshold
@@ -1009,13 +1027,37 @@
 <p>Compaction replaces a long session history with a checkpoint: a summarizer call
 whose output becomes the context for the next request. It keeps long sessions
 inside the model's context window without discarding the work done so far.</p>
+<h2 id="native-provider-compaction">Native provider compaction<a class="headerlink" href="#native-provider-compaction" title="Permanent link">&para;</a></h2>
+<p>OpenAI Responses and Azure OpenAI Responses models can opt into provider-native
+compaction. The native operation runs first. If the adapter rejects the
+assembled request, the provider call fails, or the returned opaque window is
+invalid, Cookie Agent automatically runs the existing internal compaction agent.</p>
+<p>Enable it on a managed provider model override with
+<code>compaction = "openai-responses-compact"</code> or
+<code>compaction = "azure-responses-compact"</code>. Cookie Agent derives the native model
+capability from that setting. Other adaptors reject the setting. Azure also
+requires the managed provider identity <code>azure.openai</code> plus <code>model</code>, <code>version</code>,
+and <code>deployment_type</code> in the provider <code>setup</code> table so the window is scoped to
+an explicit deployment.</p>
+<p>A native checkpoint stores a bounded opaque provider window rather than summary
+text. Events through the checkpoint boundary are omitted from normal history,
+no framed summary message is inserted, and the window is attached to the next
+request. Later native compactions are seeded with the previous window. The
+window has a 32 MiB cap; <code>max_summary_bytes</code> applies only to text summaries.</p>
 <h2 id="the-trigger-threshold">The trigger threshold<a class="headerlink" href="#the-trigger-threshold" title="Permanent link">&para;</a></h2>
-<p>Compaction is driven by <code>buffer_tokens</code>. The trigger threshold is:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>trigger_tokens = model_context_limit - buffer_tokens
+<p>By default, compaction uses a proportional trigger:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>trigger_tokens = model_context_limit * percent / 100
 </code></pre></div>
-<p><code>buffer_tokens</code> defaults to 33,000, so a model with a 200,000-token context
-window triggers at 167,000 tokens. If the buffer exceeds the context limit, the
-trigger becomes 0 and automatic compaction is disabled for that model.</p>
+<p><code>percent</code> defaults to 70, so a model with a 200,000-token context window
+triggers at 140,000 tokens. Valid percentages are 1 through 99; 100 is rejected
+because compaction at the model limit does not preserve useful request
+headroom.</p>
+<p>The fixed-buffer form preserves the earlier behavior:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>trigger_tokens = model_context_limit - buffer_tokens
+</code></pre></div>
+<p>This subtraction saturates at zero. If the buffer equals or exceeds the context
+limit, the trigger becomes 0 and automatic compaction is disabled for that
+model.</p>
 <p>The threshold is compared against two signals:</p>
 <ul>
 <li><strong>Post-check usage.</strong> After each committed model turn, the reported input +
@@ -1033,14 +1075,17 @@ trigger becomes 0 and automatic compaction is disabled for that model.</p>
    references. If elision alone brings the estimated size under the threshold,
    no summarizer call is made — the session continues with the elided events and
    a <code>tool_output_elided</code> event is recorded for each.</li>
-<li><strong>Summarizer call.</strong> The internal <code>compaction</code> agent (see
+<li><strong>Native or summarizer call.</strong> An opted-in Responses model first attempts
+   native compaction. Otherwise, or after any native failure, the internal
+   <code>compaction</code> agent (see
    <a href="../agents/#internal-agents">Internal agents</a>) receives the assembled history
    plus the fixed instruction, optionally extended with the user's focus text.
    It must return summary text only, at most <code>max_summary_bytes</code> (256 KiB by
    default). Non-text output is rejected.</li>
 <li><strong>Checkpoint commit.</strong> A <code>context_checkpoint_committed</code> event records the
-   summary, its source boundaries, and the budget math (context limit, trigger
-   threshold, input tokens before, estimated tokens after).</li>
+   text summary or opaque native window, its source boundaries, and the budget
+   math (context limit, trigger threshold, input tokens before, estimated tokens
+   after).</li>
 <li><strong>Rehydration.</strong> After the checkpoint, the engine re-reads up to 5 distinct
    files most recently opened by the <code>read</code> tool (32 KiB each, 128 KiB total,
    permission-checked against the owner policy) and appends a
@@ -1054,11 +1099,17 @@ work is already too big — automatic compaction latches off for that session,
 emits a <code>context_compaction_auto_disabled</code> event, and only manual compaction or
 context-overflow recovery will run again. This prevents compacting in a loop.</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[context_compaction]</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">auto</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="w">            </span><span class="c1"># enable automatic signals</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">buffer_tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">33000</span><span class="w">  </span><span class="c1"># headroom below the context limit</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">max_summary_bytes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">262144</span><span class="w">  </span><span class="c1"># 256 KiB, max 2 MiB</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[context_compaction]</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">auto</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">percent</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">70</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">max_summary_bytes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">262144</span><span class="w">  </span><span class="c1"># 256 KiB, max 2 MiB</span>
 </code></pre></div>
+<p>To reserve a fixed amount of headroom instead:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[context_compaction]</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">buffer_tokens</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">33000</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<p>The legacy top-level <code>buffer_tokens = 33000</code> spelling remains accepted as an
+alias for the fixed trigger. It cannot be combined with <code>trigger</code>.</p>
 <ul>
 <li><code>auto = false</code> disables the automatic post-check and predictive signals.
   Manual <code>/compact</code> and context-overflow recovery compaction remain available.</li>
@@ -1067,7 +1118,7 @@ context-overflow recovery will run again. This prevents compacting in a loop.</p
 </ul>
 <h2 id="manual-compaction">Manual compaction<a class="headerlink" href="#manual-compaction" title="Permanent link">&para;</a></h2>
 <p><code>/compact</code> forces a checkpoint for the selected idle session:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>/compact preserve the parser decisions and failing test evidence
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>/compact preserve the parser decisions and failing test evidence
 </code></pre></div>
 <p>The optional focus text is appended to the fixed compaction instruction so the
 summary emphasizes the areas you care about. Steering remains available while

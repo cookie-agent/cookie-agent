@@ -1366,10 +1366,16 @@ truncated or replaced with artifact references.</p>
 <td>Enable automatic compaction signals (post-check usage and predictive pre-send estimation). Manual <code>/compact</code> and context-overflow recovery compaction remain available when <code>false</code>.</td>
 </tr>
 <tr>
+<td><code>trigger</code></td>
+<td>inline table</td>
+<td><code>{ percent = 70 }</code></td>
+<td>Trigger threshold selection. <code>{ percent = N }</code> uses <code>N%</code> of the model context limit, where <code>N</code> must be from 1 through 99. <code>{ buffer_tokens = N }</code> subtracts positive <code>N</code> from the context limit, saturating at zero.</td>
+</tr>
+<tr>
 <td><code>buffer_tokens</code></td>
 <td>integer</td>
-<td><code>33000</code></td>
-<td>Headroom subtracted from the model context limit. The trigger threshold is <code>context_limit - buffer_tokens</code>; compaction runs when actual or estimated usage reaches it. Must be greater than zero.</td>
+<td>unset</td>
+<td>Legacy alias for <code>trigger = { buffer_tokens = N }</code>. Must be greater than zero and cannot be set together with <code>trigger</code>.</td>
 </tr>
 <tr>
 <td><code>max_summary_bytes</code></td>
@@ -1477,7 +1483,7 @@ for complete examples.</p>
 <td><code>setup</code></td>
 <td>map of string values</td>
 <td>empty</td>
-<td>Setup fields the provider recipe requires (for example <code>project</code>, <code>location</code>, <code>region</code>, <code>resource_name</code>). Interpolates <code>${env:NAME}</code>.</td>
+<td>Setup fields the provider recipe requires (for example <code>project</code>, <code>location</code>, <code>region</code>, <code>resource_name</code>). Native Azure Responses compaction also requires <code>model</code>, <code>version</code>, and <code>deployment_type</code>. Interpolates <code>${env:NAME}</code>.</td>
 </tr>
 <tr>
 <td><code>api_key</code></td>
@@ -1501,10 +1507,18 @@ for complete examples.</p>
 <td><code>model_overrides</code></td>
 <td>map</td>
 <td>empty</td>
-<td>Sparse per-model overrides: <code>enabled</code>, <code>display_name</code>, <code>defaults</code>, <code>variants</code>, <code>default_variant</code>, <code>shape</code>. Cannot invent a model absent from the catalog or change capabilities.</td>
+<td>Sparse per-model overrides: <code>enabled</code>, <code>display_name</code>, <code>defaults</code>, <code>variants</code>, <code>default_variant</code>, <code>shape</code>, <code>compaction</code>. Cannot invent a model absent from the catalog or directly change capabilities.</td>
 </tr>
 </tbody>
 </table>
+<p>Within a model override, <code>compaction</code> defaults to <code>"unsupported"</code>. Set it to
+<code>"openai-responses-compact"</code> for the OpenAI Responses recipe or
+<code>"azure-responses-compact"</code> for the Azure Responses recipe. The compiler derives
+the native capability from this setting and rejects it for other recipes. The
+Azure provider identity must be <code>azure.openai</code> to match Oven's native scope.
+Frozen manifests store the compiled native/unsupported capability, not this
+setting string, so they never contain the retired <code>"v1"</code> value. Authored <code>"v1"</code>
+fails with a migration error naming the adapter-specific replacement.</p>
 <p><code>auth_override</code>:</p>
 <table>
 <thead>

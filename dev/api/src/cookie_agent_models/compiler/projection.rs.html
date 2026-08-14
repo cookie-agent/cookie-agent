@@ -81,55 +81,60 @@
 <a href=#81 id=81 data-nosnippet>81</a>        <span class="string">"temperature"</span>: model.temperature.unwrap_or(<span class="bool-val">false</span>),
 <a href=#82 id=82 data-nosnippet>82</a>        <span class="string">"top_p"</span>: <span class="bool-val">false</span>,
 <a href=#83 id=83 data-nosnippet>83</a>        <span class="string">"seed"</span>: <span class="bool-val">false</span>,
-<a href=#84 id=84 data-nosnippet>84</a>        <span class="string">"native_replay"</span>: native_replay,
-<a href=#85 id=85 data-nosnippet>85</a>        <span class="string">"cancellation"</span>: <span class="string">"local_only"</span>,
-<a href=#86 id=86 data-nosnippet>86</a>        <span class="string">"media"</span>: media
-<a href=#87 id=87 data-nosnippet>87</a>    }))
-<a href=#88 id=88 data-nosnippet>88</a>}
-<a href=#89 id=89 data-nosnippet>89</a>
-<a href=#90 id=90 data-nosnippet>90</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>managed_defaults(model: <span class="kw-2">&amp;</span>CatalogModelRecord) -&gt; RequestDefaults {
-<a href=#91 id=91 data-nosnippet>91</a>    RequestDefaults {
-<a href=#92 id=92 data-nosnippet>92</a>        max_output_tokens: <span class="prelude-val">Some</span>(model.limits.output.min(<span class="number">16_384</span>)),
-<a href=#93 id=93 data-nosnippet>93</a>        ..RequestDefaults::default()
-<a href=#94 id=94 data-nosnippet>94</a>    }
-<a href=#95 id=95 data-nosnippet>95</a>}
-<a href=#96 id=96 data-nosnippet>96</a>
-<a href=#97 id=97 data-nosnippet>97</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>validate_capability_shape(capabilities: <span class="kw-2">&amp;</span>ModelCapabilities) -&gt; bool {
-<a href=#98 id=98 data-nosnippet>98</a>    !capabilities.input.is_empty()
-<a href=#99 id=99 data-nosnippet>99</a>        &amp;&amp; capabilities.input.contains(<span class="kw-2">&amp;</span>Modality::Text)
-<a href=#100 id=100 data-nosnippet>100</a>        &amp;&amp; capabilities.output == BTreeSet::from([Modality::Text])
-<a href=#101 id=101 data-nosnippet>101</a>        &amp;&amp; capabilities.context_tokens &gt; <span class="number">0
-<a href=#102 id=102 data-nosnippet>102</a>        </span>&amp;&amp; capabilities.output_tokens &gt; <span class="number">0
-<a href=#103 id=103 data-nosnippet>103</a>        </span>&amp;&amp; capabilities.output_tokens &lt;= capabilities.context_tokens
-<a href=#104 id=104 data-nosnippet>104</a>        &amp;&amp; (!capabilities.parallel_tool_calls || capabilities.tool_calling)
-<a href=#105 id=105 data-nosnippet>105</a>        &amp;&amp; capabilities.cancellation == CancellationCapability::LocalOnly
+<a href=#84 id=84 data-nosnippet>84</a>        <span class="string">"compaction"</span>: <span class="string">"unsupported"</span>,
+<a href=#85 id=85 data-nosnippet>85</a>        <span class="string">"native_replay"</span>: native_replay,
+<a href=#86 id=86 data-nosnippet>86</a>        <span class="string">"cancellation"</span>: <span class="string">"local_only"</span>,
+<a href=#87 id=87 data-nosnippet>87</a>        <span class="string">"media"</span>: media
+<a href=#88 id=88 data-nosnippet>88</a>    }))
+<a href=#89 id=89 data-nosnippet>89</a>}
+<a href=#90 id=90 data-nosnippet>90</a>
+<a href=#91 id=91 data-nosnippet>91</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>managed_defaults(model: <span class="kw-2">&amp;</span>CatalogModelRecord) -&gt; RequestDefaults {
+<a href=#92 id=92 data-nosnippet>92</a>    RequestDefaults {
+<a href=#93 id=93 data-nosnippet>93</a>        max_output_tokens: <span class="prelude-val">Some</span>(model.limits.output.min(<span class="number">16_384</span>)),
+<a href=#94 id=94 data-nosnippet>94</a>        ..RequestDefaults::default()
+<a href=#95 id=95 data-nosnippet>95</a>    }
+<a href=#96 id=96 data-nosnippet>96</a>}
+<a href=#97 id=97 data-nosnippet>97</a>
+<a href=#98 id=98 data-nosnippet>98</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>validate_capability_shape(capabilities: <span class="kw-2">&amp;</span>ModelCapabilities) -&gt; bool {
+<a href=#99 id=99 data-nosnippet>99</a>    !capabilities.input.is_empty()
+<a href=#100 id=100 data-nosnippet>100</a>        &amp;&amp; capabilities.input.contains(<span class="kw-2">&amp;</span>Modality::Text)
+<a href=#101 id=101 data-nosnippet>101</a>        &amp;&amp; capabilities.output == BTreeSet::from([Modality::Text])
+<a href=#102 id=102 data-nosnippet>102</a>        &amp;&amp; capabilities.context_tokens &gt; <span class="number">0
+<a href=#103 id=103 data-nosnippet>103</a>        </span>&amp;&amp; capabilities.output_tokens &gt; <span class="number">0
+<a href=#104 id=104 data-nosnippet>104</a>        </span>&amp;&amp; capabilities.output_tokens &lt;= capabilities.context_tokens
+<a href=#105 id=105 data-nosnippet>105</a>        &amp;&amp; (!capabilities.parallel_tool_calls || capabilities.tool_calling)
 <a href=#106 id=106 data-nosnippet>106</a>        &amp;&amp; <span class="macro">matches!</span>(
-<a href=#107 id=107 data-nosnippet>107</a>            capabilities.native_replay,
-<a href=#108 id=108 data-nosnippet>108</a>            ReplayCapability::Unsupported | ReplayCapability::Optional | ReplayCapability::Required
+<a href=#107 id=107 data-nosnippet>107</a>            capabilities.compaction,
+<a href=#108 id=108 data-nosnippet>108</a>            <span class="kw">crate</span>::CompactionCapability::Unsupported | <span class="kw">crate</span>::CompactionCapability::Native
 <a href=#109 id=109 data-nosnippet>109</a>        )
-<a href=#110 id=110 data-nosnippet>110</a>}
-<a href=#111 id=111 data-nosnippet>111</a>
-<a href=#112 id=112 data-nosnippet>112</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>validate_defaults(
-<a href=#113 id=113 data-nosnippet>113</a>    defaults: <span class="kw-2">&amp;</span>RequestDefaults,
-<a href=#114 id=114 data-nosnippet>114</a>    capabilities: <span class="kw-2">&amp;</span>ModelCapabilities,
-<a href=#115 id=115 data-nosnippet>115</a>) -&gt; bool {
-<a href=#116 id=116 data-nosnippet>116</a>    defaults
-<a href=#117 id=117 data-nosnippet>117</a>        .temperature
-<a href=#118 id=118 data-nosnippet>118</a>        .is_none_or(|value| capabilities.temperature &amp;&amp; (<span class="number">0.0</span>..=<span class="number">2.0</span>).contains(<span class="kw-2">&amp;</span>value.get()))
-<a href=#119 id=119 data-nosnippet>119</a>        &amp;&amp; defaults
-<a href=#120 id=120 data-nosnippet>120</a>            .top_p
-<a href=#121 id=121 data-nosnippet>121</a>            .is_none_or(|value| capabilities.top_p &amp;&amp; (<span class="number">0.0</span>..=<span class="number">1.0</span>).contains(<span class="kw-2">&amp;</span>value.get()))
-<a href=#122 id=122 data-nosnippet>122</a>        &amp;&amp; defaults.seed.is_none_or(|<span class="kw">_</span>| capabilities.seed)
-<a href=#123 id=123 data-nosnippet>123</a>        &amp;&amp; defaults
-<a href=#124 id=124 data-nosnippet>124</a>            .max_output_tokens
-<a href=#125 id=125 data-nosnippet>125</a>            .is_none_or(|value| value &gt; <span class="number">0 </span>&amp;&amp; value &lt;= capabilities.output_tokens)
-<a href=#126 id=126 data-nosnippet>126</a>        &amp;&amp; defaults
-<a href=#127 id=127 data-nosnippet>127</a>            .tool_choice
-<a href=#128 id=128 data-nosnippet>128</a>            .as_ref()
-<a href=#129 id=129 data-nosnippet>129</a>            .is_none_or(|<span class="kw">_</span>| capabilities.tool_calling)
-<a href=#130 id=130 data-nosnippet>130</a>        &amp;&amp; defaults.stop.len() &lt;= <span class="number">8
-<a href=#131 id=131 data-nosnippet>131</a>        </span>&amp;&amp; defaults.stop.iter().all(|value| {
-<a href=#132 id=132 data-nosnippet>132</a>            !value.is_empty() &amp;&amp; value.len() &lt;= <span class="number">256 </span>&amp;&amp; !value.chars().any(char::is_control)
-<a href=#133 id=133 data-nosnippet>133</a>        })
-<a href=#134 id=134 data-nosnippet>134</a>}
+<a href=#110 id=110 data-nosnippet>110</a>        &amp;&amp; capabilities.cancellation == CancellationCapability::LocalOnly
+<a href=#111 id=111 data-nosnippet>111</a>        &amp;&amp; <span class="macro">matches!</span>(
+<a href=#112 id=112 data-nosnippet>112</a>            capabilities.native_replay,
+<a href=#113 id=113 data-nosnippet>113</a>            ReplayCapability::Unsupported | ReplayCapability::Optional | ReplayCapability::Required
+<a href=#114 id=114 data-nosnippet>114</a>        )
+<a href=#115 id=115 data-nosnippet>115</a>}
+<a href=#116 id=116 data-nosnippet>116</a>
+<a href=#117 id=117 data-nosnippet>117</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>validate_defaults(
+<a href=#118 id=118 data-nosnippet>118</a>    defaults: <span class="kw-2">&amp;</span>RequestDefaults,
+<a href=#119 id=119 data-nosnippet>119</a>    capabilities: <span class="kw-2">&amp;</span>ModelCapabilities,
+<a href=#120 id=120 data-nosnippet>120</a>) -&gt; bool {
+<a href=#121 id=121 data-nosnippet>121</a>    defaults
+<a href=#122 id=122 data-nosnippet>122</a>        .temperature
+<a href=#123 id=123 data-nosnippet>123</a>        .is_none_or(|value| capabilities.temperature &amp;&amp; (<span class="number">0.0</span>..=<span class="number">2.0</span>).contains(<span class="kw-2">&amp;</span>value.get()))
+<a href=#124 id=124 data-nosnippet>124</a>        &amp;&amp; defaults
+<a href=#125 id=125 data-nosnippet>125</a>            .top_p
+<a href=#126 id=126 data-nosnippet>126</a>            .is_none_or(|value| capabilities.top_p &amp;&amp; (<span class="number">0.0</span>..=<span class="number">1.0</span>).contains(<span class="kw-2">&amp;</span>value.get()))
+<a href=#127 id=127 data-nosnippet>127</a>        &amp;&amp; defaults.seed.is_none_or(|<span class="kw">_</span>| capabilities.seed)
+<a href=#128 id=128 data-nosnippet>128</a>        &amp;&amp; defaults
+<a href=#129 id=129 data-nosnippet>129</a>            .max_output_tokens
+<a href=#130 id=130 data-nosnippet>130</a>            .is_none_or(|value| value &gt; <span class="number">0 </span>&amp;&amp; value &lt;= capabilities.output_tokens)
+<a href=#131 id=131 data-nosnippet>131</a>        &amp;&amp; defaults
+<a href=#132 id=132 data-nosnippet>132</a>            .tool_choice
+<a href=#133 id=133 data-nosnippet>133</a>            .as_ref()
+<a href=#134 id=134 data-nosnippet>134</a>            .is_none_or(|<span class="kw">_</span>| capabilities.tool_calling)
+<a href=#135 id=135 data-nosnippet>135</a>        &amp;&amp; defaults.stop.len() &lt;= <span class="number">8
+<a href=#136 id=136 data-nosnippet>136</a>        </span>&amp;&amp; defaults.stop.iter().all(|value| {
+<a href=#137 id=137 data-nosnippet>137</a>            !value.is_empty() &amp;&amp; value.len() &lt;= <span class="number">256 </span>&amp;&amp; !value.chars().any(char::is_control)
+<a href=#138 id=138 data-nosnippet>138</a>        })
+<a href=#139 id=139 data-nosnippet>139</a>}
 </code></pre></div></section></main></body></html>
