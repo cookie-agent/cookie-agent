@@ -53,6 +53,19 @@ impl FrozenRunPolicy {
             .map(|tool| tool_name(*tool).to_owned())
             .collect()
     }
+
+    pub(crate) fn model_capabilities(
+        &self,
+        binding: &protocol::FrozenModelBinding,
+    ) -> Option<protocol::ModelCapabilities> {
+        self.runtime
+            .result
+            .snapshot
+            .models
+            .iter()
+            .find(|model| model.key == binding.selection.model)
+            .map(|model| model.capabilities.clone())
+    }
 }
 
 pub(crate) fn freeze_root_agent_policy(

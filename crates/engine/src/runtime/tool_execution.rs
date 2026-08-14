@@ -37,6 +37,7 @@ impl Engine {
         run: RunId,
         call: ToolCall,
         policy: &FrozenRunPolicy,
+        turn_context: Arc<crate::TurnAgentContext>,
     ) -> PreparedToolCall {
         let fallback_presentation = tool_title_only(&call.name);
         let session = match self.inner.store.get(session_id) {
@@ -111,6 +112,7 @@ impl Engine {
             run,
             cwd: self.inner.store.cwd().to_owned(),
             workspace_root: self.inner.store.cwd().to_owned(),
+            turn_context,
         };
         let prepared = match provider.prepare(context, call.clone()).await {
             Ok(prepared) => apply_primary_argument_labels(provider.as_ref(), &call.name, prepared)
@@ -129,6 +131,7 @@ impl Engine {
         active: Arc<ActiveRun>,
         run: RunId,
         prepared: PreparedToolCall,
+        turn_context: Arc<crate::TurnAgentContext>,
     ) -> Result<ToolResult, ToolFailure> {
         let engine = self.clone();
         {
@@ -273,6 +276,7 @@ impl Engine {
                 ),
                 cancellation: active.cancellation.child_token(),
                 stdin: interactive.then_some(stdin),
+                turn_context,
                 artifacts: engine.inner.artifacts.clone(),
             });
             tokio::pin!(invoke);

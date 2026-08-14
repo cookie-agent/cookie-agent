@@ -61,6 +61,7 @@ mod approval_projection;
 mod artifacts;
 pub(crate) mod compaction;
 mod delegation;
+mod get_history;
 mod helpers;
 mod internal_agents;
 mod mailbox;
@@ -73,11 +74,12 @@ pub(crate) mod tool_execution;
 
 use admission::InflightDelegation;
 pub(crate) use artifacts::{ArtifactStore, OutputCapture};
+pub use get_history::EngineHistoryView;
 use helpers::safe_code;
 
 use crate::tool_api::{
     PreparedExecutorCell, PreparedSerializationKey, PreparedTool, StdinWrite, ToolCall, ToolError,
-    ToolProvider,
+    ToolProvider, TurnAgentContext,
 };
 
 #[derive(Clone)]
@@ -186,6 +188,7 @@ struct ActiveRun {
 struct AttemptTurn {
     turn: PersistedModelTurn,
     model_turn_seq: u64,
+    turn_context: Arc<TurnAgentContext>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

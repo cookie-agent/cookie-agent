@@ -22,6 +22,29 @@ pub mod fs_cap;
 pub mod read;
 pub mod write;
 
+#[cfg(test)]
+pub(crate) fn test_turn_context() -> std::sync::Arc<cookie_agent_engine::TurnAgentContext> {
+    std::sync::Arc::new(cookie_agent_engine::TurnAgentContext {
+        agent: cookie_agent_protocol::AgentId::new("test").expect("test agent ID"),
+        capabilities: cookie_agent_protocol::ModelCapabilities {
+            input: std::collections::BTreeSet::from([cookie_agent_protocol::Modality::Text]),
+            output: std::collections::BTreeSet::from([cookie_agent_protocol::Modality::Text]),
+            context_tokens: 8_192,
+            output_tokens: 2_048,
+            tool_calling: true,
+            parallel_tool_calls: true,
+            structured_output: false,
+            reasoning: false,
+            temperature: true,
+            top_p: true,
+            seed: false,
+            native_replay: cookie_agent_protocol::ReplayCapability::Optional,
+            cancellation: cookie_agent_protocol::CancellationCapability::LocalOnly,
+            media: std::collections::BTreeMap::new(),
+        },
+    })
+}
+
 pub(crate) fn schema<T: JsonSchema>() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(T)).expect("tool schemas serialize")
 }
@@ -325,6 +348,7 @@ mod tests {
             run: RunId::new_v7(),
             cwd: "/tmp".into(),
             workspace_root: "/tmp".into(),
+            turn_context: crate::test_turn_context(),
         };
         for name in ["grep", "glob"] {
             let result = tools

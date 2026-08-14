@@ -417,6 +417,7 @@ mod tests {
                     run: RunId::new_v7(),
                     cwd: root.to_owned(),
                     workspace_root: root.to_owned(),
+                    turn_context: crate::test_turn_context(),
                 },
                 ToolCall {
                     id: ToolCallId::new_v7(),
@@ -618,6 +619,7 @@ mod tests {
                     run: RunId::new_v7(),
                     cwd: root.path().to_owned(),
                     workspace_root: root.path().to_owned(),
+                    turn_context: crate::test_turn_context(),
                 },
                 cookie_agent_engine::ToolCall {
                     id: ToolCallId::new_v7(),

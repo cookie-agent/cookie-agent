@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use cookie_agent_config::ContextCompactionTrigger;
 use cookie_agent_protocol::{
@@ -28,7 +31,7 @@ use crate::{
     model_bridge::AbortBridge,
     model_history::{self, assemble_model_context},
     policy::{self, FrozenRunPolicy},
-    tool_api::{ProgressSink, ToolCall, ToolExecutionContext},
+    tool_api::{ProgressSink, ToolCall, ToolExecutionContext, TurnAgentContext},
 };
 
 pub(crate) const COMPACTION_INSTRUCTION: &str = "Create a detailed technical summary of the conversation so work can continue without the earlier context. Include: the goal/objective; decisions and their rationale; files changed and current code state; commands run and their outcomes; errors encountered and fixes applied; and the pending next step. Preserve exact identifiers, paths, constraints, and unresolved questions. Return summary text only and do not call tools.";
@@ -61,6 +64,7 @@ struct RehydrationInput<'a> {
     owner_policy: &'a FrozenRunPolicy,
     cancellation: &'a CancellationToken,
     events: &'a [StoredEvent],
+    turn_context: Arc<TurnAgentContext>,
 }
 
 impl Engine {
@@ -195,6 +199,16 @@ impl Engine {
             return Ok(events);
         }
 
+        // Rehydration runs outside a normal turn, so it uses the owner and binding that triggered
+        // this checkpoint.
+        let rehydration_turn_context = Arc::new(TurnAgentContext {
+            agent: input.owner_policy.agent.agent.clone(),
+            capabilities: input
+                .owner_policy
+                .model_capabilities(input.binding)
+                .ok_or(EngineError::NoRunnableModel)?,
+        });
+
         let input_through_seq = events.last().map_or(0, |event| event.seq);
         let previous = latest_checkpoint_seq(&events);
         let source_from_seq = if previous == 0 {
@@ -280,7 +294,12 @@ impl Engine {
                 )
                 .await?;
                 return self
-                    .finalize_context_checkpoint(input, events, input_tokens_after)
+                    .finalize_context_checkpoint(
+                        input,
+                        events,
+                        input_tokens_after,
+                        rehydration_turn_context,
+                    )
                     .await;
             }
         }
@@ -346,8 +365,13 @@ impl Engine {
             input.actor_direct,
         )
         .await?;
-        self.finalize_context_checkpoint(input, events, input_tokens_after)
-            .await
+        self.finalize_context_checkpoint(
+            input,
+            events,
+            input_tokens_after,
+            rehydration_turn_context,
+        )
+        .await
     }
 
     async fn finalize_context_checkpoint(
@@ -355,6 +379,7 @@ impl Engine {
         input: CompactionInput<'_>,
         mut events: Vec<StoredEvent>,
         input_tokens_after: u64,
+        turn_context: Arc<TurnAgentContext>,
     ) -> Result<Vec<StoredEvent>, EngineError> {
         self.inner
             .context_token_estimators
@@ -370,6 +395,7 @@ impl Engine {
                 owner_policy: input.owner_policy,
                 cancellation: input.cancellation,
                 events: &events,
+                turn_context,
             })
             .await;
         if !files.is_empty() {
@@ -490,6 +516,7 @@ impl Engine {
                         }),
                     },
                     input.owner_policy,
+                    Arc::clone(&input.turn_context),
                 )
                 .await;
             let Ok(prepared) = prepared.prepared else {
@@ -515,6 +542,7 @@ impl Engine {
                     progress: ProgressSink::new(progress_tx, OutputHub::new(call_id, 1024)),
                     cancellation: input.cancellation.child_token(),
                     stdin: None,
+                    turn_context: Arc::clone(&input.turn_context),
                     artifacts: self.inner.artifacts.clone(),
                 })
                 .await;
@@ -545,12 +573,22 @@ impl Engine {
         owner_policy: &FrozenRunPolicy,
         events: &[StoredEvent],
     ) -> Vec<ContextRehydratedFile> {
+        let binding = owner_policy
+            .selected_suffix
+            .first()
+            .expect("test owner policy has a model binding");
         self.rehydrated_files(RehydrationInput {
             session,
             run,
             owner_policy,
             cancellation: &CancellationToken::new(),
             events,
+            turn_context: Arc::new(TurnAgentContext {
+                agent: owner_policy.agent.agent.clone(),
+                capabilities: owner_policy
+                    .model_capabilities(binding)
+                    .expect("test binding has published capabilities"),
+            }),
         })
         .await
     }

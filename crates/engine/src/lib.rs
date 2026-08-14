@@ -24,12 +24,12 @@ mod tool_api;
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
 pub use media::approved_media_type;
-pub use runtime::{ApprovalRespondFailure, Engine, EngineError, EngineOptions};
+pub use runtime::{ApprovalRespondFailure, Engine, EngineError, EngineHistoryView, EngineOptions};
 pub use runtime_snapshot::PublishedRuntime;
 pub use tool_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, ProgressSink, SessionToolContext,
     StdinWrite, ToolCall, ToolError, ToolExecutionContext, ToolPreparationContext, ToolProgress,
-    ToolProvider, ToolSpec, ToolStdin,
+    ToolProvider, ToolSpec, ToolStdin, TurnAgentContext,
 };
 
 pub(crate) use runtime::ArtifactStore;

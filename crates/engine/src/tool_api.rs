@@ -2,8 +2,9 @@ use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    OutputStream, PersistedToolResult as ToolResult, PreparedOperationIdentity, RunId, SessionId,
-    Sha256Digest, ToolAttachment, ToolCallId, ToolCallPresentation,
+    AgentId, ModelCapabilities, OutputStream, PersistedToolResult as ToolResult,
+    PreparedOperationIdentity, RunId, SessionId, Sha256Digest, ToolAttachment, ToolCallId,
+    ToolCallPresentation,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -107,12 +108,27 @@ pub struct StdinWrite {
     pub eof: bool,
 }
 
+/// Immutable harness context captured for one tool preparation/execution batch.
+///
+/// This is tool-facing but harness-private metadata. Tool providers must not forward it to
+/// external systems, including MCP wrappers. Compaction rehydration uses the context of the owner
+/// policy and model binding that triggered the checkpoint.
+#[derive(Debug)]
+pub struct TurnAgentContext {
+    /// Agent that owns the tool call.
+    pub agent: AgentId,
+    /// Public capabilities of the exact model binding that produced the tool call.
+    pub capabilities: ModelCapabilities,
+}
+
 #[derive(Clone, Debug)]
 pub struct ToolPreparationContext {
     pub session: SessionId,
     pub run: RunId,
     pub cwd: PathBuf,
     pub workspace_root: PathBuf,
+    /// Static agent/model context shared with execution for this batch.
+    pub turn_context: Arc<TurnAgentContext>,
 }
 
 #[derive(Debug)]
@@ -122,6 +138,8 @@ pub struct ToolExecutionContext {
     pub progress: ProgressSink,
     pub cancellation: CancellationToken,
     pub stdin: Option<ToolStdin>,
+    /// Static agent/model context shared with preparation for this batch.
+    pub turn_context: Arc<TurnAgentContext>,
     pub(crate) artifacts: Arc<ArtifactStore>,
 }
 

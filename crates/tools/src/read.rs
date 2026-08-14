@@ -437,6 +437,7 @@ mod tests {
             run: RunId::new_v7(),
             cwd: root.to_owned(),
             workspace_root: root.to_owned(),
+            turn_context: crate::test_turn_context(),
         }
     }
 
@@ -492,6 +493,7 @@ mod tests {
                     run: RunId::new_v7(),
                     cwd: workspace.path().to_owned(),
                     workspace_root: workspace.path().to_owned(),
+                    turn_context: crate::test_turn_context(),
                 },
                 ToolCall {
                     id: ToolCallId::new_v7(),

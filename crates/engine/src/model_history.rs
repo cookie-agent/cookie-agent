@@ -290,8 +290,7 @@ pub(crate) fn assemble_model_context(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn assemble_history(
+pub(crate) fn assemble_full_history(
     events: &[StoredEvent],
     store: &ArtifactStore,
     binding: &FrozenModelBinding,
@@ -1271,7 +1270,7 @@ mod tests {
     };
 
     use super::{
-        COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, assemble_history,
+        COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, assemble_full_history,
         assemble_model_context, framed_compaction_summary, replay_decisions,
         replay_decisions_with_preflight, restore_replay, tool_output_elision_marker, wire_model,
     };
@@ -1384,7 +1383,7 @@ mod tests {
             },
         )];
         let history =
-            assemble_history(&events, &store, &binding, "System prompt.").expect("history");
+            assemble_full_history(&events, &store, &binding, "System prompt.").expect("history");
         let oven_sdk::HistoryTurn::Assistant(turn) = &history[1] else {
             panic!("assistant turn");
         };
@@ -1989,7 +1988,7 @@ mod tests {
                 },
             ),
         ];
-        let history = assemble_history(&events, &store, &binding, "System prompt.")
+        let history = assemble_full_history(&events, &store, &binding, "System prompt.")
             .expect("assembled history");
         insta::with_settings!({ prepend_module_to_snapshot => false }, {
             insta::assert_json_snapshot!(

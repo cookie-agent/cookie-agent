@@ -36,7 +36,7 @@ use crate::{
         self, FrozenRunPolicy, freeze_root_agent_policy, policy_for_session_selection,
         resolve_agent,
     },
-    tool_api::ToolCall,
+    tool_api::{ToolCall, TurnAgentContext},
 };
 
 impl Engine {
@@ -443,7 +443,13 @@ impl Engine {
                     arguments: arguments.clone(),
                 };
                 let prepared_call = self
-                    .prepare_tool_call(active.session, run_id, call, &active.policy)
+                    .prepare_tool_call(
+                        active.session,
+                        run_id,
+                        call,
+                        &active.policy,
+                        Arc::clone(&attempt.turn_context),
+                    )
                     .await;
                 let operation_fingerprint = prepared_call.prepared.as_ref().map_or_else(
                     |_| fallback_operation_fingerprint(&prepared_call.call),
@@ -539,7 +545,13 @@ impl Engine {
                 } else {
                     match task {
                         PendingTool::Prepared(prepared) => {
-                            self.execute_tool(active.clone(), run_id, *prepared).await
+                            self.execute_tool(
+                                active.clone(),
+                                run_id,
+                                *prepared,
+                                Arc::clone(&attempt.turn_context),
+                            )
+                            .await
                         }
                         PendingTool::ImmediateFailure(failure) => Err(failure),
                     }
@@ -654,6 +666,12 @@ impl Engine {
                     .map_err(|error| ModelError::invalid_request(error.to_string()))?
                     .len();
                 let replay_preflight = context.replay_decisions;
+                let turn_context = Arc::new(TurnAgentContext {
+                    agent: policy.agent.agent.clone(),
+                    capabilities: policy
+                        .model_capabilities(binding)
+                        .ok_or(EngineError::NoRunnableModel)?,
+                });
                 let mut request = ModelRequest::new(context.history).with_tools(tools.clone());
                 if let Some(native_context) = context.native_context {
                     request = request.with_native_context(native_context);
@@ -810,6 +828,7 @@ impl Engine {
                         return Ok(AttemptTurn {
                             turn,
                             model_turn_seq,
+                            turn_context,
                         });
                     }
                     Err(error)

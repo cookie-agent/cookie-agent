@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     os::unix::fs::PermissionsExt as _,
     sync::{
@@ -41,10 +41,32 @@ use tempfile::TempDir;
 
 use crate::events::{EventLog, EventLogError};
 use crate::{
-    DelegateInvocation, Engine, EngineError, EngineOptions, PreparedExecutor, PreparedTool,
-    SessionToolContext, ToolCall, ToolError, ToolExecutionContext, ToolPreparationContext,
-    ToolProvider, ToolSpec,
+    DelegateInvocation, Engine, EngineError, EngineHistoryView, EngineOptions, PreparedExecutor,
+    PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
+    ToolPreparationContext, ToolProvider, ToolSpec, TurnAgentContext,
 };
+
+fn test_turn_context() -> Arc<TurnAgentContext> {
+    Arc::new(TurnAgentContext {
+        agent: AgentId::new("test").expect("test agent ID"),
+        capabilities: cookie_agent_protocol::ModelCapabilities {
+            input: BTreeSet::from([cookie_agent_protocol::Modality::Text]),
+            output: BTreeSet::from([cookie_agent_protocol::Modality::Text]),
+            context_tokens: 8_192,
+            output_tokens: 2_048,
+            tool_calling: true,
+            parallel_tool_calls: true,
+            structured_output: false,
+            reasoning: false,
+            temperature: true,
+            top_p: true,
+            seed: false,
+            native_replay: cookie_agent_protocol::ReplayCapability::Optional,
+            cancellation: cookie_agent_protocol::CancellationCapability::LocalOnly,
+            media: BTreeMap::new(),
+        },
+    })
+}
 
 #[derive(Clone)]
 struct TestDelegateProvider {
@@ -1479,6 +1501,39 @@ fn parent_model_resolves_exact_binding_skips_parentless_and_replays_historically
 }
 
 #[test]
+fn model_capabilities_follow_the_exact_fallback_binding() {
+    let fixture = synthetic_default_fixture(None);
+    let descriptor = fixture
+        .engine
+        .runtime_snapshot()
+        .expect("runtime")
+        .snapshot
+        .agents
+        .into_iter()
+        .find(|agent| agent.id.as_str() == "default")
+        .expect("default agent");
+    let selection = RunSelection {
+        agent: descriptor.id,
+        model: descriptor.resolved_fallback[0].clone(),
+    };
+    let mut owner = frozen_root_policy(&fixture, &selection);
+    let fallback = crate::test_support::model_binding_named("fallback-one");
+    let mut runtime = (*owner.runtime).clone();
+    let mut fallback_descriptor = runtime.result.snapshot.models[0].clone();
+    fallback_descriptor.key = fallback.selection.model.clone();
+    fallback_descriptor.capabilities.context_tokens = 16_384;
+    let expected = fallback_descriptor.capabilities.clone();
+    runtime.result.snapshot.models.push(fallback_descriptor);
+    owner.runtime = Arc::new(runtime);
+
+    assert_eq!(owner.model_capabilities(&fallback), Some(expected));
+    assert_ne!(
+        owner.model_capabilities(&owner.selected_suffix[0]),
+        owner.model_capabilities(&fallback)
+    );
+}
+
+#[test]
 fn manual_compaction_resolves_parent_model_from_nonzero_active_fallback() {
     let fixture = synthetic_default_fixture(None);
     let descriptor = fixture
@@ -2207,6 +2262,21 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
             EventPayload::ContextCheckpointCommitted { commit } => Some(&commit.checkpoint),
             _ => None,
         });
+        let assembled = fixture
+            .engine
+            .get_history(session.session_id, EngineHistoryView::Assembled)
+            .await
+            .expect("assembled checkpoint history");
+        let full = fixture
+            .engine
+            .get_history(session.session_id, EngineHistoryView::Full)
+            .await
+            .expect("full checkpoint history");
+        let assembled = serde_json::to_string(&assembled).expect("serialize assembled history");
+        let full = serde_json::to_string(&full).expect("serialize full history");
+        assert_ne!(assembled, full);
+        assert!(full.contains("compact this context"));
+        assert!(!assembled.contains("compact this context"));
         if fail_native {
             let Some(cookie_agent_protocol::ContextCheckpoint::InternalSummary { checkpoint }) =
                 checkpoint
@@ -2214,6 +2284,7 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
                 panic!("native failure must commit the harness checkpoint");
             };
             assert_eq!(checkpoint.summary(), "fallback summary");
+            assert!(assembled.contains("fallback summary"));
         } else {
             assert!(matches!(
                 checkpoint,
@@ -4673,6 +4744,13 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
         .engine
         .create_session(selection.clone())
         .expect("session");
+    assert!(matches!(
+        fixture
+            .engine
+            .get_history(session.session_id, EngineHistoryView::Assembled)
+            .await,
+        Err(EngineError::NoRunnableModel)
+    ));
     fixture
         .engine
         .start_run(RunStartParams {
@@ -4717,6 +4795,22 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
                 EventPayload::RunCompleted { final_text: Some(text) }
                     if text == "scripted root complete"
             ))
+    );
+    let assembled = fixture
+        .engine
+        .get_history(session.session_id, EngineHistoryView::Assembled)
+        .await
+        .expect("assembled tool history");
+    let serialized = serde_json::to_string(&assembled).expect("serialize assembled history");
+    assert!(serialized.contains("hello scripted model"));
+    assert!(serialized.contains("scripted root complete"));
+    assert_eq!(
+        fixture
+            .engine
+            .get_history(session.session_id, EngineHistoryView::Full)
+            .await
+            .expect("full tool history"),
+        assembled
     );
     fixture.engine.shutdown().await;
     let reopened = reopen_engine(&fixture);
@@ -5537,6 +5631,7 @@ async fn permission_labels_come_from_get_primary_argument_on_prepared_arguments(
                 run: cookie_agent_protocol::RunId::new_v7(),
                 cwd: "/tmp".into(),
                 workspace_root: "/tmp".into(),
+                turn_context: test_turn_context(),
             },
             ToolCall {
                 id: ToolCallId::new_v7(),

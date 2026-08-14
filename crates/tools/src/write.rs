@@ -241,6 +241,7 @@ mod tests {
             run: RunId::new_v7(),
             cwd: root.to_owned(),
             workspace_root: root.to_owned(),
+            turn_context: crate::test_turn_context(),
         }
     }
 
