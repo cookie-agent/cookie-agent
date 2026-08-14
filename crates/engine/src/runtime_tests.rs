@@ -2229,6 +2229,298 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
     }
 }
 
+fn append_compaction_tool_history(
+    fixture: &Fixture,
+    session: SessionId,
+    run: cookie_agent_protocol::RunId,
+    binding: &cookie_agent_protocol::FrozenModelBinding,
+    output: String,
+    latest_usage: u64,
+) {
+    let model_call_id =
+        cookie_agent_protocol::ModelCallId::new("compaction-history-tool").expect("model call ID");
+    let tool_call_id = ToolCallId::new_v7();
+    let owner = cookie_agent_protocol::AssistantToolCallRef {
+        model_turn_seq: 2,
+        content_index: 0,
+        model_call_id: model_call_id.clone(),
+        provider_item_id: None,
+    };
+    let resolved_model = crate::policy::wire_resolved(binding);
+    let prior_events = fixture
+        .engine
+        .inner
+        .store
+        .get(session)
+        .expect("history projection")
+        .log
+        .events();
+    let first_attempt_ordinal = prior_events
+        .iter()
+        .filter(|event| {
+            event.run_id == Some(run)
+                && matches!(event.payload, EventPayload::ModelAttemptStarted { .. })
+        })
+        .count() as u32
+        + 1;
+    let prompt_fingerprint = prior_events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::RunStarted { agent, .. } if event.run_id == Some(run) => {
+                Some(agent.prompt_fingerprint.clone())
+            }
+            _ => None,
+        })
+        .expect("run prompt fingerprint");
+    let append_model_turn = |model_turn_seq, attempt_ordinal, content, finish_reason, usage| {
+        let attempt_id = cookie_agent_protocol::AttemptId::new_v7();
+        fixture
+            .engine
+            .append_direct(
+                session,
+                Some(run),
+                EventPayload::ModelAttemptStarted {
+                    attempt_id,
+                    attempt_ordinal,
+                    fallback_index: 0,
+                    retry_ordinal: 0,
+                    resolved_model: resolved_model.clone(),
+                    prompt_fingerprint: prompt_fingerprint.clone(),
+                },
+            )
+            .expect("append model attempt");
+        fixture
+            .engine
+            .append_direct(
+                session,
+                Some(run),
+                EventPayload::ModelTurnCommitted {
+                    attempt_id,
+                    model_turn_seq,
+                    resolved_model: resolved_model.clone(),
+                    input_through_seq: 1,
+                    turn: cookie_agent_protocol::PersistedModelTurn {
+                        content,
+                        provider_options: BTreeMap::new(),
+                        finish_reason,
+                        usage,
+                        response_metadata: BTreeMap::new(),
+                        provider_metadata: BTreeMap::new(),
+                        native_replay: None,
+                    },
+                    warnings: Vec::new(),
+                },
+            )
+            .expect("append model turn");
+    };
+    append_model_turn(
+        2,
+        first_attempt_ordinal,
+        vec![cookie_agent_protocol::PersistedAssistantPart::ToolCall {
+            id: model_call_id,
+            provider_item_id: None,
+            name: cookie_agent_protocol::SafeCode::new("bash").unwrap(),
+            input: serde_json::json!({"command": "produce historical output"}),
+            raw_input: None,
+            metadata: None,
+        }],
+        cookie_agent_protocol::ModelFinishReason::ToolCalls,
+        cookie_agent_protocol::Usage::default(),
+    );
+    fixture
+        .engine
+        .append_direct(
+            session,
+            Some(run),
+            EventPayload::ToolCallStarted {
+                start: cookie_agent_protocol::ToolCallStart {
+                    tool_call_id,
+                    owner: owner.clone(),
+                    presentation: cookie_agent_protocol::ToolCallPresentation {
+                        title: cookie_agent_protocol::SafeDisplayText::new("Historical output")
+                            .unwrap(),
+                        primary_argument: None,
+                    },
+                    operation_fingerprint: serde_json::from_value(serde_json::json!({
+                        "digest": Sha256Digest::of_bytes(b"compaction-history-tool")
+                    }))
+                    .unwrap(),
+                },
+            },
+        )
+        .expect("append tool start");
+    fixture
+        .engine
+        .append_direct(
+            session,
+            Some(run),
+            EventPayload::ToolCallTerminated {
+                termination: cookie_agent_protocol::ToolCallTermination {
+                    tool_call_id,
+                    owner,
+                    outcome: ToolTerminationOutcome::Completed,
+                    result: Some(cookie_agent_protocol::PersistedToolResult {
+                        title: cookie_agent_protocol::SafeDisplayText::new("Historical output")
+                            .unwrap(),
+                        output,
+                        metadata: serde_json::Value::Null,
+                        truncation: None,
+                        attachments: Vec::new(),
+                    }),
+                    error: None,
+                },
+            },
+        )
+        .expect("append tool result");
+    for (model_turn_seq, attempt_ordinal, usage) in [
+        (
+            3,
+            first_attempt_ordinal + 1,
+            cookie_agent_protocol::Usage::default(),
+        ),
+        (
+            4,
+            first_attempt_ordinal + 2,
+            cookie_agent_protocol::Usage {
+                input_tokens: Some(latest_usage),
+                ..cookie_agent_protocol::Usage::default()
+            },
+        ),
+    ] {
+        append_model_turn(
+            model_turn_seq,
+            attempt_ordinal,
+            vec![cookie_agent_protocol::PersistedAssistantPart::Text {
+                text: format!("recent turn {model_turn_seq}"),
+                metadata: None,
+            }],
+            cookie_agent_protocol::ModelFinishReason::Stop,
+            usage,
+        );
+    }
+}
+
+#[tokio::test]
+async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() {
+    const RAW_MARKER: &str = "RAW_COMPACTION_TOOL_OUTPUT";
+    let root_body = "data: {\"choices\":[{\"delta\":{\"content\":\"initial complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+    let summary_body = "data: {\"choices\":[{\"delta\":{\"content\":\"compacted summary\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+
+    for (output_bytes, latest_usage, expect_elision) in
+        [(8 * 1024, 100, false), (80 * 1024, 20_000, true)]
+    {
+        let (endpoint, captured, _reached, _release) = scripted_server_with_delayed_response(
+            vec![root_body.to_owned(), summary_body.to_owned()],
+            usize::MAX,
+        )
+        .await;
+        let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
+            &endpoint,
+            "---\nschema: 4\ndescription: Raw-first compaction test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: {}\n---\nTest raw-first compaction.\n",
+            Some((
+                "compaction.md",
+                "---\nschema: 4\ndescription: Test compaction\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_input_tokens: 16384, max_output_tokens: 256 }\ntools: []\npermissions: {}\n---\nSummarize faithfully.\n",
+            )),
+            None,
+        );
+        let session = fixture
+            .engine
+            .create_session(selection.clone())
+            .expect("compaction session");
+        let run = fixture
+            .engine
+            .start_run(RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new(format!("raw-first-{expect_elision}"))
+                    .expect("run ID"),
+                selection: selection.clone(),
+                input: "prepare compaction history".into(),
+            })
+            .await
+            .expect("start compaction run");
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+        let owner_policy = frozen_root_policy(&fixture, &selection);
+        let binding = owner_policy.selected_suffix.first().expect("binding");
+        let output = format!(
+            "{RAW_MARKER}{}",
+            "x".repeat(output_bytes - RAW_MARKER.len())
+        );
+        append_compaction_tool_history(
+            &fixture,
+            session.session_id,
+            run.run_id,
+            binding,
+            output,
+            latest_usage,
+        );
+
+        assert!(
+            fixture
+                .engine
+                .compact_session(session.session_id, None)
+                .await
+                .expect("manual compaction")
+        );
+        let events = fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("compacted projection")
+            .log
+            .events();
+        let commit = events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::ContextCheckpointCommitted { commit } => Some(commit),
+                _ => None,
+            })
+            .expect("compaction checkpoint");
+        assert_eq!(
+            events
+                .iter()
+                .any(|event| matches!(event.payload, EventPayload::ToolOutputElided { .. })),
+            expect_elision
+        );
+
+        let input_events = events
+            .iter()
+            .filter(|event| event.seq <= commit.boundaries.input_through_seq)
+            .cloned()
+            .collect::<Vec<_>>();
+        let context = crate::model_history::assemble_model_context(
+            &input_events,
+            &fixture.engine.inner.artifacts,
+            binding,
+            &owner_policy.agent.composed_prompt,
+        )
+        .expect("selected compaction context");
+        let mut history = context.history;
+        history.push(oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(
+            vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
+                crate::runtime::compaction::COMPACTION_INSTRUCTION,
+            ))],
+        )));
+        let serialized_bytes =
+            serde_json::to_vec(&(history, Vec::<oven_sdk::ToolDefinition>::new()))
+                .expect("serialize selected compaction request")
+                .len();
+        assert_eq!(
+            commit.budgets.input_tokens_before,
+            (serialized_bytes as u64).div_ceil(4)
+        );
+
+        let requests = captured.await.expect("captured compaction requests");
+        let summary_request = requests.get(1).expect("summarizer request");
+        assert_eq!(summary_request.contains(RAW_MARKER), !expect_elision);
+        assert_eq!(
+            summary_request.contains("[tool output elided; retained at artifact://sha256/"),
+            expect_elision
+        );
+        fixture.engine.shutdown().await;
+    }
+}
+
 fn reopen_engine(fixture: &Fixture) -> Engine {
     let current = fixture.manager.current();
     let manager = Arc::new(

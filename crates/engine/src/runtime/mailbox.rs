@@ -628,16 +628,6 @@ impl Engine {
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .remove(&session);
-                        self.inner
-                            .compaction_auto_disabled
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .remove(&session);
-                        self.inner
-                            .compaction_postcheck_pending
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .remove(&session);
                         self.rebuild_visible_tree_grants();
                         Ok(SessionRevertResult {
                             session: self.inner.store.get(session)?.metadata(),

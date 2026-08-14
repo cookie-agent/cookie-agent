@@ -1617,6 +1617,7 @@ pub enum EventPayload {
         #[schemars(length(max = 5))]
         files: Vec<ContextRehydratedFile>,
     },
+    /// Legacy durable event retained for old logs; the engine no longer emits it.
     ContextCompactionAutoDisabled {
         #[schemars(range(min = 1))]
         observed_tokens: u64,

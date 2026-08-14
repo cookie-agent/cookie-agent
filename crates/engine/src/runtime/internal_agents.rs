@@ -418,7 +418,10 @@ impl Engine {
     }
 }
 
-fn internal_agent_input_limit(kind: InternalAgentKind, policy: &FrozenInternalAgentPolicy) -> u64 {
+pub(super) fn internal_agent_input_limit(
+    kind: InternalAgentKind,
+    policy: &FrozenInternalAgentPolicy,
+) -> u64 {
     if kind != InternalAgentKind::ContextCompaction {
         return policy.limits.max_input_tokens;
     }

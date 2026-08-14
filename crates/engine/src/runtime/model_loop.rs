@@ -257,12 +257,6 @@ impl Engine {
             .unwrap_or_default();
         if !config.auto_compaction
             || trigger_tokens == 0
-            || self
-                .inner
-                .compaction_auto_disabled
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .contains(&input.session)
             || !should_run_predictive_compaction(
                 estimator,
                 input.serialized_message_bytes,
@@ -291,6 +285,7 @@ impl Engine {
                 tools: &tools,
                 events,
                 force: true,
+                overflow_recovery: false,
                 focus: None,
                 actor_direct: input.actor_direct,
             })
@@ -643,6 +638,7 @@ impl Engine {
                         tools: &tools,
                         events: request_events,
                         force: false,
+                        overflow_recovery: false,
                         focus: None,
                         actor_direct: false,
                     })
@@ -654,7 +650,7 @@ impl Engine {
                     binding,
                     composed_prompt,
                 )?;
-                let serialized_history_bytes = serde_json::to_vec(&context.history)
+                let serialized_context_bytes = serde_json::to_vec(&(&context.history, &tools))
                     .map_err(|error| ModelError::invalid_request(error.to_string()))?
                     .len();
                 let replay_preflight = context.replay_decisions;
@@ -795,7 +791,7 @@ impl Engine {
                             .entry(session)
                             .or_default()
                             .record_committed_turn(
-                                serialized_history_bytes,
+                                serialized_context_bytes,
                                 turn.usage.input_tokens,
                             );
                         let title_policy = self.internal_agent_policy(
@@ -854,6 +850,7 @@ impl Engine {
                                 tools: &tools,
                                 events: recovery_events,
                                 force: true,
+                                overflow_recovery: true,
                                 focus: None,
                                 actor_direct: false,
                             })

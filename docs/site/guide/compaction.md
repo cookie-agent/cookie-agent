@@ -60,35 +60,36 @@ The threshold is compared against two signals:
 
 ## What happens when it triggers
 
-1. **Tool-output elision.** Bulky tool outputs (8 KiB or more) from turns older
-   than the last two are first replaced with content-addressed artifact
-   references. If elision alone brings the estimated size under the threshold,
-   no summarizer call is made — the session continues with the elided events and
-   a `tool_output_elided` event is recorded for each.
-2. **Native or summarizer call.** An opted-in Responses model first attempts
+1. **Raw-context fit check.** The engine first assembles the unmodified history.
+   It uses the session's calibrated tokens-per-byte estimate when available and
+   otherwise estimates tokens as serialized bytes ÷ 4. A latest real usage value
+   at or below the budget is accepted without estimating. The budget is the
+   compaction agent's effective input limit, or the bound model's context limit
+   for native compaction, minus the compaction agent's output-token allowance.
+   If a replayed policy has no output allowance, the engine reserves 20,000
+   tokens as conservative summary-output headroom.
+2. **Overflow elision.** When the raw context exceeds that budget, or when a
+   normal model request has already failed for context length, bulky tool outputs
+   (8 KiB or more) from turns older than the last two are replaced with
+   content-addressed artifact references. The context is then reassembled from
+   the elided events. If elision brings an automatic compaction below its trigger
+   threshold, no summarizer call is made.
+3. **Native or summarizer call.** An opted-in Responses model first attempts
    native compaction. Otherwise, or after any native failure, the internal
    `compaction` agent (see
    [Internal agents](agents.md#internal-agents)) receives the assembled history
    plus the fixed instruction, optionally extended with the user's focus text.
    It must return summary text only, at most `max_summary_bytes` (256 KiB by
    default). Non-text output is rejected.
-3. **Checkpoint commit.** A `context_checkpoint_committed` event records the
+4. **Checkpoint commit.** A `context_checkpoint_committed` event records the
    text summary or opaque native window, its source boundaries, and the budget
    math (context limit, trigger threshold, input tokens before, estimated tokens
    after).
-4. **Rehydration.** After the checkpoint, the engine re-reads up to 5 distinct
+5. **Rehydration.** After the checkpoint, the engine re-reads up to 5 distinct
    files most recently opened by the `read` tool (32 KiB each, 128 KiB total,
    permission-checked against the owner policy) and appends a
    `context_rehydrated` event with their contents, so the fresh context still
    has the important file contents available.
-
-## Anti-thrash latching
-
-After a compaction, the engine runs a post-check on the next committed turn. If
-usage is still at or above the trigger threshold — meaning the summary plus new
-work is already too big — automatic compaction latches off for that session,
-emits a `context_compaction_auto_disabled` event, and only manual compaction or
-context-overflow recovery will run again. This prevents compacting in a loop.
 
 ## Configuration
 
@@ -128,8 +129,8 @@ compaction runs; admitted pending inputs are promoted only after the checkpoint,
 honoring any recalls made during compaction.
 
 `session.compact` returns whether a checkpoint was actually committed. Manual
-compaction always runs elision first and still skips the summarizer call if the
-elided context is already under the threshold.
+compaction uses raw history when it fits the compaction budget and uses
+tool-output elision only as overflow recovery.
 
 ## Events
 
@@ -140,4 +141,3 @@ Compaction produces these event payloads:
   / `internal_agent_fallback` — the compaction agent invocation
 - `context_checkpoint_committed` — the checkpoint with boundaries and budgets
 - `context_rehydrated` — file contents re-read into the fresh context
-- `context_compaction_auto_disabled` — automatic compaction latched off

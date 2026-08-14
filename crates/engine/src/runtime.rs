@@ -219,14 +219,14 @@ struct PendingPromotionState {
 impl ContextTokenEstimator {
     fn record_committed_turn(
         &mut self,
-        serialized_history_bytes: usize,
+        serialized_context_bytes: usize,
         input_tokens: Option<u64>,
     ) {
         self.last_committed_input_tokens = input_tokens.unwrap_or(0);
-        if serialized_history_bytes > 0
+        if serialized_context_bytes > 0
             && let Some(input_tokens) = input_tokens.filter(|tokens| *tokens > 0)
         {
-            self.tokens_per_byte = input_tokens as f64 / serialized_history_bytes as f64;
+            self.tokens_per_byte = input_tokens as f64 / serialized_context_bytes as f64;
         }
     }
 
@@ -235,6 +235,11 @@ impl ContextTokenEstimator {
             self.last_committed_input_tokens
                 .saturating_add((serialized_message_bytes as f64 * self.tokens_per_byte) as u64)
         })
+    }
+
+    fn estimated_context_tokens(self, serialized_context_bytes: usize) -> Option<u64> {
+        (self.tokens_per_byte > 0.0)
+            .then(|| (serialized_context_bytes as f64 * self.tokens_per_byte).ceil() as u64)
     }
 
     fn should_compact(self, serialized_message_bytes: usize, soft_tokens: u64) -> bool {
@@ -686,8 +691,6 @@ pub(crate) struct Inner {
     finalized_output_hubs: Mutex<VecDeque<ToolCallId>>,
     pub(crate) pending_approvals: Mutex<HashMap<(SessionId, ApprovalId), PendingApproval>>,
     permission_modes: Mutex<HashMap<SessionId, PermissionMode>>,
-    compaction_auto_disabled: Mutex<HashSet<SessionId>>,
-    compaction_postcheck_pending: Mutex<HashSet<SessionId>>,
     compaction_in_progress: Mutex<HashSet<SessionId>>,
     compaction_deferred: Mutex<HashMap<SessionId, VecDeque<SessionCommand>>>,
     context_token_estimators: Mutex<HashMap<SessionId, ContextTokenEstimator>>,
@@ -775,8 +778,6 @@ impl Engine {
                 finalized_output_hubs: Mutex::new(VecDeque::new()),
                 pending_approvals: Mutex::new(HashMap::new()),
                 permission_modes: Mutex::new(HashMap::new()),
-                compaction_auto_disabled: Mutex::new(HashSet::new()),
-                compaction_postcheck_pending: Mutex::new(HashSet::new()),
                 compaction_in_progress: Mutex::new(HashSet::new()),
                 compaction_deferred: Mutex::new(HashMap::new()),
                 context_token_estimators: Mutex::new(HashMap::new()),
@@ -1282,6 +1283,8 @@ mod context_token_estimator_tests {
         assert_eq!(estimator.tokens_per_byte, 0.25);
         assert_eq!(estimator.last_committed_input_tokens, 50);
         assert_eq!(estimator.projected_tokens(40), Some(60));
+        assert_eq!(estimator.estimated_context_tokens(40), Some(10));
+        assert_eq!(estimator.estimated_context_tokens(41), Some(11));
     }
 
     #[test]

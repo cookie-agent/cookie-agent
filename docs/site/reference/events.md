@@ -18,6 +18,9 @@ run ID reject a null envelope value.
 | Internal agents | `internal_agent_started`, `internal_agent_completed`, `internal_agent_failed`, `internal_agent_cancelled`, `internal_agent_interrupted`, `internal_agent_fallback` |
 | Compaction | `context_checkpoint_committed`, `context_rehydrated`, `context_compaction_auto_disabled` |
 
+`context_compaction_auto_disabled` is a legacy durable event retained for old
+session logs. Current engines no longer emit it.
+
 Schema 14 introduces the pending-input and branch control records used by the
 current steering and revert behavior: `user_input_admitted`,
 `user_input_recalled`, and `session_reverted`. `user_input_submitted` remains the

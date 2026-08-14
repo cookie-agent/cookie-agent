@@ -37,9 +37,11 @@ copied prefix, the new title receives ` (fork)`, and the new session is selected
 ## Compaction
 
 Automatic compaction is enabled by default. It triggers from actual token usage
-or a learned pre-send estimate relative to the model context limit. Old bulky
-tool outputs may first be replaced with artifact references; if that is enough,
-no summarizer call is made.
+or a learned pre-send estimate relative to the model context limit. Raw history
+is preferred; old bulky tool outputs are replaced with artifact references only
+when the raw compaction input would overflow its budget or a normal model request
+has already failed for context length. If that is enough to bring an automatic
+compaction below its trigger, no summarizer call is made.
 
 Use `/compact` to force compaction for the selected idle session. Add optional
 focus text, for example:
@@ -54,4 +56,4 @@ compaction. Set `context_compaction.auto = false` to disable automatic signals;
 manual and context-overflow recovery compaction remain available.
 
 See [Compaction](compaction.md) for the trigger math, the internal agent that
-performs it, rehydration, and anti-thrash behavior.
+performs it, and rehydration.
