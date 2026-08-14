@@ -257,6 +257,11 @@ fn validate_records(
                     );
                 }
             }
+            EventPayload::DelegateChildTerminated { .. } => {
+                if record.run_id.is_some() {
+                    return corrupt(path, "DelegateChildTerminated must not have run_id");
+                }
+            }
             EventPayload::RunStarted {
                 agent,
                 selected_suffix,
@@ -286,6 +291,7 @@ fn validate_records(
                     cookie_agent_protocol::SessionTitleChange::UserSet { .. }
                         | cookie_agent_protocol::SessionTitleChange::UserClear { .. }
                         | cookie_agent_protocol::SessionTitleChange::UserReset { .. }
+                        | cookie_agent_protocol::SessionTitleChange::DelegatedSet { .. }
                 );
                 if user != record.run_id.is_none() {
                     return corrupt(path, "SessionTitleCommitted has inconsistent run ownership");

@@ -11,6 +11,14 @@ between sessions. Delegated sessions form a tree beneath the root that created
 them. Accepted runs retain their frozen model binding even if catalog,
 configuration, or provider-store state changes later.
 
+## Titles
+
+Root sessions may generate a title from their opening user messages according to
+the `session_title` configuration. A delegated session is titled immediately
+from the `delegate_subagent` description instead. The description is bounded by
+`session_title.max_chars`, and the delegated child does not run the title
+internal agent.
+
 ## Revert
 
 Revert is available only while the session is idle. It appends a

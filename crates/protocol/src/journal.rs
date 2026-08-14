@@ -26,6 +26,14 @@ pub struct DelegateRequestPayload {
     pub expected_output: Value,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DelegateRequestPayloadV2 {
+    pub description: String,
+    pub prompt: String,
+    pub title: SessionTitle,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[allow(clippy::large_enum_variant)]
@@ -52,6 +60,29 @@ pub enum DelegationJournalRecord {
         request_fingerprint: Sha256Digest,
         task: String,
         request: DelegateRequestPayload,
+    },
+    DelegationStartedV2 {
+        reservation: DelegationReservation,
+        child_agent: Box<AgentSnapshot>,
+        #[ts(type = "ModelSnapshotRevision")]
+        manifest_revision: ModelSnapshotRevision,
+        #[ts(type = "RuntimeRevision")]
+        runtime_revision: RuntimeRevision,
+        #[ts(type = "CatalogRevision")]
+        catalog_revision: CatalogRevision,
+        #[ts(type = "ProviderStateRevision")]
+        provider_state_revision: ProviderStateRevision,
+        #[ts(type = "ModelRevision")]
+        model_revision: ModelRevision,
+        #[ts(type = "AgentRevision")]
+        agent_revision: AgentRevision,
+        #[ts(type = "RecipeRegistryRevision")]
+        recipe_registry_revision: RecipeRegistryRevision,
+        #[schemars(length(min = 1, max = 256))]
+        selected_suffix: Vec<FrozenModelBinding>,
+        request_fingerprint: Sha256Digest,
+        prompt: String,
+        request: DelegateRequestPayloadV2,
     },
     DelegationLinked {
         invocation_id: InvocationId,

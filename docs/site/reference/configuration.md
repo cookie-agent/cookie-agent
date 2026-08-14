@@ -105,7 +105,7 @@ Controls automatic session titles generated from the first user message.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `max_depth` | integer | `3` | Maximum delegation depth below a root session. Must be greater than zero. |
-| `max_concurrency` | integer | *(omitted)* | Maximum concurrent delegation invocations. Omitted means unlimited. A value of `0` is rejected. |
+| `max_concurrency` | integer | `4` | Maximum concurrently running root-level background delegations. Excess calls queue FIFO, up to `4 × max_concurrency`; a full queue rejects admission. Foreground and nested delegations bypass this queue. A value of `0` is rejected. |
 
 ## `[providers]`
 

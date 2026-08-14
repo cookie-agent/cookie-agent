@@ -1721,6 +1721,44 @@ fn reduce_event(
             EventLevel::Info,
             format!("rehydrated {} recently read file(s)", files.len()),
         ),
+        EventPayload::DelegateQueued {
+            session_id,
+            position,
+        } => push_event(
+            state,
+            EventLevel::Info,
+            position.map_or_else(
+                || format!("subagent {session_id} queued"),
+                |position| format!("subagent {session_id} queued at position {position}"),
+            ),
+        ),
+        EventPayload::DelegateFinished {
+            session_id,
+            status,
+            total_lines,
+            ..
+        } => push_event(
+            state,
+            if matches!(status, cookie_agent_protocol::SessionStatus::Completed) {
+                EventLevel::Info
+            } else {
+                EventLevel::Warning
+            },
+            format!("subagent {session_id} finished: {status:?} ({total_lines} lines)")
+                .to_lowercase(),
+        ),
+        EventPayload::DelegateChildTerminated { status, reason } => push_event(
+            state,
+            if matches!(status, cookie_agent_protocol::SessionStatus::Failed) {
+                EventLevel::Error
+            } else {
+                EventLevel::Info
+            },
+            reason.map_or_else(
+                || format!("subagent {status:?}").to_lowercase(),
+                |reason| format!("subagent {status:?}: {reason}").to_lowercase(),
+            ),
+        ),
         EventPayload::ContextCompactionAutoDisabled {
             observed_tokens,
             trigger_tokens,
@@ -2548,6 +2586,9 @@ fn render_title_commit(change: &SessionTitleChange) -> String {
         SessionTitleChange::UserReset { .. } => "session title reset".into(),
         SessionTitleChange::InternalAgentSet { title, .. } => {
             format!("session title set to {title}")
+        }
+        SessionTitleChange::DelegatedSet { title, .. } => {
+            format!("delegated session titled {title}")
         }
         SessionTitleChange::FallbackSet { title } => format!("session title set to {title}"),
     }

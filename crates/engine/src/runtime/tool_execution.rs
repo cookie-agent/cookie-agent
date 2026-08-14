@@ -68,8 +68,12 @@ impl Engine {
                 })
         });
         let enabled_tools = policy.tools();
-        if (call.name == "delegate" && !delegate_enabled)
-            || (call.name != "delegate"
+        let delegation_tool = matches!(
+            call.name.as_str(),
+            "delegate_subagent" | "get_subagent_result" | "cancel_subagent"
+        );
+        if (delegation_tool && !delegate_enabled)
+            || (!delegation_tool
                 && (!enabled_tools.contains(&call.name)
                     || !PermissionPipeline::tool_visible(&policy.agent, &call.name)))
         {
@@ -382,10 +386,14 @@ impl Engine {
                 .tools_for_session(&SessionToolContext { session })
                 .map_err(|error| EngineError::MissingTool(error.to_string()))?
             {
-                if ((tool.name != "delegate"
+                let delegation_tool = matches!(
+                    tool.name.as_str(),
+                    "delegate_subagent" | "get_subagent_result" | "cancel_subagent"
+                );
+                if ((!delegation_tool
                     && enabled_tools.contains(&tool.name)
                     && PermissionPipeline::tool_visible(&policy.agent, &tool.name))
-                    || (tool.name == "delegate" && delegate_enabled))
+                    || (delegation_tool && delegate_enabled))
                     && names.insert(tool.name.clone())
                 {
                     let schema = JsonSchema::new(tool.parameters).map_err(|error| {

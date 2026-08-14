@@ -75,8 +75,11 @@ struct TestDelegateProvider {
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct TestDelegateArgs {
-    agent: AgentId,
-    task: String,
+    agent_type: AgentId,
+    prompt: String,
+    description: String,
+    #[serde(default)]
+    background: bool,
 }
 
 struct TestDelegateExecutor {
@@ -94,16 +97,18 @@ impl ToolProvider for TestDelegateProvider {
             .map_err(|error| ToolError::execution(error.to_string()))?;
         Ok((!targets.is_empty())
             .then(|| ToolSpec {
-                name: "delegate".to_owned(),
+                name: "delegate_subagent".to_owned(),
                 description: "Delegate scripted work".to_owned(),
                 parameters: serde_json::json!({
                     "type":"object",
                     "additionalProperties":false,
                     "properties":{
-                        "agent":{"type":"string","enum":targets},
-                        "task":{"type":"string"}
+                        "agent_type":{"type":"string","enum":targets},
+                        "prompt":{"type":"string"},
+                        "description":{"type":"string"}
+                        ,"background":{"type":"boolean","default":false}
                     },
-                    "required":["agent","task"]
+                    "required":["agent_type","prompt","description"]
                 }),
             })
             .into_iter()
@@ -115,14 +120,14 @@ impl ToolProvider for TestDelegateProvider {
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
-        if name != "delegate" {
+        if name != "delegate_subagent" {
             return Err(ToolError::execution(
                 "delegate provider received another tool",
             ));
         }
         let args: TestDelegateArgs = serde_json::from_value(arguments.clone())
             .map_err(|error| ToolError::execution(error.to_string()))?;
-        Ok(args.agent.to_string())
+        Ok(args.agent_type.to_string())
     }
 
     fn get_display_argument(
@@ -140,7 +145,7 @@ impl ToolProvider for TestDelegateProvider {
     ) -> Result<PreparedTool, ToolError> {
         let args: TestDelegateArgs = serde_json::from_value(call.arguments)
             .map_err(|error| ToolError::execution(error.to_string()))?;
-        let label = args.agent.to_string();
+        let label = args.agent_type.to_string();
         let label_digest = Sha256Digest::of_bytes(label.as_bytes());
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(
@@ -149,7 +154,7 @@ impl ToolProvider for TestDelegateProvider {
             ),
             vec![ApprovalCapability {
                 action: PermissionAction::Delegate,
-                operation: PreparedCapabilityOperation::new("delegate:spawn")
+                operation: PreparedCapabilityOperation::new("delegate_subagent:spawn")
                     .map_err(|error| ToolError::execution(error.to_string()))?,
             }],
             vec![PreparedApprovalResource {
@@ -196,18 +201,29 @@ impl PreparedExecutor for TestDelegateExecutor {
                 parent_session_id: context.session,
                 parent_run_id: context.run,
                 parent_tool_call_id: self.call_id,
-                agent: self.args.agent,
-                task: self.args.task,
-                context: Vec::new(),
-                success_criteria: vec!["return a report".to_owned()],
-                expected_output: serde_json::Value::Null,
+                agent_type: self.args.agent_type,
+                description: self.args.description,
+                prompt: self.args.prompt,
+                background: self.args.background,
             })
             .await
             .map_err(|error| ToolError::execution(error.to_string()))?;
-        self.engine
-            .await_delegate(handle)
-            .await
-            .map_err(|error| ToolError::execution(error.to_string()))
+        if self.args.background {
+            let metadata = serde_json::json!({"session_id":handle.child_session_id});
+            Ok(cookie_agent_protocol::PersistedToolResult {
+                title: cookie_agent_protocol::SafeDisplayText::new("Subagent started")
+                    .expect("title"),
+                output: metadata.to_string(),
+                metadata,
+                truncation: None,
+                attachments: Vec::new(),
+            })
+        } else {
+            self.engine
+                .await_delegate(handle)
+                .await
+                .map_err(|error| ToolError::execution(error.to_string()))
+        }
     }
 }
 
@@ -1135,7 +1151,7 @@ fn custom_fixture_with_endpoint_and_primary_agent(
     endpoint: &str,
     primary_agent: &str,
 ) -> (Fixture, RunSelection) {
-    custom_fixture_with_endpoint_primary_and_internal(endpoint, primary_agent, None, None)
+    custom_fixture_with_endpoint_primary_and_internal(endpoint, primary_agent, None, None, false)
 }
 
 fn custom_fixture_with_endpoint_primary_and_internal(
@@ -1143,6 +1159,7 @@ fn custom_fixture_with_endpoint_primary_and_internal(
     primary_agent: &str,
     internal: Option<(&str, &str)>,
     compaction_buffer_tokens: Option<u64>,
+    generate_titles: bool,
 ) -> (Fixture, RunSelection) {
     let directory = TempDir::new().expect("temp directory");
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
@@ -1206,7 +1223,7 @@ media = {}
             .expect("private internal agent");
     }
     let mut config = load_from_roots(None, Some(&project)).expect("loaded config");
-    config.runtime.session_title.generate_on_first_turn = false;
+    config.runtime.session_title.generate_on_first_turn = generate_titles;
     if let Some(buffer_tokens) = compaction_buffer_tokens {
         config.runtime.context_compaction.trigger =
             cookie_agent_config::ContextCompactionTrigger::BufferTokens { buffer_tokens };
@@ -1588,6 +1605,7 @@ fn workspace_internal_agent_replaces_builtin_document_and_limits() {
             "---\nschema: 4\ndescription: Workspace approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1234, max_input_tokens: 2345, max_output_tokens: 345 }\ntools: [bash]\npermissions: {}\n---\nWorkspace approval prompt.\n",
         )),
         None,
+        false,
     );
     let owner = frozen_root_policy(&fixture, &selection);
     let policy = fixture
@@ -1875,7 +1893,7 @@ async fn scripted_delegation_server() -> (String, tokio::task::JoinHandle<Vec<St
     let address = listener.local_addr().expect("listener address");
     let task = tokio::spawn(async move {
         let bodies = [
-            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"delegate-call\",\"type\":\"function\",\"function\":{\"name\":\"delegate\",\"arguments\":\"{\\\"agent\\\":\\\"worker\\\",\\\"task\\\":\\\"write report\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"delegate-call\",\"type\":\"function\",\"function\":{\"name\":\"delegate_subagent\",\"arguments\":\"{\\\"agent_type\\\":\\\"worker\\\",\\\"description\\\":\\\"Write report\\\",\\\"prompt\\\":\\\"write report\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
             "data: {\"choices\":[{\"delta\":{\"content\":\"delegated child report\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
             "data: {\"choices\":[{\"delta\":{\"content\":\"parent accepted child report\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
         ];
@@ -1905,6 +1923,309 @@ async fn scripted_delegation_server() -> (String, tokio::task::JoinHandle<Vec<St
             requests.push(String::from_utf8(request).expect("UTF-8 request"));
         }
         requests
+    });
+    (format!("http://{address}/v1"), task)
+}
+
+async fn scripted_background_delegation_server() -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("background delegation listener");
+    let address = listener.local_addr().expect("listener address");
+    let task = tokio::spawn(async move {
+        let bodies = [
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"background-delegate-call\",\"type\":\"function\",\"function\":{\"name\":\"delegate_subagent\",\"arguments\":\"{\\\"agent_type\\\":\\\"worker\\\",\\\"description\\\":\\\"Write report\\\",\\\"prompt\\\":\\\"write report\\\",\\\"background\\\":true}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"first line\\nsecond line\\nthird line\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"parent continued after admission\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        ];
+        let mut requests = Vec::new();
+        for body in bodies {
+            let (mut socket, _) = listener
+                .accept()
+                .await
+                .expect("background delegation accept");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 8192];
+            loop {
+                let read = socket
+                    .read(&mut buffer)
+                    .await
+                    .expect("background delegation read");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("background delegation response");
+            requests.push(String::from_utf8(request).expect("UTF-8 request"));
+        }
+        requests
+    });
+    (format!("http://{address}/v1"), task)
+}
+
+async fn read_scripted_http_request(socket: &mut tokio::net::TcpStream) -> Vec<u8> {
+    use tokio::io::AsyncReadExt as _;
+
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let mut expected = None;
+    loop {
+        let read = socket
+            .read(&mut buffer)
+            .await
+            .expect("scripted request read");
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+        if expected.is_none()
+            && let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+        {
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            expected = Some(header_end + 4 + content_length);
+        }
+        if expected.is_some_and(|expected| request.len() >= expected) {
+            break;
+        }
+    }
+    request
+}
+
+async fn write_scripted_sse(socket: &mut tokio::net::TcpStream, body: &str) {
+    use tokio::io::AsyncWriteExt as _;
+
+    let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    socket
+        .write_all(response.as_bytes())
+        .await
+        .expect("scripted SSE response");
+}
+
+async fn scripted_queued_delegation_server() -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("queued delegation listener");
+    let address = listener.local_addr().expect("listener address");
+    let task = tokio::spawn(async move {
+        let (mut initial, _) = listener.accept().await.expect("queued parent initial");
+        let _ = read_scripted_http_request(&mut initial).await;
+        let calls = (0..5)
+            .map(|index| {
+                serde_json::json!({
+                    "index": index,
+                    "id": format!("queued-delegate-{index}"),
+                    "type": "function",
+                    "function": {
+                        "name": "delegate_subagent",
+                        "arguments": serde_json::json!({
+                            "agent_type":"worker",
+                            "description":format!("Child {index}"),
+                            "prompt":format!("queued child {index}"),
+                            "background":true
+                        }).to_string()
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let initial_body = format!(
+            "data: {}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n",
+            serde_json::json!({"choices":[{"delta":{"tool_calls":calls},"finish_reason":null}]})
+        );
+        write_scripted_sse(&mut initial, &initial_body).await;
+
+        let mut children = Vec::new();
+        let mut parent_responded = false;
+        while children.len() < 4 || !parent_responded {
+            let (mut socket, _) = listener.accept().await.expect("queued concurrent request");
+            let request = read_scripted_http_request(&mut socket).await;
+            let text = String::from_utf8_lossy(&request);
+            if text.contains("\"role\":\"tool\"") {
+                let body = "data: {\"choices\":[{\"delta\":{\"content\":\"parent admitted all children\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+                write_scripted_sse(&mut socket, body).await;
+                parent_responded = true;
+            } else {
+                children.push(socket);
+            }
+        }
+        for (index, child) in children.iter_mut().enumerate() {
+            let body = format!(
+                "data: {{\"choices\":[{{\"delta\":{{\"content\":\"child {index} done\"}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n"
+            );
+            write_scripted_sse(child, &body).await;
+        }
+        let (mut queued, _) = listener.accept().await.expect("queued child start");
+        let request = read_scripted_http_request(&mut queued).await;
+        assert!(String::from_utf8_lossy(&request).contains("queued child"));
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"queued child done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        write_scripted_sse(&mut queued, body).await;
+    });
+    (format!("http://{address}/v1"), task)
+}
+
+async fn scripted_full_delegation_queue_server() -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("full delegation queue listener");
+    let address = listener.local_addr().expect("listener address");
+    let task = tokio::spawn(async move {
+        let (mut initial, _) = listener.accept().await.expect("full queue parent initial");
+        let _ = read_scripted_http_request(&mut initial).await;
+        let calls = (0..21)
+            .map(|index| {
+                serde_json::json!({
+                    "index": index,
+                    "id": format!("full-queue-delegate-{index}"),
+                    "type": "function",
+                    "function": {
+                        "name": "delegate_subagent",
+                        "arguments": serde_json::json!({
+                            "agent_type":"worker",
+                            "description":format!("Full queue child {index}"),
+                            "prompt":format!("full queue child {index}"),
+                            "background":true
+                        }).to_string()
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let initial_body = format!(
+            "data: {}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n",
+            serde_json::json!({"choices":[{"delta":{"tool_calls":calls},"finish_reason":null}]})
+        );
+        write_scripted_sse(&mut initial, &initial_body).await;
+
+        let mut children = Vec::new();
+        let mut parent_responded = false;
+        while children.len() < 4 || !parent_responded {
+            let (mut socket, _) = listener.accept().await.expect("full queue request");
+            let request = read_scripted_http_request(&mut socket).await;
+            if String::from_utf8_lossy(&request).contains("\"role\":\"tool\"") {
+                let body = "data: {\"choices\":[{\"delta\":{\"content\":\"queue full rejection observed\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+                write_scripted_sse(&mut socket, body).await;
+                parent_responded = true;
+            } else {
+                children.push(socket);
+            }
+        }
+        std::future::pending::<()>().await;
+    });
+    (format!("http://{address}/v1"), task)
+}
+
+async fn scripted_startup_failure_delegation_server() -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("startup failure delegation listener");
+    let address = listener.local_addr().expect("listener address");
+    let task = tokio::spawn(async move {
+        let (mut initial, _) = listener
+            .accept()
+            .await
+            .expect("startup failure parent initial");
+        let _ = read_scripted_http_request(&mut initial).await;
+        let calls = (0..5)
+            .map(|index| {
+                serde_json::json!({
+                    "index": index,
+                    "id": format!("startup-failure-delegate-{index}"),
+                    "type": "function",
+                    "function": {
+                        "name": "delegate_subagent",
+                        "arguments": serde_json::json!({
+                            "agent_type":"worker",
+                            "description":format!("Startup child {index}"),
+                            "prompt":format!("startup child {index}"),
+                            "background":true
+                        }).to_string()
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let initial_body = format!(
+            "data: {}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n",
+            serde_json::json!({"choices":[{"delta":{"tool_calls":calls},"finish_reason":null}]})
+        );
+        write_scripted_sse(&mut initial, &initial_body).await;
+
+        let mut children = Vec::new();
+        let mut parent_responded = false;
+        while children.len() < 4 || !parent_responded {
+            let (mut socket, _) = listener.accept().await.expect("startup failure request");
+            let request = read_scripted_http_request(&mut socket).await;
+            if String::from_utf8_lossy(&request).contains("\"role\":\"tool\"") {
+                let body = "data: {\"choices\":[{\"delta\":{\"content\":\"parent observed startup failure\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+                write_scripted_sse(&mut socket, body).await;
+                parent_responded = true;
+            } else {
+                children.push(socket);
+            }
+        }
+        for (index, child) in children.iter_mut().enumerate() {
+            let body = format!(
+                "data: {{\"choices\":[{{\"delta\":{{\"content\":\"startup child {index} done\"}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n"
+            );
+            write_scripted_sse(child, &body).await;
+        }
+    });
+    (format!("http://{address}/v1"), task)
+}
+
+async fn scripted_cancellable_delegation_server() -> (String, tokio::task::JoinHandle<()>) {
+    use tokio::io::AsyncReadExt as _;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("cancellable delegation listener");
+    let address = listener.local_addr().expect("listener address");
+    let task = tokio::spawn(async move {
+        let (mut initial, _) = listener.accept().await.expect("cancellable parent initial");
+        let _ = read_scripted_http_request(&mut initial).await;
+        let body = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"cancellable-delegate\",\"type\":\"function\",\"function\":{\"name\":\"delegate_subagent\",\"arguments\":\"{\\\"agent_type\\\":\\\"worker\\\",\\\"description\\\":\\\"Long task\\\",\\\"prompt\\\":\\\"long running child\\\",\\\"background\\\":true}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n";
+        write_scripted_sse(&mut initial, body).await;
+
+        let mut child = None;
+        let mut parent_responded = false;
+        while child.is_none() || !parent_responded {
+            let (mut socket, _) = listener
+                .accept()
+                .await
+                .expect("cancellable concurrent request");
+            let request = read_scripted_http_request(&mut socket).await;
+            if String::from_utf8_lossy(&request).contains("\"role\":\"tool\"") {
+                let body = "data: {\"choices\":[{\"delta\":{\"content\":\"parent continued\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+                write_scripted_sse(&mut socket, body).await;
+                parent_responded = true;
+            } else {
+                child = Some(socket);
+            }
+        }
+        let mut child = child.expect("child socket");
+        let mut buffer = [0_u8; 256];
+        while child.read(&mut buffer).await.unwrap_or(0) != 0 {}
     });
     (format!("http://{address}/v1"), task)
 }
@@ -2493,6 +2814,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
                 "---\nschema: 4\ndescription: Test compaction\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_input_tokens: 16384, max_output_tokens: 256 }\ntools: []\npermissions: {}\n---\nSummarize faithfully.\n",
             )),
             None,
+            false,
         );
         let session = fixture
             .engine
@@ -3766,6 +4088,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         "---\nschema: 4\ndescription: Steering compaction test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: ask\n---\nTest steering compaction.\n",
         None,
         Some(500),
+        false,
     );
     let executed = Arc::new(AtomicBool::new(false));
     fixture
@@ -3957,6 +4280,7 @@ async fn cancel_during_start_prediction_aborts_compaction_without_appending_inpu
         "---\nschema: 4\ndescription: Start cancellation test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: {}\n---\nTest start cancellation.\n",
         None,
         Some(500),
+        false,
     );
     let session = fixture
         .engine
@@ -4086,6 +4410,7 @@ async fn steer_during_start_prediction_survives_initial_submission_and_reaches_m
         "---\nschema: 4\ndescription: Start steering race test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions: {}\n---\nTest start steering.\n",
         None,
         Some(500),
+        false,
     );
     let session = fixture
         .engine
@@ -4204,6 +4529,7 @@ async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix()
             "---\nschema: 4\ndescription: Persistent approval evaluator\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_input_tokens: 4096, max_output_tokens: 128 }\ntools: []\npermissions: {}\n---\nEvaluate approval requests conservatively.\n",
         )),
         None,
+        false,
     );
     let executed = Arc::new(AtomicBool::new(false));
     fixture
@@ -5307,7 +5633,866 @@ async fn scripted_parent_delegate_child_run_completes_and_reopens() {
 }
 
 #[tokio::test]
-async fn root_run_and_schema_ten_delegation_reservation_reopen_exactly() {
+async fn delegated_child_uses_description_title_without_title_agent() {
+    let bodies = vec![
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"titled-delegate\",\"type\":\"function\",\"function\":{\"name\":\"delegate_subagent\",\"arguments\":\"{\\\"agent_type\\\":\\\"worker\\\",\\\"description\\\":\\\"Write report\\\",\\\"prompt\\\":\\\"write report\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n".to_owned(),
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Parent delegation title\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
+        "data: {\"choices\":[{\"delta\":{\"content\":\"delegated child report\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
+        "data: {\"choices\":[{\"delta\":{\"content\":\"parent accepted child report\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
+    ];
+    let (endpoint, captured, _reached, _release) =
+        scripted_server_with_delayed_response(bodies, usize::MAX).await;
+    let (mut fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
+        &endpoint,
+        "---\nschema: 4\ndescription: Titled delegation parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions:\n  delegate:\n    worker: allow\n---\nTest delegated titles.\n",
+        None,
+        None,
+        true,
+    );
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("titled parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("titled-delegation").expect("run ID"),
+            selection,
+            input: "delegate a titled child".into(),
+        })
+        .await
+        .expect("accepted titled delegation");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if fixture
+                .engine
+                .children(parent.session_id)
+                .first()
+                .is_some_and(|child| child.status == SessionStatus::Completed)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("titled child completion");
+    let child_id = fixture.engine.children(parent.session_id)[0].session_id;
+    let child = fixture
+        .engine
+        .inner
+        .store
+        .get(child_id)
+        .expect("titled child projection");
+    assert_eq!(
+        child.meta.title.as_ref().map(SessionTitle::as_str),
+        Some("Write report")
+    );
+    assert!(matches!(
+        child.log.events()[1].payload,
+        EventPayload::SessionTitleCommitted {
+            change: SessionTitleChange::DelegatedSet { .. },
+            input_through_seq: 0,
+        }
+    ));
+    assert!(!child.log.events().iter().any(|event| matches!(
+        event.payload,
+        EventPayload::InternalAgentStarted {
+            kind: InternalAgentKind::SessionTitle,
+            ..
+        }
+    )));
+    assert!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(parent.session_id)
+            .expect("titled parent projection")
+            .log
+            .events()
+            .iter()
+            .any(|event| matches!(
+                event.payload,
+                EventPayload::InternalAgentStarted {
+                    kind: InternalAgentKind::SessionTitle,
+                    ..
+                }
+            ))
+    );
+    assert_eq!(captured.await.expect("titled delegation server").len(), 4);
+    fixture
+        .engine
+        .rename_session(cookie_agent_protocol::SessionRenameParams {
+            session_id: child_id,
+            client_rename_id: ClientRenameId::new("delegated-user-title").expect("rename ID"),
+            change: cookie_agent_protocol::SessionRenameChange::Set {
+                title: SessionTitle::new("User title").expect("user title"),
+            },
+        })
+        .await
+        .expect("rename delegated child");
+    let child_dir = fixture.engine.inner.store.session_dir(child_id);
+    fixture.engine.shutdown().await;
+
+    let reopened = reopen_engine(&fixture);
+    assert_eq!(
+        reopened
+            .get_session(child_id)
+            .expect("user-renamed delegated child")
+            .title
+            .as_ref()
+            .map(SessionTitle::as_str),
+        Some("User title")
+    );
+    reopened.shutdown().await;
+
+    let event_path = child_dir.join("events.jsonl");
+    let mut events = fs::read_to_string(&event_path)
+        .expect("child events")
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<cookie_agent_protocol::StoredEvent>(line).expect("event")
+        })
+        .collect::<Vec<_>>();
+    let removed_seq = events
+        .iter()
+        .find(|event| {
+            matches!(
+                event.payload,
+                EventPayload::SessionTitleCommitted {
+                    change: SessionTitleChange::DelegatedSet { .. },
+                    ..
+                }
+            )
+        })
+        .expect("delegated title event")
+        .seq;
+    events.retain(|event| {
+        !matches!(
+            event.payload,
+            EventPayload::SessionTitleCommitted {
+                change: SessionTitleChange::DelegatedSet { .. },
+                ..
+            }
+        )
+    });
+    for event in &mut events {
+        if event.seq > removed_seq {
+            event.seq -= 1;
+        }
+        match &mut event.payload {
+            EventPayload::RunStarted {
+                input_through_seq, ..
+            }
+            | EventPayload::ModelTurnCommitted {
+                input_through_seq, ..
+            } if *input_through_seq > removed_seq => *input_through_seq -= 1,
+            EventPayload::UserInputApplied { user_input_seq } if *user_input_seq > removed_seq => {
+                *user_input_seq -= 1;
+            }
+            _ => {}
+        }
+    }
+    let rewritten = events
+        .iter()
+        .map(|event| serde_json::to_string(event).expect("serialize event"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(&event_path, rewritten).expect("remove delegated title crash window");
+    fixture.config.runtime.session_title.max_chars = 4;
+
+    let reopened = reopen_engine(&fixture);
+    let recovered_child = reopened
+        .inner
+        .store
+        .get(child_id)
+        .expect("recovered titled child");
+    assert_eq!(
+        recovered_child
+            .meta
+            .title
+            .as_ref()
+            .map(SessionTitle::as_str),
+        Some("User title")
+    );
+    assert!(recovered_child.log.events().iter().any(|event| {
+        matches!(
+            &event.payload,
+            EventPayload::SessionTitleCommitted {
+                change: SessionTitleChange::DelegatedSet { title, .. },
+                ..
+            } if title.as_str() == "Write report"
+        )
+    }));
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn background_delegate_returns_session_then_notifies_and_paginates() {
+    let (endpoint, captured) = scripted_background_delegation_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("background parent session");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("background-delegation").expect("run ID"),
+            selection: selection.clone(),
+            input: "delegate in the background".into(),
+        })
+        .await
+        .expect("accepted background parent run");
+
+    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let projection = fixture
+                .engine
+                .inner
+                .store
+                .get(parent.session_id)
+                .expect("background parent projection");
+            if let Some(session_id) = projection.log.events().iter().find_map(|event| {
+                let EventPayload::ToolCallTerminated { termination } = &event.payload else {
+                    return None;
+                };
+                termination
+                    .result
+                    .as_ref()?
+                    .metadata
+                    .get("session_id")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+            }) {
+                break session_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("immediate background session result");
+
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let projection = fixture
+                .engine
+                .inner
+                .store
+                .get(parent.session_id)
+                .expect("background parent projection");
+            if projection.log.events().iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    EventPayload::DelegateFinished {
+                        session_id,
+                        status: SessionStatus::Completed,
+                        preview,
+                        total_lines: 3,
+                    } if *session_id == child_session_id
+                        && preview == "first line\nsecond line\nthird line"
+                )
+            }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background completion notification");
+
+    let page = fixture
+        .engine
+        .get_subagent_result(
+            parent.session_id,
+            child_session_id,
+            false,
+            1,
+            1,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("paginated subagent result");
+    assert_eq!(
+        page.output,
+        "<status>completed</status>\n<content>\n2: second line\n</content>"
+    );
+    assert_eq!(page.metadata["offset"], 1);
+    assert_eq!(page.metadata["limit"], 1);
+    assert_eq!(page.metadata["total_lines"], 3);
+
+    let foreign = fixture
+        .engine
+        .create_session(selection)
+        .expect("foreign session");
+    assert!(
+        fixture
+            .engine
+            .get_subagent_result(
+                foreign.session_id,
+                child_session_id,
+                false,
+                0,
+                1,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(captured.await.expect("background server").len(), 3);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn background_delegate_permission_approval_gates_child_admission() {
+    let (endpoint, captured) = scripted_background_delegation_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\nschema: 4\ndescription: Approval-gated delegation agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions:\n  delegate:\n    worker: ask\n---\nTest approval-gated delegation.\n",
+    );
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("approval-gated parent");
+    fixture
+        .engine
+        .set_permission_mode(parent.session_id, PermissionMode::Ask)
+        .expect("ask mode");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("approval-gated-background").expect("run ID"),
+            selection,
+            input: "delegate only after approval".into(),
+        })
+        .await
+        .expect("accepted approval-gated run");
+
+    let approval = wait_for_escalated_approval(&fixture.engine, parent.session_id).await;
+    assert!(fixture.engine.children(parent.session_id).is_empty());
+    approve_once(&fixture.engine, &approval, "background-delegate-approval").await;
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if fixture
+                .engine
+                .children(parent.session_id)
+                .first()
+                .is_some_and(|child| child.status == SessionStatus::Completed)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("approved background child completion");
+    assert_eq!(captured.await.expect("approval-gated server").len(), 3);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn running_subagent_result_is_empty_waits_and_cancel_is_session_addressed() {
+    let (endpoint, server) = scripted_cancellable_delegation_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("cancellable parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("cancellable-delegation").expect("run ID"),
+            selection,
+            input: "start a cancellable child".into(),
+        })
+        .await
+        .expect("accepted cancellable parent run");
+
+    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(child) = fixture.engine.children(parent.session_id).first()
+                && child.status == SessionStatus::Running
+            {
+                break child.session_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("running child");
+    let immediate = fixture
+        .engine
+        .get_subagent_result(
+            parent.session_id,
+            child_session_id,
+            false,
+            0,
+            20,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("running result");
+    assert_eq!(
+        immediate.output,
+        "<status>running</status>\n<content>\n</content>"
+    );
+
+    let wait_engine = fixture.engine.clone();
+    let waiter = tokio::spawn(async move {
+        wait_engine
+            .get_subagent_result(
+                parent.session_id,
+                child_session_id,
+                true,
+                0,
+                20,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+    });
+    let cancelled = fixture
+        .engine
+        .cancel_subagent(
+            parent.session_id,
+            child_session_id,
+            Some("test cancellation".into()),
+        )
+        .await
+        .expect("cancel subagent");
+    assert_eq!(cancelled.metadata["status"], "cancelled");
+    let waited = waiter
+        .await
+        .expect("result waiter task")
+        .expect("waited result");
+    assert!(waited.output.starts_with("<status>cancelled</status>"));
+    server.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn background_startup_failure_releases_capacity_and_notifies() {
+    let (endpoint, server) = scripted_startup_failure_delegation_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    fixture
+        .engine
+        .inner
+        .delegate_start_failures
+        .store(1, Ordering::Release);
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("startup failure parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("startup-failure-delegation").expect("run ID"),
+            selection,
+            input: "start five children with one injected failure".into(),
+        })
+        .await
+        .expect("accepted startup failure parent");
+
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let children = fixture.engine.children(parent.session_id);
+            let completed = children
+                .iter()
+                .filter(|child| child.status == SessionStatus::Completed)
+                .count();
+            let failed = children
+                .iter()
+                .filter(|child| child.status == SessionStatus::Failed)
+                .count();
+            let finished = fixture
+                .engine
+                .inner
+                .store
+                .get(parent.session_id)
+                .expect("startup failure parent projection")
+                .log
+                .events()
+                .iter()
+                .filter(|event| matches!(event.payload, EventPayload::DelegateFinished { .. }))
+                .count();
+            if completed == 4 && failed == 1 && finished == 5 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    if completed.is_err() {
+        let projection = fixture
+            .engine
+            .inner
+            .store
+            .get(parent.session_id)
+            .expect("timed out startup failure parent");
+        panic!(
+            "startup failure timed out: children={:#?}, events={:#?}",
+            fixture.engine.children(parent.session_id),
+            projection.log.events()
+        );
+    }
+    let failed = fixture
+        .engine
+        .children(parent.session_id)
+        .into_iter()
+        .find(|child| child.status == SessionStatus::Failed)
+        .expect("failed startup child");
+    assert!(
+        fixture
+            .engine
+            .inner
+            .journal
+            .entries()
+            .iter()
+            .find(|entry| entry.reservation.child_session_id == failed.session_id)
+            .is_some_and(|entry| entry.child_run_id.is_none())
+    );
+    server.await.expect("startup failure server");
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
+    let (endpoint, server) = scripted_queued_delegation_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    assert_eq!(fixture.config.runtime.delegation.max_concurrency, Some(4));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("queued parent session");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("queued-delegation").expect("run ID"),
+            selection,
+            input: "launch five background children".into(),
+        })
+        .await
+        .expect("accepted queued parent run");
+
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let parent_projection = fixture
+                .engine
+                .inner
+                .store
+                .get(parent.session_id)
+                .expect("queued parent projection");
+            let queued = parent_projection
+                .log
+                .events()
+                .iter()
+                .any(|event| matches!(event.payload, EventPayload::DelegateQueued { .. }));
+            let finished = parent_projection
+                .log
+                .events()
+                .iter()
+                .filter(|event| matches!(event.payload, EventPayload::DelegateFinished { .. }))
+                .count();
+            let completed_children = fixture
+                .engine
+                .children(parent.session_id)
+                .iter()
+                .filter(|child| child.status == SessionStatus::Completed)
+                .count();
+            if queued && finished == 5 && completed_children == 5 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    if completed.is_err() {
+        let projection = fixture
+            .engine
+            .inner
+            .store
+            .get(parent.session_id)
+            .expect("timed out queued parent");
+        panic!(
+            "queued delegation timed out: parent={:?}, children={:#?}, events={:#?}",
+            projection.status,
+            fixture.engine.children(parent.session_id),
+            projection.log.events()
+        );
+    }
+    assert_eq!(fixture.engine.children(parent.session_id).len(), 5);
+    server.await.expect("queued delegation server");
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn background_delegation_rejects_when_four_x_queue_is_full() {
+    let (endpoint, server) = scripted_full_delegation_queue_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("full queue parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("full-delegation-queue").expect("run ID"),
+            selection,
+            input: "fill the background delegation queue".into(),
+        })
+        .await
+        .expect("accepted full queue parent run");
+
+    let projection = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let projection = fixture
+                .engine
+                .inner
+                .store
+                .get(parent.session_id)
+                .expect("full queue parent projection");
+            if projection.status == SessionStatus::Completed {
+                break projection;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("full queue parent completion");
+    assert_eq!(fixture.engine.children(parent.session_id).len(), 20);
+    assert_eq!(
+        projection
+            .log
+            .events()
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::DelegateQueued { .. }))
+            .count(),
+        16
+    );
+    assert!(projection.log.events().iter().any(|event| {
+        matches!(
+            &event.payload,
+            EventPayload::ToolCallTerminated { termination }
+                if termination.outcome == ToolTerminationOutcome::Failed
+                    && termination.error.as_ref().is_some_and(|error| {
+                        error.message.as_str().contains("background queue is full")
+                    })
+        )
+    }));
+
+    let queued_ids = projection
+        .log
+        .events()
+        .iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::DelegateQueued { session_id, .. } => Some(session_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let cancelled_id = queued_ids[0];
+    let retry_id = queued_ids[1];
+    fixture
+        .engine
+        .inner
+        .delegate_terminal_append_failures
+        .store(1, Ordering::Release);
+    let error = fixture
+        .engine
+        .cancel_subagent(
+            parent.session_id,
+            cancelled_id,
+            Some("first cancellation append fails".into()),
+        )
+        .await
+        .expect_err("injected queued cancellation append failure");
+    assert!(
+        error
+            .to_string()
+            .contains("injected delegate terminal append failure")
+    );
+    assert!(
+        fixture
+            .engine
+            .delegation_queue_contains(cancelled_id)
+            .expect("queued child remains in FIFO")
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .get_subagent_result(
+                parent.session_id,
+                cancelled_id,
+                false,
+                0,
+                1,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .expect("queued child result after failed cancellation")
+            .output,
+        "<status>queued</status>\n<content>\n</content>"
+    );
+    assert!(
+        !fixture
+            .engine
+            .inner
+            .store
+            .get(cancelled_id)
+            .expect("still queued child")
+            .log
+            .events()
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::DelegateChildTerminated { .. }))
+    );
+    let cancelled = fixture
+        .engine
+        .cancel_subagent(
+            parent.session_id,
+            cancelled_id,
+            Some("cancel while queued".into()),
+        )
+        .await
+        .expect("cancel queued subagent");
+    assert_eq!(cancelled.metadata["status"], "cancelled");
+    let cancelled_child = fixture
+        .engine
+        .inner
+        .store
+        .get(cancelled_id)
+        .expect("cancelled queued child");
+    assert_eq!(cancelled_child.status, SessionStatus::Cancelled);
+    assert!(!cancelled_child.log.events().iter().any(|event| {
+        matches!(
+            event.payload,
+            EventPayload::RunStarted { .. } | EventPayload::ModelAttemptStarted { .. }
+        )
+    }));
+    assert!(
+        fixture
+            .engine
+            .inner
+            .journal
+            .entries()
+            .iter()
+            .find(|entry| entry.reservation.child_session_id == cancelled_id)
+            .is_some_and(|entry| entry.child_run_id.is_none())
+    );
+
+    fixture
+        .engine
+        .inner
+        .delegate_start_failures
+        .store(100, Ordering::Release);
+    let running_id = fixture
+        .engine
+        .children(parent.session_id)
+        .into_iter()
+        .find(|child| child.status == SessionStatus::Running)
+        .expect("running child")
+        .session_id;
+    fixture
+        .engine
+        .cancel_subagent(parent.session_id, running_id, Some("free one slot".into()))
+        .await
+        .expect("cancel running child");
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if fixture
+                .engine
+                .inner
+                .delegate_start_failures
+                .load(Ordering::Acquire)
+                < 100
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("queued startup failure injection");
+    assert!(
+        fixture
+            .engine
+            .inner
+            .journal
+            .entries()
+            .iter()
+            .find(|entry| entry.reservation.child_session_id == retry_id)
+            .is_some_and(|entry| entry.child_run_id.is_none())
+    );
+    fixture
+        .engine
+        .inner
+        .delegate_start_failures
+        .store(0, Ordering::Release);
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if fixture
+                .engine
+                .inner
+                .journal
+                .entries()
+                .iter()
+                .find(|entry| entry.reservation.child_session_id == retry_id)
+                .is_some_and(|entry| entry.child_run_id.is_some())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("queued child retained and retried");
+    server.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn root_run_and_schema_eleven_delegation_reservation_reopen_exactly() {
     let (fixture, selection) = custom_fixture();
     let session = fixture
         .engine
@@ -5363,10 +6548,9 @@ async fn root_run_and_schema_ten_delegation_reservation_reopen_exactly() {
             agent.fallback_chain.clone(),
             Sha256Digest::of_bytes(b"scripted delegation request"),
             crate::journal::DelegateRequestPayload {
-                task: "scripted delegated task".to_owned(),
-                context: Vec::new(),
-                success_criteria: vec!["reopens exactly".to_owned()],
-                expected_output: serde_json::Value::Null,
+                description: "Scripted delegation".to_owned(),
+                prompt: "scripted delegated task".to_owned(),
+                title: SessionTitle::new("Scripted delegation").expect("delegated title"),
             },
         )
         .expect("delegation reservation");
@@ -5387,7 +6571,7 @@ async fn root_run_and_schema_ten_delegation_reservation_reopen_exactly() {
     assert_eq!(schema["title"], "StoredDelegationJournalRecord");
     assert_eq!(
         schema["properties"]["delegation_journal_schema_version"]["const"],
-        10
+        11
     );
     assert_eq!(schema["additionalProperties"], false);
     let required_keys = |value: &serde_json::Value| {
@@ -5406,7 +6590,12 @@ async fn root_run_and_schema_ten_delegation_reservation_reopen_exactly() {
             .cloned()
             .collect()
     );
-    let started_schema = &schema["$defs"]["DelegationJournalRecord"]["oneOf"][0];
+    let started_schema = schema["$defs"]["DelegationJournalRecord"]["oneOf"]
+        .as_array()
+        .expect("journal record variants")
+        .iter()
+        .find(|variant| variant["properties"]["type"]["const"] == "delegation_started_v2")
+        .expect("v2 started schema");
     assert_eq!(started_schema["additionalProperties"], false);
     assert_eq!(
         required_keys(&started_schema["required"]),

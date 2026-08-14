@@ -17,7 +17,9 @@ use thiserror::Error;
 
 use crate::events::{EventLogError, append_jsonl, load_jsonl};
 
-pub use cookie_agent_protocol::{DelegateRequestPayload, DelegationReservation};
+pub use cookie_agent_protocol::{
+    DelegateRequestPayloadV2 as DelegateRequestPayload, DelegationReservation,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DelegationRuntimeRevisions {
@@ -37,7 +39,7 @@ pub struct JournalEntry {
     pub revisions: DelegationRuntimeRevisions,
     pub selected_suffix: Vec<FrozenModelBinding>,
     pub request_fingerprint: Sha256Digest,
-    pub task: String,
+    pub prompt: String,
     pub request: DelegateRequestPayload,
     pub linked: bool,
     pub child_run_id: Option<RunId>,
@@ -332,7 +334,8 @@ fn reserve(
             Err(JournalError::Corrupt(invocation_id))
         };
     }
-    if request.task.is_empty()
+    if request.description.is_empty()
+        || request.prompt.is_empty()
         || selected_suffix.is_empty()
         || selected_suffix
             .iter()
@@ -368,7 +371,7 @@ fn reserve(
         revisions: revisions.clone(),
         selected_suffix: selected_suffix.clone(),
         request_fingerprint: request_fingerprint.clone(),
-        task: request.task.clone(),
+        prompt: request.prompt.clone(),
         request: request.clone(),
         linked: false,
         child_run_id: None,
@@ -378,7 +381,7 @@ fn reserve(
         path,
         &StoredDelegationJournalRecord {
             delegation_journal_schema_version: DelegationJournalSchemaVersion::current(),
-            record: DelegationJournalRecord::DelegationStarted {
+            record: DelegationJournalRecord::DelegationStartedV2 {
                 reservation,
                 child_agent: Box::new(child_agent),
                 manifest_revision: revisions.manifest_revision,
@@ -390,7 +393,7 @@ fn reserve(
                 recipe_registry_revision: revisions.recipe_registry_revision,
                 selected_suffix,
                 request_fingerprint,
-                task: request.task.clone(),
+                prompt: request.prompt.clone(),
                 request,
             },
         },
@@ -462,7 +465,10 @@ fn mark_run_started(
 
 fn apply(state: &mut JournalState, record: DelegationJournalRecord) -> Result<(), JournalError> {
     match record {
-        DelegationJournalRecord::DelegationStarted {
+        DelegationJournalRecord::DelegationStarted { reservation, .. } => {
+            return Err(JournalError::Corrupt(reservation.invocation_id));
+        }
+        DelegationJournalRecord::DelegationStartedV2 {
             reservation,
             child_agent,
             manifest_revision,
@@ -474,14 +480,15 @@ fn apply(state: &mut JournalState, record: DelegationJournalRecord) -> Result<()
             recipe_registry_revision,
             selected_suffix,
             request_fingerprint,
-            task,
+            prompt,
             request,
         } => {
             if state.entries.contains_key(&reservation.invocation_id) {
                 return Err(JournalError::Corrupt(reservation.invocation_id));
             }
-            if task.is_empty()
-                || request.task != task
+            if request.description.is_empty()
+                || prompt.is_empty()
+                || request.prompt != prompt
                 || selected_suffix.is_empty()
                 || selected_suffix
                     .iter()
@@ -514,7 +521,7 @@ fn apply(state: &mut JournalState, record: DelegationJournalRecord) -> Result<()
                     },
                     selected_suffix,
                     request_fingerprint,
-                    task,
+                    prompt,
                     request,
                     linked: false,
                     child_run_id: None,
@@ -560,18 +567,16 @@ mod tests {
     fn delegate_request_payload_is_strict_and_has_no_serde_defaults() {
         assert!(
             serde_json::from_value::<DelegateRequestPayload>(serde_json::json!({
-                "task":"report",
-                "success_criteria":[],
-                "expected_output":null
+                "description":"Report",
+                "title":"Report"
             }))
             .is_err()
         );
         assert!(
             serde_json::from_value::<DelegateRequestPayload>(serde_json::json!({
-                "task":"report",
-                "context":[],
-                "success_criteria":[],
-                "expected_output":null,
+                "description":"Report",
+                "prompt":"report",
+                "title":"Report",
                 "legacy":true
             }))
             .is_err()
@@ -579,15 +584,15 @@ mod tests {
     }
 
     #[test]
-    fn journal_replay_accepts_only_schema_ten_and_strict_records() {
+    fn journal_replay_accepts_only_schema_eleven_and_strict_records() {
         let invocation_id = InvocationId::new_v7();
         for value in [
             serde_json::json!({
-                "delegation_journal_schema_version":9,
+                "delegation_journal_schema_version":10,
                 "record":{"type":"delegation_linked","invocation_id":invocation_id}
             }),
             serde_json::json!({
-                "delegation_journal_schema_version":10,
+                "delegation_journal_schema_version":11,
                 "record":{"type":"delegation_linked","invocation_id":invocation_id,"legacy":true}
             }),
         ] {

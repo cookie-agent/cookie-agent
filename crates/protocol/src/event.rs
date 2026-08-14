@@ -197,6 +197,10 @@ pub enum SessionTitleChange {
         title: SessionTitle,
         invocation_id: InternalAgentInvocationId,
     },
+    DelegatedSet {
+        title: SessionTitle,
+        invocation_id: InvocationId,
+    },
     FallbackSet {
         title: SessionTitle,
     },
@@ -222,7 +226,9 @@ impl SessionTitleChange {
                 client_rename_id: client_rename_id.clone(),
                 change: SessionRenameChange::Reset,
             }),
-            Self::InternalAgentSet { .. } | Self::FallbackSet { .. } => None,
+            Self::InternalAgentSet { .. }
+            | Self::DelegatedSet { .. }
+            | Self::FallbackSet { .. } => None,
         }
     }
 }
@@ -1528,6 +1534,25 @@ pub enum EventPayload {
         tool_call_id: ToolCallId,
         child_session_id: SessionId,
     },
+    DelegateQueued {
+        session_id: SessionId,
+        #[serde(deserialize_with = "deserialize_required_option")]
+        #[schemars(with = "crate::NullableSchema<u32>", required)]
+        position: Option<u32>,
+    },
+    DelegateFinished {
+        session_id: SessionId,
+        status: SessionStatus,
+        #[schemars(length(max = 2048))]
+        preview: String,
+        total_lines: u64,
+    },
+    DelegateChildTerminated {
+        status: SessionStatus,
+        #[serde(deserialize_with = "deserialize_required_option")]
+        #[schemars(with = "crate::NullableSchema<SafeErrorMessage>", required)]
+        reason: Option<SafeErrorMessage>,
+    },
     ApprovalRequested {
         request: ApprovalRequest,
     },
@@ -1636,6 +1661,7 @@ impl EventPayload {
             Self::SessionCreated { .. }
                 | Self::SessionReverted { .. }
                 | Self::SessionTitleCommitted { .. }
+                | Self::DelegateChildTerminated { .. }
         )
     }
     fn validate(&self) -> Result<(), EventSchemaError> {
@@ -1728,6 +1754,25 @@ impl EventPayload {
                 }
             }
             Self::ToolCallTerminated { termination } => termination.validate()?,
+            Self::DelegateFinished {
+                status, preview, ..
+            } => {
+                if !matches!(
+                    status,
+                    SessionStatus::Completed
+                        | SessionStatus::Failed
+                        | SessionStatus::Interrupted
+                        | SessionStatus::Cancelled
+                ) || preview.len() > 2048
+                {
+                    return Err(EventSchemaError::InvalidDelegateFinished);
+                }
+            }
+            Self::DelegateChildTerminated { status, .. }
+                if !matches!(status, SessionStatus::Failed | SessionStatus::Cancelled) =>
+            {
+                return Err(EventSchemaError::InvalidDelegateFinished);
+            }
             Self::ToolOutputElided {
                 original_bytes,
                 retained,
@@ -1951,6 +1996,7 @@ pub enum EventSchemaError {
     InvalidJson,
     ZeroModelTurnSequence,
     InvalidToolTermination,
+    InvalidDelegateFinished,
     TooManyModelParts,
     ModelTurnTooLarge,
     SummaryLimitTooLarge,
@@ -1994,6 +2040,7 @@ impl fmt::Display for EventSchemaError {
             Self::InvalidToolTermination => {
                 "tool termination outcome/result/error combination is invalid"
             }
+            Self::InvalidDelegateFinished => "delegate completion payload is invalid",
             Self::TooManyModelParts => "persisted model turn exceeds 4096 parts",
             Self::ModelTurnTooLarge => "persisted model turn exceeds 8 MiB",
             Self::SummaryLimitTooLarge => "summary limit exceeds 2 MiB",

@@ -143,19 +143,22 @@ pub struct ApprovalConfig {
 pub struct DelegationConfig {
     #[serde(default = "default_delegation_depth")]
     pub max_depth: u32,
-    #[serde(default)]
+    #[serde(default = "default_delegation_concurrency")]
     pub max_concurrency: Option<u32>,
 }
 impl Default for DelegationConfig {
     fn default() -> Self {
         Self {
             max_depth: default_delegation_depth(),
-            max_concurrency: None,
+            max_concurrency: default_delegation_concurrency(),
         }
     }
 }
 const fn default_delegation_depth() -> u32 {
     3
+}
+const fn default_delegation_concurrency() -> Option<u32> {
+    Some(4)
 }
 impl Default for ApprovalConfig {
     fn default() -> Self {

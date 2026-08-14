@@ -116,7 +116,9 @@ impl PermissionPipeline {
             "read" => Ok(PermissionAction::Read),
             "write" | "edit" => Ok(PermissionAction::Write),
             "bash" => Ok(PermissionAction::Bash),
-            "delegate" => Ok(PermissionAction::Delegate),
+            "delegate_subagent" | "get_subagent_result" | "cancel_subagent" => {
+                Ok(PermissionAction::Delegate)
+            }
             other => Err(PermissionError::UnknownAction(other.into())),
         }
     }

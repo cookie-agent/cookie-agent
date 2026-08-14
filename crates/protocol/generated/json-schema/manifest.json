@@ -1,5 +1,5 @@
 {
-  "delegation_journal_schema_version": 10,
+  "delegation_journal_schema_version": 11,
   "event_schema_version": 15,
   "protocol_version": 9,
   "schemas": [

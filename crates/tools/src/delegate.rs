@@ -5,13 +5,13 @@ use cookie_agent_engine::{
 };
 use cookie_agent_protocol::{
     AgentId, ApprovalResourceSource, PermissionAction, PersistedToolResult as ToolResult,
-    PreparedBindingLifetime,
+    PreparedBindingLifetime, SessionId,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{fs_cap, prepared_operation, prepared_resource};
+use crate::{fs_cap, prepared_operation, prepared_resource, safe_title};
 
-const CONTEXT_LIMIT_BYTES: usize = 32 * 1024;
+const DEFAULT_RESULT_LIMIT: u32 = 2_000;
 
 pub struct DelegateToolProvider {
     engine: Engine,
@@ -20,20 +20,45 @@ pub struct DelegateToolProvider {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct DelegateArgs {
-    task: String,
-    agent: AgentId,
+    description: String,
+    prompt: String,
+    agent_type: AgentId,
     #[serde(default)]
-    context: Vec<serde_json::Value>,
-    #[serde(default)]
-    success_criteria: Vec<String>,
-    #[serde(default)]
-    expected_output: Option<serde_json::Value>,
+    background: bool,
 }
 
-struct DelegateExecutor {
-    engine: Engine,
-    call_id: cookie_agent_protocol::ToolCallId,
-    args: DelegateArgs,
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct GetResultArgs {
+    session_id: SessionId,
+    #[serde(default)]
+    wait: bool,
+    #[serde(default)]
+    offset: u32,
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CancelArgs {
+    session_id: SessionId,
+    reason: Option<String>,
+}
+
+enum DelegateExecutor {
+    Invoke {
+        engine: Engine,
+        call_id: cookie_agent_protocol::ToolCallId,
+        args: DelegateArgs,
+    },
+    GetResult {
+        engine: Engine,
+        args: GetResultArgs,
+    },
+    Cancel {
+        engine: Engine,
+        args: CancelArgs,
+    },
 }
 
 impl DelegateToolProvider {
@@ -50,24 +75,92 @@ impl DelegateToolProvider {
             .delegate_targets(session)
             .map_err(|error| ToolError::execution(error.to_string()))
     }
+
+    fn operation(
+        &self,
+        ctx: &ToolPreparationContext,
+        name: &str,
+        args: &impl Serialize,
+        operation_name: &str,
+        agent_type: &AgentId,
+    ) -> Result<PreparedToolParts, ToolError> {
+        let resource = prepared_resource(
+            PermissionAction::Delegate,
+            "agent",
+            agent_type.as_str().as_bytes(),
+            agent_type.as_str().as_bytes(),
+            PreparedBindingLifetime::RestartStable,
+            ApprovalResourceSource::PrimaryOperation,
+        )?;
+        let cwd = fs_cap::cwd_context_bytes(&ctx.cwd)?;
+        Ok(PreparedToolParts {
+            operation: prepared_operation(
+                name,
+                args,
+                vec![(PermissionAction::Delegate, operation_name)],
+                vec![resource],
+                &cwd,
+            )?,
+            policy_labels: vec![agent_type.to_string()],
+        })
+    }
+}
+
+struct PreparedToolParts {
+    operation: cookie_agent_protocol::PreparedOperationIdentity,
+    policy_labels: Vec<String>,
 }
 
 #[async_trait]
 impl ToolProvider for DelegateToolProvider {
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         let targets = self.targets(ctx.session)?;
-        Ok((!targets.is_empty())
-            .then(|| ToolSpec {
-                name: "delegate".into(),
-                description: "Delegate a prepared objective to an allowed agent.".into(),
-                parameters: serde_json::json!({
-                    "type":"object","additionalProperties":false,
-                    "properties":{"task":{"type":"string"},"agent":{"type":"string","enum":targets},"context":{"type":"array"},"success_criteria":{"type":"array","items":{"type":"string"}},"expected_output":{}},
-                    "required":["task","agent"]
-                }),
-            })
-            .into_iter()
-            .collect())
+        Ok(if targets.is_empty() {
+            Vec::new()
+        } else {
+            vec![
+                ToolSpec {
+                    name: "delegate_subagent".into(),
+                    description: "Delegate a self-contained prompt to an allowed subagent.".into(),
+                    parameters: serde_json::json!({
+                        "type":"object","additionalProperties":false,
+                        "properties":{
+                            "description":{"type":"string"},
+                            "prompt":{"type":"string"},
+                            "agent_type":{"type":"string","enum":targets},
+                            "background":{"type":"boolean","default":false}
+                        },
+                        "required":["description","prompt","agent_type"]
+                    }),
+                },
+                ToolSpec {
+                    name: "get_subagent_result".into(),
+                    description: "Read a paginated result from an owned subagent session.".into(),
+                    parameters: serde_json::json!({
+                        "type":"object","additionalProperties":false,
+                        "properties":{
+                            "session_id":{"type":"string"},
+                            "wait":{"type":"boolean","default":false},
+                            "offset":{"type":"integer","minimum":0,"default":0},
+                            "limit":{"type":"integer","minimum":1,"maximum":4_294_967_295_u64,"default":2000}
+                        },
+                        "required":["session_id"]
+                    }),
+                },
+                ToolSpec {
+                    name: "cancel_subagent".into(),
+                    description: "Cancel an owned subagent session.".into(),
+                    parameters: serde_json::json!({
+                        "type":"object","additionalProperties":false,
+                        "properties":{
+                            "session_id":{"type":"string"},
+                            "reason":{"type":"string"}
+                        },
+                        "required":["session_id"]
+                    }),
+                },
+            ]
+        })
     }
 
     fn get_primary_argument(
@@ -75,7 +168,14 @@ impl ToolProvider for DelegateToolProvider {
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
-        delegate_argument(name, arguments)
+        match name {
+            "delegate_subagent" => Ok(parse_delegate(arguments)?.agent_type.to_string()),
+            "get_subagent_result" => Ok(parse_result(arguments)?.session_id.to_string()),
+            "cancel_subagent" => Ok(parse_cancel(arguments)?.session_id.to_string()),
+            _ => Err(ToolError::execution(
+                "delegate provider received another tool",
+            )),
+        }
     }
 
     fn get_display_argument(
@@ -83,7 +183,10 @@ impl ToolProvider for DelegateToolProvider {
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
-        delegate_argument(name, arguments)
+        match name {
+            "delegate_subagent" => Ok(parse_delegate(arguments)?.description),
+            _ => self.get_primary_argument(name, arguments),
+        }
     }
 
     async fn prepare(
@@ -91,53 +194,71 @@ impl ToolProvider for DelegateToolProvider {
         ctx: ToolPreparationContext,
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
-        let args: DelegateArgs = serde_json::from_value(call.arguments)
-            .map_err(|error| ToolError::execution(error.to_string()))?;
-        if serde_json::to_vec(&args.context)
-            .map_err(|error| ToolError::execution(error.to_string()))?
-            .len()
-            > CONTEXT_LIMIT_BYTES
-        {
-            return Err(ToolError::execution("delegate context exceeds 32 KiB"));
-        }
-        if !self.targets(ctx.session)?.contains(&args.agent) {
-            return Err(ToolError::execution("delegate target is not allowed"));
-        }
-        let resource = prepared_resource(
-            PermissionAction::Delegate,
-            "agent",
-            args.agent.as_str().as_bytes(),
-            args.agent.as_str().as_bytes(),
-            PreparedBindingLifetime::RestartStable,
-            ApprovalResourceSource::PrimaryOperation,
-        )?;
-        let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
-        let operation = prepared_operation(
-            "delegate",
-            &args,
-            vec![(PermissionAction::Delegate, "spawn")],
-            vec![resource],
-            &context,
-        )?;
-        let policy_labels = vec![args.agent.to_string()];
-        let normalized_arguments = serde_json::json!({
-            "agent": args.agent,
-            "task": args.task,
-            "context": args.context,
-            "success_criteria": args.success_criteria,
-            "expected_output": args.expected_output,
-        });
-        PreparedTool::new(
-            operation,
-            normalized_arguments,
-            None,
-            Box::new(DelegateExecutor {
-                engine: self.engine.clone(),
-                call_id: call.id,
-                args,
-            }),
-        )?
-        .with_policy_labels(policy_labels)
+        let (parts, normalized, executor) = match call.name.as_str() {
+            "delegate_subagent" => {
+                let args = parse_delegate(&call.arguments)?;
+                if args.description.trim().is_empty() || args.prompt.trim().is_empty() {
+                    return Err(ToolError::execution(
+                        "description and prompt must not be empty",
+                    ));
+                }
+                if !self.targets(ctx.session)?.contains(&args.agent_type) {
+                    return Err(ToolError::execution("delegate target is not allowed"));
+                }
+                let parts =
+                    self.operation(&ctx, "delegate_subagent", &args, "spawn", &args.agent_type)?;
+                let normalized = serde_json::to_value(&args)
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                let executor = DelegateExecutor::Invoke {
+                    engine: self.engine.clone(),
+                    call_id: call.id,
+                    args,
+                };
+                (parts, normalized, executor)
+            }
+            "get_subagent_result" => {
+                let mut args = parse_result(&call.arguments)?;
+                let limit = args.limit.unwrap_or(DEFAULT_RESULT_LIMIT);
+                if limit == 0 {
+                    return Err(ToolError::execution("limit must be positive"));
+                }
+                args.limit = Some(limit);
+                let agent = self
+                    .engine
+                    .subagent_agent_type(ctx.session, args.session_id)
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                let parts = self.operation(&ctx, "get_subagent_result", &args, "read", &agent)?;
+                let normalized = serde_json::to_value(&args)
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                let executor = DelegateExecutor::GetResult {
+                    engine: self.engine.clone(),
+                    args,
+                };
+                (parts, normalized, executor)
+            }
+            "cancel_subagent" => {
+                let args = parse_cancel(&call.arguments)?;
+                let agent = self
+                    .engine
+                    .subagent_agent_type(ctx.session, args.session_id)
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                let parts = self.operation(&ctx, "cancel_subagent", &args, "cancel", &agent)?;
+                let normalized = serde_json::to_value(&args)
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                let executor = DelegateExecutor::Cancel {
+                    engine: self.engine.clone(),
+                    args,
+                };
+                (parts, normalized, executor)
+            }
+            _ => {
+                return Err(ToolError::execution(
+                    "delegate provider received another tool",
+                ));
+            }
+        };
+        PreparedTool::new(parts.operation, normalized, None, Box::new(executor))?
+            .with_policy_labels(parts.policy_labels)
     }
 }
 
@@ -152,55 +273,97 @@ impl PreparedExecutor for DelegateExecutor {
         context: ToolExecutionContext,
     ) -> Result<ToolResult, ToolError> {
         if context.cancellation.is_cancelled() {
-            return Err(ToolError::execution("prepared delegation cancelled"));
+            return Err(ToolError::execution(
+                "prepared subagent operation cancelled",
+            ));
         }
-        let handle = self
-            .engine
-            .delegate_invoke(DelegateInvocation {
-                parent_session_id: context.session,
-                parent_run_id: context.run,
-                parent_tool_call_id: self.call_id,
-                agent: self.args.agent,
-                task: self.args.task,
-                context: self.args.context,
-                success_criteria: self.args.success_criteria,
-                expected_output: self.args.expected_output.unwrap_or(serde_json::Value::Null),
-            })
-            .await
-            .map_err(|error| ToolError::execution(error.to_string()))?;
-        self.engine
-            .await_delegate(handle)
-            .await
-            .map_err(|error| ToolError::execution(error.to_string()))
+        match *self {
+            Self::Invoke {
+                engine,
+                call_id,
+                args,
+            } => {
+                let background = args.background;
+                let handle = engine
+                    .delegate_invoke(DelegateInvocation {
+                        parent_session_id: context.session,
+                        parent_run_id: context.run,
+                        parent_tool_call_id: call_id,
+                        agent_type: args.agent_type,
+                        description: args.description,
+                        prompt: args.prompt,
+                        background,
+                    })
+                    .await
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                if background {
+                    let metadata = serde_json::json!({"session_id":handle.child_session_id});
+                    Ok(ToolResult {
+                        title: safe_title("Subagent started"),
+                        output: metadata.to_string(),
+                        metadata,
+                        truncation: None,
+                        attachments: Vec::new(),
+                    })
+                } else {
+                    engine
+                        .await_delegate(handle)
+                        .await
+                        .map_err(|error| ToolError::execution(error.to_string()))
+                }
+            }
+            Self::GetResult { engine, args } => engine
+                .get_subagent_result(
+                    context.session,
+                    args.session_id,
+                    args.wait,
+                    args.offset,
+                    args.limit.expect("normalized result limit"),
+                    context.cancellation,
+                )
+                .await
+                .map_err(|error| ToolError::execution(error.to_string())),
+            Self::Cancel { engine, args } => engine
+                .cancel_subagent(context.session, args.session_id, args.reason)
+                .await
+                .map_err(|error| ToolError::execution(error.to_string())),
+        }
     }
 }
 
-fn delegate_argument(name: &str, arguments: &serde_json::Value) -> Result<String, ToolError> {
-    if name != "delegate" {
-        return Err(ToolError::execution(
-            "delegate provider received another tool",
-        ));
-    }
-    let args: DelegateArgs = serde_json::from_value(arguments.clone())
-        .map_err(|error| ToolError::execution(error.to_string()))?;
-    Ok(args.agent.to_string())
+fn parse_delegate(arguments: &serde_json::Value) -> Result<DelegateArgs, ToolError> {
+    serde_json::from_value(arguments.clone())
+        .map_err(|error| ToolError::execution(error.to_string()))
+}
+
+fn parse_result(arguments: &serde_json::Value) -> Result<GetResultArgs, ToolError> {
+    serde_json::from_value(arguments.clone())
+        .map_err(|error| ToolError::execution(error.to_string()))
+}
+
+fn parse_cancel(arguments: &serde_json::Value) -> Result<CancelArgs, ToolError> {
+    serde_json::from_value(arguments.clone())
+        .map_err(|error| ToolError::execution(error.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use cookie_agent_engine::ToolError;
 
-    use super::delegate_argument;
+    use super::parse_delegate;
 
     #[test]
-    fn primary_and_display_arguments_are_the_agent_id() {
-        let arguments = serde_json::json!({"task":"review","agent":"reviewer"});
-        assert_eq!(
-            delegate_argument("delegate", &arguments).expect("delegate argument"),
-            "reviewer"
-        );
+    fn delegate_arguments_use_agent_as_primary_and_description_as_display() {
+        let arguments = serde_json::json!({
+            "description":"Review API",
+            "prompt":"Review the API in full.",
+            "agent_type":"reviewer"
+        });
+        let args = parse_delegate(&arguments).expect("delegate arguments");
+        assert_eq!(args.agent_type.as_str(), "reviewer");
+        assert_eq!(args.description, "Review API");
         assert!(matches!(
-            delegate_argument("delegate", &serde_json::json!({"task":"review"})),
+            parse_delegate(&serde_json::json!({"task":"review","agent":"reviewer"})),
             Err(ToolError::Failed(_))
         ));
     }

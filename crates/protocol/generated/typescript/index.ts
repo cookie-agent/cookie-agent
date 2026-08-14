@@ -58,6 +58,7 @@ export * from "./CredentialFieldType.js";
 export * from "./CwdIdentity.js";
 export * from "./DecisionTrace.js";
 export * from "./DelegateRequestPayload.js";
+export * from "./DelegateRequestPayloadV2.js";
 export * from "./DelegationJournalRecord.js";
 export * from "./DelegationJournalSchemaVersion.js";
 export * from "./DelegationReservation.js";

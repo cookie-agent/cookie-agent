@@ -5,7 +5,7 @@
   "properties": {
     "delegation_journal_schema_version": {
       "type": "integer",
-      "const": 10
+      "const": 11
     },
     "record": {
       "$ref": "#/$defs/DelegationJournalRecord"
@@ -217,6 +217,29 @@
         "expected_output"
       ]
     },
+    "DelegateRequestPayloadV2": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "title": {
+          "description": "Nonblank control-free UTF-8 session title.",
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "prompt",
+        "title"
+      ]
+    },
     "DelegationJournalRecord": {
       "oneOf": [
         {
@@ -310,6 +333,100 @@
             "selected_suffix",
             "request_fingerprint",
             "task",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "agent_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "catalog_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "child_agent": {
+              "$ref": "#/$defs/AgentSnapshot"
+            },
+            "manifest_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "model_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "provider_state_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "recipe_registry_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "request": {
+              "$ref": "#/$defs/DelegateRequestPayloadV2"
+            },
+            "request_fingerprint": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "reservation": {
+              "$ref": "#/$defs/DelegationReservation"
+            },
+            "runtime_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "selected_suffix": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/FrozenModelBinding"
+              },
+              "maxItems": 256,
+              "minItems": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "delegation_started_v2"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "reservation",
+            "child_agent",
+            "manifest_revision",
+            "runtime_revision",
+            "catalog_revision",
+            "provider_state_revision",
+            "model_revision",
+            "agent_revision",
+            "recipe_registry_revision",
+            "selected_suffix",
+            "request_fingerprint",
+            "prompt",
             "request"
           ]
         },

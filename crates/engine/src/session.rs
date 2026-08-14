@@ -508,6 +508,7 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
     let mut usage = None;
     let mut rename_records = HashMap::new();
     let mut automatic_title = None;
+    let mut delegated_title = None;
     let mut user_title: Option<Option<cookie_agent_protocol::SessionTitle>> = None;
     for envelope in &events {
         if let EventPayload::SessionTitleCommitted { change, .. } = &envelope.payload {
@@ -517,6 +518,9 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
                 }
                 SessionTitleChange::UserClear { .. } => user_title = Some(None),
                 SessionTitleChange::UserReset { .. } => user_title = None,
+                SessionTitleChange::DelegatedSet { title, .. } => {
+                    delegated_title = Some(title.clone());
+                }
                 SessionTitleChange::InternalAgentSet { title, .. }
                 | SessionTitleChange::FallbackSet { title } => {
                     automatic_title = Some(title.clone());
@@ -524,11 +528,18 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
             }
             meta.title = user_title
                 .clone()
-                .unwrap_or_else(|| automatic_title.clone());
+                .unwrap_or_else(|| delegated_title.clone().or_else(|| automatic_title.clone()));
             meta.title_updated_seq = envelope.seq;
             if let Some(record) = change.user_rename_record() {
                 rename_records.insert(record.client_rename_id.clone(), record);
             }
+        }
+        if let EventPayload::DelegateChildTerminated {
+            status: terminal, ..
+        } = &envelope.payload
+        {
+            status = *terminal;
+            continue;
         }
         if matches!(envelope.payload, EventPayload::SessionReverted { .. }) {
             status = SessionStatus::Idle;

@@ -131,7 +131,7 @@ pub const EVENT_SCHEMA_VERSION: u32 = 15;
 /// The only session metadata schema supported by this build.
 pub const SESSION_META_SCHEMA_VERSION: u32 = 9;
 /// The only delegation-journal schema supported by this build.
-pub const DELEGATION_JOURNAL_SCHEMA_VERSION: u32 = 10;
+pub const DELEGATION_JOURNAL_SCHEMA_VERSION: u32 = 11;
 /// The only coherent runtime snapshot schema supported by this build.
 pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 3;
 
@@ -205,8 +205,8 @@ macro_rules! exact_numeric_wire_type {
 exact_numeric_wire_type!(ProtocolVersion, 9, "9", "The exact protocol wire version.");
 exact_numeric_wire_type!(
     EventSchemaVersion,
-    14,
-    "14",
+    15,
+    "15",
     "The exact event/session-JSONL schema version."
 );
 exact_numeric_wire_type!(
@@ -217,8 +217,8 @@ exact_numeric_wire_type!(
 );
 exact_numeric_wire_type!(
     DelegationJournalSchemaVersion,
-    10,
-    "10",
+    11,
+    "11",
     "The exact delegation-journal schema version."
 );
 exact_numeric_wire_type!(

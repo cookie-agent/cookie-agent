@@ -812,19 +812,24 @@ impl Engine {
                                 serialized_context_bytes,
                                 turn.usage.input_tokens,
                             );
-                        let title_policy = self.internal_agent_policy(
-                            InternalAgentKind::SessionTitle,
-                            policy,
-                            Some(binding),
-                        )?;
-                        self.maybe_generate_session_title(
-                            session,
-                            run,
-                            input_through_seq,
-                            cancellation,
-                            &title_policy,
-                        )
-                        .await?;
+                        if !matches!(
+                            self.inner.store.get(session)?.meta.origin,
+                            cookie_agent_protocol::SessionOrigin::Delegated { .. }
+                        ) {
+                            let title_policy = self.internal_agent_policy(
+                                InternalAgentKind::SessionTitle,
+                                policy,
+                                Some(binding),
+                            )?;
+                            self.maybe_generate_session_title(
+                                session,
+                                run,
+                                input_through_seq,
+                                cancellation,
+                                &title_policy,
+                            )
+                            .await?;
+                        }
                         return Ok(AttemptTurn {
                             turn,
                             model_turn_seq,

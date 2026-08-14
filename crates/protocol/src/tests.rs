@@ -144,12 +144,12 @@ fn exact_versions_are_current_only() {
     assert_eq!(PROTOCOL_VERSION, 9);
     assert_eq!(EVENT_SCHEMA_VERSION, 15);
     assert_eq!(SESSION_META_SCHEMA_VERSION, 9);
-    assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 10);
+    assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 11);
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 3);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(8)).is_err());
     assert!(serde_json::from_value::<AgentSchemaVersion>(json!(3)).is_err());
-    assert!(serde_json::from_value::<EventSchemaVersion>(json!(13)).is_err());
-    assert!(serde_json::from_value::<DelegationJournalSchemaVersion>(json!(9)).is_err());
+    assert!(serde_json::from_value::<EventSchemaVersion>(json!(14)).is_err());
+    assert!(serde_json::from_value::<DelegationJournalSchemaVersion>(json!(10)).is_err());
     assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(2)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
 }
@@ -761,12 +761,12 @@ fn frozen_sources_and_credentials_are_strict() {
 }
 
 #[test]
-fn delegation_journal_schema_ten_roundtrips_actual_start_record() {
+fn delegation_journal_schema_eleven_roundtrips_actual_start_record() {
     let binding = frozen_binding();
     let manifest_revision = binding.manifest_revision.clone();
     let record = StoredDelegationJournalRecord {
         delegation_journal_schema_version: DelegationJournalSchemaVersion::current(),
-        record: DelegationJournalRecord::DelegationStarted {
+        record: DelegationJournalRecord::DelegationStartedV2 {
             reservation: DelegationReservation {
                 invocation_id: InvocationId::new_v7(),
                 parent_session_id: SessionId::new_v7(),
@@ -784,12 +784,11 @@ fn delegation_journal_schema_ten_roundtrips_actual_start_record() {
             recipe_registry_revision: revision("recipes"),
             selected_suffix: vec![binding],
             request_fingerprint: Sha256Digest::of_bytes(b"request"),
-            task: "Review the implementation".into(),
-            request: DelegateRequestPayload {
-                task: "Review the implementation".into(),
-                context: Vec::new(),
-                success_criteria: vec!["Report blockers".into()],
-                expected_output: json!({"type":"report"}),
+            prompt: "Review the implementation".into(),
+            request: DelegateRequestPayloadV2 {
+                description: "Review implementation".into(),
+                prompt: "Review the implementation".into(),
+                title: SessionTitle::new("Review implementation").unwrap(),
             },
         },
     };
@@ -815,6 +814,30 @@ fn delegation_journal_schema_ten_roundtrips_actual_start_record() {
     let mut unknown = encoded;
     unknown["record"]["legacy_revision"] = json!(revision::<RuntimeRevision>("legacy"));
     assert!(serde_json::from_value::<StoredDelegationJournalRecord>(unknown).is_err());
+}
+
+#[test]
+fn delegation_v2_is_additive_to_the_legacy_exported_request_shape() {
+    let legacy = json!({
+        "task":"Review the implementation",
+        "context":[],
+        "success_criteria":["Report blockers"],
+        "expected_output":{"type":"report"}
+    });
+    let decoded: DelegateRequestPayload = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), legacy);
+
+    let v2 = json!({
+        "description":"Review implementation",
+        "prompt":"Review the implementation",
+        "title":"Review implementation"
+    });
+    let decoded: DelegateRequestPayloadV2 = serde_json::from_value(v2.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), v2);
+
+    let schema = serde_json::to_string(&json_schema_documents()).unwrap();
+    assert!(schema.contains("delegation_started"));
+    assert!(schema.contains("delegation_started_v2"));
 }
 
 #[test]

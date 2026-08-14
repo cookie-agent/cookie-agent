@@ -4,7 +4,6 @@ use cookie_agent_protocol::{
     AgentId, InvocationId, PersistedToolResult as ToolResult, RunId, SessionId, ToolCallId,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::runtime::{Engine, EngineError};
 
@@ -14,11 +13,10 @@ pub struct DelegateInvocation {
     pub parent_session_id: SessionId,
     pub parent_run_id: RunId,
     pub parent_tool_call_id: ToolCallId,
-    pub agent: AgentId,
-    pub task: String,
-    pub context: Vec<Value>,
-    pub success_criteria: Vec<String>,
-    pub expected_output: Value,
+    pub agent_type: AgentId,
+    pub description: String,
+    pub prompt: String,
+    pub background: bool,
 }
 
 /// Stable child identity returned to the delegate tool provider.
@@ -26,7 +24,7 @@ pub struct DelegateInvocation {
 pub struct DelegateHandle {
     pub invocation_id: InvocationId,
     pub child_session_id: SessionId,
-    pub child_run_id: RunId,
+    pub child_run_id: Option<RunId>,
 }
 
 /// A delegate wait that cancels its child if its consumer abandons the wait.

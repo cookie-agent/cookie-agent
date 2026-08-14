@@ -49,7 +49,7 @@ identity
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
 | `config` | Strict schema-10 runtime configuration and schema-4 Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports `AgentMode`, `ToolName`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |
 | `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence. |
-| `tools` | Built-in `read`, `write`, `edit`, and `bash` tools plus the `delegate` tool provider. |
+| `tools` | Built-in `read`, `write`, `edit`, and `bash` tools plus the `delegate_subagent`, `get_subagent_result`, and `cancel_subagent` provider. |
 | `server` | The `ServerProtocol` implementation over `Engine`, concrete transports (WebSocket + `InProcessStream`), a thin connection wrapper, and the public `load_auth_token` / `validate_websocket_url` APIs. |
 | `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow. Its client is a thin adapter re-exporting the shared protocol client. |
 | `cookie_agent` | CLI and composition root wiring every crate together. The only binary. |
@@ -196,7 +196,7 @@ session and drive the run loop:
 - **Approvals.** A stateless approval evaluator (the `approval` internal agent)
   classifies asks in `auto_approve` mode. `ask` skips the classifier, and `yolo`
   approves immediately. A doom-loop guard rejects repeated identical approvals.
-- **Delegation.** The `delegate` tool reserves a child session under the parent,
+- **Delegation.** The `delegate_subagent` tool reserves a child session under the parent,
   journals the invocation, and runs the target subagent with an inherited model
   suffix. Depth and concurrency limits come from `delegation` configuration.
 - **Internal agents.** The approval, context-compaction, and session-title
@@ -224,7 +224,7 @@ canonical working directory:
     cwd                            # canonical project path
     sessions/<session-id>/         # events.jsonl + meta.json cache
     artifacts/                     # content-addressed tool output
-    delegations.jsonl              # delegation journal (schema 10)
+    delegations.jsonl              # delegation journal (schema 11)
     grant-invalidations.jsonl      # tree-grant invalidation journal
     runtime-revisions-v8.jsonl     # runtime revision index
 ```

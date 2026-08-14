@@ -478,6 +478,22 @@ fn assemble_history_with_replay(
             EventPayload::ContextRehydrated { files } => {
                 logical.push(LogicalTurn::Rehydration(files.clone()));
             }
+            EventPayload::DelegateFinished {
+                session_id,
+                status,
+                preview,
+                total_lines,
+            } => {
+                logical.push(LogicalTurn::User(user_text(&format!(
+                    "<subagent_notification>{}</subagent_notification>",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "status": format!("{status:?}").to_ascii_lowercase(),
+                        "preview": preview,
+                        "total_lines": total_lines,
+                    })
+                ))));
+            }
             _ => {}
         }
     }

@@ -51,8 +51,14 @@ and permission rules must pass. A bare deny hides a tool. A mapped action hides
 it only when `"*": deny` exists with no non-deny exceptions.
 
 Delegation targets come from the keys in the `delegate` permission map and must
-resolve to enabled `subagent` or `all` agents. Runtime `delegation.max_depth`
-defaults to 3; omitted `max_concurrency` means unlimited.
+resolve to enabled `subagent` or `all` agents. This action controls
+`delegate_subagent`, `get_subagent_result`, and `cancel_subagent`; result and
+cancel operations retain the child agent ID as their permission resource.
+Runtime `delegation.max_depth` defaults to 3 and `max_concurrency` defaults to 4.
+
+`delegate_subagent` replaces the former `delegate` tool name without an alias.
+Old tool calls and prepared-operation grants therefore fail closed. The
+`delegate` spelling above remains the permission action, not a tool alias.
 
 ## Live permission modes
 

@@ -286,7 +286,7 @@ fn delegation_runtime_defaults_and_limits_are_strict() {
     write_config(&defaults, "schema_version = 10\n");
     let loaded = load_from_roots(None, Some(&defaults)).unwrap();
     assert_eq!(loaded.runtime.delegation.max_depth, 3);
-    assert_eq!(loaded.runtime.delegation.max_concurrency, None);
+    assert_eq!(loaded.runtime.delegation.max_concurrency, Some(4));
 
     let authored = temp.path().join("delegation-authored");
     write_config(

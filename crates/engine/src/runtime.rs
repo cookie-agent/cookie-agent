@@ -74,6 +74,7 @@ pub(crate) mod tool_execution;
 
 use admission::InflightDelegation;
 pub(crate) use artifacts::{ArtifactStore, OutputCapture};
+use delegation::DelegationRecord;
 pub use get_history::EngineHistoryView;
 use helpers::safe_code;
 
@@ -686,6 +687,8 @@ pub(crate) struct Inner {
     permissions: PermissionPipeline,
     active: Mutex<HashMap<RunId, Arc<ActiveRun>>>,
     inflight_delegations: Mutex<HashMap<InvocationId, HashMap<u64, InflightDelegation>>>,
+    delegations_by_session: Mutex<HashMap<SessionId, DelegationRecord>>,
+    delegation_queue: Mutex<VecDeque<SessionId>>,
     delegation_admission: tokio::sync::Mutex<()>,
     next_admission_generation: AtomicU64,
     subscribers: Mutex<HashMap<SessionId, Vec<PersistedSubscriber>>>,
@@ -716,6 +719,10 @@ pub(crate) struct Inner {
     abandoned_sweep_hook: Mutex<Option<AbandonedSweepHook>>,
     #[cfg(test)]
     pub(crate) publication_failure: AtomicBool,
+    #[cfg(test)]
+    pub(crate) delegate_start_failures: AtomicU64,
+    #[cfg(test)]
+    pub(crate) delegate_terminal_append_failures: AtomicU64,
 }
 
 /// Cloneable in-process engine handle. It contains no transport concerns and
@@ -773,6 +780,8 @@ impl Engine {
                 permissions: PermissionPipeline::default(),
                 active: Mutex::new(HashMap::new()),
                 inflight_delegations: Mutex::new(HashMap::new()),
+                delegations_by_session: Mutex::new(HashMap::new()),
+                delegation_queue: Mutex::new(VecDeque::new()),
                 delegation_admission: tokio::sync::Mutex::new(()),
                 next_admission_generation: AtomicU64::new(1),
                 subscribers: Mutex::new(HashMap::new()),
@@ -803,6 +812,10 @@ impl Engine {
                 abandoned_sweep_hook: Mutex::new(None),
                 #[cfg(test)]
                 publication_failure: AtomicBool::new(false),
+                #[cfg(test)]
+                delegate_start_failures: AtomicU64::new(0),
+                #[cfg(test)]
+                delegate_terminal_append_failures: AtomicU64::new(0),
             }),
         };
         engine.validate_referenced_manifests()?;

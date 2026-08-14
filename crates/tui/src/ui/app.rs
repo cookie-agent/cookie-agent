@@ -6215,6 +6215,7 @@ fn title_change_from_event(
     let title = match change {
         SessionTitleChange::UserSet { title, .. }
         | SessionTitleChange::InternalAgentSet { title, .. }
+        | SessionTitleChange::DelegatedSet { title, .. }
         | SessionTitleChange::FallbackSet { title } => Some(title.clone()),
         SessionTitleChange::UserClear { .. } | SessionTitleChange::UserReset { .. } => None,
     };
@@ -6231,6 +6232,7 @@ pub(super) fn status_change_from_event(
         EventPayload::RunFailed { .. } => SessionStatus::Failed,
         EventPayload::RunCancelled { .. } => SessionStatus::Cancelled,
         EventPayload::RunInterrupted { .. } => SessionStatus::Interrupted,
+        EventPayload::DelegateChildTerminated { status, .. } => *status,
         _ => return None,
     };
     Some((event.session_id, status, event.seq))

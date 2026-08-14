@@ -594,8 +594,8 @@ mod tests {
     fn approval_without_user_message_uses_fixed_fallback() {
         let input = approval_stateless_input(
             ApprovalToolInput {
-                name: "delegate",
-                normalized_parameters: &serde_json::json!({"agent":"worker"}),
+                name: "delegate_subagent",
+                normalized_parameters: &serde_json::json!({"agent_type":"worker"}),
             },
             None,
         );

@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use cookie_agent_protocol::{
-    InternalAgentKind, RunId, SessionId, SessionTitle, SessionTitleChange, StoredEvent,
+    InternalAgentKind, RunId, SessionId, SessionOrigin, SessionTitle, SessionTitleChange,
+    StoredEvent,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -49,7 +50,12 @@ impl Engine {
         internal_policy: &FrozenInternalAgentPolicy,
     ) -> Result<(), EngineError> {
         let policy = &self.inner.config.runtime.session_title;
-        if !policy.generate_on_first_turn {
+        if !policy.generate_on_first_turn
+            || matches!(
+                self.inner.store.get(session)?.meta.origin,
+                SessionOrigin::Delegated { .. }
+            )
+        {
             return Ok(());
         }
         let events = self.inner.store.get(session)?.log.events();
@@ -128,6 +134,9 @@ impl Engine {
         session: SessionId,
     ) -> Result<(), EngineError> {
         let projection = self.inner.store.get(session)?;
+        if matches!(projection.meta.origin, SessionOrigin::Delegated { .. }) {
+            return Ok(());
+        }
         let events = projection.log.events();
         if !automatic_title_eligible(&events) {
             return Ok(());
@@ -251,6 +260,9 @@ pub(super) fn automatic_title_eligible(events: &[StoredEvent]) -> bool {
             match change {
                 SessionTitleChange::InternalAgentSet { .. }
                 | SessionTitleChange::FallbackSet { .. } => latest_automatic = Some(event.seq),
+                SessionTitleChange::DelegatedSet { .. } => {
+                    latest_user = Some((event.seq, false));
+                }
                 SessionTitleChange::UserSet { .. } | SessionTitleChange::UserClear { .. } => {
                     latest_user = Some((event.seq, false));
                 }
@@ -271,9 +283,26 @@ pub(super) fn fallback_title(input: &str, max_chars: usize) -> Option<SessionTit
     SessionTitle::new(bounded).ok()
 }
 
+pub(super) fn delegated_title(
+    description: &str,
+    max_chars: usize,
+) -> Result<SessionTitle, EngineError> {
+    if description.chars().any(char::is_control) {
+        return Err(EngineError::MissingTool(
+            "delegate description must be a nonblank control-free session title".into(),
+        ));
+    }
+    let bounded = description.chars().take(max_chars).collect::<String>();
+    SessionTitle::new(bounded).map_err(|_| {
+        EngineError::MissingTool(
+            "delegate description must be a nonblank control-free session title".into(),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::title_prompt;
+    use super::{delegated_title, title_prompt};
 
     #[test]
     fn title_prompt_limits_opening_user_messages() {
@@ -288,5 +317,19 @@ mod tests {
         assert!(prompt.contains("first user message"));
         assert!(prompt.contains("second user message"));
         assert!(!prompt.contains("excluded user message"));
+    }
+
+    #[test]
+    fn delegated_title_preserves_text_truncates_by_chars_and_rejects_controls() {
+        let title = delegated_title("  Direct title  ", 80).expect("delegated title");
+        assert_eq!(title.as_str(), "  Direct title  ");
+        assert_eq!(
+            delegated_title("éééé", 3)
+                .expect("truncated delegated title")
+                .as_str(),
+            "ééé"
+        );
+        assert!(delegated_title("invalid\ntitle", 80).is_err());
+        assert!(delegated_title("valid prefix\n", 5).is_err());
     }
 }

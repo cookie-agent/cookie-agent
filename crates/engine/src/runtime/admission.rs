@@ -5,13 +5,13 @@ use std::{
 
 use cookie_agent_protocol::{
     AgentId, InvocationId, RunId, RunSelection, SessionId, SessionMeta, SessionOrigin,
-    SessionStatus, Sha256Digest, ToolCallId,
+    SessionStatus, SessionTitle, SessionTitleChange, Sha256Digest, ToolCallId,
 };
 use tokio::sync::oneshot;
 
 use super::{
     Engine, EngineError, Event, Inner, SessionCommand,
-    delegation::{cancelled_delegate_result_with_reason, enforce_delegation_concurrency},
+    delegation::cancelled_delegate_result_with_reason,
     helpers::{invocation_id, session_depth},
 };
 use crate::{journal, policy::FrozenRunPolicy};
@@ -85,13 +85,13 @@ impl Engine {
         admission: Option<(InvocationId, u64)>,
     ) -> Result<SessionMeta, EngineError> {
         let child_runtime = Arc::clone(&child_policy.runtime);
+        let child_title = request.title.clone();
         let parent = self.inner.store.get(parent_session_id)?;
-        enforce_delegation_concurrency(self, &parent)?;
         if parent
             .runs
             .get(&parent_run_id)
             .and_then(|run| run.pending_calls.get(&parent_tool_call_id))
-            .is_none_or(|tool| tool != "delegate")
+            .is_none_or(|tool| tool != "delegate_subagent")
         {
             return Err(EngineError::MissingTool(
                 "delegate call is not pending".into(),
@@ -173,6 +173,8 @@ impl Engine {
             ));
         }
         if let Ok(existing) = self.inner.store.get(entry.reservation.child_session_id) {
+            self.ensure_delegated_title(existing.meta.session_id, invocation_id, child_title)
+                .await?;
             self.ensure_parent_link(
                 parent_session_id,
                 parent_run_id,
@@ -231,6 +233,8 @@ impl Engine {
         self.spawn_admission_blocking(move || store.create_with_status(child_session_id, creation))
             .await?;
         self.spawn_actor(child_session_id);
+        self.ensure_delegated_title(child_session_id, invocation_id, child_title)
+            .await?;
         if admission.is_some_and(|(invocation_id, generation)| {
             !self.admission_generation_live(invocation_id, generation)
         }) {
@@ -249,6 +253,105 @@ impl Engine {
         self.spawn_admission_blocking(move || journal.mark_linked(invocation_id))
             .await?;
         Ok(self.inner.store.get(child_session_id)?.metadata())
+    }
+
+    async fn ensure_delegated_title(
+        &self,
+        child_session_id: SessionId,
+        invocation_id: InvocationId,
+        title: SessionTitle,
+    ) -> Result<(), EngineError> {
+        let projection = self.inner.store.get(child_session_id)?;
+        let mut has_matching_title = false;
+        for event in projection.log.events() {
+            if let Event::SessionTitleCommitted { change, .. } = event.payload {
+                match change {
+                    SessionTitleChange::DelegatedSet {
+                        title: existing,
+                        invocation_id: existing_invocation,
+                    } if existing_invocation == invocation_id => {
+                        if existing != title {
+                            return Err(EngineError::MissingTool(
+                                "delegated child has a conflicting origin title".into(),
+                            ));
+                        }
+                        has_matching_title = true;
+                    }
+                    SessionTitleChange::UserSet { .. }
+                    | SessionTitleChange::UserClear { .. }
+                    | SessionTitleChange::UserReset { .. } => {}
+                    _ => {
+                        return Err(EngineError::MissingTool(
+                            "delegated child has a conflicting session title".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        if !has_matching_title {
+            self.append(
+                child_session_id,
+                None,
+                Event::SessionTitleCommitted {
+                    change: SessionTitleChange::DelegatedSet {
+                        title,
+                        invocation_id,
+                    },
+                    input_through_seq: 0,
+                },
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn ensure_delegated_title_blocking(
+        &self,
+        child_session_id: SessionId,
+        invocation_id: InvocationId,
+        title: SessionTitle,
+    ) -> Result<(), EngineError> {
+        let projection = self.inner.store.get(child_session_id)?;
+        let mut has_matching_title = false;
+        for event in projection.log.events() {
+            if let Event::SessionTitleCommitted { change, .. } = event.payload {
+                match change {
+                    SessionTitleChange::DelegatedSet {
+                        title: existing,
+                        invocation_id: existing_invocation,
+                    } if existing_invocation == invocation_id => {
+                        if existing != title {
+                            return Err(EngineError::MissingTool(
+                                "delegated child has a conflicting origin title".into(),
+                            ));
+                        }
+                        has_matching_title = true;
+                    }
+                    SessionTitleChange::UserSet { .. }
+                    | SessionTitleChange::UserClear { .. }
+                    | SessionTitleChange::UserReset { .. } => {}
+                    _ => {
+                        return Err(EngineError::MissingTool(
+                            "delegated child has a conflicting session title".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        if !has_matching_title {
+            self.append_blocking(
+                child_session_id,
+                None,
+                Event::SessionTitleCommitted {
+                    change: SessionTitleChange::DelegatedSet {
+                        title,
+                        invocation_id,
+                    },
+                    input_through_seq: 0,
+                },
+            )?;
+        }
+        Ok(())
     }
 
     pub(super) fn admission_generation_live(

@@ -8,9 +8,9 @@ there are no migrations, aliases, compatibility readers, or dual paths.
 | Runtime configuration | 10 |
 | Agent document | 4 |
 | Protocol | 9 |
-| Events and session JSONL | 14 |
+| Events and session JSONL | 15 |
 | Session metadata | 9 |
-| Delegation journal | 10 |
+| Delegation journal | 11 |
 | Runtime snapshot | 3 |
 | Catalog cache | 2 |
 | Provider store | 3 |

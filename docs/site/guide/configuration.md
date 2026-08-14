@@ -73,7 +73,7 @@ fallback_to_input_excerpt = true
 
 [delegation]
 max_depth = 3
-# max_concurrency = 4 # omitted means unlimited
+max_concurrency = 4
 
 [providers]
 ```
@@ -84,7 +84,9 @@ Validation rules that apply regardless of what you set:
 - Positive limits are required everywhere; compaction trigger percentages must
   be from 1 through 99, and `context_compaction.max_summary_bytes` may not exceed
   2 MiB.
-- `delegation.max_concurrency` of `0` is rejected; omitting it means unlimited.
+- `delegation.max_concurrency` defaults to `4`; `0` is rejected. Excess
+  root-level background delegations queue up to four times the concurrency
+  limit. Foreground and nested delegations bypass the queue.
 - Provider definitions are validated per provider ID (see
   [Providers](providers.md)).
 

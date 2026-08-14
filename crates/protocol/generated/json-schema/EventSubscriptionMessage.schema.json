@@ -1581,6 +1581,94 @@
         {
           "type": "object",
           "properties": {
+            "position": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "delegate_queued"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "session_id",
+            "position"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "preview": {
+              "type": "string",
+              "maxLength": 2048
+            },
+            "session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "status": {
+              "$ref": "#/$defs/SessionStatus"
+            },
+            "total_lines": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "delegate_finished"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "session_id",
+            "status",
+            "preview",
+            "total_lines"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "description": "Control-free bounded safe error text.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "status": {
+              "$ref": "#/$defs/SessionStatus"
+            },
+            "type": {
+              "type": "string",
+              "const": "delegate_child_terminated"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "status",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "request": {
               "$ref": "#/$defs/ApprovalRequest"
             },
@@ -4627,6 +4715,17 @@
         }
       ]
     },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ]
+    },
     "SessionTitleChange": {
       "oneOf": [
         {
@@ -4727,6 +4826,31 @@
         {
           "type": "object",
           "properties": {
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "title": {
+              "description": "Nonblank control-free UTF-8 session title.",
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "delegated_set"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "title",
+            "invocation_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "title": {
               "description": "Nonblank control-free UTF-8 session title.",
               "type": "string",
@@ -4751,7 +4875,7 @@
       "properties": {
         "event_schema_version": {
           "type": "integer",
-          "const": 14
+          "const": 15
         },
         "payload": {
           "$ref": "#/$defs/EventPayload"

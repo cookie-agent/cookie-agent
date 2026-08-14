@@ -88,10 +88,10 @@ The parameters are preparation-derived rather than raw model JSON, so canonical
 paths and permission labels match what the permission pipeline evaluated.
 Every prepared tool must provide this object explicitly; parameterless tools use
 an empty object, and construction rejects `null`. Permission labels use each
-tool's mandatory primary argument: file path, whole command, or delegate target.
+tool's mandatory primary argument: file path, whole command, or subagent target.
 TUI compact titles use a separate display
 argument: abbreviated paths, a one-line bash command that keeps `&&` segments,
-or the same delegate agent id. Bash no longer
+or a subagent's short description. Bash no longer
 reroutes `cat`/`rm` onto read/write; each call is one bash resource whose
 label is the whole command string. Search uses bash (`rg`/`find`); there is
 no dedicated grep or glob tool.
@@ -117,7 +117,7 @@ schema_version = 10
 
 [delegation]
 max_depth = 3
-# max_concurrency = 4 # omitted means unlimited
+max_concurrency = 4
 
 [context_compaction]
 auto = true

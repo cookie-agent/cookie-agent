@@ -5366,6 +5366,47 @@ mod tests {
                 Some((session, expected, 2))
             );
         }
+        assert_eq!(
+            status_change_from_event(&runless_event(
+                session,
+                3,
+                EventPayload::DelegateChildTerminated {
+                    status: SessionStatus::Cancelled,
+                    reason: None,
+                },
+            )),
+            Some((session, SessionStatus::Cancelled, 3))
+        );
+    }
+
+    #[tokio::test]
+    async fn runless_delegate_terminal_event_patches_live_session_and_tree_status() {
+        let (client, _requests) = recording_client();
+        let mut app = App::new(client).await.expect("test app");
+        let child = SessionId::new_v7();
+        app.sessions = vec![session_meta(child)];
+        app.tree_root = Some(child);
+        app.tree = Some(SessionTree {
+            session: session_meta(child),
+            children: Vec::new(),
+        });
+        assert!(app.store.apply_event(session_created(child, 1)));
+
+        app.handle_delivery(live_event(runless_event(
+            child,
+            2,
+            EventPayload::DelegateChildTerminated {
+                status: SessionStatus::Cancelled,
+                reason: None,
+            },
+        )))
+        .await;
+
+        assert_eq!(app.sessions[0].status, SessionStatus::Cancelled);
+        assert_eq!(
+            app.tree.as_ref().expect("tree").session.status,
+            SessionStatus::Cancelled
+        );
     }
 
     #[tokio::test]

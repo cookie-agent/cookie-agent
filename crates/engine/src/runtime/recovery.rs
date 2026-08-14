@@ -84,7 +84,7 @@ impl Engine {
             }
             for run in session.runs.values() {
                 for (tool_call_id, tool) in &run.pending_calls {
-                    if tool == "delegate" {
+                    if tool == "delegate_subagent" {
                         continue;
                     }
                     let failure = restart_tool_failure();
@@ -154,6 +154,11 @@ impl Engine {
                 .get(entry.reservation.child_session_id)
                 .is_ok()
             {
+                self.ensure_delegated_title_blocking(
+                    entry.reservation.child_session_id,
+                    entry.reservation.invocation_id,
+                    entry.request.title.clone(),
+                )?;
                 let parent = self.inner.store.get(entry.reservation.parent_session_id)?;
                 let parent_cancelled = parent
                     .runs
@@ -218,6 +223,7 @@ impl Engine {
                 }
             }
         }
+        self.rebuild_delegation_registry(&journal_entries)?;
         Ok(())
     }
 
@@ -262,7 +268,7 @@ impl Engine {
             )
         }) {
             for (call, tool) in &run.pending_calls {
-                if tool == "delegate" {
+                if tool == "delegate_subagent" {
                     let recovery_key = (session_id, run.id, *call);
                     if self
                         .inner
@@ -333,11 +339,7 @@ impl Engine {
                         }
                     };
                     if child.status == SessionStatus::Completed {
-                        let result = completed_delegate_result(
-                            &child,
-                            entry.child_run_id,
-                            &self.inner.artifacts,
-                        )?;
+                        let result = completed_delegate_result(&child, entry.child_run_id);
                         self.terminate_tool_direct(
                             session_id,
                             run.id,
@@ -395,7 +397,7 @@ impl Engine {
                                 .await_delegate(DelegateHandle {
                                     invocation_id: entry.reservation.invocation_id,
                                     child_session_id: child_id,
-                                    child_run_id,
+                                    child_run_id: Some(child_run_id),
                                 })
                                 .await;
                             if let Ok(result) = result {

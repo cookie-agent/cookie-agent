@@ -43,7 +43,7 @@ Review the requested change and report concrete findings.
 | `enabled` | boolean | *(required)* | Disabled agents are never runnable as roots, delegation targets, or internal backends. |
 | `model_fallback` | array | *(required for `primary`)* | Ordered model chain; see below. |
 | `limits` | table | defaults below | Timeouts and token bounds. |
-| `tools` | array of strings | *(required)* | Tool allowlist: `read`, `write`, `edit`, `bash` (plus the implicit `delegate` tool controlled by the `delegate` permission). At most 256 entries, no duplicates. |
+| `tools` | array of strings | *(required)* | Tool allowlist: `read`, `write`, `edit`, `bash` (plus the implicit subagent tools controlled by the `delegate` permission). At most 256 entries, no duplicates. |
 | `permissions` | table | *(required)* | Ordered action permission map; see [Permissions](permissions.md). At most 256 rules. |
 
 `limits` defaults to `timeout_ms = 30000`, `max_input_tokens = 16384`,
@@ -66,6 +66,25 @@ expression, and only without a variant.
 - `all` — runnable both as a root and as a delegation target.
 - `internal` — engine-only (see below). Cannot be selected as a root or a
   delegation target.
+
+## Subagent tools
+
+`delegate_subagent` requires a short `description`, a self-contained `prompt`,
+an allowed `agent_type`, and an optional `background` boolean. Foreground calls
+block and return a concise result teaser. Background calls return immediately
+with only the child `session_id`; admission still waits for any required
+permission approval. The description becomes the delegated session title when
+the child is created. It is truncated to `session_title.max_chars` using the same
+Unicode-character limit as generated titles; invalid title text rejects the
+delegation.
+
+Background sessions move through `queued`, `running`, and a terminal
+`completed`, `failed`, `interrupted`, or `cancelled` state. Completion appends a
+parent event containing the session ID, status, first 20 result lines (at most 2
+KiB), and total line count. Use `get_subagent_result` with `session_id`, optional
+`wait`, and zero-based `offset`/`limit` to retrieve the full result in pages. Use
+`cancel_subagent` with the owned `session_id` and optional `reason` to cancel it.
+Both tools reject sessions that are not direct children of the caller.
 
 ## Layering and replacement
 
@@ -97,6 +116,10 @@ All three default to `${parent_model}`, so they run on the model the parent run
 is currently using. The compaction agent's input limit additionally scales to
 the largest context window among its resolved models, so it can read the full
 conversation it is asked to summarize.
+
+The title agent runs only for root sessions that still need an automatic title.
+Delegated sessions already have the `delegate_subagent` description as their
+title, so they never invoke the title agent.
 
 The built-in documents are replaced by authored schema-4 documents with the same
 ID, `mode: internal`, and an explicit `model_fallback`. `${parent_model}` is
