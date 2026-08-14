@@ -1217,7 +1217,7 @@ so the CLI keeps working even when built without the <code>tui</code> feature.</
 </tr>
 <tr>
 <td><code>tools</code></td>
-<td>Built-in <code>read</code>, <code>write</code>, <code>edit</code>, and <code>bash</code> tools plus the <code>delegate</code> tool provider.</td>
+<td>Built-in <code>read</code>, <code>write</code>, <code>edit</code>, and <code>bash</code> tools plus the <code>delegate_subagent</code>, <code>get_subagent_result</code>, and <code>cancel_subagent</code> provider.</td>
 </tr>
 <tr>
 <td><code>server</code></td>
@@ -1357,7 +1357,7 @@ session and drive the run loop:</p>
 <li><strong>Approvals.</strong> A stateless approval evaluator (the <code>approval</code> internal agent)
   classifies asks in <code>auto_approve</code> mode. <code>ask</code> skips the classifier, and <code>yolo</code>
   approves immediately. A doom-loop guard rejects repeated identical approvals.</li>
-<li><strong>Delegation.</strong> The <code>delegate</code> tool reserves a child session under the parent,
+<li><strong>Delegation.</strong> The <code>delegate_subagent</code> tool reserves a child session under the parent,
   journals the invocation, and runs the target subagent with an inherited model
   suffix. Depth and concurrency limits come from <code>delegation</code> configuration.</li>
 <li><strong>Internal agents.</strong> The approval, context-compaction, and session-title
@@ -1381,7 +1381,7 @@ canonical working directory:</p>
 <a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    cwd                            # canonical project path
 <a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    sessions/&lt;session-id&gt;/         # events.jsonl + meta.json cache
 <a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    artifacts/                     # content-addressed tool output
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    delegations.jsonl              # delegation journal (schema 10)
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    delegations.jsonl              # delegation journal (schema 11)
 <a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    grant-invalidations.jsonl      # tree-grant invalidation journal
 <a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    runtime-revisions-v8.jsonl     # runtime revision index
 </code></pre></div>

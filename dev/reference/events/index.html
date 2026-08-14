@@ -934,7 +934,7 @@
 
 
 <h1 id="event-reference">Event Reference<a class="headerlink" href="#event-reference" title="Permanent link">&para;</a></h1>
-<p>Session persistence and subscriptions use event schema 14. Every stored event
+<p>Session persistence and subscriptions use event schema 15. Every stored event
 contains <code>event_schema_version</code>, <code>session_id</code>, required nullable <code>run_id</code>, a
 positive physical <code>seq</code>, <code>timestamp</code>, and a tagged <code>payload</code>. Events requiring a
 run ID reject a null envelope value.</p>
@@ -965,7 +965,7 @@ run ID reject a null envelope value.</p>
 </tr>
 <tr>
 <td>Tools</td>
-<td><code>tool_call_started</code>, <code>tool_call_progress</code>, <code>tool_call_terminated</code>, <code>tool_output_elided</code>, <code>tool_stdin_submitted</code>, <code>tool_call_linked</code></td>
+<td><code>tool_call_started</code>, <code>tool_call_progress</code>, <code>tool_call_terminated</code>, <code>tool_output_elided</code>, <code>tool_stdin_submitted</code>, <code>tool_call_linked</code>, <code>delegate_queued</code>, <code>delegate_finished</code></td>
 </tr>
 <tr>
 <td>Approvals</td>
@@ -983,14 +983,15 @@ run ID reject a null envelope value.</p>
 </table>
 <p><code>context_compaction_auto_disabled</code> is a legacy durable event retained for old
 session logs. Current engines no longer emit it.</p>
-<p>Schema 14 introduces the pending-input and branch control records used by the
-current steering and revert behavior: <code>user_input_admitted</code>,
-<code>user_input_recalled</code>, and <code>session_reverted</code>. <code>user_input_submitted</code> remains the
-point at which text enters model-visible history.</p>
+<p>Schema 15 adds <code>delegate_queued</code> and <code>delegate_finished</code>. The completion event is
+written to the parent run and carries <code>{ session_id, status, preview,
+total_lines }</code>; <code>preview</code> is limited to the first 20 lines and 2 KiB. It becomes
+model-visible at the next turn boundary, while full output remains available
+through <code>get_subagent_result</code>.</p>
 <h2 id="subscriptions">Subscriptions<a class="headerlink" href="#subscriptions" title="Permanent link">&para;</a></h2>
 <p><code>events.subscribe</code> returns all retained events after the optional cursor and
 starts <code>events.subscription</code> notifications. A notification is tagged as either:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;event&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;event_schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">14</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;event&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;event_schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">15</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
 </code></pre></div>
 <p>or a gap indicating that the subscriber must rebuild its disposable projection:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>

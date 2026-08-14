@@ -1443,8 +1443,8 @@ truncated or replaced with artifact references.</p>
 <tr>
 <td><code>max_concurrency</code></td>
 <td>integer</td>
-<td><em>(omitted)</em></td>
-<td>Maximum concurrent delegation invocations. Omitted means unlimited. A value of <code>0</code> is rejected.</td>
+<td><code>4</code></td>
+<td>Maximum concurrently running root-level background delegations. Excess calls queue FIFO, up to <code>4 × max_concurrency</code>; a full queue rejects admission. Foreground and nested delegations bypass this queue. A value of <code>0</code> is rejected.</td>
 </tr>
 </tbody>
 </table>

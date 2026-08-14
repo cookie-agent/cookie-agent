@@ -594,8 +594,8 @@
 <a href=#594 id=594 data-nosnippet>594</a>    </span><span class="kw">fn </span>approval_without_user_message_uses_fixed_fallback() {
 <a href=#595 id=595 data-nosnippet>595</a>        <span class="kw">let </span>input = approval_stateless_input(
 <a href=#596 id=596 data-nosnippet>596</a>            ApprovalToolInput {
-<a href=#597 id=597 data-nosnippet>597</a>                name: <span class="string">"delegate"</span>,
-<a href=#598 id=598 data-nosnippet>598</a>                normalized_parameters: <span class="kw-2">&amp;</span><span class="macro">serde_json::json!</span>({<span class="string">"agent"</span>:<span class="string">"worker"</span>}),
+<a href=#597 id=597 data-nosnippet>597</a>                name: <span class="string">"delegate_subagent"</span>,
+<a href=#598 id=598 data-nosnippet>598</a>                normalized_parameters: <span class="kw-2">&amp;</span><span class="macro">serde_json::json!</span>({<span class="string">"agent_type"</span>:<span class="string">"worker"</span>}),
 <a href=#599 id=599 data-nosnippet>599</a>            },
 <a href=#600 id=600 data-nosnippet>600</a>            <span class="prelude-val">None</span>,
 <a href=#601 id=601 data-nosnippet>601</a>        );

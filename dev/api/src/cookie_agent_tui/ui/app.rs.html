@@ -6215,590 +6215,592 @@
 <a href=#6215 id=6215 data-nosnippet>6215</a>    <span class="kw">let </span>title = <span class="kw">match </span>change {
 <a href=#6216 id=6216 data-nosnippet>6216</a>        SessionTitleChange::UserSet { title, .. }
 <a href=#6217 id=6217 data-nosnippet>6217</a>        | SessionTitleChange::InternalAgentSet { title, .. }
-<a href=#6218 id=6218 data-nosnippet>6218</a>        | SessionTitleChange::FallbackSet { title } =&gt; <span class="prelude-val">Some</span>(title.clone()),
-<a href=#6219 id=6219 data-nosnippet>6219</a>        SessionTitleChange::UserClear { .. } | SessionTitleChange::UserReset { .. } =&gt; <span class="prelude-val">None</span>,
-<a href=#6220 id=6220 data-nosnippet>6220</a>    };
-<a href=#6221 id=6221 data-nosnippet>6221</a>    <span class="prelude-val">Some</span>((event.session_id, title, event.seq))
-<a href=#6222 id=6222 data-nosnippet>6222</a>}
-<a href=#6223 id=6223 data-nosnippet>6223</a>
-<a href=#6224 id=6224 data-nosnippet>6224</a><span class="doccomment">/// Mirror the engine session projection's run lifecycle status derivation.
-<a href=#6225 id=6225 data-nosnippet>6225</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>status_change_from_event(
-<a href=#6226 id=6226 data-nosnippet>6226</a>    event: <span class="kw-2">&amp;</span>cookie_agent_protocol::StoredEvent,
-<a href=#6227 id=6227 data-nosnippet>6227</a>) -&gt; <span class="prelude-ty">Option</span>&lt;(SessionId, SessionStatus, u64)&gt; {
-<a href=#6228 id=6228 data-nosnippet>6228</a>    <span class="kw">let </span>status = <span class="kw">match </span><span class="kw-2">&amp;</span>event.payload {
-<a href=#6229 id=6229 data-nosnippet>6229</a>        EventPayload::RunStarted { .. } =&gt; SessionStatus::Running,
-<a href=#6230 id=6230 data-nosnippet>6230</a>        EventPayload::RunCompleted { .. } =&gt; SessionStatus::Completed,
-<a href=#6231 id=6231 data-nosnippet>6231</a>        EventPayload::RunFailed { .. } =&gt; SessionStatus::Failed,
-<a href=#6232 id=6232 data-nosnippet>6232</a>        EventPayload::RunCancelled { .. } =&gt; SessionStatus::Cancelled,
-<a href=#6233 id=6233 data-nosnippet>6233</a>        EventPayload::RunInterrupted { .. } =&gt; SessionStatus::Interrupted,
-<a href=#6234 id=6234 data-nosnippet>6234</a>        <span class="kw">_ </span>=&gt; <span class="kw">return </span><span class="prelude-val">None</span>,
-<a href=#6235 id=6235 data-nosnippet>6235</a>    };
-<a href=#6236 id=6236 data-nosnippet>6236</a>    <span class="prelude-val">Some</span>((event.session_id, status, event.seq))
-<a href=#6237 id=6237 data-nosnippet>6237</a>}
-<a href=#6238 id=6238 data-nosnippet>6238</a>
-<a href=#6239 id=6239 data-nosnippet>6239</a><span class="doccomment">/// Collect the newest known title for each session from the live tree and
-<a href=#6240 id=6240 data-nosnippet>6240</a>/// session list, so stale patches can be repaired with the newer value.
-<a href=#6241 id=6241 data-nosnippet>6241</a></span><span class="kw">fn </span>collect_known_titles(
-<a href=#6242 id=6242 data-nosnippet>6242</a>    tree: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>SessionTree&gt;,
-<a href=#6243 id=6243 data-nosnippet>6243</a>    sessions: <span class="kw-2">&amp;</span>[SessionMeta],
-<a href=#6244 id=6244 data-nosnippet>6244</a>    sequences: <span class="kw-2">&amp;</span>HashMap&lt;SessionId, u64&gt;,
-<a href=#6245 id=6245 data-nosnippet>6245</a>    titles: <span class="kw-2">&amp;mut </span>HashMap&lt;SessionId, (u64, <span class="prelude-ty">Option</span>&lt;SessionTitle&gt;)&gt;,
-<a href=#6246 id=6246 data-nosnippet>6246</a>) {
-<a href=#6247 id=6247 data-nosnippet>6247</a>    <span class="kw">fn </span>walk(node: <span class="kw-2">&amp;</span>SessionTree, titles: <span class="kw-2">&amp;mut </span>HashMap&lt;SessionId, (u64, <span class="prelude-ty">Option</span>&lt;SessionTitle&gt;)&gt;) {
-<a href=#6248 id=6248 data-nosnippet>6248</a>        titles.insert(
-<a href=#6249 id=6249 data-nosnippet>6249</a>            node.session.session_id,
-<a href=#6250 id=6250 data-nosnippet>6250</a>            (node.session.title_updated_seq, node.session.title.clone()),
-<a href=#6251 id=6251 data-nosnippet>6251</a>        );
-<a href=#6252 id=6252 data-nosnippet>6252</a>        <span class="kw">for </span>child <span class="kw">in </span><span class="kw-2">&amp;</span>node.children {
-<a href=#6253 id=6253 data-nosnippet>6253</a>            walk(child, titles);
-<a href=#6254 id=6254 data-nosnippet>6254</a>        }
-<a href=#6255 id=6255 data-nosnippet>6255</a>    }
-<a href=#6256 id=6256 data-nosnippet>6256</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(tree) = tree {
-<a href=#6257 id=6257 data-nosnippet>6257</a>        walk(tree, titles);
-<a href=#6258 id=6258 data-nosnippet>6258</a>    }
-<a href=#6259 id=6259 data-nosnippet>6259</a>    <span class="kw">for </span>session <span class="kw">in </span>sessions {
-<a href=#6260 id=6260 data-nosnippet>6260</a>        titles
-<a href=#6261 id=6261 data-nosnippet>6261</a>            .entry(session.session_id)
-<a href=#6262 id=6262 data-nosnippet>6262</a>            .and_modify(|entry| {
-<a href=#6263 id=6263 data-nosnippet>6263</a>                <span class="kw">if </span>session.title_updated_seq &gt; entry.<span class="number">0 </span>{
-<a href=#6264 id=6264 data-nosnippet>6264</a>                    <span class="kw-2">*</span>entry = (session.title_updated_seq, session.title.clone());
-<a href=#6265 id=6265 data-nosnippet>6265</a>                }
-<a href=#6266 id=6266 data-nosnippet>6266</a>            })
-<a href=#6267 id=6267 data-nosnippet>6267</a>            .or_insert((session.title_updated_seq, session.title.clone()));
-<a href=#6268 id=6268 data-nosnippet>6268</a>    }
-<a href=#6269 id=6269 data-nosnippet>6269</a>    <span class="comment">// Any session with a newer sequence but no meta patch yet keeps its
-<a href=#6270 id=6270 data-nosnippet>6270</a>    // recorded sequence so stale tree values cannot regress it.
-<a href=#6271 id=6271 data-nosnippet>6271</a>    </span><span class="kw">for </span>(session_id, seq) <span class="kw">in </span>sequences {
-<a href=#6272 id=6272 data-nosnippet>6272</a>        titles
-<a href=#6273 id=6273 data-nosnippet>6273</a>            .entry(<span class="kw-2">*</span>session_id)
-<a href=#6274 id=6274 data-nosnippet>6274</a>            .and_modify(|entry| entry.<span class="number">0 </span>= entry.<span class="number">0</span>.max(<span class="kw-2">*</span>seq))
-<a href=#6275 id=6275 data-nosnippet>6275</a>            .or_insert((<span class="kw-2">*</span>seq, <span class="prelude-val">None</span>));
-<a href=#6276 id=6276 data-nosnippet>6276</a>    }
-<a href=#6277 id=6277 data-nosnippet>6277</a>}
-<a href=#6278 id=6278 data-nosnippet>6278</a>
-<a href=#6279 id=6279 data-nosnippet>6279</a><span class="kw">fn </span>collect_known_statuses(
-<a href=#6280 id=6280 data-nosnippet>6280</a>    tree: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>SessionTree&gt;,
-<a href=#6281 id=6281 data-nosnippet>6281</a>    sessions: <span class="kw-2">&amp;</span>[SessionMeta],
-<a href=#6282 id=6282 data-nosnippet>6282</a>    statuses: <span class="kw-2">&amp;mut </span>HashMap&lt;SessionId, (u64, SessionStatus)&gt;,
-<a href=#6283 id=6283 data-nosnippet>6283</a>) {
-<a href=#6284 id=6284 data-nosnippet>6284</a>    <span class="kw">fn </span>record(meta: <span class="kw-2">&amp;</span>SessionMeta, statuses: <span class="kw-2">&amp;mut </span>HashMap&lt;SessionId, (u64, SessionStatus)&gt;) {
-<a href=#6285 id=6285 data-nosnippet>6285</a>        statuses
-<a href=#6286 id=6286 data-nosnippet>6286</a>            .entry(meta.session_id)
-<a href=#6287 id=6287 data-nosnippet>6287</a>            .and_modify(|entry| {
-<a href=#6288 id=6288 data-nosnippet>6288</a>                <span class="kw">if </span>meta.last_event_seq &gt; entry.<span class="number">0 </span>{
-<a href=#6289 id=6289 data-nosnippet>6289</a>                    <span class="kw-2">*</span>entry = (meta.last_event_seq, meta.status);
-<a href=#6290 id=6290 data-nosnippet>6290</a>                }
-<a href=#6291 id=6291 data-nosnippet>6291</a>            })
-<a href=#6292 id=6292 data-nosnippet>6292</a>            .or_insert((meta.last_event_seq, meta.status));
-<a href=#6293 id=6293 data-nosnippet>6293</a>    }
-<a href=#6294 id=6294 data-nosnippet>6294</a>
-<a href=#6295 id=6295 data-nosnippet>6295</a>    <span class="kw">fn </span>walk(node: <span class="kw-2">&amp;</span>SessionTree, statuses: <span class="kw-2">&amp;mut </span>HashMap&lt;SessionId, (u64, SessionStatus)&gt;) {
-<a href=#6296 id=6296 data-nosnippet>6296</a>        record(<span class="kw-2">&amp;</span>node.session, statuses);
-<a href=#6297 id=6297 data-nosnippet>6297</a>        <span class="kw">for </span>child <span class="kw">in </span><span class="kw-2">&amp;</span>node.children {
-<a href=#6298 id=6298 data-nosnippet>6298</a>            walk(child, statuses);
-<a href=#6299 id=6299 data-nosnippet>6299</a>        }
-<a href=#6300 id=6300 data-nosnippet>6300</a>    }
-<a href=#6301 id=6301 data-nosnippet>6301</a>
-<a href=#6302 id=6302 data-nosnippet>6302</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(tree) = tree {
-<a href=#6303 id=6303 data-nosnippet>6303</a>        walk(tree, statuses);
-<a href=#6304 id=6304 data-nosnippet>6304</a>    }
-<a href=#6305 id=6305 data-nosnippet>6305</a>    <span class="kw">for </span>session <span class="kw">in </span>sessions {
-<a href=#6306 id=6306 data-nosnippet>6306</a>        record(session, statuses);
-<a href=#6307 id=6307 data-nosnippet>6307</a>    }
-<a href=#6308 id=6308 data-nosnippet>6308</a>}
-<a href=#6309 id=6309 data-nosnippet>6309</a>
-<a href=#6310 id=6310 data-nosnippet>6310</a><span class="kw">fn </span>patch_tree_node_statuses(
-<a href=#6311 id=6311 data-nosnippet>6311</a>    tree: <span class="kw-2">&amp;mut </span>SessionTree,
-<a href=#6312 id=6312 data-nosnippet>6312</a>    statuses: <span class="kw-2">&amp;</span>HashMap&lt;SessionId, (u64, SessionStatus)&gt;,
-<a href=#6313 id=6313 data-nosnippet>6313</a>) {
-<a href=#6314 id=6314 data-nosnippet>6314</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>((seq, status)) = statuses.get(<span class="kw-2">&amp;</span>tree.session.session_id)
-<a href=#6315 id=6315 data-nosnippet>6315</a>        &amp;&amp; tree.session.last_event_seq &lt; <span class="kw-2">*</span>seq
-<a href=#6316 id=6316 data-nosnippet>6316</a>    {
-<a href=#6317 id=6317 data-nosnippet>6317</a>        tree.session.last_event_seq = <span class="kw-2">*</span>seq;
-<a href=#6318 id=6318 data-nosnippet>6318</a>        tree.session.status = <span class="kw-2">*</span>status;
-<a href=#6319 id=6319 data-nosnippet>6319</a>    }
-<a href=#6320 id=6320 data-nosnippet>6320</a>    <span class="kw">for </span>child <span class="kw">in </span><span class="kw-2">&amp;mut </span>tree.children {
-<a href=#6321 id=6321 data-nosnippet>6321</a>        patch_tree_node_statuses(child, statuses);
-<a href=#6322 id=6322 data-nosnippet>6322</a>    }
-<a href=#6323 id=6323 data-nosnippet>6323</a>}
-<a href=#6324 id=6324 data-nosnippet>6324</a>
-<a href=#6325 id=6325 data-nosnippet>6325</a><span class="kw">fn </span>patch_tree_node_titles(
-<a href=#6326 id=6326 data-nosnippet>6326</a>    tree: <span class="kw-2">&amp;mut </span>SessionTree,
-<a href=#6327 id=6327 data-nosnippet>6327</a>    sequences: <span class="kw-2">&amp;</span>HashMap&lt;SessionId, u64&gt;,
-<a href=#6328 id=6328 data-nosnippet>6328</a>    known: <span class="kw-2">&amp;</span>HashMap&lt;SessionId, (u64, <span class="prelude-ty">Option</span>&lt;SessionTitle&gt;)&gt;,
-<a href=#6329 id=6329 data-nosnippet>6329</a>) {
-<a href=#6330 id=6330 data-nosnippet>6330</a>    <span class="kw">let </span>session_id = tree.session.session_id;
-<a href=#6331 id=6331 data-nosnippet>6331</a>    <span class="kw">let </span>known_seq = sequences.get(<span class="kw-2">&amp;</span>session_id).copied().unwrap_or(<span class="number">0</span>);
-<a href=#6332 id=6332 data-nosnippet>6332</a>    <span class="kw">if </span>tree.session.title_updated_seq &lt; known_seq {
-<a href=#6333 id=6333 data-nosnippet>6333</a>        <span class="comment">// The tree response is older than a title event already applied;
-<a href=#6334 id=6334 data-nosnippet>6334</a>        // restore the newest known title and sequence.
-<a href=#6335 id=6335 data-nosnippet>6335</a>        </span>tree.session.title = known.get(<span class="kw-2">&amp;</span>session_id).and_then(|(<span class="kw">_</span>, title)| title.clone());
-<a href=#6336 id=6336 data-nosnippet>6336</a>        tree.session.title_updated_seq = known_seq;
-<a href=#6337 id=6337 data-nosnippet>6337</a>    }
-<a href=#6338 id=6338 data-nosnippet>6338</a>    <span class="kw">for </span>child <span class="kw">in </span><span class="kw-2">&amp;mut </span>tree.children {
-<a href=#6339 id=6339 data-nosnippet>6339</a>        patch_tree_node_titles(child, sequences, known);
-<a href=#6340 id=6340 data-nosnippet>6340</a>    }
-<a href=#6341 id=6341 data-nosnippet>6341</a>}
-<a href=#6342 id=6342 data-nosnippet>6342</a>
-<a href=#6343 id=6343 data-nosnippet>6343</a><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>approval_content(approval: <span class="kw-2">&amp;</span>ApprovalState) -&gt; String {
-<a href=#6344 id=6344 data-nosnippet>6344</a>    <span class="kw">let </span><span class="kw-2">mut </span>content = String::new();
-<a href=#6345 id=6345 data-nosnippet>6345</a>    <span class="macro">writeln!</span>(
-<a href=#6346 id=6346 data-nosnippet>6346</a>        content,
-<a href=#6347 id=6347 data-nosnippet>6347</a>        <span class="string">"PERMISSION REQUIRED{}"</span>,
-<a href=#6348 id=6348 data-nosnippet>6348</a>        <span class="kw">if </span>approval.escalated {
-<a href=#6349 id=6349 data-nosnippet>6349</a>            <span class="string">" · ESCALATED"
-<a href=#6350 id=6350 data-nosnippet>6350</a>        </span>} <span class="kw">else </span>{
-<a href=#6351 id=6351 data-nosnippet>6351</a>            <span class="string">""
-<a href=#6352 id=6352 data-nosnippet>6352</a>        </span>}
-<a href=#6353 id=6353 data-nosnippet>6353</a>    )
-<a href=#6354 id=6354 data-nosnippet>6354</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6355 id=6355 data-nosnippet>6355</a>    <span class="macro">writeln!</span>(
-<a href=#6356 id=6356 data-nosnippet>6356</a>        content,
-<a href=#6357 id=6357 data-nosnippet>6357</a>        <span class="string">"consent target: {}"</span>,
-<a href=#6358 id=6358 data-nosnippet>6358</a>        approval.evaluations[<span class="number">0</span>].trace.normalized_resource
-<a href=#6359 id=6359 data-nosnippet>6359</a>    )
-<a href=#6360 id=6360 data-nosnippet>6360</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6361 id=6361 data-nosnippet>6361</a>    <span class="macro">writeln!</span>(content, <span class="string">"approval id: {}"</span>, approval.approval_id)
-<a href=#6362 id=6362 data-nosnippet>6362</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6363 id=6363 data-nosnippet>6363</a>    <span class="macro">writeln!</span>(content, <span class="string">"request revision: {}"</span>, approval.request_revision)
+<a href=#6218 id=6218 data-nosnippet>6218</a>        | SessionTitleChange::DelegatedSet { title, .. }
+<a href=#6219 id=6219 data-nosnippet>6219</a>        | SessionTitleChange::FallbackSet { title } =&gt; <span class="prelude-val">Some</span>(title.clone()),
+<a href=#6220 id=6220 data-nosnippet>6220</a>        SessionTitleChange::UserClear { .. } | SessionTitleChange::UserReset { .. } =&gt; <span class="prelude-val">None</span>,
+<a href=#6221 id=6221 data-nosnippet>6221</a>    };
+<a href=#6222 id=6222 data-nosnippet>6222</a>    <span class="prelude-val">Some</span>((event.session_id, title, event.seq))
+<a href=#6223 id=6223 data-nosnippet>6223</a>}
+<a href=#6224 id=6224 data-nosnippet>6224</a>
+<a href=#6225 id=6225 data-nosnippet>6225</a><span class="doccomment">/// Mirror the engine session projection's run lifecycle status derivation.
+<a href=#6226 id=6226 data-nosnippet>6226</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>status_change_from_event(
+<a href=#6227 id=6227 data-nosnippet>6227</a>    event: <span class="kw-2">&amp;</span>cookie_agent_protocol::StoredEvent,
+<a href=#6228 id=6228 data-nosnippet>6228</a>) -&gt; <span class="prelude-ty">Option</span>&lt;(SessionId, SessionStatus, u64)&gt; {
+<a href=#6229 id=6229 data-nosnippet>6229</a>    <span class="kw">let </span>status = <span class="kw">match </span><span class="kw-2">&amp;</span>event.payload {
+<a href=#6230 id=6230 data-nosnippet>6230</a>        EventPayload::RunStarted { .. } =&gt; SessionStatus::Running,
+<a href=#6231 id=6231 data-nosnippet>6231</a>        EventPayload::RunCompleted { .. } =&gt; SessionStatus::Completed,
+<a href=#6232 id=6232 data-nosnippet>6232</a>        EventPayload::RunFailed { .. } =&gt; SessionStatus::Failed,
+<a href=#6233 id=6233 data-nosnippet>6233</a>        EventPayload::RunCancelled { .. } =&gt; SessionStatus::Cancelled,
+<a href=#6234 id=6234 data-nosnippet>6234</a>        EventPayload::RunInterrupted { .. } =&gt; SessionStatus::Interrupted,
+<a href=#6235 id=6235 data-nosnippet>6235</a>        EventPayload::DelegateChildTerminated { status, .. } =&gt; <span class="kw-2">*</span>status,
+<a href=#6236 id=6236 data-nosnippet>6236</a>        <span class="kw">_ </span>=&gt; <span class="kw">return </span><span class="prelude-val">None</span>,
+<a href=#6237 id=6237 data-nosnippet>6237</a>    };
+<a href=#6238 id=6238 data-nosnippet>6238</a>    <span class="prelude-val">Some</span>((event.session_id, status, event.seq))
+<a href=#6239 id=6239 data-nosnippet>6239</a>}
+<a href=#6240 id=6240 data-nosnippet>6240</a>
+<a href=#6241 id=6241 data-nosnippet>6241</a><span class="doccomment">/// Collect the newest known title for each session from the live tree and
+<a href=#6242 id=6242 data-nosnippet>6242</a>/// session list, so stale patches can be repaired with the newer value.
+<a href=#6243 id=6243 data-nosnippet>6243</a></span><span class="kw">fn </span>collect_known_titles(
+<a href=#6244 id=6244 data-nosnippet>6244</a>    tree: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>SessionTree&gt;,
+<a href=#6245 id=6245 data-nosnippet>6245</a>    sessions: <span class="kw-2">&amp;</span>[SessionMeta],
+<a href=#6246 id=6246 data-nosnippet>6246</a>    sequences: <span class="kw-2">&amp;</span>HashMap&lt;SessionId, u64&gt;,
+<a href=#6247 id=6247 data-nosnippet>6247</a>    titles: <span class="kw-2">&amp;mut </span>HashMap&lt;SessionId, (u64, <span class="prelude-ty">Option</span>&lt;SessionTitle&gt;)&gt;,
+<a href=#6248 id=6248 data-nosnippet>6248</a>) {
+<a href=#6249 id=6249 data-nosnippet>6249</a>    <span class="kw">fn </span>walk(node: <span class="kw-2">&amp;</span>SessionTree, titles: <span class="kw-2">&amp;mut </span>HashMap&lt;SessionId, (u64, <span class="prelude-ty">Option</span>&lt;SessionTitle&gt;)&gt;) {
+<a href=#6250 id=6250 data-nosnippet>6250</a>        titles.insert(
+<a href=#6251 id=6251 data-nosnippet>6251</a>            node.session.session_id,
+<a href=#6252 id=6252 data-nosnippet>6252</a>            (node.session.title_updated_seq, node.session.title.clone()),
+<a href=#6253 id=6253 data-nosnippet>6253</a>        );
+<a href=#6254 id=6254 data-nosnippet>6254</a>        <span class="kw">for </span>child <span class="kw">in </span><span class="kw-2">&amp;</span>node.children {
+<a href=#6255 id=6255 data-nosnippet>6255</a>            walk(child, titles);
+<a href=#6256 id=6256 data-nosnippet>6256</a>        }
+<a href=#6257 id=6257 data-nosnippet>6257</a>    }
+<a href=#6258 id=6258 data-nosnippet>6258</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(tree) = tree {
+<a href=#6259 id=6259 data-nosnippet>6259</a>        walk(tree, titles);
+<a href=#6260 id=6260 data-nosnippet>6260</a>    }
+<a href=#6261 id=6261 data-nosnippet>6261</a>    <span class="kw">for </span>session <span class="kw">in </span>sessions {
+<a href=#6262 id=6262 data-nosnippet>6262</a>        titles
+<a href=#6263 id=6263 data-nosnippet>6263</a>            .entry(session.session_id)
+<a href=#6264 id=6264 data-nosnippet>6264</a>            .and_modify(|entry| {
+<a href=#6265 id=6265 data-nosnippet>6265</a>                <span class="kw">if </span>session.title_updated_seq &gt; entry.<span class="number">0 </span>{
+<a href=#6266 id=6266 data-nosnippet>6266</a>                    <span class="kw-2">*</span>entry = (session.title_updated_seq, session.title.clone());
+<a href=#6267 id=6267 data-nosnippet>6267</a>                }
+<a href=#6268 id=6268 data-nosnippet>6268</a>            })
+<a href=#6269 id=6269 data-nosnippet>6269</a>            .or_insert((session.title_updated_seq, session.title.clone()));
+<a href=#6270 id=6270 data-nosnippet>6270</a>    }
+<a href=#6271 id=6271 data-nosnippet>6271</a>    <span class="comment">// Any session with a newer sequence but no meta patch yet keeps its
+<a href=#6272 id=6272 data-nosnippet>6272</a>    // recorded sequence so stale tree values cannot regress it.
+<a href=#6273 id=6273 data-nosnippet>6273</a>    </span><span class="kw">for </span>(session_id, seq) <span class="kw">in </span>sequences {
+<a href=#6274 id=6274 data-nosnippet>6274</a>        titles
+<a href=#6275 id=6275 data-nosnippet>6275</a>            .entry(<span class="kw-2">*</span>session_id)
+<a href=#6276 id=6276 data-nosnippet>6276</a>            .and_modify(|entry| entry.<span class="number">0 </span>= entry.<span class="number">0</span>.max(<span class="kw-2">*</span>seq))
+<a href=#6277 id=6277 data-nosnippet>6277</a>            .or_insert((<span class="kw-2">*</span>seq, <span class="prelude-val">None</span>));
+<a href=#6278 id=6278 data-nosnippet>6278</a>    }
+<a href=#6279 id=6279 data-nosnippet>6279</a>}
+<a href=#6280 id=6280 data-nosnippet>6280</a>
+<a href=#6281 id=6281 data-nosnippet>6281</a><span class="kw">fn </span>collect_known_statuses(
+<a href=#6282 id=6282 data-nosnippet>6282</a>    tree: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>SessionTree&gt;,
+<a href=#6283 id=6283 data-nosnippet>6283</a>    sessions: <span class="kw-2">&amp;</span>[SessionMeta],
+<a href=#6284 id=6284 data-nosnippet>6284</a>    statuses: <span class="kw-2">&amp;mut </span>HashMap&lt;SessionId, (u64, SessionStatus)&gt;,
+<a href=#6285 id=6285 data-nosnippet>6285</a>) {
+<a href=#6286 id=6286 data-nosnippet>6286</a>    <span class="kw">fn </span>record(meta: <span class="kw-2">&amp;</span>SessionMeta, statuses: <span class="kw-2">&amp;mut </span>HashMap&lt;SessionId, (u64, SessionStatus)&gt;) {
+<a href=#6287 id=6287 data-nosnippet>6287</a>        statuses
+<a href=#6288 id=6288 data-nosnippet>6288</a>            .entry(meta.session_id)
+<a href=#6289 id=6289 data-nosnippet>6289</a>            .and_modify(|entry| {
+<a href=#6290 id=6290 data-nosnippet>6290</a>                <span class="kw">if </span>meta.last_event_seq &gt; entry.<span class="number">0 </span>{
+<a href=#6291 id=6291 data-nosnippet>6291</a>                    <span class="kw-2">*</span>entry = (meta.last_event_seq, meta.status);
+<a href=#6292 id=6292 data-nosnippet>6292</a>                }
+<a href=#6293 id=6293 data-nosnippet>6293</a>            })
+<a href=#6294 id=6294 data-nosnippet>6294</a>            .or_insert((meta.last_event_seq, meta.status));
+<a href=#6295 id=6295 data-nosnippet>6295</a>    }
+<a href=#6296 id=6296 data-nosnippet>6296</a>
+<a href=#6297 id=6297 data-nosnippet>6297</a>    <span class="kw">fn </span>walk(node: <span class="kw-2">&amp;</span>SessionTree, statuses: <span class="kw-2">&amp;mut </span>HashMap&lt;SessionId, (u64, SessionStatus)&gt;) {
+<a href=#6298 id=6298 data-nosnippet>6298</a>        record(<span class="kw-2">&amp;</span>node.session, statuses);
+<a href=#6299 id=6299 data-nosnippet>6299</a>        <span class="kw">for </span>child <span class="kw">in </span><span class="kw-2">&amp;</span>node.children {
+<a href=#6300 id=6300 data-nosnippet>6300</a>            walk(child, statuses);
+<a href=#6301 id=6301 data-nosnippet>6301</a>        }
+<a href=#6302 id=6302 data-nosnippet>6302</a>    }
+<a href=#6303 id=6303 data-nosnippet>6303</a>
+<a href=#6304 id=6304 data-nosnippet>6304</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(tree) = tree {
+<a href=#6305 id=6305 data-nosnippet>6305</a>        walk(tree, statuses);
+<a href=#6306 id=6306 data-nosnippet>6306</a>    }
+<a href=#6307 id=6307 data-nosnippet>6307</a>    <span class="kw">for </span>session <span class="kw">in </span>sessions {
+<a href=#6308 id=6308 data-nosnippet>6308</a>        record(session, statuses);
+<a href=#6309 id=6309 data-nosnippet>6309</a>    }
+<a href=#6310 id=6310 data-nosnippet>6310</a>}
+<a href=#6311 id=6311 data-nosnippet>6311</a>
+<a href=#6312 id=6312 data-nosnippet>6312</a><span class="kw">fn </span>patch_tree_node_statuses(
+<a href=#6313 id=6313 data-nosnippet>6313</a>    tree: <span class="kw-2">&amp;mut </span>SessionTree,
+<a href=#6314 id=6314 data-nosnippet>6314</a>    statuses: <span class="kw-2">&amp;</span>HashMap&lt;SessionId, (u64, SessionStatus)&gt;,
+<a href=#6315 id=6315 data-nosnippet>6315</a>) {
+<a href=#6316 id=6316 data-nosnippet>6316</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>((seq, status)) = statuses.get(<span class="kw-2">&amp;</span>tree.session.session_id)
+<a href=#6317 id=6317 data-nosnippet>6317</a>        &amp;&amp; tree.session.last_event_seq &lt; <span class="kw-2">*</span>seq
+<a href=#6318 id=6318 data-nosnippet>6318</a>    {
+<a href=#6319 id=6319 data-nosnippet>6319</a>        tree.session.last_event_seq = <span class="kw-2">*</span>seq;
+<a href=#6320 id=6320 data-nosnippet>6320</a>        tree.session.status = <span class="kw-2">*</span>status;
+<a href=#6321 id=6321 data-nosnippet>6321</a>    }
+<a href=#6322 id=6322 data-nosnippet>6322</a>    <span class="kw">for </span>child <span class="kw">in </span><span class="kw-2">&amp;mut </span>tree.children {
+<a href=#6323 id=6323 data-nosnippet>6323</a>        patch_tree_node_statuses(child, statuses);
+<a href=#6324 id=6324 data-nosnippet>6324</a>    }
+<a href=#6325 id=6325 data-nosnippet>6325</a>}
+<a href=#6326 id=6326 data-nosnippet>6326</a>
+<a href=#6327 id=6327 data-nosnippet>6327</a><span class="kw">fn </span>patch_tree_node_titles(
+<a href=#6328 id=6328 data-nosnippet>6328</a>    tree: <span class="kw-2">&amp;mut </span>SessionTree,
+<a href=#6329 id=6329 data-nosnippet>6329</a>    sequences: <span class="kw-2">&amp;</span>HashMap&lt;SessionId, u64&gt;,
+<a href=#6330 id=6330 data-nosnippet>6330</a>    known: <span class="kw-2">&amp;</span>HashMap&lt;SessionId, (u64, <span class="prelude-ty">Option</span>&lt;SessionTitle&gt;)&gt;,
+<a href=#6331 id=6331 data-nosnippet>6331</a>) {
+<a href=#6332 id=6332 data-nosnippet>6332</a>    <span class="kw">let </span>session_id = tree.session.session_id;
+<a href=#6333 id=6333 data-nosnippet>6333</a>    <span class="kw">let </span>known_seq = sequences.get(<span class="kw-2">&amp;</span>session_id).copied().unwrap_or(<span class="number">0</span>);
+<a href=#6334 id=6334 data-nosnippet>6334</a>    <span class="kw">if </span>tree.session.title_updated_seq &lt; known_seq {
+<a href=#6335 id=6335 data-nosnippet>6335</a>        <span class="comment">// The tree response is older than a title event already applied;
+<a href=#6336 id=6336 data-nosnippet>6336</a>        // restore the newest known title and sequence.
+<a href=#6337 id=6337 data-nosnippet>6337</a>        </span>tree.session.title = known.get(<span class="kw-2">&amp;</span>session_id).and_then(|(<span class="kw">_</span>, title)| title.clone());
+<a href=#6338 id=6338 data-nosnippet>6338</a>        tree.session.title_updated_seq = known_seq;
+<a href=#6339 id=6339 data-nosnippet>6339</a>    }
+<a href=#6340 id=6340 data-nosnippet>6340</a>    <span class="kw">for </span>child <span class="kw">in </span><span class="kw-2">&amp;mut </span>tree.children {
+<a href=#6341 id=6341 data-nosnippet>6341</a>        patch_tree_node_titles(child, sequences, known);
+<a href=#6342 id=6342 data-nosnippet>6342</a>    }
+<a href=#6343 id=6343 data-nosnippet>6343</a>}
+<a href=#6344 id=6344 data-nosnippet>6344</a>
+<a href=#6345 id=6345 data-nosnippet>6345</a><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>approval_content(approval: <span class="kw-2">&amp;</span>ApprovalState) -&gt; String {
+<a href=#6346 id=6346 data-nosnippet>6346</a>    <span class="kw">let </span><span class="kw-2">mut </span>content = String::new();
+<a href=#6347 id=6347 data-nosnippet>6347</a>    <span class="macro">writeln!</span>(
+<a href=#6348 id=6348 data-nosnippet>6348</a>        content,
+<a href=#6349 id=6349 data-nosnippet>6349</a>        <span class="string">"PERMISSION REQUIRED{}"</span>,
+<a href=#6350 id=6350 data-nosnippet>6350</a>        <span class="kw">if </span>approval.escalated {
+<a href=#6351 id=6351 data-nosnippet>6351</a>            <span class="string">" · ESCALATED"
+<a href=#6352 id=6352 data-nosnippet>6352</a>        </span>} <span class="kw">else </span>{
+<a href=#6353 id=6353 data-nosnippet>6353</a>            <span class="string">""
+<a href=#6354 id=6354 data-nosnippet>6354</a>        </span>}
+<a href=#6355 id=6355 data-nosnippet>6355</a>    )
+<a href=#6356 id=6356 data-nosnippet>6356</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6357 id=6357 data-nosnippet>6357</a>    <span class="macro">writeln!</span>(
+<a href=#6358 id=6358 data-nosnippet>6358</a>        content,
+<a href=#6359 id=6359 data-nosnippet>6359</a>        <span class="string">"consent target: {}"</span>,
+<a href=#6360 id=6360 data-nosnippet>6360</a>        approval.evaluations[<span class="number">0</span>].trace.normalized_resource
+<a href=#6361 id=6361 data-nosnippet>6361</a>    )
+<a href=#6362 id=6362 data-nosnippet>6362</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6363 id=6363 data-nosnippet>6363</a>    <span class="macro">writeln!</span>(content, <span class="string">"approval id: {}"</span>, approval.approval_id)
 <a href=#6364 id=6364 data-nosnippet>6364</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6365 id=6365 data-nosnippet>6365</a>    <span class="macro">writeln!</span>(content, <span class="string">"trigger: {:?}"</span>, approval.trigger).expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6366 id=6366 data-nosnippet>6366</a>    <span class="macro">writeln!</span>(
-<a href=#6367 id=6367 data-nosnippet>6367</a>        content,
-<a href=#6368 id=6368 data-nosnippet>6368</a>        <span class="string">"operation fingerprint: {}"</span>,
-<a href=#6369 id=6369 data-nosnippet>6369</a>        approval.operation_fingerprint.digest()
-<a href=#6370 id=6370 data-nosnippet>6370</a>    )
-<a href=#6371 id=6371 data-nosnippet>6371</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6372 id=6372 data-nosnippet>6372</a>    <span class="macro">writeln!</span>(
-<a href=#6373 id=6373 data-nosnippet>6373</a>        content,
-<a href=#6374 id=6374 data-nosnippet>6374</a>        <span class="string">"normalized-arguments digest: {}"</span>,
-<a href=#6375 id=6375 data-nosnippet>6375</a>        approval.normalized_arguments_digest
-<a href=#6376 id=6376 data-nosnippet>6376</a>    )
-<a href=#6377 id=6377 data-nosnippet>6377</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6378 id=6378 data-nosnippet>6378</a>    <span class="macro">writeln!</span>(
-<a href=#6379 id=6379 data-nosnippet>6379</a>        content,
-<a href=#6380 id=6380 data-nosnippet>6380</a>        <span class="string">"execution-context digest: {}"</span>,
-<a href=#6381 id=6381 data-nosnippet>6381</a>        approval.execution_context_digest
-<a href=#6382 id=6382 data-nosnippet>6382</a>    )
-<a href=#6383 id=6383 data-nosnippet>6383</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6384 id=6384 data-nosnippet>6384</a>    <span class="macro">writeln!</span>(
-<a href=#6385 id=6385 data-nosnippet>6385</a>        content,
-<a href=#6386 id=6386 data-nosnippet>6386</a>        <span class="string">"prepared capability lifetime: {:?}"</span>,
-<a href=#6387 id=6387 data-nosnippet>6387</a>        approval.capability_lifetime
-<a href=#6388 id=6388 data-nosnippet>6388</a>    )
-<a href=#6389 id=6389 data-nosnippet>6389</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6390 id=6390 data-nosnippet>6390</a>
-<a href=#6391 id=6391 data-nosnippet>6391</a>    <span class="macro">writeln!</span>(content, <span class="string">"\nCAPABILITIES ({})"</span>, approval.capabilities.len())
-<a href=#6392 id=6392 data-nosnippet>6392</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6393 id=6393 data-nosnippet>6393</a>    <span class="kw">for </span>(index, capability) <span class="kw">in </span>approval.capabilities.iter().enumerate() {
-<a href=#6394 id=6394 data-nosnippet>6394</a>        <span class="macro">writeln!</span>(
-<a href=#6395 id=6395 data-nosnippet>6395</a>            content,
-<a href=#6396 id=6396 data-nosnippet>6396</a>            <span class="string">"{}. action: {:?}\n   operation: {}\n   lifetime: {:?}"</span>,
-<a href=#6397 id=6397 data-nosnippet>6397</a>            index + <span class="number">1</span>,
-<a href=#6398 id=6398 data-nosnippet>6398</a>            capability.action,
-<a href=#6399 id=6399 data-nosnippet>6399</a>            capability.operation.as_str(),
-<a href=#6400 id=6400 data-nosnippet>6400</a>            approval.capability_lifetime
-<a href=#6401 id=6401 data-nosnippet>6401</a>        )
-<a href=#6402 id=6402 data-nosnippet>6402</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6403 id=6403 data-nosnippet>6403</a>    }
-<a href=#6404 id=6404 data-nosnippet>6404</a>
-<a href=#6405 id=6405 data-nosnippet>6405</a>    <span class="macro">writeln!</span>(content, <span class="string">"\nRESOURCES ({})"</span>, approval.resources.len())
-<a href=#6406 id=6406 data-nosnippet>6406</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6407 id=6407 data-nosnippet>6407</a>    <span class="kw">for </span>(index, resource) <span class="kw">in </span>approval.resources.iter().enumerate() {
-<a href=#6408 id=6408 data-nosnippet>6408</a>        <span class="kw">let </span>normalized = approval
-<a href=#6409 id=6409 data-nosnippet>6409</a>            .evaluations
-<a href=#6410 id=6410 data-nosnippet>6410</a>            .iter()
-<a href=#6411 id=6411 data-nosnippet>6411</a>            .find(|evaluation| evaluation.resource_digest == resource.binding_digest)
-<a href=#6412 id=6412 data-nosnippet>6412</a>            .expect(<span class="string">"validated approval evaluations cover every resource"</span>)
-<a href=#6413 id=6413 data-nosnippet>6413</a>            .trace
-<a href=#6414 id=6414 data-nosnippet>6414</a>            .normalized_resource
-<a href=#6415 id=6415 data-nosnippet>6415</a>            .as_str();
-<a href=#6416 id=6416 data-nosnippet>6416</a>        <span class="macro">writeln!</span>(
-<a href=#6417 id=6417 data-nosnippet>6417</a>            content,
-<a href=#6418 id=6418 data-nosnippet>6418</a>            <span class="string">"{}. action: {:?}\n   normalized identity: {}\n   canonical identity: {}\n   binding digest: {}\n   boundary: {}\n   binding lifetime: {:?}\n   source: {:?}"</span>,
-<a href=#6419 id=6419 data-nosnippet>6419</a>            index + <span class="number">1</span>,
-<a href=#6420 id=6420 data-nosnippet>6420</a>            resource.capability,
-<a href=#6421 id=6421 data-nosnippet>6421</a>            normalized,
-<a href=#6422 id=6422 data-nosnippet>6422</a>            resource.canonical.as_str(),
-<a href=#6423 id=6423 data-nosnippet>6423</a>            resource.binding_digest.digest(),
-<a href=#6424 id=6424 data-nosnippet>6424</a>            approval_boundary(<span class="kw-2">&amp;</span>resource.boundary),
-<a href=#6425 id=6425 data-nosnippet>6425</a>            resource.binding_lifetime,
-<a href=#6426 id=6426 data-nosnippet>6426</a>            resource.source
-<a href=#6427 id=6427 data-nosnippet>6427</a>        )
-<a href=#6428 id=6428 data-nosnippet>6428</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6429 id=6429 data-nosnippet>6429</a>    }
-<a href=#6430 id=6430 data-nosnippet>6430</a>
-<a href=#6431 id=6431 data-nosnippet>6431</a>    <span class="macro">writeln!</span>(content, <span class="string">"\nEVALUATIONS ({})"</span>, approval.evaluations.len())
-<a href=#6432 id=6432 data-nosnippet>6432</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6433 id=6433 data-nosnippet>6433</a>    <span class="kw">for </span>(index, evaluation) <span class="kw">in </span>approval.evaluations.iter().enumerate() {
-<a href=#6434 id=6434 data-nosnippet>6434</a>        <span class="macro">writeln!</span>(
-<a href=#6435 id=6435 data-nosnippet>6435</a>            content,
-<a href=#6436 id=6436 data-nosnippet>6436</a>            <span class="string">"{}. resource binding digest: {}\n   result effect: {:?}\n   trace action: {:?}\n   trace normalized resource: {}\n   trace effect: {:?}\n   precedence reason: {}\n   candidate rules ({}):"</span>,
-<a href=#6437 id=6437 data-nosnippet>6437</a>            index + <span class="number">1</span>,
-<a href=#6438 id=6438 data-nosnippet>6438</a>            evaluation.resource_digest.digest(),
-<a href=#6439 id=6439 data-nosnippet>6439</a>            evaluation.effect,
-<a href=#6440 id=6440 data-nosnippet>6440</a>            evaluation.trace.action,
-<a href=#6441 id=6441 data-nosnippet>6441</a>            evaluation.trace.normalized_resource,
-<a href=#6442 id=6442 data-nosnippet>6442</a>            evaluation.trace.effect,
-<a href=#6443 id=6443 data-nosnippet>6443</a>            evaluation.trace.precedence_reason,
-<a href=#6444 id=6444 data-nosnippet>6444</a>            evaluation.trace.candidates.len()
-<a href=#6445 id=6445 data-nosnippet>6445</a>        )
-<a href=#6446 id=6446 data-nosnippet>6446</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6447 id=6447 data-nosnippet>6447</a>        <span class="kw">if </span>evaluation.trace.candidates.is_empty() {
-<a href=#6448 id=6448 data-nosnippet>6448</a>            <span class="macro">writeln!</span>(content, <span class="string">"      (none)"</span>).expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6449 id=6449 data-nosnippet>6449</a>        } <span class="kw">else </span>{
-<a href=#6450 id=6450 data-nosnippet>6450</a>            <span class="kw">for </span>(candidate_index, candidate) <span class="kw">in </span>evaluation.trace.candidates.iter().enumerate() {
-<a href=#6451 id=6451 data-nosnippet>6451</a>                <span class="macro">writeln!</span>(
-<a href=#6452 id=6452 data-nosnippet>6452</a>                    content,
-<a href=#6453 id=6453 data-nosnippet>6453</a>                    <span class="string">"      {}. action: {:?} · resource: {} · source layer: {} · effect: {:?}"</span>,
-<a href=#6454 id=6454 data-nosnippet>6454</a>                    candidate_index + <span class="number">1</span>,
-<a href=#6455 id=6455 data-nosnippet>6455</a>                    candidate.action,
-<a href=#6456 id=6456 data-nosnippet>6456</a>                    candidate.resource,
-<a href=#6457 id=6457 data-nosnippet>6457</a>                    candidate.source_layer,
-<a href=#6458 id=6458 data-nosnippet>6458</a>                    candidate.effect
-<a href=#6459 id=6459 data-nosnippet>6459</a>                )
-<a href=#6460 id=6460 data-nosnippet>6460</a>                .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6461 id=6461 data-nosnippet>6461</a>            }
-<a href=#6462 id=6462 data-nosnippet>6462</a>        }
-<a href=#6463 id=6463 data-nosnippet>6463</a>    }
-<a href=#6464 id=6464 data-nosnippet>6464</a>
-<a href=#6465 id=6465 data-nosnippet>6465</a>    <span class="macro">writeln!</span>(content, <span class="string">"\nRESPONSE CONSTRAINTS"</span>).expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6466 id=6466 data-nosnippet>6466</a>    <span class="macro">writeln!</span>(
-<a href=#6467 id=6467 data-nosnippet>6467</a>        content,
-<a href=#6468 id=6468 data-nosnippet>6468</a>        <span class="string">"allow approve once: {}"</span>,
-<a href=#6469 id=6469 data-nosnippet>6469</a>        approval.constraints.allow_once
-<a href=#6470 id=6470 data-nosnippet>6470</a>    )
-<a href=#6471 id=6471 data-nosnippet>6471</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6472 id=6472 data-nosnippet>6472</a>    <span class="macro">writeln!</span>(
-<a href=#6473 id=6473 data-nosnippet>6473</a>        content,
-<a href=#6474 id=6474 data-nosnippet>6474</a>        <span class="string">"allow delegation-tree grant: {}"</span>,
-<a href=#6475 id=6475 data-nosnippet>6475</a>        approval.constraints.allow_tree_grant
-<a href=#6476 id=6476 data-nosnippet>6476</a>    )
-<a href=#6477 id=6477 data-nosnippet>6477</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6478 id=6478 data-nosnippet>6478</a>    <span class="macro">writeln!</span>(
-<a href=#6479 id=6479 data-nosnippet>6479</a>        content,
-<a href=#6480 id=6480 data-nosnippet>6480</a>        <span class="string">"allow cancel: {}"</span>,
-<a href=#6481 id=6481 data-nosnippet>6481</a>        approval.constraints.cancellable
-<a href=#6482 id=6482 data-nosnippet>6482</a>    )
-<a href=#6483 id=6483 data-nosnippet>6483</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6484 id=6484 data-nosnippet>6484</a>    <span class="macro">writeln!</span>(
-<a href=#6485 id=6485 data-nosnippet>6485</a>        content,
-<a href=#6486 id=6486 data-nosnippet>6486</a>        <span class="string">"expires at: {}"</span>,
-<a href=#6487 id=6487 data-nosnippet>6487</a>        approval
-<a href=#6488 id=6488 data-nosnippet>6488</a>            .constraints
-<a href=#6489 id=6489 data-nosnippet>6489</a>            .expires_at
-<a href=#6490 id=6490 data-nosnippet>6490</a>            .map_or_else(|| <span class="string">"never"</span>.into(), |timestamp| timestamp.to_string())
-<a href=#6491 id=6491 data-nosnippet>6491</a>    )
-<a href=#6492 id=6492 data-nosnippet>6492</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
-<a href=#6493 id=6493 data-nosnippet>6493</a>    content
-<a href=#6494 id=6494 data-nosnippet>6494</a>}
-<a href=#6495 id=6495 data-nosnippet>6495</a>
-<a href=#6496 id=6496 data-nosnippet>6496</a><span class="kw">fn </span>approval_boundary(boundary: <span class="kw-2">&amp;</span>cookie_agent_protocol::ApprovalBoundary) -&gt; String {
-<a href=#6497 id=6497 data-nosnippet>6497</a>    <span class="kw">match </span>boundary {
-<a href=#6498 id=6498 data-nosnippet>6498</a>        cookie_agent_protocol::ApprovalBoundary::Exact =&gt; <span class="string">"exact"</span>.into(),
-<a href=#6499 id=6499 data-nosnippet>6499</a>        cookie_agent_protocol::ApprovalBoundary::CommandPrefix { prefix } =&gt; {
-<a href=#6500 id=6500 data-nosnippet>6500</a>            <span class="macro">format!</span>(<span class="string">"command prefix: {prefix}"</span>)
-<a href=#6501 id=6501 data-nosnippet>6501</a>        }
-<a href=#6502 id=6502 data-nosnippet>6502</a>        cookie_agent_protocol::ApprovalBoundary::DelegationTree { root_session_id } =&gt; {
-<a href=#6503 id=6503 data-nosnippet>6503</a>            <span class="macro">format!</span>(<span class="string">"delegation tree rooted at session {root_session_id}"</span>)
-<a href=#6504 id=6504 data-nosnippet>6504</a>        }
-<a href=#6505 id=6505 data-nosnippet>6505</a>    }
-<a href=#6506 id=6506 data-nosnippet>6506</a>}
-<a href=#6507 id=6507 data-nosnippet>6507</a>
-<a href=#6508 id=6508 data-nosnippet>6508</a><span class="kw">fn </span>inner_rect(area: Rect) -&gt; Rect {
-<a href=#6509 id=6509 data-nosnippet>6509</a>    Rect::new(
-<a href=#6510 id=6510 data-nosnippet>6510</a>        area.x.saturating_add(<span class="number">1</span>),
-<a href=#6511 id=6511 data-nosnippet>6511</a>        area.y.saturating_add(<span class="number">1</span>),
-<a href=#6512 id=6512 data-nosnippet>6512</a>        area.width.saturating_sub(<span class="number">2</span>),
-<a href=#6513 id=6513 data-nosnippet>6513</a>        area.height.saturating_sub(<span class="number">2</span>),
-<a href=#6514 id=6514 data-nosnippet>6514</a>    )
-<a href=#6515 id=6515 data-nosnippet>6515</a>}
-<a href=#6516 id=6516 data-nosnippet>6516</a>
-<a href=#6517 id=6517 data-nosnippet>6517</a><span class="doccomment">/// Paint an overlay panel: reset every cell like `Clear` (a styled `Block`
-<a href=#6518 id=6518 data-nosnippet>6518</a>/// only re-styles cells, so underlying glyphs would ghost through), then
-<a href=#6519 id=6519 data-nosnippet>6519</a>/// fill with the theme surface instead of punching a terminal-default hole
-<a href=#6520 id=6520 data-nosnippet>6520</a>/// in the light theme.
-<a href=#6521 id=6521 data-nosnippet>6521</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>paint_panel(frame: <span class="kw-2">&amp;mut </span>ratatui::Frame, area: Rect, theme: <span class="kw-2">&amp;</span>Theme) {
-<a href=#6522 id=6522 data-nosnippet>6522</a>    <span class="kw">let </span>clip = area.intersection(frame.area());
-<a href=#6523 id=6523 data-nosnippet>6523</a>    <span class="kw">let </span>buffer = frame.buffer_mut();
-<a href=#6524 id=6524 data-nosnippet>6524</a>    <span class="kw">for </span>y <span class="kw">in </span>clip.top()..clip.bottom() {
-<a href=#6525 id=6525 data-nosnippet>6525</a>        <span class="kw">for </span>x <span class="kw">in </span>clip.left()..clip.right() {
-<a href=#6526 id=6526 data-nosnippet>6526</a>            <span class="kw">let </span>cell = <span class="kw-2">&amp;mut </span>buffer[(x, y)];
-<a href=#6527 id=6527 data-nosnippet>6527</a>            cell.reset();
-<a href=#6528 id=6528 data-nosnippet>6528</a>            cell.set_style(theme.panel());
-<a href=#6529 id=6529 data-nosnippet>6529</a>        }
-<a href=#6530 id=6530 data-nosnippet>6530</a>    }
-<a href=#6531 id=6531 data-nosnippet>6531</a>}
-<a href=#6532 id=6532 data-nosnippet>6532</a>
-<a href=#6533 id=6533 data-nosnippet>6533</a><span class="doccomment">/// Visual hierarchy for the approval body: the banner is a warning, the
-<a href=#6534 id=6534 data-nosnippet>6534</a>/// consent target is the prominent identity, section headers are headings,
-<a href=#6535 id=6535 data-nosnippet>6535</a>/// identity digests recede, and the remaining evidence is body text. The
-<a href=#6536 id=6536 data-nosnippet>6536</a>/// content itself is produced by `approval_content` unchanged.
-<a href=#6537 id=6537 data-nosnippet>6537</a></span><span class="kw">fn </span>approval_line_style(line: <span class="kw-2">&amp;</span>str, theme: <span class="kw-2">&amp;</span>Theme) -&gt; ratatui::style::Style {
-<a href=#6538 id=6538 data-nosnippet>6538</a>    <span class="kw">if </span>line.starts_with(<span class="string">"PERMISSION REQUIRED"</span>) {
-<a href=#6539 id=6539 data-nosnippet>6539</a>        <span class="kw">return </span>theme.warning();
-<a href=#6540 id=6540 data-nosnippet>6540</a>    }
-<a href=#6541 id=6541 data-nosnippet>6541</a>    <span class="kw">if </span>line.starts_with(<span class="string">"consent target:"</span>) {
-<a href=#6542 id=6542 data-nosnippet>6542</a>        <span class="kw">return </span>theme.user();
-<a href=#6543 id=6543 data-nosnippet>6543</a>    }
-<a href=#6544 id=6544 data-nosnippet>6544</a>    <span class="kw">if </span>[
-<a href=#6545 id=6545 data-nosnippet>6545</a>        <span class="string">"CAPABILITIES ("</span>,
-<a href=#6546 id=6546 data-nosnippet>6546</a>        <span class="string">"RESOURCES ("</span>,
-<a href=#6547 id=6547 data-nosnippet>6547</a>        <span class="string">"EVALUATIONS ("</span>,
-<a href=#6548 id=6548 data-nosnippet>6548</a>        <span class="string">"RESPONSE CONSTRAINTS"</span>,
-<a href=#6549 id=6549 data-nosnippet>6549</a>    ]
-<a href=#6550 id=6550 data-nosnippet>6550</a>    .iter()
-<a href=#6551 id=6551 data-nosnippet>6551</a>    .any(|header| line.starts_with(header))
-<a href=#6552 id=6552 data-nosnippet>6552</a>    {
-<a href=#6553 id=6553 data-nosnippet>6553</a>        <span class="kw">return </span>theme.heading();
-<a href=#6554 id=6554 data-nosnippet>6554</a>    }
-<a href=#6555 id=6555 data-nosnippet>6555</a>    <span class="kw">if </span>[
-<a href=#6556 id=6556 data-nosnippet>6556</a>        <span class="string">"approval id:"</span>,
-<a href=#6557 id=6557 data-nosnippet>6557</a>        <span class="string">"request revision:"</span>,
-<a href=#6558 id=6558 data-nosnippet>6558</a>        <span class="string">"trigger:"</span>,
-<a href=#6559 id=6559 data-nosnippet>6559</a>        <span class="string">"operation fingerprint:"</span>,
-<a href=#6560 id=6560 data-nosnippet>6560</a>        <span class="string">"normalized-arguments digest:"</span>,
-<a href=#6561 id=6561 data-nosnippet>6561</a>        <span class="string">"execution-context digest:"</span>,
-<a href=#6562 id=6562 data-nosnippet>6562</a>        <span class="string">"prepared capability lifetime:"</span>,
-<a href=#6563 id=6563 data-nosnippet>6563</a>    ]
-<a href=#6564 id=6564 data-nosnippet>6564</a>    .iter()
-<a href=#6565 id=6565 data-nosnippet>6565</a>    .any(|key| line.starts_with(key))
-<a href=#6566 id=6566 data-nosnippet>6566</a>    {
-<a href=#6567 id=6567 data-nosnippet>6567</a>        <span class="kw">return </span>theme.internal();
-<a href=#6568 id=6568 data-nosnippet>6568</a>    }
-<a href=#6569 id=6569 data-nosnippet>6569</a>    theme.body()
-<a href=#6570 id=6570 data-nosnippet>6570</a>}
-<a href=#6571 id=6571 data-nosnippet>6571</a>
-<a href=#6572 id=6572 data-nosnippet>6572</a><span class="kw">fn </span>decision_tone(decision: ApprovalUserDecision) -&gt; <span class="kw">crate</span>::theme::DecisionTone {
-<a href=#6573 id=6573 data-nosnippet>6573</a>    <span class="kw">match </span>decision {
-<a href=#6574 id=6574 data-nosnippet>6574</a>        ApprovalUserDecision::ApproveOnce | ApprovalUserDecision::ApproveTree =&gt; {
-<a href=#6575 id=6575 data-nosnippet>6575</a>            <span class="kw">crate</span>::theme::DecisionTone::Allow
-<a href=#6576 id=6576 data-nosnippet>6576</a>        }
-<a href=#6577 id=6577 data-nosnippet>6577</a>        ApprovalUserDecision::Reject =&gt; <span class="kw">crate</span>::theme::DecisionTone::Deny,
-<a href=#6578 id=6578 data-nosnippet>6578</a>        ApprovalUserDecision::Cancel =&gt; <span class="kw">crate</span>::theme::DecisionTone::Neutral,
-<a href=#6579 id=6579 data-nosnippet>6579</a>    }
-<a href=#6580 id=6580 data-nosnippet>6580</a>}
-<a href=#6581 id=6581 data-nosnippet>6581</a>
-<a href=#6582 id=6582 data-nosnippet>6582</a><span class="kw">fn </span>approval_action_hits(area: Rect, approval: <span class="kw-2">&amp;</span>ApprovalState) -&gt; Vec&lt;ApprovalHit&gt; {
-<a href=#6583 id=6583 data-nosnippet>6583</a>    <span class="kw">let </span>inner = inner_rect(area);
-<a href=#6584 id=6584 data-nosnippet>6584</a>    <span class="kw">if </span>inner.width == <span class="number">0 </span>|| inner.height == <span class="number">0 </span>{
-<a href=#6585 id=6585 data-nosnippet>6585</a>        <span class="kw">return </span>Vec::new();
-<a href=#6586 id=6586 data-nosnippet>6586</a>    }
-<a href=#6587 id=6587 data-nosnippet>6587</a>    <span class="comment">// Roomy panels get three-row rounded buttons; cramped ones keep the
-<a href=#6588 id=6588 data-nosnippet>6588</a>    // single action row. Heights here and in `render_approval` must agree.
-<a href=#6589 id=6589 data-nosnippet>6589</a>    </span><span class="kw">let </span>height = <span class="kw">if </span>inner.width &gt;= <span class="number">44 </span>&amp;&amp; inner.height &gt;= <span class="number">10 </span>{
-<a href=#6590 id=6590 data-nosnippet>6590</a>        <span class="number">3
-<a href=#6591 id=6591 data-nosnippet>6591</a>    </span>} <span class="kw">else </span>{
-<a href=#6592 id=6592 data-nosnippet>6592</a>        <span class="number">1
-<a href=#6593 id=6593 data-nosnippet>6593</a>    </span>};
-<a href=#6594 id=6594 data-nosnippet>6594</a>    <span class="kw">let </span>row = Rect::new(
-<a href=#6595 id=6595 data-nosnippet>6595</a>        inner.x,
-<a href=#6596 id=6596 data-nosnippet>6596</a>        inner.y + inner.height - height,
-<a href=#6597 id=6597 data-nosnippet>6597</a>        inner.width,
-<a href=#6598 id=6598 data-nosnippet>6598</a>        height,
-<a href=#6599 id=6599 data-nosnippet>6599</a>    );
-<a href=#6600 id=6600 data-nosnippet>6600</a>    <span class="kw">let </span><span class="kw-2">mut </span>decisions = Vec::new();
-<a href=#6601 id=6601 data-nosnippet>6601</a>    <span class="kw">if </span>approval.constraints.allow_once {
-<a href=#6602 id=6602 data-nosnippet>6602</a>        decisions.push(ApprovalUserDecision::ApproveOnce);
-<a href=#6603 id=6603 data-nosnippet>6603</a>    }
-<a href=#6604 id=6604 data-nosnippet>6604</a>    <span class="kw">if </span>approval.constraints.allow_tree_grant {
-<a href=#6605 id=6605 data-nosnippet>6605</a>        decisions.push(ApprovalUserDecision::ApproveTree);
-<a href=#6606 id=6606 data-nosnippet>6606</a>    }
-<a href=#6607 id=6607 data-nosnippet>6607</a>    decisions.push(ApprovalUserDecision::Reject);
-<a href=#6608 id=6608 data-nosnippet>6608</a>    <span class="kw">if </span>approval.constraints.cancellable {
-<a href=#6609 id=6609 data-nosnippet>6609</a>        decisions.push(ApprovalUserDecision::Cancel);
-<a href=#6610 id=6610 data-nosnippet>6610</a>    }
-<a href=#6611 id=6611 data-nosnippet>6611</a>    <span class="kw">if </span>decisions.is_empty() {
-<a href=#6612 id=6612 data-nosnippet>6612</a>        <span class="kw">return </span>Vec::new();
-<a href=#6613 id=6613 data-nosnippet>6613</a>    }
-<a href=#6614 id=6614 data-nosnippet>6614</a>    <span class="kw">let </span>width = <span class="number">100 </span>/ u16::try_from(decisions.len()).unwrap_or(<span class="number">1</span>);
-<a href=#6615 id=6615 data-nosnippet>6615</a>    Layout::default()
-<a href=#6616 id=6616 data-nosnippet>6616</a>        .direction(Direction::Horizontal)
-<a href=#6617 id=6617 data-nosnippet>6617</a>        .constraints(decisions.iter().map(|<span class="kw">_</span>| Constraint::Percentage(width)))
-<a href=#6618 id=6618 data-nosnippet>6618</a>        .split(row)
-<a href=#6619 id=6619 data-nosnippet>6619</a>        .iter()
-<a href=#6620 id=6620 data-nosnippet>6620</a>        .zip(decisions)
-<a href=#6621 id=6621 data-nosnippet>6621</a>        .map(|(rect, decision)| ApprovalHit {
-<a href=#6622 id=6622 data-nosnippet>6622</a>            rect: <span class="kw-2">*</span>rect,
-<a href=#6623 id=6623 data-nosnippet>6623</a>            decision,
-<a href=#6624 id=6624 data-nosnippet>6624</a>        })
-<a href=#6625 id=6625 data-nosnippet>6625</a>        .collect()
-<a href=#6626 id=6626 data-nosnippet>6626</a>}
-<a href=#6627 id=6627 data-nosnippet>6627</a>
-<a href=#6628 id=6628 data-nosnippet>6628</a><span class="doccomment">/// Render each decision as a distinct button: a rounded frame in the
-<a href=#6629 id=6629 data-nosnippet>6629</a>/// decision's tone with a glyph-bearing label (never color alone). Buttons
-<a href=#6630 id=6630 data-nosnippet>6630</a>/// leave a one-column visual gap between frames while their hit regions
-<a href=#6631 id=6631 data-nosnippet>6631</a>/// stay contiguous; single-row areas fall back to flat labels.
-<a href=#6632 id=6632 data-nosnippet>6632</a></span><span class="kw">fn </span>render_approval_actions(frame: <span class="kw-2">&amp;mut </span>ratatui::Frame, actions: <span class="kw-2">&amp;</span>[ApprovalHit], theme: <span class="kw-2">&amp;</span>Theme) {
-<a href=#6633 id=6633 data-nosnippet>6633</a>    <span class="kw">for </span>action <span class="kw">in </span>actions {
-<a href=#6634 id=6634 data-nosnippet>6634</a>        <span class="kw">let </span>tone = theme.decision(decision_tone(action.decision), <span class="bool-val">false</span>);
-<a href=#6635 id=6635 data-nosnippet>6635</a>        <span class="kw">if </span>action.rect.height == <span class="number">1 </span>{
-<a href=#6636 id=6636 data-nosnippet>6636</a>            <span class="kw">let </span>label = approval_action_label(action.decision, action.rect.width);
-<a href=#6637 id=6637 data-nosnippet>6637</a>            frame.render_widget(
-<a href=#6638 id=6638 data-nosnippet>6638</a>                Paragraph::new(Span::styled(label, tone))
-<a href=#6639 id=6639 data-nosnippet>6639</a>                    .alignment(ratatui::layout::Alignment::Center),
-<a href=#6640 id=6640 data-nosnippet>6640</a>                action.rect,
-<a href=#6641 id=6641 data-nosnippet>6641</a>            );
-<a href=#6642 id=6642 data-nosnippet>6642</a>            <span class="kw">continue</span>;
-<a href=#6643 id=6643 data-nosnippet>6643</a>        }
-<a href=#6644 id=6644 data-nosnippet>6644</a>        <span class="comment">// Visual frame shrinks one column off the hit region for the gap.
-<a href=#6645 id=6645 data-nosnippet>6645</a>        </span><span class="kw">let </span>visual = Rect::new(
-<a href=#6646 id=6646 data-nosnippet>6646</a>            action.rect.x,
-<a href=#6647 id=6647 data-nosnippet>6647</a>            action.rect.y,
-<a href=#6648 id=6648 data-nosnippet>6648</a>            action.rect.width.saturating_sub(<span class="number">1</span>).max(<span class="number">1</span>),
-<a href=#6649 id=6649 data-nosnippet>6649</a>            action.rect.height,
-<a href=#6650 id=6650 data-nosnippet>6650</a>        );
-<a href=#6651 id=6651 data-nosnippet>6651</a>        <span class="kw">let </span>inner = inner_rect(visual);
-<a href=#6652 id=6652 data-nosnippet>6652</a>        frame.render_widget(
-<a href=#6653 id=6653 data-nosnippet>6653</a>            Block::default()
-<a href=#6654 id=6654 data-nosnippet>6654</a>                .borders(Borders::ALL)
-<a href=#6655 id=6655 data-nosnippet>6655</a>                .border_type(ratatui::widgets::BorderType::Rounded)
-<a href=#6656 id=6656 data-nosnippet>6656</a>                .border_style(tone)
-<a href=#6657 id=6657 data-nosnippet>6657</a>                .style(theme.panel()),
-<a href=#6658 id=6658 data-nosnippet>6658</a>            visual,
-<a href=#6659 id=6659 data-nosnippet>6659</a>        );
-<a href=#6660 id=6660 data-nosnippet>6660</a>        <span class="kw">let </span>label = approval_action_label(action.decision, visual.width);
-<a href=#6661 id=6661 data-nosnippet>6661</a>        frame.render_widget(
-<a href=#6662 id=6662 data-nosnippet>6662</a>            Paragraph::new(Span::styled(label, tone)).alignment(ratatui::layout::Alignment::Center),
-<a href=#6663 id=6663 data-nosnippet>6663</a>            inner,
-<a href=#6664 id=6664 data-nosnippet>6664</a>        );
-<a href=#6665 id=6665 data-nosnippet>6665</a>    }
-<a href=#6666 id=6666 data-nosnippet>6666</a>}
-<a href=#6667 id=6667 data-nosnippet>6667</a>
-<a href=#6668 id=6668 data-nosnippet>6668</a><span class="kw">fn </span>approval_action_label(decision: ApprovalUserDecision, width: u16) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
-<a href=#6669 id=6669 data-nosnippet>6669</a>    <span class="kw">let </span>full = <span class="kw">match </span>decision {
-<a href=#6670 id=6670 data-nosnippet>6670</a>        ApprovalUserDecision::ApproveOnce =&gt; <span class="string">"✓ Allow once"</span>,
-<a href=#6671 id=6671 data-nosnippet>6671</a>        ApprovalUserDecision::ApproveTree =&gt; <span class="string">"✓ Allow all"</span>,
-<a href=#6672 id=6672 data-nosnippet>6672</a>        ApprovalUserDecision::Reject =&gt; <span class="string">"✗ Reject"</span>,
-<a href=#6673 id=6673 data-nosnippet>6673</a>        ApprovalUserDecision::Cancel =&gt; <span class="string">"⎋ Cancel"</span>,
-<a href=#6674 id=6674 data-nosnippet>6674</a>    };
-<a href=#6675 id=6675 data-nosnippet>6675</a>    <span class="kw">if </span>usize::from(width) &gt;= full.len() + <span class="number">2 </span>{
-<a href=#6676 id=6676 data-nosnippet>6676</a>        <span class="kw">return </span>full;
-<a href=#6677 id=6677 data-nosnippet>6677</a>    }
-<a href=#6678 id=6678 data-nosnippet>6678</a>    <span class="kw">let </span>short = <span class="kw">match </span>decision {
-<a href=#6679 id=6679 data-nosnippet>6679</a>        ApprovalUserDecision::ApproveOnce =&gt; <span class="string">"✓ Once"</span>,
-<a href=#6680 id=6680 data-nosnippet>6680</a>        ApprovalUserDecision::ApproveTree =&gt; <span class="string">"✓ Tree"</span>,
-<a href=#6681 id=6681 data-nosnippet>6681</a>        ApprovalUserDecision::Reject =&gt; <span class="string">"✗ No"</span>,
-<a href=#6682 id=6682 data-nosnippet>6682</a>        ApprovalUserDecision::Cancel =&gt; <span class="string">"⎋ Esc"</span>,
-<a href=#6683 id=6683 data-nosnippet>6683</a>    };
-<a href=#6684 id=6684 data-nosnippet>6684</a>    <span class="kw">if </span>usize::from(width) &gt;= short.len() + <span class="number">2 </span>{
-<a href=#6685 id=6685 data-nosnippet>6685</a>        <span class="kw">return </span>short;
-<a href=#6686 id=6686 data-nosnippet>6686</a>    }
-<a href=#6687 id=6687 data-nosnippet>6687</a>    <span class="kw">match </span>decision {
-<a href=#6688 id=6688 data-nosnippet>6688</a>        ApprovalUserDecision::ApproveOnce =&gt; <span class="string">"✓"</span>,
-<a href=#6689 id=6689 data-nosnippet>6689</a>        ApprovalUserDecision::ApproveTree =&gt; <span class="string">"✓T"</span>,
-<a href=#6690 id=6690 data-nosnippet>6690</a>        ApprovalUserDecision::Reject =&gt; <span class="string">"✗"</span>,
-<a href=#6691 id=6691 data-nosnippet>6691</a>        ApprovalUserDecision::Cancel =&gt; <span class="string">"⎋"</span>,
-<a href=#6692 id=6692 data-nosnippet>6692</a>    }
-<a href=#6693 id=6693 data-nosnippet>6693</a>}
-<a href=#6694 id=6694 data-nosnippet>6694</a>
-<a href=#6695 id=6695 data-nosnippet>6695</a><span class="kw">fn </span>centered(area: Rect, width: u16, height: u16) -&gt; Rect {
-<a href=#6696 id=6696 data-nosnippet>6696</a>    <span class="kw">let </span>vertical = Layout::default()
-<a href=#6697 id=6697 data-nosnippet>6697</a>        .direction(Direction::Vertical)
-<a href=#6698 id=6698 data-nosnippet>6698</a>        .constraints([
-<a href=#6699 id=6699 data-nosnippet>6699</a>            Constraint::Percentage((<span class="number">100 </span>- height) / <span class="number">2</span>),
-<a href=#6700 id=6700 data-nosnippet>6700</a>            Constraint::Percentage(height),
+<a href=#6365 id=6365 data-nosnippet>6365</a>    <span class="macro">writeln!</span>(content, <span class="string">"request revision: {}"</span>, approval.request_revision)
+<a href=#6366 id=6366 data-nosnippet>6366</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6367 id=6367 data-nosnippet>6367</a>    <span class="macro">writeln!</span>(content, <span class="string">"trigger: {:?}"</span>, approval.trigger).expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6368 id=6368 data-nosnippet>6368</a>    <span class="macro">writeln!</span>(
+<a href=#6369 id=6369 data-nosnippet>6369</a>        content,
+<a href=#6370 id=6370 data-nosnippet>6370</a>        <span class="string">"operation fingerprint: {}"</span>,
+<a href=#6371 id=6371 data-nosnippet>6371</a>        approval.operation_fingerprint.digest()
+<a href=#6372 id=6372 data-nosnippet>6372</a>    )
+<a href=#6373 id=6373 data-nosnippet>6373</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6374 id=6374 data-nosnippet>6374</a>    <span class="macro">writeln!</span>(
+<a href=#6375 id=6375 data-nosnippet>6375</a>        content,
+<a href=#6376 id=6376 data-nosnippet>6376</a>        <span class="string">"normalized-arguments digest: {}"</span>,
+<a href=#6377 id=6377 data-nosnippet>6377</a>        approval.normalized_arguments_digest
+<a href=#6378 id=6378 data-nosnippet>6378</a>    )
+<a href=#6379 id=6379 data-nosnippet>6379</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6380 id=6380 data-nosnippet>6380</a>    <span class="macro">writeln!</span>(
+<a href=#6381 id=6381 data-nosnippet>6381</a>        content,
+<a href=#6382 id=6382 data-nosnippet>6382</a>        <span class="string">"execution-context digest: {}"</span>,
+<a href=#6383 id=6383 data-nosnippet>6383</a>        approval.execution_context_digest
+<a href=#6384 id=6384 data-nosnippet>6384</a>    )
+<a href=#6385 id=6385 data-nosnippet>6385</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6386 id=6386 data-nosnippet>6386</a>    <span class="macro">writeln!</span>(
+<a href=#6387 id=6387 data-nosnippet>6387</a>        content,
+<a href=#6388 id=6388 data-nosnippet>6388</a>        <span class="string">"prepared capability lifetime: {:?}"</span>,
+<a href=#6389 id=6389 data-nosnippet>6389</a>        approval.capability_lifetime
+<a href=#6390 id=6390 data-nosnippet>6390</a>    )
+<a href=#6391 id=6391 data-nosnippet>6391</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6392 id=6392 data-nosnippet>6392</a>
+<a href=#6393 id=6393 data-nosnippet>6393</a>    <span class="macro">writeln!</span>(content, <span class="string">"\nCAPABILITIES ({})"</span>, approval.capabilities.len())
+<a href=#6394 id=6394 data-nosnippet>6394</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6395 id=6395 data-nosnippet>6395</a>    <span class="kw">for </span>(index, capability) <span class="kw">in </span>approval.capabilities.iter().enumerate() {
+<a href=#6396 id=6396 data-nosnippet>6396</a>        <span class="macro">writeln!</span>(
+<a href=#6397 id=6397 data-nosnippet>6397</a>            content,
+<a href=#6398 id=6398 data-nosnippet>6398</a>            <span class="string">"{}. action: {:?}\n   operation: {}\n   lifetime: {:?}"</span>,
+<a href=#6399 id=6399 data-nosnippet>6399</a>            index + <span class="number">1</span>,
+<a href=#6400 id=6400 data-nosnippet>6400</a>            capability.action,
+<a href=#6401 id=6401 data-nosnippet>6401</a>            capability.operation.as_str(),
+<a href=#6402 id=6402 data-nosnippet>6402</a>            approval.capability_lifetime
+<a href=#6403 id=6403 data-nosnippet>6403</a>        )
+<a href=#6404 id=6404 data-nosnippet>6404</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6405 id=6405 data-nosnippet>6405</a>    }
+<a href=#6406 id=6406 data-nosnippet>6406</a>
+<a href=#6407 id=6407 data-nosnippet>6407</a>    <span class="macro">writeln!</span>(content, <span class="string">"\nRESOURCES ({})"</span>, approval.resources.len())
+<a href=#6408 id=6408 data-nosnippet>6408</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6409 id=6409 data-nosnippet>6409</a>    <span class="kw">for </span>(index, resource) <span class="kw">in </span>approval.resources.iter().enumerate() {
+<a href=#6410 id=6410 data-nosnippet>6410</a>        <span class="kw">let </span>normalized = approval
+<a href=#6411 id=6411 data-nosnippet>6411</a>            .evaluations
+<a href=#6412 id=6412 data-nosnippet>6412</a>            .iter()
+<a href=#6413 id=6413 data-nosnippet>6413</a>            .find(|evaluation| evaluation.resource_digest == resource.binding_digest)
+<a href=#6414 id=6414 data-nosnippet>6414</a>            .expect(<span class="string">"validated approval evaluations cover every resource"</span>)
+<a href=#6415 id=6415 data-nosnippet>6415</a>            .trace
+<a href=#6416 id=6416 data-nosnippet>6416</a>            .normalized_resource
+<a href=#6417 id=6417 data-nosnippet>6417</a>            .as_str();
+<a href=#6418 id=6418 data-nosnippet>6418</a>        <span class="macro">writeln!</span>(
+<a href=#6419 id=6419 data-nosnippet>6419</a>            content,
+<a href=#6420 id=6420 data-nosnippet>6420</a>            <span class="string">"{}. action: {:?}\n   normalized identity: {}\n   canonical identity: {}\n   binding digest: {}\n   boundary: {}\n   binding lifetime: {:?}\n   source: {:?}"</span>,
+<a href=#6421 id=6421 data-nosnippet>6421</a>            index + <span class="number">1</span>,
+<a href=#6422 id=6422 data-nosnippet>6422</a>            resource.capability,
+<a href=#6423 id=6423 data-nosnippet>6423</a>            normalized,
+<a href=#6424 id=6424 data-nosnippet>6424</a>            resource.canonical.as_str(),
+<a href=#6425 id=6425 data-nosnippet>6425</a>            resource.binding_digest.digest(),
+<a href=#6426 id=6426 data-nosnippet>6426</a>            approval_boundary(<span class="kw-2">&amp;</span>resource.boundary),
+<a href=#6427 id=6427 data-nosnippet>6427</a>            resource.binding_lifetime,
+<a href=#6428 id=6428 data-nosnippet>6428</a>            resource.source
+<a href=#6429 id=6429 data-nosnippet>6429</a>        )
+<a href=#6430 id=6430 data-nosnippet>6430</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6431 id=6431 data-nosnippet>6431</a>    }
+<a href=#6432 id=6432 data-nosnippet>6432</a>
+<a href=#6433 id=6433 data-nosnippet>6433</a>    <span class="macro">writeln!</span>(content, <span class="string">"\nEVALUATIONS ({})"</span>, approval.evaluations.len())
+<a href=#6434 id=6434 data-nosnippet>6434</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6435 id=6435 data-nosnippet>6435</a>    <span class="kw">for </span>(index, evaluation) <span class="kw">in </span>approval.evaluations.iter().enumerate() {
+<a href=#6436 id=6436 data-nosnippet>6436</a>        <span class="macro">writeln!</span>(
+<a href=#6437 id=6437 data-nosnippet>6437</a>            content,
+<a href=#6438 id=6438 data-nosnippet>6438</a>            <span class="string">"{}. resource binding digest: {}\n   result effect: {:?}\n   trace action: {:?}\n   trace normalized resource: {}\n   trace effect: {:?}\n   precedence reason: {}\n   candidate rules ({}):"</span>,
+<a href=#6439 id=6439 data-nosnippet>6439</a>            index + <span class="number">1</span>,
+<a href=#6440 id=6440 data-nosnippet>6440</a>            evaluation.resource_digest.digest(),
+<a href=#6441 id=6441 data-nosnippet>6441</a>            evaluation.effect,
+<a href=#6442 id=6442 data-nosnippet>6442</a>            evaluation.trace.action,
+<a href=#6443 id=6443 data-nosnippet>6443</a>            evaluation.trace.normalized_resource,
+<a href=#6444 id=6444 data-nosnippet>6444</a>            evaluation.trace.effect,
+<a href=#6445 id=6445 data-nosnippet>6445</a>            evaluation.trace.precedence_reason,
+<a href=#6446 id=6446 data-nosnippet>6446</a>            evaluation.trace.candidates.len()
+<a href=#6447 id=6447 data-nosnippet>6447</a>        )
+<a href=#6448 id=6448 data-nosnippet>6448</a>        .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6449 id=6449 data-nosnippet>6449</a>        <span class="kw">if </span>evaluation.trace.candidates.is_empty() {
+<a href=#6450 id=6450 data-nosnippet>6450</a>            <span class="macro">writeln!</span>(content, <span class="string">"      (none)"</span>).expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6451 id=6451 data-nosnippet>6451</a>        } <span class="kw">else </span>{
+<a href=#6452 id=6452 data-nosnippet>6452</a>            <span class="kw">for </span>(candidate_index, candidate) <span class="kw">in </span>evaluation.trace.candidates.iter().enumerate() {
+<a href=#6453 id=6453 data-nosnippet>6453</a>                <span class="macro">writeln!</span>(
+<a href=#6454 id=6454 data-nosnippet>6454</a>                    content,
+<a href=#6455 id=6455 data-nosnippet>6455</a>                    <span class="string">"      {}. action: {:?} · resource: {} · source layer: {} · effect: {:?}"</span>,
+<a href=#6456 id=6456 data-nosnippet>6456</a>                    candidate_index + <span class="number">1</span>,
+<a href=#6457 id=6457 data-nosnippet>6457</a>                    candidate.action,
+<a href=#6458 id=6458 data-nosnippet>6458</a>                    candidate.resource,
+<a href=#6459 id=6459 data-nosnippet>6459</a>                    candidate.source_layer,
+<a href=#6460 id=6460 data-nosnippet>6460</a>                    candidate.effect
+<a href=#6461 id=6461 data-nosnippet>6461</a>                )
+<a href=#6462 id=6462 data-nosnippet>6462</a>                .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6463 id=6463 data-nosnippet>6463</a>            }
+<a href=#6464 id=6464 data-nosnippet>6464</a>        }
+<a href=#6465 id=6465 data-nosnippet>6465</a>    }
+<a href=#6466 id=6466 data-nosnippet>6466</a>
+<a href=#6467 id=6467 data-nosnippet>6467</a>    <span class="macro">writeln!</span>(content, <span class="string">"\nRESPONSE CONSTRAINTS"</span>).expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6468 id=6468 data-nosnippet>6468</a>    <span class="macro">writeln!</span>(
+<a href=#6469 id=6469 data-nosnippet>6469</a>        content,
+<a href=#6470 id=6470 data-nosnippet>6470</a>        <span class="string">"allow approve once: {}"</span>,
+<a href=#6471 id=6471 data-nosnippet>6471</a>        approval.constraints.allow_once
+<a href=#6472 id=6472 data-nosnippet>6472</a>    )
+<a href=#6473 id=6473 data-nosnippet>6473</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6474 id=6474 data-nosnippet>6474</a>    <span class="macro">writeln!</span>(
+<a href=#6475 id=6475 data-nosnippet>6475</a>        content,
+<a href=#6476 id=6476 data-nosnippet>6476</a>        <span class="string">"allow delegation-tree grant: {}"</span>,
+<a href=#6477 id=6477 data-nosnippet>6477</a>        approval.constraints.allow_tree_grant
+<a href=#6478 id=6478 data-nosnippet>6478</a>    )
+<a href=#6479 id=6479 data-nosnippet>6479</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6480 id=6480 data-nosnippet>6480</a>    <span class="macro">writeln!</span>(
+<a href=#6481 id=6481 data-nosnippet>6481</a>        content,
+<a href=#6482 id=6482 data-nosnippet>6482</a>        <span class="string">"allow cancel: {}"</span>,
+<a href=#6483 id=6483 data-nosnippet>6483</a>        approval.constraints.cancellable
+<a href=#6484 id=6484 data-nosnippet>6484</a>    )
+<a href=#6485 id=6485 data-nosnippet>6485</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6486 id=6486 data-nosnippet>6486</a>    <span class="macro">writeln!</span>(
+<a href=#6487 id=6487 data-nosnippet>6487</a>        content,
+<a href=#6488 id=6488 data-nosnippet>6488</a>        <span class="string">"expires at: {}"</span>,
+<a href=#6489 id=6489 data-nosnippet>6489</a>        approval
+<a href=#6490 id=6490 data-nosnippet>6490</a>            .constraints
+<a href=#6491 id=6491 data-nosnippet>6491</a>            .expires_at
+<a href=#6492 id=6492 data-nosnippet>6492</a>            .map_or_else(|| <span class="string">"never"</span>.into(), |timestamp| timestamp.to_string())
+<a href=#6493 id=6493 data-nosnippet>6493</a>    )
+<a href=#6494 id=6494 data-nosnippet>6494</a>    .expect(<span class="string">"writing to a String cannot fail"</span>);
+<a href=#6495 id=6495 data-nosnippet>6495</a>    content
+<a href=#6496 id=6496 data-nosnippet>6496</a>}
+<a href=#6497 id=6497 data-nosnippet>6497</a>
+<a href=#6498 id=6498 data-nosnippet>6498</a><span class="kw">fn </span>approval_boundary(boundary: <span class="kw-2">&amp;</span>cookie_agent_protocol::ApprovalBoundary) -&gt; String {
+<a href=#6499 id=6499 data-nosnippet>6499</a>    <span class="kw">match </span>boundary {
+<a href=#6500 id=6500 data-nosnippet>6500</a>        cookie_agent_protocol::ApprovalBoundary::Exact =&gt; <span class="string">"exact"</span>.into(),
+<a href=#6501 id=6501 data-nosnippet>6501</a>        cookie_agent_protocol::ApprovalBoundary::CommandPrefix { prefix } =&gt; {
+<a href=#6502 id=6502 data-nosnippet>6502</a>            <span class="macro">format!</span>(<span class="string">"command prefix: {prefix}"</span>)
+<a href=#6503 id=6503 data-nosnippet>6503</a>        }
+<a href=#6504 id=6504 data-nosnippet>6504</a>        cookie_agent_protocol::ApprovalBoundary::DelegationTree { root_session_id } =&gt; {
+<a href=#6505 id=6505 data-nosnippet>6505</a>            <span class="macro">format!</span>(<span class="string">"delegation tree rooted at session {root_session_id}"</span>)
+<a href=#6506 id=6506 data-nosnippet>6506</a>        }
+<a href=#6507 id=6507 data-nosnippet>6507</a>    }
+<a href=#6508 id=6508 data-nosnippet>6508</a>}
+<a href=#6509 id=6509 data-nosnippet>6509</a>
+<a href=#6510 id=6510 data-nosnippet>6510</a><span class="kw">fn </span>inner_rect(area: Rect) -&gt; Rect {
+<a href=#6511 id=6511 data-nosnippet>6511</a>    Rect::new(
+<a href=#6512 id=6512 data-nosnippet>6512</a>        area.x.saturating_add(<span class="number">1</span>),
+<a href=#6513 id=6513 data-nosnippet>6513</a>        area.y.saturating_add(<span class="number">1</span>),
+<a href=#6514 id=6514 data-nosnippet>6514</a>        area.width.saturating_sub(<span class="number">2</span>),
+<a href=#6515 id=6515 data-nosnippet>6515</a>        area.height.saturating_sub(<span class="number">2</span>),
+<a href=#6516 id=6516 data-nosnippet>6516</a>    )
+<a href=#6517 id=6517 data-nosnippet>6517</a>}
+<a href=#6518 id=6518 data-nosnippet>6518</a>
+<a href=#6519 id=6519 data-nosnippet>6519</a><span class="doccomment">/// Paint an overlay panel: reset every cell like `Clear` (a styled `Block`
+<a href=#6520 id=6520 data-nosnippet>6520</a>/// only re-styles cells, so underlying glyphs would ghost through), then
+<a href=#6521 id=6521 data-nosnippet>6521</a>/// fill with the theme surface instead of punching a terminal-default hole
+<a href=#6522 id=6522 data-nosnippet>6522</a>/// in the light theme.
+<a href=#6523 id=6523 data-nosnippet>6523</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>paint_panel(frame: <span class="kw-2">&amp;mut </span>ratatui::Frame, area: Rect, theme: <span class="kw-2">&amp;</span>Theme) {
+<a href=#6524 id=6524 data-nosnippet>6524</a>    <span class="kw">let </span>clip = area.intersection(frame.area());
+<a href=#6525 id=6525 data-nosnippet>6525</a>    <span class="kw">let </span>buffer = frame.buffer_mut();
+<a href=#6526 id=6526 data-nosnippet>6526</a>    <span class="kw">for </span>y <span class="kw">in </span>clip.top()..clip.bottom() {
+<a href=#6527 id=6527 data-nosnippet>6527</a>        <span class="kw">for </span>x <span class="kw">in </span>clip.left()..clip.right() {
+<a href=#6528 id=6528 data-nosnippet>6528</a>            <span class="kw">let </span>cell = <span class="kw-2">&amp;mut </span>buffer[(x, y)];
+<a href=#6529 id=6529 data-nosnippet>6529</a>            cell.reset();
+<a href=#6530 id=6530 data-nosnippet>6530</a>            cell.set_style(theme.panel());
+<a href=#6531 id=6531 data-nosnippet>6531</a>        }
+<a href=#6532 id=6532 data-nosnippet>6532</a>    }
+<a href=#6533 id=6533 data-nosnippet>6533</a>}
+<a href=#6534 id=6534 data-nosnippet>6534</a>
+<a href=#6535 id=6535 data-nosnippet>6535</a><span class="doccomment">/// Visual hierarchy for the approval body: the banner is a warning, the
+<a href=#6536 id=6536 data-nosnippet>6536</a>/// consent target is the prominent identity, section headers are headings,
+<a href=#6537 id=6537 data-nosnippet>6537</a>/// identity digests recede, and the remaining evidence is body text. The
+<a href=#6538 id=6538 data-nosnippet>6538</a>/// content itself is produced by `approval_content` unchanged.
+<a href=#6539 id=6539 data-nosnippet>6539</a></span><span class="kw">fn </span>approval_line_style(line: <span class="kw-2">&amp;</span>str, theme: <span class="kw-2">&amp;</span>Theme) -&gt; ratatui::style::Style {
+<a href=#6540 id=6540 data-nosnippet>6540</a>    <span class="kw">if </span>line.starts_with(<span class="string">"PERMISSION REQUIRED"</span>) {
+<a href=#6541 id=6541 data-nosnippet>6541</a>        <span class="kw">return </span>theme.warning();
+<a href=#6542 id=6542 data-nosnippet>6542</a>    }
+<a href=#6543 id=6543 data-nosnippet>6543</a>    <span class="kw">if </span>line.starts_with(<span class="string">"consent target:"</span>) {
+<a href=#6544 id=6544 data-nosnippet>6544</a>        <span class="kw">return </span>theme.user();
+<a href=#6545 id=6545 data-nosnippet>6545</a>    }
+<a href=#6546 id=6546 data-nosnippet>6546</a>    <span class="kw">if </span>[
+<a href=#6547 id=6547 data-nosnippet>6547</a>        <span class="string">"CAPABILITIES ("</span>,
+<a href=#6548 id=6548 data-nosnippet>6548</a>        <span class="string">"RESOURCES ("</span>,
+<a href=#6549 id=6549 data-nosnippet>6549</a>        <span class="string">"EVALUATIONS ("</span>,
+<a href=#6550 id=6550 data-nosnippet>6550</a>        <span class="string">"RESPONSE CONSTRAINTS"</span>,
+<a href=#6551 id=6551 data-nosnippet>6551</a>    ]
+<a href=#6552 id=6552 data-nosnippet>6552</a>    .iter()
+<a href=#6553 id=6553 data-nosnippet>6553</a>    .any(|header| line.starts_with(header))
+<a href=#6554 id=6554 data-nosnippet>6554</a>    {
+<a href=#6555 id=6555 data-nosnippet>6555</a>        <span class="kw">return </span>theme.heading();
+<a href=#6556 id=6556 data-nosnippet>6556</a>    }
+<a href=#6557 id=6557 data-nosnippet>6557</a>    <span class="kw">if </span>[
+<a href=#6558 id=6558 data-nosnippet>6558</a>        <span class="string">"approval id:"</span>,
+<a href=#6559 id=6559 data-nosnippet>6559</a>        <span class="string">"request revision:"</span>,
+<a href=#6560 id=6560 data-nosnippet>6560</a>        <span class="string">"trigger:"</span>,
+<a href=#6561 id=6561 data-nosnippet>6561</a>        <span class="string">"operation fingerprint:"</span>,
+<a href=#6562 id=6562 data-nosnippet>6562</a>        <span class="string">"normalized-arguments digest:"</span>,
+<a href=#6563 id=6563 data-nosnippet>6563</a>        <span class="string">"execution-context digest:"</span>,
+<a href=#6564 id=6564 data-nosnippet>6564</a>        <span class="string">"prepared capability lifetime:"</span>,
+<a href=#6565 id=6565 data-nosnippet>6565</a>    ]
+<a href=#6566 id=6566 data-nosnippet>6566</a>    .iter()
+<a href=#6567 id=6567 data-nosnippet>6567</a>    .any(|key| line.starts_with(key))
+<a href=#6568 id=6568 data-nosnippet>6568</a>    {
+<a href=#6569 id=6569 data-nosnippet>6569</a>        <span class="kw">return </span>theme.internal();
+<a href=#6570 id=6570 data-nosnippet>6570</a>    }
+<a href=#6571 id=6571 data-nosnippet>6571</a>    theme.body()
+<a href=#6572 id=6572 data-nosnippet>6572</a>}
+<a href=#6573 id=6573 data-nosnippet>6573</a>
+<a href=#6574 id=6574 data-nosnippet>6574</a><span class="kw">fn </span>decision_tone(decision: ApprovalUserDecision) -&gt; <span class="kw">crate</span>::theme::DecisionTone {
+<a href=#6575 id=6575 data-nosnippet>6575</a>    <span class="kw">match </span>decision {
+<a href=#6576 id=6576 data-nosnippet>6576</a>        ApprovalUserDecision::ApproveOnce | ApprovalUserDecision::ApproveTree =&gt; {
+<a href=#6577 id=6577 data-nosnippet>6577</a>            <span class="kw">crate</span>::theme::DecisionTone::Allow
+<a href=#6578 id=6578 data-nosnippet>6578</a>        }
+<a href=#6579 id=6579 data-nosnippet>6579</a>        ApprovalUserDecision::Reject =&gt; <span class="kw">crate</span>::theme::DecisionTone::Deny,
+<a href=#6580 id=6580 data-nosnippet>6580</a>        ApprovalUserDecision::Cancel =&gt; <span class="kw">crate</span>::theme::DecisionTone::Neutral,
+<a href=#6581 id=6581 data-nosnippet>6581</a>    }
+<a href=#6582 id=6582 data-nosnippet>6582</a>}
+<a href=#6583 id=6583 data-nosnippet>6583</a>
+<a href=#6584 id=6584 data-nosnippet>6584</a><span class="kw">fn </span>approval_action_hits(area: Rect, approval: <span class="kw-2">&amp;</span>ApprovalState) -&gt; Vec&lt;ApprovalHit&gt; {
+<a href=#6585 id=6585 data-nosnippet>6585</a>    <span class="kw">let </span>inner = inner_rect(area);
+<a href=#6586 id=6586 data-nosnippet>6586</a>    <span class="kw">if </span>inner.width == <span class="number">0 </span>|| inner.height == <span class="number">0 </span>{
+<a href=#6587 id=6587 data-nosnippet>6587</a>        <span class="kw">return </span>Vec::new();
+<a href=#6588 id=6588 data-nosnippet>6588</a>    }
+<a href=#6589 id=6589 data-nosnippet>6589</a>    <span class="comment">// Roomy panels get three-row rounded buttons; cramped ones keep the
+<a href=#6590 id=6590 data-nosnippet>6590</a>    // single action row. Heights here and in `render_approval` must agree.
+<a href=#6591 id=6591 data-nosnippet>6591</a>    </span><span class="kw">let </span>height = <span class="kw">if </span>inner.width &gt;= <span class="number">44 </span>&amp;&amp; inner.height &gt;= <span class="number">10 </span>{
+<a href=#6592 id=6592 data-nosnippet>6592</a>        <span class="number">3
+<a href=#6593 id=6593 data-nosnippet>6593</a>    </span>} <span class="kw">else </span>{
+<a href=#6594 id=6594 data-nosnippet>6594</a>        <span class="number">1
+<a href=#6595 id=6595 data-nosnippet>6595</a>    </span>};
+<a href=#6596 id=6596 data-nosnippet>6596</a>    <span class="kw">let </span>row = Rect::new(
+<a href=#6597 id=6597 data-nosnippet>6597</a>        inner.x,
+<a href=#6598 id=6598 data-nosnippet>6598</a>        inner.y + inner.height - height,
+<a href=#6599 id=6599 data-nosnippet>6599</a>        inner.width,
+<a href=#6600 id=6600 data-nosnippet>6600</a>        height,
+<a href=#6601 id=6601 data-nosnippet>6601</a>    );
+<a href=#6602 id=6602 data-nosnippet>6602</a>    <span class="kw">let </span><span class="kw-2">mut </span>decisions = Vec::new();
+<a href=#6603 id=6603 data-nosnippet>6603</a>    <span class="kw">if </span>approval.constraints.allow_once {
+<a href=#6604 id=6604 data-nosnippet>6604</a>        decisions.push(ApprovalUserDecision::ApproveOnce);
+<a href=#6605 id=6605 data-nosnippet>6605</a>    }
+<a href=#6606 id=6606 data-nosnippet>6606</a>    <span class="kw">if </span>approval.constraints.allow_tree_grant {
+<a href=#6607 id=6607 data-nosnippet>6607</a>        decisions.push(ApprovalUserDecision::ApproveTree);
+<a href=#6608 id=6608 data-nosnippet>6608</a>    }
+<a href=#6609 id=6609 data-nosnippet>6609</a>    decisions.push(ApprovalUserDecision::Reject);
+<a href=#6610 id=6610 data-nosnippet>6610</a>    <span class="kw">if </span>approval.constraints.cancellable {
+<a href=#6611 id=6611 data-nosnippet>6611</a>        decisions.push(ApprovalUserDecision::Cancel);
+<a href=#6612 id=6612 data-nosnippet>6612</a>    }
+<a href=#6613 id=6613 data-nosnippet>6613</a>    <span class="kw">if </span>decisions.is_empty() {
+<a href=#6614 id=6614 data-nosnippet>6614</a>        <span class="kw">return </span>Vec::new();
+<a href=#6615 id=6615 data-nosnippet>6615</a>    }
+<a href=#6616 id=6616 data-nosnippet>6616</a>    <span class="kw">let </span>width = <span class="number">100 </span>/ u16::try_from(decisions.len()).unwrap_or(<span class="number">1</span>);
+<a href=#6617 id=6617 data-nosnippet>6617</a>    Layout::default()
+<a href=#6618 id=6618 data-nosnippet>6618</a>        .direction(Direction::Horizontal)
+<a href=#6619 id=6619 data-nosnippet>6619</a>        .constraints(decisions.iter().map(|<span class="kw">_</span>| Constraint::Percentage(width)))
+<a href=#6620 id=6620 data-nosnippet>6620</a>        .split(row)
+<a href=#6621 id=6621 data-nosnippet>6621</a>        .iter()
+<a href=#6622 id=6622 data-nosnippet>6622</a>        .zip(decisions)
+<a href=#6623 id=6623 data-nosnippet>6623</a>        .map(|(rect, decision)| ApprovalHit {
+<a href=#6624 id=6624 data-nosnippet>6624</a>            rect: <span class="kw-2">*</span>rect,
+<a href=#6625 id=6625 data-nosnippet>6625</a>            decision,
+<a href=#6626 id=6626 data-nosnippet>6626</a>        })
+<a href=#6627 id=6627 data-nosnippet>6627</a>        .collect()
+<a href=#6628 id=6628 data-nosnippet>6628</a>}
+<a href=#6629 id=6629 data-nosnippet>6629</a>
+<a href=#6630 id=6630 data-nosnippet>6630</a><span class="doccomment">/// Render each decision as a distinct button: a rounded frame in the
+<a href=#6631 id=6631 data-nosnippet>6631</a>/// decision's tone with a glyph-bearing label (never color alone). Buttons
+<a href=#6632 id=6632 data-nosnippet>6632</a>/// leave a one-column visual gap between frames while their hit regions
+<a href=#6633 id=6633 data-nosnippet>6633</a>/// stay contiguous; single-row areas fall back to flat labels.
+<a href=#6634 id=6634 data-nosnippet>6634</a></span><span class="kw">fn </span>render_approval_actions(frame: <span class="kw-2">&amp;mut </span>ratatui::Frame, actions: <span class="kw-2">&amp;</span>[ApprovalHit], theme: <span class="kw-2">&amp;</span>Theme) {
+<a href=#6635 id=6635 data-nosnippet>6635</a>    <span class="kw">for </span>action <span class="kw">in </span>actions {
+<a href=#6636 id=6636 data-nosnippet>6636</a>        <span class="kw">let </span>tone = theme.decision(decision_tone(action.decision), <span class="bool-val">false</span>);
+<a href=#6637 id=6637 data-nosnippet>6637</a>        <span class="kw">if </span>action.rect.height == <span class="number">1 </span>{
+<a href=#6638 id=6638 data-nosnippet>6638</a>            <span class="kw">let </span>label = approval_action_label(action.decision, action.rect.width);
+<a href=#6639 id=6639 data-nosnippet>6639</a>            frame.render_widget(
+<a href=#6640 id=6640 data-nosnippet>6640</a>                Paragraph::new(Span::styled(label, tone))
+<a href=#6641 id=6641 data-nosnippet>6641</a>                    .alignment(ratatui::layout::Alignment::Center),
+<a href=#6642 id=6642 data-nosnippet>6642</a>                action.rect,
+<a href=#6643 id=6643 data-nosnippet>6643</a>            );
+<a href=#6644 id=6644 data-nosnippet>6644</a>            <span class="kw">continue</span>;
+<a href=#6645 id=6645 data-nosnippet>6645</a>        }
+<a href=#6646 id=6646 data-nosnippet>6646</a>        <span class="comment">// Visual frame shrinks one column off the hit region for the gap.
+<a href=#6647 id=6647 data-nosnippet>6647</a>        </span><span class="kw">let </span>visual = Rect::new(
+<a href=#6648 id=6648 data-nosnippet>6648</a>            action.rect.x,
+<a href=#6649 id=6649 data-nosnippet>6649</a>            action.rect.y,
+<a href=#6650 id=6650 data-nosnippet>6650</a>            action.rect.width.saturating_sub(<span class="number">1</span>).max(<span class="number">1</span>),
+<a href=#6651 id=6651 data-nosnippet>6651</a>            action.rect.height,
+<a href=#6652 id=6652 data-nosnippet>6652</a>        );
+<a href=#6653 id=6653 data-nosnippet>6653</a>        <span class="kw">let </span>inner = inner_rect(visual);
+<a href=#6654 id=6654 data-nosnippet>6654</a>        frame.render_widget(
+<a href=#6655 id=6655 data-nosnippet>6655</a>            Block::default()
+<a href=#6656 id=6656 data-nosnippet>6656</a>                .borders(Borders::ALL)
+<a href=#6657 id=6657 data-nosnippet>6657</a>                .border_type(ratatui::widgets::BorderType::Rounded)
+<a href=#6658 id=6658 data-nosnippet>6658</a>                .border_style(tone)
+<a href=#6659 id=6659 data-nosnippet>6659</a>                .style(theme.panel()),
+<a href=#6660 id=6660 data-nosnippet>6660</a>            visual,
+<a href=#6661 id=6661 data-nosnippet>6661</a>        );
+<a href=#6662 id=6662 data-nosnippet>6662</a>        <span class="kw">let </span>label = approval_action_label(action.decision, visual.width);
+<a href=#6663 id=6663 data-nosnippet>6663</a>        frame.render_widget(
+<a href=#6664 id=6664 data-nosnippet>6664</a>            Paragraph::new(Span::styled(label, tone)).alignment(ratatui::layout::Alignment::Center),
+<a href=#6665 id=6665 data-nosnippet>6665</a>            inner,
+<a href=#6666 id=6666 data-nosnippet>6666</a>        );
+<a href=#6667 id=6667 data-nosnippet>6667</a>    }
+<a href=#6668 id=6668 data-nosnippet>6668</a>}
+<a href=#6669 id=6669 data-nosnippet>6669</a>
+<a href=#6670 id=6670 data-nosnippet>6670</a><span class="kw">fn </span>approval_action_label(decision: ApprovalUserDecision, width: u16) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
+<a href=#6671 id=6671 data-nosnippet>6671</a>    <span class="kw">let </span>full = <span class="kw">match </span>decision {
+<a href=#6672 id=6672 data-nosnippet>6672</a>        ApprovalUserDecision::ApproveOnce =&gt; <span class="string">"✓ Allow once"</span>,
+<a href=#6673 id=6673 data-nosnippet>6673</a>        ApprovalUserDecision::ApproveTree =&gt; <span class="string">"✓ Allow all"</span>,
+<a href=#6674 id=6674 data-nosnippet>6674</a>        ApprovalUserDecision::Reject =&gt; <span class="string">"✗ Reject"</span>,
+<a href=#6675 id=6675 data-nosnippet>6675</a>        ApprovalUserDecision::Cancel =&gt; <span class="string">"⎋ Cancel"</span>,
+<a href=#6676 id=6676 data-nosnippet>6676</a>    };
+<a href=#6677 id=6677 data-nosnippet>6677</a>    <span class="kw">if </span>usize::from(width) &gt;= full.len() + <span class="number">2 </span>{
+<a href=#6678 id=6678 data-nosnippet>6678</a>        <span class="kw">return </span>full;
+<a href=#6679 id=6679 data-nosnippet>6679</a>    }
+<a href=#6680 id=6680 data-nosnippet>6680</a>    <span class="kw">let </span>short = <span class="kw">match </span>decision {
+<a href=#6681 id=6681 data-nosnippet>6681</a>        ApprovalUserDecision::ApproveOnce =&gt; <span class="string">"✓ Once"</span>,
+<a href=#6682 id=6682 data-nosnippet>6682</a>        ApprovalUserDecision::ApproveTree =&gt; <span class="string">"✓ Tree"</span>,
+<a href=#6683 id=6683 data-nosnippet>6683</a>        ApprovalUserDecision::Reject =&gt; <span class="string">"✗ No"</span>,
+<a href=#6684 id=6684 data-nosnippet>6684</a>        ApprovalUserDecision::Cancel =&gt; <span class="string">"⎋ Esc"</span>,
+<a href=#6685 id=6685 data-nosnippet>6685</a>    };
+<a href=#6686 id=6686 data-nosnippet>6686</a>    <span class="kw">if </span>usize::from(width) &gt;= short.len() + <span class="number">2 </span>{
+<a href=#6687 id=6687 data-nosnippet>6687</a>        <span class="kw">return </span>short;
+<a href=#6688 id=6688 data-nosnippet>6688</a>    }
+<a href=#6689 id=6689 data-nosnippet>6689</a>    <span class="kw">match </span>decision {
+<a href=#6690 id=6690 data-nosnippet>6690</a>        ApprovalUserDecision::ApproveOnce =&gt; <span class="string">"✓"</span>,
+<a href=#6691 id=6691 data-nosnippet>6691</a>        ApprovalUserDecision::ApproveTree =&gt; <span class="string">"✓T"</span>,
+<a href=#6692 id=6692 data-nosnippet>6692</a>        ApprovalUserDecision::Reject =&gt; <span class="string">"✗"</span>,
+<a href=#6693 id=6693 data-nosnippet>6693</a>        ApprovalUserDecision::Cancel =&gt; <span class="string">"⎋"</span>,
+<a href=#6694 id=6694 data-nosnippet>6694</a>    }
+<a href=#6695 id=6695 data-nosnippet>6695</a>}
+<a href=#6696 id=6696 data-nosnippet>6696</a>
+<a href=#6697 id=6697 data-nosnippet>6697</a><span class="kw">fn </span>centered(area: Rect, width: u16, height: u16) -&gt; Rect {
+<a href=#6698 id=6698 data-nosnippet>6698</a>    <span class="kw">let </span>vertical = Layout::default()
+<a href=#6699 id=6699 data-nosnippet>6699</a>        .direction(Direction::Vertical)
+<a href=#6700 id=6700 data-nosnippet>6700</a>        .constraints([
 <a href=#6701 id=6701 data-nosnippet>6701</a>            Constraint::Percentage((<span class="number">100 </span>- height) / <span class="number">2</span>),
-<a href=#6702 id=6702 data-nosnippet>6702</a>        ])
-<a href=#6703 id=6703 data-nosnippet>6703</a>        .split(area);
-<a href=#6704 id=6704 data-nosnippet>6704</a>    Layout::default()
-<a href=#6705 id=6705 data-nosnippet>6705</a>        .direction(Direction::Horizontal)
-<a href=#6706 id=6706 data-nosnippet>6706</a>        .constraints([
-<a href=#6707 id=6707 data-nosnippet>6707</a>            Constraint::Percentage((<span class="number">100 </span>- width) / <span class="number">2</span>),
-<a href=#6708 id=6708 data-nosnippet>6708</a>            Constraint::Percentage(width),
+<a href=#6702 id=6702 data-nosnippet>6702</a>            Constraint::Percentage(height),
+<a href=#6703 id=6703 data-nosnippet>6703</a>            Constraint::Percentage((<span class="number">100 </span>- height) / <span class="number">2</span>),
+<a href=#6704 id=6704 data-nosnippet>6704</a>        ])
+<a href=#6705 id=6705 data-nosnippet>6705</a>        .split(area);
+<a href=#6706 id=6706 data-nosnippet>6706</a>    Layout::default()
+<a href=#6707 id=6707 data-nosnippet>6707</a>        .direction(Direction::Horizontal)
+<a href=#6708 id=6708 data-nosnippet>6708</a>        .constraints([
 <a href=#6709 id=6709 data-nosnippet>6709</a>            Constraint::Percentage((<span class="number">100 </span>- width) / <span class="number">2</span>),
-<a href=#6710 id=6710 data-nosnippet>6710</a>        ])
-<a href=#6711 id=6711 data-nosnippet>6711</a>        .split(vertical[<span class="number">1</span>])[<span class="number">1</span>]
-<a href=#6712 id=6712 data-nosnippet>6712</a>}
-<a href=#6713 id=6713 data-nosnippet>6713</a>
-<a href=#6714 id=6714 data-nosnippet>6714</a><span class="kw">fn </span>client_run_id() -&gt; ClientRunId {
-<a href=#6715 id=6715 data-nosnippet>6715</a>    <span class="kw">let </span>ticks = SystemTime::now()
-<a href=#6716 id=6716 data-nosnippet>6716</a>        .duration_since(UNIX_EPOCH)
-<a href=#6717 id=6717 data-nosnippet>6717</a>        .unwrap_or_default()
-<a href=#6718 id=6718 data-nosnippet>6718</a>        .as_nanos();
-<a href=#6719 id=6719 data-nosnippet>6719</a>    ClientRunId::new(<span class="macro">format!</span>(<span class="string">"tui-{ticks}"</span>)).expect(<span class="string">"bounded client run id"</span>)
-<a href=#6720 id=6720 data-nosnippet>6720</a>}
-<a href=#6721 id=6721 data-nosnippet>6721</a>
-<a href=#6722 id=6722 data-nosnippet>6722</a><span class="doccomment">/// The OSC 52 clipboard escape for `text`: `ESC ] 52 ; c ; &lt;base64&gt; BEL`.
-<a href=#6723 id=6723 data-nosnippet>6723</a>/// The `c` target is the system clipboard selection in every terminal that
-<a href=#6724 id=6724 data-nosnippet>6724</a>/// implements the sequence.
-<a href=#6725 id=6725 data-nosnippet>6725</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>osc52_sequence(text: <span class="kw-2">&amp;</span>str) -&gt; String {
-<a href=#6726 id=6726 data-nosnippet>6726</a>    <span class="macro">format!</span>(<span class="string">"\x1b]52;c;{}\x07"</span>, STANDARD.encode(text.as_bytes()))
-<a href=#6727 id=6727 data-nosnippet>6727</a>}
-<a href=#6728 id=6728 data-nosnippet>6728</a>
-<a href=#6729 id=6729 data-nosnippet>6729</a><span class="doccomment">/// Coarse age label for the strip title: precise enough to show a stuck
-<a href=#6730 id=6730 data-nosnippet>6730</a>/// queue, coarse enough to avoid false precision (and flicker).
-<a href=#6731 id=6731 data-nosnippet>6731</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>queue_age_label(age_secs: i64) -&gt; String {
-<a href=#6732 id=6732 data-nosnippet>6732</a>    <span class="kw">if </span>age_secs &lt; <span class="number">60 </span>{
-<a href=#6733 id=6733 data-nosnippet>6733</a>        <span class="string">"&lt;1m"</span>.to_owned()
-<a href=#6734 id=6734 data-nosnippet>6734</a>    } <span class="kw">else if </span>age_secs &lt; <span class="number">3600 </span>{
-<a href=#6735 id=6735 data-nosnippet>6735</a>        <span class="macro">format!</span>(<span class="string">"{}m"</span>, age_secs / <span class="number">60</span>)
-<a href=#6736 id=6736 data-nosnippet>6736</a>    } <span class="kw">else </span>{
-<a href=#6737 id=6737 data-nosnippet>6737</a>        <span class="macro">format!</span>(<span class="string">"{}h"</span>, age_secs / <span class="number">3600</span>)
-<a href=#6738 id=6738 data-nosnippet>6738</a>    }
-<a href=#6739 id=6739 data-nosnippet>6739</a>}
-<a href=#6740 id=6740 data-nosnippet>6740</a>
-<a href=#6741 id=6741 data-nosnippet>6741</a><span class="doccomment">/// Collapse a queued message to one display line of at most `width` cells:
-<a href=#6742 id=6742 data-nosnippet>6742</a>/// newlines flatten to spaces and overlong text ends in an ellipsis.
-<a href=#6743 id=6743 data-nosnippet>6743</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>ellipsize_single_line(text: <span class="kw-2">&amp;</span>str, width: usize) -&gt; String {
-<a href=#6744 id=6744 data-nosnippet>6744</a>    <span class="kw">let </span>flat = text.split_whitespace().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;().join(<span class="string">" "</span>);
-<a href=#6745 id=6745 data-nosnippet>6745</a>    <span class="kw">if </span>UnicodeWidthStr::width(flat.as_str()) &lt;= width {
-<a href=#6746 id=6746 data-nosnippet>6746</a>        <span class="kw">return </span>flat;
-<a href=#6747 id=6747 data-nosnippet>6747</a>    }
-<a href=#6748 id=6748 data-nosnippet>6748</a>    <span class="kw">let </span><span class="kw-2">mut </span>out = String::new();
-<a href=#6749 id=6749 data-nosnippet>6749</a>    <span class="kw">let </span><span class="kw-2">mut </span>used = <span class="number">0</span>;
-<a href=#6750 id=6750 data-nosnippet>6750</a>    <span class="kw">for </span>grapheme <span class="kw">in </span>flat.graphemes(<span class="bool-val">true</span>) {
-<a href=#6751 id=6751 data-nosnippet>6751</a>        <span class="kw">let </span>cell = UnicodeWidthStr::width(grapheme);
-<a href=#6752 id=6752 data-nosnippet>6752</a>        <span class="comment">// The ellipsis itself needs one cell.
-<a href=#6753 id=6753 data-nosnippet>6753</a>        </span><span class="kw">if </span>used + cell + <span class="number">1 </span>&gt; width {
-<a href=#6754 id=6754 data-nosnippet>6754</a>            <span class="kw">break</span>;
-<a href=#6755 id=6755 data-nosnippet>6755</a>        }
-<a href=#6756 id=6756 data-nosnippet>6756</a>        used += cell;
-<a href=#6757 id=6757 data-nosnippet>6757</a>        out.push_str(grapheme);
-<a href=#6758 id=6758 data-nosnippet>6758</a>    }
-<a href=#6759 id=6759 data-nosnippet>6759</a>    out.push(<span class="string">'…'</span>);
-<a href=#6760 id=6760 data-nosnippet>6760</a>    out
-<a href=#6761 id=6761 data-nosnippet>6761</a>}
-<a href=#6762 id=6762 data-nosnippet>6762</a>
-<a href=#6763 id=6763 data-nosnippet>6763</a><span class="kw">fn </span>client_response_id() -&gt; ClientResponseId {
-<a href=#6764 id=6764 data-nosnippet>6764</a>    ClientResponseId::new(Uuid::now_v7().to_string()).expect(<span class="string">"uuid-derived client response id"</span>)
-<a href=#6765 id=6765 data-nosnippet>6765</a>}
-<a href=#6766 id=6766 data-nosnippet>6766</a>
-<a href=#6767 id=6767 data-nosnippet>6767</a><span class="kw">fn </span>collect_tree_session_ids(tree: <span class="kw-2">&amp;</span>SessionTree, session_ids: <span class="kw-2">&amp;mut </span>Vec&lt;SessionId&gt;) {
-<a href=#6768 id=6768 data-nosnippet>6768</a>    session_ids.push(tree.session.session_id);
-<a href=#6769 id=6769 data-nosnippet>6769</a>    <span class="kw">for </span>child <span class="kw">in </span><span class="kw-2">&amp;</span>tree.children {
-<a href=#6770 id=6770 data-nosnippet>6770</a>        collect_tree_session_ids(child, session_ids);
-<a href=#6771 id=6771 data-nosnippet>6771</a>    }
-<a href=#6772 id=6772 data-nosnippet>6772</a>}
-<a href=#6773 id=6773 data-nosnippet>6773</a>
-<a href=#6774 id=6774 data-nosnippet>6774</a><span class="doccomment">/// Depth-first collection of a subtree's session metadata, used to attribute
-<a href=#6775 id=6775 data-nosnippet>6775</a>/// descendant warnings to their owning session.
-<a href=#6776 id=6776 data-nosnippet>6776</a></span><span class="kw">fn </span>collect_subtree_sessions(tree: <span class="kw-2">&amp;</span>SessionTree, sessions: <span class="kw-2">&amp;mut </span>Vec&lt;SessionMeta&gt;) {
-<a href=#6777 id=6777 data-nosnippet>6777</a>    sessions.push(tree.session.clone());
-<a href=#6778 id=6778 data-nosnippet>6778</a>    <span class="kw">for </span>child <span class="kw">in </span><span class="kw-2">&amp;</span>tree.children {
-<a href=#6779 id=6779 data-nosnippet>6779</a>        collect_subtree_sessions(child, sessions);
-<a href=#6780 id=6780 data-nosnippet>6780</a>    }
-<a href=#6781 id=6781 data-nosnippet>6781</a>}
-<a href=#6782 id=6782 data-nosnippet>6782</a>
-<a href=#6783 id=6783 data-nosnippet>6783</a><span class="kw">fn </span>find_session(tree: <span class="kw-2">&amp;</span>SessionTree, session_id: SessionId) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>SessionMeta&gt; {
-<a href=#6784 id=6784 data-nosnippet>6784</a>    find_node(tree, session_id).map(|node| <span class="kw-2">&amp;</span>node.session)
-<a href=#6785 id=6785 data-nosnippet>6785</a>}
-<a href=#6786 id=6786 data-nosnippet>6786</a>
-<a href=#6787 id=6787 data-nosnippet>6787</a><span class="kw">fn </span>find_node(tree: <span class="kw-2">&amp;</span>SessionTree, session_id: SessionId) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>SessionTree&gt; {
-<a href=#6788 id=6788 data-nosnippet>6788</a>    <span class="kw">if </span>tree.session.session_id == session_id {
-<a href=#6789 id=6789 data-nosnippet>6789</a>        <span class="kw">return </span><span class="prelude-val">Some</span>(tree);
-<a href=#6790 id=6790 data-nosnippet>6790</a>    }
-<a href=#6791 id=6791 data-nosnippet>6791</a>    tree.children
-<a href=#6792 id=6792 data-nosnippet>6792</a>        .iter()
-<a href=#6793 id=6793 data-nosnippet>6793</a>        .find_map(|child| find_node(child, session_id))
-<a href=#6794 id=6794 data-nosnippet>6794</a>}
-<a href=#6795 id=6795 data-nosnippet>6795</a>
-<a href=#6796 id=6796 data-nosnippet>6796</a><span class="kw">fn </span>find_node_mut(tree: <span class="kw-2">&amp;mut </span>SessionTree, session_id: SessionId) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;mut </span>SessionTree&gt; {
-<a href=#6797 id=6797 data-nosnippet>6797</a>    <span class="kw">if </span>tree.session.session_id == session_id {
-<a href=#6798 id=6798 data-nosnippet>6798</a>        <span class="kw">return </span><span class="prelude-val">Some</span>(tree);
-<a href=#6799 id=6799 data-nosnippet>6799</a>    }
-<a href=#6800 id=6800 data-nosnippet>6800</a>    tree.children
-<a href=#6801 id=6801 data-nosnippet>6801</a>        .iter_mut()
-<a href=#6802 id=6802 data-nosnippet>6802</a>        .find_map(|child| find_node_mut(child, session_id))
-<a href=#6803 id=6803 data-nosnippet>6803</a>}
+<a href=#6710 id=6710 data-nosnippet>6710</a>            Constraint::Percentage(width),
+<a href=#6711 id=6711 data-nosnippet>6711</a>            Constraint::Percentage((<span class="number">100 </span>- width) / <span class="number">2</span>),
+<a href=#6712 id=6712 data-nosnippet>6712</a>        ])
+<a href=#6713 id=6713 data-nosnippet>6713</a>        .split(vertical[<span class="number">1</span>])[<span class="number">1</span>]
+<a href=#6714 id=6714 data-nosnippet>6714</a>}
+<a href=#6715 id=6715 data-nosnippet>6715</a>
+<a href=#6716 id=6716 data-nosnippet>6716</a><span class="kw">fn </span>client_run_id() -&gt; ClientRunId {
+<a href=#6717 id=6717 data-nosnippet>6717</a>    <span class="kw">let </span>ticks = SystemTime::now()
+<a href=#6718 id=6718 data-nosnippet>6718</a>        .duration_since(UNIX_EPOCH)
+<a href=#6719 id=6719 data-nosnippet>6719</a>        .unwrap_or_default()
+<a href=#6720 id=6720 data-nosnippet>6720</a>        .as_nanos();
+<a href=#6721 id=6721 data-nosnippet>6721</a>    ClientRunId::new(<span class="macro">format!</span>(<span class="string">"tui-{ticks}"</span>)).expect(<span class="string">"bounded client run id"</span>)
+<a href=#6722 id=6722 data-nosnippet>6722</a>}
+<a href=#6723 id=6723 data-nosnippet>6723</a>
+<a href=#6724 id=6724 data-nosnippet>6724</a><span class="doccomment">/// The OSC 52 clipboard escape for `text`: `ESC ] 52 ; c ; &lt;base64&gt; BEL`.
+<a href=#6725 id=6725 data-nosnippet>6725</a>/// The `c` target is the system clipboard selection in every terminal that
+<a href=#6726 id=6726 data-nosnippet>6726</a>/// implements the sequence.
+<a href=#6727 id=6727 data-nosnippet>6727</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>osc52_sequence(text: <span class="kw-2">&amp;</span>str) -&gt; String {
+<a href=#6728 id=6728 data-nosnippet>6728</a>    <span class="macro">format!</span>(<span class="string">"\x1b]52;c;{}\x07"</span>, STANDARD.encode(text.as_bytes()))
+<a href=#6729 id=6729 data-nosnippet>6729</a>}
+<a href=#6730 id=6730 data-nosnippet>6730</a>
+<a href=#6731 id=6731 data-nosnippet>6731</a><span class="doccomment">/// Coarse age label for the strip title: precise enough to show a stuck
+<a href=#6732 id=6732 data-nosnippet>6732</a>/// queue, coarse enough to avoid false precision (and flicker).
+<a href=#6733 id=6733 data-nosnippet>6733</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>queue_age_label(age_secs: i64) -&gt; String {
+<a href=#6734 id=6734 data-nosnippet>6734</a>    <span class="kw">if </span>age_secs &lt; <span class="number">60 </span>{
+<a href=#6735 id=6735 data-nosnippet>6735</a>        <span class="string">"&lt;1m"</span>.to_owned()
+<a href=#6736 id=6736 data-nosnippet>6736</a>    } <span class="kw">else if </span>age_secs &lt; <span class="number">3600 </span>{
+<a href=#6737 id=6737 data-nosnippet>6737</a>        <span class="macro">format!</span>(<span class="string">"{}m"</span>, age_secs / <span class="number">60</span>)
+<a href=#6738 id=6738 data-nosnippet>6738</a>    } <span class="kw">else </span>{
+<a href=#6739 id=6739 data-nosnippet>6739</a>        <span class="macro">format!</span>(<span class="string">"{}h"</span>, age_secs / <span class="number">3600</span>)
+<a href=#6740 id=6740 data-nosnippet>6740</a>    }
+<a href=#6741 id=6741 data-nosnippet>6741</a>}
+<a href=#6742 id=6742 data-nosnippet>6742</a>
+<a href=#6743 id=6743 data-nosnippet>6743</a><span class="doccomment">/// Collapse a queued message to one display line of at most `width` cells:
+<a href=#6744 id=6744 data-nosnippet>6744</a>/// newlines flatten to spaces and overlong text ends in an ellipsis.
+<a href=#6745 id=6745 data-nosnippet>6745</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>ellipsize_single_line(text: <span class="kw-2">&amp;</span>str, width: usize) -&gt; String {
+<a href=#6746 id=6746 data-nosnippet>6746</a>    <span class="kw">let </span>flat = text.split_whitespace().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;().join(<span class="string">" "</span>);
+<a href=#6747 id=6747 data-nosnippet>6747</a>    <span class="kw">if </span>UnicodeWidthStr::width(flat.as_str()) &lt;= width {
+<a href=#6748 id=6748 data-nosnippet>6748</a>        <span class="kw">return </span>flat;
+<a href=#6749 id=6749 data-nosnippet>6749</a>    }
+<a href=#6750 id=6750 data-nosnippet>6750</a>    <span class="kw">let </span><span class="kw-2">mut </span>out = String::new();
+<a href=#6751 id=6751 data-nosnippet>6751</a>    <span class="kw">let </span><span class="kw-2">mut </span>used = <span class="number">0</span>;
+<a href=#6752 id=6752 data-nosnippet>6752</a>    <span class="kw">for </span>grapheme <span class="kw">in </span>flat.graphemes(<span class="bool-val">true</span>) {
+<a href=#6753 id=6753 data-nosnippet>6753</a>        <span class="kw">let </span>cell = UnicodeWidthStr::width(grapheme);
+<a href=#6754 id=6754 data-nosnippet>6754</a>        <span class="comment">// The ellipsis itself needs one cell.
+<a href=#6755 id=6755 data-nosnippet>6755</a>        </span><span class="kw">if </span>used + cell + <span class="number">1 </span>&gt; width {
+<a href=#6756 id=6756 data-nosnippet>6756</a>            <span class="kw">break</span>;
+<a href=#6757 id=6757 data-nosnippet>6757</a>        }
+<a href=#6758 id=6758 data-nosnippet>6758</a>        used += cell;
+<a href=#6759 id=6759 data-nosnippet>6759</a>        out.push_str(grapheme);
+<a href=#6760 id=6760 data-nosnippet>6760</a>    }
+<a href=#6761 id=6761 data-nosnippet>6761</a>    out.push(<span class="string">'…'</span>);
+<a href=#6762 id=6762 data-nosnippet>6762</a>    out
+<a href=#6763 id=6763 data-nosnippet>6763</a>}
+<a href=#6764 id=6764 data-nosnippet>6764</a>
+<a href=#6765 id=6765 data-nosnippet>6765</a><span class="kw">fn </span>client_response_id() -&gt; ClientResponseId {
+<a href=#6766 id=6766 data-nosnippet>6766</a>    ClientResponseId::new(Uuid::now_v7().to_string()).expect(<span class="string">"uuid-derived client response id"</span>)
+<a href=#6767 id=6767 data-nosnippet>6767</a>}
+<a href=#6768 id=6768 data-nosnippet>6768</a>
+<a href=#6769 id=6769 data-nosnippet>6769</a><span class="kw">fn </span>collect_tree_session_ids(tree: <span class="kw-2">&amp;</span>SessionTree, session_ids: <span class="kw-2">&amp;mut </span>Vec&lt;SessionId&gt;) {
+<a href=#6770 id=6770 data-nosnippet>6770</a>    session_ids.push(tree.session.session_id);
+<a href=#6771 id=6771 data-nosnippet>6771</a>    <span class="kw">for </span>child <span class="kw">in </span><span class="kw-2">&amp;</span>tree.children {
+<a href=#6772 id=6772 data-nosnippet>6772</a>        collect_tree_session_ids(child, session_ids);
+<a href=#6773 id=6773 data-nosnippet>6773</a>    }
+<a href=#6774 id=6774 data-nosnippet>6774</a>}
+<a href=#6775 id=6775 data-nosnippet>6775</a>
+<a href=#6776 id=6776 data-nosnippet>6776</a><span class="doccomment">/// Depth-first collection of a subtree's session metadata, used to attribute
+<a href=#6777 id=6777 data-nosnippet>6777</a>/// descendant warnings to their owning session.
+<a href=#6778 id=6778 data-nosnippet>6778</a></span><span class="kw">fn </span>collect_subtree_sessions(tree: <span class="kw-2">&amp;</span>SessionTree, sessions: <span class="kw-2">&amp;mut </span>Vec&lt;SessionMeta&gt;) {
+<a href=#6779 id=6779 data-nosnippet>6779</a>    sessions.push(tree.session.clone());
+<a href=#6780 id=6780 data-nosnippet>6780</a>    <span class="kw">for </span>child <span class="kw">in </span><span class="kw-2">&amp;</span>tree.children {
+<a href=#6781 id=6781 data-nosnippet>6781</a>        collect_subtree_sessions(child, sessions);
+<a href=#6782 id=6782 data-nosnippet>6782</a>    }
+<a href=#6783 id=6783 data-nosnippet>6783</a>}
+<a href=#6784 id=6784 data-nosnippet>6784</a>
+<a href=#6785 id=6785 data-nosnippet>6785</a><span class="kw">fn </span>find_session(tree: <span class="kw-2">&amp;</span>SessionTree, session_id: SessionId) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>SessionMeta&gt; {
+<a href=#6786 id=6786 data-nosnippet>6786</a>    find_node(tree, session_id).map(|node| <span class="kw-2">&amp;</span>node.session)
+<a href=#6787 id=6787 data-nosnippet>6787</a>}
+<a href=#6788 id=6788 data-nosnippet>6788</a>
+<a href=#6789 id=6789 data-nosnippet>6789</a><span class="kw">fn </span>find_node(tree: <span class="kw-2">&amp;</span>SessionTree, session_id: SessionId) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>SessionTree&gt; {
+<a href=#6790 id=6790 data-nosnippet>6790</a>    <span class="kw">if </span>tree.session.session_id == session_id {
+<a href=#6791 id=6791 data-nosnippet>6791</a>        <span class="kw">return </span><span class="prelude-val">Some</span>(tree);
+<a href=#6792 id=6792 data-nosnippet>6792</a>    }
+<a href=#6793 id=6793 data-nosnippet>6793</a>    tree.children
+<a href=#6794 id=6794 data-nosnippet>6794</a>        .iter()
+<a href=#6795 id=6795 data-nosnippet>6795</a>        .find_map(|child| find_node(child, session_id))
+<a href=#6796 id=6796 data-nosnippet>6796</a>}
+<a href=#6797 id=6797 data-nosnippet>6797</a>
+<a href=#6798 id=6798 data-nosnippet>6798</a><span class="kw">fn </span>find_node_mut(tree: <span class="kw-2">&amp;mut </span>SessionTree, session_id: SessionId) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;mut </span>SessionTree&gt; {
+<a href=#6799 id=6799 data-nosnippet>6799</a>    <span class="kw">if </span>tree.session.session_id == session_id {
+<a href=#6800 id=6800 data-nosnippet>6800</a>        <span class="kw">return </span><span class="prelude-val">Some</span>(tree);
+<a href=#6801 id=6801 data-nosnippet>6801</a>    }
+<a href=#6802 id=6802 data-nosnippet>6802</a>    tree.children
+<a href=#6803 id=6803 data-nosnippet>6803</a>        .iter_mut()
+<a href=#6804 id=6804 data-nosnippet>6804</a>        .find_map(|child| find_node_mut(child, session_id))
+<a href=#6805 id=6805 data-nosnippet>6805</a>}
 </code></pre></div></section></main></body></html>

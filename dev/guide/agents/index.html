@@ -614,6 +614,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#subagent-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      Subagent tools
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#layering-and-replacement" class="md-nav__link">
     <span class="md-ellipsis">
       Layering and replacement
@@ -972,6 +981,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#subagent-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      Subagent tools
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#layering-and-replacement" class="md-nav__link">
     <span class="md-ellipsis">
       Layering and replacement
@@ -1097,7 +1115,7 @@ four built-in agents that are part of the harness itself.</p>
 <td><code>tools</code></td>
 <td>array of strings</td>
 <td><em>(required)</em></td>
-<td>Tool allowlist: <code>read</code>, <code>write</code>, <code>edit</code>, <code>bash</code> (plus the implicit <code>delegate</code> tool controlled by the <code>delegate</code> permission). At most 256 entries, no duplicates.</td>
+<td>Tool allowlist: <code>read</code>, <code>write</code>, <code>edit</code>, <code>bash</code> (plus the implicit subagent tools controlled by the <code>delegate</code> permission). At most 256 entries, no duplicates.</td>
 </tr>
 <tr>
 <td><code>permissions</code></td>
@@ -1126,6 +1144,22 @@ expression, and only without a variant.</p>
 <li><code>internal</code> — engine-only (see below). Cannot be selected as a root or a
   delegation target.</li>
 </ul>
+<h2 id="subagent-tools">Subagent tools<a class="headerlink" href="#subagent-tools" title="Permanent link">&para;</a></h2>
+<p><code>delegate_subagent</code> requires a short <code>description</code>, a self-contained <code>prompt</code>,
+an allowed <code>agent_type</code>, and an optional <code>background</code> boolean. Foreground calls
+block and return a concise result teaser. Background calls return immediately
+with only the child <code>session_id</code>; admission still waits for any required
+permission approval. The description becomes the delegated session title when
+the child is created. It is truncated to <code>session_title.max_chars</code> using the same
+Unicode-character limit as generated titles; invalid title text rejects the
+delegation.</p>
+<p>Background sessions move through <code>queued</code>, <code>running</code>, and a terminal
+<code>completed</code>, <code>failed</code>, <code>interrupted</code>, or <code>cancelled</code> state. Completion appends a
+parent event containing the session ID, status, first 20 result lines (at most 2
+KiB), and total line count. Use <code>get_subagent_result</code> with <code>session_id</code>, optional
+<code>wait</code>, and zero-based <code>offset</code>/<code>limit</code> to retrieve the full result in pages. Use
+<code>cancel_subagent</code> with the owned <code>session_id</code> and optional <code>reason</code> to cancel it.
+Both tools reject sessions that are not direct children of the caller.</p>
 <h2 id="layering-and-replacement">Layering and replacement<a class="headerlink" href="#layering-and-replacement" title="Permanent link">&para;</a></h2>
 <p>User-layer and workspace-layer agent directories merge into one registry by
 agent ID. A same-ID workspace agent replaces the user agent completely. The IDs
@@ -1175,6 +1209,9 @@ family (<code>internal_agent_started</code>, <code>internal_agent_completed</cod
 is currently using. The compaction agent's input limit additionally scales to
 the largest context window among its resolved models, so it can read the full
 conversation it is asked to summarize.</p>
+<p>The title agent runs only for root sessions that still need an automatic title.
+Delegated sessions already have the <code>delegate_subagent</code> description as their
+title, so they never invoke the title agent.</p>
 <p>The built-in documents are replaced by authored schema-4 documents with the same
 ID, <code>mode: internal</code>, and an explicit <code>model_fallback</code>. <code>${parent_model}</code> is
 allowed only in internal agents. When an internal agent document is disabled, or

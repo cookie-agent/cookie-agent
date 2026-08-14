@@ -544,6 +544,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#titles" class="md-nav__link">
+    <span class="md-ellipsis">
+      Titles
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#revert" class="md-nav__link">
     <span class="md-ellipsis">
       Revert
@@ -924,6 +933,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#titles" class="md-nav__link">
+    <span class="md-ellipsis">
+      Titles
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#revert" class="md-nav__link">
     <span class="md-ellipsis">
       Revert
@@ -978,6 +996,12 @@ Closing an empty session leaves no persisted session.</p>
 between sessions. Delegated sessions form a tree beneath the root that created
 them. Accepted runs retain their frozen model binding even if catalog,
 configuration, or provider-store state changes later.</p>
+<h2 id="titles">Titles<a class="headerlink" href="#titles" title="Permanent link">&para;</a></h2>
+<p>Root sessions may generate a title from their opening user messages according to
+the <code>session_title</code> configuration. A delegated session is titled immediately
+from the <code>delegate_subagent</code> description instead. The description is bounded by
+<code>session_title.max_chars</code>, and the delegated child does not run the title
+internal agent.</p>
 <h2 id="revert">Revert<a class="headerlink" href="#revert" title="Permanent link">&para;</a></h2>
 <p>Revert is available only while the session is idle. It appends a
 <code>session_reverted</code> control event; it never truncates the physical event log.
