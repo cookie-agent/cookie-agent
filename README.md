@@ -22,12 +22,12 @@ the implemented npm-family/provider/auth baseline is described in
 | Surface | Version |
 |---|---:|
 | Runtime configuration | 10 |
-| Agent document | 4 |
+| Agent document | 5 |
 | Protocol | 9 |
 | Events and session JSONL | 14 |
 | Session metadata | 9 |
 | Delegation journal | 10 |
-| Runtime snapshot | 3 |
+| Runtime snapshot | 4 |
 | Catalog cache | 2 |
 | Provider store | 3 |
 | Family recipe registry | 1 |
@@ -68,7 +68,7 @@ not merge. Managed models are automatic: every family-supported,
 non-deprecated text-output model is included unless disabled by a sparse
 override.
 
-Agent Markdown documents use exact schema 4. Their `mode` is `primary`,
+Agent Markdown documents use exact schema 5. Their `mode` is `primary`,
 `subagent`, `all`, or `internal`. Internal agents are engine-only: they cannot be
 selected as roots or delegation targets and do not appear in TUI agent pickers.
 The runtime supplies built-in `approval`, `compaction`, and `title` internal

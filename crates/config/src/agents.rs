@@ -1,15 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cookie_agent_identity::{AgentId, ConfiguredVariantRef, ModelKey, WildcardPattern};
-pub use cookie_agent_protocol::{
-    AgentMode, PermissionAction, PermissionEffect, PermissionRule, ToolName,
-};
+pub use cookie_agent_protocol::{AgentMode, PermissionAction, PermissionEffect, PermissionRule};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{AgentDocument, ConfigError};
 
-const AGENT_SCHEMA: u32 = 4;
+const AGENT_SCHEMA: u32 = 5;
 const MAX_LIST: usize = 256;
 pub const BUILT_IN_DEFAULT_AGENT_ID: &str = "default";
 pub const BUILT_IN_APPROVAL_AGENT_ID: &str = "approval";
@@ -17,7 +15,7 @@ pub const BUILT_IN_COMPACTION_AGENT_ID: &str = "compaction";
 pub const BUILT_IN_TITLE_AGENT_ID: &str = "title";
 pub const PARENT_MODEL_EXPRESSION: &str = "${parent_model}";
 
-/// Exact schema-4 agent marker.
+/// Exact schema-5 agent marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct AgentSchemaVersion;
 
@@ -30,7 +28,7 @@ impl<'de> Deserialize<'de> for AgentSchemaVersion {
         if value == AGENT_SCHEMA {
             Ok(Self)
         } else {
-            Err(serde::de::Error::custom("agent schema must be exactly 4"))
+            Err(serde::de::Error::custom("agent schema must be exactly 5"))
         }
     }
 }
@@ -197,8 +195,7 @@ pub struct AgentFrontmatter {
     pub model_fallback: Vec<AgentModelFallback>,
     #[serde(default)]
     pub limits: AgentLimits,
-    pub tools: Vec<ToolName>,
-    #[serde(deserialize_with = "deserialize_permissions")]
+    #[serde(default, deserialize_with = "deserialize_permissions")]
     pub permissions: IndexMap<PermissionAction, PermissionValue>,
 }
 
@@ -307,10 +304,8 @@ fn validate_agent_document(
     if matches!(frontmatter.mode, AgentMode::Primary) && frontmatter.model_fallback.is_empty() {
         return Err(ConfigError::PrimaryFallback(document.id.clone()));
     }
-    for length in [frontmatter.model_fallback.len(), frontmatter.tools.len()] {
-        if length > MAX_LIST {
-            return Err(ConfigError::AgentLimit(document.id.clone()));
-        }
+    if frontmatter.model_fallback.len() > MAX_LIST {
+        return Err(ConfigError::AgentLimit(document.id.clone()));
     }
     let mut fallback_models = BTreeSet::new();
     for fallback in &frontmatter.model_fallback {
@@ -338,9 +333,6 @@ fn validate_agent_document(
             field: "limits",
         });
     }
-    if frontmatter.tools.iter().collect::<BTreeSet<_>>().len() != frontmatter.tools.len() {
-        return Err(ConfigError::DuplicateTool(document.id.clone()));
-    }
     let permission_rules = frontmatter
         .permissions
         .values()
@@ -356,10 +348,7 @@ fn validate_agent_document(
         let rules = delegate.rules(PermissionAction::Delegate);
         for rule in rules {
             if rule.effect == PermissionEffect::Deny {
-                if rule.resource.as_str() == "*" && matches!(delegate, PermissionValue::Effect(_)) {
-                    continue;
-                }
-                return Err(ConfigError::Delegation(document.id.clone()));
+                continue;
             }
             let target = AgentId::new(rule.resource.as_str())
                 .map_err(|_| ConfigError::Delegation(document.id.clone()))?;

@@ -211,7 +211,6 @@ mod tests {
                     enabled: true,
                     runnable_as_root: true,
                     resolved_fallback: vec![selection],
-                    tools: Vec::new(),
                     delegation_targets: Vec::new(),
                 }]
             } else {

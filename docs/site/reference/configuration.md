@@ -267,7 +267,7 @@ with a letter or underscore). A missing variable, a non-UTF-8 value, or an
 interpolation used anywhere else is a load error. Interpolation is not available
 in permission patterns, agent documents, or custom static headers.
 
-## Agent documents (schema 4)
+## Agent documents (schema 5)
 
 Agent files are named `<agent-id>.md`; the filename is the agent ID
 (`^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$`, at most 64 characters). Each file has

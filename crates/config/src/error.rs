@@ -44,6 +44,10 @@ pub enum ConfigError {
     #[error("invalid frontmatter for agent `{0}`")]
     AgentFrontmatter(AgentId),
     #[error(
+        "agent `{0}` uses the removed `tools` field; use `permissions` entries to control tool visibility"
+    )]
+    AgentToolsRemoved(AgentId),
+    #[error(
         "agent `{0}` permission resources support only `${{workspace_dir}}`, and only for read or write"
     )]
     AgentPermissionExpression(AgentId),
@@ -57,8 +61,6 @@ pub enum ConfigError {
     AgentLimit(AgentId),
     #[error("primary agent `{0}` requires a nonempty fallback")]
     PrimaryFallback(AgentId),
-    #[error("agent `{0}` lists a tool more than once")]
-    DuplicateTool(AgentId),
     #[error("agent `{0}` has invalid delegation")]
     Delegation(AgentId),
     #[error("agent `{agent}` delegates to unknown agent `{target}`")]

@@ -1,11 +1,11 @@
 use cookie_agent_config::{
     AgentDocumentSource as ConfigDocumentSource, AgentMode as ConfigAgentMode,
     PermissionAction as ConfigPermissionAction, PermissionEffect as ConfigPermissionEffect,
-    PermissionRule as ConfigPermissionRule, ToolName as ConfigToolName,
+    PermissionRule as ConfigPermissionRule,
 };
 use cookie_agent_identity::WildcardPattern;
 use cookie_agent_protocol::{
-    AgentDocumentSource, AgentMode, PermissionAction, PermissionEffect, PermissionRule, ToolName,
+    AgentDocumentSource, AgentMode, PermissionAction, PermissionEffect, PermissionRule,
 };
 use serde::Serialize;
 
@@ -23,14 +23,6 @@ fn config_agent_wire_types_match_protocol() {
         (ConfigAgentMode::Subagent, AgentMode::Subagent),
         (ConfigAgentMode::All, AgentMode::All),
         (ConfigAgentMode::Internal, AgentMode::Internal),
-    ] {
-        assert_same_json(&config, &protocol);
-    }
-    for (config, protocol) in [
-        (ConfigToolName::Read, ToolName::Read),
-        (ConfigToolName::Write, ToolName::Write),
-        (ConfigToolName::Edit, ToolName::Edit),
-        (ConfigToolName::Bash, ToolName::Bash),
     ] {
         assert_same_json(&config, &protocol);
     }

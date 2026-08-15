@@ -148,7 +148,6 @@ mod tests {
                     variant: None,
                 }],
                 limits: cookie_agent_config::AgentLimits::default(),
-                tools: Vec::new(),
                 permissions: Default::default(),
             },
             body: body.to_owned(),

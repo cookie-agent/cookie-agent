@@ -6,6 +6,5 @@ import type { FrozenDelegationPolicy } from "./FrozenDelegationPolicy.js";
 import type { FrozenModelBinding } from "./FrozenModelBinding.js";
 import type { PermissionRule } from "./PermissionRule.js";
 import type { Sha256Digest } from "./Sha256Digest.js";
-import type { ToolName } from "./ToolName.js";
 
-export type AgentSnapshot = { agent: AgentId, schema: AgentSchemaVersion, mode: AgentMode, description: string, document_source: AgentDocumentSource, document_fingerprint: Sha256Digest, composed_prompt: string, prompt_fingerprint: Sha256Digest, tools: Array<ToolName>, permissions: Array<PermissionRule>, delegation: FrozenDelegationPolicy | null, fallback_chain: Array<FrozenModelBinding>, selected_suffix_start: number, };
+export type AgentSnapshot = { agent: AgentId, schema: AgentSchemaVersion, mode: AgentMode, description: string, document_source: AgentDocumentSource, document_fingerprint: Sha256Digest, composed_prompt: string, prompt_fingerprint: Sha256Digest, permissions: Array<PermissionRule>, delegation: FrozenDelegationPolicy | null, fallback_chain: Array<FrozenModelBinding>, selected_suffix_start: number, };

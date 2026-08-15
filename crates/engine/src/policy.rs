@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::sync::Arc;
 
 use cookie_agent_protocol as protocol;
 
@@ -44,14 +44,6 @@ impl FrozenRunPolicy {
         self.selected_suffix
             .get(fallback_index..)
             .unwrap_or_default()
-    }
-
-    pub fn tools(&self) -> BTreeSet<String> {
-        self.agent
-            .tools
-            .iter()
-            .map(|tool| tool_name(*tool).to_owned())
-            .collect()
     }
 
     pub(crate) fn model_capabilities(
@@ -232,7 +224,6 @@ fn freeze_with_bindings(
         document_fingerprint: wire_digest(&document.document_fingerprint)?,
         composed_prompt: document.body.clone(),
         prompt_fingerprint: wire_digest(&document.prompt_fingerprint)?,
-        tools: document.frontmatter.tools.clone(),
         permissions: document
             .frontmatter
             .permissions
@@ -345,15 +336,6 @@ pub(crate) fn resolve_model(
         ));
     }
     Ok(resolved)
-}
-
-pub(crate) const fn tool_name(tool: protocol::ToolName) -> &'static str {
-    match tool {
-        protocol::ToolName::Read => "read",
-        protocol::ToolName::Write => "write",
-        protocol::ToolName::Edit => "edit",
-        protocol::ToolName::Bash => "bash",
-    }
 }
 
 fn wire_digest(

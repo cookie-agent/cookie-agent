@@ -245,7 +245,6 @@ export * from "./ToolAttachment.js";
 export * from "./ToolCallId.js";
 export * from "./ToolCallPresentation.js";
 export * from "./ToolChoice.js";
-export * from "./ToolName.js";
 export * from "./ToolOutputTruncation.js";
 export * from "./ToolTerminationOutcome.js";
 export * from "./TreeApprovalGrant.js";

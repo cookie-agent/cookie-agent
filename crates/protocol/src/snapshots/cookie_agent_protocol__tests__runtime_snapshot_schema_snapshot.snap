@@ -1,6 +1,6 @@
 ---
 source: crates/protocol/src/tests.rs
-assertion_line: 1001
+assertion_line: 1004
 expression: schema_for!(RuntimeSnapshotResult)
 ---
 {
@@ -80,13 +80,6 @@ expression: schema_for!(RuntimeSnapshotResult)
         },
         "runnable_as_root": {
           "type": "boolean"
-        },
-        "tools": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ToolName"
-          },
-          "maxItems": 256
         }
       },
       "additionalProperties": false,
@@ -97,7 +90,6 @@ expression: schema_for!(RuntimeSnapshotResult)
         "enabled",
         "runnable_as_root",
         "resolved_fallback",
-        "tools",
         "delegation_targets"
       ]
     },
@@ -810,7 +802,7 @@ expression: schema_for!(RuntimeSnapshotResult)
         },
         "snapshot_schema_version": {
           "type": "integer",
-          "const": 3
+          "const": 4
         }
       },
       "additionalProperties": false,
@@ -961,15 +953,6 @@ expression: schema_for!(RuntimeSnapshotResult)
         "max_length",
         "minimum",
         "maximum"
-      ]
-    },
-    "ToolName": {
-      "type": "string",
-      "enum": [
-        "read",
-        "write",
-        "edit",
-        "bash"
       ]
     },
     "VariantOrigin": {

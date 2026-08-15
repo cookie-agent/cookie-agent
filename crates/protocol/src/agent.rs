@@ -7,7 +7,7 @@ use ts_rs::TS;
 use crate::{AgentId, FrozenModelBinding, ModelKey, ModelSelection, Sha256Digest, WildcardPattern};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
-#[ts(type = "4")]
+#[ts(type = "5")]
 pub struct AgentSchemaVersion(());
 impl AgentSchemaVersion {
     #[must_use]
@@ -16,7 +16,7 @@ impl AgentSchemaVersion {
     }
     #[must_use]
     pub const fn value(self) -> u32 {
-        4
+        5
     }
 }
 impl Serialize for AgentSchemaVersion {
@@ -24,7 +24,7 @@ impl Serialize for AgentSchemaVersion {
     where
         S: serde::Serializer,
     {
-        s.serialize_u32(4)
+        s.serialize_u32(5)
     }
 }
 impl<'de> Deserialize<'de> for AgentSchemaVersion {
@@ -33,11 +33,11 @@ impl<'de> Deserialize<'de> for AgentSchemaVersion {
         D: serde::Deserializer<'de>,
     {
         let v = u32::deserialize(d)?;
-        if v == 4 {
+        if v == 5 {
             Ok(Self::current())
         } else {
             Err(serde::de::Error::custom(format!(
-                "unsupported exact agent schema {v}; expected 4"
+                "unsupported exact agent schema {v}; expected 5"
             )))
         }
     }
@@ -50,8 +50,36 @@ impl JsonSchema for AgentSchemaVersion {
         Cow::Borrowed("AgentSchemaVersion")
     }
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"integer","const":4})
+        json_schema!({"type":"integer","const":5})
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LegacyAgentSchemaVersion;
+
+impl<'de> Deserialize<'de> for LegacyAgentSchemaVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = u32::deserialize(deserializer)?;
+        if value == 4 {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom(format!(
+                "unsupported legacy agent schema {value}; expected 4"
+            )))
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+#[serde(rename_all = "snake_case")]
+enum LegacyToolName {
+    Read,
+    Write,
+    Edit,
+    Bash,
 }
 
 #[derive(
@@ -63,17 +91,6 @@ pub enum AgentMode {
     Subagent,
     All,
     Internal,
-}
-
-#[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize, TS,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolName {
-    Read,
-    Write,
-    Edit,
-    Bash,
 }
 
 #[derive(
@@ -167,8 +184,6 @@ pub struct AgentSnapshot {
     pub composed_prompt: String,
     pub prompt_fingerprint: Sha256Digest,
     #[schemars(length(max = 256))]
-    pub tools: Vec<ToolName>,
-    #[schemars(length(max = 256))]
     pub permissions: Vec<PermissionRule>,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<FrozenDelegationPolicy>", required)]
@@ -192,16 +207,11 @@ impl AgentSnapshot {
         {
             return Err(AgentSchemaError::InvalidPrompt);
         }
-        if self.tools.len() > 256
-            || self.permissions.len() > 256
+        if self.permissions.len() > 256
             || self.fallback_chain.is_empty()
             || self.fallback_chain.len() > 256
         {
             return Err(AgentSchemaError::InvalidListBounds);
-        }
-        let mut tools = BTreeSet::new();
-        if !self.tools.iter().all(|tool| tools.insert(*tool)) {
-            return Err(AgentSchemaError::DuplicateTool);
         }
         let mut models = BTreeSet::<ModelKey>::new();
         if !self
@@ -272,7 +282,7 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
     {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
-        struct Wire {
+        struct CurrentWire {
             agent: AgentId,
             schema: AgentSchemaVersion,
             mode: AgentMode,
@@ -281,28 +291,92 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
             document_fingerprint: Sha256Digest,
             composed_prompt: String,
             prompt_fingerprint: Sha256Digest,
-            tools: Vec<ToolName>,
             permissions: Vec<PermissionRule>,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             delegation: Option<FrozenDelegationPolicy>,
             fallback_chain: Vec<FrozenModelBinding>,
             selected_suffix_start: u32,
         }
-        let w = Wire::deserialize(d)?;
-        let value = Self {
-            agent: w.agent,
-            schema: w.schema,
-            mode: w.mode,
-            description: w.description,
-            document_source: w.document_source,
-            document_fingerprint: w.document_fingerprint,
-            composed_prompt: w.composed_prompt,
-            prompt_fingerprint: w.prompt_fingerprint,
-            tools: w.tools,
-            permissions: w.permissions,
-            delegation: w.delegation,
-            fallback_chain: w.fallback_chain,
-            selected_suffix_start: w.selected_suffix_start,
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LegacyWire {
+            agent: AgentId,
+            #[serde(rename = "schema")]
+            _schema: LegacyAgentSchemaVersion,
+            mode: AgentMode,
+            description: String,
+            document_source: AgentDocumentSource,
+            document_fingerprint: Sha256Digest,
+            composed_prompt: String,
+            prompt_fingerprint: Sha256Digest,
+            tools: Vec<LegacyToolName>,
+            permissions: Vec<PermissionRule>,
+            #[serde(deserialize_with = "crate::deserialize_required_option")]
+            delegation: Option<FrozenDelegationPolicy>,
+            fallback_chain: Vec<FrozenModelBinding>,
+            selected_suffix_start: u32,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Current(CurrentWire),
+            Legacy(LegacyWire),
+        }
+
+        let value = match Wire::deserialize(d)? {
+            Wire::Current(w) => Self {
+                agent: w.agent,
+                schema: w.schema,
+                mode: w.mode,
+                description: w.description,
+                document_source: w.document_source,
+                document_fingerprint: w.document_fingerprint,
+                composed_prompt: w.composed_prompt,
+                prompt_fingerprint: w.prompt_fingerprint,
+                permissions: w.permissions,
+                delegation: w.delegation,
+                fallback_chain: w.fallback_chain,
+                selected_suffix_start: w.selected_suffix_start,
+            },
+            Wire::Legacy(w) => {
+                let mut tools = BTreeSet::new();
+                if w.tools.len() > 256 || !w.tools.iter().all(|tool| tools.insert(*tool)) {
+                    return Err(serde::de::Error::custom(
+                        "legacy agent tools must be unique and contain at most 256 entries",
+                    ));
+                }
+                let LegacyWire {
+                    agent,
+                    _schema: _,
+                    mode,
+                    description,
+                    document_source,
+                    document_fingerprint,
+                    composed_prompt,
+                    prompt_fingerprint,
+                    tools: _,
+                    permissions,
+                    delegation,
+                    fallback_chain,
+                    selected_suffix_start,
+                } = w;
+                Self {
+                    agent,
+                    schema: AgentSchemaVersion::current(),
+                    mode,
+                    description,
+                    document_source,
+                    document_fingerprint,
+                    composed_prompt,
+                    prompt_fingerprint,
+                    permissions,
+                    delegation,
+                    fallback_chain,
+                    selected_suffix_start,
+                }
+            }
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -334,8 +408,6 @@ pub struct AgentDescriptor {
     #[schemars(length(max = 256))]
     #[ts(type = "Array<ModelSelection>")]
     pub resolved_fallback: Vec<ModelSelection>,
-    #[schemars(length(max = 256))]
-    pub tools: Vec<ToolName>,
     #[schemars(length(max = 256))]
     #[ts(type = "Array<AgentId>")]
     pub delegation_targets: Vec<AgentId>,
@@ -373,10 +445,7 @@ impl AgentDescriptor {
         {
             return Err(AgentSchemaError::InvalidDescription);
         }
-        if self.resolved_fallback.len() > 256
-            || self.tools.len() > 256
-            || self.delegation_targets.len() > 256
-        {
+        if self.resolved_fallback.len() > 256 || self.delegation_targets.len() > 256 {
             return Err(AgentSchemaError::InvalidListBounds);
         }
         let mut models = BTreeSet::new();
@@ -419,7 +488,6 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
             runnable_as_root: bool,
             #[serde(deserialize_with = "crate::deserialize_required_model_selections")]
             resolved_fallback: Vec<ModelSelection>,
-            tools: Vec<ToolName>,
             delegation_targets: Vec<AgentId>,
         }
         let w = Wire::deserialize(d)?;
@@ -430,7 +498,6 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
             enabled: w.enabled,
             runnable_as_root: w.runnable_as_root,
             resolved_fallback: w.resolved_fallback,
-            tools: w.tools,
             delegation_targets: w.delegation_targets,
         };
         value.validate().map_err(serde::de::Error::custom)?;
@@ -444,7 +511,6 @@ pub enum AgentSchemaError {
     InvalidDescription,
     InvalidPrompt,
     InvalidListBounds,
-    DuplicateTool,
     DuplicateFallbackModel,
     InvalidModelBinding,
     InvalidSuffixStart,
@@ -454,7 +520,7 @@ pub enum AgentSchemaError {
 }
 impl fmt::Display for AgentSchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self{Self::InvalidDelegationTargets=>"delegation targets must be a nonempty, strictly sorted unique list of at most 256 IDs",Self::InvalidDescription=>"agent description must be nonblank, control-free, and 1..=512 bytes",Self::InvalidPrompt=>"composed prompt must be nonblank and at most 128 KiB",Self::InvalidListBounds=>"agent list exceeds bounds or frozen fallback is empty",Self::DuplicateTool=>"agent tools must be unique",Self::DuplicateFallbackModel=>"fallback chains may contain each model key at most once",Self::InvalidModelBinding=>"agent snapshot contains an invalid frozen model binding",Self::InvalidSuffixStart=>"selected_suffix_start must index the frozen fallback chain",Self::SelectionMismatch=>"run selection does not match the snapshot agent and selected fallback start",Self::SelectedSuffixMismatch=>"selected suffix does not exactly match the frozen fallback order and selected head",Self::InvalidRootRunnable=>"runnable_as_root contradicts enabled mode or fallback state"})
+        f.write_str(match self{Self::InvalidDelegationTargets=>"delegation targets must be a nonempty, strictly sorted unique list of at most 256 IDs",Self::InvalidDescription=>"agent description must be nonblank, control-free, and 1..=512 bytes",Self::InvalidPrompt=>"composed prompt must be nonblank and at most 128 KiB",Self::InvalidListBounds=>"agent list exceeds bounds or frozen fallback is empty",Self::DuplicateFallbackModel=>"fallback chains may contain each model key at most once",Self::InvalidModelBinding=>"agent snapshot contains an invalid frozen model binding",Self::InvalidSuffixStart=>"selected_suffix_start must index the frozen fallback chain",Self::SelectionMismatch=>"run selection does not match the snapshot agent and selected fallback start",Self::SelectedSuffixMismatch=>"selected suffix does not exactly match the frozen fallback order and selected head",Self::InvalidRootRunnable=>"runnable_as_root contradicts enabled mode or fallback state"})
     }
 }
 impl std::error::Error for AgentSchemaError {}

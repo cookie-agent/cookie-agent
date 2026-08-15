@@ -464,7 +464,6 @@ mod tests {
             document_fingerprint: Sha256Digest::of_bytes(b"test document"),
             composed_prompt: "Test permission evaluation.\n".into(),
             prompt_fingerprint: Sha256Digest::of_bytes(b"Test permission evaluation.\n"),
-            tools: Vec::new(),
             permissions: rules,
             delegation: None,
             fallback_chain: Vec::new(),
@@ -1142,6 +1141,27 @@ mod tests {
             &delegate_exception,
             "delegate"
         ));
+
+        for permission_name in ["write", "bash"] {
+            assert!(!PermissionPipeline::tool_visible(
+                &policy(vec![rule(
+                    "deny-action",
+                    PermissionPipeline::action_for_permission_name(permission_name).unwrap(),
+                    "*",
+                    PermissionEffect::Deny,
+                )]),
+                permission_name,
+            ));
+        }
+    }
+
+    #[test]
+    fn empty_permissions_expose_builtin_actions_but_not_mcp() {
+        let policy = policy(Vec::new());
+        for permission_name in ["read", "write", "bash"] {
+            assert!(PermissionPipeline::tool_visible(&policy, permission_name));
+        }
+        assert!(!PermissionPipeline::tool_visible(&policy, "mcp"));
     }
 
     #[test]

@@ -61,13 +61,17 @@ Generic read allows do not override the built-in ask behavior for `.env` and
 
 ## Tool availability and delegation
 
-The agent's `tools` list remains a separate allowlist for the built-in tools,
-and both the allowlist and permission rules must pass for those. MCP tool
-availability is permission-driven instead: no `mcp` action hides them, as does
-a bare deny or `"*": deny` with no non-deny exception. Any non-fully-denied
-`mcp` entry exposes the action's tools; resource patterns still decide
-individual calls. Delegation is likewise absent unless the authored permission
-map names eligible targets.
+Tool availability is permission-driven for every action. `read`, `write`
+(including `edit`), and `bash` are visible when their action is omitted because
+unmatched calls ask by default. A bare deny hides an action's tools. A mapped
+action with `"*": deny` also hides them when it has no more-specific non-deny
+exception; resource patterns still decide individual calls once tools are
+visible.
+
+MCP tools are absent when the `mcp` action is omitted and appear only for a
+non-fully-denied `mcp` entry. Delegation tools are absent unless the `delegate`
+map names at least one eligible target with `allow` or `ask`. There is no
+separate tool allowlist.
 
 Delegation targets come from the keys in the `delegate` permission map and must
 resolve to enabled `subagent` or `all` agents. This action controls

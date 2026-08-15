@@ -133,7 +133,7 @@ pub const SESSION_META_SCHEMA_VERSION: u32 = 9;
 /// The current delegation-journal schema written by this build.
 pub const DELEGATION_JOURNAL_SCHEMA_VERSION: u32 = 14;
 /// The only coherent runtime snapshot schema supported by this build.
-pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 3;
+pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 4;
 
 /// Returns the TypeScript generation configuration required by this JSON wire.
 #[must_use]
@@ -333,8 +333,8 @@ impl JsonSchema for DelegationJournalSchemaVersion {
 }
 exact_numeric_wire_type!(
     RuntimeSnapshotSchemaVersion,
-    3,
-    "3",
+    4,
+    "4",
     "The exact coherent runtime snapshot schema version."
 );
 

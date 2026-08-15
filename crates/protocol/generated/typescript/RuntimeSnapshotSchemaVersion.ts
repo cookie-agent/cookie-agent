@@ -3,4 +3,4 @@
 /**
  *The exact coherent runtime snapshot schema version.
  */
-export type RuntimeSnapshotSchemaVersion = 3;
+export type RuntimeSnapshotSchemaVersion = 4;

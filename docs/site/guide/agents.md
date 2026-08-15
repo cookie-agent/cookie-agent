@@ -7,15 +7,14 @@ four built-in agents that are part of the harness itself.
 
 ## Agent document structure
 
-Each file has schema-4 YAML frontmatter and a nonempty Markdown body:
+Each file has schema-5 YAML frontmatter and a nonempty Markdown body:
 
 ```markdown
 ---
-schema: 4
+schema: 5
 description: Reviews changes for correctness
 mode: subagent
 enabled: true
-tools: [read, bash]
 model_fallback:
   - { model: "openai/gpt-5", variant: null }
 limits:
@@ -37,16 +36,28 @@ Review the requested change and report concrete findings.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `schema` | integer | *(required)* | Must be exactly `4`. |
+| `schema` | integer | *(required)* | Must be exactly `5`. |
 | `description` | string | *(required)* | 1–512 characters, no control characters. Shown in the TUI and snapshots. |
 | `mode` | string | *(required)* | `primary`, `subagent`, `all`, or `internal`. |
 | `enabled` | boolean | *(required)* | Disabled agents are never runnable as roots, delegation targets, or internal backends. |
 | `model_fallback` | array | *(required for `primary`)* | Ordered model chain; see below. |
 | `limits` | table | defaults below | Timeouts and token bounds. |
-| `permissions` | table | *(required)* | Ordered action permission map; see [Permissions](permissions.md). At most 256 rules. |
+| `permissions` | table | `{}` | Ordered action permission map; see [Permissions](permissions.md). At most 256 rules. |
 
 `limits` defaults to `timeout_ms = 30000`, `max_input_tokens = 16384`,
 `max_output_tokens = 2048`. Every limit must be greater than zero.
+
+Tool visibility is derived only from `permissions`. With no `permissions` field,
+the `read`, `write`, `edit`, and `bash` tools are visible and unmatched calls ask
+by default. `edit` uses the `write` action. Delegation tools require a `delegate`
+map naming at least one eligible target, and MCP tools require a non-fully-denied
+`mcp` entry. A bare action deny hides that action's tools. A mapped action with
+`"*": deny` also hides them unless it contains a more specific `allow` or `ask`
+exception.
+
+Schema 5 removes the former `tools` field. Documents that still declare it fail
+with an error naming `tools` and directing the author to `permissions`; remove
+the field and express tool visibility and call policy in the permission map.
 
 `model_fallback` entries are `{ model = "<provider>/<model-id>", variant = <name|null|"base"> }`.
 The `variant` field is optional: omitted (`null`) selects the model's configured
@@ -144,7 +155,7 @@ The title agent runs only for root sessions that still need an automatic title.
 Delegated sessions already have the `delegate_subagent` description as their
 title, so they never invoke the title agent.
 
-The built-in documents are replaced by authored schema-4 documents with the same
+The built-in documents are replaced by authored schema-5 documents with the same
 ID, `mode: internal`, and an explicit `model_fallback`. `${parent_model}` is
 allowed only in internal agents. When an internal agent document is disabled, or
 its fallback chain yields no available model, the internal call fails safely
@@ -156,7 +167,7 @@ keeps its own selection:
 
 ```markdown
 ---
-schema: 4
+schema: 5
 description: Context compaction on a fast model
 mode: internal
 enabled: true

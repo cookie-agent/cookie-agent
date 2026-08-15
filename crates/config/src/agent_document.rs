@@ -47,6 +47,7 @@ pub(crate) fn parse_agent(
     let yaml_value: serde_yaml::Value =
         serde_yaml::from_str(yaml).map_err(|_| ConfigError::AgentFrontmatter(id.clone()))?;
     validate_yaml_limits(&yaml_value, 0)?;
+    reject_removed_tools_field(&yaml_value, &id)?;
     validate_permission_expressions(&yaml_value, &id)?;
     let frontmatter: AgentFrontmatter = serde_yaml::from_value(yaml_value)
         .map_err(|_| ConfigError::AgentFrontmatter(id.clone()))?;
@@ -67,6 +68,20 @@ pub(crate) fn parse_agent(
         document_fingerprint,
         prompt_fingerprint,
     })
+}
+
+fn reject_removed_tools_field(
+    value: &serde_yaml::Value,
+    agent: &AgentId,
+) -> Result<(), ConfigError> {
+    let tools = serde_yaml::Value::String("tools".to_owned());
+    if value
+        .as_mapping()
+        .is_some_and(|frontmatter| frontmatter.contains_key(&tools))
+    {
+        return Err(ConfigError::AgentToolsRemoved(agent.clone()));
+    }
+    Ok(())
 }
 
 fn validate_permission_expressions(

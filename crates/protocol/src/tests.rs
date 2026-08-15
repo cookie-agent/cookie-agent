@@ -107,7 +107,6 @@ fn child_agent(binding: FrozenModelBinding) -> AgentSnapshot {
         document_fingerprint: Sha256Digest::of_bytes(b"document"),
         composed_prompt: "Complete the delegated task.".into(),
         prompt_fingerprint: Sha256Digest::of_bytes(b"prompt"),
-        tools: Vec::new(),
         permissions: Vec::new(),
         delegation: None,
         fallback_chain: vec![binding],
@@ -145,9 +144,9 @@ fn wire_versions_accept_only_documented_event_and_delegation_history() {
     assert_eq!(EVENT_SCHEMA_VERSION, 17);
     assert_eq!(SESSION_META_SCHEMA_VERSION, 9);
     assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 14);
-    assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 3);
+    assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 4);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(8)).is_err());
-    assert!(serde_json::from_value::<AgentSchemaVersion>(json!(3)).is_err());
+    assert!(serde_json::from_value::<AgentSchemaVersion>(json!(4)).is_err());
     for version in [15, 16, 17] {
         assert_eq!(
             serde_json::from_value::<EventSchemaVersion>(json!(version))
@@ -172,8 +171,37 @@ fn wire_versions_accept_only_documented_event_and_delegation_history() {
     );
     assert!(serde_json::from_value::<DelegationJournalSchemaVersion>(json!(10)).is_err());
     assert!(serde_json::from_value::<DelegationJournalSchemaVersion>(json!(15)).is_err());
-    assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(2)).is_err());
+    assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(3)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
+}
+
+#[test]
+fn legacy_agent_snapshot_upconversion_is_exact_and_writes_schema_five() {
+    let mut legacy = serde_json::to_value(child_agent(frozen_binding())).unwrap();
+    legacy["schema"] = json!(4);
+    legacy["tools"] = json!(["read", "write", "edit", "bash"]);
+
+    let converted = serde_json::from_value::<AgentSnapshot>(legacy.clone()).unwrap();
+    assert_eq!(converted.schema.value(), 5);
+    let current = serde_json::to_value(converted).unwrap();
+    assert_eq!(current["schema"], 5);
+    assert!(current.get("tools").is_none());
+
+    let mut unknown_field = legacy.clone();
+    unknown_field["legacy_extra"] = json!(true);
+    assert!(serde_json::from_value::<AgentSnapshot>(unknown_field).is_err());
+
+    let mut missing_tools = legacy.clone();
+    missing_tools.as_object_mut().unwrap().remove("tools");
+    assert!(serde_json::from_value::<AgentSnapshot>(missing_tools).is_err());
+
+    let mut duplicate_tools = legacy.clone();
+    duplicate_tools["tools"] = json!(["read", "read"]);
+    assert!(serde_json::from_value::<AgentSnapshot>(duplicate_tools).is_err());
+
+    let mut unknown_tool = legacy;
+    unknown_tool["tools"] = json!(["grep"]);
+    assert!(serde_json::from_value::<AgentSnapshot>(unknown_tool).is_err());
 }
 
 #[test]

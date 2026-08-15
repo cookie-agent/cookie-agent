@@ -2371,7 +2371,6 @@ mod tests {
                     document_fingerprint: Sha256Digest::of_bytes(b"document"),
                     composed_prompt: "You are the primary test agent.\n".into(),
                     prompt_fingerprint: Sha256Digest::of_bytes(b"prompt"),
-                    tools: Vec::new(),
                     permissions: Vec::new(),
                     delegation: None,
                     fallback_chain: chain,
@@ -2782,7 +2781,6 @@ mod tests {
                 model: model_key(),
                 variant: None,
             }],
-            tools: Vec::new(),
             delegation_targets: Vec::new(),
         }
     }
@@ -6565,7 +6563,6 @@ mod tests {
                     document_fingerprint: Sha256Digest::of_bytes(b"document"),
                     composed_prompt: "You are the primary test agent.\n".into(),
                     prompt_fingerprint: Sha256Digest::of_bytes(b"prompt"),
-                    tools: Vec::new(),
                     permissions: Vec::new(),
                     delegation: None,
                     fallback_chain: snapshot_chain.clone(),

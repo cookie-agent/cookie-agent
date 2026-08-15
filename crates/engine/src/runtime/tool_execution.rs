@@ -68,7 +68,6 @@ impl Engine {
                     })
                 })
         });
-        let enabled_tools = policy.tools();
         let providers = self
             .inner
             .tools
@@ -106,14 +105,7 @@ impl Engine {
             };
         };
         let delegation_tool = permission_name == "delegate";
-        let mcp_tool = permission_name == "mcp";
-        let enabled = if delegation_tool {
-            delegate_enabled
-        } else if mcp_tool {
-            true
-        } else {
-            enabled_tools.contains(&call.name)
-        };
+        let enabled = !delegation_tool || delegate_enabled;
         if !enabled || !PermissionPipeline::tool_visible(&policy.agent, &permission_name) {
             return PreparedToolCall {
                 prepared: Err(ToolFailure {
@@ -390,7 +382,6 @@ impl Engine {
                     })
                 })
         });
-        let enabled_tools = policy.tools();
         let mut names = HashSet::new();
         let mut output = Vec::new();
         let providers = self
@@ -405,14 +396,7 @@ impl Engine {
                 .map_err(|error| EngineError::MissingTool(error.to_string()))?
             {
                 let delegation_tool = tool.permission_name == "delegate";
-                let mcp_tool = tool.permission_name == "mcp";
-                let enabled = if delegation_tool {
-                    delegate_enabled
-                } else if mcp_tool {
-                    true
-                } else {
-                    enabled_tools.contains(&tool.name)
-                };
+                let enabled = !delegation_tool || delegate_enabled;
                 if enabled && PermissionPipeline::tool_visible(&policy.agent, &tool.permission_name)
                 {
                     if !names.insert(tool.name.clone()) {

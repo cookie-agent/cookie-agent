@@ -105,19 +105,12 @@
         },
         "schema": {
           "type": "integer",
-          "const": 4
+          "const": 5
         },
         "selected_suffix_start": {
           "type": "integer",
           "format": "uint32",
           "minimum": 0
-        },
-        "tools": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ToolName"
-          },
-          "maxItems": 256
         }
       },
       "additionalProperties": false,
@@ -130,7 +123,6 @@
         "document_fingerprint",
         "composed_prompt",
         "prompt_fingerprint",
-        "tools",
         "permissions",
         "delegation",
         "fallback_chain",
@@ -1870,15 +1862,6 @@
             "named"
           ]
         }
-      ]
-    },
-    "ToolName": {
-      "type": "string",
-      "enum": [
-        "read",
-        "write",
-        "edit",
-        "bash"
       ]
     }
   }

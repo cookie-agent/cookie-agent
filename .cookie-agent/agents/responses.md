@@ -1,11 +1,10 @@
 ---
-schema: 4
+schema: 5
 description: Primary agent pinned to the OpenAI Responses model and high variant
 mode: primary
 enabled: true
 model_fallback:
   - { model: "openai/gpt-5.6-luna", variant: high }
-tools: [read, write, edit, bash]
 permissions:
   read:
     "*": allow

@@ -398,7 +398,6 @@ impl Engine {
             composed_prompt: document.body.clone(),
             prompt_fingerprint: Sha256Digest::new(document.prompt_fingerprint.as_str())
                 .map_err(|_| EngineError::RuntimeCompileFailed)?,
-            tools: Vec::new(),
             permissions: Vec::new(),
             delegation: None,
             fallback_chain: models.clone(),

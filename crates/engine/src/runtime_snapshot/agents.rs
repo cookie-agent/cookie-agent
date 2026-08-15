@@ -4,7 +4,7 @@ use cookie_agent_config::{
     AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentLimits, AgentMode,
     AgentModelFallback, AgentModelRef, AgentRegistry as ConfigAgentRegistry, AgentSchemaVersion,
     BUILT_IN_APPROVAL_AGENT_ID, BUILT_IN_COMPACTION_AGENT_ID, BUILT_IN_DEFAULT_AGENT_ID,
-    BUILT_IN_TITLE_AGENT_ID, PermissionAction, PermissionEffect, PermissionValue, ToolName,
+    BUILT_IN_TITLE_AGENT_ID, PermissionAction, PermissionEffect, PermissionValue,
 };
 use cookie_agent_identity::{AgentId as IdentityAgentId, WildcardPattern};
 use cookie_agent_models::{CompiledModelRuntime, compiler::CompiledModelStatus};
@@ -125,7 +125,6 @@ impl AgentRegistry {
                         ResolvedAgentFallback::ParentModel => None,
                     })
                     .collect(),
-                tools: agent.document.frontmatter.tools.clone(),
                 delegation_targets: delegation_targets(&agent.document.frontmatter.permissions),
             })
             .collect();
@@ -204,7 +203,6 @@ fn built_in_internal_document(
             variant: None,
         }],
         limits,
-        tools: Vec::new(),
         permissions: IndexMap::new(),
     };
     let document_fingerprint = fingerprint(
@@ -239,12 +237,6 @@ fn built_in_default_document(selection: &ModelSelection) -> Result<AgentDocument
                 .map(cookie_agent_identity::ConfiguredVariantRef::Named),
         }],
         limits: AgentLimits::default(),
-        tools: vec![
-            ToolName::Read,
-            ToolName::Write,
-            ToolName::Edit,
-            ToolName::Bash,
-        ],
         permissions: built_in_default_permissions()?,
     };
     let document_fingerprint = fingerprint("cookie-agent/built-in-default-document/v1", selection)?;
@@ -360,4 +352,33 @@ fn selection_available(models: &CompiledModelRuntime, selection: &ModelSelection
                 .as_ref()
                 .is_none_or(|variant| model.model.variants.contains_key(variant))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use cookie_agent_config::{PermissionAction, PermissionEffect, PermissionValue};
+    use cookie_agent_identity::WildcardPattern;
+    use indexmap::IndexMap;
+
+    use super::delegation_targets;
+
+    #[test]
+    fn delegation_targets_require_named_non_deny_permissions() {
+        assert!(delegation_targets(&IndexMap::new()).is_empty());
+
+        let mut resources = IndexMap::new();
+        resources.insert(WildcardPattern::new("*").unwrap(), PermissionEffect::Deny);
+        resources.insert(
+            WildcardPattern::new("reviewer").unwrap(),
+            PermissionEffect::Ask,
+        );
+        let permissions = IndexMap::from([(
+            PermissionAction::Delegate,
+            PermissionValue::Resources(resources),
+        )]);
+        assert_eq!(
+            delegation_targets(&permissions),
+            [cookie_agent_protocol::AgentId::new("reviewer").unwrap()]
+        );
+    }
 }

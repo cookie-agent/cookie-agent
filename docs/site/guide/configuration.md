@@ -112,12 +112,12 @@ Prefer interpolation or `/connect` over plaintext credentials, and never commit
 
 ## Agent documents
 
-Agents are Markdown files whose filename is the agent ID. Each file has schema-4
+Agents are Markdown files whose filename is the agent ID. Each file has schema-5
 YAML frontmatter and a nonempty Markdown body used as the system prompt:
 
 ```markdown
 ---
-schema: 4
+schema: 5
 description: Reviews changes for correctness
 mode: subagent
 enabled: true
