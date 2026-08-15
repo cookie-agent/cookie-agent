@@ -254,16 +254,26 @@ impl ToolProvider for BuiltinTools {
         Ok(tools)
     }
 
-    fn get_primary_argument(
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        match tool_name {
+            "read" => read::ReadTool::get_permission_name(tool_name),
+            "write" => write::WriteTool::get_permission_name(tool_name),
+            "edit" => edit::EditTool::get_permission_name(tool_name),
+            "bash" => bash::BashTool::get_permission_name(tool_name),
+            _ => Err(tool_error(format!("unknown built-in tool `{tool_name}`"))),
+        }
+    }
+
+    fn get_permission_resource(
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<String, ToolError> {
+    ) -> Result<(&'static str, Option<String>), ToolError> {
         match name {
-            "read" => self.read.get_primary_argument(name, arguments),
-            "write" => self.write.get_primary_argument(name, arguments),
-            "edit" => self.edit.get_primary_argument(name, arguments),
-            "bash" => self.bash.get_primary_argument(name, arguments),
+            "read" => self.read.get_permission_resource(name, arguments),
+            "write" => self.write.get_permission_resource(name, arguments),
+            "edit" => self.edit.get_permission_resource(name, arguments),
+            "bash" => self.bash.get_permission_resource(name, arguments),
             _ => Err(tool_error(format!("unknown built-in tool `{name}`"))),
         }
     }
@@ -309,9 +319,34 @@ mod tests {
         PreparedResourceIdentity, RunId, SessionId, Sha256Digest, ToolCallId,
     };
 
+    use super::{
+        BuiltinTools, bash::BashTool, delegate::DelegateToolProvider, edit::EditTool,
+        read::ReadTool, write::WriteTool,
+    };
+
+    #[test]
+    fn static_permission_names_cover_every_builtin_and_delegate_tool() {
+        assert_eq!(ReadTool::get_permission_name("read").unwrap(), "read");
+        assert_eq!(WriteTool::get_permission_name("write").unwrap(), "write");
+        assert_eq!(EditTool::get_permission_name("edit").unwrap(), "write");
+        assert_eq!(BashTool::get_permission_name("bash").unwrap(), "bash");
+        for name in [
+            "delegate_subagent",
+            "get_subagent_result",
+            "steer_subagent",
+            "cancel_subagent",
+        ] {
+            assert_eq!(
+                DelegateToolProvider::get_permission_name(name).unwrap(),
+                "delegate"
+            );
+        }
+        assert!(BuiltinTools::get_permission_name("grep").is_err());
+    }
+
     #[test]
     fn builtin_tools_do_not_expose_grep_or_glob() {
-        let tools = super::BuiltinTools::new("/tmp");
+        let tools = BuiltinTools::new("/tmp");
         let names = tools
             .tools_for_session(&SessionToolContext {
                 session: SessionId::new_v7(),
@@ -325,10 +360,10 @@ mod tests {
             let arguments = serde_json::json!({});
             assert!(
                 matches!(
-                    tools.get_primary_argument(name, &arguments),
+                    tools.get_permission_resource(name, &arguments),
                     Err(ToolError::Failed(_))
                 ),
-                "{name} primary"
+                "{name} permission resource"
             );
             assert!(
                 matches!(

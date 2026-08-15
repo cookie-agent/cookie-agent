@@ -48,26 +48,35 @@ impl ToolProvider for WriteTool {
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             name: "write".into(),
+            permission_name: Self::get_permission_name("write")?.into(),
             description: "Atomically write an exact descriptor-bound target.".into(),
             parameters: schema::<WriteArgs>(),
         }])
     }
 
-    fn get_primary_argument(
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        match tool_name {
+            "write" => Ok("write"),
+            _ => Err(ToolError::execution("write provider received another tool")),
+        }
+    }
+
+    fn get_permission_resource(
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<String, ToolError> {
-        if name != "write" {
-            return Err(ToolError::execution("write provider received another tool"));
-        }
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        let permission_name = Self::get_permission_name(name)?;
         let args: WriteArgs = parse_args("write", arguments.clone())?;
         if args.file_path.is_empty() {
             return Err(ToolError::execution("filePath must not be empty"));
         }
-        Ok(crate::permission_path_label(
-            &args.file_path,
-            &self.workspace,
+        Ok((
+            permission_name,
+            Some(crate::permission_path_label(
+                &args.file_path,
+                &self.workspace,
+            )),
         ))
     }
 
@@ -76,7 +85,9 @@ impl ToolProvider for WriteTool {
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
-        let path = self.get_primary_argument(name, arguments)?;
+        let (_, Some(path)) = self.get_permission_resource(name, arguments)? else {
+            return Err(ToolError::execution("write permission resource is missing"));
+        };
         Ok(crate::abbreviated_display_path(&path, &self.workspace))
     }
 
@@ -189,18 +200,18 @@ mod tests {
     use super::WriteTool;
 
     #[test]
-    fn primary_argument_is_the_file_path() {
+    fn permission_resource_is_the_file_path() {
         let tool = WriteTool::new("/tmp");
         assert_eq!(
-            tool.get_primary_argument(
+            tool.get_permission_resource(
                 "write",
                 &serde_json::json!({"filePath":"out.txt","content":"x"})
             )
-            .expect("primary"),
-            "out.txt"
+            .expect("permission resource"),
+            ("write", Some("out.txt".into()))
         );
         assert!(matches!(
-            tool.get_primary_argument("write", &serde_json::json!({"content":"x"})),
+            tool.get_permission_resource("write", &serde_json::json!({"content":"x"})),
             Err(ToolError::Failed(_))
         ));
     }

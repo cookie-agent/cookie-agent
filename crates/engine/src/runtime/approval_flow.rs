@@ -13,7 +13,7 @@ use super::{
     approval_projection::doom_loop_repetitions, helpers::root_id,
     internal_agents::parse_internal_approval,
 };
-use crate::tool_api::PreparedExecutorCell;
+use crate::tool_api::{PreparedExecutorCell, UNSCOPED_PERMISSION_RESOURCE_DISPLAY};
 use cookie_agent_protocol::InternalAgentKind;
 
 pub(super) const APPROVAL_USER_REQUEST_PREFIX: &str = "Evaluate only the current approval request. Return strict JSON only: {\"decision\":\"allow\"|\"deny\"|\"ask\"}.\n\n<latest_user_request>\n";
@@ -40,7 +40,9 @@ impl Engine {
                 .zip(input.policy_labels)
                 .map(|(resource, label)| cookie_agent_protocol::DecisionTrace {
                     action: resource.capability,
-                    normalized_resource: label.clone(),
+                    normalized_resource: label
+                        .clone()
+                        .unwrap_or_else(|| UNSCOPED_PERMISSION_RESOURCE_DISPLAY.to_owned()),
                     candidates: Vec::new(),
                     effect: cookie_agent_protocol::PermissionEffect::Ask,
                     precedence_reason: input

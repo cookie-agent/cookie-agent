@@ -52,26 +52,35 @@ impl ToolProvider for EditTool {
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             name: "edit".into(),
+            permission_name: Self::get_permission_name("edit")?.into(),
             description: "Apply a precomputed semantic replacement atomically.".into(),
             parameters: schema::<EditArgs>(),
         }])
     }
 
-    fn get_primary_argument(
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        match tool_name {
+            "edit" => Ok("write"),
+            _ => Err(ToolError::execution("edit provider received another tool")),
+        }
+    }
+
+    fn get_permission_resource(
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<String, ToolError> {
-        if name != "edit" {
-            return Err(ToolError::execution("edit provider received another tool"));
-        }
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        let permission_name = Self::get_permission_name(name)?;
         let args: EditArgs = parse_args("edit", arguments.clone())?;
         if args.file_path.is_empty() {
             return Err(ToolError::execution("filePath must not be empty"));
         }
-        Ok(crate::permission_path_label(
-            &args.file_path,
-            &self.workspace,
+        Ok((
+            permission_name,
+            Some(crate::permission_path_label(
+                &args.file_path,
+                &self.workspace,
+            )),
         ))
     }
 
@@ -80,7 +89,9 @@ impl ToolProvider for EditTool {
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
-        let path = self.get_primary_argument(name, arguments)?;
+        let (_, Some(path)) = self.get_permission_resource(name, arguments)? else {
+            return Err(ToolError::execution("edit permission resource is missing"));
+        };
         Ok(crate::abbreviated_display_path(&path, &self.workspace))
     }
 
@@ -202,10 +213,10 @@ mod tests {
     use super::EditTool;
 
     #[test]
-    fn primary_argument_is_the_file_path() {
+    fn permission_resource_is_the_file_path() {
         let tool = EditTool::new("/tmp");
         assert_eq!(
-            tool.get_primary_argument(
+            tool.get_permission_resource(
                 "edit",
                 &serde_json::json!({
                     "filePath":"value.txt",
@@ -213,11 +224,11 @@ mod tests {
                     "newString":"b"
                 })
             )
-            .expect("primary"),
-            "value.txt"
+            .expect("permission resource"),
+            ("write", Some("value.txt".into()))
         );
         assert!(matches!(
-            tool.get_primary_argument(
+            tool.get_permission_resource(
                 "edit",
                 &serde_json::json!({"oldString":"a","newString":"b"})
             ),

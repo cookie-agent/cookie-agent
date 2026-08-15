@@ -24,17 +24,24 @@ ask.
 
 ## Resource labels
 
-Every current built-in tool prepares exactly one permission resource:
+Tool providers publish a static permission name and an optional resource label:
 
-| Action | Label |
-|---|---|
-| `read`, `write` | Workspace-relative path inside the workspace; absolute path outside it |
-| `bash` | The complete command string |
-| `delegate` | Target agent ID |
+| Tool | Permission name | Resource label |
+|---|---|---|
+| `read` | `read` | Workspace-relative path inside the workspace; absolute path outside it |
+| `write`, `edit` | `write` | Workspace-relative path inside the workspace; absolute path outside it |
+| `bash` | `bash` | Complete command string |
+| `delegate_subagent` | `delegate` | Target `agent_type` |
+| `get_subagent_result`, `steer_subagent`, `cancel_subagent` | `delegate` | None (permission-name-only check) |
 
 The `edit` tool uses the `write` permission action. Bash is not parsed into file
 operations: `cat .env` is controlled by `bash`, not `read`, and a pattern such
 as `git *` also matches a longer command beginning with `git`.
+
+When a tool has no resource label, only the permission's bare effect or `"*"`
+rule applies. Specific patterns are inapplicable rather than matching or
+denying. If neither a bare effect nor `"*"` exists, the normal unmatched result
+is `ask`.
 
 `${workspace_dir}` is allowed only in `read` and `write` patterns and expands
 against the engine workspace root during evaluation. Ordinary absolute patterns
@@ -53,9 +60,21 @@ it only when `"*": deny` exists with no non-deny exceptions.
 Delegation targets come from the keys in the `delegate` permission map and must
 resolve to enabled `subagent` or `all` agents. This action controls
 `delegate_subagent`, `get_subagent_result`, `steer_subagent`, and
-`cancel_subagent`. Result and cancel operations retain the child agent ID as
-their permission resource. Steer uses the owned child session ID as its resource
-label and the operation verb `steer`.
+`cancel_subagent`. Only `delegate_subagent` matches agent-specific patterns.
+Result, steer, and cancel retain their existing ownership and argument
+validation, but permission evaluation for them uses only the bare effect or
+`"*"`. Their approval display still shows the owned `session_id`; display text is
+independent of the permission resource.
+
+This changes existing mapped delegation policies. For example,
+`delegate: {reviewer: allow, "*": deny}` allows `delegate_subagent` targeting
+`reviewer`, but denies `get_subagent_result`, `steer_subagent`, and
+`cancel_subagent` because their permission-name-only checks use the `"*": deny`
+fallback and ignore the `reviewer` pattern.
+The prepared resource identity for these three tools also changed. Existing
+tree grants issued for their former agent- or session-scoped identities do not
+carry over: old grants can no longer auto-approve these operations, so any call
+whose new resource-less policy evaluates to `ask` requires approval again.
 Runtime `delegation.max_depth` defaults to 3 and `max_concurrency` defaults to 4.
 
 `delegate_subagent` replaces the former `delegate` tool name without an alias.

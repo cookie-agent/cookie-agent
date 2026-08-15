@@ -14,9 +14,11 @@ use cookie_agent_protocol::{
 };
 use thiserror::Error;
 
+use crate::tool_api::UNSCOPED_PERMISSION_RESOURCE_DISPLAY;
+
 #[derive(Debug, Error)]
 pub enum PermissionError {
-    #[error("unknown permission action `{0}`")]
+    #[error("unknown permission name `{0}`")]
     UnknownAction(String),
 }
 
@@ -111,14 +113,14 @@ pub struct PermissionPipeline {
 }
 
 impl PermissionPipeline {
-    pub fn action_for_tool(tool: &str) -> Result<PermissionAction, PermissionError> {
-        match tool {
+    pub fn action_for_permission_name(
+        permission_name: &str,
+    ) -> Result<PermissionAction, PermissionError> {
+        match permission_name {
             "read" => Ok(PermissionAction::Read),
-            "write" | "edit" => Ok(PermissionAction::Write),
+            "write" => Ok(PermissionAction::Write),
             "bash" => Ok(PermissionAction::Bash),
-            "delegate_subagent" | "get_subagent_result" | "steer_subagent" | "cancel_subagent" => {
-                Ok(PermissionAction::Delegate)
-            }
+            "delegate" => Ok(PermissionAction::Delegate),
             other => Err(PermissionError::UnknownAction(other.into())),
         }
     }
@@ -128,7 +130,7 @@ impl PermissionPipeline {
         &self,
         policy: &AgentSnapshot,
         operation: &PreparedOperationIdentity,
-        policy_labels: &[String],
+        policy_labels: &[Option<String>],
         workspace: &Path,
     ) -> PermissionDecision {
         assert!(!operation.resources().is_empty());
@@ -138,15 +140,33 @@ impl PermissionPipeline {
             .iter()
             .zip(policy_labels)
             .map(|(resource, normalized)| {
-                let candidates = matching_rules(policy, resource.capability, normalized, workspace);
-                let (effect, reason) =
-                    effective_permission(policy, resource.capability, normalized, workspace);
+                let (candidates, effect, reason) = match normalized {
+                    Some(normalized) => {
+                        let candidates =
+                            matching_rules(policy, resource.capability, normalized, workspace);
+                        let (effect, reason) = effective_permission(
+                            policy,
+                            resource.capability,
+                            normalized,
+                            workspace,
+                        );
+                        (candidates, effect, reason)
+                    }
+                    None => {
+                        let candidates = matching_loose_rules(policy, resource.capability);
+                        let (effect, reason) =
+                            effective_loose_permission(policy, resource.capability);
+                        (candidates, effect, reason)
+                    }
+                };
                 ApprovalEvaluation {
                     resource_digest: resource.binding_digest.clone(),
                     effect,
                     trace: DecisionTrace {
                         action: resource.capability,
-                        normalized_resource: normalized.clone(),
+                        normalized_resource: normalized
+                            .clone()
+                            .unwrap_or_else(|| UNSCOPED_PERMISSION_RESOURCE_DISPLAY.to_owned()),
                         candidates,
                         effect,
                         precedence_reason: reason,
@@ -174,8 +194,8 @@ impl PermissionPipeline {
     }
 
     #[must_use]
-    pub fn tool_visible(policy: &AgentSnapshot, tool: &str) -> bool {
-        let Ok(action) = Self::action_for_tool(tool) else {
+    pub fn tool_visible(policy: &AgentSnapshot, permission_name: &str) -> bool {
+        let Ok(action) = Self::action_for_permission_name(permission_name) else {
             return true;
         };
         let Some(deny) = policy
@@ -192,6 +212,32 @@ impl PermissionPipeline {
                     && rule.effect != PermissionEffect::Deny
             })
     }
+}
+
+pub(crate) fn effective_loose_permission(
+    policy: &AgentSnapshot,
+    action: PermissionAction,
+) -> (PermissionEffect, String) {
+    policy
+        .permissions
+        .iter()
+        .enumerate()
+        .filter(|(_, rule)| rule.action == action && rule.resource.as_str() == "*")
+        .max_by_key(|(index, _)| *index)
+        .map_or_else(
+            || {
+                (
+                    PermissionEffect::Ask,
+                    "no bare or `*` rule; ask by default for a permission-name-only check".into(),
+                )
+            },
+            |(_, rule)| {
+                (
+                    rule.effect,
+                    "bare or `*` permission rule applies to the permission-name-only check".into(),
+                )
+            },
+        )
 }
 
 pub(crate) fn effective_permission(
@@ -373,6 +419,23 @@ fn matching_rules(
         .collect()
 }
 
+fn matching_loose_rules(
+    policy: &AgentSnapshot,
+    action: PermissionAction,
+) -> Vec<MatchedPermissionRule> {
+    policy
+        .permissions
+        .iter()
+        .filter(|rule| rule.action == action && rule.resource.as_str() == "*")
+        .map(|rule| MatchedPermissionRule {
+            source_layer: SafeCode::new("agent_document").expect("static safe code"),
+            action: rule.action,
+            resource: rule.resource.clone(),
+            effect: rule.effect,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use cookie_agent_protocol::{
@@ -434,9 +497,10 @@ mod tests {
     }
 
     fn operation(resources: Vec<PreparedApprovalResource>) -> PreparedOperationIdentity {
+        let action = resources.first().expect("test resources").capability;
         let capabilities = vec![ApprovalCapability {
-            action: PermissionAction::Read,
-            operation: PreparedCapabilityOperation::new("read:read").expect("operation"),
+            action,
+            operation: PreparedCapabilityOperation::new("permission:test").expect("operation"),
         }];
         PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(b"args"),
@@ -461,7 +525,7 @@ mod tests {
         let labels = resources
             .iter()
             .map(|resource| match &resource.boundary {
-                ApprovalBoundary::CommandPrefix { prefix } => prefix.clone(),
+                ApprovalBoundary::CommandPrefix { prefix } => Some(prefix.clone()),
                 _ => unreachable!("test resources carry explicit labels"),
             })
             .collect::<Vec<_>>();
@@ -471,6 +535,136 @@ mod tests {
             &labels,
             std::path::Path::new("/workspace"),
         )
+    }
+
+    fn decide_loose(policy: &AgentSnapshot, action: PermissionAction) -> super::PermissionDecision {
+        let prepared_resource = resource(action, "unscoped-test-identity", b"permission-name-only");
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(b"loose args"),
+            vec![ApprovalCapability {
+                action,
+                operation: PreparedCapabilityOperation::new("permission:loose")
+                    .expect("loose operation"),
+            }],
+            vec![prepared_resource],
+            Sha256Digest::of_bytes(b"loose context"),
+        )
+        .expect("loose prepared operation");
+        PermissionPipeline::default().decide_operation(
+            policy,
+            &operation,
+            &[None],
+            std::path::Path::new("/workspace"),
+        )
+    }
+
+    #[test]
+    fn loose_permission_uses_only_bare_or_wildcard_effect() {
+        let bare_allow = cookie_agent_config::PermissionValue::Effect(PermissionEffect::Allow)
+            .rules(PermissionAction::Delegate);
+        assert_eq!(
+            decide_loose(&policy(bare_allow), PermissionAction::Delegate).effect,
+            PermissionEffect::Allow
+        );
+        for effect in [
+            PermissionEffect::Allow,
+            PermissionEffect::Ask,
+            PermissionEffect::Deny,
+        ] {
+            let decision = decide_loose(
+                &policy(vec![rule(
+                    "wildcard",
+                    PermissionAction::Delegate,
+                    "*",
+                    effect,
+                )]),
+                PermissionAction::Delegate,
+            );
+            assert_eq!(decision.effect, effect);
+            assert_eq!(decision.evaluations[0].trace.candidates.len(), 1);
+        }
+        let specific_only = decide_loose(
+            &policy(vec![rule(
+                "specific",
+                PermissionAction::Delegate,
+                "reviewer",
+                PermissionEffect::Allow,
+            )]),
+            PermissionAction::Delegate,
+        );
+        assert_eq!(specific_only.effect, PermissionEffect::Ask);
+        assert!(specific_only.evaluations[0].trace.candidates.is_empty());
+    }
+
+    #[test]
+    fn former_loose_marker_literal_remains_a_scoped_resource() {
+        let literal = "<permission-name-only>";
+        let decision = decide(
+            &policy(vec![
+                rule(
+                    "literal-deny",
+                    PermissionAction::Bash,
+                    literal,
+                    PermissionEffect::Deny,
+                ),
+                rule(
+                    "fallback-allow",
+                    PermissionAction::Bash,
+                    "*",
+                    PermissionEffect::Allow,
+                ),
+            ]),
+            resource(PermissionAction::Bash, literal, literal.as_bytes()),
+        );
+        assert_eq!(decision.effect, PermissionEffect::Deny);
+        assert_eq!(decision.evaluations[0].trace.normalized_resource, literal);
+    }
+
+    #[test]
+    fn delegate_spawn_matches_agent_pattern_while_session_tools_ignore_it() {
+        let delegate_policy = policy(vec![
+            rule(
+                "reviewer",
+                PermissionAction::Delegate,
+                "reviewer",
+                PermissionEffect::Allow,
+            ),
+            rule(
+                "fallback",
+                PermissionAction::Delegate,
+                "*",
+                PermissionEffect::Deny,
+            ),
+        ]);
+        let spawn = decide(
+            &delegate_policy,
+            resource(PermissionAction::Delegate, "reviewer", b"reviewer"),
+        );
+        assert_eq!(spawn.effect, PermissionEffect::Allow);
+        let session_tool = decide_loose(&delegate_policy, PermissionAction::Delegate);
+        assert_eq!(session_tool.effect, PermissionEffect::Deny);
+
+        let specific_deny_with_wildcard_allow = decide_loose(
+            &policy(vec![
+                rule(
+                    "reviewer",
+                    PermissionAction::Delegate,
+                    "reviewer",
+                    PermissionEffect::Deny,
+                ),
+                rule(
+                    "fallback",
+                    PermissionAction::Delegate,
+                    "*",
+                    PermissionEffect::Allow,
+                ),
+            ]),
+            PermissionAction::Delegate,
+        );
+        assert_eq!(
+            specific_deny_with_wildcard_allow.effect,
+            PermissionEffect::Allow
+        );
     }
 
     #[test]
@@ -565,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn steer_subagent_uses_session_scoped_delegate_permission_and_can_be_denied() {
+    fn steer_subagent_uses_loose_delegate_permission_and_can_be_denied() {
         let session = cookie_agent_protocol::SessionId::new_v7().to_string();
         let resource = resource(PermissionAction::Delegate, &session, session.as_bytes());
         let operation = PreparedOperationIdentity::new(
@@ -587,11 +781,11 @@ mod tests {
                 PermissionEffect::Deny,
             )]),
             &operation,
-            &[session],
+            &[None],
             std::path::Path::new("/workspace"),
         );
         assert_eq!(
-            PermissionPipeline::action_for_tool("steer_subagent").expect("steer action"),
+            PermissionPipeline::action_for_permission_name("delegate").expect("delegate action"),
             PermissionAction::Delegate
         );
         assert_eq!(decision.effect, PermissionEffect::Deny);
@@ -836,6 +1030,35 @@ mod tests {
             ),
         ]);
         assert!(PermissionPipeline::tool_visible(&denied_again, "read"));
+
+        let delegate_hidden = policy(vec![rule(
+            "deny-delegate",
+            PermissionAction::Delegate,
+            "*",
+            PermissionEffect::Deny,
+        )]);
+        assert!(!PermissionPipeline::tool_visible(
+            &delegate_hidden,
+            "delegate"
+        ));
+        let delegate_exception = policy(vec![
+            rule(
+                "deny-delegate",
+                PermissionAction::Delegate,
+                "*",
+                PermissionEffect::Deny,
+            ),
+            rule(
+                "allow-reviewer",
+                PermissionAction::Delegate,
+                "reviewer",
+                PermissionEffect::Allow,
+            ),
+        ]);
+        assert!(PermissionPipeline::tool_visible(
+            &delegate_exception,
+            "delegate"
+        ));
     }
 
     #[test]

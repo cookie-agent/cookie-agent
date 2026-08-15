@@ -1154,11 +1154,14 @@ mod tests {
                             title: safe_display(name),
                             primary_argument: None,
                         },
-                        operation_fingerprint: fallback_operation_fingerprint(&ToolCall {
-                            id: call_id,
-                            name: name.into(),
-                            arguments: serde_json::json!({"filePath": path}),
-                        }),
+                        operation_fingerprint: fallback_operation_fingerprint(
+                            &ToolCall {
+                                id: call_id,
+                                name: name.into(),
+                                arguments: serde_json::json!({"filePath": path}),
+                            },
+                            Some("read"),
+                        ),
                     },
                 },
             });

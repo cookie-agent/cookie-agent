@@ -45,6 +45,7 @@ impl Engine {
             Err(error) => {
                 return PreparedToolCall {
                     call,
+                    permission_name: None,
                     presentation: fallback_presentation,
                     prepared: Err(ToolFailure {
                         code: ToolCallFailureCode::ExecutionFailed,
@@ -68,48 +69,54 @@ impl Engine {
                 })
         });
         let enabled_tools = policy.tools();
-        let delegation_tool = matches!(
-            call.name.as_str(),
-            "delegate_subagent" | "get_subagent_result" | "steer_subagent" | "cancel_subagent"
-        );
-        if (delegation_tool && !delegate_enabled)
-            || (!delegation_tool
-                && (!enabled_tools.contains(&call.name)
-                    || !PermissionPipeline::tool_visible(&policy.agent, &call.name)))
-        {
-            return PreparedToolCall {
-                prepared: Err(ToolFailure {
-                    code: ToolCallFailureCode::ExecutionFailed,
-                    message: format!("tool `{}` is not enabled for this session", call.name),
-                }),
-                call,
-                presentation: fallback_presentation,
-            };
-        }
         let providers = self
             .inner
             .tools
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        let provider = providers.into_iter().find(|provider| {
+        let provider = providers.into_iter().find_map(|provider| {
             provider
                 .tools_for_session(&SessionToolContext {
                     session: session_id,
                 })
                 .ok()
-                .is_some_and(|tools| tools.iter().any(|tool| tool.name == call.name))
+                .and_then(|tools| {
+                    tools
+                        .into_iter()
+                        .find(|tool| tool.name == call.name)
+                        .map(|tool| (provider, tool))
+                })
         });
-        let Some(provider) = provider else {
+        let Some((provider, tool_spec)) = provider else {
             return PreparedToolCall {
                 prepared: Err(ToolFailure {
                     code: ToolCallFailureCode::ExecutionFailed,
                     message: format!("tool `{}` is unavailable", call.name),
                 }),
                 call,
+                permission_name: None,
                 presentation: fallback_presentation,
             };
         };
+        let permission_name = tool_spec.permission_name;
+        let delegation_tool = permission_name == "delegate";
+        let enabled = if delegation_tool {
+            delegate_enabled
+        } else {
+            enabled_tools.contains(&call.name)
+        };
+        if !enabled || !PermissionPipeline::tool_visible(&policy.agent, &permission_name) {
+            return PreparedToolCall {
+                prepared: Err(ToolFailure {
+                    code: ToolCallFailureCode::ExecutionFailed,
+                    message: format!("tool `{}` is not enabled for this session", call.name),
+                }),
+                call,
+                permission_name: Some(permission_name),
+                presentation: fallback_presentation,
+            };
+        }
         let presentation = provider.presentation(&call);
         let context = ToolPreparationContext {
             session: session_id,
@@ -119,12 +126,15 @@ impl Engine {
             turn_context,
         };
         let prepared = match provider.prepare(context, call.clone()).await {
-            Ok(prepared) => apply_primary_argument_labels(provider.as_ref(), &call.name, prepared)
-                .map_err(Into::into),
+            Ok(prepared) => {
+                apply_permission_resource(provider.as_ref(), &call.name, &permission_name, prepared)
+                    .map_err(Into::into)
+            }
             Err(error) => Err(error.into()),
         };
         PreparedToolCall {
             call,
+            permission_name: Some(permission_name),
             presentation,
             prepared,
         }
@@ -386,17 +396,14 @@ impl Engine {
                 .tools_for_session(&SessionToolContext { session })
                 .map_err(|error| EngineError::MissingTool(error.to_string()))?
             {
-                let delegation_tool = matches!(
-                    tool.name.as_str(),
-                    "delegate_subagent"
-                        | "get_subagent_result"
-                        | "steer_subagent"
-                        | "cancel_subagent"
-                );
-                if ((!delegation_tool
-                    && enabled_tools.contains(&tool.name)
-                    && PermissionPipeline::tool_visible(&policy.agent, &tool.name))
-                    || (delegation_tool && delegate_enabled))
+                let delegation_tool = tool.permission_name == "delegate";
+                let enabled = if delegation_tool {
+                    delegate_enabled
+                } else {
+                    enabled_tools.contains(&tool.name)
+                };
+                if enabled
+                    && PermissionPipeline::tool_visible(&policy.agent, &tool.permission_name)
                     && names.insert(tool.name.clone())
                 {
                     let schema = JsonSchema::new(tool.parameters).map_err(|error| {
@@ -414,8 +421,13 @@ impl Engine {
     }
 }
 
-pub(super) fn fallback_operation_fingerprint(call: &ToolCall) -> OperationFingerprint {
-    let action = PermissionPipeline::action_for_tool(&call.name)
+pub(super) fn fallback_operation_fingerprint(
+    call: &ToolCall,
+    permission_name: Option<&str>,
+) -> OperationFingerprint {
+    let action = permission_name
+        .or_else(|| fallback_permission_name(&call.name))
+        .and_then(|name| PermissionPipeline::action_for_permission_name(name).ok())
         .unwrap_or(cookie_agent_protocol::PermissionAction::Read);
     let binding = serde_json::to_vec(&call.arguments).expect("tool arguments serialize");
     let operation = PreparedOperationIdentity::new(
@@ -450,13 +462,44 @@ pub(super) fn fallback_operation_fingerprint(call: &ToolCall) -> OperationFinger
     OperationFingerprint::from_prepared_operation(&operation)
 }
 
-pub(crate) fn apply_primary_argument_labels(
+fn fallback_permission_name(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        "read" => Some("read"),
+        "write" | "edit" => Some("write"),
+        "bash" => Some("bash"),
+        "delegate_subagent" | "get_subagent_result" | "steer_subagent" | "cancel_subagent" => {
+            Some("delegate")
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn apply_permission_resource(
     provider: &dyn ToolProvider,
     name: &str,
+    expected_permission_name: &str,
     prepared: PreparedTool,
 ) -> Result<PreparedTool, ToolError> {
-    let primary = provider.get_primary_argument(name, prepared.normalized_arguments())?;
-    prepared.with_primary_argument_label(primary)
+    let (permission_name, resource) =
+        provider.get_permission_resource(name, prepared.normalized_arguments())?;
+    if permission_name != expected_permission_name {
+        return Err(ToolError::execution(
+            "tool permission metadata changed between discovery and preparation",
+        ));
+    }
+    let action = PermissionPipeline::action_for_permission_name(permission_name)
+        .map_err(|error| ToolError::execution(error.to_string()))?;
+    if prepared
+        .operation()
+        .resources()
+        .iter()
+        .any(|prepared| prepared.capability != action)
+    {
+        return Err(ToolError::execution(
+            "prepared permission capability does not match provider metadata",
+        ));
+    }
+    prepared.with_permission_resource(resource)
 }
 
 pub(crate) fn tool_title_only(name: &str) -> ToolCallPresentation {
@@ -565,4 +608,35 @@ pub(crate) fn validate_attachment(
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use cookie_agent_protocol::ToolCallId;
+
+    use super::{ToolCall, fallback_operation_fingerprint};
+
+    #[test]
+    fn discovery_failure_fingerprints_keep_known_tool_actions() {
+        for (tool_name, permission_name) in [
+            ("write", "write"),
+            ("edit", "write"),
+            ("bash", "bash"),
+            ("delegate_subagent", "delegate"),
+            ("get_subagent_result", "delegate"),
+            ("steer_subagent", "delegate"),
+            ("cancel_subagent", "delegate"),
+        ] {
+            let call = ToolCall {
+                id: ToolCallId::new_v7(),
+                name: tool_name.into(),
+                arguments: serde_json::json!({"invalid":"prepare failure"}),
+            };
+            assert_eq!(
+                fallback_operation_fingerprint(&call, None),
+                fallback_operation_fingerprint(&call, Some(permission_name)),
+                "{tool_name}"
+            );
+        }
+    }
 }

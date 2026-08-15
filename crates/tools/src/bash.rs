@@ -108,24 +108,30 @@ impl ToolProvider for BashTool {
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             name: "bash".into(),
+            permission_name: Self::get_permission_name("bash")?.into(),
             description: "Execute one prepared shell command.".into(),
             parameters: schema::<BashArgs>(),
         }])
     }
 
-    fn get_primary_argument(
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        match tool_name {
+            "bash" => Ok("bash"),
+            _ => Err(ToolError::execution("bash provider received another tool")),
+        }
+    }
+
+    fn get_permission_resource(
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<String, ToolError> {
-        if name != "bash" {
-            return Err(ToolError::execution("bash provider received another tool"));
-        }
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        let permission_name = Self::get_permission_name(name)?;
         let args: BashArgs = parse_args("bash", arguments.clone())?;
         if args.command.trim().is_empty() {
             return Err(ToolError::execution("command must not be empty"));
         }
-        Ok(args.command)
+        Ok((permission_name, Some(args.command)))
     }
 
     fn get_display_argument(
@@ -133,7 +139,9 @@ impl ToolProvider for BashTool {
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
-        let command = self.get_primary_argument(name, arguments)?;
+        let (_, Some(command)) = self.get_permission_resource(name, arguments)? else {
+            return Err(ToolError::execution("bash permission resource is missing"));
+        };
         Ok(compact_command_line(&command))
     }
 
@@ -371,15 +379,15 @@ mod tests {
     use super::{BashTool, resolve_executable_in_path};
 
     #[test]
-    fn primary_argument_is_the_command() {
+    fn permission_resource_is_the_command() {
         let tool = BashTool::new("/tmp");
         assert_eq!(
-            tool.get_primary_argument("bash", &serde_json::json!({"command":"git status"}))
-                .expect("primary"),
-            "git status"
+            tool.get_permission_resource("bash", &serde_json::json!({"command":"git status"}))
+                .expect("permission resource"),
+            ("bash", Some("git status".into()))
         );
         assert!(matches!(
-            tool.get_primary_argument("bash", &serde_json::json!({"command":"   "})),
+            tool.get_permission_resource("bash", &serde_json::json!({"command":"   "})),
             Err(ToolError::Failed(_))
         ));
     }
@@ -459,7 +467,10 @@ mod tests {
     async fn whole_command_label_is_one_resource() {
         let root = tempfile::tempdir().expect("root");
         let prepared = prepare(root.path(), "echo one; echo one").await;
-        assert_eq!(prepared.policy_labels(), ["echo one; echo one"]);
+        assert_eq!(
+            prepared.policy_labels(),
+            [Some("echo one; echo one".into())]
+        );
         assert_eq!(
             prepared.operation().resources()[0].capability,
             PermissionAction::Bash
@@ -486,7 +497,7 @@ mod tests {
             );
         }
         let env = prepare(root.path(), "cat .env").await;
-        assert_eq!(env.policy_labels(), ["cat .env"]);
+        assert_eq!(env.policy_labels(), [Some("cat .env".into())]);
         let decision = PermissionPipeline::default().decide_operation(
             &policy(vec![
                 rule(PermissionAction::Bash, "*", PermissionEffect::Allow),
@@ -503,7 +514,10 @@ mod tests {
     async fn compound_command_is_one_whole_command_resource() {
         let root = tempfile::tempdir().expect("root");
         let prepared = prepare(root.path(), "git status && rm -rf x").await;
-        assert_eq!(prepared.policy_labels(), ["git status && rm -rf x"]);
+        assert_eq!(
+            prepared.policy_labels(),
+            [Some("git status && rm -rf x".into())]
+        );
         assert_eq!(
             prepared.normalized_arguments(),
             &serde_json::json!({"command":"git status && rm -rf x"})
@@ -563,7 +577,7 @@ mod tests {
     async fn simple_command_is_matched_as_itself() {
         let root = tempfile::tempdir().expect("root");
         let prepared = prepare(root.path(), "pwd").await;
-        assert_eq!(prepared.policy_labels(), ["pwd"]);
+        assert_eq!(prepared.policy_labels(), [Some("pwd".into())]);
         let decision = PermissionPipeline::default().decide_operation(
             &policy(vec![rule(
                 PermissionAction::Bash,

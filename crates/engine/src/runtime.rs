@@ -305,7 +305,7 @@ struct ApprovalToolInput<'a> {
 
 struct ModelApprovalInput<'a> {
     operation: &'a PreparedOperationIdentity,
-    policy_labels: &'a [String],
+    policy_labels: &'a [Option<String>],
     executor: PreparedExecutorCell,
     message: Option<String>,
     tool: ApprovalToolInput<'a>,
@@ -313,6 +313,7 @@ struct ModelApprovalInput<'a> {
 
 struct PreparedToolCall {
     call: ToolCall,
+    permission_name: Option<String>,
     presentation: ToolCallPresentation,
     prepared: Result<PreparedTool, ToolFailure>,
 }

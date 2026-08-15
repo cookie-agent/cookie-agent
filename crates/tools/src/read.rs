@@ -55,6 +55,7 @@ impl ToolProvider for ReadTool {
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             name: "read".into(),
+            permission_name: Self::get_permission_name("read")?.into(),
             description:
                 "Read a descriptor-bound file or directory snapshot using a zero-based offset."
                     .into(),
@@ -62,21 +63,29 @@ impl ToolProvider for ReadTool {
         }])
     }
 
-    fn get_primary_argument(
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        match tool_name {
+            "read" => Ok("read"),
+            _ => Err(ToolError::execution("read provider received another tool")),
+        }
+    }
+
+    fn get_permission_resource(
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<String, ToolError> {
-        if name != "read" {
-            return Err(ToolError::execution("read provider received another tool"));
-        }
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        let permission_name = Self::get_permission_name(name)?;
         let args: ReadArgs = parse_args("read", arguments.clone())?;
         if args.file_path.is_empty() {
             return Err(ToolError::execution("filePath must not be empty"));
         }
-        Ok(crate::permission_path_label(
-            &args.file_path,
-            &self.workspace,
+        Ok((
+            permission_name,
+            Some(crate::permission_path_label(
+                &args.file_path,
+                &self.workspace,
+            )),
         ))
     }
 
@@ -281,19 +290,19 @@ mod tests {
     use super::{ReadTool, directory_page, text_page};
 
     #[test]
-    fn primary_argument_is_the_file_path() {
+    fn permission_resource_is_the_file_path() {
         let tool = ReadTool::new("/tmp");
         assert_eq!(
-            tool.get_primary_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
-                .expect("primary"),
-            "src/lib.rs"
+            tool.get_permission_resource("read", &serde_json::json!({"filePath":"src/lib.rs"}))
+                .expect("permission resource"),
+            ("read", Some("src/lib.rs".into()))
         );
         assert!(matches!(
-            tool.get_primary_argument("read", &serde_json::json!({})),
+            tool.get_permission_resource("read", &serde_json::json!({})),
             Err(ToolError::Failed(_))
         ));
         assert!(matches!(
-            tool.get_primary_argument(
+            tool.get_permission_resource(
                 "read",
                 &serde_json::json!({"filePath":"src/lib.rs","byteOffset":0})
             ),
@@ -510,13 +519,13 @@ mod tests {
         );
         assert_eq!(
             prepared.policy_labels(),
-            [external.path().display().to_string()]
+            [Some(external.path().display().to_string())]
         );
         assert_eq!(
             ReadTool::new(workspace.path())
-                .get_primary_argument("read", prepared.normalized_arguments())
-                .expect("primary from prepared args"),
-            external.path().display().to_string()
+                .get_permission_resource("read", prepared.normalized_arguments())
+                .expect("resource from prepared args"),
+            ("read", Some(external.path().display().to_string()))
         );
     }
 
@@ -526,12 +535,12 @@ mod tests {
         fs::create_dir(workspace.path().join("nested")).expect("nested");
         fs::write(workspace.path().join("nested/value.txt"), "value").expect("fixture");
         let prepared = prepared(workspace.path(), "nested/value.txt").await;
-        assert_eq!(prepared.policy_labels(), ["nested/value.txt"]);
+        assert_eq!(prepared.policy_labels(), [Some("nested/value.txt".into())]);
         assert_eq!(
             ReadTool::new(workspace.path())
-                .get_primary_argument("read", prepared.normalized_arguments())
-                .expect("primary from prepared args"),
-            "nested/value.txt"
+                .get_permission_resource("read", prepared.normalized_arguments())
+                .expect("resource from prepared args"),
+            ("read", Some("nested/value.txt".into()))
         );
     }
 

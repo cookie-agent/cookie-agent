@@ -452,7 +452,12 @@ impl Engine {
                     )
                     .await;
                 let operation_fingerprint = prepared_call.prepared.as_ref().map_or_else(
-                    |_| fallback_operation_fingerprint(&prepared_call.call),
+                    |_| {
+                        fallback_operation_fingerprint(
+                            &prepared_call.call,
+                            prepared_call.permission_name.as_deref(),
+                        )
+                    },
                     |prepared| OperationFingerprint::from_prepared_operation(prepared.operation()),
                 );
                 self.append(

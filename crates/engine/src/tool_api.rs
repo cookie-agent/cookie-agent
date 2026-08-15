@@ -25,9 +25,12 @@ pub struct SessionToolContext {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolSpec {
     pub name: String,
+    pub permission_name: String,
     pub description: String,
     pub parameters: Value,
 }
+
+pub(crate) const UNSCOPED_PERMISSION_RESOURCE_DISPLAY: &str = "<permission-name-only>";
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolCall {
     pub id: ToolCallId,
@@ -257,7 +260,7 @@ pub trait PreparedExecutor: Send + Sync {
 
 pub struct PreparedTool {
     pub(crate) operation: PreparedOperationIdentity,
-    pub(crate) policy_labels: Vec<String>,
+    pub(crate) policy_labels: Vec<Option<String>>,
     pub(crate) normalized_arguments: serde_json::Value,
     pub(crate) serialization_key: Option<PreparedSerializationKey>,
     pub(crate) executor: PreparedExecutorCell,
@@ -285,7 +288,7 @@ impl PreparedTool {
         let policy_labels = operation
             .resources()
             .iter()
-            .map(|resource| resource.canonical.as_str().to_owned())
+            .map(|resource| Some(resource.canonical.as_str().to_owned()))
             .collect();
         Ok(Self {
             operation,
@@ -320,15 +323,17 @@ impl PreparedTool {
                 ));
             }
         }
-        self.policy_labels = labels;
+        self.policy_labels = labels.into_iter().map(Some).collect();
         Ok(self)
     }
 
-    pub fn with_primary_argument_label(mut self, primary: String) -> Result<Self, ToolError> {
-        if primary.is_empty() {
-            return Err(ToolError::execution("primary argument must not be empty"));
+    pub fn with_permission_resource(mut self, resource: Option<String>) -> Result<Self, ToolError> {
+        if resource.as_ref().is_some_and(String::is_empty) {
+            return Err(ToolError::execution(
+                "permission resource must not be empty",
+            ));
         }
-        self.policy_labels.fill(primary);
+        self.policy_labels.fill(resource);
         Ok(self)
     }
 
@@ -338,7 +343,7 @@ impl PreparedTool {
     }
 
     #[must_use]
-    pub fn policy_labels(&self) -> &[String] {
+    pub fn policy_labels(&self) -> &[Option<String>] {
         &self.policy_labels
     }
 }
@@ -346,7 +351,14 @@ impl PreparedTool {
 #[async_trait]
 pub trait ToolProvider: Send + Sync {
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError>;
-    fn get_primary_argument(&self, name: &str, arguments: &Value) -> Result<String, ToolError>;
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError>
+    where
+        Self: Sized;
+    fn get_permission_resource(
+        &self,
+        tool_name: &str,
+        arguments: &Value,
+    ) -> Result<(&'static str, Option<String>), ToolError>;
     fn get_display_argument(&self, name: &str, arguments: &Value) -> Result<String, ToolError>;
 
     fn presentation(&self, call: &ToolCall) -> ToolCallPresentation {
@@ -427,5 +439,19 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("must not be null"));
+    }
+
+    #[test]
+    fn absent_permission_resource_sets_the_loose_policy_marker() {
+        let prepared = PreparedTool::new(
+            operation(),
+            serde_json::json!({}),
+            None,
+            Box::new(NoopExecutor),
+        )
+        .expect("prepared tool")
+        .with_permission_resource(None)
+        .expect("loose permission resource");
+        assert_eq!(prepared.policy_labels(), [None]);
     }
 }

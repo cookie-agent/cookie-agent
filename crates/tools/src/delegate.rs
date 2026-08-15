@@ -115,24 +115,21 @@ impl DelegateToolProvider {
                 vec![resource],
                 &cwd,
             )?,
-            policy_labels: vec![agent_type.to_string()],
+            permission_resource: Some(agent_type.to_string()),
         })
     }
 
-    fn session_operation(
-        &self,
+    fn unscoped_operation(
         ctx: &ToolPreparationContext,
         name: &str,
         args: &impl Serialize,
         operation_name: &str,
-        session_id: SessionId,
     ) -> Result<PreparedToolParts, ToolError> {
-        let session = session_id.to_string();
         let resource = prepared_resource(
             PermissionAction::Delegate,
-            "session",
-            session.as_bytes(),
-            session.as_bytes(),
+            "permission",
+            b"delegate",
+            b"delegate",
             PreparedBindingLifetime::RestartStable,
             ApprovalResourceSource::PrimaryOperation,
         )?;
@@ -145,14 +142,14 @@ impl DelegateToolProvider {
                 vec![resource],
                 &cwd,
             )?,
-            policy_labels: vec![session],
+            permission_resource: None,
         })
     }
 }
 
 struct PreparedToolParts {
     operation: cookie_agent_protocol::PreparedOperationIdentity,
-    policy_labels: Vec<String>,
+    permission_resource: Option<String>,
 }
 
 #[async_trait]
@@ -165,6 +162,7 @@ impl ToolProvider for DelegateToolProvider {
             vec![
                 ToolSpec {
                     name: "delegate_subagent".into(),
+                    permission_name: Self::get_permission_name("delegate_subagent")?.into(),
                     description: "Delegate a self-contained prompt to an allowed subagent.".into(),
                     parameters: serde_json::json!({
                         "type":"object","additionalProperties":false,
@@ -181,6 +179,7 @@ impl ToolProvider for DelegateToolProvider {
                 },
                 ToolSpec {
                     name: "get_subagent_result".into(),
+                    permission_name: Self::get_permission_name("get_subagent_result")?.into(),
                     description: "Read a paginated result from an owned subagent session.".into(),
                     parameters: serde_json::json!({
                         "type":"object","additionalProperties":false,
@@ -195,6 +194,7 @@ impl ToolProvider for DelegateToolProvider {
                 },
                 ToolSpec {
                     name: "steer_subagent".into(),
+                    permission_name: Self::get_permission_name("steer_subagent")?.into(),
                     description:
                         "Send a user message to an owned running or queued subagent session.".into(),
                     parameters: serde_json::json!({
@@ -208,6 +208,7 @@ impl ToolProvider for DelegateToolProvider {
                 },
                 ToolSpec {
                     name: "cancel_subagent".into(),
+                    permission_name: Self::get_permission_name("cancel_subagent")?.into(),
                     description: "Cancel an owned subagent session.".into(),
                     parameters: serde_json::json!({
                         "type":"object","additionalProperties":false,
@@ -222,20 +223,25 @@ impl ToolProvider for DelegateToolProvider {
         })
     }
 
-    fn get_primary_argument(
-        &self,
-        name: &str,
-        arguments: &serde_json::Value,
-    ) -> Result<String, ToolError> {
-        match name {
-            "delegate_subagent" => Ok(parse_delegate(arguments)?.agent_type.to_string()),
-            "get_subagent_result" => Ok(parse_result(arguments)?.session_id.to_string()),
-            "steer_subagent" => Ok(parse_steer(arguments)?.session_id.to_string()),
-            "cancel_subagent" => Ok(parse_cancel(arguments)?.session_id.to_string()),
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        match tool_name {
+            "delegate_subagent" | "get_subagent_result" | "steer_subagent" | "cancel_subagent" => {
+                Ok("delegate")
+            }
             _ => Err(ToolError::execution(
                 "delegate provider received another tool",
             )),
         }
+    }
+
+    fn get_permission_resource(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        let permission_name = Self::get_permission_name(name)?;
+        let resource = delegate_permission_resource(name, arguments)?;
+        Ok((permission_name, resource))
     }
 
     fn get_display_argument(
@@ -245,7 +251,12 @@ impl ToolProvider for DelegateToolProvider {
     ) -> Result<String, ToolError> {
         match name {
             "delegate_subagent" => Ok(parse_delegate(arguments)?.description),
-            _ => self.get_primary_argument(name, arguments),
+            "get_subagent_result" => Ok(parse_result(arguments)?.session_id.to_string()),
+            "steer_subagent" => Ok(parse_steer(arguments)?.session_id.to_string()),
+            "cancel_subagent" => Ok(parse_cancel(arguments)?.session_id.to_string()),
+            _ => Err(ToolError::execution(
+                "delegate provider received another tool",
+            )),
         }
     }
 
@@ -288,11 +299,10 @@ impl ToolProvider for DelegateToolProvider {
                     return Err(ToolError::execution("limit must be positive"));
                 }
                 args.limit = Some(limit);
-                let agent = self
-                    .engine
+                self.engine
                     .subagent_agent_type(ctx.session, args.session_id)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
-                let parts = self.operation(&ctx, "get_subagent_result", &args, "read", &agent)?;
+                let parts = Self::unscoped_operation(&ctx, "get_subagent_result", &args, "read")?;
                 let normalized = serde_json::to_value(&args)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
                 let executor = DelegateExecutor::GetResult {
@@ -303,11 +313,10 @@ impl ToolProvider for DelegateToolProvider {
             }
             "cancel_subagent" => {
                 let args = parse_cancel(&call.arguments)?;
-                let agent = self
-                    .engine
+                self.engine
                     .subagent_agent_type(ctx.session, args.session_id)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
-                let parts = self.operation(&ctx, "cancel_subagent", &args, "cancel", &agent)?;
+                let parts = Self::unscoped_operation(&ctx, "cancel_subagent", &args, "cancel")?;
                 let normalized = serde_json::to_value(&args)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
                 let executor = DelegateExecutor::Cancel {
@@ -324,13 +333,7 @@ impl ToolProvider for DelegateToolProvider {
                 self.engine
                     .subagent_agent_type(ctx.session, args.session_id)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
-                let parts = self.session_operation(
-                    &ctx,
-                    "steer_subagent",
-                    &args,
-                    "steer",
-                    args.session_id,
-                )?;
+                let parts = Self::unscoped_operation(&ctx, "steer_subagent", &args, "steer")?;
                 let normalized = serde_json::to_value(&args)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
                 let executor = DelegateExecutor::Steer {
@@ -345,8 +348,24 @@ impl ToolProvider for DelegateToolProvider {
                 ));
             }
         };
-        PreparedTool::new(parts.operation, normalized, None, Box::new(executor))?
-            .with_policy_labels(parts.policy_labels)
+        let prepared = PreparedTool::new(parts.operation, normalized, None, Box::new(executor))?;
+        match parts.permission_resource {
+            Some(resource) => prepared.with_policy_labels(vec![resource]),
+            None => prepared.with_permission_resource(None),
+        }
+    }
+}
+
+fn delegate_permission_resource(
+    name: &str,
+    arguments: &serde_json::Value,
+) -> Result<Option<String>, ToolError> {
+    match name {
+        "delegate_subagent" => Ok(Some(parse_delegate(arguments)?.agent_type.to_string())),
+        "get_subagent_result" | "steer_subagent" | "cancel_subagent" => Ok(None),
+        _ => Err(ToolError::execution(
+            "delegate provider received another tool",
+        )),
     }
 }
 
@@ -453,12 +472,157 @@ fn parse_steer(arguments: &serde_json::Value) -> Result<SteerArgs, ToolError> {
 
 #[cfg(test)]
 mod tests {
-    use cookie_agent_engine::ToolError;
+    use cookie_agent_engine::{
+        ToolError, ToolPreparationContext, ToolProvider, permissions::ApprovalStore,
+    };
+    use cookie_agent_protocol::{
+        ApprovalId, ApprovalResourceSource, OperationFingerprint, PermissionAction,
+        PreparedBindingLifetime, RunId, SessionId, TreeApprovalGrant, TreeApprovalGrantId,
+    };
+    use serde::Serialize;
 
-    use super::{parse_delegate, parse_steer};
+    use super::{
+        CancelArgs, DelegateToolProvider, GetResultArgs, SteerArgs, delegate_permission_resource,
+        parse_delegate, parse_steer,
+    };
+
+    fn assert_legacy_grant_does_not_match(
+        name: &str,
+        operation_name: &str,
+        args: &impl Serialize,
+        old_resource_kind: &str,
+        old_binding: &[u8],
+    ) {
+        let context = ToolPreparationContext {
+            session: SessionId::new_v7(),
+            run: RunId::new_v7(),
+            cwd: "/tmp".into(),
+            workspace_root: "/tmp".into(),
+            turn_context: crate::test_turn_context(),
+        };
+        let current =
+            DelegateToolProvider::unscoped_operation(&context, name, args, operation_name)
+                .expect("current unscoped operation")
+                .operation;
+        let old_resource = crate::prepared_resource(
+            PermissionAction::Delegate,
+            old_resource_kind,
+            old_binding,
+            old_binding,
+            PreparedBindingLifetime::RestartStable,
+            ApprovalResourceSource::PrimaryOperation,
+        )
+        .expect("legacy scoped resource");
+        let cwd = crate::fs_cap::cwd_context_bytes(&context.cwd).expect("cwd context");
+        let old = crate::prepared_operation(
+            name,
+            args,
+            vec![(PermissionAction::Delegate, operation_name)],
+            vec![old_resource],
+            &cwd,
+        )
+        .expect("legacy scoped operation");
+        let root = SessionId::new_v7();
+        let store = ApprovalStore::default();
+        store.grant(TreeApprovalGrant {
+            grant_id: TreeApprovalGrantId::new_v7(),
+            root_session_id: root,
+            approval_id: ApprovalId::new_v7(),
+            operation_fingerprint: OperationFingerprint::from_prepared_operation(&old),
+            capabilities: old.capabilities().to_vec(),
+            resources: old.resources().to_vec(),
+            created_at: "2026-01-01T00:00:00Z".parse().expect("timestamp"),
+        });
+        assert!(store.matching(root, &current).is_none());
+    }
 
     #[test]
-    fn delegate_arguments_use_agent_as_primary_and_description_as_display() {
+    fn legacy_scoped_delegate_grants_do_not_match_unscoped_session_tools() {
+        let session_id = SessionId::new_v7();
+        assert_legacy_grant_does_not_match(
+            "get_subagent_result",
+            "read",
+            &GetResultArgs {
+                session_id,
+                wait: false,
+                offset: 0,
+                limit: Some(super::DEFAULT_RESULT_LIMIT),
+            },
+            "agent",
+            b"reviewer",
+        );
+        assert_legacy_grant_does_not_match(
+            "cancel_subagent",
+            "cancel",
+            &CancelArgs {
+                session_id,
+                reason: None,
+            },
+            "agent",
+            b"reviewer",
+        );
+        let session = session_id.to_string();
+        assert_legacy_grant_does_not_match(
+            "steer_subagent",
+            "steer",
+            &SteerArgs {
+                session_id,
+                message: "continue".into(),
+            },
+            "session",
+            session.as_bytes(),
+        );
+    }
+
+    #[test]
+    fn delegate_permission_metadata_distinguishes_spawn_from_session_tools() {
+        for name in [
+            "delegate_subagent",
+            "get_subagent_result",
+            "steer_subagent",
+            "cancel_subagent",
+        ] {
+            assert_eq!(
+                DelegateToolProvider::get_permission_name(name).expect("permission name"),
+                "delegate"
+            );
+        }
+        assert_eq!(
+            delegate_permission_resource(
+                "delegate_subagent",
+                &serde_json::json!({
+                    "description":"Review",
+                    "prompt":"Review this.",
+                    "agent_type":"reviewer"
+                })
+            )
+            .expect("spawn resource"),
+            Some("reviewer".into())
+        );
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
+        for (name, arguments) in [
+            (
+                "get_subagent_result",
+                serde_json::json!({"session_id":session_id}),
+            ),
+            (
+                "steer_subagent",
+                serde_json::json!({"session_id":session_id,"message":"continue"}),
+            ),
+            (
+                "cancel_subagent",
+                serde_json::json!({"session_id":session_id}),
+            ),
+        ] {
+            assert_eq!(
+                delegate_permission_resource(name, &arguments).expect("loose resource"),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn delegate_arguments_use_agent_as_permission_resource_and_description_as_display() {
         let arguments = serde_json::json!({
             "description":"Review API",
             "prompt":"Review the API in full.",

@@ -101,6 +101,7 @@ impl ToolProvider for TestDelegateProvider {
         Ok((!targets.is_empty())
             .then(|| ToolSpec {
                 name: "delegate_subagent".to_owned(),
+                permission_name: "delegate".to_owned(),
                 description: "Delegate scripted work".to_owned(),
                 parameters: serde_json::json!({
                     "type":"object",
@@ -120,19 +121,24 @@ impl ToolProvider for TestDelegateProvider {
             .collect())
     }
 
-    fn get_primary_argument(
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        match tool_name {
+            "delegate_subagent" => Ok("delegate"),
+            _ => Err(ToolError::execution(
+                "delegate provider received another tool",
+            )),
+        }
+    }
+
+    fn get_permission_resource(
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<String, ToolError> {
-        if name != "delegate_subagent" {
-            return Err(ToolError::execution(
-                "delegate provider received another tool",
-            ));
-        }
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        let permission_name = Self::get_permission_name(name)?;
         let args: TestDelegateArgs = serde_json::from_value(arguments.clone())
             .map_err(|error| ToolError::execution(error.to_string()))?;
-        Ok(args.agent_type.to_string())
+        Ok((permission_name, Some(args.agent_type.to_string())))
     }
 
     fn get_display_argument(
@@ -140,7 +146,8 @@ impl ToolProvider for TestDelegateProvider {
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
-        self.get_primary_argument(name, arguments)
+        let (_, resource) = self.get_permission_resource(name, arguments)?;
+        resource.ok_or_else(|| ToolError::execution("delegate permission resource is missing"))
     }
 
     async fn prepare(
@@ -248,6 +255,7 @@ impl ToolProvider for TestWriteProvider {
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             name: "write".to_owned(),
+            permission_name: "write".to_owned(),
             description: "Write a test value".to_owned(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -257,15 +265,22 @@ impl ToolProvider for TestWriteProvider {
         }])
     }
 
-    fn get_primary_argument(
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        match tool_name {
+            "write" => Ok("write"),
+            _ => Err(ToolError::execution("write provider received another tool")),
+        }
+    }
+
+    fn get_permission_resource(
         &self,
         name: &str,
         _arguments: &serde_json::Value,
-    ) -> Result<String, ToolError> {
-        if name != "write" {
-            return Err(ToolError::execution("write provider received another tool"));
-        }
-        Ok("approval-test.txt".into())
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        Ok((
+            Self::get_permission_name(name)?,
+            Some("approval-test.txt".into()),
+        ))
     }
 
     fn get_display_argument(
@@ -273,7 +288,8 @@ impl ToolProvider for TestWriteProvider {
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
-        self.get_primary_argument(name, arguments)
+        let (_, resource) = self.get_permission_resource(name, arguments)?;
+        resource.ok_or_else(|| ToolError::execution("write permission resource is missing"))
     }
 
     async fn prepare(
@@ -353,6 +369,7 @@ impl ToolProvider for TestRehydrationReadProvider {
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             name: "read".into(),
+            permission_name: "read".into(),
             description: "Test capability-bound read".into(),
             parameters: serde_json::json!({
                 "type":"object",
@@ -363,19 +380,25 @@ impl ToolProvider for TestRehydrationReadProvider {
         }])
     }
 
-    fn get_primary_argument(
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        match tool_name {
+            "read" => Ok("read"),
+            _ => Err(ToolError::execution("read provider received another tool")),
+        }
+    }
+
+    fn get_permission_resource(
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<String, ToolError> {
-        if name != "read" {
-            return Err(ToolError::execution("read provider received another tool"));
-        }
-        arguments
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        let permission_name = Self::get_permission_name(name)?;
+        let resource = arguments
             .get("filePath")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
-            .ok_or_else(|| ToolError::execution("missing filePath"))
+            .ok_or_else(|| ToolError::execution("missing filePath"))?;
+        Ok((permission_name, Some(resource)))
     }
 
     fn get_display_argument(
@@ -383,7 +406,8 @@ impl ToolProvider for TestRehydrationReadProvider {
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
-        self.get_primary_argument(name, arguments)
+        let (_, resource) = self.get_permission_resource(name, arguments)?;
+        resource.ok_or_else(|| ToolError::execution("read permission resource is missing"))
     }
 
     async fn prepare(
@@ -9160,27 +9184,27 @@ async fn root_run_and_current_delegation_reservation_reopen_exactly() {
 }
 
 #[test]
-fn test_providers_expose_mandatory_primary_arguments() {
+fn test_providers_expose_permission_resources() {
     let write = TestWriteProvider {
         executed: Arc::new(AtomicBool::new(false)),
     };
     assert_eq!(
         write
-            .get_primary_argument("write", &serde_json::json!({}))
-            .expect("write primary"),
-        "approval-test.txt"
+            .get_permission_resource("write", &serde_json::json!({}))
+            .expect("write resource"),
+        ("write", Some("approval-test.txt".into()))
     );
     let read = TestRehydrationReadProvider {
         executed: Arc::new(AtomicBool::new(false)),
         swap_after_prepare: false,
     };
     assert_eq!(
-        read.get_primary_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
-            .expect("read primary"),
-        "src/lib.rs"
+        read.get_permission_resource("read", &serde_json::json!({"filePath":"src/lib.rs"}))
+            .expect("read resource"),
+        ("read", Some("src/lib.rs".into()))
     );
     assert!(
-        read.get_primary_argument("read", &serde_json::json!({}))
+        read.get_permission_resource("read", &serde_json::json!({}))
             .is_err()
     );
     assert_eq!(
@@ -9205,6 +9229,7 @@ impl ToolProvider for DivergentReadProvider {
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             name: "read".into(),
+            permission_name: "read".into(),
             description: "Divergent prepared-label test".into(),
             parameters: serde_json::json!({
                 "type":"object",
@@ -9215,19 +9240,25 @@ impl ToolProvider for DivergentReadProvider {
         }])
     }
 
-    fn get_primary_argument(
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        match tool_name {
+            "read" => Ok("read"),
+            _ => Err(ToolError::execution("read provider received another tool")),
+        }
+    }
+
+    fn get_permission_resource(
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<String, ToolError> {
-        if name != "read" {
-            return Err(ToolError::execution("read provider received another tool"));
-        }
-        arguments
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        let permission_name = Self::get_permission_name(name)?;
+        let resource = arguments
             .get("filePath")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
-            .ok_or_else(|| ToolError::execution("missing filePath"))
+            .ok_or_else(|| ToolError::execution("missing filePath"))?;
+        Ok((permission_name, Some(resource)))
     }
 
     fn get_display_argument(
@@ -9235,7 +9266,8 @@ impl ToolProvider for DivergentReadProvider {
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
-        self.get_primary_argument(name, arguments)
+        let (_, resource) = self.get_permission_resource(name, arguments)?;
+        resource.ok_or_else(|| ToolError::execution("read permission resource is missing"))
     }
 
     async fn prepare(
@@ -9296,14 +9328,14 @@ impl PreparedExecutor for DivergentReadExecutor {
 }
 
 #[tokio::test]
-async fn permission_labels_come_from_get_primary_argument_on_prepared_arguments() {
+async fn permission_labels_come_from_prepared_permission_resource() {
     let provider = DivergentReadProvider;
     let raw = serde_json::json!({"filePath":"src/lib.rs"});
     assert_eq!(
         provider
-            .get_primary_argument("read", &raw)
-            .expect("raw primary"),
-        "src/lib.rs"
+            .get_permission_resource("read", &raw)
+            .expect("raw permission resource"),
+        ("read", Some("src/lib.rs".into()))
     );
     let prepared = provider
         .prepare(
@@ -9322,15 +9354,19 @@ async fn permission_labels_come_from_get_primary_argument_on_prepared_arguments(
         )
         .await
         .expect("prepare");
-    assert_eq!(prepared.policy_labels(), ["divergent-raw"]);
-    let labeled =
-        crate::runtime::tool_execution::apply_primary_argument_labels(&provider, "read", prepared)
-            .expect("overwrite");
+    assert_eq!(prepared.policy_labels(), [Some("divergent-raw".into())]);
+    let labeled = crate::runtime::tool_execution::apply_permission_resource(
+        &provider, "read", "read", prepared,
+    )
+    .expect("overwrite");
     assert_eq!(
         provider
-            .get_primary_argument("read", labeled.normalized_arguments())
-            .expect("prepared primary"),
-        "canonical/src/lib.rs"
+            .get_permission_resource("read", labeled.normalized_arguments())
+            .expect("prepared permission resource"),
+        ("read", Some("canonical/src/lib.rs".into()))
     );
-    assert_eq!(labeled.policy_labels(), ["canonical/src/lib.rs"]);
+    assert_eq!(
+        labeled.policy_labels(),
+        [Some("canonical/src/lib.rs".into())]
+    );
 }
