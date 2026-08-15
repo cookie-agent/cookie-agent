@@ -45,6 +45,7 @@ impl Engine {
         params: RunStartParams,
         admission: Option<(InvocationId, u64)>,
     ) -> Result<RunStartResult, EngineError> {
+        self.inner.mcp.await_eager_ready().await;
         if let Some((invocation_id, generation)) = admission
             && !self.admission_generation_live(invocation_id, generation)
         {

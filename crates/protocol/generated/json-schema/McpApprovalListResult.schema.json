@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "McpApprovalListResult",
+  "type": "object",
+  "properties": {
+    "approvals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/McpPendingApproval"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "approvals"
+  ],
+  "$defs": {
+    "McpPendingApproval": {
+      "type": "object",
+      "properties": {
+        "connection": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "server": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "server",
+        "digest",
+        "connection"
+      ]
+    }
+  }
+}

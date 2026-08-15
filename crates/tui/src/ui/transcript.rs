@@ -2001,6 +2001,7 @@ mod tests {
                 providers: BTreeMap::new(),
             },
             agents: BTreeMap::new(),
+            mcp_servers: BTreeMap::new(),
         };
         let engine = Engine::open(EngineOptions {
             data_dir: directory.path().join("data"),

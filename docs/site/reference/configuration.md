@@ -45,6 +45,7 @@ Only these keys are allowed at the top of `config.toml`. Everything except
 | `session_title` | table | defaults below | Automatic session titles |
 | `delegation` | table | defaults below | Delegation depth and concurrency |
 | `providers` | table | empty | Provider definitions |
+| `mcp` | table | empty | MCP tool server definitions |
 
 Minimal valid file:
 
@@ -106,6 +107,24 @@ Controls automatic session titles generated from the first user message.
 |---|---|---|---|
 | `max_depth` | integer | `3` | Maximum delegation depth below a root session. Must be greater than zero. |
 | `max_concurrency` | integer | `4` | Maximum concurrently running root-level background delegations. Excess calls queue FIFO, up to `4 × max_concurrency`; a full queue rejects admission. Foreground and nested delegations bypass this queue. A value of `0` is rejected. |
+
+## `[mcp.servers.<name>]`
+
+MCP server definitions are layered by server name. A workspace definition
+replaces the same user-level server and requires hash-pinned approval before it
+can connect. See the [MCP guide](../guide/mcp.md) for trust and naming behavior.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `command` | string | *(none)* | Stdio server executable. Exactly one of `command` or `url` is required. |
+| `args` | array of strings | empty | Command arguments; valid only with `command`. |
+| `env` | map of strings | empty | Command environment additions; valid only with `command`. |
+| `cwd` | string | *(none)* | Child working directory; valid only with `command`. |
+| `url` | string | *(none)* | Absolute HTTP or HTTPS Streamable HTTP endpoint. Exactly one of `url` or `command` is required. |
+| `headers` | map of strings | empty | Static request headers; valid only with `url`. |
+| `enabled` | boolean | `true` | Whether the server may connect. |
+| `lazy` | boolean | `false` | Defer connection and tool listing until first named use. |
+| `timeout_ms` | integer | `30000` | Positive timeout for connect, list, and call operations. |
 
 ## `[providers]`
 

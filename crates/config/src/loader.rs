@@ -32,6 +32,19 @@ const MAX_AGENT_BYTES: u64 = 256 * 1024;
 pub struct LoadedConfiguration {
     pub runtime: RuntimeConfig,
     pub agents: BTreeMap<AgentId, AgentDocument>,
+    pub mcp_servers: BTreeMap<String, LoadedMcpServer>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum McpServerSource {
+    User,
+    Workspace,
+}
+
+#[derive(Clone, Debug)]
+pub struct LoadedMcpServer {
+    pub source: McpServerSource,
+    pub config: crate::McpServerConfig,
 }
 
 impl LoadedConfiguration {
@@ -72,10 +85,23 @@ pub fn load_from_roots(
         providers: BTreeMap::new(),
     };
     let mut agents = BTreeMap::new();
+    let mut mcp_servers = BTreeMap::new();
     let mut provider_values = SensitiveProviderValues::new();
     for root in [user.as_ref(), workspace.as_ref()].into_iter().flatten() {
         if let Some(mut layer) = root.load_runtime()? {
             apply_settings(&mut runtime, &layer);
+            if let Some(mcp) = layer.mcp.take() {
+                let source = match root.source {
+                    AgentDocumentSource::User => McpServerSource::User,
+                    AgentDocumentSource::Workspace => McpServerSource::Workspace,
+                    AgentDocumentSource::BuiltIn => {
+                        unreachable!("configuration roots are authored")
+                    }
+                };
+                for (name, config) in mcp.servers {
+                    mcp_servers.insert(name, LoadedMcpServer { source, config });
+                }
+            }
             for (id, value) in std::mem::take(&mut layer.providers) {
                 provider_values.insert(id, value);
             }
@@ -96,7 +122,14 @@ pub fn load_from_roots(
     }
     AgentRegistry::validate_ref(&agents)?;
     validate_runtime(&runtime)?;
-    Ok(LoadedConfiguration { runtime, agents })
+    for (name, server) in &mcp_servers {
+        server.config.validate(name)?;
+    }
+    Ok(LoadedConfiguration {
+        runtime,
+        agents,
+        mcp_servers,
+    })
 }
 
 impl LayerRoot {
@@ -155,6 +188,7 @@ fn decode_runtime_layer(value: &mut toml::Value) -> Result<RawRuntimeLayer, Conf
         "context_compaction",
         "session_title",
         "delegation",
+        "mcp",
         "providers",
     ];
     let table = value

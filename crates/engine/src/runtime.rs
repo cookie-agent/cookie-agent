@@ -705,6 +705,7 @@ pub(crate) struct Inner {
     runtime_revision_index: Mutex<RuntimeRevisionIndex>,
     manifest_store: ModelSnapshotManifestStore,
     tools: Mutex<Vec<Arc<dyn ToolProvider>>>,
+    mcp: Arc<crate::McpRegistry>,
     approvals: ApprovalStore,
     permissions: PermissionPipeline,
     active: Mutex<HashMap<RunId, Arc<ActiveRun>>>,
@@ -779,6 +780,19 @@ impl Engine {
         });
         let store = SessionStore::open(&options.data_dir, &options.cwd)?;
         let artifacts = ArtifactStore::open(store.project_dir_path().join("artifacts"))?;
+        let mcp = Arc::new(
+            crate::McpRegistry::new(
+                options.config.mcp_servers.clone(),
+                store.project_dir_path().join("mcp-trust-grants.jsonl"),
+            )
+            .map_err(|error| EngineError::MissingTool(error.to_string()))?,
+        );
+        for provider in &options.tools {
+            mcp.reserve_provider(provider.as_ref())
+                .map_err(|error| EngineError::MissingTool(error.to_string()))?;
+        }
+        let mut tools = options.tools;
+        tools.push(mcp.clone());
         let journal = DelegationJournal::open(store.project_dir_path().join("delegations.jsonl"))?;
         let grant_journal = GrantInvalidationJournal::open(
             store.project_dir_path().join("grant-invalidations.jsonl"),
@@ -805,7 +819,8 @@ impl Engine {
                 runtime_notifications,
                 runtime_revision_index: Mutex::new(runtime_revision_index),
                 manifest_store,
-                tools: Mutex::new(options.tools),
+                tools: Mutex::new(tools),
+                mcp,
                 approvals: ApprovalStore::default(),
                 permissions: PermissionPipeline::default(),
                 active: Mutex::new(HashMap::new()),
@@ -871,6 +886,9 @@ impl Engine {
                 .map_err(|_| EngineError::ActorStopped)??;
         } else {
             engine.reconcile()?;
+        }
+        if let Some(runtime) = &engine.inner.runtime {
+            engine.inner.mcp.start_eager(runtime);
         }
         Ok(engine)
     }
@@ -1267,11 +1285,56 @@ impl Engine {
     /// Registers a tool provider after engine open, allowing providers that
     /// require an Engine (notably delegate) to break the construction cycle.
     pub fn register_tool_provider(&self, provider: Arc<dyn ToolProvider>) {
+        self.try_register_tool_provider(provider)
+            .expect("tool provider name collision");
+    }
+
+    pub fn try_register_tool_provider(
+        &self,
+        provider: Arc<dyn ToolProvider>,
+    ) -> Result<(), EngineError> {
+        self.inner
+            .mcp
+            .reserve_provider(provider.as_ref())
+            .map_err(|error| EngineError::MissingTool(error.to_string()))?;
         self.inner
             .tools
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(provider);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn mcp_statuses(&self) -> Vec<crate::McpServerStatus> {
+        self.inner.mcp.statuses()
+    }
+
+    #[must_use]
+    pub fn pending_mcp_approvals(&self) -> Vec<crate::McpApprovalRequest> {
+        self.inner.mcp.pending_approvals()
+    }
+
+    pub fn approve_project_mcp_server(
+        &self,
+        server: &str,
+        expected_digest: &cookie_agent_protocol::Sha256Digest,
+    ) -> Result<(), EngineError> {
+        self.inner
+            .mcp
+            .approve_project_server(server, expected_digest)
+            .map_err(|error| EngineError::MissingTool(error.to_string()))
+    }
+
+    pub fn reject_project_mcp_server(
+        &self,
+        server: &str,
+        expected_digest: &cookie_agent_protocol::Sha256Digest,
+    ) -> Result<(), EngineError> {
+        self.inner
+            .mcp
+            .reject_project_server(server, expected_digest)
+            .map_err(|error| EngineError::MissingTool(error.to_string()))
     }
 
     /// Stops new session mailbox traffic, cancels active work, and joins the
@@ -1316,6 +1379,7 @@ impl Engine {
         for run in active {
             run.cancellation.cancel();
         }
+        self.inner.mcp.shutdown().await;
         self.inner
             .actors
             .lock()

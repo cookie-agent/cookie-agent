@@ -4,7 +4,7 @@ cookie agent reads three independent configuration surfaces:
 
 | Surface | Location | Schema |
 |---|---|---|
-| Runtime and providers | `~/.config/cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` | 10 |
+| Runtime, providers, and MCP servers | `~/.config/cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` | 10 |
 | Agents | `~/.config/cookie_agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` | 4 |
 | TUI | `$XDG_CONFIG_HOME/cookie_agent/tui.toml` or `~/.config/cookie_agent/tui.toml` | 1 |
 
@@ -23,7 +23,7 @@ key-by-key reference, see [Configuration Reference](../reference/configuration.m
 There is no upward workspace search: configuration is loaded from the exact
 working directory the daemon started in. The user layer and the workspace layer
 are both optional. Workspace settings replace the corresponding user settings. A
-same-ID workspace provider or agent replaces the complete user definition;
+same-ID workspace provider, MCP server, or agent replaces the complete user definition;
 nested fields never merge. Unknown fields, wrong schema versions, and malformed
 values are rejected.
 
@@ -89,6 +89,8 @@ Validation rules that apply regardless of what you set:
   limit. Foreground and nested delegations bypass the queue.
 - Provider definitions are validated per provider ID (see
   [Providers](providers.md)).
+- MCP servers require exactly one stdio command or Streamable HTTP URL (see
+  [MCP servers](mcp.md)).
 
 ## Environment interpolation
 
@@ -125,7 +127,6 @@ limits:
   timeout_ms: 30000
   max_input_tokens: 16384
   max_output_tokens: 2048
-tools: [read, bash]
 permissions:
   read: allow
   write: deny

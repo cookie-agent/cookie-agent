@@ -2,7 +2,8 @@ use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt as _, sync::Ar
 
 use cookie_agent_config::{
     ApprovalConfig, ConfigSchemaVersion, ContextCompactionConfig, LoadedConfiguration,
-    RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
+    LoadedMcpServer, McpServerConfig, McpServerSource, RuntimeConfig, ServerConfig,
+    SessionTitleConfig, ToolOutputConfig,
 };
 use cookie_agent_engine::{Engine, EngineOptions};
 use cookie_agent_models::{
@@ -18,8 +19,9 @@ use cookie_agent_models::{
     },
 };
 use cookie_agent_protocol::{
-    AuthFieldName, AuthMethodId, CatalogRevision, ProviderId, ProviderSetupRecipeId,
-    RUNTIME_CHANGED_METHOD, RecipeCompilerVersion, SessionListParams,
+    AuthFieldName, AuthMethodId, CatalogRevision, McpApprovalDecision, McpApprovalRespondParams,
+    ProviderId, ProviderSetupRecipeId, RUNTIME_CHANGED_METHOD, RecipeCompilerVersion,
+    SessionListParams,
 };
 use jiff::Timestamp;
 use serde_json::{Value, json};
@@ -36,6 +38,10 @@ struct Harness {
 }
 
 fn harness() -> Harness {
+    harness_with_mcp(BTreeMap::new())
+}
+
+fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
     let directory = TempDir::new().expect("temp directory");
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
         .expect("private temp directory");
@@ -85,6 +91,7 @@ fn harness() -> Harness {
             providers: BTreeMap::new(),
         },
         agents: BTreeMap::new(),
+        mcp_servers,
     };
     let engine = Engine::open(EngineOptions {
         data_dir: directory.path().join("data"),
@@ -100,6 +107,74 @@ fn harness() -> Harness {
         engine,
         server,
     }
+}
+
+#[tokio::test]
+async fn mcp_project_approval_is_reachable_through_protocol() {
+    let config = |lazy| McpServerConfig {
+        command: Some("not-started".into()),
+        args: Vec::new(),
+        env: BTreeMap::new(),
+        cwd: None,
+        url: None,
+        headers: BTreeMap::new(),
+        enabled: true,
+        lazy,
+        timeout_ms: Some(1_000),
+    };
+    let harness = harness_with_mcp(BTreeMap::from([
+        (
+            "approved".into(),
+            LoadedMcpServer {
+                source: McpServerSource::Workspace,
+                config: config(true),
+            },
+        ),
+        (
+            "rejected".into(),
+            LoadedMcpServer {
+                source: McpServerSource::Workspace,
+                config: config(true),
+            },
+        ),
+    ]));
+    let client = Client::connect_in_process(Arc::clone(&harness.server));
+    client.handshake().await.expect("handshake");
+    let pending = client
+        .list_mcp_approvals()
+        .await
+        .expect("list MCP approvals")
+        .approvals;
+    assert_eq!(pending.len(), 2);
+    for (server, decision) in [
+        ("approved", McpApprovalDecision::Approve),
+        ("rejected", McpApprovalDecision::Reject),
+    ] {
+        let approval = pending
+            .iter()
+            .find(|approval| approval.server == server)
+            .expect("pending server");
+        let result = client
+            .respond_mcp_approval(McpApprovalRespondParams {
+                server: server.into(),
+                digest: approval.digest.clone(),
+                decision,
+            })
+            .await
+            .expect("respond to MCP approval");
+        assert_eq!(result.decision, decision);
+    }
+    assert!(
+        client
+            .list_mcp_approvals()
+            .await
+            .expect("list after responses")
+            .approvals
+            .is_empty()
+    );
+    client.shutdown();
+    harness.server.shutdown();
+    harness.engine.shutdown().await;
 }
 
 fn empty_catalog(label: &str) -> Arc<CatalogSnapshot> {
@@ -227,6 +302,7 @@ fn harness_with_catalog(
             providers: BTreeMap::new(),
         },
         agents: BTreeMap::new(),
+        mcp_servers: BTreeMap::new(),
     };
     let engine = Engine::open(EngineOptions {
         data_dir: directory.path().join("data"),

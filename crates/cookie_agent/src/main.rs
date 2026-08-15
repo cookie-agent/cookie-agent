@@ -17,9 +17,10 @@ use cookie_agent_models::{
 };
 use cookie_agent_protocol::{
     AuthMethodDescriptor, ClientConnectId, ClientRequestId, EffectiveAuthState,
-    ProviderConfigurationState, ProviderConnectResult, ProviderDescriptor,
-    ProviderDisconnectParams, ProviderDisconnectResult, ProviderId, ProviderSupportState,
-    RuntimeSnapshotResult, SafeCode, SafeSetupValue, parse_setup_value, setup_value_text,
+    McpApprovalDecision, McpApprovalRespondParams, ProviderConfigurationState,
+    ProviderConnectResult, ProviderDescriptor, ProviderDisconnectParams, ProviderDisconnectResult,
+    ProviderId, ProviderSupportState, RuntimeSnapshotResult, SafeCode, SafeSetupValue,
+    parse_setup_value, setup_value_text,
 };
 #[cfg(feature = "tui")]
 use cookie_agent_server::in_process_pair;
@@ -71,6 +72,23 @@ enum Command {
         #[arg(long, default_value = DEFAULT_WEBSOCKET_URL)]
         url: String,
     },
+    /// List or respond to pending project MCP server approvals.
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+        #[arg(long, default_value = DEFAULT_WEBSOCKET_URL)]
+        url: String,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq, Subcommand)]
+enum McpCommand {
+    /// List project MCP servers waiting for approval.
+    List,
+    /// Approve one pending project MCP server.
+    Approve { server: String },
+    /// Reject one pending project MCP server for this daemon lifetime.
+    Reject { server: String },
 }
 
 struct Runtime {
@@ -160,6 +178,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Command::Connect { provider_id, url }) => run_connect(&url, provider_id).await,
         Some(Command::Disconnect { provider_id, url }) => run_disconnect(&url, provider_id).await,
+        Some(Command::Mcp { command, url }) => run_mcp(&url, command).await,
         Some(Command::Attach { url }) => run_attached_tui(&url).await,
         None => {
             run_local_frontend(compose(workspace.as_deref().expect("local workspace")).await?).await
@@ -173,7 +192,12 @@ fn local_workspace(
 ) -> anyhow::Result<Option<PathBuf>> {
     if matches!(
         command,
-        Some(Command::Attach { .. } | Command::Connect { .. } | Command::Disconnect { .. })
+        Some(
+            Command::Attach { .. }
+                | Command::Connect { .. }
+                | Command::Disconnect { .. }
+                | Command::Mcp { .. },
+        )
     ) {
         Ok(None)
     } else {
@@ -232,11 +256,12 @@ async fn compose_with<T: CatalogTransport + 'static>(
         cwd: workspace.to_owned(),
         config: configuration,
         model_manager,
-        tools: Vec::new(),
+        tools: vec![Arc::new(BuiltinTools::new(workspace))],
     })
     .context("open manifests, rehydrate project state, and reconcile engine")?;
-    engine.register_tool_provider(Arc::new(BuiltinTools::new(workspace)));
-    engine.register_tool_provider(Arc::new(DelegateToolProvider::new(engine.clone())));
+    engine
+        .try_register_tool_provider(Arc::new(DelegateToolProvider::new(engine.clone())))
+        .context("register delegate tools")?;
     let server = Arc::new(Server::new(engine.clone()));
     let catalog_refresh_shutdown = CancellationToken::new();
     let catalog_refresh_task = tokio::spawn(run_catalog_refresh_loop(
@@ -447,6 +472,82 @@ async fn run_disconnect(url: &str, provider_id: Option<String>) -> anyhow::Resul
         result.provider_id,
         result.runtime.snapshot.runtime_revision,
         if result.replayed { " (replayed)" } else { "" }
+    );
+    Ok(())
+}
+
+async fn run_mcp(url: &str, command: McpCommand) -> anyhow::Result<()> {
+    let client = Client::connect_websocket(url).await?;
+    client.handshake().await.context("handshake with daemon")?;
+    let pending = client
+        .list_mcp_approvals()
+        .await
+        .context("mcp.approval.list failed")?
+        .approvals;
+    match command {
+        McpCommand::List => {
+            if pending.is_empty() {
+                println!("No project MCP servers are pending approval.");
+            }
+            for approval in pending {
+                println!(
+                    "{}\n  digest: {}\n  connection:\n{}",
+                    approval.server,
+                    approval.digest,
+                    approval
+                        .connection
+                        .lines()
+                        .map(|line| format!("    {line}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+            }
+            Ok(())
+        }
+        McpCommand::Approve { server } => {
+            respond_mcp_cli(&client, pending, server, McpApprovalDecision::Approve).await
+        }
+        McpCommand::Reject { server } => {
+            respond_mcp_cli(&client, pending, server, McpApprovalDecision::Reject).await
+        }
+    }
+}
+
+async fn respond_mcp_cli(
+    client: &Client,
+    pending: Vec<cookie_agent_protocol::McpPendingApproval>,
+    server: String,
+    decision: McpApprovalDecision,
+) -> anyhow::Result<()> {
+    let approval = pending
+        .into_iter()
+        .find(|approval| approval.server == server)
+        .with_context(|| format!("MCP server `{server}` is not pending approval"))?;
+    println!("Server: {}", approval.server);
+    println!("Digest: {}", approval.digest);
+    println!("Connection:\n{}", approval.connection);
+    let prompt = match decision {
+        McpApprovalDecision::Approve => "Approve this project MCP server? [y/N] ",
+        McpApprovalDecision::Reject => "Reject this project MCP server? [y/N] ",
+    };
+    if !prompt_confirmation(prompt)? {
+        anyhow::bail!("MCP approval response cancelled");
+    }
+    let result = client
+        .respond_mcp_approval(McpApprovalRespondParams {
+            server,
+            digest: approval.digest,
+            decision,
+        })
+        .await
+        .context("mcp.approval.respond failed")?;
+    println!(
+        "MCP server `{}` was {}.",
+        result.server,
+        match result.decision {
+            McpApprovalDecision::Approve => "approved",
+            McpApprovalDecision::Reject => "rejected",
+        }
     );
     Ok(())
 }
@@ -954,6 +1055,17 @@ mod tests {
         assert!(
             Cli::try_parse_from(["cookie", "connect", "openai", "--api-key", "sentinel"]).is_err()
         );
+        assert_eq!(
+            Cli::try_parse_from(["cookie", "mcp", "approve", "github"])
+                .unwrap()
+                .command,
+            Some(Command::Mcp {
+                command: McpCommand::Approve {
+                    server: "github".into()
+                },
+                url: DEFAULT_WEBSOCKET_URL.into(),
+            })
+        );
     }
 
     #[test]
@@ -968,6 +1080,10 @@ mod tests {
             },
             Command::Disconnect {
                 provider_id: None,
+                url: DEFAULT_WEBSOCKET_URL.into(),
+            },
+            Command::Mcp {
+                command: McpCommand::List,
                 url: DEFAULT_WEBSOCKET_URL.into(),
             },
         ] {

@@ -970,6 +970,10 @@ fn generated_roots_are_current_only_and_secret_free() {
         "RuntimeChangedNotification.schema.json",
         "ProviderDisconnectParams.schema.json",
         "ProviderDisconnectResult.schema.json",
+        "McpApprovalListParams.schema.json",
+        "McpApprovalListResult.schema.json",
+        "McpApprovalRespondParams.schema.json",
+        "McpApprovalRespondResult.schema.json",
         "ModelSnapshotManifestV1.schema.json",
         "StoredDelegationJournalRecord.schema.json",
     ] {

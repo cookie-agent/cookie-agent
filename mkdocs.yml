@@ -53,6 +53,7 @@ nav:
       - TUI: guide/tui.md
       - Sessions: guide/sessions.md
       - Permissions: guide/permissions.md
+      - MCP servers: guide/mcp.md
       - Agents: guide/agents.md
       - Configuration: guide/configuration.md
       - Providers: guide/providers.md

@@ -562,3 +562,44 @@ pub struct ApprovalListResult {
     pub approvals: Vec<ApprovalRecord>,
     pub tree_grants: Vec<TreeApprovalGrant>,
 }
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpApprovalListParams {}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpPendingApproval {
+    pub server: String,
+    pub digest: Sha256Digest,
+    pub connection: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpApprovalListResult {
+    pub approvals: Vec<McpPendingApproval>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum McpApprovalDecision {
+    Approve,
+    Reject,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpApprovalRespondParams {
+    pub server: String,
+    pub digest: Sha256Digest,
+    pub decision: McpApprovalDecision,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpApprovalRespondResult {
+    pub server: String,
+    pub digest: Sha256Digest,
+    pub decision: McpApprovalDecision,
+}

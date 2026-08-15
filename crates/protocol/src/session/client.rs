@@ -15,7 +15,8 @@ use std::{
 use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
     ClientHello, EventPayload, EventSubscriptionMessage, EventsSubscribeParams,
-    EventsSubscribeResult, JsonRpcError, JsonRpcId, MessageFrame, Notification, OutputDelta,
+    EventsSubscribeResult, JsonRpcError, JsonRpcId, McpApprovalListParams, McpApprovalListResult,
+    McpApprovalRespondParams, McpApprovalRespondResult, MessageFrame, Notification, OutputDelta,
     OutputGap, OutputSnapshotEnvelope, OutputStream, ProtocolVersion, ProviderConnectParams,
     ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, Response,
     RunCancelParams, RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams,
@@ -145,6 +146,11 @@ pub trait ClientProtocol: Send + Sync {
         &self,
         params: ApprovalListParams,
     ) -> Result<ApprovalListResult, ClientError>;
+    async fn list_mcp_approvals(&self) -> Result<McpApprovalListResult, ClientError>;
+    async fn respond_mcp_approval(
+        &self,
+        params: McpApprovalRespondParams,
+    ) -> Result<McpApprovalRespondResult, ClientError>;
     async fn subscribe_events(
         &self,
         session_id: SessionId,
@@ -575,6 +581,18 @@ impl Client {
         self.call("approval.list", &params).await
     }
 
+    pub async fn list_mcp_approvals(&self) -> Result<McpApprovalListResult, ClientError> {
+        self.call("mcp.approval.list", &McpApprovalListParams {})
+            .await
+    }
+
+    pub async fn respond_mcp_approval(
+        &self,
+        params: McpApprovalRespondParams,
+    ) -> Result<McpApprovalRespondResult, ClientError> {
+        self.call("mcp.approval.respond", &params).await
+    }
+
     /// Start an initial cursor replay. Its contents are delivered only through
     /// [`Client::subscribe_deliveries`].
     pub async fn subscribe_events(
@@ -773,6 +791,15 @@ impl ClientProtocol for Client {
     ) -> Result<ApprovalListResult, ClientError> {
         Client::list_approvals(self, params).await
     }
+    async fn list_mcp_approvals(&self) -> Result<McpApprovalListResult, ClientError> {
+        Client::list_mcp_approvals(self).await
+    }
+    async fn respond_mcp_approval(
+        &self,
+        params: McpApprovalRespondParams,
+    ) -> Result<McpApprovalRespondResult, ClientError> {
+        Client::respond_mcp_approval(self, params).await
+    }
     async fn subscribe_events(
         &self,
         session_id: SessionId,
@@ -908,6 +935,15 @@ where
         params: ApprovalListParams,
     ) -> Result<ApprovalListResult, ClientError> {
         self.deref().list_approvals(params).await
+    }
+    async fn list_mcp_approvals(&self) -> Result<McpApprovalListResult, ClientError> {
+        self.deref().list_mcp_approvals().await
+    }
+    async fn respond_mcp_approval(
+        &self,
+        params: McpApprovalRespondParams,
+    ) -> Result<McpApprovalRespondResult, ClientError> {
+        self.deref().respond_mcp_approval(params).await
     }
     async fn subscribe_events(
         &self,

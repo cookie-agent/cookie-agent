@@ -12,6 +12,63 @@ const CONFIG_SCHEMA: u32 = 10;
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 7419;
 
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub servers: BTreeMap<String, McpServerConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerConfig {
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    pub cwd: Option<String>,
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub lazy: bool,
+    pub timeout_ms: Option<u64>,
+}
+
+impl McpServerConfig {
+    pub(crate) fn validate(&self, name: &str) -> Result<(), ConfigError> {
+        let invalid_name =
+            name.is_empty() || name.len() > 128 || name.chars().any(char::is_control);
+        let transport_count = usize::from(self.command.is_some()) + usize::from(self.url.is_some());
+        let invalid_stdio = self.command.as_ref().is_some_and(String::is_empty)
+            || self.cwd.as_ref().is_some_and(String::is_empty);
+        let invalid_remote = self.url.as_ref().is_some_and(|url| {
+            url::Url::parse(url)
+                .map(|parsed| !matches!(parsed.scheme(), "http" | "https"))
+                .unwrap_or(true)
+        });
+        let mixed = self.command.is_some() && !self.headers.is_empty()
+            || self.url.is_some()
+                && (!self.args.is_empty() || !self.env.is_empty() || self.cwd.is_some());
+        if invalid_name
+            || transport_count != 1
+            || invalid_stdio
+            || invalid_remote
+            || mixed
+            || self.timeout_ms == Some(0)
+        {
+            return Err(ConfigError::McpServer {
+                server: name.to_owned(),
+                reason: "configure exactly one of command or url; stdio-only and remote-only fields may not be mixed, and timeout_ms must be positive".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Exact schema-10 marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConfigSchemaVersion;
@@ -70,6 +127,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) context_compaction: Option<ContextCompactionConfig>,
     pub(crate) session_title: Option<SessionTitleConfig>,
     pub(crate) delegation: Option<DelegationConfig>,
+    pub(crate) mcp: Option<McpConfig>,
     #[serde(default)]
     pub(crate) providers: SensitiveProviderValues,
 }

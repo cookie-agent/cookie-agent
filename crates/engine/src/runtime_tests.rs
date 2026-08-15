@@ -11,7 +11,8 @@ use std::{
 use async_trait::async_trait;
 use cookie_agent_config::{
     ApprovalConfig, ConfigSchemaVersion, ContextCompactionConfig, LoadedConfiguration,
-    RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig, load_from_roots,
+    LoadedMcpServer, McpServerConfig, McpServerSource, RuntimeConfig, ServerConfig,
+    SessionTitleConfig, ToolOutputConfig, load_from_roots,
 };
 use cookie_agent_models::{
     ModelManager,
@@ -549,6 +550,7 @@ fn fixture() -> Fixture {
             providers: BTreeMap::new(),
         },
         agents: BTreeMap::new(),
+        mcp_servers: BTreeMap::new(),
     };
     let engine = Engine::open(EngineOptions {
         data_dir: directory.path().join("data"),
@@ -1199,6 +1201,7 @@ fn custom_fixture_with_endpoint_primary_and_internal(
         compaction_buffer_tokens,
         generate_titles,
         None,
+        None,
     )
 }
 
@@ -1209,6 +1212,7 @@ fn custom_fixture_with_endpoint_primary_internal_and_concurrency(
     compaction_buffer_tokens: Option<u64>,
     generate_titles: bool,
     max_concurrency: Option<u32>,
+    mcp_server: Option<LoadedMcpServer>,
 ) -> (Fixture, RunSelection) {
     let directory = TempDir::new().expect("temp directory");
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
@@ -1278,6 +1282,9 @@ media = {}
             .expect("private internal agent");
     }
     let mut config = load_from_roots(None, Some(&project)).expect("loaded config");
+    if let Some(server) = mcp_server {
+        config.mcp_servers.insert("fixture".into(), server);
+    }
     config.runtime.session_title.generate_on_first_turn = generate_titles;
     if let Some(buffer_tokens) = compaction_buffer_tokens {
         config.runtime.context_compaction.trigger =
@@ -5674,6 +5681,99 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
     reopened.shutdown().await;
 }
 
+fn delayed_mcp_server(source: McpServerSource) -> LoadedMcpServer {
+    let mut env = BTreeMap::new();
+    env.insert("MCP_FIXTURE_LIST_DELAY_MS".into(), "100".into());
+    LoadedMcpServer {
+        source,
+        config: McpServerConfig {
+            command: Some("python3".into()),
+            args: vec![format!(
+                "{}/tests/fixtures/mcp_server.py",
+                env!("CARGO_MANIFEST_DIR")
+            )],
+            env,
+            cwd: None,
+            url: None,
+            headers: BTreeMap::new(),
+            enabled: true,
+            lazy: false,
+            timeout_ms: Some(5_000),
+        },
+    }
+}
+
+#[tokio::test]
+async fn immediate_first_run_waits_for_complete_eager_mcp_listing() {
+    let (endpoint, captured) = scripted_model_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
+        &endpoint,
+        "---\nschema: 4\ndescription: MCP readiness agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions:\n  mcp: allow\n---\nUse MCP.\n",
+        None,
+        None,
+        false,
+        None,
+        Some(delayed_mcp_server(McpServerSource::User)),
+    );
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("immediate session");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("immediate-mcp-run").expect("run ID"),
+            selection,
+            input: "use the available tools".into(),
+        })
+        .await
+        .expect("first run after engine open");
+    let status = fixture.engine.mcp_statuses().remove(0);
+    assert_eq!(status.state, crate::McpServerState::Connected);
+    assert_eq!(status.tools.len(), 2);
+    captured.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn immediate_run_after_project_approval_waits_for_mcp_listing() {
+    let (endpoint, captured) = scripted_model_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
+        &endpoint,
+        "---\nschema: 4\ndescription: Approved MCP readiness agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions:\n  mcp: allow\n---\nUse approved MCP.\n",
+        None,
+        None,
+        false,
+        None,
+        Some(delayed_mcp_server(McpServerSource::Workspace)),
+    );
+    let approval = fixture.engine.pending_mcp_approvals().remove(0);
+    fixture
+        .engine
+        .approve_project_mcp_server(&approval.server, &approval.digest)
+        .expect("approve project MCP server");
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session immediately after approval");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("post-approval-mcp-run").expect("run ID"),
+            selection,
+            input: "use the approved tools".into(),
+        })
+        .await
+        .expect("run immediately after approval");
+    let status = fixture.engine.mcp_statuses().remove(0);
+    assert_eq!(status.state, crate::McpServerState::Connected);
+    assert_eq!(status.tools.len(), 2);
+    captured.abort();
+    fixture.engine.shutdown().await;
+}
+
 #[tokio::test]
 async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
     let response = |text: &str| {
@@ -6786,6 +6886,7 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
         None,
         false,
         Some(1),
+        None,
     );
     fixture
         .engine
@@ -6964,6 +7065,7 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
         None,
         false,
         Some(1),
+        None,
     );
     fixture
         .engine

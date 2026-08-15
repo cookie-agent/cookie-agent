@@ -19,8 +19,10 @@ pub use agents::{
 };
 pub use error::ConfigError;
 pub use loader::{LoadedConfiguration, load, load_from_roots};
+pub use loader::{LoadedMcpServer, McpServerSource};
 pub use runtime::{
     ApprovalConfig, ConfigSchemaVersion, ContextCompactionConfig, ContextCompactionTrigger,
-    DelegationConfig, RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
+    DelegationConfig, McpConfig, McpServerConfig, RuntimeConfig, ServerConfig, SessionTitleConfig,
+    ToolOutputConfig,
 };
 pub use wildcard::simple_wildcard_match;

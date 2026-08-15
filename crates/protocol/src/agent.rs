@@ -85,6 +85,7 @@ pub enum PermissionAction {
     Write,
     Bash,
     Delegate,
+    Mcp,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]

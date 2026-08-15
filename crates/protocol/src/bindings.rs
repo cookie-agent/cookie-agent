@@ -99,6 +99,10 @@ macro_rules! protocol_roots {
             ApprovalRespondError,
             ApprovalListParams,
             ApprovalListResult,
+            McpApprovalListParams,
+            McpApprovalListResult,
+            McpApprovalRespondParams,
+            McpApprovalRespondResult,
             RuntimeSnapshotGetParams,
             RuntimeSnapshotResult,
             RuntimeChangedNotification,
@@ -240,6 +244,8 @@ pub const TYPESCRIPT_COMPILE_FIXTURE: &str = r#"/// <reference path="./globals.d
 import type {
   ClientHello,
   ModelSnapshotManifestV1,
+  McpApprovalListResult,
+  McpApprovalRespondParams,
   ProviderConnectResult,
   ProviderDisconnectParams,
   Request,
@@ -261,6 +267,8 @@ const roots: [
   ProviderConnectResult,
   ProviderDisconnectParams,
   ModelSnapshotManifestV1,
+  McpApprovalListResult,
+  McpApprovalRespondParams,
 ] | null = null;
 
 export { roots };

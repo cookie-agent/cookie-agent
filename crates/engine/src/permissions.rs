@@ -121,6 +121,7 @@ impl PermissionPipeline {
             "write" => Ok(PermissionAction::Write),
             "bash" => Ok(PermissionAction::Bash),
             "delegate" => Ok(PermissionAction::Delegate),
+            "mcp" => Ok(PermissionAction::Mcp),
             other => Err(PermissionError::UnknownAction(other.into())),
         }
     }
@@ -198,6 +199,11 @@ impl PermissionPipeline {
         let Ok(action) = Self::action_for_permission_name(permission_name) else {
             return true;
         };
+        if action == PermissionAction::Mcp
+            && !policy.permissions.iter().any(|rule| rule.action == action)
+        {
+            return false;
+        }
         let Some(deny) = policy
             .permissions
             .iter()
@@ -665,6 +671,83 @@ mod tests {
             specific_deny_with_wildcard_allow.effect,
             PermissionEffect::Allow
         );
+    }
+
+    #[test]
+    fn mcp_permissions_are_scoped_by_generated_tool_name() {
+        let mcp_policy = policy(vec![
+            rule(
+                "server-allow",
+                PermissionAction::Mcp,
+                "github_*",
+                PermissionEffect::Allow,
+            ),
+            rule(
+                "tool-deny",
+                PermissionAction::Mcp,
+                "github_delete_repo",
+                PermissionEffect::Deny,
+            ),
+        ]);
+        assert_eq!(
+            decide(
+                &mcp_policy,
+                resource(PermissionAction::Mcp, "github_search", b"search")
+            )
+            .effect,
+            PermissionEffect::Allow
+        );
+        assert_eq!(
+            decide(
+                &mcp_policy,
+                resource(PermissionAction::Mcp, "github_delete_repo", b"delete")
+            )
+            .effect,
+            PermissionEffect::Deny
+        );
+        assert_eq!(
+            decide(
+                &mcp_policy,
+                resource(PermissionAction::Mcp, "slack_search", b"unmatched")
+            )
+            .effect,
+            PermissionEffect::Ask
+        );
+        assert_eq!(
+            PermissionPipeline::action_for_permission_name("mcp").expect("MCP action"),
+            PermissionAction::Mcp
+        );
+        assert!(PermissionPipeline::tool_visible(&mcp_policy, "mcp"));
+        assert!(!PermissionPipeline::tool_visible(
+            &policy(Vec::new()),
+            "mcp"
+        ));
+        assert!(!PermissionPipeline::tool_visible(
+            &policy(vec![rule(
+                "deny-all",
+                PermissionAction::Mcp,
+                "*",
+                PermissionEffect::Deny,
+            )]),
+            "mcp"
+        ));
+        assert!(PermissionPipeline::tool_visible(
+            &policy(vec![
+                rule(
+                    "deny-all",
+                    PermissionAction::Mcp,
+                    "*",
+                    PermissionEffect::Deny,
+                ),
+                rule(
+                    "allow-github",
+                    PermissionAction::Mcp,
+                    "github_*",
+                    PermissionEffect::Allow,
+                ),
+            ]),
+            "mcp"
+        ));
     }
 
     #[test]

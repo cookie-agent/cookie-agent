@@ -351,6 +351,13 @@ impl PreparedTool {
 #[async_trait]
 pub trait ToolProvider: Send + Sync {
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError>;
+    /// Claims a currently undiscovered dynamic tool, allowing preparation to make it available.
+    fn permission_for_unlisted_tool(
+        &self,
+        _tool_name: &str,
+    ) -> Result<Option<&'static str>, ToolError> {
+        Ok(None)
+    }
     fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError>
     where
         Self: Sized;

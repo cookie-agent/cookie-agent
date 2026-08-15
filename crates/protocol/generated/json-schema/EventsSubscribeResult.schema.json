@@ -3261,7 +3261,8 @@
         "read",
         "write",
         "bash",
-        "delegate"
+        "delegate",
+        "mcp"
       ]
     },
     "PermissionEffect": {

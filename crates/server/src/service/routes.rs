@@ -2,17 +2,19 @@ use async_trait::async_trait;
 use cookie_agent_engine::{EngineError, session::SessionError};
 use cookie_agent_protocol::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondErrorCode, ApprovalRespondParams,
-    ApprovalRespondResult, EventsSubscribeParams, EventsSubscribeResult, ProviderConnectParams,
-    ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, RunCancelParams,
-    RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult,
-    RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
-    RuntimeSnapshotGetParams, RuntimeSnapshotResult, ServerContext, ServerFault, ServerProtocol,
-    SessionChildrenParams, SessionChildrenResult, SessionCompactParams, SessionCompactResult,
-    SessionCreateParams, SessionCreateResult, SessionForkParams, SessionForkResult,
-    SessionGetParams, SessionGetResult, SessionListParams, SessionListResult,
-    SessionRenameErrorCode, SessionRenameParams, SessionRenameResult, SessionResumeParams,
-    SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
-    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult,
+    ApprovalRespondResult, EventsSubscribeParams, EventsSubscribeResult, McpApprovalDecision,
+    McpApprovalListParams, McpApprovalListResult, McpApprovalRespondParams,
+    McpApprovalRespondResult, McpPendingApproval, ProviderConnectParams, ProviderConnectResult,
+    ProviderDisconnectParams, ProviderDisconnectResult, RunCancelParams, RunCancelResult,
+    RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerParams,
+    RunSteerResult, RunToolStdinParams, RunToolStdinResult, RuntimeSnapshotGetParams,
+    RuntimeSnapshotResult, ServerContext, ServerFault, ServerProtocol, SessionChildrenParams,
+    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
+    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
+    SessionListParams, SessionListResult, SessionRenameErrorCode, SessionRenameParams,
+    SessionRenameResult, SessionResumeParams, SessionResumeResult, SessionRevertParams,
+    SessionRevertResult, SessionSetPermissionModeParams, SessionSetPermissionModeResult,
+    SessionTreeParams, SessionTreeResult,
 };
 
 use super::Server;
@@ -189,6 +191,41 @@ impl ServerProtocol for Server {
         Ok(self
             .engine
             .list_approvals(params.root_session_id, params.status))
+    }
+
+    async fn list_mcp_approvals(&self, _: McpApprovalListParams) -> Result<McpApprovalListResult> {
+        Ok(McpApprovalListResult {
+            approvals: self
+                .engine
+                .pending_mcp_approvals()
+                .into_iter()
+                .map(|approval| McpPendingApproval {
+                    server: approval.server,
+                    digest: approval.digest,
+                    connection: approval.connection,
+                })
+                .collect(),
+        })
+    }
+
+    async fn respond_mcp_approval(
+        &self,
+        params: McpApprovalRespondParams,
+    ) -> Result<McpApprovalRespondResult> {
+        match params.decision {
+            McpApprovalDecision::Approve => self
+                .engine
+                .approve_project_mcp_server(&params.server, &params.digest),
+            McpApprovalDecision::Reject => self
+                .engine
+                .reject_project_mcp_server(&params.server, &params.digest),
+        }
+        .map_err(protocol_fault)?;
+        Ok(McpApprovalRespondResult {
+            server: params.server,
+            digest: params.digest,
+            decision: params.decision,
+        })
     }
 
     async fn runtime_snapshot(&self, _: RuntimeSnapshotGetParams) -> Result<RuntimeSnapshotResult> {

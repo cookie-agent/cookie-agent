@@ -1,7 +1,7 @@
 # Permissions
 
 Agent documents define an ordered permission map for `read`, `write`, `bash`,
-and `delegate`. Each action is either one bare effect or a resource-pattern map:
+`delegate`, and `mcp`. Each action is either one bare effect or a resource-pattern map:
 
 ```yaml
 permissions:
@@ -15,6 +15,9 @@ permissions:
   delegate:
     "reviewer": allow
     "*": deny
+  mcp:
+    "github_*": allow
+    github_delete_repo: deny
 ```
 
 Effects are `allow`, `ask`, and `deny`. A bare effect is equivalent to mapping
@@ -33,10 +36,15 @@ Tool providers publish a static permission name and an optional resource label:
 | `bash` | `bash` | Complete command string |
 | `delegate_subagent` | `delegate` | Target `agent_type` |
 | `get_subagent_result`, `steer_subagent`, `cancel_subagent` | `delegate` | None (permission-name-only check) |
+| `<server>_<tool>` | `mcp` | The complete generated MCP tool name |
 
 The `edit` tool uses the `write` permission action. Bash is not parsed into file
 operations: `cat .env` is controlled by `bash`, not `read`, and a pattern such
 as `git *` also matches a longer command beginning with `git`.
+
+MCP checks are always scoped. A rule such as `"github_*": allow` covers every
+tool from that generated server prefix, while a more-specific deny can override
+one tool. An unmatched MCP tool asks.
 
 When a tool has no resource label, only the permission's bare effect or `"*"`
 rule applies. Specific patterns are inapplicable rather than matching or
@@ -51,11 +59,15 @@ expand environment variables.
 Generic read allows do not override the built-in ask behavior for `.env` and
 `.env.*`; an exact or more-specific authored rule decides.
 
-## Tools and delegation
+## Tool availability and delegation
 
-The agent's `tools` list is a separate allowlist, and both the tool allowlist
-and permission rules must pass. A bare deny hides a tool. A mapped action hides
-it only when `"*": deny` exists with no non-deny exceptions.
+The agent's `tools` list remains a separate allowlist for the built-in tools,
+and both the allowlist and permission rules must pass for those. MCP tool
+availability is permission-driven instead: no `mcp` action hides them, as does
+a bare deny or `"*": deny` with no non-deny exception. Any non-fully-denied
+`mcp` entry exposes the action's tools; resource patterns still decide
+individual calls. Delegation is likewise absent unless the authored permission
+map names eligible targets.
 
 Delegation targets come from the keys in the `delegate` permission map and must
 resolve to enabled `subagent` or `all` agents. This action controls

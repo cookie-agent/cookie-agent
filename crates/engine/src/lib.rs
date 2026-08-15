@@ -5,6 +5,7 @@ mod delegation_api;
 pub mod events;
 pub mod grant_journal;
 pub mod journal;
+mod mcp;
 mod media;
 mod model_bridge;
 mod model_history;
@@ -23,6 +24,7 @@ mod tool_api;
 
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
+pub use mcp::{McpApprovalRequest, McpRegistry, McpServerState, McpServerStatus};
 pub use media::approved_media_type;
 pub use runtime::{ApprovalRespondFailure, Engine, EngineError, EngineHistoryView, EngineOptions};
 pub use runtime_snapshot::PublishedRuntime;

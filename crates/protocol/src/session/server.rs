@@ -9,14 +9,16 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
     ClientHello, ClientRenameId, ErrorResponse, EventsSubscribeParams, EventsSubscribeResult,
-    JsonRpcError, JsonRpcId, JsonRpcVersion, MessageFrame, Notification, ProviderConnectParams,
-    ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, Request, Response,
-    RunCancelParams, RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams,
-    RunStartResult, RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
-    RuntimeSnapshotGetParams, RuntimeSnapshotResult, ServerHello, SessionChildrenParams,
-    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
-    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
-    SessionId, SessionListParams, SessionListResult, SessionRenameChange, SessionRenameError,
+    JsonRpcError, JsonRpcId, JsonRpcVersion, McpApprovalListParams, McpApprovalListResult,
+    McpApprovalRespondParams, McpApprovalRespondResult, MessageFrame, Notification,
+    ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
+    ProviderDisconnectResult, Request, Response, RunCancelParams, RunCancelResult,
+    RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerParams,
+    RunSteerResult, RunToolStdinParams, RunToolStdinResult, RuntimeSnapshotGetParams,
+    RuntimeSnapshotResult, ServerHello, SessionChildrenParams, SessionChildrenResult,
+    SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
+    SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionId,
+    SessionListParams, SessionListResult, SessionRenameChange, SessionRenameError,
     SessionRenameErrorCode, SessionRenameParams, SessionRenameResult, SessionResumeParams,
     SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
     SessionSetPermissionModeResult, SessionTitle, SessionTreeParams, SessionTreeResult,
@@ -126,6 +128,14 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: ApprovalListParams,
     ) -> Result<ApprovalListResult, ServerFault>;
+    async fn list_mcp_approvals(
+        &self,
+        params: McpApprovalListParams,
+    ) -> Result<McpApprovalListResult, ServerFault>;
+    async fn respond_mcp_approval(
+        &self,
+        params: McpApprovalRespondParams,
+    ) -> Result<McpApprovalRespondResult, ServerFault>;
     async fn runtime_snapshot(
         &self,
         params: RuntimeSnapshotGetParams,
@@ -291,6 +301,8 @@ async fn dispatch<S: ServerProtocol>(
         "events.subscribe" => value(server.subscribe_events(decode(params)?, context).await?),
         "approval.respond" => value(server.respond_approval(decode(params)?).await?),
         "approval.list" => value(server.list_approvals(decode(params)?).await?),
+        "mcp.approval.list" => value(server.list_mcp_approvals(decode_default(params)?).await?),
+        "mcp.approval.respond" => value(server.respond_mcp_approval(decode(params)?).await?),
         crate::RUNTIME_SNAPSHOT_GET_METHOD if has_request_id => {
             value(server.runtime_snapshot(decode_default(params)?).await?)
         }

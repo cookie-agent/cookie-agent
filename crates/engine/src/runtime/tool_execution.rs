@@ -75,20 +75,26 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        let provider = providers.into_iter().find_map(|provider| {
+        let mut provider = providers.iter().find_map(|provider| {
             provider
                 .tools_for_session(&SessionToolContext {
                     session: session_id,
                 })
-                .ok()
-                .and_then(|tools| {
-                    tools
-                        .into_iter()
-                        .find(|tool| tool.name == call.name)
-                        .map(|tool| (provider, tool))
-                })
+                .ok()?
+                .into_iter()
+                .find(|tool| tool.name == call.name)
+                .map(|tool| (provider.clone(), tool.permission_name))
         });
-        let Some((provider, tool_spec)) = provider else {
+        if provider.is_none() {
+            provider = providers.iter().find_map(|candidate| {
+                candidate
+                    .permission_for_unlisted_tool(&call.name)
+                    .ok()
+                    .flatten()
+                    .map(|permission_name| (candidate.clone(), permission_name.to_owned()))
+            });
+        }
+        let Some((provider, permission_name)) = provider else {
             return PreparedToolCall {
                 prepared: Err(ToolFailure {
                     code: ToolCallFailureCode::ExecutionFailed,
@@ -99,10 +105,12 @@ impl Engine {
                 presentation: fallback_presentation,
             };
         };
-        let permission_name = tool_spec.permission_name;
         let delegation_tool = permission_name == "delegate";
+        let mcp_tool = permission_name == "mcp";
         let enabled = if delegation_tool {
             delegate_enabled
+        } else if mcp_tool {
+            true
         } else {
             enabled_tools.contains(&call.name)
         };
@@ -397,15 +405,22 @@ impl Engine {
                 .map_err(|error| EngineError::MissingTool(error.to_string()))?
             {
                 let delegation_tool = tool.permission_name == "delegate";
+                let mcp_tool = tool.permission_name == "mcp";
                 let enabled = if delegation_tool {
                     delegate_enabled
+                } else if mcp_tool {
+                    true
                 } else {
                     enabled_tools.contains(&tool.name)
                 };
-                if enabled
-                    && PermissionPipeline::tool_visible(&policy.agent, &tool.permission_name)
-                    && names.insert(tool.name.clone())
+                if enabled && PermissionPipeline::tool_visible(&policy.agent, &tool.permission_name)
                 {
+                    if !names.insert(tool.name.clone()) {
+                        return Err(EngineError::MissingTool(format!(
+                            "tool name `{}` is published by more than one provider",
+                            tool.name
+                        )));
+                    }
                     let schema = JsonSchema::new(tool.parameters).map_err(|error| {
                         EngineError::MissingTool(format!(
                             "tool `{}` has invalid JSON Schema: {error}",

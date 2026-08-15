@@ -1,8 +1,8 @@
 # Agents
 
 Agents are Markdown documents with YAML frontmatter. The filename is the agent
-ID. An agent defines the system prompt, the tools it may use, its permission
-rules, its model fallback chain, and its runtime limits. The engine also runs
+ID. An agent defines the system prompt, permission-controlled tool access, its
+model fallback chain, and its runtime limits. The engine also runs
 four built-in agents that are part of the harness itself.
 
 ## Agent document structure
@@ -15,13 +15,13 @@ schema: 4
 description: Reviews changes for correctness
 mode: subagent
 enabled: true
+tools: [read, bash]
 model_fallback:
   - { model: "openai/gpt-5", variant: null }
 limits:
   timeout_ms: 30000
   max_input_tokens: 16384
   max_output_tokens: 2048
-tools: [read, bash]
 permissions:
   read: allow
   write: deny
@@ -43,7 +43,6 @@ Review the requested change and report concrete findings.
 | `enabled` | boolean | *(required)* | Disabled agents are never runnable as roots, delegation targets, or internal backends. |
 | `model_fallback` | array | *(required for `primary`)* | Ordered model chain; see below. |
 | `limits` | table | defaults below | Timeouts and token bounds. |
-| `tools` | array of strings | *(required)* | Tool allowlist: `read`, `write`, `edit`, `bash` (plus the implicit subagent tools controlled by the `delegate` permission). At most 256 entries, no duplicates. |
 | `permissions` | table | *(required)* | Ordered action permission map; see [Permissions](permissions.md). At most 256 rules. |
 
 `limits` defaults to `timeout_ms = 30000`, `max_input_tokens = 16384`,
@@ -121,9 +120,8 @@ the built-in document through normal layering. The ID `default` is reserved for
 the engine-supplied fallback agent and cannot be authored at all.
 
 If no authored agent is runnable as a root, the engine synthesizes the built-in
-`default` coding agent bound to the first available model selection. Its prompt,
-tools (`read`, `write`, `edit`, `bash`), and the standard read/write/bash
-permission map are fixed by the engine.
+`default` coding agent bound to the first available model selection. Its prompt
+and standard read/write/bash permission map are fixed by the engine.
 
 ## Internal agents
 
@@ -168,7 +166,6 @@ limits:
   timeout_ms: 30000
   max_input_tokens: 16384
   max_output_tokens: 2048
-tools: []
 permissions: {}
 ---
 Summarize conversation context faithfully within the supplied bounds. Return summary text only.

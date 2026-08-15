@@ -212,6 +212,7 @@ mod tests {
                 providers,
             },
             agents: BTreeMap::from([(agent_id.clone(), test_agent_document(&agent_id))]),
+            mcp_servers: BTreeMap::new(),
         };
         let engine = Engine::open(EngineOptions {
             data_dir: directory.path().join("data"),
