@@ -1010,19 +1010,23 @@ SSE transport is not supported.</p>
 <p>Servers from <code>~/.config/cookie_agent/config.toml</code> are trusted. A server authored
 under <code>&lt;cwd&gt;/.cookie-agent/config.toml</code> remains <code>pending_approval</code> and is not
 started until explicitly approved. The approval presents the complete command
-and arguments, environment, and working directory, or the URL and headers. The
-grant is pinned to a canonical SHA-256 digest of <code>command</code>, <code>args</code>, <code>env</code>, <code>cwd</code>,
-<code>url</code>, and <code>headers</code>. Changing any of those fields requires approval again.
-Grants created by versions that hashed fewer fields no longer match and prompt
-again. Project MCP grants use the same durable tree-grant representation and
-approval store as tool approvals.</p>
+and arguments, environment, and working directory, or the URL and headers.
+Approval is stored for that server name in the current project. Existing grants
+are recorded in the per-project <code>mcp-trust-grants.jsonl</code> file. This store is not
+versioned. An incompatible or malformed complete record is a startup error; fix
+the record or delete the per-project <code>mcp-trust-grants.jsonl</code> file to reset MCP
+approvals.</p>
+<p>Approvals are keyed by server name; a later change to a project file can replace
+the server command under an existing approval — only enable project servers from
+repositories you trust.</p>
 <p>With the daemon running, inspect and respond to project requests through:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="go">cookie mcp list</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="go">cookie mcp approve github</span>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="go">cookie mcp reject github</span>
 </code></pre></div>
-<p>Approval is durable for the exact digest. Rejection lasts for the current daemon
-lifetime; a later restart presents the project request again. Approving a
+<p>Approval is durable for the server name in that project, including across later
+configuration changes. Rejection lasts for the current daemon lifetime; a later
+restart presents the project request again. Approving a
 non-lazy server starts its connection immediately. Runs started after the
 approval response wait for that bounded connection and initial tool listing
 before assembling their tool context.</p>
