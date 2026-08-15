@@ -571,7 +571,6 @@ pub struct McpApprovalListParams {}
 #[serde(deny_unknown_fields)]
 pub struct McpPendingApproval {
     pub server: String,
-    pub digest: Sha256Digest,
     pub connection: String,
 }
 
@@ -592,7 +591,6 @@ pub enum McpApprovalDecision {
 #[serde(deny_unknown_fields)]
 pub struct McpApprovalRespondParams {
     pub server: String,
-    pub digest: Sha256Digest,
     pub decision: McpApprovalDecision,
 }
 
@@ -600,6 +598,5 @@ pub struct McpApprovalRespondParams {
 #[serde(deny_unknown_fields)]
 pub struct McpApprovalRespondResult {
     pub server: String,
-    pub digest: Sha256Digest,
     pub decision: McpApprovalDecision,
 }

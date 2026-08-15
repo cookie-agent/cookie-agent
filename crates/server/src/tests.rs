@@ -150,14 +150,10 @@ async fn mcp_project_approval_is_reachable_through_protocol() {
         ("approved", McpApprovalDecision::Approve),
         ("rejected", McpApprovalDecision::Reject),
     ] {
-        let approval = pending
-            .iter()
-            .find(|approval| approval.server == server)
-            .expect("pending server");
+        assert!(pending.iter().any(|approval| approval.server == server));
         let result = client
             .respond_mcp_approval(McpApprovalRespondParams {
                 server: server.into(),
-                digest: approval.digest.clone(),
                 decision,
             })
             .await

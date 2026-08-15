@@ -43,12 +43,16 @@ SSE transport is not supported.
 Servers from `~/.config/cookie_agent/config.toml` are trusted. A server authored
 under `<cwd>/.cookie-agent/config.toml` remains `pending_approval` and is not
 started until explicitly approved. The approval presents the complete command
-and arguments, environment, and working directory, or the URL and headers. The
-grant is pinned to a canonical SHA-256 digest of `command`, `args`, `env`, `cwd`,
-`url`, and `headers`. Changing any of those fields requires approval again.
-Grants created by versions that hashed fewer fields no longer match and prompt
-again. Project MCP grants use the same durable tree-grant representation and
-approval store as tool approvals.
+and arguments, environment, and working directory, or the URL and headers.
+Approval is stored for that server name in the current project. Existing grants
+are recorded in the per-project `mcp-trust-grants.jsonl` file. This store is not
+versioned. An incompatible or malformed complete record is a startup error; fix
+the record or delete the per-project `mcp-trust-grants.jsonl` file to reset MCP
+approvals.
+
+Approvals are keyed by server name; a later change to a project file can replace
+the server command under an existing approval — only enable project servers from
+repositories you trust.
 
 With the daemon running, inspect and respond to project requests through:
 
@@ -58,8 +62,9 @@ cookie mcp approve github
 cookie mcp reject github
 ```
 
-Approval is durable for the exact digest. Rejection lasts for the current daemon
-lifetime; a later restart presents the project request again. Approving a
+Approval is durable for the server name in that project, including across later
+configuration changes. Rejection lasts for the current daemon lifetime; a later
+restart presents the project request again. Approving a
 non-lazy server starts its connection immediately. Runs started after the
 approval response wait for that bounded connection and initial tool listing
 before assembling their tool context.

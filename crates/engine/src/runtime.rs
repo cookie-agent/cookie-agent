@@ -1315,25 +1315,17 @@ impl Engine {
         self.inner.mcp.pending_approvals()
     }
 
-    pub fn approve_project_mcp_server(
-        &self,
-        server: &str,
-        expected_digest: &cookie_agent_protocol::Sha256Digest,
-    ) -> Result<(), EngineError> {
+    pub fn approve_project_mcp_server(&self, server: &str) -> Result<(), EngineError> {
         self.inner
             .mcp
-            .approve_project_server(server, expected_digest)
+            .approve_project_server(server)
             .map_err(|error| EngineError::MissingTool(error.to_string()))
     }
 
-    pub fn reject_project_mcp_server(
-        &self,
-        server: &str,
-        expected_digest: &cookie_agent_protocol::Sha256Digest,
-    ) -> Result<(), EngineError> {
+    pub fn reject_project_mcp_server(&self, server: &str) -> Result<(), EngineError> {
         self.inner
             .mcp
-            .reject_project_server(server, expected_digest)
+            .reject_project_server(server)
             .map_err(|error| EngineError::MissingTool(error.to_string()))
     }
 

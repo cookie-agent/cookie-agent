@@ -491,9 +491,8 @@ async fn run_mcp(url: &str, command: McpCommand) -> anyhow::Result<()> {
             }
             for approval in pending {
                 println!(
-                    "{}\n  digest: {}\n  connection:\n{}",
+                    "{}\n  connection:\n{}",
                     approval.server,
-                    approval.digest,
                     approval
                         .connection
                         .lines()
@@ -524,7 +523,6 @@ async fn respond_mcp_cli(
         .find(|approval| approval.server == server)
         .with_context(|| format!("MCP server `{server}` is not pending approval"))?;
     println!("Server: {}", approval.server);
-    println!("Digest: {}", approval.digest);
     println!("Connection:\n{}", approval.connection);
     let prompt = match decision {
         McpApprovalDecision::Approve => "Approve this project MCP server? [y/N] ",
@@ -534,11 +532,7 @@ async fn respond_mcp_cli(
         anyhow::bail!("MCP approval response cancelled");
     }
     let result = client
-        .respond_mcp_approval(McpApprovalRespondParams {
-            server,
-            digest: approval.digest,
-            decision,
-        })
+        .respond_mcp_approval(McpApprovalRespondParams { server, decision })
         .await
         .context("mcp.approval.respond failed")?;
     println!(

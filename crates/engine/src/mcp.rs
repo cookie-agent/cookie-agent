@@ -13,11 +13,10 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::{LoadedMcpServer, McpServerConfig, McpServerSource};
 use cookie_agent_protocol::{
-    ApprovalBoundary, ApprovalCapability, ApprovalId, ApprovalResourceSource, PermissionAction,
+    ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, PermissionAction,
     PersistedToolResult as ToolResult, PreparedApprovalResource, PreparedBindingLifetime,
     PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
     PreparedResourceIdentity, SafeDisplayText, Sha256Digest, ToolAttachment, ToolCallId,
-    TreeApprovalGrant, TreeApprovalGrantId,
 };
 use process_wrap::tokio::CommandWrap;
 #[cfg(windows)]
@@ -37,7 +36,7 @@ use rmcp::{
     },
     transport::{StreamableHttpClientTransport, TokioChildProcess, Transport},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::Notify;
@@ -45,12 +44,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProgress, ToolProvider, ToolSpec, permissions::ApprovalStore,
+    ToolPreparationContext, ToolProgress, ToolProvider, ToolSpec,
 };
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
-const TRUST_ROOT: cookie_agent_protocol::SessionId =
-    cookie_agent_protocol::SessionId(uuid::Uuid::from_u128(0x6d63702d74727573742d726f6f74));
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,8 +72,13 @@ pub struct McpServerStatus {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct McpApprovalRequest {
     pub server: String,
-    pub digest: Sha256Digest,
     pub connection: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct McpNameTrustGrant {
+    server: String,
 }
 
 #[derive(Clone)]
@@ -105,7 +107,7 @@ struct RegistryInner {
     servers: Mutex<BTreeMap<String, Arc<ServerRuntime>>>,
     reserved_names: Mutex<HashSet<String>>,
     claimed_names: Mutex<HashMap<String, String>>,
-    approvals: ApprovalStore,
+    trusted_names: Mutex<HashSet<String>>,
     trust_path: std::path::PathBuf,
     shutdown: CancellationToken,
     connection_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -333,16 +335,26 @@ fn unsupported_server_request(method: &str) -> ErrorData {
     )
 }
 
+fn load_trust_records(path: &std::path::Path) -> Result<Vec<McpNameTrustGrant>, ToolError> {
+    crate::events::load_jsonl(path).map_err(|error| {
+        ToolError::execution(format!(
+            "invalid MCP trust store `{}`; fix the records or remove the file to reset project MCP approvals: {error}",
+            path.display()
+        ))
+    })
+}
+
 impl McpRegistry {
     pub(crate) fn new(
         servers: BTreeMap<String, LoadedMcpServer>,
         trust_path: std::path::PathBuf,
     ) -> Result<Self, ToolError> {
-        let approvals = ApprovalStore::default();
+        let mut trusted_names = HashSet::new();
         if trust_path.exists() {
-            let grants = crate::events::load_jsonl::<TreeApprovalGrant>(&trust_path)
-                .map_err(|error| ToolError::execution(error.to_string()))?;
-            approvals.replace(grants);
+            let grants = load_trust_records(&trust_path)?;
+            for grant in grants {
+                trusted_names.insert(grant.server);
+            }
         }
         let inner = Arc::new(RegistryInner {
             servers: Mutex::new(BTreeMap::new()),
@@ -357,7 +369,7 @@ impl McpRegistry {
                 "cancel_subagent".into(),
             ])),
             claimed_names: Mutex::new(HashMap::new()),
-            approvals,
+            trusted_names: Mutex::new(trusted_names),
             trust_path,
             shutdown: CancellationToken::new(),
             connection_tasks: Mutex::new(Vec::new()),
@@ -375,14 +387,14 @@ impl McpRegistry {
                     "MCP server `{name}` collides with server `{existing}` after name sanitization"
                 )));
             }
+            let trusted_by_name = inner
+                .trusted_names
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(&name);
             let state = if !loaded.config.enabled {
                 McpServerState::Disabled
-            } else if loaded.source == McpServerSource::Workspace
-                && inner
-                    .approvals
-                    .matching(TRUST_ROOT, &trust_operation(&name, &loaded.config)?)
-                    .is_none()
-            {
+            } else if loaded.source == McpServerSource::Workspace && !trusted_by_name {
                 McpServerState::PendingApproval
             } else {
                 McpServerState::Disconnected
@@ -537,17 +549,12 @@ impl McpRegistry {
             .filter(|server| server.current_state() == McpServerState::PendingApproval)
             .map(|server| McpApprovalRequest {
                 server: server.name.clone(),
-                digest: trust_digest(&server.loaded.config),
                 connection: approval_display(&server.loaded.config),
             })
             .collect()
     }
 
-    pub fn approve_project_server(
-        &self,
-        server_name: &str,
-        expected_digest: &Sha256Digest,
-    ) -> Result<(), ToolError> {
+    pub fn approve_project_server(&self, server_name: &str) -> Result<(), ToolError> {
         let server = self.server(server_name)?;
         if server.loaded.source != McpServerSource::Workspace {
             return Err(ToolError::execution(format!(
@@ -559,26 +566,16 @@ impl McpRegistry {
                 "MCP server `{server_name}` is not pending approval"
             )));
         }
-        let digest = trust_digest(&server.loaded.config);
-        if &digest != expected_digest {
-            return Err(ToolError::execution(format!(
-                "MCP server `{server_name}` changed since approval was requested"
-            )));
-        }
-        let operation = trust_operation(server_name, &server.loaded.config)?;
-        let grant = TreeApprovalGrant {
-            grant_id: TreeApprovalGrantId::new_v7(),
-            root_session_id: TRUST_ROOT,
-            approval_id: ApprovalId::new_v7(),
-            operation_fingerprint:
-                cookie_agent_protocol::OperationFingerprint::from_prepared_operation(&operation),
-            capabilities: operation.capabilities().to_vec(),
-            resources: operation.resources().to_vec(),
-            created_at: jiff::Timestamp::now(),
+        let grant = McpNameTrustGrant {
+            server: server_name.to_owned(),
         };
         crate::events::append_jsonl(&self.inner.trust_path, &grant)
             .map_err(|error| ToolError::execution(error.to_string()))?;
-        self.inner.approvals.grant(grant);
+        self.inner
+            .trusted_names
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(server_name.to_owned());
         server.set_status(McpServerState::Disconnected, None);
         if !server.loaded.config.lazy
             && let Ok(handle) = tokio::runtime::Handle::try_current()
@@ -590,11 +587,7 @@ impl McpRegistry {
         Ok(())
     }
 
-    pub fn reject_project_server(
-        &self,
-        server_name: &str,
-        expected_digest: &Sha256Digest,
-    ) -> Result<(), ToolError> {
+    pub fn reject_project_server(&self, server_name: &str) -> Result<(), ToolError> {
         let server = self.server(server_name)?;
         if server.loaded.source != McpServerSource::Workspace {
             return Err(ToolError::execution(format!(
@@ -604,11 +597,6 @@ impl McpRegistry {
         if server.current_state() != McpServerState::PendingApproval {
             return Err(ToolError::execution(format!(
                 "MCP server `{server_name}` is not pending approval"
-            )));
-        }
-        if &trust_digest(&server.loaded.config) != expected_digest {
-            return Err(ToolError::execution(format!(
-                "MCP server `{server_name}` changed since approval was requested"
             )));
         }
         server.set_status(
@@ -1294,56 +1282,6 @@ fn safe_title(value: &str) -> SafeDisplayText {
     SafeDisplayText::new(title).expect("sanitized MCP title")
 }
 
-fn trust_digest(config: &McpServerConfig) -> Sha256Digest {
-    #[derive(Serialize)]
-    struct Input<'a> {
-        command: &'a Option<String>,
-        args: &'a [String],
-        env: &'a BTreeMap<String, String>,
-        cwd: &'a Option<String>,
-        url: &'a Option<String>,
-        headers: &'a BTreeMap<String, String>,
-    }
-    let bytes = serde_json::to_vec(&Input {
-        command: &config.command,
-        args: &config.args,
-        env: &config.env,
-        cwd: &config.cwd,
-        url: &config.url,
-        headers: &config.headers,
-    })
-    .expect("MCP trust input serializes");
-    Sha256Digest::of_bytes(&bytes)
-}
-
-fn trust_operation(
-    name: &str,
-    config: &McpServerConfig,
-) -> Result<PreparedOperationIdentity, ToolError> {
-    let digest = trust_digest(config);
-    PreparedOperationIdentity::new(
-        digest.clone(),
-        vec![ApprovalCapability {
-            action: PermissionAction::Mcp,
-            operation: PreparedCapabilityOperation::new("mcp:connect")
-                .map_err(|error| ToolError::execution(error.to_string()))?,
-        }],
-        vec![PreparedApprovalResource {
-            capability: PermissionAction::Mcp,
-            canonical: PreparedResourceIdentity::new(format!("mcp-server:{digest}"))
-                .map_err(|error| ToolError::execution(error.to_string()))?,
-            binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
-                digest.as_str().as_bytes(),
-            ),
-            binding_lifetime: PreparedBindingLifetime::RestartStable,
-            boundary: ApprovalBoundary::Exact,
-            source: ApprovalResourceSource::PrimaryOperation,
-        }],
-        Sha256Digest::of_bytes(name.as_bytes()),
-    )
-    .map_err(|error| ToolError::execution(error.to_string()))
-}
-
 fn approval_display(config: &McpServerConfig) -> String {
     if let Some(command) = &config.command {
         let mut value = std::iter::once(command.as_str())
@@ -1388,7 +1326,7 @@ mod tests {
         ToolProvider as _, TurnAgentContext, events::OutputHub, runtime::ArtifactStore,
     };
 
-    use super::{McpRegistry, McpServerState, convert_tool, sanitize_name, trust_digest};
+    use super::{McpRegistry, McpServerState, convert_tool, sanitize_name};
 
     fn fixture_config(lazy: bool) -> McpServerConfig {
         McpServerConfig {
@@ -1787,7 +1725,7 @@ mod tests {
     }
 
     #[test]
-    fn project_approval_is_persisted_and_command_changes_reprompt() {
+    fn project_approval_is_keyed_by_name_and_rejection_stays_blocked() {
         let directory = tempfile::tempdir().expect("tempdir");
         let project_registry = registry(&directory, McpServerSource::Workspace, true);
         assert_eq!(
@@ -1797,7 +1735,7 @@ mod tests {
         let approval = project_registry.pending_approvals().remove(0);
         assert!(approval.connection.contains("mcp_server.py"));
         project_registry
-            .approve_project_server("fixture", &approval.digest)
+            .approve_project_server("fixture")
             .expect("approve project MCP server");
         assert_eq!(
             project_registry.statuses()[0].state,
@@ -1806,6 +1744,10 @@ mod tests {
 
         let reopened = registry(&directory, McpServerSource::Workspace, true);
         assert_eq!(reopened.statuses()[0].state, McpServerState::Disconnected);
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("trust.jsonl")).expect("trust file"),
+            "{\"server\":\"fixture\"}\n"
+        );
 
         let mut changed = fixture_config(true);
         changed.args.push("--changed".into());
@@ -1820,40 +1762,69 @@ mod tests {
             directory.path().join("trust.jsonl"),
         )
         .expect("changed registry");
-        assert_eq!(changed.statuses()[0].state, McpServerState::PendingApproval);
+        assert_eq!(changed.statuses()[0].state, McpServerState::Disconnected);
+
+        let renamed = McpRegistry::new(
+            BTreeMap::from([(
+                "renamed".into(),
+                LoadedMcpServer {
+                    source: McpServerSource::Workspace,
+                    config: fixture_config(true),
+                },
+            )]),
+            directory.path().join("trust.jsonl"),
+        )
+        .expect("renamed registry");
+        assert_eq!(renamed.statuses()[0].state, McpServerState::PendingApproval);
+        renamed
+            .reject_project_server("renamed")
+            .expect("reject renamed server");
+        assert_eq!(renamed.statuses()[0].state, McpServerState::Rejected);
+
+        let reoffered = McpRegistry::new(
+            BTreeMap::from([(
+                "renamed".into(),
+                LoadedMcpServer {
+                    source: McpServerSource::Workspace,
+                    config: fixture_config(true),
+                },
+            )]),
+            directory.path().join("trust.jsonl"),
+        )
+        .expect("reoffered registry");
+        assert_eq!(
+            reoffered.statuses()[0].state,
+            McpServerState::PendingApproval
+        );
+        reoffered
+            .approve_project_server("renamed")
+            .expect("reapprove renamed server");
+        assert_eq!(reoffered.statuses()[0].state, McpServerState::Disconnected);
     }
 
     #[test]
-    fn trust_digest_pins_every_connection_identity_field() {
-        let mut config = cookie_agent_config::McpServerConfig {
-            command: Some("server".into()),
-            args: vec!["--one".into()],
-            env: Default::default(),
-            cwd: None,
-            url: None,
-            headers: Default::default(),
-            enabled: true,
-            lazy: false,
-            timeout_ms: None,
-        };
-        let first = trust_digest(&config);
-        config.args.push("--two".into());
-        assert_ne!(first, trust_digest(&config));
-        config.args.pop();
-        config.env.insert("PATH".into(), "/project/bin".into());
-        assert_ne!(first, trust_digest(&config));
-        config.env.clear();
-        config.cwd = Some("/project".into());
-        assert_ne!(first, trust_digest(&config));
-
-        config.command = None;
-        config.args.clear();
-        config.cwd = None;
-        config.url = Some("https://mcp.example.test".into());
-        let remote = trust_digest(&config);
-        config
-            .headers
-            .insert("Authorization".into(), "Bearer changed".into());
-        assert_ne!(remote, trust_digest(&config));
+    fn incompatible_trust_record_fails_with_reset_remediation() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let trust_path = directory.path().join("trust.jsonl");
+        std::fs::write(
+            &trust_path,
+            "{\"server\":\"fixture\",\"digest\":\"legacy\"}\n",
+        )
+        .expect("incompatible trust store");
+        let error = McpRegistry::new(
+            BTreeMap::from([(
+                "fixture".into(),
+                LoadedMcpServer {
+                    source: McpServerSource::Workspace,
+                    config: fixture_config(true),
+                },
+            )]),
+            trust_path.clone(),
+        )
+        .expect_err("incompatible trust records must fail startup");
+        let message = error.to_string();
+        assert!(message.contains(&trust_path.display().to_string()));
+        assert!(message.contains("fix the records or remove the file"));
+        assert!(message.contains("reset project MCP approvals"));
     }
 }

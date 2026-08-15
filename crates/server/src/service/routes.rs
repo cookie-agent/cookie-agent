@@ -201,7 +201,6 @@ impl ServerProtocol for Server {
                 .into_iter()
                 .map(|approval| McpPendingApproval {
                     server: approval.server,
-                    digest: approval.digest,
                     connection: approval.connection,
                 })
                 .collect(),
@@ -213,17 +212,12 @@ impl ServerProtocol for Server {
         params: McpApprovalRespondParams,
     ) -> Result<McpApprovalRespondResult> {
         match params.decision {
-            McpApprovalDecision::Approve => self
-                .engine
-                .approve_project_mcp_server(&params.server, &params.digest),
-            McpApprovalDecision::Reject => self
-                .engine
-                .reject_project_mcp_server(&params.server, &params.digest),
+            McpApprovalDecision::Approve => self.engine.approve_project_mcp_server(&params.server),
+            McpApprovalDecision::Reject => self.engine.reject_project_mcp_server(&params.server),
         }
         .map_err(protocol_fault)?;
         Ok(McpApprovalRespondResult {
             server: params.server,
-            digest: params.digest,
             decision: params.decision,
         })
     }

@@ -6,12 +6,6 @@
     "decision": {
       "$ref": "#/$defs/McpApprovalDecision"
     },
-    "digest": {
-      "type": "string",
-      "maxLength": 64,
-      "minLength": 64,
-      "pattern": "^[0-9a-f]{64}$"
-    },
     "server": {
       "type": "string"
     }
@@ -19,7 +13,6 @@
   "additionalProperties": false,
   "required": [
     "server",
-    "digest",
     "decision"
   ],
   "$defs": {

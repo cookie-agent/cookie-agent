@@ -5767,7 +5767,7 @@ async fn immediate_run_after_project_approval_waits_for_mcp_listing() {
     let approval = fixture.engine.pending_mcp_approvals().remove(0);
     fixture
         .engine
-        .approve_project_mcp_server(&approval.server, &approval.digest)
+        .approve_project_mcp_server(&approval.server)
         .expect("approve project MCP server");
     let session = fixture
         .engine
