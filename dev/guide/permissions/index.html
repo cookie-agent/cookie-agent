@@ -971,32 +971,50 @@ and <code>delegate</code>. Each action is either one bare effect or a resource-p
 fewer wildcards, then the later declaration on an exact tie. Unmatched resources
 ask.</p>
 <h2 id="resource-labels">Resource labels<a class="headerlink" href="#resource-labels" title="Permanent link">&para;</a></h2>
-<p>Every current built-in tool prepares exactly one permission resource:</p>
+<p>Tool providers publish a static permission name and an optional resource label:</p>
 <table>
 <thead>
 <tr>
-<th>Action</th>
-<th>Label</th>
+<th>Tool</th>
+<th>Permission name</th>
+<th>Resource label</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>read</code>, <code>write</code></td>
+<td><code>read</code></td>
+<td><code>read</code></td>
+<td>Workspace-relative path inside the workspace; absolute path outside it</td>
+</tr>
+<tr>
+<td><code>write</code>, <code>edit</code></td>
+<td><code>write</code></td>
 <td>Workspace-relative path inside the workspace; absolute path outside it</td>
 </tr>
 <tr>
 <td><code>bash</code></td>
-<td>The complete command string</td>
+<td><code>bash</code></td>
+<td>Complete command string</td>
 </tr>
 <tr>
+<td><code>delegate_subagent</code></td>
 <td><code>delegate</code></td>
-<td>Target agent ID</td>
+<td>Target <code>agent_type</code></td>
+</tr>
+<tr>
+<td><code>get_subagent_result</code>, <code>steer_subagent</code>, <code>cancel_subagent</code></td>
+<td><code>delegate</code></td>
+<td>None (permission-name-only check)</td>
 </tr>
 </tbody>
 </table>
 <p>The <code>edit</code> tool uses the <code>write</code> permission action. Bash is not parsed into file
 operations: <code>cat .env</code> is controlled by <code>bash</code>, not <code>read</code>, and a pattern such
 as <code>git *</code> also matches a longer command beginning with <code>git</code>.</p>
+<p>When a tool has no resource label, only the permission's bare effect or <code>"*"</code>
+rule applies. Specific patterns are inapplicable rather than matching or
+denying. If neither a bare effect nor <code>"*"</code> exists, the normal unmatched result
+is <code>ask</code>.</p>
 <p><code>${workspace_dir}</code> is allowed only in <code>read</code> and <code>write</code> patterns and expands
 against the engine workspace root during evaluation. Ordinary absolute patterns
 such as <code>/etc/*</code> control outside-workspace paths. Permission patterns do not
@@ -1010,9 +1028,20 @@ it only when <code>"*": deny</code> exists with no non-deny exceptions.</p>
 <p>Delegation targets come from the keys in the <code>delegate</code> permission map and must
 resolve to enabled <code>subagent</code> or <code>all</code> agents. This action controls
 <code>delegate_subagent</code>, <code>get_subagent_result</code>, <code>steer_subagent</code>, and
-<code>cancel_subagent</code>. Result and cancel operations retain the child agent ID as
-their permission resource. Steer uses the owned child session ID as its resource
-label and the operation verb <code>steer</code>.
+<code>cancel_subagent</code>. Only <code>delegate_subagent</code> matches agent-specific patterns.
+Result, steer, and cancel retain their existing ownership and argument
+validation, but permission evaluation for them uses only the bare effect or
+<code>"*"</code>. Their approval display still shows the owned <code>session_id</code>; display text is
+independent of the permission resource.</p>
+<p>This changes existing mapped delegation policies. For example,
+<code>delegate: {reviewer: allow, "*": deny}</code> allows <code>delegate_subagent</code> targeting
+<code>reviewer</code>, but denies <code>get_subagent_result</code>, <code>steer_subagent</code>, and
+<code>cancel_subagent</code> because their permission-name-only checks use the <code>"*": deny</code>
+fallback and ignore the <code>reviewer</code> pattern.
+The prepared resource identity for these three tools also changed. Existing
+tree grants issued for their former agent- or session-scoped identities do not
+carry over: old grants can no longer auto-approve these operations, so any call
+whose new resource-less policy evaluates to <code>ask</code> requires approval again.
 Runtime <code>delegation.max_depth</code> defaults to 3 and <code>max_concurrency</code> defaults to 4.</p>
 <p><code>delegate_subagent</code> replaces the former <code>delegate</code> tool name without an alias.
 Old tool calls and prepared-operation grants therefore fail closed. The

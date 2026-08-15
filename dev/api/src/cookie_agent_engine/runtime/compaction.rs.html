@@ -1154,38 +1154,41 @@
 <a href=#1154 id=1154 data-nosnippet>1154</a>                            title: safe_display(name),
 <a href=#1155 id=1155 data-nosnippet>1155</a>                            primary_argument: <span class="prelude-val">None</span>,
 <a href=#1156 id=1156 data-nosnippet>1156</a>                        },
-<a href=#1157 id=1157 data-nosnippet>1157</a>                        operation_fingerprint: fallback_operation_fingerprint(<span class="kw-2">&amp;</span>ToolCall {
-<a href=#1158 id=1158 data-nosnippet>1158</a>                            id: call_id,
-<a href=#1159 id=1159 data-nosnippet>1159</a>                            name: name.into(),
-<a href=#1160 id=1160 data-nosnippet>1160</a>                            arguments: <span class="macro">serde_json::json!</span>({<span class="string">"filePath"</span>: path}),
-<a href=#1161 id=1161 data-nosnippet>1161</a>                        }),
-<a href=#1162 id=1162 data-nosnippet>1162</a>                    },
-<a href=#1163 id=1163 data-nosnippet>1163</a>                },
-<a href=#1164 id=1164 data-nosnippet>1164</a>            });
-<a href=#1165 id=1165 data-nosnippet>1165</a>            events.push(StoredEvent {
-<a href=#1166 id=1166 data-nosnippet>1166</a>                event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
-<a href=#1167 id=1167 data-nosnippet>1167</a>                session_id: session,
-<a href=#1168 id=1168 data-nosnippet>1168</a>                run_id: <span class="prelude-val">Some</span>(run),
-<a href=#1169 id=1169 data-nosnippet>1169</a>                seq: events.len() <span class="kw">as </span>u64 + <span class="number">1</span>,
-<a href=#1170 id=1170 data-nosnippet>1170</a>                timestamp: jiff::Timestamp::now(),
-<a href=#1171 id=1171 data-nosnippet>1171</a>                payload: Event::ToolCallTerminated {
-<a href=#1172 id=1172 data-nosnippet>1172</a>                    termination: ToolCallTermination {
-<a href=#1173 id=1173 data-nosnippet>1173</a>                        tool_call_id: call_id,
-<a href=#1174 id=1174 data-nosnippet>1174</a>                        owner,
-<a href=#1175 id=1175 data-nosnippet>1175</a>                        outcome: ToolTerminationOutcome::Completed,
-<a href=#1176 id=1176 data-nosnippet>1176</a>                        result: <span class="prelude-val">Some</span>(ToolResult {
-<a href=#1177 id=1177 data-nosnippet>1177</a>                            title: safe_display(name),
-<a href=#1178 id=1178 data-nosnippet>1178</a>                            output: output.into(),
-<a href=#1179 id=1179 data-nosnippet>1179</a>                            metadata: <span class="macro">serde_json::json!</span>({}),
-<a href=#1180 id=1180 data-nosnippet>1180</a>                            truncation: <span class="prelude-val">None</span>,
-<a href=#1181 id=1181 data-nosnippet>1181</a>                            attachments: Vec::new(),
-<a href=#1182 id=1182 data-nosnippet>1182</a>                        }),
-<a href=#1183 id=1183 data-nosnippet>1183</a>                        error: <span class="prelude-val">None</span>,
-<a href=#1184 id=1184 data-nosnippet>1184</a>                    },
-<a href=#1185 id=1185 data-nosnippet>1185</a>                },
-<a href=#1186 id=1186 data-nosnippet>1186</a>            });
-<a href=#1187 id=1187 data-nosnippet>1187</a>        }
-<a href=#1188 id=1188 data-nosnippet>1188</a>        <span class="macro">assert_eq!</span>(recent_read_candidates(<span class="kw-2">&amp;</span>events), <span class="macro">vec!</span>[<span class="string">"src/lib.rs"</span>]);
-<a href=#1189 id=1189 data-nosnippet>1189</a>    }
-<a href=#1190 id=1190 data-nosnippet>1190</a>}
+<a href=#1157 id=1157 data-nosnippet>1157</a>                        operation_fingerprint: fallback_operation_fingerprint(
+<a href=#1158 id=1158 data-nosnippet>1158</a>                            <span class="kw-2">&amp;</span>ToolCall {
+<a href=#1159 id=1159 data-nosnippet>1159</a>                                id: call_id,
+<a href=#1160 id=1160 data-nosnippet>1160</a>                                name: name.into(),
+<a href=#1161 id=1161 data-nosnippet>1161</a>                                arguments: <span class="macro">serde_json::json!</span>({<span class="string">"filePath"</span>: path}),
+<a href=#1162 id=1162 data-nosnippet>1162</a>                            },
+<a href=#1163 id=1163 data-nosnippet>1163</a>                            <span class="prelude-val">Some</span>(<span class="string">"read"</span>),
+<a href=#1164 id=1164 data-nosnippet>1164</a>                        ),
+<a href=#1165 id=1165 data-nosnippet>1165</a>                    },
+<a href=#1166 id=1166 data-nosnippet>1166</a>                },
+<a href=#1167 id=1167 data-nosnippet>1167</a>            });
+<a href=#1168 id=1168 data-nosnippet>1168</a>            events.push(StoredEvent {
+<a href=#1169 id=1169 data-nosnippet>1169</a>                event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+<a href=#1170 id=1170 data-nosnippet>1170</a>                session_id: session,
+<a href=#1171 id=1171 data-nosnippet>1171</a>                run_id: <span class="prelude-val">Some</span>(run),
+<a href=#1172 id=1172 data-nosnippet>1172</a>                seq: events.len() <span class="kw">as </span>u64 + <span class="number">1</span>,
+<a href=#1173 id=1173 data-nosnippet>1173</a>                timestamp: jiff::Timestamp::now(),
+<a href=#1174 id=1174 data-nosnippet>1174</a>                payload: Event::ToolCallTerminated {
+<a href=#1175 id=1175 data-nosnippet>1175</a>                    termination: ToolCallTermination {
+<a href=#1176 id=1176 data-nosnippet>1176</a>                        tool_call_id: call_id,
+<a href=#1177 id=1177 data-nosnippet>1177</a>                        owner,
+<a href=#1178 id=1178 data-nosnippet>1178</a>                        outcome: ToolTerminationOutcome::Completed,
+<a href=#1179 id=1179 data-nosnippet>1179</a>                        result: <span class="prelude-val">Some</span>(ToolResult {
+<a href=#1180 id=1180 data-nosnippet>1180</a>                            title: safe_display(name),
+<a href=#1181 id=1181 data-nosnippet>1181</a>                            output: output.into(),
+<a href=#1182 id=1182 data-nosnippet>1182</a>                            metadata: <span class="macro">serde_json::json!</span>({}),
+<a href=#1183 id=1183 data-nosnippet>1183</a>                            truncation: <span class="prelude-val">None</span>,
+<a href=#1184 id=1184 data-nosnippet>1184</a>                            attachments: Vec::new(),
+<a href=#1185 id=1185 data-nosnippet>1185</a>                        }),
+<a href=#1186 id=1186 data-nosnippet>1186</a>                        error: <span class="prelude-val">None</span>,
+<a href=#1187 id=1187 data-nosnippet>1187</a>                    },
+<a href=#1188 id=1188 data-nosnippet>1188</a>                },
+<a href=#1189 id=1189 data-nosnippet>1189</a>            });
+<a href=#1190 id=1190 data-nosnippet>1190</a>        }
+<a href=#1191 id=1191 data-nosnippet>1191</a>        <span class="macro">assert_eq!</span>(recent_read_candidates(<span class="kw-2">&amp;</span>events), <span class="macro">vec!</span>[<span class="string">"src/lib.rs"</span>]);
+<a href=#1192 id=1192 data-nosnippet>1192</a>    }
+<a href=#1193 id=1193 data-nosnippet>1193</a>}
 </code></pre></div></section></main></body></html>
