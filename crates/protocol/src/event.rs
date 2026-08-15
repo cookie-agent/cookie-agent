@@ -1443,8 +1443,17 @@ pub enum EventPayload {
     UserInputRecalled {
         input: String,
     },
+    UserInputRecalledV2 {
+        user_input_seq: u64,
+        input: String,
+    },
     UserInputApplied {
         user_input_seq: u64,
+    },
+    DelegatedContextSeeded {
+        invocation_id: InvocationId,
+        #[schemars(length(max = 65536))]
+        turns: Vec<DelegatedContextTurn>,
     },
     RunCompleted {
         #[serde(deserialize_with = "deserialize_required_option")]
@@ -1541,6 +1550,14 @@ pub enum EventPayload {
         position: Option<u32>,
     },
     DelegateFinished {
+        session_id: SessionId,
+        status: SessionStatus,
+        #[schemars(length(max = 2048))]
+        preview: String,
+        total_lines: u64,
+    },
+    DelegateFinishedV2 {
+        invocation_id: InvocationId,
         session_id: SessionId,
         status: SessionStatus,
         #[schemars(length(max = 2048))]
@@ -1661,6 +1678,9 @@ impl EventPayload {
             Self::SessionCreated { .. }
                 | Self::SessionReverted { .. }
                 | Self::SessionTitleCommitted { .. }
+                | Self::UserInputAdmitted { .. }
+                | Self::UserInputRecalled { .. }
+                | Self::DelegatedContextSeeded { .. }
                 | Self::DelegateChildTerminated { .. }
         )
     }
@@ -1754,7 +1774,19 @@ impl EventPayload {
                 }
             }
             Self::ToolCallTerminated { termination } => termination.validate()?,
+            Self::DelegatedContextSeeded { turns, .. } => {
+                if turns.is_empty()
+                    || turns.len() > 65_536
+                    || turns.iter().any(|turn| turn.text.is_empty())
+                    || turns.iter().map(|turn| turn.text.len()).sum::<usize>() > 65_536
+                {
+                    return Err(EventSchemaError::InvalidDelegatedContext);
+                }
+            }
             Self::DelegateFinished {
+                status, preview, ..
+            }
+            | Self::DelegateFinishedV2 {
                 status, preview, ..
             } => {
                 if !matches!(
@@ -1997,6 +2029,7 @@ pub enum EventSchemaError {
     ZeroModelTurnSequence,
     InvalidToolTermination,
     InvalidDelegateFinished,
+    InvalidDelegatedContext,
     TooManyModelParts,
     ModelTurnTooLarge,
     SummaryLimitTooLarge,
@@ -2041,6 +2074,7 @@ impl fmt::Display for EventSchemaError {
                 "tool termination outcome/result/error combination is invalid"
             }
             Self::InvalidDelegateFinished => "delegate completion payload is invalid",
+            Self::InvalidDelegatedContext => "delegated context seed is invalid",
             Self::TooManyModelParts => "persisted model turn exceeds 4096 parts",
             Self::ModelTurnTooLarge => "persisted model turn exceeds 8 MiB",
             Self::SummaryLimitTooLarge => "summary limit exceeds 2 MiB",

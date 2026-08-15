@@ -1,9 +1,9 @@
 use std::sync::{Arc, atomic::Ordering};
 
 use cookie_agent_protocol::{
-    InvocationId, PersistedToolResult as ToolResult, RunId, RunStartParams, SafeToolError,
-    SessionId, SessionOrigin, SessionStatus, Sha256Digest, ToolCallId, ToolCallTermination,
-    ToolTerminationOutcome,
+    DelegatedContextRole, DelegatedContextTurn, InvocationId, PersistedToolResult as ToolResult,
+    RunId, RunStartParams, SafeToolError, SessionId, SessionOrigin, SessionStatus, Sha256Digest,
+    ToolCallId, ToolCallTermination, ToolTerminationOutcome,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -16,6 +16,7 @@ use super::{
     helpers::{invocation_id, safe_code, safe_display, safe_error, session_depth},
 };
 use crate::{
+    EngineHistoryView,
     delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation},
     journal::{self, JournalError},
     policy::{self, FrozenRunPolicy, freeze_delegated_agent_policy, resolve_agent},
@@ -23,6 +24,92 @@ use crate::{
 };
 
 impl Engine {
+    pub(crate) fn validate_resume_target(
+        &self,
+        parent_session_id: SessionId,
+        resume_session_id: SessionId,
+        agent_type: &cookie_agent_protocol::AgentId,
+    ) -> Result<session::SessionProjection, EngineError> {
+        if resume_session_id == parent_session_id {
+            return Err(EngineError::MissingTool(
+                "resume_session_id cannot reference the delegating session itself".into(),
+            ));
+        }
+        let mut cursor = parent_session_id;
+        let mut visited = std::collections::HashSet::new();
+        while visited.insert(cursor) {
+            let current = self.inner.store.get(cursor)?;
+            let SessionOrigin::Delegated {
+                parent_session_id, ..
+            } = current.meta.origin
+            else {
+                break;
+            };
+            if parent_session_id == resume_session_id {
+                return Err(EngineError::MissingTool(
+                    "resume_session_id cannot reference an ancestor session".into(),
+                ));
+            }
+            cursor = parent_session_id;
+        }
+        let resumed = self.inner.store.get(resume_session_id).map_err(|_| {
+            EngineError::MissingTool(format!("resume session {resume_session_id} was not found"))
+        })?;
+        let direct_child = matches!(
+            resumed.meta.origin,
+            SessionOrigin::Delegated {
+                parent_session_id: owner,
+                ..
+            } if owner == parent_session_id
+        ) && self.inner.journal.entries().iter().any(|entry| {
+            entry.reservation.parent_session_id == parent_session_id
+                && entry.reservation.child_session_id == resume_session_id
+        });
+        if !direct_child {
+            return Err(EngineError::MissingTool(
+                "resume session is not a prior direct child of the delegating parent".into(),
+            ));
+        }
+        if &resumed.meta.creation_selection.agent != agent_type {
+            return Err(EngineError::MissingTool(
+                "resume session agent does not match agent_type".into(),
+            ));
+        }
+        if let Some(record) = self
+            .inner
+            .delegations_by_session
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?
+            .get(&resume_session_id)
+            .copied()
+            && matches!(
+                record.state,
+                DelegationState::Queued | DelegationState::Starting
+            )
+        {
+            return Err(EngineError::MissingTool(format!(
+                "resume session already has in-flight delegation {} in {} state",
+                record.invocation_id,
+                if record.state == DelegationState::Queued {
+                    "queued"
+                } else {
+                    "starting"
+                }
+            )));
+        }
+        Ok(resumed)
+    }
+
+    async fn delegated_context_seed(
+        &self,
+        parent_session_id: SessionId,
+    ) -> Result<Vec<DelegatedContextTurn>, EngineError> {
+        let history = self
+            .get_history(parent_session_id, EngineHistoryView::Assembled)
+            .await?;
+        Ok(context_seed_from_history(history))
+    }
+
     /// Serializes the durable parent backlink per invocation. Every admission
     /// path re-checks under this barrier; only the first appends it.
     pub(super) async fn ensure_parent_link(
@@ -166,6 +253,44 @@ impl Engine {
         generation: u64,
     ) -> Result<DelegateHandle, EngineError> {
         let admission_guard = self.inner.delegation_admission.lock().await;
+        if invocation.resume_session_id.is_some() && invocation.inherit_context {
+            return Err(EngineError::MissingTool(
+                "resume_session_id and inherit_context cannot both be set".into(),
+            ));
+        }
+        if let Some(existing) = self.journal_get(invocation_id).await?
+            && existing.child_run_id.is_some()
+        {
+            validate_redelivery_mode(existing.request.background, invocation.background)?;
+            let request_matches = existing.reservation.parent_session_id
+                == invocation.parent_session_id
+                && existing.reservation.parent_run_id == invocation.parent_run_id
+                && existing.reservation.parent_tool_call_id == invocation.parent_tool_call_id
+                && existing.child_agent.agent == invocation.agent_type
+                && existing.request.description == invocation.description
+                && existing.request.prompt == invocation.prompt
+                && existing.request.resume_session_id == invocation.resume_session_id
+                && existing.request.inherit_context == invocation.inherit_context;
+            if !request_matches {
+                return Err(EngineError::MissingTool(
+                    "delegate redelivery does not match its durable reservation".into(),
+                ));
+            }
+            let registry_owns_invocation = self
+                .inner
+                .delegations_by_session
+                .lock()
+                .map_err(|_| EngineError::ActorStopped)?
+                .get(&existing.reservation.child_session_id)
+                .is_some_and(|record| record.invocation_id == invocation_id);
+            if existing.run_attached || registry_owns_invocation {
+                return Ok(DelegateHandle {
+                    invocation_id,
+                    child_session_id: existing.reservation.child_session_id,
+                    child_run_id: existing.child_run_id,
+                });
+            }
+        }
         let parent = self.inner.store.get(invocation.parent_session_id)?;
         if parent
             .runs
@@ -198,6 +323,16 @@ impl Engine {
                 "delegate target or depth is not allowed".into(),
             ));
         }
+        let resume_child = invocation
+            .resume_session_id
+            .map(|resume_session_id| {
+                self.validate_resume_target(
+                    invocation.parent_session_id,
+                    resume_session_id,
+                    &invocation.agent_type,
+                )
+            })
+            .transpose()?;
         let child_agent = resolve_agent(&parent_policy.registry, &invocation.agent_type)?;
         if !child_agent.document.frontmatter.enabled
             || !matches!(
@@ -248,24 +383,42 @@ impl Engine {
                 tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
             },
         )?;
+        let seeded_context = if invocation.inherit_context {
+            self.delegated_context_seed(invocation.parent_session_id)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let proposed_title = super::titles::delegated_title(
+            &invocation.description,
+            self.inner.config.runtime.session_title.max_chars,
+        )?;
+        let title = resume_child
+            .as_ref()
+            .and_then(|child| child.meta.title.clone())
+            .unwrap_or(proposed_title);
         let fingerprint_payload = serde_json::to_vec(&(
             &invocation.agent_type,
             &invocation.description,
             &invocation.prompt,
+            &invocation.resume_session_id,
+            invocation.inherit_context,
+            invocation.background,
+            &seeded_context,
             &child_policy.agent,
             &child_policy.selected_suffix,
         ))
         .map_err(|_| EngineError::RuntimeCompileFailed)?;
         let fingerprint = Sha256Digest::new(format!("{:x}", Sha256::digest(&fingerprint_payload)))
             .map_err(|_| EngineError::RuntimeCompileFailed)?;
-        let title = super::titles::delegated_title(
-            &invocation.description,
-            self.inner.config.runtime.session_title.max_chars,
-        )?;
         let request = journal::DelegateRequestPayload {
             description: invocation.description,
             prompt: invocation.prompt,
             title,
+            resume_session_id: invocation.resume_session_id,
+            inherit_context: invocation.inherit_context,
+            seeded_context,
+            background: Some(invocation.background),
         };
 
         let root_session_id = match parent.meta.origin {
@@ -274,9 +427,43 @@ impl Engine {
             } => root_session_id,
             _ => parent.meta.session_id,
         };
-        let counts_slot =
+        let resumed_running = if resume_child
+            .as_ref()
+            .is_some_and(|child| child.status == SessionStatus::Running)
+        {
+            let record = self
+                .inner
+                .delegations_by_session
+                .lock()
+                .map_err(|_| EngineError::ActorStopped)?
+                .get(
+                    &resume_child
+                        .as_ref()
+                        .expect("checked resume child")
+                        .meta
+                        .session_id,
+                )
+                .copied()
+                .ok_or_else(|| {
+                    EngineError::MissingTool(
+                        "running resume session has no active delegation record".into(),
+                    )
+                })?;
+            let run_id = record.child_run_id.ok_or_else(|| {
+                EngineError::MissingTool("running resume session has no active run".into())
+            })?;
+            Some((run_id, record))
+        } else {
+            None
+        };
+        let fresh_counts_slot =
             invocation.background && !matches!(parent.meta.origin, SessionOrigin::Delegated { .. });
-        let queued = counts_slot && self.background_slot_unavailable(root_session_id)?;
+        let counts_slot = resumed_running
+            .map(|(_, record)| record.counts_slot)
+            .unwrap_or(fresh_counts_slot);
+        let queued = resumed_running.is_none()
+            && fresh_counts_slot
+            && self.background_slot_unavailable(root_session_id)?;
         if queued && self.background_queue_full(root_session_id)? {
             return Err(EngineError::MissingTool(format!(
                 "delegate admission denied: background queue is full for concurrency limit {}",
@@ -321,6 +508,226 @@ impl Engine {
             .journal_get(invocation_id)
             .await?
             .ok_or_else(|| EngineError::MissingTool("delegate reservation disappeared".into()))?;
+        if resume_child.is_some() {
+            self.inner
+                .delegation_queue
+                .lock()
+                .map_err(|_| EngineError::ActorStopped)?
+                .retain(|session_id| *session_id != child.session_id);
+        }
+        if let Some((child_run_id, previous_record)) = resumed_running {
+            if entry.child_run_id == Some(child_run_id)
+                && (entry.run_attached || previous_record.invocation_id == invocation_id)
+            {
+                return Ok(DelegateHandle {
+                    invocation_id,
+                    child_session_id: child.session_id,
+                    child_run_id: Some(child_run_id),
+                });
+            }
+            let journal = self.inner.journal.clone();
+            self.spawn_admission_blocking(move || {
+                journal.mark_run_attached(invocation_id, child_run_id)
+            })
+            .await?;
+            #[cfg(test)]
+            self.wait_for_resume_test_hook(&self.inner.resume_attachment_hook)
+                .await;
+            if let Err(error) = self.publish_resume_admission_target(
+                invocation_id,
+                generation,
+                child.session_id,
+                child_run_id,
+                previous_record,
+            ) {
+                let journal = self.inner.journal.clone();
+                self.spawn_admission_blocking(move || {
+                    journal.mark_terminated(invocation_id, SessionStatus::Cancelled)
+                })
+                .await?;
+                return Err(error);
+            }
+            let handle = DelegateHandle {
+                invocation_id,
+                child_session_id: child.session_id,
+                child_run_id: Some(child_run_id),
+            };
+            let monitor_release = if invocation.background || counts_slot {
+                match self.spawn_background_monitor_gated(handle) {
+                    Ok(release) => Some(release),
+                    Err(error) => {
+                        let journal = self.inner.journal.clone();
+                        self.spawn_admission_blocking(move || {
+                            journal.mark_terminated(invocation_id, SessionStatus::Cancelled)
+                        })
+                        .await?;
+                        return Err(error);
+                    }
+                }
+            } else {
+                None
+            };
+            #[cfg(test)]
+            if let Some(hook) = {
+                self.inner
+                    .resume_admission_hook
+                    .lock()
+                    .expect("resume admission hook lock poisoned")
+                    .clone()
+            } {
+                if let Some(reached) = hook
+                    .reached
+                    .lock()
+                    .expect("resume admission reached lock poisoned")
+                    .take()
+                {
+                    let _ = reached.send(());
+                }
+                hook.release.notified().await;
+            }
+            let admission = match self
+                .request(child.session_id, |reply| {
+                    SessionCommand::AdmitDelegatedResume {
+                        run: child_run_id,
+                        input: entry.request.prompt.clone(),
+                        reply,
+                    }
+                })
+                .await
+            {
+                Ok(admission) => admission,
+                Err(error) => {
+                    let journal = self.inner.journal.clone();
+                    self.spawn_admission_blocking(move || {
+                        journal.mark_terminated(invocation_id, SessionStatus::Cancelled)
+                    })
+                    .await?;
+                    return Err(error);
+                }
+            };
+            if !admission.accepted {
+                let journal = self.inner.journal.clone();
+                self.spawn_admission_blocking(move || {
+                    journal.mark_terminated(invocation_id, SessionStatus::Cancelled)
+                })
+                .await?;
+                return Err(EngineError::MissingTool(
+                    "resume session stopped before its prompt was admitted".into(),
+                ));
+            }
+            let Some(admission_seq) = admission.admission_seq else {
+                let journal = self.inner.journal.clone();
+                self.spawn_admission_blocking(move || {
+                    journal.mark_terminated(invocation_id, SessionStatus::Cancelled)
+                })
+                .await?;
+                let _ = self.cancel_run_durably(
+                    child_run_id,
+                    Some("resume admission sequence was not published".into()),
+                );
+                return Err(EngineError::MissingTool(
+                    "resume admission sequence is missing".into(),
+                ));
+            };
+            if let Err(error) =
+                self.publish_resume_admission_seq(invocation_id, generation, admission_seq)
+            {
+                drop(monitor_release);
+                self.rollback_running_resume(
+                    invocation_id,
+                    child.session_id,
+                    child_run_id,
+                    admission_seq,
+                    previous_record,
+                    SessionStatus::Cancelled,
+                )
+                .await?;
+                return Err(error);
+            }
+            #[cfg(test)]
+            self.wait_for_resume_test_hook(&self.inner.resume_rollback_hook)
+                .await;
+            if !self.admission_generation_live(invocation_id, generation) {
+                drop(monitor_release);
+                self.rollback_running_resume(
+                    invocation_id,
+                    child.session_id,
+                    child_run_id,
+                    admission_seq,
+                    previous_record,
+                    SessionStatus::Cancelled,
+                )
+                .await?;
+                return Err(EngineError::MissingTool(
+                    "delegate admission was abandoned".into(),
+                ));
+            }
+            let registry_failed = {
+                match self.inner.delegations_by_session.lock() {
+                    Ok(mut records) => {
+                        records.insert(
+                            child.session_id,
+                            DelegationRecord {
+                                parent_session_id: invocation.parent_session_id,
+                                parent_run_id: invocation.parent_run_id,
+                                parent_tool_call_id: invocation.parent_tool_call_id,
+                                invocation_id,
+                                root_session_id,
+                                child_run_id: Some(child_run_id),
+                                state: DelegationState::Running,
+                                background: invocation.background,
+                                counts_slot,
+                                notification_sent: false,
+                            },
+                        );
+                        false
+                    }
+                    Err(_) => true,
+                }
+            };
+            if registry_failed {
+                drop(monitor_release);
+                self.rollback_running_resume(
+                    invocation_id,
+                    child.session_id,
+                    child_run_id,
+                    admission_seq,
+                    previous_record,
+                    SessionStatus::Cancelled,
+                )
+                .await?;
+                return Err(EngineError::ActorStopped);
+            }
+            if let Some(release) = monitor_release
+                && release.send(()).is_err()
+            {
+                self.rollback_running_resume(
+                    invocation_id,
+                    child.session_id,
+                    child_run_id,
+                    admission_seq,
+                    previous_record,
+                    SessionStatus::Cancelled,
+                )
+                .await?;
+                return Err(EngineError::ActorStopped);
+            }
+            if !self.admission_generation_live(invocation_id, generation) {
+                self.rollback_running_resume(
+                    invocation_id,
+                    child.session_id,
+                    child_run_id,
+                    admission_seq,
+                    previous_record,
+                    SessionStatus::Cancelled,
+                )
+                .await?;
+                return Err(EngineError::MissingTool(
+                    "delegate admission was abandoned".into(),
+                ));
+            }
+            return Ok(handle);
+        }
         self.inner
             .delegations_by_session
             .lock()
@@ -370,6 +777,12 @@ impl Engine {
                     .lock()
                     .map_err(|_| EngineError::ActorStopped)?
                     .retain(|session_id| *session_id != child.session_id);
+                let journal = self.inner.journal.clone();
+                let _ = self
+                    .spawn_admission_blocking(move || {
+                        journal.mark_terminated(invocation_id, SessionStatus::Failed)
+                    })
+                    .await;
                 let terminalized = self
                     .terminalize_child_without_run(
                         child.session_id,
@@ -388,7 +801,8 @@ impl Engine {
                 }
                 drop(admission_guard);
                 if terminalized.is_ok() {
-                    self.finish_background_or_retry(child.session_id).await;
+                    self.finish_background_or_retry(child.session_id, invocation_id)
+                        .await;
                 } else {
                     let _ = self.start_queued_delegation(root_session_id).await;
                 }
@@ -420,6 +834,12 @@ impl Engine {
                         )
                         .await;
                 }
+                let journal = self.inner.journal.clone();
+                let _ = self
+                    .spawn_admission_blocking(move || {
+                        journal.mark_terminated(invocation_id, SessionStatus::Failed)
+                    })
+                    .await;
                 let terminalized = self
                     .terminalize_child_without_run(
                         child.session_id,
@@ -434,18 +854,13 @@ impl Engine {
                     .map_err(|_| EngineError::ActorStopped)?
                     .get_mut(&child.session_id)
                 {
-                    record.state = DelegationState::Finished(
-                        terminalized
-                            .as_ref()
-                            .ok()
-                            .and_then(|_| self.inner.store.get(child.session_id).ok())
-                            .map_or(SessionStatus::Failed, |child| child.status),
-                    );
+                    record.state = DelegationState::Finished(SessionStatus::Failed);
                 }
                 drop(admission_guard);
                 if invocation.background {
                     if terminalized.is_ok() {
-                        self.finish_background_or_retry(child.session_id).await;
+                        self.finish_background_or_retry(child.session_id, invocation_id)
+                            .await;
                     } else {
                         let _ = self.start_queued_delegation(root_session_id).await;
                     }
@@ -476,7 +891,8 @@ impl Engine {
                 Some("background delegate monitor failed to start".into()),
             );
             drop(admission_guard);
-            self.finish_background_or_retry(child.session_id).await;
+            self.finish_background_or_retry(child.session_id, invocation_id)
+                .await;
             return Err(error);
         }
         Ok(handle)
@@ -509,7 +925,11 @@ impl Engine {
                     ));
                 }
             };
-            match child.status {
+            let status = handle
+                .child_run_id
+                .and_then(|run_id| child.runs.get(&run_id).map(|run| run.status))
+                .unwrap_or(child.status);
+            match status {
                 SessionStatus::Running | SessionStatus::Idle => {
                     let active = {
                         self.inner
@@ -549,8 +969,7 @@ impl Engine {
                     return Ok(result);
                 }
                 SessionStatus::Failed | SessionStatus::Interrupted => {
-                    let result =
-                        terminal_delegate_result(&child, handle.child_run_id, child.status);
+                    let result = terminal_delegate_result(&child, handle.child_run_id, status);
                     self.clear_delegate_admissions(handle.invocation_id);
                     return Ok(result);
                 }
@@ -693,6 +1112,11 @@ impl Engine {
         entry: &journal::JournalEntry,
         admission: Option<(InvocationId, u64)>,
     ) -> Result<RunId, EngineError> {
+        if entry.terminal_status.is_some() {
+            return Err(EngineError::MissingTool(
+                "delegate invocation was cancelled before startup".into(),
+            ));
+        }
         #[cfg(test)]
         if self
             .inner
@@ -876,7 +1300,7 @@ impl Engine {
             let _ = monitor.await_delegate_inner(handle).await;
             loop {
                 match monitor
-                    .finish_background_delegate(handle.child_session_id)
+                    .finish_background_delegate(handle.child_session_id, handle.invocation_id)
                     .await
                 {
                     Ok(()) => break,
@@ -899,19 +1323,123 @@ impl Engine {
         Ok(())
     }
 
-    async fn finish_background_or_retry(&self, child_session_id: SessionId) {
+    fn spawn_background_monitor_gated(
+        &self,
+        handle: DelegateHandle,
+    ) -> Result<tokio::sync::oneshot::Sender<()>, EngineError> {
+        #[cfg(test)]
         if self
-            .finish_background_delegate(child_session_id)
+            .inner
+            .resume_monitor_failures
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                (remaining > 0).then(|| remaining - 1)
+            })
+            .is_ok()
+        {
+            return Err(EngineError::ActorStopped);
+        }
+        let runtime = self
+            .inner
+            .runtime
+            .clone()
+            .or_else(|| tokio::runtime::Handle::try_current().ok())
+            .ok_or(EngineError::ActorStopped)?;
+        let (release, admitted) = tokio::sync::oneshot::channel();
+        let engine = self.clone();
+        let monitor = engine.clone();
+        if !self.spawn_admission_task(&runtime, async move {
+            if admitted.await.is_err() {
+                return;
+            }
+            let _ = monitor.await_delegate_inner(handle).await;
+            loop {
+                match monitor
+                    .finish_background_delegate(handle.child_session_id, handle.invocation_id)
+                    .await
+                {
+                    Ok(()) => break,
+                    Err(error) => {
+                        if monitor
+                            .inner
+                            .admission_tasks_closing
+                            .load(Ordering::Acquire)
+                        {
+                            break;
+                        }
+                        eprintln!("background delegate completion retrying: {error}");
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                }
+            }
+        }) {
+            return Err(EngineError::ActorStopped);
+        }
+        Ok(release)
+    }
+
+    pub(super) async fn rollback_running_resume(
+        &self,
+        invocation_id: InvocationId,
+        child_session_id: SessionId,
+        child_run_id: RunId,
+        admission_seq: u64,
+        previous_record: DelegationRecord,
+        status: SessionStatus,
+    ) -> Result<(), EngineError> {
+        let recalled = self
+            .request(child_session_id, |reply| {
+                SessionCommand::RecallDelegatedResume {
+                    run: child_run_id,
+                    admission_seq,
+                    reply,
+                }
+            })
+            .await
+            .unwrap_or(false);
+        let journal = self.inner.journal.clone();
+        self.spawn_admission_blocking(move || journal.mark_terminated(invocation_id, status))
+            .await?;
+        if let Ok(mut records) = self.inner.delegations_by_session.lock()
+            && records
+                .get(&child_session_id)
+                .is_some_and(|record| record.invocation_id == invocation_id)
+        {
+            records.insert(child_session_id, previous_record);
+        }
+        if !recalled {
+            let child = self.inner.store.get(child_session_id)?;
+            if child
+                .runs
+                .get(&child_run_id)
+                .is_some_and(|run| run.status == SessionStatus::Running)
+            {
+                let _ = self.cancel_run_durably(
+                    child_run_id,
+                    Some("abandoned resume prompt could not be recalled".into()),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn finish_background_or_retry(
+        &self,
+        child_session_id: SessionId,
+        invocation_id: InvocationId,
+    ) {
+        if self
+            .finish_background_delegate(child_session_id, invocation_id)
             .await
             .is_err()
         {
-            let _ = self.spawn_background_finish_retry(child_session_id);
+            let _ = self.spawn_background_finish_retry(child_session_id, invocation_id);
         }
     }
 
     fn spawn_background_finish_retry(
         &self,
         child_session_id: SessionId,
+        invocation_id: InvocationId,
     ) -> Result<(), EngineError> {
         let runtime = self
             .inner
@@ -923,7 +1451,10 @@ impl Engine {
         let retry = engine.clone();
         if !self.spawn_admission_task(&runtime, async move {
             loop {
-                match retry.finish_background_delegate(child_session_id).await {
+                match retry
+                    .finish_background_delegate(child_session_id, invocation_id)
+                    .await
+                {
                     Ok(()) => break,
                     Err(error) => {
                         if retry.inner.admission_tasks_closing.load(Ordering::Acquire) {
@@ -943,47 +1474,91 @@ impl Engine {
     async fn finish_background_delegate(
         &self,
         child_session_id: SessionId,
+        invocation_id: InvocationId,
     ) -> Result<(), EngineError> {
         let child = self.inner.store.get(child_session_id)?;
-        let (parent_session_id, parent_run_id, root_session_id, already_sent) = {
+        let entry = self
+            .journal_get(invocation_id)
+            .await?
+            .ok_or_else(|| EngineError::MissingTool("delegate journal entry is missing".into()))?;
+        if entry.reservation.child_session_id != child_session_id {
+            return Err(EngineError::MissingTool(
+                "delegate journal child does not match completion monitor".into(),
+            ));
+        }
+        let parent_session_id = entry.reservation.parent_session_id;
+        let parent_run_id = entry.reservation.parent_run_id;
+        let parent = self.inner.store.get(parent_session_id)?;
+        let root_session_id = match parent.meta.origin {
+            SessionOrigin::Delegated {
+                root_session_id, ..
+            } => root_session_id,
+            _ => parent_session_id,
+        };
+        let exact_status = if let Some(status) = entry.terminal_status {
+            status
+        } else if let Some(child_run_id) = entry.child_run_id {
+            child
+                .runs
+                .get(&child_run_id)
+                .map(|run| run.status)
+                .ok_or_else(|| EngineError::MissingTool("delegate child run is missing".into()))?
+        } else {
+            child.status
+        };
+        if !matches!(
+            exact_status,
+            SessionStatus::Completed
+                | SessionStatus::Failed
+                | SessionStatus::Interrupted
+                | SessionStatus::Cancelled
+        ) {
+            return Err(EngineError::MissingTool(
+                "delegate child run is not terminal".into(),
+            ));
+        }
+        let (owns_registry, registry_background, already_sent) = {
             let mut records = self
                 .inner
                 .delegations_by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?;
-            let record = records.get_mut(&child_session_id).ok_or_else(|| {
-                EngineError::MissingTool("subagent registry entry is missing".into())
-            })?;
-            if !record.background {
-                return Err(EngineError::MissingTool(
-                    "foreground subagent cannot emit a background notification".into(),
-                ));
+            if let Some(record) = records
+                .get_mut(&child_session_id)
+                .filter(|record| record.invocation_id == invocation_id)
+            {
+                let already_sent = record.notification_sent;
+                record.state = DelegationState::Finished(exact_status);
+                (true, record.background, already_sent)
+            } else {
+                (false, false, false)
             }
-            let already_sent = record.notification_sent;
-            record.state = DelegationState::Finished(child.status);
-            (
-                record.parent_session_id,
-                record.parent_run_id,
-                record.root_session_id,
-                already_sent,
-            )
         };
-        let already_logged = !already_sent
-            && self
-                .inner
-                .store
-                .get(parent_session_id)?
-                .log
-                .events()
-                .iter()
-                .any(|event| {
-                    matches!(
-                        event.payload,
-                        Event::DelegateFinished { session_id, .. }
-                            if session_id == child_session_id
-                    )
-                });
-        if already_logged
+        let background_return = parent.log.events().iter().any(|event| {
+            matches!(
+                &event.payload,
+                Event::ToolCallTerminated { termination }
+                    if termination.tool_call_id == entry.reservation.parent_tool_call_id
+                        && termination.result.as_ref().is_some_and(|result| {
+                            result.metadata.get("session_id")
+                                == Some(&serde_json::json!(child_session_id))
+                        })
+            )
+        });
+        let background = registry_background || background_return;
+        let already_logged = background
+            && parent.log.events().iter().any(|event| {
+                matches!(
+                    event.payload,
+                    Event::DelegateFinishedV2 {
+                        invocation_id: logged_invocation,
+                        session_id,
+                        ..
+                    } if logged_invocation == invocation_id && session_id == child_session_id
+                )
+            });
+        if owns_registry
+            && already_logged
             && let Some(record) = self
                 .inner
                 .delegations_by_session
@@ -993,28 +1568,32 @@ impl Engine {
         {
             record.notification_sent = true;
         }
-        let notification_result = if !already_sent && !already_logged {
-            let child_run_id = self
-                .inner
-                .delegations_by_session
-                .lock()
-                .map_err(|_| EngineError::ActorStopped)?
-                .get(&child_session_id)
-                .and_then(|record| record.child_run_id);
-            let teaser = delegate_teaser(&child, child_session_id, child.status, child_run_id);
+        let notification_result = if background && !already_sent && !already_logged {
+            let teaser = if entry.terminal_status.is_some() && entry.child_run_id.is_none() {
+                DelegateTeaser {
+                    session_id: child_session_id,
+                    status: SessionStatus::Cancelled,
+                    preview: String::new(),
+                    total_lines: 0,
+                }
+            } else {
+                delegate_teaser(&child, child_session_id, exact_status, entry.child_run_id)
+            };
             let result = self
                 .append(
                     parent_session_id,
                     Some(parent_run_id),
-                    Event::DelegateFinished {
+                    Event::DelegateFinishedV2 {
+                        invocation_id,
                         session_id: child_session_id,
-                        status: child.status,
+                        status: exact_status,
                         preview: teaser.preview,
                         total_lines: teaser.total_lines,
                     },
                 )
                 .await;
             if result.is_ok()
+                && owns_registry
                 && let Some(record) = self
                     .inner
                     .delegations_by_session
@@ -1028,7 +1607,11 @@ impl Engine {
         } else {
             Ok(())
         };
-        let drain_result = self.start_queued_delegation(root_session_id).await;
+        let drain_result = if owns_registry {
+            self.start_queued_delegation(root_session_id).await
+        } else {
+            Ok(())
+        };
         notification_result.and(drain_result)
     }
 
@@ -1062,6 +1645,81 @@ impl Engine {
                 },
             )
             .await?;
+        }
+        Ok(())
+    }
+
+    async fn void_runless_pending_inputs(
+        &self,
+        child_session_id: SessionId,
+    ) -> Result<(), EngineError> {
+        let events = self.inner.store.get(child_session_id)?.log.events();
+        let boundary = events
+            .iter()
+            .rev()
+            .find(|event| {
+                matches!(
+                    event.payload,
+                    Event::RunCompleted { .. }
+                        | Event::RunFailed { .. }
+                        | Event::RunCancelled { .. }
+                        | Event::RunInterrupted { .. }
+                )
+            })
+            .map_or(0, |event| event.seq);
+        let mut pending = std::collections::VecDeque::new();
+        for event in events
+            .iter()
+            .filter(|event| event.seq > boundary && event.run_id.is_none())
+        {
+            match &event.payload {
+                Event::UserInputAdmitted { input } => pending.push_back(input.clone()),
+                Event::UserInputRecalled { .. } => {
+                    pending.pop_back();
+                }
+                _ => {}
+            }
+        }
+        for input in pending.into_iter().rev() {
+            self.append(child_session_id, None, Event::UserInputRecalled { input })
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn void_runless_pending_inputs_blocking(
+        &self,
+        child_session_id: SessionId,
+    ) -> Result<(), EngineError> {
+        let events = self.inner.store.get(child_session_id)?.log.events();
+        let boundary = events
+            .iter()
+            .rev()
+            .find(|event| {
+                matches!(
+                    event.payload,
+                    Event::RunCompleted { .. }
+                        | Event::RunFailed { .. }
+                        | Event::RunCancelled { .. }
+                        | Event::RunInterrupted { .. }
+                )
+            })
+            .map_or(0, |event| event.seq);
+        let mut pending = std::collections::VecDeque::new();
+        for event in events
+            .iter()
+            .filter(|event| event.seq > boundary && event.run_id.is_none())
+        {
+            match &event.payload {
+                Event::UserInputAdmitted { input } => pending.push_back(input.clone()),
+                Event::UserInputRecalled { .. } => {
+                    pending.pop_back();
+                }
+                _ => {}
+            }
+        }
+        for input in pending.into_iter().rev() {
+            self.append_blocking(child_session_id, None, Event::UserInputRecalled { input })?;
         }
         Ok(())
     }
@@ -1136,7 +1794,7 @@ impl Engine {
                 Some("queued subagent disappeared during startup".into()),
             );
             drop(admission_guard);
-            let _ = self.spawn_background_finish_retry(child_session_id);
+            let _ = self.spawn_background_finish_retry(child_session_id, invocation_id);
             return Err(error);
         }
         let handle = DelegateHandle {
@@ -1150,7 +1808,7 @@ impl Engine {
                 Some("background delegate monitor failed to start".into()),
             );
             drop(admission_guard);
-            let _ = self.spawn_background_finish_retry(child_session_id);
+            let _ = self.spawn_background_finish_retry(child_session_id, invocation_id);
             return Err(error);
         }
         Ok(())
@@ -1190,13 +1848,6 @@ impl Engine {
         else {
             unreachable!("ownership check requires a delegated origin");
         };
-        self.ensure_parent_link(
-            caller_session_id,
-            parent_run_id,
-            parent_tool_call_id,
-            child_session_id,
-        )
-        .await?;
         let registry_record = self
             .inner
             .delegations_by_session
@@ -1204,15 +1855,28 @@ impl Engine {
             .map_err(|_| EngineError::ActorStopped)?
             .get(&child_session_id)
             .copied();
-        if let Some(record) = registry_record
-            && (record.parent_session_id != caller_session_id
-                || record.parent_run_id != parent_run_id
-                || record.parent_tool_call_id != parent_tool_call_id)
-        {
+        if registry_record.is_some_and(|record| record.parent_session_id != caller_session_id) {
             return Err(EngineError::MissingTool(
                 "subagent registry ownership does not match its parent link".into(),
             ));
         }
+        let (parent_run_id, parent_tool_call_id, invocation_id) = registry_record.map_or(
+            (parent_run_id, parent_tool_call_id, invocation_id),
+            |record| {
+                (
+                    record.parent_run_id,
+                    record.parent_tool_call_id,
+                    record.invocation_id,
+                )
+            },
+        );
+        self.ensure_parent_link(
+            caller_session_id,
+            parent_run_id,
+            parent_tool_call_id,
+            child_session_id,
+        )
+        .await?;
         let child_run_id = registry_record
             .and_then(|record| record.child_run_id)
             .or_else(|| {
@@ -1242,27 +1906,36 @@ impl Engine {
             .await?;
         loop {
             let child = self.inner.store.get(child_session_id)?;
-            let queued = self
+            let record = self
                 .inner
                 .delegations_by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?
                 .get(&child_session_id)
-                .is_some_and(|record| record.state == DelegationState::Queued);
-            let terminal = matches!(
-                child.status,
-                SessionStatus::Completed
-                    | SessionStatus::Failed
-                    | SessionStatus::Interrupted
-                    | SessionStatus::Cancelled
-            );
+                .copied();
+            let queued = record.is_some_and(|record| record.state == DelegationState::Queued);
+            let pending_terminal = record.and_then(|record| match record.state {
+                DelegationState::Finished(status) if record.child_run_id.is_none() => Some(status),
+                _ => None,
+            });
+            let terminal = pending_terminal.is_some()
+                || (!queued
+                    && matches!(
+                        child.status,
+                        SessionStatus::Completed
+                            | SessionStatus::Failed
+                            | SessionStatus::Interrupted
+                            | SessionStatus::Cancelled
+                    ));
             if terminal || !wait {
                 let status = if queued {
                     "queued"
+                } else if let Some(status) = pending_terminal {
+                    session_status_name(status)
                 } else {
                     session_status_name(child.status)
                 };
-                let text = if terminal {
+                let text = if terminal && pending_terminal.is_none() {
                     delegate_final_text(&child, handle.child_run_id)
                 } else {
                     ""
@@ -1275,6 +1948,80 @@ impl Engine {
                 }
                 () = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
             }
+        }
+    }
+
+    pub async fn steer_subagent(
+        &self,
+        caller_session_id: SessionId,
+        child_session_id: SessionId,
+        message: String,
+    ) -> Result<ToolResult, EngineError> {
+        if message.trim().is_empty() {
+            return Err(EngineError::MissingTool(
+                "subagent steer message must not be empty".into(),
+            ));
+        }
+        let handle = self
+            .ensure_subagent_owned(caller_session_id, child_session_id)
+            .await?;
+        let admission_guard = self.inner.delegation_admission.lock().await;
+        let record = self
+            .inner
+            .delegations_by_session
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?
+            .get(&child_session_id)
+            .copied()
+            .ok_or_else(|| EngineError::MissingTool("subagent registry entry is missing".into()))?;
+        let child = self.inner.store.get(child_session_id)?;
+        match record.state {
+            DelegationState::Queued => {
+                self.append(
+                    child_session_id,
+                    None,
+                    Event::UserInputAdmitted { input: message },
+                )
+                .await?;
+                drop(admission_guard);
+                Ok(steered_delegate_result(child_session_id, "queued"))
+            }
+            DelegationState::Starting | DelegationState::Running => {
+                if matches!(
+                    child.status,
+                    SessionStatus::Completed
+                        | SessionStatus::Failed
+                        | SessionStatus::Interrupted
+                        | SessionStatus::Cancelled
+                ) {
+                    return Err(EngineError::MissingTool(format!(
+                        "subagent is terminal ({}) and cannot be steered",
+                        session_status_name(child.status)
+                    )));
+                }
+                let child_run_id =
+                    record.child_run_id.or(handle.child_run_id).ok_or_else(|| {
+                        EngineError::MissingTool("subagent has not started a run".into())
+                    })?;
+                drop(admission_guard);
+                let result = self
+                    .request(child_session_id, |reply| SessionCommand::Steer {
+                        run: child_run_id,
+                        input: message,
+                        reply,
+                    })
+                    .await?;
+                if !result.accepted {
+                    return Err(EngineError::MissingTool(
+                        "subagent is no longer running".into(),
+                    ));
+                }
+                Ok(steered_delegate_result(child_session_id, "running"))
+            }
+            DelegationState::Finished(status) => Err(EngineError::MissingTool(format!(
+                "subagent is terminal ({}) and cannot be steered",
+                session_status_name(status)
+            ))),
         }
     }
 
@@ -1310,6 +2057,12 @@ impl Engine {
             let cancellation_reason = reason
                 .as_deref()
                 .unwrap_or("queued subagent cancelled before startup");
+            let journal = self.inner.journal.clone();
+            self.spawn_admission_blocking(move || {
+                journal.mark_terminated(record.invocation_id, SessionStatus::Cancelled)
+            })
+            .await?;
+            self.void_runless_pending_inputs(child_session_id).await?;
             self.terminalize_child_without_run(
                 child_session_id,
                 SessionStatus::Cancelled,
@@ -1331,7 +2084,8 @@ impl Engine {
                 record.state = DelegationState::Finished(SessionStatus::Cancelled);
             }
             drop(admission_guard);
-            self.finish_background_or_retry(child_session_id).await;
+            self.finish_background_or_retry(child_session_id, record.invocation_id)
+                .await;
             return Ok(cancelled_delegate_result(child_session_id, None));
         }
         let child_run_id = record
@@ -1374,12 +2128,201 @@ impl Engine {
             .contains(&child_session_id))
     }
 
+    #[cfg(test)]
+    pub(crate) fn delegation_registry_snapshot(
+        &self,
+        child_session_id: SessionId,
+    ) -> Result<(InvocationId, Option<SessionStatus>, bool), EngineError> {
+        self.inner
+            .delegations_by_session
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?
+            .get(&child_session_id)
+            .map(|record| {
+                (
+                    record.invocation_id,
+                    match record.state {
+                        DelegationState::Finished(status) => Some(status),
+                        _ => None,
+                    },
+                    record.counts_slot,
+                )
+            })
+            .ok_or_else(|| EngineError::MissingTool("subagent registry entry is missing".into()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_resume_admission_hook(
+        &self,
+    ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
+        let (reached, receiver) = tokio::sync::oneshot::channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        *self
+            .inner
+            .resume_admission_hook
+            .lock()
+            .expect("resume admission hook lock poisoned") =
+            Some(Arc::new(super::ResumeAdmissionHook {
+                reached: std::sync::Mutex::new(Some(reached)),
+                release: Arc::clone(&release),
+            }));
+        (receiver, release)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_resume_attachment_hook(
+        &self,
+    ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
+        self.install_resume_test_hook(&self.inner.resume_attachment_hook)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_resume_rollback_hook(
+        &self,
+    ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
+        self.install_resume_test_hook(&self.inner.resume_rollback_hook)
+    }
+
+    #[cfg(test)]
+    fn install_resume_test_hook(
+        &self,
+        slot: &std::sync::Mutex<Option<Arc<super::ResumeAdmissionHook>>>,
+    ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
+        let (reached, receiver) = tokio::sync::oneshot::channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        *slot.lock().expect("resume test hook lock poisoned") =
+            Some(Arc::new(super::ResumeAdmissionHook {
+                reached: std::sync::Mutex::new(Some(reached)),
+                release: Arc::clone(&release),
+            }));
+        (receiver, release)
+    }
+
+    #[cfg(test)]
+    async fn wait_for_resume_test_hook(
+        &self,
+        slot: &std::sync::Mutex<Option<Arc<super::ResumeAdmissionHook>>>,
+    ) {
+        let hook = slot.lock().expect("resume test hook lock poisoned").clone();
+        if let Some(hook) = hook {
+            if let Some(reached) = hook
+                .reached
+                .lock()
+                .expect("resume test hook reached lock poisoned")
+                .take()
+            {
+                let _ = reached.send(());
+            }
+            hook.release.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_delegation_slot_ownership(
+        &self,
+        child_session_id: SessionId,
+        background: bool,
+        counts_slot: bool,
+    ) -> Result<(), EngineError> {
+        let mut records = self
+            .inner
+            .delegations_by_session
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?;
+        let record = records
+            .get_mut(&child_session_id)
+            .ok_or_else(|| EngineError::MissingTool("subagent registry entry is missing".into()))?;
+        record.background = background;
+        record.counts_slot = counts_slot;
+        Ok(())
+    }
+
     pub(super) fn rebuild_delegation_registry(
         &self,
         entries: &[journal::JournalEntry],
     ) -> Result<(), EngineError> {
         let mut queued_roots = Vec::new();
         for entry in entries {
+            let Ok(child) = self.inner.store.get(entry.reservation.child_session_id) else {
+                continue;
+            };
+            let parent = self.inner.store.get(entry.reservation.parent_session_id)?;
+            let background = parent.log.events().iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    Event::ToolCallTerminated { termination }
+                        if termination.tool_call_id == entry.reservation.parent_tool_call_id
+                            && termination.result.as_ref().is_some_and(|result| {
+                                result.metadata.get("session_id")
+                                    == Some(&serde_json::json!(child.meta.session_id))
+                            })
+                )
+            });
+            let notification_sent = parent.log.events().iter().any(|event| {
+                matches!(
+                    event.payload,
+                    Event::DelegateFinishedV2 {
+                        invocation_id,
+                        session_id,
+                        ..
+                    } if invocation_id == entry.reservation.invocation_id
+                        && session_id == child.meta.session_id
+                )
+            });
+            let exact_status = entry
+                .terminal_status
+                .or_else(|| {
+                    entry
+                        .child_run_id
+                        .and_then(|run_id| child.runs.get(&run_id).map(|run| run.status))
+                })
+                .or_else(|| {
+                    (entry.request.resume_session_id.is_none()
+                        && matches!(
+                            child.status,
+                            SessionStatus::Failed | SessionStatus::Cancelled
+                        ))
+                    .then_some(child.status)
+                });
+            if background
+                && !notification_sent
+                && let Some(status) = exact_status
+                && matches!(
+                    status,
+                    SessionStatus::Completed
+                        | SessionStatus::Failed
+                        | SessionStatus::Interrupted
+                        | SessionStatus::Cancelled
+                )
+            {
+                let teaser = if entry.terminal_status.is_some() && entry.child_run_id.is_none() {
+                    DelegateTeaser {
+                        session_id: child.meta.session_id,
+                        status,
+                        preview: String::new(),
+                        total_lines: 0,
+                    }
+                } else {
+                    delegate_teaser(&child, child.meta.session_id, status, entry.child_run_id)
+                };
+                self.append_blocking(
+                    entry.reservation.parent_session_id,
+                    Some(entry.reservation.parent_run_id),
+                    Event::DelegateFinishedV2 {
+                        invocation_id: entry.reservation.invocation_id,
+                        session_id: child.meta.session_id,
+                        status,
+                        preview: teaser.preview,
+                        total_lines: teaser.total_lines,
+                    },
+                )?;
+            }
+        }
+        let mut latest = std::collections::HashMap::new();
+        for entry in entries {
+            latest.insert(entry.reservation.child_session_id, entry);
+        }
+        for entry in latest.into_values() {
             let child = match self.inner.store.get(entry.reservation.child_session_id) {
                 Ok(child) => child,
                 Err(_) => continue,
@@ -1395,14 +2338,19 @@ impl Engine {
                 matches!(
                     event.payload,
                     Event::DelegateQueued { session_id, .. }
-                        if session_id == child.meta.session_id
+                        if event.run_id == Some(entry.reservation.parent_run_id)
+                            && session_id == child.meta.session_id
                 )
             });
             let notification_sent = parent.log.events().iter().any(|event| {
                 matches!(
                     event.payload,
-                    Event::DelegateFinished { session_id, .. }
-                        if session_id == child.meta.session_id
+                    Event::DelegateFinishedV2 {
+                        invocation_id,
+                        session_id,
+                        ..
+                    } if invocation_id == entry.reservation.invocation_id
+                        && session_id == child.meta.session_id
                 )
             });
             let background_return = parent.log.events().iter().any(|event| {
@@ -1417,17 +2365,23 @@ impl Engine {
                 )
             });
             let background = queued_event || background_return;
-            let terminal = matches!(
-                child.status,
-                SessionStatus::Completed
-                    | SessionStatus::Failed
-                    | SessionStatus::Interrupted
-                    | SessionStatus::Cancelled
-            );
-            let state = if terminal {
-                DelegationState::Finished(child.status)
+            let exact_run_status = entry
+                .child_run_id
+                .and_then(|run_id| child.runs.get(&run_id).map(|run| run.status));
+            let state = if let Some(status) = entry.terminal_status {
+                DelegationState::Finished(status)
             } else if entry.child_run_id.is_none() && queued_event {
                 DelegationState::Queued
+            } else if exact_run_status.is_some_and(|status| {
+                matches!(
+                    status,
+                    SessionStatus::Completed
+                        | SessionStatus::Failed
+                        | SessionStatus::Interrupted
+                        | SessionStatus::Cancelled
+                )
+            }) {
+                DelegationState::Finished(exact_run_status.expect("checked terminal status"))
             } else {
                 DelegationState::Running
             };
@@ -1459,19 +2413,27 @@ impl Engine {
                     .map_err(|_| EngineError::ActorStopped)?
                     .push_back(child.meta.session_id);
                 queued_roots.push(root_session_id);
-            } else if background && terminal && !notification_sent {
-                let teaser = delegate_teaser(
-                    &child,
-                    child.meta.session_id,
-                    child.status,
-                    entry.child_run_id,
-                );
+            } else if background
+                && let DelegationState::Finished(status) = state
+                && !notification_sent
+            {
+                let teaser = if entry.terminal_status.is_some() && entry.child_run_id.is_none() {
+                    DelegateTeaser {
+                        session_id: child.meta.session_id,
+                        status,
+                        preview: String::new(),
+                        total_lines: 0,
+                    }
+                } else {
+                    delegate_teaser(&child, child.meta.session_id, status, entry.child_run_id)
+                };
                 self.append_blocking(
                     entry.reservation.parent_session_id,
                     Some(entry.reservation.parent_run_id),
-                    Event::DelegateFinished {
+                    Event::DelegateFinishedV2 {
+                        invocation_id: entry.reservation.invocation_id,
                         session_id: child.meta.session_id,
-                        status: child.status,
+                        status,
                         preview: teaser.preview,
                         total_lines: teaser.total_lines,
                     },
@@ -1502,7 +2464,7 @@ pub(super) enum DelegationState {
     Finished(SessionStatus),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct DelegationRecord {
     pub(super) parent_session_id: SessionId,
     pub(super) parent_run_id: RunId,
@@ -1544,6 +2506,64 @@ pub(super) fn delegate_client_run_id(
 
 pub(super) fn render_delegate_input(request: &journal::DelegateRequestPayload) -> String {
     request.prompt.clone()
+}
+
+const DELEGATED_CONTEXT_MAX_BYTES: usize = 64 * 1024;
+
+fn context_seed_from_history(history: Vec<oven_sdk::HistoryTurn>) -> Vec<DelegatedContextTurn> {
+    let mut turns = history
+        .into_iter()
+        .filter_map(|turn| match turn {
+            oven_sdk::HistoryTurn::User(message) => {
+                let text = message
+                    .content
+                    .into_iter()
+                    .filter_map(|part| match part {
+                        oven_sdk::InputPart::Text(text) => Some(text.text),
+                        _ => None,
+                    })
+                    .collect::<String>();
+                (!text.is_empty()).then_some(DelegatedContextTurn {
+                    role: DelegatedContextRole::User,
+                    text,
+                })
+            }
+            oven_sdk::HistoryTurn::Assistant(turn) => {
+                let text = turn
+                    .message
+                    .content
+                    .into_iter()
+                    .filter_map(|part| match part {
+                        oven_sdk::AssistantPart::Text(text) => Some(text.text),
+                        _ => None,
+                    })
+                    .collect::<String>();
+                (!text.is_empty()).then_some(DelegatedContextTurn {
+                    role: DelegatedContextRole::Assistant,
+                    text,
+                })
+            }
+            oven_sdk::HistoryTurn::System(_) | oven_sdk::HistoryTurn::Tool(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let mut excess = turns
+        .iter()
+        .map(|turn| turn.text.len())
+        .sum::<usize>()
+        .saturating_sub(DELEGATED_CONTEXT_MAX_BYTES);
+    while excess > 0 && !turns.is_empty() {
+        if turns[0].text.len() <= excess {
+            excess -= turns.remove(0).text.len();
+            continue;
+        }
+        let mut boundary = excess;
+        while !turns[0].text.is_char_boundary(boundary) {
+            boundary += 1;
+        }
+        turns[0].text.drain(..boundary);
+        excess = 0;
+    }
+    turns
 }
 
 struct DelegateTeaser {
@@ -1627,6 +2647,16 @@ fn paginated_subagent_result(status: &str, text: &str, offset: u32, limit: u32) 
     }
 }
 
+fn steered_delegate_result(child_session_id: SessionId, status: &str) -> ToolResult {
+    structured_delegate_result(
+        "Subagent steered",
+        serde_json::json!({
+            "session_id": child_session_id,
+            "status": status,
+        }),
+    )
+}
+
 pub(crate) fn completed_delegate_result(
     child: &session::SessionProjection,
     child_run_id: Option<RunId>,
@@ -1701,6 +2731,34 @@ pub(super) fn delegate_failure_result(
     )
 }
 
+fn validate_redelivery_mode(
+    durable_background: Option<bool>,
+    redelivery_background: bool,
+) -> Result<(), EngineError> {
+    let Some(durable_background) = durable_background else {
+        return Err(EngineError::MissingTool(
+            "delegate redelivery execution mode is unavailable in this legacy journal; start a new delegation"
+                .into(),
+        ));
+    };
+    if durable_background != redelivery_background {
+        let durable = if durable_background {
+            "background"
+        } else {
+            "foreground"
+        };
+        let redelivery = if redelivery_background {
+            "background"
+        } else {
+            "foreground"
+        };
+        return Err(EngineError::MissingTool(format!(
+            "delegate redelivery execution mode conflict: durable invocation is {durable}, redelivery requested {redelivery}"
+        )));
+    }
+    Ok(())
+}
+
 pub(super) fn is_journal_append_failure(error: &EngineError) -> bool {
     matches!(
         error,
@@ -1712,13 +2770,32 @@ pub(super) fn is_journal_append_failure(error: &EngineError) -> bool {
 
 #[cfg(test)]
 mod concurrency_tests {
-    use super::{background_queue_limit_reached, paginated_subagent_result, preview_text};
+    use super::{
+        DELEGATED_CONTEXT_MAX_BYTES, background_queue_limit_reached, context_seed_from_history,
+        paginated_subagent_result, preview_text, validate_redelivery_mode,
+    };
 
     #[test]
     fn background_queue_rejects_only_at_four_times_concurrency() {
         assert!(!background_queue_limit_reached(4, 15));
         assert!(background_queue_limit_reached(4, 16));
         assert!(background_queue_limit_reached(4, 17));
+    }
+
+    #[test]
+    fn redelivery_execution_mode_must_match_in_both_directions() {
+        assert!(validate_redelivery_mode(Some(false), false).is_ok());
+        assert!(validate_redelivery_mode(Some(true), true).is_ok());
+        let foreground_to_background = validate_redelivery_mode(Some(false), true)
+            .expect_err("foreground to background must fail")
+            .to_string();
+        assert!(foreground_to_background.contains("durable invocation is foreground"));
+        assert!(foreground_to_background.contains("requested background"));
+        let background_to_foreground = validate_redelivery_mode(Some(true), false)
+            .expect_err("background to foreground must fail")
+            .to_string();
+        assert!(background_to_foreground.contains("durable invocation is background"));
+        assert!(background_to_foreground.contains("requested foreground"));
     }
 
     #[test]
@@ -1748,5 +2825,42 @@ mod concurrency_tests {
             "<status>running</status>\n<content>\n</content>"
         );
         assert_eq!(running.metadata["total_lines"], 0);
+    }
+
+    #[test]
+    fn inherited_context_is_text_only_and_truncates_oldest_bytes_first() {
+        let history = vec![
+            oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
+                oven_sdk::SystemPart::Text(oven_sdk::TextPart::new("private system prompt")),
+            ])),
+            oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(vec![
+                oven_sdk::InputPart::Text(oven_sdk::TextPart::new("old-user".repeat(125))),
+            ])),
+            oven_sdk::HistoryTurn::tool(oven_sdk::ToolMessage::new(vec![
+                oven_sdk::ToolResultPart::new(
+                    "call",
+                    oven_sdk::ToolContent::Text("secret tool output".into()),
+                ),
+            ])),
+            oven_sdk::HistoryTurn::assistant(oven_sdk::CompletedTurn::new(
+                oven_sdk::AssistantMessage::new(vec![
+                    oven_sdk::AssistantPart::Text(oven_sdk::TextPart::new("n".repeat(70_000))),
+                    oven_sdk::AssistantPart::ToolResult(oven_sdk::ToolResultPart::new(
+                        "hosted",
+                        oven_sdk::ToolContent::Text("hosted output".into()),
+                    )),
+                ]),
+                oven_sdk::Finish::new(oven_sdk::Usage::default(), oven_sdk::FinishReason::Stop),
+            )),
+        ];
+        let seed = context_seed_from_history(history);
+        assert_eq!(seed.len(), 1);
+        assert_eq!(
+            seed[0].role,
+            cookie_agent_protocol::DelegatedContextRole::Assistant
+        );
+        assert_eq!(seed[0].text.len(), DELEGATED_CONTEXT_MAX_BYTES);
+        assert!(!seed[0].text.contains("old-user"));
+        assert!(!seed[0].text.contains("tool output"));
     }
 }

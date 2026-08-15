@@ -70,21 +70,46 @@ expression, and only without a variant.
 ## Subagent tools
 
 `delegate_subagent` requires a short `description`, a self-contained `prompt`,
-an allowed `agent_type`, and an optional `background` boolean. Foreground calls
-block and return a concise result teaser. Background calls return immediately
-with only the child `session_id`; admission still waits for any required
-permission approval. The description becomes the delegated session title when
-the child is created. It is truncated to `session_title.max_chars` using the same
-Unicode-character limit as generated titles; invalid title text rejects the
-delegation.
+an allowed `agent_type`, and accepts optional `background`, `resume_session_id`,
+and `inherit_context` arguments. Foreground calls block and return a concise
+result teaser. Background calls return immediately with only the child
+`session_id`; admission still waits for any required permission approval. For a
+new child, the description becomes the delegated session title. It is truncated
+to `session_title.max_chars` using the same Unicode-character limit as generated
+titles; invalid title text rejects the delegation.
+
+`resume_session_id` attaches an existing direct child that was previously
+created by this same parent session. Top-level, unknown, foreign, self, and
+ancestor sessions are rejected. A terminal child starts a new run with the new
+prompt; an active child receives the prompt through its pending-input FIFO. The
+current delegation link is refreshed, so result, steer, cancel, queue, slot, and
+completion-notification behavior applies to the resumed work. The existing
+session title is never replaced by the new description; the description remains
+only the delegation call's display argument. A child that already has a queued
+or starting delegation cannot be resumed again until that invocation starts or
+terminates; the second resume is rejected without replacing the first.
+
+`inherit_context = true` seeds a newly created child's initial model history
+from the parent's assembled history at delegation time. Only user and assistant
+text is copied: system content, files, tool calls, and tool outputs/results are
+dropped. The retained text is capped at 64 KiB by truncating the oldest content
+first. This is a capability and privacy boundary: retained parent text crosses
+into the child agent's model context and must be appropriate for that child.
+`inherit_context` and `resume_session_id` cannot both be set.
 
 Background sessions move through `queued`, `running`, and a terminal
 `completed`, `failed`, `interrupted`, or `cancelled` state. Completion appends a
 parent event containing the session ID, status, first 20 result lines (at most 2
 KiB), and total line count. Use `get_subagent_result` with `session_id`, optional
 `wait`, and zero-based `offset`/`limit` to retrieve the full result in pages. Use
-`cancel_subagent` with the owned `session_id` and optional `reason` to cancel it.
-Both tools reject sessions that are not direct children of the caller.
+`steer_subagent` with the owned `session_id` and a non-empty `message` to add a
+user turn to a running or queued child. Running children promote steer messages
+FIFO after the current tool batch or at the next completion boundary. A queued
+child persists the message before it has a run and promotes it after its initial
+model response when the queue starts it. Use `cancel_subagent` with the owned
+`session_id` and optional `reason` to cancel it. Result, steer, and cancellation
+operations reject sessions that are not direct children of the caller, and
+steering rejects terminal children.
 
 ## Layering and replacement
 

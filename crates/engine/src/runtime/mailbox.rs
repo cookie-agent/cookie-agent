@@ -499,6 +499,81 @@ impl Engine {
                 };
                 let _ = reply.send(result);
             }
+            SessionCommand::AdmitDelegatedResume { run, input, reply } => {
+                let active = self
+                    .inner
+                    .active
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get(&run)
+                    .cloned()
+                    .filter(|active| active.session == session)
+                    .ok_or(EngineError::MissingRun(run));
+                let result = match active {
+                    Err(error) => Err(error),
+                    Ok(_) => {
+                        let projection = self.inner.store.get(session);
+                        match projection {
+                            Err(error) => Err(error.into()),
+                            Ok(projection)
+                                if !projection
+                                    .runs
+                                    .get(&run)
+                                    .is_some_and(|run| run.status == SessionStatus::Running) =>
+                            {
+                                Ok(super::DelegatedResumeAdmission {
+                                    accepted: false,
+                                    admission_seq: None,
+                                })
+                            }
+                            Ok(_) => self
+                                .append_direct(
+                                    session,
+                                    Some(run),
+                                    Event::UserInputAdmitted { input },
+                                )
+                                .and_then(|()| {
+                                    let admission_seq =
+                                        self.inner.store.get(session)?.meta.last_event_seq;
+                                    Ok(super::DelegatedResumeAdmission {
+                                        accepted: true,
+                                        admission_seq: Some(admission_seq),
+                                    })
+                                }),
+                        }
+                    }
+                };
+                let _ = reply.send(result);
+            }
+            SessionCommand::RecallDelegatedResume {
+                run,
+                admission_seq,
+                reply,
+            } => {
+                let result = (|| {
+                    let projection = self.inner.store.get(session)?;
+                    if !projection.runs.contains_key(&run) {
+                        return Err(EngineError::MissingRun(run));
+                    }
+                    let recalled = pending_inputs(&projection.log.events(), run)
+                        .into_iter()
+                        .find(|pending| pending.admission_seq == admission_seq);
+                    if let Some(pending) = recalled {
+                        self.append_direct(
+                            session,
+                            Some(run),
+                            Event::UserInputRecalledV2 {
+                                user_input_seq: admission_seq,
+                                input: pending.input,
+                            },
+                        )?;
+                        Ok(true)
+                    } else {
+                        Ok(false)
+                    }
+                })();
+                let _ = reply.send(result);
+            }
             SessionCommand::RecallSteer { run, reply } => {
                 let result = (|| {
                     self.inner
@@ -1096,7 +1171,38 @@ impl Engine {
 fn pending_inputs(events: &[StoredEvent], run: RunId) -> Vec<PendingInput> {
     let mut pending = VecDeque::new();
     let mut initial_input_submitted = false;
-    for event in events.iter().filter(|event| event.run_id == Some(run)) {
+    let run_start_seq = events.iter().find_map(|event| {
+        (event.run_id == Some(run) && matches!(event.payload, Event::RunStarted { .. }))
+            .then_some(event.seq)
+    });
+    let previous_terminal_seq = run_start_seq
+        .and_then(|run_start_seq| {
+            events
+                .iter()
+                .rev()
+                .find(|event| {
+                    event.seq < run_start_seq
+                        && matches!(
+                            event.payload,
+                            Event::RunCompleted { .. }
+                                | Event::RunFailed { .. }
+                                | Event::RunCancelled { .. }
+                                | Event::RunInterrupted { .. }
+                        )
+                })
+                .map(|event| event.seq)
+        })
+        .unwrap_or(0);
+    for event in events.iter().filter(|event| {
+        event.run_id == Some(run)
+            || (run_start_seq.is_some_and(|run_start_seq| event.seq < run_start_seq)
+                && event.seq > previous_terminal_seq
+                && event.run_id.is_none()
+                && matches!(
+                    event.payload,
+                    Event::UserInputAdmitted { .. } | Event::UserInputRecalled { .. }
+                ))
+    }) {
         match &event.payload {
             Event::UserInputAdmitted { input } => pending.push_back(PendingInput {
                 admission_seq: event.seq,
@@ -1104,6 +1210,14 @@ fn pending_inputs(events: &[StoredEvent], run: RunId) -> Vec<PendingInput> {
             }),
             Event::UserInputRecalled { .. } => {
                 pending.pop_back();
+            }
+            Event::UserInputRecalledV2 { user_input_seq, .. } => {
+                if let Some(position) = pending
+                    .iter()
+                    .position(|pending| pending.admission_seq == *user_input_seq)
+                {
+                    pending.remove(position);
+                }
             }
             Event::UserInputSubmitted { .. } => {
                 if initial_input_submitted {
@@ -1202,5 +1316,48 @@ mod tests {
         let mut terminal = replayed;
         terminal.push(event(run, 7, Event::RunCancelled { reason: None }));
         assert!(pending_inputs(&terminal, run).is_empty());
+    }
+
+    #[test]
+    fn targeted_recall_removes_only_its_admission_sequence() {
+        let run = RunId::new_v7();
+        let events = vec![
+            event(
+                run,
+                1,
+                Event::UserInputSubmitted {
+                    input: "initial".into(),
+                },
+            ),
+            event(
+                run,
+                2,
+                Event::UserInputAdmitted {
+                    input: "resume".into(),
+                },
+            ),
+            event(
+                run,
+                3,
+                Event::UserInputAdmitted {
+                    input: "direct steer".into(),
+                },
+            ),
+            event(
+                run,
+                4,
+                Event::UserInputRecalledV2 {
+                    user_input_seq: 2,
+                    input: "resume".into(),
+                },
+            ),
+        ];
+        assert_eq!(
+            pending_inputs(&events, run),
+            vec![PendingInput {
+                admission_seq: 3,
+                input: "direct steer".into(),
+            }]
+        );
     }
 }

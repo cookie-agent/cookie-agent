@@ -4,14 +4,14 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    AgentId, InvocationId, RunId, RunSelection, SessionId, SessionMeta, SessionOrigin,
-    SessionStatus, SessionTitle, SessionTitleChange, Sha256Digest, ToolCallId,
+    AgentId, DelegatedContextTurn, InvocationId, RunId, RunSelection, SessionId, SessionMeta,
+    SessionOrigin, SessionStatus, SessionTitle, SessionTitleChange, Sha256Digest, ToolCallId,
 };
 use tokio::sync::oneshot;
 
 use super::{
     Engine, EngineError, Event, Inner, SessionCommand,
-    delegation::cancelled_delegate_result_with_reason,
+    delegation::{DelegationRecord, cancelled_delegate_result_with_reason},
     helpers::{invocation_id, session_depth},
 };
 use crate::{journal, policy::FrozenRunPolicy};
@@ -86,6 +86,8 @@ impl Engine {
     ) -> Result<SessionMeta, EngineError> {
         let child_runtime = Arc::clone(&child_policy.runtime);
         let child_title = request.title.clone();
+        let resume_session_id = request.resume_session_id;
+        let seeded_context = request.seeded_context.clone();
         let parent = self.inner.store.get(parent_session_id)?;
         if parent
             .runs
@@ -173,8 +175,16 @@ impl Engine {
             ));
         }
         if let Ok(existing) = self.inner.store.get(entry.reservation.child_session_id) {
-            self.ensure_delegated_title(existing.meta.session_id, invocation_id, child_title)
+            if resume_session_id.is_none() {
+                self.ensure_delegated_context_seed(
+                    existing.meta.session_id,
+                    invocation_id,
+                    seeded_context,
+                )
                 .await?;
+                self.ensure_delegated_title(existing.meta.session_id, invocation_id, child_title)
+                    .await?;
+            }
             self.ensure_parent_link(
                 parent_session_id,
                 parent_run_id,
@@ -233,6 +243,8 @@ impl Engine {
         self.spawn_admission_blocking(move || store.create_with_status(child_session_id, creation))
             .await?;
         self.spawn_actor(child_session_id);
+        self.ensure_delegated_context_seed(child_session_id, invocation_id, seeded_context)
+            .await?;
         self.ensure_delegated_title(child_session_id, invocation_id, child_title)
             .await?;
         if admission.is_some_and(|(invocation_id, generation)| {
@@ -253,6 +265,85 @@ impl Engine {
         self.spawn_admission_blocking(move || journal.mark_linked(invocation_id))
             .await?;
         Ok(self.inner.store.get(child_session_id)?.metadata())
+    }
+
+    async fn ensure_delegated_context_seed(
+        &self,
+        child_session_id: SessionId,
+        invocation_id: InvocationId,
+        turns: Vec<DelegatedContextTurn>,
+    ) -> Result<(), EngineError> {
+        if turns.is_empty() {
+            return Ok(());
+        }
+        let projection = self.inner.store.get(child_session_id)?;
+        let mut found = false;
+        for event in projection.log.events() {
+            if let Event::DelegatedContextSeeded {
+                invocation_id: existing_invocation,
+                turns: existing_turns,
+            } = event.payload
+                && existing_invocation == invocation_id
+            {
+                if existing_turns != turns {
+                    return Err(EngineError::MissingTool(
+                        "delegated child has conflicting inherited context".into(),
+                    ));
+                }
+                found = true;
+            }
+        }
+        if !found {
+            self.append(
+                child_session_id,
+                None,
+                Event::DelegatedContextSeeded {
+                    invocation_id,
+                    turns,
+                },
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn ensure_delegated_context_seed_blocking(
+        &self,
+        child_session_id: SessionId,
+        invocation_id: InvocationId,
+        turns: Vec<DelegatedContextTurn>,
+    ) -> Result<(), EngineError> {
+        if turns.is_empty() {
+            return Ok(());
+        }
+        let projection = self.inner.store.get(child_session_id)?;
+        let mut found = false;
+        for event in projection.log.events() {
+            if let Event::DelegatedContextSeeded {
+                invocation_id: existing_invocation,
+                turns: existing_turns,
+            } = event.payload
+                && existing_invocation == invocation_id
+            {
+                if existing_turns != turns {
+                    return Err(EngineError::MissingTool(
+                        "delegated child has conflicting inherited context".into(),
+                    ));
+                }
+                found = true;
+            }
+        }
+        if !found {
+            self.append_blocking(
+                child_session_id,
+                None,
+                Event::DelegatedContextSeeded {
+                    invocation_id,
+                    turns,
+                },
+            )?;
+        }
+        Ok(())
     }
 
     async fn ensure_delegated_title(
@@ -373,6 +464,25 @@ impl Engine {
             .is_some()
     }
 
+    #[cfg(test)]
+    pub(crate) fn cancel_inflight_delegation_for_test(
+        &self,
+        invocation_id: InvocationId,
+    ) -> Result<(), EngineError> {
+        let mut admissions = self
+            .inner
+            .inflight_delegations
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?;
+        let entries = admissions.get_mut(&invocation_id).ok_or_else(|| {
+            EngineError::MissingTool("delegate admission is not in flight".into())
+        })?;
+        for admission in entries.values_mut() {
+            admission.cancelled = true;
+        }
+        Ok(())
+    }
+
     pub(super) fn publish_admission_child(
         &self,
         invocation_id: InvocationId,
@@ -411,6 +521,51 @@ impl Engine {
         admission.child_session_id = Some(child_session_id);
         admission.child_run_id = Some(child_run_id);
         admission.starting = false;
+        Ok(())
+    }
+
+    pub(super) fn publish_resume_admission_target(
+        &self,
+        invocation_id: InvocationId,
+        generation: u64,
+        child_session_id: SessionId,
+        child_run_id: RunId,
+        previous_record: DelegationRecord,
+    ) -> Result<(), EngineError> {
+        let mut admissions = self
+            .inner
+            .inflight_delegations
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?;
+        let admission = admissions
+            .get_mut(&invocation_id)
+            .and_then(|entries| entries.get_mut(&generation))
+            .filter(|admission| !admission.cancelled)
+            .ok_or_else(|| EngineError::MissingTool("delegate admission disappeared".into()))?;
+        admission.child_session_id = Some(child_session_id);
+        admission.child_run_id = Some(child_run_id);
+        admission.resume_attach = true;
+        admission.previous_record = Some(previous_record);
+        admission.starting = false;
+        Ok(())
+    }
+
+    pub(super) fn publish_resume_admission_seq(
+        &self,
+        invocation_id: InvocationId,
+        generation: u64,
+        admission_seq: u64,
+    ) -> Result<(), EngineError> {
+        let mut admissions = self
+            .inner
+            .inflight_delegations
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?;
+        let admission = admissions
+            .get_mut(&invocation_id)
+            .and_then(|entries| entries.get_mut(&generation))
+            .ok_or_else(|| EngineError::MissingTool("delegate admission disappeared".into()))?;
+        admission.resume_admission_seq = Some(admission_seq);
         Ok(())
     }
 
@@ -466,6 +621,9 @@ impl Engine {
         if !admission.cancelled {
             return Ok(None);
         }
+        if admission.resume_attach && admission.resume_admission_seq.is_none() {
+            return Ok(None);
+        }
         if admission.starting && admission.child_run_id.is_none() {
             return Ok(None);
         }
@@ -483,6 +641,9 @@ impl Engine {
             parent_tool_call_id,
             child_session_id: admission.child_session_id,
             child_run_id: admission.child_run_id,
+            resume_attach: admission.resume_attach,
+            resume_admission_seq: admission.resume_admission_seq,
+            previous_record: admission.previous_record,
         };
         Ok(Some(target))
     }
@@ -505,6 +666,7 @@ impl Engine {
             return Ok(None);
         };
         if !admission.cancelled
+            || (admission.resume_attach && admission.resume_admission_seq.is_none())
             || (admission.starting && admission.child_run_id.is_none())
             || entries.values().any(|entry| !entry.cancelled)
         {
@@ -525,11 +687,16 @@ impl Engine {
             parent_tool_call_id,
             child_session_id: admission.child_session_id,
             child_run_id: admission.child_run_id,
+            resume_attach: admission.resume_attach,
+            resume_admission_seq: admission.resume_admission_seq,
+            previous_record: admission.previous_record,
         };
         if target != observed {
             return Ok(None);
         }
-        if let Some(run_id) = target.child_run_id {
+        if !target.resume_attach
+            && let Some(run_id) = target.child_run_id
+        {
             match self.cancel_run_durably(run_id, Some("delegate admission was abandoned".into())) {
                 Ok(_) => {}
                 Err(EngineError::MissingRun(_))
@@ -580,6 +747,25 @@ impl Engine {
         else {
             return Ok(());
         };
+        if target.resume_attach {
+            self.rollback_running_resume(
+                invocation_id,
+                target
+                    .child_session_id
+                    .ok_or_else(|| EngineError::MissingTool("resume child is missing".into()))?,
+                target
+                    .child_run_id
+                    .ok_or_else(|| EngineError::MissingTool("resume run is missing".into()))?,
+                target.resume_admission_seq.ok_or_else(|| {
+                    EngineError::MissingTool("resume admission sequence is missing".into())
+                })?,
+                target.previous_record.ok_or_else(|| {
+                    EngineError::MissingTool("previous delegation owner is missing".into())
+                })?,
+                SessionStatus::Cancelled,
+            )
+            .await?;
+        }
         let result = cancelled_delegate_result_with_reason(
             target.child_session_id,
             "delegate admission was abandoned",
@@ -608,6 +794,9 @@ pub(super) struct InflightDelegation {
     pub(super) child_run_id: Option<RunId>,
     starting: bool,
     pub(super) cancelled: bool,
+    resume_attach: bool,
+    resume_admission_seq: Option<u64>,
+    previous_record: Option<DelegationRecord>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -617,6 +806,9 @@ pub(super) struct AbandonedAdmission {
     parent_tool_call_id: ToolCallId,
     child_session_id: Option<SessionId>,
     child_run_id: Option<RunId>,
+    resume_attach: bool,
+    resume_admission_seq: Option<u64>,
+    previous_record: Option<DelegationRecord>,
 }
 
 /// Removes only its own admission generation. Concurrent redeliveries retain
@@ -655,6 +847,9 @@ impl AdmissionGuard {
                 child_run_id: None,
                 starting: false,
                 cancelled: false,
+                resume_attach: false,
+                resume_admission_seq: None,
+                previous_record: None,
             },
         );
         drop(admissions);

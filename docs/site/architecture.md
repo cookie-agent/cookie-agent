@@ -3,9 +3,9 @@
 cookie agent is a subagent-first coding harness built as a Rust workspace of nine
 crates. A local daemon owns provider connections, sessions, model execution,
 permissions, and persistence; a terminal UI communicates with it over a versioned
-JSON-RPC WebSocket protocol. The project is current-only: each durable surface
-accepts exactly one schema version and there are no migration readers or legacy
-protocol paths.
+JSON-RPC WebSocket protocol. Writers emit only the current schema for each
+durable surface. Event logs reopen schemas 15-17 and delegation journals reopen
+schemas 11-14; other surfaces remain current-only.
 
 ## Process model
 
@@ -224,10 +224,20 @@ canonical working directory:
     cwd                            # canonical project path
     sessions/<session-id>/         # events.jsonl + meta.json cache
     artifacts/                     # content-addressed tool output
-    delegations.jsonl              # delegation journal (schema 11)
+    delegations.jsonl              # delegation journal (writes 14; reads 11-14)
     grant-invalidations.jsonl      # tree-grant invalidation journal
     runtime-revisions-v8.jsonl     # runtime revision index
 ```
+
+Schema 12 is readable for unambiguous records. Its unshipped intermediate
+encoding used `delegation_run_started` for both a newly started resumed run and
+an attachment to an existing run; schema-12 resume/start pairs are rejected
+because their meaning cannot be recovered soundly. The error directs operators
+to move the affected project's `delegations.jsonl` aside and restart. This
+discards in-flight delegation recovery state AND historical child resumability:
+child session event logs remain intact, but without the journal those sessions
+no longer satisfy the journal-backed ownership checks required for
+`resume_session_id`.
 
 Project model-snapshot manifests live inside the workspace at
 `.cookie-agent/model-snapshots/` and are the only per-project engine state the

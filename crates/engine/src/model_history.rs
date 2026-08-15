@@ -5,11 +5,12 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use bytes::Bytes;
 use cookie_agent_protocol::{
     ApprovalDecisionSource, ArtifactReference, ContextCheckpoint, ContextRehydratedFile,
-    EventPayload, FrozenModelBinding, ModelFinishReason, ModelSelection, NativeContextScope,
-    NativeReplayArtifact, PersistedAssistantPart, PersistedContentValue, PersistedFilePart,
-    PersistedFileSource, PersistedModelTurn, PersistedToolContent, PersistedToolResult,
-    ReplayDecision, ReplayDisposition, ResolvedModelRef, SafeCode, SafeErrorMessage, Sha256Digest,
-    StoredEvent, ToolAttachment, ToolCallId, ToolTerminationOutcome, Usage,
+    DelegatedContextRole, EventPayload, FrozenModelBinding, ModelFinishReason, ModelSelection,
+    NativeContextScope, NativeReplayArtifact, PersistedAssistantPart, PersistedContentValue,
+    PersistedFilePart, PersistedFileSource, PersistedModelTurn, PersistedToolContent,
+    PersistedToolResult, ReplayDecision, ReplayDisposition, ResolvedModelRef, SafeCode,
+    SafeErrorMessage, Sha256Digest, StoredEvent, ToolAttachment, ToolCallId,
+    ToolTerminationOutcome, Usage,
 };
 use oven_sdk::{
     AdapterId, AssistantMessage, AssistantPart, CompletedTurn, ContentValue, CustomPart, FilePart,
@@ -203,6 +204,7 @@ pub(crate) fn replay_decisions_with_preflight(
 #[derive(Clone)]
 enum LogicalTurn {
     User(UserMessage),
+    SeedAssistant(String),
     Assistant(Box<AssistantRecord>),
     Rehydration(Vec<ContextRehydratedFile>),
 }
@@ -330,6 +332,14 @@ fn assemble_history_with_replay(
 
     for envelope in events {
         match &envelope.payload {
+            EventPayload::DelegatedContextSeeded { turns, .. } => {
+                logical.extend(turns.iter().map(|turn| match turn.role {
+                    DelegatedContextRole::User => LogicalTurn::User(user_text(&turn.text)),
+                    DelegatedContextRole::Assistant => {
+                        LogicalTurn::SeedAssistant(turn.text.clone())
+                    }
+                }));
+            }
             EventPayload::UserInputSubmitted { input } => {
                 submitted.insert(envelope.seq, input.clone());
             }
@@ -483,6 +493,13 @@ fn assemble_history_with_replay(
                 status,
                 preview,
                 total_lines,
+            }
+            | EventPayload::DelegateFinishedV2 {
+                session_id,
+                status,
+                preview,
+                total_lines,
+                ..
             } => {
                 logical.push(LogicalTurn::User(user_text(&format!(
                     "<subagent_notification>{}</subagent_notification>",
@@ -505,6 +522,12 @@ fn assemble_history_with_replay(
     for turn in logical {
         match turn {
             LogicalTurn::User(user) => history.push(HistoryTurn::user(user)),
+            LogicalTurn::SeedAssistant(text) => {
+                history.push(HistoryTurn::assistant(CompletedTurn::new(
+                    AssistantMessage::new(vec![AssistantPart::Text(TextPart::new(text))]),
+                    Finish::new(oven_sdk::Usage::default(), FinishReason::Stop),
+                )));
+            }
             LogicalTurn::Assistant(mut assistant) => {
                 let retained = assistant
                     .calls

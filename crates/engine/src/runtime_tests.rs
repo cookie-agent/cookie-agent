@@ -39,7 +39,7 @@ use cookie_agent_protocol::{
 use jiff::Timestamp;
 use tempfile::TempDir;
 
-use crate::events::{EventLog, EventLogError};
+use crate::events::EventLog;
 use crate::{
     DelegateInvocation, Engine, EngineError, EngineHistoryView, EngineOptions, PreparedExecutor,
     PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
@@ -80,6 +80,9 @@ struct TestDelegateArgs {
     description: String,
     #[serde(default)]
     background: bool,
+    resume_session_id: Option<SessionId>,
+    #[serde(default)]
+    inherit_context: bool,
 }
 
 struct TestDelegateExecutor {
@@ -105,8 +108,10 @@ impl ToolProvider for TestDelegateProvider {
                     "properties":{
                         "agent_type":{"type":"string","enum":targets},
                         "prompt":{"type":"string"},
-                        "description":{"type":"string"}
-                        ,"background":{"type":"boolean","default":false}
+                        "description":{"type":"string"},
+                        "background":{"type":"boolean","default":false},
+                        "resume_session_id":{"type":"string"},
+                        "inherit_context":{"type":"boolean","default":false}
                     },
                     "required":["agent_type","prompt","description"]
                 }),
@@ -205,6 +210,8 @@ impl PreparedExecutor for TestDelegateExecutor {
                 description: self.args.description,
                 prompt: self.args.prompt,
                 background: self.args.background,
+                resume_session_id: self.args.resume_session_id,
+                inherit_context: self.args.inherit_context,
             })
             .await
             .map_err(|error| ToolError::execution(error.to_string()))?;
@@ -1161,6 +1168,24 @@ fn custom_fixture_with_endpoint_primary_and_internal(
     compaction_buffer_tokens: Option<u64>,
     generate_titles: bool,
 ) -> (Fixture, RunSelection) {
+    custom_fixture_with_endpoint_primary_internal_and_concurrency(
+        endpoint,
+        primary_agent,
+        internal,
+        compaction_buffer_tokens,
+        generate_titles,
+        None,
+    )
+}
+
+fn custom_fixture_with_endpoint_primary_internal_and_concurrency(
+    endpoint: &str,
+    primary_agent: &str,
+    internal: Option<(&str, &str)>,
+    compaction_buffer_tokens: Option<u64>,
+    generate_titles: bool,
+    max_concurrency: Option<u32>,
+) -> (Fixture, RunSelection) {
     let directory = TempDir::new().expect("temp directory");
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
         .expect("private temp directory");
@@ -1198,6 +1223,12 @@ cancellation = "local_only"
 media = {}
 "#
     .replace("http://127.0.0.1:9/v1", endpoint);
+    let config_text = max_concurrency.map_or(config_text.clone(), |max_concurrency| {
+        config_text.replace(
+            "[delegation]\nmax_depth = 1",
+            &format!("[delegation]\nmax_depth = 1\nmax_concurrency = {max_concurrency}"),
+        )
+    });
     fs::write(project.join("config.toml"), config_text).expect("config");
     fs::set_permissions(
         project.join("config.toml"),
@@ -2025,6 +2056,54 @@ async fn write_scripted_sse(socket: &mut tokio::net::TcpStream, body: &str) {
         .expect("scripted SSE response");
 }
 
+async fn scripted_channel_server(
+    expected_requests: usize,
+) -> (
+    String,
+    tokio::sync::mpsc::UnboundedSender<String>,
+    tokio::task::JoinHandle<Vec<String>>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("channel script listener");
+    let address = listener.local_addr().expect("listener address");
+    let (responses, mut response_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::with_capacity(expected_requests);
+        for _ in 0..expected_requests {
+            let (mut socket, _) = listener.accept().await.expect("channel script accept");
+            requests.push(
+                String::from_utf8(read_scripted_http_request(&mut socket).await)
+                    .expect("channel script request"),
+            );
+            let body = response_rx.recv().await.expect("channel script response");
+            write_scripted_sse(&mut socket, &body).await;
+        }
+        requests
+    });
+    (format!("http://{address}/v1"), responses, task)
+}
+
+fn scripted_text_body(text: &str) -> String {
+    format!(
+        "data: {}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n",
+        serde_json::json!({"choices":[{"delta":{"content":text},"finish_reason":null}]})
+    )
+}
+
+fn scripted_tool_body(id: &str, name: &str, arguments: serde_json::Value) -> String {
+    let call = serde_json::json!({
+        "index":0,
+        "id":id,
+        "type":"function",
+        "function":{"name":name,"arguments":arguments.to_string()}
+    });
+    format!(
+        "data: {}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n",
+        serde_json::json!({"choices":[{"delta":{"tool_calls":[call]},"finish_reason":null}]})
+    )
+}
+
 async fn scripted_queued_delegation_server() -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -2228,6 +2307,398 @@ async fn scripted_cancellable_delegation_server() -> (String, tokio::task::JoinH
         while child.read(&mut buffer).await.unwrap_or(0) != 0 {}
     });
     (format!("http://{address}/v1"), task)
+}
+
+async fn scripted_running_steer_server() -> (
+    String,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<Vec<String>>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("running steer listener");
+    let address = listener.local_addr().expect("listener address");
+    let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (mut initial, _) = listener.accept().await.expect("steer parent initial");
+        let mut requests = vec![
+            String::from_utf8(read_scripted_http_request(&mut initial).await)
+                .expect("parent request"),
+        ];
+        let body = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"steer-delegate\",\"type\":\"function\",\"function\":{\"name\":\"delegate_subagent\",\"arguments\":\"{\\\"agent_type\\\":\\\"worker\\\",\\\"description\\\":\\\"Steer child\\\",\\\"prompt\\\":\\\"begin child work\\\",\\\"background\\\":true}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n";
+        write_scripted_sse(&mut initial, body).await;
+
+        let mut child = None;
+        let mut reached_tx = Some(reached_tx);
+        let mut parent_responded = false;
+        while child.is_none() || !parent_responded {
+            let (mut socket, _) = listener.accept().await.expect("steer concurrent request");
+            let request = String::from_utf8(read_scripted_http_request(&mut socket).await)
+                .expect("steer request");
+            if request.contains("\"role\":\"tool\"") {
+                let body = "data: {\"choices\":[{\"delta\":{\"content\":\"parent continued\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+                write_scripted_sse(&mut socket, body).await;
+                parent_responded = true;
+            } else {
+                requests.push(request);
+                child = Some(socket);
+                if let Some(reached_tx) = reached_tx.take() {
+                    let _ = reached_tx.send(());
+                }
+            }
+        }
+        let _ = release_rx.await;
+        let mut child = child.expect("running child socket");
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"initial child pass\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        write_scripted_sse(&mut child, body).await;
+
+        let (mut steered, _) = listener.accept().await.expect("steered child request");
+        requests.push(
+            String::from_utf8(read_scripted_http_request(&mut steered).await)
+                .expect("steered request"),
+        );
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"steered child done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        write_scripted_sse(&mut steered, body).await;
+        requests
+    });
+    (format!("http://{address}/v1"), reached_rx, release_tx, task)
+}
+
+async fn scripted_running_resume_server() -> (
+    String,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<SessionId>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<Vec<String>>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("running resume listener");
+    let address = listener.local_addr().expect("listener address");
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (mut initial, _) = listener.accept().await.expect("resume parent initial");
+        let mut requests = vec![
+            String::from_utf8(read_scripted_http_request(&mut initial).await)
+                .expect("resume parent request"),
+        ];
+        write_scripted_sse(
+            &mut initial,
+            &scripted_tool_body(
+                "running-resume-fresh",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Running resume child",
+                    "prompt":"initial active prompt",
+                    "background":true
+                }),
+            ),
+        )
+        .await;
+
+        let mut child = None;
+        let mut parent_responded = false;
+        while child.is_none() || !parent_responded {
+            let (mut socket, _) = listener.accept().await.expect("running resume request");
+            let request = String::from_utf8(read_scripted_http_request(&mut socket).await)
+                .expect("running resume request text");
+            requests.push(request.clone());
+            if request.contains("\"role\":\"tool\"") {
+                write_scripted_sse(&mut socket, &scripted_text_body("parent first run done")).await;
+                parent_responded = true;
+            } else {
+                child = Some(socket);
+            }
+        }
+        let _ = ready_tx.send(());
+        let resume_session_id = resume_rx.await.expect("resume session ID");
+        let (mut second_parent, _) = listener.accept().await.expect("second resume parent");
+        requests.push(
+            String::from_utf8(read_scripted_http_request(&mut second_parent).await)
+                .expect("second resume parent request"),
+        );
+        write_scripted_sse(
+            &mut second_parent,
+            &scripted_tool_body(
+                "running-resume-existing",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Continue running child",
+                    "prompt":"resume active prompt",
+                    "background":true,
+                    "resume_session_id":resume_session_id
+                }),
+            ),
+        )
+        .await;
+
+        let _ = release_rx.await;
+        let mut child = child.expect("held child request");
+        write_scripted_sse(&mut child, &scripted_text_body("initial child pass")).await;
+        let mut parent_done = false;
+        let mut child_done = false;
+        while !parent_done || !child_done {
+            let (mut socket, _) = listener.accept().await.expect("resumed completion request");
+            let request = String::from_utf8(read_scripted_http_request(&mut socket).await)
+                .expect("resumed completion request text");
+            requests.push(request.clone());
+            if request.contains("\"role\":\"tool\"") {
+                write_scripted_sse(&mut socket, &scripted_text_body("parent resumed child")).await;
+                parent_done = true;
+            } else {
+                write_scripted_sse(&mut socket, &scripted_text_body("resumed child done")).await;
+                child_done = true;
+            }
+        }
+        requests
+    });
+    (
+        format!("http://{address}/v1"),
+        ready_rx,
+        resume_tx,
+        release_tx,
+        task,
+    )
+}
+
+async fn scripted_queued_resume_server() -> (
+    String,
+    tokio::sync::oneshot::Sender<SessionId>,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<Vec<String>>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("queued resume listener");
+    let address = listener.local_addr().expect("listener address");
+    let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+    let (queued_tx, queued_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        let (mut first_parent, _) = listener.accept().await.expect("queued resume first parent");
+        requests.push(
+            String::from_utf8(read_scripted_http_request(&mut first_parent).await)
+                .expect("first parent request"),
+        );
+        write_scripted_sse(
+            &mut first_parent,
+            &scripted_tool_body(
+                "queued-resume-origin",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Queue resume identity",
+                    "prompt":"create terminal resume target",
+                    "background":true
+                }),
+            ),
+        )
+        .await;
+        for text in ["terminal target complete", "first parent complete"] {
+            let (mut socket, _) = listener.accept().await.expect("first resume phase request");
+            requests.push(
+                String::from_utf8(read_scripted_http_request(&mut socket).await)
+                    .expect("first resume phase request text"),
+            );
+            write_scripted_sse(&mut socket, &scripted_text_body(text)).await;
+        }
+
+        let resume_session_id = resume_rx.await.expect("queued resume session ID");
+        let (mut second_parent, _) = listener
+            .accept()
+            .await
+            .expect("queued resume second parent");
+        requests.push(
+            String::from_utf8(read_scripted_http_request(&mut second_parent).await)
+                .expect("second parent request"),
+        );
+        let calls = [
+            serde_json::json!({
+                "index":0,
+                "id":"queued-resume-slot-holder",
+                "type":"function",
+                "function":{
+                    "name":"delegate_subagent",
+                    "arguments":serde_json::json!({
+                        "agent_type":"worker",
+                        "description":"Slot holder",
+                        "prompt":"hold the only slot",
+                        "background":true
+                    }).to_string()
+                }
+            }),
+            serde_json::json!({
+                "index":1,
+                "id":"queued-resume-target",
+                "type":"function",
+                "function":{
+                    "name":"delegate_subagent",
+                    "arguments":serde_json::json!({
+                        "agent_type":"worker",
+                        "description":"Queued resumed child",
+                        "prompt":"resume after slot release",
+                        "background":true,
+                        "resume_session_id":resume_session_id
+                    }).to_string()
+                }
+            }),
+            serde_json::json!({
+                "index":2,
+                "id":"queued-resume-duplicate",
+                "type":"function",
+                "function":{
+                    "name":"delegate_subagent",
+                    "arguments":serde_json::json!({
+                        "agent_type":"worker",
+                        "description":"Duplicate queued resume",
+                        "prompt":"must be rejected while resume is queued",
+                        "background":true,
+                        "resume_session_id":resume_session_id
+                    }).to_string()
+                }
+            }),
+        ];
+        let body = format!(
+            "data: {}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n",
+            serde_json::json!({"choices":[{"delta":{"tool_calls":calls},"finish_reason":null}]})
+        );
+        write_scripted_sse(&mut second_parent, &body).await;
+
+        let mut slot_holder = None;
+        let mut parent_done = false;
+        while slot_holder.is_none() || !parent_done {
+            let (mut socket, _) = listener
+                .accept()
+                .await
+                .expect("queued resume admission request");
+            let request = String::from_utf8(read_scripted_http_request(&mut socket).await)
+                .expect("queued resume admission request text");
+            requests.push(request.clone());
+            if request.contains("\"role\":\"tool\"") {
+                write_scripted_sse(&mut socket, &scripted_text_body("parent queued resume")).await;
+                parent_done = true;
+            } else {
+                slot_holder = Some(socket);
+            }
+        }
+        let _ = queued_tx.send(());
+        let _ = release_rx.await;
+        let mut slot_holder = slot_holder.expect("slot holder request");
+        write_scripted_sse(&mut slot_holder, &scripted_text_body("slot holder done")).await;
+        let (mut resumed, _) = listener
+            .accept()
+            .await
+            .expect("queued resumed child request");
+        requests.push(
+            String::from_utf8(read_scripted_http_request(&mut resumed).await)
+                .expect("queued resumed child request text"),
+        );
+        write_scripted_sse(&mut resumed, &scripted_text_body("queued resume done")).await;
+        let (mut steered, _) = listener
+            .accept()
+            .await
+            .expect("queued resume steer request");
+        requests.push(
+            String::from_utf8(read_scripted_http_request(&mut steered).await)
+                .expect("queued resume steer request text"),
+        );
+        write_scripted_sse(
+            &mut steered,
+            &scripted_text_body("queued resume correction done"),
+        )
+        .await;
+        requests
+    });
+    (
+        format!("http://{address}/v1"),
+        resume_tx,
+        queued_rx,
+        release_tx,
+        task,
+    )
+}
+
+async fn scripted_queued_steer_recovery_server() -> (
+    String,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<Vec<String>>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("queued steer listener");
+    let address = listener.local_addr().expect("listener address");
+    let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (mut initial, _) = listener
+            .accept()
+            .await
+            .expect("queued steer parent initial");
+        let _ = read_scripted_http_request(&mut initial).await;
+        let calls = (0..5)
+            .map(|index| {
+                serde_json::json!({
+                    "index": index,
+                    "id": format!("queued-steer-delegate-{index}"),
+                    "type": "function",
+                    "function": {
+                        "name": "delegate_subagent",
+                        "arguments": serde_json::json!({
+                            "agent_type":"worker",
+                            "description":format!("Queued steer child {index}"),
+                            "prompt":format!("queued steer child {index}"),
+                            "background":true
+                        }).to_string()
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let body = format!(
+            "data: {}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n",
+            serde_json::json!({"choices":[{"delta":{"tool_calls":calls},"finish_reason":null}]})
+        );
+        write_scripted_sse(&mut initial, &body).await;
+
+        let mut children = Vec::new();
+        let mut parent_responded = false;
+        while children.len() < 4 || !parent_responded {
+            let (mut socket, _) = listener.accept().await.expect("queued steer request");
+            let request = read_scripted_http_request(&mut socket).await;
+            if String::from_utf8_lossy(&request).contains("\"role\":\"tool\"") {
+                let body = "data: {\"choices\":[{\"delta\":{\"content\":\"parent queued children\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+                write_scripted_sse(&mut socket, body).await;
+                parent_responded = true;
+            } else {
+                children.push(socket);
+            }
+        }
+        let _ = reached_tx.send(());
+        let _ = release_rx.await;
+        drop(children);
+
+        let (mut queued, _) = listener.accept().await.expect("recovered queued child");
+        let first = String::from_utf8(read_scripted_http_request(&mut queued).await)
+            .expect("queued initial request");
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"queued initial pass\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        write_scripted_sse(&mut queued, body).await;
+
+        let (mut steered, _) = listener.accept().await.expect("recovered steer request");
+        let second = String::from_utf8(read_scripted_http_request(&mut steered).await)
+            .expect("queued steered request");
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"queued steer done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        write_scripted_sse(&mut steered, body).await;
+        vec![first, second]
+    });
+    (format!("http://{address}/v1"), reached_rx, release_tx, task)
 }
 
 async fn scripted_approval_server(
@@ -3881,16 +4352,45 @@ fn external_store_generation_is_reloaded_before_discovery() {
 }
 
 #[test]
-fn event_schema_thirteen_persistence_fails_deserialization() {
-    let directory = TempDir::new().expect("temp directory");
-    let path = directory.path().join("events.jsonl");
-    fs::write(
-        &path,
-        b"{\"event_schema_version\":13,\"payload\":{\"type\":\"session_created\"}}\n",
-    )
-    .expect("legacy event");
-    let error = EventLog::open(path, SessionId::new_v7()).expect_err("version 13 rejected");
-    assert!(matches!(error, EventLogError::Json { .. }));
+fn event_logs_reopen_for_shipped_schema_fifteen_and_intermediate_sixteen() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture
+        .engine
+        .create_session(selection)
+        .expect("legacy event session");
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("legacy event projection")
+        .log
+        .events();
+    for version in [15, 16] {
+        let directory = TempDir::new().expect("legacy event directory");
+        let path = directory.path().join("events.jsonl");
+        let contents = events
+            .iter()
+            .map(|event| {
+                let mut value = serde_json::to_value(event).expect("serialize legacy event");
+                value["event_schema_version"] = serde_json::json!(version);
+                serde_json::to_string(&value).expect("serialize legacy event envelope")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(&path, contents).expect("write legacy event log");
+        let reopened = EventLog::open(path, session.session_id).expect("reopen legacy event log");
+        assert!(
+            reopened
+                .events()
+                .iter()
+                .all(|event| event.event_schema_version.value() == version)
+        );
+    }
+    let mut unsupported = serde_json::to_value(&events[0]).expect("serialize unsupported event");
+    unsupported["event_schema_version"] = serde_json::json!(14);
+    assert!(serde_json::from_value::<cookie_agent_protocol::StoredEvent>(unsupported).is_err());
 }
 
 #[test]
@@ -5675,6 +6175,10 @@ async fn delegated_child_uses_description_title_without_title_agent() {
                 .children(parent.session_id)
                 .first()
                 .is_some_and(|child| child.status == SessionStatus::Completed)
+                && fixture
+                    .engine
+                    .get_session(parent.session_id)
+                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
             {
                 break;
             }
@@ -5887,7 +6391,7 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
     .await
     .expect("immediate background session result");
 
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let projection = fixture
                 .engine
@@ -5898,11 +6402,12 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
             if projection.log.events().iter().any(|event| {
                 matches!(
                     &event.payload,
-                    EventPayload::DelegateFinished {
+                    EventPayload::DelegateFinishedV2 {
                         session_id,
                         status: SessionStatus::Completed,
                         preview,
                         total_lines: 3,
+                        ..
                     } if *session_id == child_session_id
                         && preview == "first line\nsecond line\nthird line"
                 )
@@ -5955,6 +6460,774 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
     );
     assert_eq!(captured.await.expect("background server").len(), 3);
     fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again() {
+    let (endpoint, responses, server) = scripted_channel_server(6).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("resume parent");
+    responses
+        .send(scripted_tool_body(
+            "resume-fresh",
+            "delegate_subagent",
+            serde_json::json!({
+                "agent_type":"worker",
+                "description":"Original identity",
+                "prompt":"first child task",
+                "background":true
+            }),
+        ))
+        .expect("fresh tool response");
+    responses
+        .send(scripted_text_body("first child result"))
+        .expect("first child response");
+    responses
+        .send(scripted_text_body("parent after first delegation"))
+        .expect("first parent response");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("resume-terminal-first").expect("run ID"),
+            selection: selection.clone(),
+            input: "create a resumable child".into(),
+        })
+        .await
+        .expect("first parent run");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if fixture
+                .engine
+                .children(parent.session_id)
+                .first()
+                .is_some_and(|child| child.status == SessionStatus::Completed)
+                && fixture
+                    .engine
+                    .get_session(parent.session_id)
+                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("first child completion");
+    let child_session_id = fixture.engine.children(parent.session_id)[0].session_id;
+    let original_title = fixture
+        .engine
+        .get_session(child_session_id)
+        .expect("original child")
+        .title;
+    let foreign = fixture
+        .engine
+        .create_session(
+            fixture
+                .engine
+                .get_session(parent.session_id)
+                .expect("parent selection")
+                .creation_selection,
+        )
+        .expect("foreign top-level session");
+    let worker = AgentId::new("worker").expect("worker agent");
+    let self_error = fixture
+        .engine
+        .validate_resume_target(parent.session_id, parent.session_id, &worker)
+        .expect_err("self resume is rejected");
+    assert!(self_error.to_string().contains("itself"));
+    let foreign_error = fixture
+        .engine
+        .validate_resume_target(parent.session_id, foreign.session_id, &worker)
+        .expect_err("foreign resume is rejected");
+    assert!(foreign_error.to_string().contains("prior direct child"));
+    let missing_id = SessionId::new_v7();
+    let missing_error = fixture
+        .engine
+        .validate_resume_target(parent.session_id, missing_id, &worker)
+        .expect_err("unknown resume is rejected");
+    assert!(missing_error.to_string().contains("was not found"));
+    let ancestor_error = fixture
+        .engine
+        .validate_resume_target(child_session_id, parent.session_id, &worker)
+        .expect_err("ancestor resume is rejected");
+    assert!(ancestor_error.to_string().contains("ancestor"));
+
+    responses
+        .send(scripted_tool_body(
+            "resume-terminal",
+            "delegate_subagent",
+            serde_json::json!({
+                "agent_type":"worker",
+                "description":"Do not replace the title",
+                "prompt":"second child task",
+                "background":true,
+                "resume_session_id":child_session_id
+            }),
+        ))
+        .expect("resume tool response");
+    responses
+        .send(scripted_text_body("second child result"))
+        .expect("second child response");
+    responses
+        .send(scripted_text_body("parent after resumed delegation"))
+        .expect("second parent response");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("resume-terminal-second").expect("run ID"),
+            selection,
+            input: "resume the existing child".into(),
+        })
+        .await
+        .expect("second parent run");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let child = fixture
+                .engine
+                .inner
+                .store
+                .get(child_session_id)
+                .expect("resumed child");
+            let notifications = fixture
+                .engine
+                .inner
+                .store
+                .get(parent.session_id)
+                .expect("resume parent projection")
+                .log
+                .events()
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event.payload,
+                        EventPayload::DelegateFinishedV2 {
+                            session_id,
+                            ..
+                        } if session_id == child_session_id
+                    )
+                })
+                .count();
+            if child.status == SessionStatus::Completed
+                && child.runs.len() == 2
+                && notifications == 2
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("resumed child completion and teaser");
+    assert_eq!(fixture.engine.children(parent.session_id).len(), 1);
+    assert_eq!(
+        fixture
+            .engine
+            .get_session(child_session_id)
+            .expect("resumed metadata")
+            .title,
+        original_title
+    );
+    let parent_events = fixture
+        .engine
+        .inner
+        .store
+        .get(parent.session_id)
+        .expect("linked parent")
+        .log
+        .events();
+    assert_eq!(
+        parent_events
+            .iter()
+            .filter(|event| matches!(
+                event.payload,
+                EventPayload::ToolCallLinked {
+                    child_session_id: linked,
+                    ..
+                } if linked == child_session_id
+            ))
+            .count(),
+        2
+    );
+    let entries = fixture.engine.inner.journal.entries();
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|entry| entry.linked));
+    assert!(entries.iter().all(|entry| entry.child_run_id.is_some()));
+    let old_parent_run_id = entries[0].reservation.parent_run_id;
+    let resumed_child_run_id = entries[1].child_run_id.expect("resumed child run ID");
+    let result = fixture
+        .engine
+        .get_subagent_result(
+            parent.session_id,
+            child_session_id,
+            false,
+            0,
+            20,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("refreshed result link");
+    assert!(result.output.contains("second child result"));
+    assert_eq!(server.await.expect("resume server").len(), 6);
+    let parent_event_path = fixture
+        .engine
+        .inner
+        .store
+        .session_dir(parent.session_id)
+        .join("events.jsonl");
+    let child_event_path = fixture
+        .engine
+        .inner
+        .store
+        .session_dir(child_session_id)
+        .join("events.jsonl");
+    fixture.engine.shutdown().await;
+
+    for (path, run_id, replacement) in [
+        (
+            parent_event_path,
+            old_parent_run_id,
+            EventPayload::RunCancelled { reason: None },
+        ),
+        (
+            child_event_path,
+            resumed_child_run_id,
+            EventPayload::RunInterrupted { reason: None },
+        ),
+    ] {
+        let mut events = fs::read_to_string(&path)
+            .expect("rewrite recovery isolation events")
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<cookie_agent_protocol::StoredEvent>(line)
+                    .expect("stored recovery isolation event")
+            })
+            .collect::<Vec<_>>();
+        let terminal = events
+            .iter_mut()
+            .find(|event| {
+                event.run_id == Some(run_id)
+                    && matches!(event.payload, EventPayload::RunCompleted { .. })
+            })
+            .expect("terminal event to rewrite");
+        terminal.payload = replacement;
+        fs::write(
+            &path,
+            events
+                .iter()
+                .map(|event| serde_json::to_string(event).expect("serialize rewritten event"))
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n",
+        )
+        .expect("persist rewritten recovery isolation events");
+    }
+    let reopened = reopen_engine(&fixture);
+    let recovered_child = reopened
+        .inner
+        .store
+        .get(child_session_id)
+        .expect("recovered resumed child");
+    assert_eq!(
+        recovered_child
+            .runs
+            .get(&resumed_child_run_id)
+            .expect("recovered resumed run")
+            .status,
+        SessionStatus::Interrupted
+    );
+    assert!(!recovered_child.log.events().iter().any(|event| {
+        event.run_id == Some(resumed_child_run_id)
+            && matches!(event.payload, EventPayload::RunCancelled { .. })
+    }));
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
+    let (endpoint, resume_id, queued, release, server) = scripted_queued_resume_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
+        &endpoint,
+        "---\nschema: 4\ndescription: Queued resume parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions:\n  delegate:\n    worker: allow\n---\nTest queued resume.\n",
+        None,
+        None,
+        false,
+        Some(1),
+    );
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("queued resume parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("queued-resume-first").expect("run ID"),
+            selection: selection.clone(),
+            input: "create the resume target".into(),
+        })
+        .await
+        .expect("queued resume first run");
+    let resumed_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(child) = fixture.engine.children(parent.session_id).first()
+                && child.status == SessionStatus::Completed
+                && fixture
+                    .engine
+                    .get_session(parent.session_id)
+                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+            {
+                break child.session_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("terminal resume target");
+    resume_id
+        .send(resumed_session_id)
+        .expect("send queued resume target");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("queued-resume-second").expect("run ID"),
+            selection,
+            input: "fill the slot then resume the terminal child".into(),
+        })
+        .await
+        .expect("queued resume second run");
+    queued.await.expect("resume queued behind slot holder");
+    let resumed_entries = fixture
+        .engine
+        .inner
+        .journal
+        .entries()
+        .into_iter()
+        .filter(|entry| entry.reservation.child_session_id == resumed_session_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        resumed_entries.len(),
+        2,
+        "the duplicate queued resume must not reserve or replace an invocation"
+    );
+    assert!(resumed_entries[1].child_run_id.is_none());
+    assert!(resumed_entries[1].terminal_status.is_none());
+    assert!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(parent.session_id)
+            .expect("duplicate resume parent projection")
+            .log
+            .events()
+            .iter()
+            .any(|event| matches!(
+                &event.payload,
+                EventPayload::ToolCallTerminated { termination }
+                    if termination.error.as_ref().is_some_and(|error| {
+                        error.message.as_str().contains("in-flight delegation")
+                    })
+            ))
+    );
+    assert!(
+        fixture
+            .engine
+            .delegation_queue_contains(resumed_session_id)
+            .expect("queue state")
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(resumed_session_id)
+            .expect("queued resume target projection")
+            .runs
+            .len(),
+        1
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .children(parent.session_id)
+            .iter()
+            .filter(|child| child.status == SessionStatus::Running)
+            .count(),
+        1
+    );
+    let steered = fixture
+        .engine
+        .steer_subagent(
+            parent.session_id,
+            resumed_session_id,
+            "queued terminal resume correction".into(),
+        )
+        .await
+        .expect("steer queued terminal resume");
+    assert_eq!(steered.metadata["status"], "queued");
+    release.send(()).expect("release concurrency slot");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let child = fixture
+                .engine
+                .inner
+                .store
+                .get(resumed_session_id)
+                .expect("started queued resume target");
+            if child.status == SessionStatus::Completed && child.runs.len() == 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("queued resume completion");
+    assert!(
+        !fixture
+            .engine
+            .delegation_queue_contains(resumed_session_id)
+            .expect("drained queue state")
+    );
+    let resumed_events = fixture
+        .engine
+        .inner
+        .store
+        .get(resumed_session_id)
+        .expect("steered resumed child")
+        .log
+        .events();
+    assert!(resumed_events.iter().any(|event| {
+        event.run_id.is_none()
+            && matches!(
+                &event.payload,
+                EventPayload::UserInputAdmitted { input }
+                    if input == "queued terminal resume correction"
+            )
+    }));
+    assert!(resumed_events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputSubmitted { input }
+            if input == "queued terminal resume correction"
+    )));
+    assert_eq!(fixture.config.runtime.delegation.max_concurrency, Some(1));
+    assert_eq!(server.await.expect("queued resume server").len(), 8);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_steers() {
+    let (endpoint, resume_id, queued, _release, server) = scripted_queued_resume_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
+        &endpoint,
+        "---\nschema: 4\ndescription: Cancel queued resume parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: []\npermissions:\n  delegate:\n    worker: allow\n---\nTest queued resume cancellation.\n",
+        None,
+        None,
+        false,
+        Some(1),
+    );
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("queued cancel parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("queued-cancel-first").expect("run ID"),
+            selection: selection.clone(),
+            input: "create terminal cancellation target".into(),
+        })
+        .await
+        .expect("queued cancel first run");
+    let resumed_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(child) = fixture.engine.children(parent.session_id).first()
+                && child.status == SessionStatus::Completed
+                && fixture
+                    .engine
+                    .get_session(parent.session_id)
+                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+            {
+                break child.session_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("terminal cancellation target");
+    resume_id
+        .send(resumed_session_id)
+        .expect("send cancellation resume target");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("queued-cancel-second").expect("run ID"),
+            selection,
+            input: "queue then cancel the terminal resume".into(),
+        })
+        .await
+        .expect("queued cancel second run");
+    queued
+        .await
+        .expect("terminal resume queued for cancellation");
+    fixture
+        .engine
+        .steer_subagent(
+            parent.session_id,
+            resumed_session_id,
+            "must not leak into a later resume".into(),
+        )
+        .await
+        .expect("steer before queued cancellation");
+    let cancelled = fixture
+        .engine
+        .cancel_subagent(
+            parent.session_id,
+            resumed_session_id,
+            Some("cancel queued resumed work".into()),
+        )
+        .await
+        .expect("cancel queued terminal resume");
+    assert_eq!(cancelled.metadata["status"], "cancelled");
+    assert_eq!(
+        fixture
+            .engine
+            .get_session(resumed_session_id)
+            .expect("historical terminal session")
+            .status,
+        SessionStatus::Completed,
+        "pending cancellation must not rewrite the previous run's status"
+    );
+    assert!(
+        !fixture
+            .engine
+            .delegation_queue_contains(resumed_session_id)
+            .expect("cancelled queue state")
+    );
+    let result = fixture
+        .engine
+        .get_subagent_result(
+            parent.session_id,
+            resumed_session_id,
+            false,
+            0,
+            20,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("cancelled queued resume result");
+    assert!(result.output.starts_with("<status>cancelled</status>"));
+    let child_events = fixture
+        .engine
+        .inner
+        .store
+        .get(resumed_session_id)
+        .expect("cancelled resume projection")
+        .log
+        .events();
+    assert!(child_events.iter().any(|event| {
+        event.run_id.is_none()
+            && matches!(
+                &event.payload,
+                EventPayload::UserInputRecalled { input }
+                    if input == "must not leak into a later resume"
+            )
+    }));
+    assert_eq!(
+        fixture
+            .engine
+            .inner
+            .journal
+            .entries()
+            .last()
+            .and_then(|entry| entry.terminal_status),
+        Some(SessionStatus::Cancelled)
+    );
+    fixture.engine.shutdown().await;
+    server.abort();
+
+    let reopened = reopen_engine(&fixture);
+    assert!(
+        !reopened
+            .delegation_queue_contains(resumed_session_id)
+            .expect("reopened cancelled queue state")
+    );
+    let (_, terminal_status, _) = reopened
+        .delegation_registry_snapshot(resumed_session_id)
+        .expect("reopened cancelled resume registry");
+    assert_eq!(terminal_status, Some(SessionStatus::Cancelled));
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn inherited_context_is_text_only_journaled_and_deterministic_after_restart() {
+    let (endpoint, responses, server) = scripted_channel_server(5).await;
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\nschema: 4\ndescription: Context delegation parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\ntools: [write]\npermissions:\n  write: allow\n  delegate:\n    worker: allow\n---\nTest inherited context.\n",
+    );
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::new(AtomicBool::new(false)),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("context parent");
+    responses
+        .send(scripted_tool_body(
+            "context-write",
+            "write",
+            serde_json::json!({}),
+        ))
+        .expect("write response");
+    responses
+        .send(scripted_text_body("parent assistant context"))
+        .expect("parent context response");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("inherit-context-history").expect("run ID"),
+            selection: selection.clone(),
+            input: "parent history input".into(),
+        })
+        .await
+        .expect("context history run");
+    wait_for_session_not_running(&fixture.engine, parent.session_id).await;
+
+    responses
+        .send(scripted_tool_body(
+            "context-delegate",
+            "delegate_subagent",
+            serde_json::json!({
+                "agent_type":"worker",
+                "description":"Inherited context child",
+                "prompt":"inherited child task",
+                "background":true,
+                "inherit_context":true
+            }),
+        ))
+        .expect("inherit delegation response");
+    responses
+        .send(scripted_text_body("inherited child done"))
+        .expect("inherited child response");
+    responses
+        .send(scripted_text_body("parent after inherited delegation"))
+        .expect("inherit parent response");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("inherit-context-delegate").expect("run ID"),
+            selection,
+            input: "delegate using assembled history".into(),
+        })
+        .await
+        .expect("inherit delegation run");
+    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(child) = fixture.engine.children(parent.session_id).first()
+                && child.status == SessionStatus::Completed
+            {
+                break child.session_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("inherited child completion");
+    let child = fixture
+        .engine
+        .inner
+        .store
+        .get(child_session_id)
+        .expect("inherited child projection");
+    let seed = child
+        .log
+        .events()
+        .into_iter()
+        .find_map(|event| match event.payload {
+            EventPayload::DelegatedContextSeeded { turns, .. } => Some(turns),
+            _ => None,
+        })
+        .expect("durable inherited context seed");
+    let seed_text = seed
+        .iter()
+        .map(|turn| turn.text.as_str())
+        .collect::<String>();
+    assert!(seed_text.contains("parent history input"));
+    assert!(seed_text.contains("parent assistant context"));
+    assert!(!seed_text.contains("executed"));
+    assert!(seed.iter().map(|turn| turn.text.len()).sum::<usize>() <= 64 * 1024);
+    let journal_entry = fixture
+        .engine
+        .inner
+        .journal
+        .entries()
+        .into_iter()
+        .find(|entry| entry.reservation.child_session_id == child_session_id)
+        .expect("context journal entry");
+    assert!(journal_entry.request.inherit_context);
+    assert_eq!(journal_entry.request.seeded_context, seed);
+    let before_restart = serde_json::to_value(
+        fixture
+            .engine
+            .get_history(child_session_id, EngineHistoryView::Assembled)
+            .await
+            .expect("child assembled history"),
+    )
+    .expect("serialize child history");
+    let requests = server.await.expect("inherited context server");
+    let child_request = requests
+        .iter()
+        .find(|request| {
+            request.contains("inherited child task") && !request.contains("\"role\":\"tool\"")
+        })
+        .expect("inherited child model request");
+    assert!(child_request.contains("parent history input"));
+    assert!(child_request.contains("parent assistant context"));
+    assert!(!child_request.contains("executed"));
+    fixture.engine.shutdown().await;
+
+    let reopened = reopen_engine(&fixture);
+    let after_restart = serde_json::to_value(
+        reopened
+            .get_history(child_session_id, EngineHistoryView::Assembled)
+            .await
+            .expect("reopened child assembled history"),
+    )
+    .expect("serialize reopened child history");
+    assert_eq!(after_restart, before_restart);
+    reopened.shutdown().await;
 }
 
 #[tokio::test]
@@ -6096,6 +7369,1069 @@ async fn running_subagent_result_is_empty_waits_and_cancel_is_session_addressed(
 }
 
 #[tokio::test]
+async fn running_subagent_steer_promotes_user_input_and_enforces_ownership_and_state() {
+    let (endpoint, reached, release, server) = scripted_running_steer_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("steer parent");
+    let foreign = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("foreign parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("running-subagent-steer").expect("run ID"),
+            selection,
+            input: "start a child to steer".into(),
+        })
+        .await
+        .expect("accepted steer parent run");
+    reached.await.expect("child request reached server");
+
+    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(child) = fixture.engine.children(parent.session_id).first()
+                && child.status == SessionStatus::Running
+            {
+                break child.session_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("running steer child");
+    let steered = fixture
+        .engine
+        .steer_subagent(
+            parent.session_id,
+            child_session_id,
+            "focus on the revised requirement".into(),
+        )
+        .await
+        .expect("steer running child");
+    assert_eq!(steered.metadata["status"], "running");
+    let foreign_error = fixture
+        .engine
+        .steer_subagent(foreign.session_id, child_session_id, "foreign steer".into())
+        .await
+        .expect_err("foreign parent cannot steer child");
+    assert!(
+        foreign_error
+            .to_string()
+            .contains("not owned by the caller")
+    );
+    let missing_id = SessionId::new_v7();
+    let missing_error = fixture
+        .engine
+        .steer_subagent(parent.session_id, missing_id, "missing steer".into())
+        .await
+        .expect_err("missing child cannot be steered");
+    assert!(missing_error.to_string().contains(&missing_id.to_string()));
+    release.send(()).expect("release child response");
+
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if fixture
+                .engine
+                .children(parent.session_id)
+                .first()
+                .is_some_and(|child| child.status == SessionStatus::Completed)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("steered child completion");
+    let child_events = fixture
+        .engine
+        .inner
+        .store
+        .get(child_session_id)
+        .expect("steered child projection")
+        .log
+        .events();
+    assert!(child_events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputAdmitted { input }
+            if input == "focus on the revised requirement"
+    )));
+    assert!(child_events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputSubmitted { input }
+            if input == "focus on the revised requirement"
+    )));
+    let terminal_error = fixture
+        .engine
+        .steer_subagent(parent.session_id, child_session_id, "too late".into())
+        .await
+        .expect_err("terminal child cannot be steered");
+    assert!(terminal_error.to_string().contains("terminal (completed)"));
+    let requests = server.await.expect("running steer server");
+    assert_eq!(requests.len(), 3);
+    assert!(requests[2].contains("focus on the revised requirement"));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_completion() {
+    let (endpoint, ready, resume_id, release, server) = scripted_running_resume_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("running resume parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("running-resume-first").expect("run ID"),
+            selection: selection.clone(),
+            input: "start the long-running child".into(),
+        })
+        .await
+        .expect("first resume parent run");
+    ready.await.expect("first parent and child requests");
+    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(child) = fixture.engine.children(parent.session_id).first()
+                && child.status == SessionStatus::Running
+                && fixture
+                    .engine
+                    .get_session(parent.session_id)
+                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+            {
+                break child.session_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("active child and completed first parent run");
+    let original_run_id = fixture
+        .engine
+        .inner
+        .store
+        .get(child_session_id)
+        .expect("running child projection")
+        .runs
+        .keys()
+        .next()
+        .copied()
+        .expect("original child run");
+    let (original_invocation_id, _, original_counts_slot) = fixture
+        .engine
+        .delegation_registry_snapshot(child_session_id)
+        .expect("original running delegation record");
+    assert!(original_counts_slot);
+    fixture
+        .engine
+        .set_delegation_slot_ownership(child_session_id, false, false)
+        .expect("model foreground running slot ownership");
+    let (resume_admitted, release_resume_admission) = fixture.engine.install_resume_rollback_hook();
+    resume_id
+        .send(child_session_id)
+        .expect("send running resume ID");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("running-resume-second").expect("run ID"),
+            selection,
+            input: "attach to the active child".into(),
+        })
+        .await
+        .expect("second resume parent run");
+    resume_admitted
+        .await
+        .expect("first running resume admitted before redelivery");
+    let resumed_entry = fixture
+        .engine
+        .inner
+        .journal
+        .entries()
+        .last()
+        .expect("running resume journal entry")
+        .clone();
+    let matching_redelivery = DelegateInvocation {
+        parent_session_id: resumed_entry.reservation.parent_session_id,
+        parent_run_id: resumed_entry.reservation.parent_run_id,
+        parent_tool_call_id: resumed_entry.reservation.parent_tool_call_id,
+        agent_type: AgentId::new("worker").expect("worker agent"),
+        description: resumed_entry.request.description,
+        prompt: resumed_entry.request.prompt,
+        background: true,
+        resume_session_id: resumed_entry.request.resume_session_id,
+        inherit_context: false,
+    };
+    let duplicate_engine = fixture.engine.clone();
+    let duplicate_invocation = matching_redelivery.clone();
+    let duplicate =
+        tokio::spawn(async move { duplicate_engine.delegate_invoke(duplicate_invocation).await });
+    release_resume_admission.notify_one();
+    let duplicate_handle = tokio::time::timeout(std::time::Duration::from_secs(3), duplicate)
+        .await
+        .expect("concurrent resume redelivery")
+        .expect("redelivery task")
+        .expect("redelivery handle");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let prompt_admitted = fixture
+                .engine
+                .inner
+                .store
+                .get(child_session_id)
+                .expect("actively resumed child")
+                .log
+                .events()
+                .iter()
+                .any(|event| {
+                    matches!(
+                        &event.payload,
+                        EventPayload::UserInputAdmitted { input }
+                            if event.run_id == Some(original_run_id)
+                                && input == "resume active prompt"
+                    )
+                });
+            let registry_handed_off = fixture
+                .engine
+                .delegation_registry_snapshot(child_session_id)
+                .is_ok_and(|(invocation_id, _, _)| invocation_id != original_invocation_id);
+            if prompt_admitted && registry_handed_off {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("running resume prompt admission");
+    let (resumed_invocation_id, _, resumed_counts_slot) = fixture
+        .engine
+        .delegation_registry_snapshot(child_session_id)
+        .expect("resumed running delegation record");
+    assert_ne!(resumed_invocation_id, original_invocation_id);
+    assert_eq!(duplicate_handle.invocation_id, resumed_invocation_id);
+    assert_eq!(duplicate_handle.child_session_id, child_session_id);
+    let mode_conflict = fixture
+        .engine
+        .delegate_invoke(DelegateInvocation {
+            background: false,
+            ..matching_redelivery
+        })
+        .await
+        .expect_err("background invocation redelivered as foreground");
+    assert!(
+        mode_conflict
+            .to_string()
+            .contains("execution mode conflict")
+    );
+    assert!(
+        mode_conflict
+            .to_string()
+            .contains("durable invocation is background")
+    );
+    assert!(
+        !resumed_counts_slot,
+        "running foreground ownership must not be promoted to a root slot"
+    );
+    let resume_admissions = fixture
+        .engine
+        .inner
+        .store
+        .get(child_session_id)
+        .expect("redelivered running child")
+        .log
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::UserInputAdmitted { input }
+                    if input == "resume active prompt"
+            )
+        })
+        .count();
+    assert_eq!(resume_admissions, 1);
+    release.send(()).expect("release active child response");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let notifications = fixture
+                .engine
+                .inner
+                .store
+                .get(parent.session_id)
+                .expect("running resume parent projection")
+                .log
+                .events()
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event.payload,
+                        EventPayload::DelegateFinishedV2 {
+                            session_id,
+                            ..
+                        } if session_id == child_session_id
+                    )
+                })
+                .count();
+            if fixture
+                .engine
+                .get_session(child_session_id)
+                .is_ok_and(|child| child.status == SessionStatus::Completed)
+                && notifications == 2
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("running resumed child completion");
+    let child = fixture
+        .engine
+        .inner
+        .store
+        .get(child_session_id)
+        .expect("running resumed projection");
+    assert_eq!(child.runs.len(), 1);
+    assert!(
+        child.log.events().iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::UserInputAdmitted { input }
+                if event.run_id == Some(original_run_id) && input == "resume active prompt"
+        )),
+        "child events: {:#?}",
+        child.log.events()
+    );
+    assert!(child.log.events().iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputSubmitted { input }
+            if event.run_id == Some(original_run_id) && input == "resume active prompt"
+    )));
+    let entries = fixture.engine.inner.journal.entries();
+    assert_eq!(entries.len(), 2);
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.child_run_id == Some(original_run_id))
+    );
+    let notification_invocations = fixture
+        .engine
+        .inner
+        .store
+        .get(parent.session_id)
+        .expect("running resume parent notifications")
+        .log
+        .events()
+        .iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::DelegateFinishedV2 {
+                invocation_id,
+                session_id,
+                ..
+            } if session_id == child_session_id => Some(invocation_id),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(notification_invocations.len(), 2);
+    assert!(notification_invocations.contains(&original_invocation_id));
+    assert!(notification_invocations.contains(&resumed_invocation_id));
+    let resumed_notifications = fixture
+        .engine
+        .inner
+        .store
+        .get(parent.session_id)
+        .expect("redelivery completion notifications")
+        .log
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.payload,
+                EventPayload::DelegateFinishedV2 { invocation_id, .. }
+                    if invocation_id == resumed_invocation_id
+            )
+        })
+        .count();
+    assert_eq!(resumed_notifications, 1);
+    let requests = server.await.expect("running resume server");
+    assert_eq!(requests.len(), 6);
+    assert!(requests.iter().any(|request| {
+        !request.contains("\"role\":\"tool\"") && request.contains("resume active prompt")
+    }));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_terminal() {
+    let (endpoint, ready, resume_id, release_child, server) =
+        scripted_running_resume_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("handoff race parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("resume-handoff-race-first").expect("run ID"),
+            selection: selection.clone(),
+            input: "start the race child".into(),
+        })
+        .await
+        .expect("handoff race first run");
+    ready.await.expect("race child active");
+    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(child) = fixture.engine.children(parent.session_id).first()
+                && child.status == SessionStatus::Running
+                && fixture
+                    .engine
+                    .get_session(parent.session_id)
+                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+            {
+                break child.session_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("race child and first parent completion");
+    let (old_invocation_id, _, _) = fixture
+        .engine
+        .delegation_registry_snapshot(child_session_id)
+        .expect("old race registry owner");
+    let (admission_reached, release_admission) = fixture.engine.install_resume_admission_hook();
+    resume_id
+        .send(child_session_id)
+        .expect("send race child ID");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("resume-handoff-race-second").expect("run ID"),
+            selection,
+            input: "race completion against resume admission".into(),
+        })
+        .await
+        .expect("handoff race second run");
+    admission_reached
+        .await
+        .expect("resume paused before child actor admission");
+    release_child
+        .send(())
+        .expect("complete child before admission");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if fixture
+                .engine
+                .get_session(child_session_id)
+                .is_ok_and(|child| child.status == SessionStatus::Completed)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("child completed while resume admission paused");
+    release_admission.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let entries = fixture.engine.inner.journal.entries();
+            let latest_cancelled = entries.last().is_some_and(|entry| {
+                entry.reservation.child_session_id == child_session_id
+                    && entry.terminal_status == Some(SessionStatus::Cancelled)
+            });
+            let registry_terminal = fixture
+                .engine
+                .delegation_registry_snapshot(child_session_id)
+                .is_ok_and(|(invocation_id, terminal_status, _)| {
+                    invocation_id == old_invocation_id
+                        && terminal_status == Some(SessionStatus::Completed)
+                });
+            if latest_cancelled && registry_terminal {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("rejected resume rolled back without a running registry leak");
+    assert!(
+        !fixture
+            .engine
+            .delegation_queue_contains(child_session_id)
+            .expect("race queue state")
+    );
+    server.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prompt() {
+    let (endpoint, ready, resume_id, release_child, server) =
+        scripted_running_resume_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("cancelled admission parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("cancel-resume-admission-first").expect("run ID"),
+            selection: selection.clone(),
+            input: "start child for cancelled resume".into(),
+        })
+        .await
+        .expect("cancelled admission first run");
+    ready.await.expect("cancelled admission child active");
+    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(child) = fixture.engine.children(parent.session_id).first()
+                && child.status == SessionStatus::Running
+                && fixture
+                    .engine
+                    .get_session(parent.session_id)
+                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+            {
+                break child.session_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cancelled admission running child");
+    let (old_invocation_id, _, _) = fixture
+        .engine
+        .delegation_registry_snapshot(child_session_id)
+        .expect("cancelled admission old owner");
+    let old_run_id = fixture
+        .engine
+        .inner
+        .journal
+        .get(old_invocation_id)
+        .and_then(|entry| entry.child_run_id)
+        .expect("cancelled admission old run");
+    let (admission_reached, release_admission) = fixture.engine.install_resume_rollback_hook();
+    resume_id
+        .send(child_session_id)
+        .expect("send cancelled admission child ID");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("cancel-resume-admission-second").expect("run ID"),
+            selection,
+            input: "cancel while resume is admitting".into(),
+        })
+        .await
+        .expect("cancelled admission second run");
+    admission_reached
+        .await
+        .expect("resume paused after actor admission");
+    let resumed_invocation_id = fixture
+        .engine
+        .inner
+        .journal
+        .entries()
+        .last()
+        .expect("cancelled resume journal reservation")
+        .reservation
+        .invocation_id;
+    assert!(
+        fixture
+            .engine
+            .steer(old_run_id, "interleaved direct steer".into())
+            .await
+            .expect("interleaved direct steer")
+            .accepted
+    );
+    fixture
+        .engine
+        .cancel_inflight_delegation_for_test(resumed_invocation_id)
+        .expect("cancel delegate future during resume admission");
+    release_admission.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let child = fixture
+                .engine
+                .inner
+                .store
+                .get(child_session_id)
+                .expect("cancelled admission child projection");
+            let admitted = child
+                .log
+                .events()
+                .iter()
+                .find_map(|event| match &event.payload {
+                    EventPayload::UserInputAdmitted { input }
+                        if input == "resume active prompt" =>
+                    {
+                        Some(event.seq)
+                    }
+                    _ => None,
+                });
+            let recalled = admitted.is_some_and(|admission_seq| {
+                child.log.events().iter().any(|event| {
+                    matches!(
+                        &event.payload,
+                        EventPayload::UserInputRecalledV2 {
+                            user_input_seq,
+                            input,
+                        } if *user_input_seq == admission_seq
+                            && input == "resume active prompt"
+                    )
+                })
+            });
+            let steer_preserved = child.log.events().iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    EventPayload::UserInputAdmitted { input } if input == "interleaved direct steer"
+                )
+            });
+            let latest_cancelled =
+                fixture
+                    .engine
+                    .inner
+                    .journal
+                    .entries()
+                    .last()
+                    .is_some_and(|entry| {
+                        entry.reservation.child_session_id == child_session_id
+                            && entry.terminal_status == Some(SessionStatus::Cancelled)
+                    });
+            if recalled && steer_preserved && latest_cancelled {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cancelled resume prompt recall");
+    let (registry_invocation, terminal_status, _) = fixture
+        .engine
+        .delegation_registry_snapshot(child_session_id)
+        .expect("cancelled admission registry");
+    assert_eq!(registry_invocation, old_invocation_id);
+    assert_eq!(terminal_status, None);
+    let child = fixture
+        .engine
+        .inner
+        .store
+        .get(child_session_id)
+        .expect("running child after cancelled resume");
+    assert_eq!(child.status, SessionStatus::Running);
+    assert!(!child.log.events().iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputSubmitted { input } if input == "resume active prompt"
+    )));
+    release_child
+        .send(())
+        .expect("release original child response");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let child = fixture
+                .engine
+                .inner
+                .store
+                .get(child_session_id)
+                .expect("interleaved steer child projection");
+            let steer_submitted = child.log.events().iter().any(|event| matches!(
+                &event.payload,
+                EventPayload::UserInputSubmitted { input } if input == "interleaved direct steer"
+            ));
+            let old_notifications = fixture
+                .engine
+                .inner
+                .store
+                .get(parent.session_id)
+                .expect("interleaved steer parent projection")
+                .log
+                .events()
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        &event.payload,
+                        EventPayload::DelegateFinishedV2 { invocation_id, .. }
+                            if *invocation_id == old_invocation_id
+                    )
+                })
+                .count();
+            if steer_submitted && old_notifications == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("interleaved steer promotion and single old completion");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let old_notifications = fixture
+        .engine
+        .inner
+        .store
+        .get(parent.session_id)
+        .expect("completed interleaved steer parent")
+        .log
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::DelegateFinishedV2 { invocation_id, .. }
+                    if *invocation_id == old_invocation_id
+            )
+        })
+        .count();
+    assert_eq!(old_notifications, 1);
+    server.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
+    let (endpoint, ready, resume_id, _release_child, server) =
+        scripted_running_resume_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("monitor failure parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("resume-monitor-failure-first").expect("run ID"),
+            selection: selection.clone(),
+            input: "start child for monitor failure".into(),
+        })
+        .await
+        .expect("monitor failure first run");
+    ready.await.expect("monitor failure child active");
+    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(child) = fixture.engine.children(parent.session_id).first()
+                && child.status == SessionStatus::Running
+                && fixture
+                    .engine
+                    .get_session(parent.session_id)
+                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+            {
+                break child.session_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("monitor failure running child");
+    let (old_invocation_id, _, _) = fixture
+        .engine
+        .delegation_registry_snapshot(child_session_id)
+        .expect("monitor failure old owner");
+    fixture
+        .engine
+        .inner
+        .resume_monitor_failures
+        .store(1, Ordering::Release);
+    resume_id
+        .send(child_session_id)
+        .expect("send monitor failure child ID");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("resume-monitor-failure-second").expect("run ID"),
+            selection,
+            input: "resume with failed monitor installation".into(),
+        })
+        .await
+        .expect("monitor failure second run");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if fixture
+                .engine
+                .inner
+                .journal
+                .entries()
+                .last()
+                .is_some_and(|entry| {
+                    entry.reservation.child_session_id == child_session_id
+                        && entry.child_run_id.is_some()
+                        && entry.terminal_status == Some(SessionStatus::Cancelled)
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("monitor failure terminal journal state");
+    let child = fixture
+        .engine
+        .inner
+        .store
+        .get(child_session_id)
+        .expect("monitor failure child projection");
+    assert!(!child.log.events().iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputAdmitted { input } if input == "resume active prompt"
+    )));
+    let (registry_invocation, terminal_status, _) = fixture
+        .engine
+        .delegation_registry_snapshot(child_session_id)
+        .expect("monitor failure registry owner");
+    assert_eq!(registry_invocation, old_invocation_id);
+    assert_eq!(terminal_status, None);
+    server.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancellation_between_run_attachment_and_publication_terminalizes_invocation() {
+    let (endpoint, ready, resume_id, _release_child, server) =
+        scripted_running_resume_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("attachment cancellation parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("resume-attachment-cancel-first").expect("run ID"),
+            selection: selection.clone(),
+            input: "start child for attachment cancellation".into(),
+        })
+        .await
+        .expect("attachment cancellation first run");
+    ready.await.expect("attachment cancellation child active");
+    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(child) = fixture.engine.children(parent.session_id).first()
+                && child.status == SessionStatus::Running
+                && fixture
+                    .engine
+                    .get_session(parent.session_id)
+                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+            {
+                break child.session_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("attachment cancellation running child");
+    let (old_invocation_id, _, _) = fixture
+        .engine
+        .delegation_registry_snapshot(child_session_id)
+        .expect("attachment cancellation old owner");
+    let (attachment_reached, release_attachment) = fixture.engine.install_resume_attachment_hook();
+    resume_id
+        .send(child_session_id)
+        .expect("send attachment cancellation child ID");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("resume-attachment-cancel-second").expect("run ID"),
+            selection,
+            input: "cancel after durable run attachment".into(),
+        })
+        .await
+        .expect("attachment cancellation second run");
+    attachment_reached
+        .await
+        .expect("resume paused after durable run attachment");
+    let invocation_id = fixture
+        .engine
+        .inner
+        .journal
+        .entries()
+        .last()
+        .expect("attached resume journal entry")
+        .reservation
+        .invocation_id;
+    fixture
+        .engine
+        .cancel_inflight_delegation_for_test(invocation_id)
+        .expect("cancel attached resume admission");
+    release_attachment.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if fixture
+                .engine
+                .inner
+                .journal
+                .get(invocation_id)
+                .is_some_and(|entry| {
+                    entry.run_attached
+                        && entry.child_run_id.is_some()
+                        && entry.terminal_status == Some(SessionStatus::Cancelled)
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("attached resume terminalization");
+    let child = fixture
+        .engine
+        .inner
+        .store
+        .get(child_session_id)
+        .expect("attachment cancellation child projection");
+    assert!(!child.log.events().iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputAdmitted { input } if input == "resume active prompt"
+    )));
+    let (registry_invocation, terminal_status, _) = fixture
+        .engine
+        .delegation_registry_snapshot(child_session_id)
+        .expect("attachment cancellation registry owner");
+    assert_eq!(registry_invocation, old_invocation_id);
+    assert_eq!(terminal_status, None);
+    server.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn queued_subagent_steer_survives_restart_and_promotes_on_first_run() {
+    let (endpoint, reached, release, server) = scripted_queued_steer_recovery_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("queued steer parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("queued-subagent-steer").expect("run ID"),
+            selection,
+            input: "queue five children".into(),
+        })
+        .await
+        .expect("accepted queued steer parent run");
+    reached.await.expect("queue reached capacity");
+    let queued_id = fixture
+        .engine
+        .inner
+        .journal
+        .entries()
+        .into_iter()
+        .find(|entry| entry.child_run_id.is_none())
+        .expect("queued child journal entry")
+        .reservation
+        .child_session_id;
+    let steered = fixture
+        .engine
+        .steer_subagent(
+            parent.session_id,
+            queued_id,
+            "apply this queued correction".into(),
+        )
+        .await
+        .expect("steer queued child");
+    assert_eq!(steered.metadata["status"], "queued");
+    let queued = fixture
+        .engine
+        .inner
+        .store
+        .get(queued_id)
+        .expect("queued child projection");
+    assert!(queued.log.is_persisted());
+    assert!(queued.log.events().iter().any(|event| {
+        event.run_id.is_none()
+            && matches!(
+                &event.payload,
+                EventPayload::UserInputAdmitted { input }
+                    if input == "apply this queued correction"
+            )
+    }));
+
+    fixture.engine.shutdown().await;
+    release.send(()).expect("release stopped child sockets");
+    let reopened = reopen_engine(&fixture);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if reopened
+                .get_session(queued_id)
+                .is_ok_and(|child| child.status == SessionStatus::Completed)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("recovered queued steer completion");
+    let recovered_events = reopened
+        .inner
+        .store
+        .get(queued_id)
+        .expect("recovered queued child")
+        .log
+        .events();
+    assert!(recovered_events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputSubmitted { input }
+            if input == "apply this queued correction"
+    )));
+    let requests = server.await.expect("queued steer recovery server");
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].contains("apply this queued correction"));
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
 async fn background_startup_failure_releases_capacity_and_notifies() {
     let (endpoint, server) = scripted_startup_failure_delegation_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
@@ -6144,7 +8480,7 @@ async fn background_startup_failure_releases_capacity_and_notifies() {
                 .log
                 .events()
                 .iter()
-                .filter(|event| matches!(event.payload, EventPayload::DelegateFinished { .. }))
+                .filter(|event| matches!(event.payload, EventPayload::DelegateFinishedV2 { .. }))
                 .count();
             if completed == 4 && failed == 1 && finished == 5 {
                 break;
@@ -6228,7 +8564,7 @@ async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
                 .log
                 .events()
                 .iter()
-                .filter(|event| matches!(event.payload, EventPayload::DelegateFinished { .. }))
+                .filter(|event| matches!(event.payload, EventPayload::DelegateFinishedV2 { .. }))
                 .count();
             let completed_children = fixture
                 .engine
@@ -6492,7 +8828,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
 }
 
 #[tokio::test]
-async fn root_run_and_schema_eleven_delegation_reservation_reopen_exactly() {
+async fn root_run_and_current_delegation_reservation_reopen_exactly() {
     let (fixture, selection) = custom_fixture();
     let session = fixture
         .engine
@@ -6551,6 +8887,10 @@ async fn root_run_and_schema_eleven_delegation_reservation_reopen_exactly() {
                 description: "Scripted delegation".to_owned(),
                 prompt: "scripted delegated task".to_owned(),
                 title: SessionTitle::new("Scripted delegation").expect("delegated title"),
+                resume_session_id: None,
+                inherit_context: false,
+                seeded_context: Vec::new(),
+                background: Some(false),
             },
         )
         .expect("delegation reservation");
@@ -6570,8 +8910,8 @@ async fn root_run_and_schema_eleven_delegation_reservation_reopen_exactly() {
     .expect("generated delegation journal schema");
     assert_eq!(schema["title"], "StoredDelegationJournalRecord");
     assert_eq!(
-        schema["properties"]["delegation_journal_schema_version"]["const"],
-        11
+        schema["properties"]["delegation_journal_schema_version"]["enum"],
+        serde_json::json!([11, 12, 13, 14])
     );
     assert_eq!(schema["additionalProperties"], false);
     let required_keys = |value: &serde_json::Value| {
@@ -6594,8 +8934,8 @@ async fn root_run_and_schema_eleven_delegation_reservation_reopen_exactly() {
         .as_array()
         .expect("journal record variants")
         .iter()
-        .find(|variant| variant["properties"]["type"]["const"] == "delegation_started_v2")
-        .expect("v2 started schema");
+        .find(|variant| variant["properties"]["type"]["const"] == "delegation_started_v3")
+        .expect("v3 started schema");
     assert_eq!(started_schema["additionalProperties"], false);
     assert_eq!(
         required_keys(&started_schema["required"]),
@@ -6618,6 +8958,158 @@ async fn root_run_and_schema_eleven_delegation_reservation_reopen_exactly() {
     ] {
         assert!(schema_text.contains(required), "missing {required}");
     }
+    let legacy_directory = tempfile::tempdir().expect("legacy journal directory");
+    let legacy_path = legacy_directory.path().join("delegations.jsonl");
+    let mut legacy = raw.clone();
+    legacy["delegation_journal_schema_version"] = serde_json::json!(11);
+    legacy["record"]["type"] = serde_json::json!("delegation_started_v2");
+    let legacy_request = legacy["record"]["request"]
+        .as_object_mut()
+        .expect("legacy request object");
+    legacy_request.remove("resume_session_id");
+    legacy_request.remove("inherit_context");
+    legacy_request.remove("seeded_context");
+    legacy_request.remove("background");
+    fs::write(
+        &legacy_path,
+        serde_json::to_string(&legacy).expect("serialize schema-11 V2 journal") + "\n",
+    )
+    .expect("write schema-11 V2 journal");
+    let legacy_journal = crate::journal::DelegationJournal::open(legacy_path)
+        .expect("open shipped schema-11 V2 journal");
+    let legacy_entry = legacy_journal
+        .get(invocation_id)
+        .expect("up-converted V2 journal entry");
+    assert_eq!(legacy_entry.request.description, "Scripted delegation");
+    assert_eq!(legacy_entry.request.prompt, "scripted delegated task");
+    assert_eq!(legacy_entry.request.resume_session_id, None);
+    assert!(!legacy_entry.request.inherit_context);
+    assert!(legacy_entry.request.seeded_context.is_empty());
+    assert_eq!(legacy_entry.request.background, None);
+    legacy_journal.shutdown();
+    let run_transition = serde_json::json!({
+        "delegation_journal_schema_version":14,
+        "record":{
+            "type":"delegation_run_started",
+            "invocation_id":invocation_id,
+            "child_run_id":cookie_agent_protocol::RunId::new_v7()
+        }
+    });
+    let terminal_transition = serde_json::json!({
+        "delegation_journal_schema_version":14,
+        "record":{
+            "type":"delegation_terminated",
+            "invocation_id":invocation_id,
+            "status":"cancelled"
+        }
+    });
+    for (name, transitions) in [
+        (
+            "run-after-terminal",
+            vec![terminal_transition.clone(), run_transition.clone()],
+        ),
+        (
+            "terminal-after-fresh-run",
+            vec![run_transition.clone(), terminal_transition.clone()],
+        ),
+    ] {
+        let directory = tempfile::tempdir().expect("invalid transition directory");
+        let path = directory.path().join("delegations.jsonl");
+        let contents = std::iter::once(raw.clone())
+            .chain(transitions)
+            .map(|record| serde_json::to_string(&record).expect("serialize transition record"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(&path, contents).expect("write invalid journal transition");
+        assert!(
+            crate::journal::DelegationJournal::open(path).is_err(),
+            "journal replay accepted invalid {name} transition"
+        );
+    }
+    let mut terminal_resume = raw.clone();
+    terminal_resume["record"]["request"]["resume_session_id"] =
+        terminal_resume["record"]["reservation"]["child_session_id"].clone();
+    let parsed_terminal_resume: cookie_agent_protocol::StoredDelegationJournalRecord =
+        serde_json::from_value(terminal_resume.clone()).expect("parse terminal resume start");
+    assert!(matches!(
+        parsed_terminal_resume.record,
+        cookie_agent_protocol::DelegationJournalRecord::DelegationStartedV4 {
+            request: cookie_agent_protocol::DelegateRequestPayloadV4 {
+                resume_session_id: Some(_),
+                ..
+            },
+            ..
+        }
+    ));
+    let directory = tempfile::tempdir().expect("terminal resume transition directory");
+    let path = directory.path().join("delegations.jsonl");
+    let contents = [
+        terminal_resume.clone(),
+        run_transition.clone(),
+        terminal_transition.clone(),
+    ]
+    .into_iter()
+    .map(|record| serde_json::to_string(&record).expect("serialize terminal resume transition"))
+    .collect::<Vec<_>>()
+    .join("\n")
+        + "\n";
+    fs::write(&path, contents).expect("write terminal resume transition");
+    assert!(
+        crate::journal::DelegationJournal::open(path).is_err(),
+        "terminal resume's newly started run accepted termination"
+    );
+    let mut ambiguous_start = terminal_resume.clone();
+    ambiguous_start["delegation_journal_schema_version"] = serde_json::json!(12);
+    ambiguous_start["record"]["type"] = serde_json::json!("delegation_started_v3");
+    ambiguous_start["record"]["request"]
+        .as_object_mut()
+        .expect("ambiguous V3 request")
+        .remove("background");
+    let mut ambiguous_run = run_transition.clone();
+    ambiguous_run["delegation_journal_schema_version"] = serde_json::json!(12);
+    let directory = tempfile::tempdir().expect("ambiguous schema-12 resume directory");
+    let path = directory.path().join("delegations.jsonl");
+    let contents = [ambiguous_start, ambiguous_run]
+        .into_iter()
+        .map(|record| serde_json::to_string(&record).expect("serialize ambiguous resume"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(&path, contents).expect("write ambiguous schema-12 resume");
+    let error = crate::journal::DelegationJournal::open(path)
+        .expect_err("ambiguous schema-12 resume transition must be rejected");
+    let message = error.to_string();
+    assert!(message.contains("delegations.jsonl"));
+    assert!(message.contains("move"));
+    assert!(message.contains("restart"));
+    assert!(message.contains("session event logs remain intact"));
+    let attachment_transition = serde_json::json!({
+        "delegation_journal_schema_version":14,
+        "record":{
+            "type":"delegation_run_attached",
+            "invocation_id":invocation_id,
+            "child_run_id":cookie_agent_protocol::RunId::new_v7()
+        }
+    });
+    let directory = tempfile::tempdir().expect("attachment transition directory");
+    let path = directory.path().join("delegations.jsonl");
+    let contents = [terminal_resume, attachment_transition, terminal_transition]
+        .into_iter()
+        .map(|record| serde_json::to_string(&record).expect("serialize attachment transition"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(&path, contents).expect("write attachment transition");
+    let attached = crate::journal::DelegationJournal::open(path)
+        .expect("replay valid attached-run termination");
+    let attached_entry = attached.get(invocation_id).expect("attached journal entry");
+    assert!(attached_entry.run_attached);
+    assert_eq!(
+        attached_entry.terminal_status,
+        Some(SessionStatus::Cancelled)
+    );
+    attached.shutdown();
     fixture.engine.shutdown().await;
 
     let reopened = reopen_engine(&fixture);

@@ -70,7 +70,7 @@ impl Engine {
         let enabled_tools = policy.tools();
         let delegation_tool = matches!(
             call.name.as_str(),
-            "delegate_subagent" | "get_subagent_result" | "cancel_subagent"
+            "delegate_subagent" | "get_subagent_result" | "steer_subagent" | "cancel_subagent"
         );
         if (delegation_tool && !delegate_enabled)
             || (!delegation_tool
@@ -388,7 +388,10 @@ impl Engine {
             {
                 let delegation_tool = matches!(
                     tool.name.as_str(),
-                    "delegate_subagent" | "get_subagent_result" | "cancel_subagent"
+                    "delegate_subagent"
+                        | "get_subagent_result"
+                        | "steer_subagent"
+                        | "cancel_subagent"
                 );
                 if ((!delegation_tool
                     && enabled_tools.contains(&tool.name)

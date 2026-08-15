@@ -1,21 +1,29 @@
-# Current-only Schemas
+# Schema Compatibility
 
-Only these versions are accepted. Earlier and unversioned formats are rejected;
-there are no migrations, aliases, compatibility readers, or dual paths.
+Writers emit the current version. Readers accept the ranges below; versions
+outside those ranges and unversioned formats are rejected.
 
-| Surface | Version |
-|---|---:|
-| Runtime configuration | 10 |
-| Agent document | 4 |
-| Protocol | 9 |
-| Events and session JSONL | 15 |
-| Session metadata | 9 |
-| Delegation journal | 11 |
-| Runtime snapshot | 3 |
-| Catalog cache | 2 |
-| Provider store | 3 |
-| Family recipe registry | 1 |
-| Project model-snapshot manifest | 1 |
+| Surface | Current write | Accepted reads |
+|---|---:|---:|
+| Runtime configuration | 10 | 10 |
+| Agent document | 4 | 4 |
+| Protocol | 9 | 9 |
+| Events and session JSONL | 17 | 15-17 |
+| Session metadata | 9 | 9 |
+| Delegation journal | 14 | 11-14[^journal-12] |
+| Runtime snapshot | 3 | 3 |
+| Catalog cache | 2 | 2 |
+| Provider store | 3 | 3 |
+| Family recipe registry | 1 | 1 |
+| Project model-snapshot manifest | 1 | 1 |
+
+[^journal-12]: Unambiguous schema-12 records reopen. The unshipped schema-12
+    resume/start encoding is rejected because it cannot distinguish a newly
+    started run from attachment to an existing run. Move the affected project's
+    `delegations.jsonl` aside and restart. This discards delegation recovery
+    state AND historical child resumability: session event logs remain intact,
+    but without the journal those child sessions no longer satisfy the
+    journal-backed ownership checks required for `resume_session_id`.
 
 The protocol crate exports JSON Schema and TypeScript binding sets for the wire
 roots. The [Rust API documentation](api.md) describes the public Rust types;

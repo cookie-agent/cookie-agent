@@ -812,6 +812,29 @@
         "precedence_reason"
       ]
     },
+    "DelegatedContextRole": {
+      "type": "string",
+      "enum": [
+        "user",
+        "assistant"
+      ]
+    },
+    "DelegatedContextTurn": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/DelegatedContextRole"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "text"
+      ]
+    },
     "EventPayload": {
       "oneOf": [
         {
@@ -1062,6 +1085,29 @@
         {
           "type": "object",
           "properties": {
+            "input": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "user_input_recalled_v2"
+            },
+            "user_input_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "user_input_seq",
+            "input"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "type": {
               "type": "string",
               "const": "user_input_applied"
@@ -1076,6 +1122,32 @@
           "required": [
             "type",
             "user_input_seq"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "turns": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DelegatedContextTurn"
+              },
+              "maxItems": 65536
+            },
+            "type": {
+              "type": "string",
+              "const": "delegated_context_seeded"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id",
+            "turns"
           ]
         },
         {
@@ -1632,6 +1704,44 @@
           "additionalProperties": false,
           "required": [
             "type",
+            "session_id",
+            "status",
+            "preview",
+            "total_lines"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "preview": {
+              "type": "string",
+              "maxLength": 2048
+            },
+            "session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "status": {
+              "$ref": "#/$defs/SessionStatus"
+            },
+            "total_lines": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "delegate_finished_v2"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id",
             "session_id",
             "status",
             "preview",
@@ -4875,7 +4985,11 @@
       "properties": {
         "event_schema_version": {
           "type": "integer",
-          "const": 15
+          "enum": [
+            15,
+            16,
+            17
+          ]
         },
         "payload": {
           "$ref": "#/$defs/EventPayload"

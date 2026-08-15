@@ -214,6 +214,11 @@ struct PendingInput {
     input: String,
 }
 
+struct DelegatedResumeAdmission {
+    accepted: bool,
+    admission_seq: Option<u64>,
+}
+
 struct PendingPromotionState {
     promoted: bool,
     pending: Vec<PendingInput>,
@@ -410,6 +415,12 @@ struct AdmissionConfirmationHook {
 }
 
 #[cfg(test)]
+struct ResumeAdmissionHook {
+    reached: Mutex<Option<oneshot::Sender<()>>>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
 struct AdmissionBlockingHook {
     reached: std_mpsc::Sender<()>,
     release: std_mpsc::Receiver<()>,
@@ -522,6 +533,16 @@ enum SessionCommand {
         run: RunId,
         input: String,
         reply: oneshot::Sender<Result<RunSteerResult, EngineError>>,
+    },
+    AdmitDelegatedResume {
+        run: RunId,
+        input: String,
+        reply: oneshot::Sender<Result<DelegatedResumeAdmission, EngineError>>,
+    },
+    RecallDelegatedResume {
+        run: RunId,
+        admission_seq: u64,
+        reply: oneshot::Sender<Result<bool, EngineError>>,
     },
     RecallSteer {
         run: RunId,
@@ -714,6 +735,12 @@ pub(crate) struct Inner {
     #[cfg(test)]
     admission_confirmation_hook: Mutex<Option<Arc<AdmissionConfirmationHook>>>,
     #[cfg(test)]
+    resume_admission_hook: Mutex<Option<Arc<ResumeAdmissionHook>>>,
+    #[cfg(test)]
+    resume_attachment_hook: Mutex<Option<Arc<ResumeAdmissionHook>>>,
+    #[cfg(test)]
+    resume_rollback_hook: Mutex<Option<Arc<ResumeAdmissionHook>>>,
+    #[cfg(test)]
     admission_blocking_hook: Mutex<Option<AdmissionBlockingHook>>,
     #[cfg(test)]
     abandoned_sweep_hook: Mutex<Option<AbandonedSweepHook>>,
@@ -723,6 +750,8 @@ pub(crate) struct Inner {
     pub(crate) delegate_start_failures: AtomicU64,
     #[cfg(test)]
     pub(crate) delegate_terminal_append_failures: AtomicU64,
+    #[cfg(test)]
+    pub(crate) resume_monitor_failures: AtomicU64,
 }
 
 /// Cloneable in-process engine handle. It contains no transport concerns and
@@ -807,6 +836,12 @@ impl Engine {
                 #[cfg(test)]
                 admission_confirmation_hook: Mutex::new(None),
                 #[cfg(test)]
+                resume_admission_hook: Mutex::new(None),
+                #[cfg(test)]
+                resume_attachment_hook: Mutex::new(None),
+                #[cfg(test)]
+                resume_rollback_hook: Mutex::new(None),
+                #[cfg(test)]
                 admission_blocking_hook: Mutex::new(None),
                 #[cfg(test)]
                 abandoned_sweep_hook: Mutex::new(None),
@@ -816,6 +851,8 @@ impl Engine {
                 delegate_start_failures: AtomicU64::new(0),
                 #[cfg(test)]
                 delegate_terminal_append_failures: AtomicU64::new(0),
+                #[cfg(test)]
+                resume_monitor_failures: AtomicU64::new(0),
             }),
         };
         engine.validate_referenced_manifests()?;

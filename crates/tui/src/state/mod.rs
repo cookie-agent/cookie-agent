@@ -158,11 +158,12 @@ impl FrozenAssistantAttribution {
 
 /// One steered message the engine admitted into its pending-input lane but
 /// has not yet promoted to the model-facing log. Pure event reduction: the
-/// lane is exactly what `UserInputAdmitted`/`UserInputSubmitted`/
-/// `UserInputRecalled` describe, so replays rebuild it identically.
+/// lane is exactly what `UserInputAdmitted`/`UserInputSubmitted` and the recall
+/// events describe, so replays rebuild it identically.
 #[derive(Clone, Debug)]
 pub struct PendingInput {
     pub text: String,
+    pub admission_seq: u64,
     /// Durable admission timestamp from the admitting event.
     pub admitted_at: jiff::Timestamp,
 }
@@ -1126,6 +1127,7 @@ fn reduce_event(
             close_open_assistant(state, timestamp);
             state.pending_inputs.push_back(PendingInput {
                 text: input,
+                admission_seq: sequence,
                 admitted_at: timestamp,
             });
         }
@@ -1150,6 +1152,16 @@ fn reduce_event(
             // its text comes back through the recall RPC result and is
             // never consulted here.
             state.pending_inputs.pop_back();
+        }
+        EventPayload::UserInputRecalledV2 { user_input_seq, .. } => {
+            close_open_assistant(state, timestamp);
+            if let Some(position) = state
+                .pending_inputs
+                .iter()
+                .position(|pending| pending.admission_seq == user_input_seq)
+            {
+                state.pending_inputs.remove(position);
+            }
         }
         EventPayload::ModelAttemptStarted {
             attempt_id,
@@ -1737,6 +1749,12 @@ fn reduce_event(
             status,
             total_lines,
             ..
+        }
+        | EventPayload::DelegateFinishedV2 {
+            session_id,
+            status,
+            total_lines,
+            ..
         } => push_event(
             state,
             if matches!(status, cookie_agent_protocol::SessionStatus::Completed) {
@@ -1790,7 +1808,9 @@ fn reduce_event(
             state.cwd_identity = Some(cwd_identity);
             state.creation_agent = Some(creation_agent);
         }
-        EventPayload::ToolStdinSubmitted { .. } | EventPayload::ToolCallLinked { .. } => {}
+        EventPayload::DelegatedContextSeeded { .. }
+        | EventPayload::ToolStdinSubmitted { .. }
+        | EventPayload::ToolCallLinked { .. } => {}
     }
 }
 

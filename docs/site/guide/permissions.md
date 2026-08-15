@@ -52,8 +52,10 @@ it only when `"*": deny` exists with no non-deny exceptions.
 
 Delegation targets come from the keys in the `delegate` permission map and must
 resolve to enabled `subagent` or `all` agents. This action controls
-`delegate_subagent`, `get_subagent_result`, and `cancel_subagent`; result and
-cancel operations retain the child agent ID as their permission resource.
+`delegate_subagent`, `get_subagent_result`, `steer_subagent`, and
+`cancel_subagent`. Result and cancel operations retain the child agent ID as
+their permission resource. Steer uses the owned child session ID as its resource
+label and the operation verb `steer`.
 Runtime `delegation.max_depth` defaults to 3 and `max_concurrency` defaults to 4.
 
 `delegate_subagent` replaces the former `delegate` tool name without an alias.

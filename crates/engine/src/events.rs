@@ -215,6 +215,7 @@ fn validate_records(
     let mut elided_tools = HashSet::<ToolCallId>::new();
     let mut next_model_turn_seq = 1_u64;
     let mut previous_timestamp = None;
+    let mut active_run = None;
     for (index, record) in records.iter().enumerate() {
         let expected_seq = index as u64 + 1;
         if record.seq != expected_seq {
@@ -262,6 +263,40 @@ fn validate_records(
                     return corrupt(path, "DelegateChildTerminated must not have run_id");
                 }
             }
+            EventPayload::UserInputAdmitted { .. } | EventPayload::UserInputRecalled { .. }
+                if record.run_id.is_none() =>
+            {
+                if active_run.is_some() {
+                    return corrupt(path, "runless UserInputAdmitted requires no active run");
+                }
+            }
+            EventPayload::UserInputRecalledV2 {
+                user_input_seq,
+                input,
+            } => {
+                let Some(run_id) = record.run_id else {
+                    return corrupt(path, "UserInputRecalledV2 is missing run_id");
+                };
+                if !records[..index].iter().any(|prior| {
+                    prior.seq == *user_input_seq
+                        && prior.run_id == Some(run_id)
+                        && matches!(
+                            &prior.payload,
+                            EventPayload::UserInputAdmitted { input: admitted }
+                                if admitted == input
+                        )
+                }) {
+                    return corrupt(path, "UserInputRecalledV2 target is not a prior admission");
+                }
+            }
+            EventPayload::DelegatedContextSeeded { .. } => {
+                if record.run_id.is_some() || !runs.is_empty() {
+                    return corrupt(
+                        path,
+                        "DelegatedContextSeeded must be runless and precede the first run",
+                    );
+                }
+            }
             EventPayload::RunStarted {
                 agent,
                 selected_suffix,
@@ -284,6 +319,7 @@ fn validate_records(
                 if runs.insert(run_id, attribution).is_some() {
                     return corrupt(path, "run_id has more than one RunStarted event");
                 }
+                active_run = Some(run_id);
             }
             EventPayload::SessionTitleCommitted { change, .. } => {
                 let user = matches!(
@@ -579,6 +615,16 @@ fn validate_records(
             _ => {
                 require_started_run(path, &runs, record.run_id)?;
             }
+        }
+        if matches!(
+            record.payload,
+            EventPayload::RunCompleted { .. }
+                | EventPayload::RunFailed { .. }
+                | EventPayload::RunCancelled { .. }
+                | EventPayload::RunInterrupted { .. }
+        ) && record.run_id == active_run
+        {
+            active_run = None;
         }
     }
     Ok(())

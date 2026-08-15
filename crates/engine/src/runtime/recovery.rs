@@ -146,39 +146,86 @@ impl Engine {
                 )?;
             }
         }
-        let journal_entries = self.inner.journal.entries();
+        let mut journal_entries = self.inner.journal.entries();
+        let mut latest_invocations = std::collections::HashMap::new();
         for entry in &journal_entries {
+            latest_invocations.insert(
+                entry.reservation.child_session_id,
+                entry.reservation.invocation_id,
+            );
+        }
+        for entry in &mut journal_entries {
             if self
                 .inner
                 .store
                 .get(entry.reservation.child_session_id)
                 .is_ok()
             {
-                self.ensure_delegated_title_blocking(
-                    entry.reservation.child_session_id,
-                    entry.reservation.invocation_id,
-                    entry.request.title.clone(),
-                )?;
+                if entry.request.resume_session_id.is_none() {
+                    self.ensure_delegated_context_seed_blocking(
+                        entry.reservation.child_session_id,
+                        entry.reservation.invocation_id,
+                        entry.request.seeded_context.clone(),
+                    )?;
+                    self.ensure_delegated_title_blocking(
+                        entry.reservation.child_session_id,
+                        entry.reservation.invocation_id,
+                        entry.request.title.clone(),
+                    )?;
+                }
                 let parent = self.inner.store.get(entry.reservation.parent_session_id)?;
                 let parent_cancelled = parent
                     .runs
                     .get(&entry.reservation.parent_run_id)
-                    .is_some_and(|run| run.status == SessionStatus::Cancelled);
-                if parent_cancelled {
-                    let child = self.inner.store.get(entry.reservation.child_session_id)?;
-                    for run in child.runs.values().filter(|run| {
+                    .is_some_and(|run| run.status == SessionStatus::Cancelled)
+                    && !parent.log.events().iter().any(|event| {
                         matches!(
-                            run.status,
-                            SessionStatus::Running | SessionStatus::Interrupted
+                            &event.payload,
+                            Event::ToolCallTerminated { termination }
+                                if termination.tool_call_id
+                                    == entry.reservation.parent_tool_call_id
                         )
-                    }) {
-                        self.append_blocking(
-                            entry.reservation.child_session_id,
-                            Some(run.id),
-                            Event::RunCancelled {
-                                reason: Some(safe_error("parent delegate run was cancelled")),
-                            },
+                    });
+                if parent_cancelled {
+                    if let Some(child_run_id) = entry.child_run_id {
+                        let child = self.inner.store.get(entry.reservation.child_session_id)?;
+                        if child.runs.get(&child_run_id).is_some_and(|run| {
+                            matches!(
+                                run.status,
+                                SessionStatus::Running | SessionStatus::Interrupted
+                            )
+                        }) {
+                            self.append_blocking(
+                                entry.reservation.child_session_id,
+                                Some(child_run_id),
+                                Event::RunCancelled {
+                                    reason: Some(safe_error("parent delegate run was cancelled")),
+                                },
+                            )?;
+                        }
+                    } else if entry.terminal_status.is_none()
+                        && latest_invocations.get(&entry.reservation.child_session_id)
+                            == Some(&entry.reservation.invocation_id)
+                    {
+                        self.inner.journal.mark_terminated(
+                            entry.reservation.invocation_id,
+                            SessionStatus::Cancelled,
                         )?;
+                        entry.terminal_status = Some(SessionStatus::Cancelled);
+                        self.void_runless_pending_inputs_blocking(
+                            entry.reservation.child_session_id,
+                        )?;
+                        let child = self.inner.store.get(entry.reservation.child_session_id)?;
+                        if child.status == SessionStatus::Idle {
+                            self.append_blocking(
+                                entry.reservation.child_session_id,
+                                None,
+                                Event::DelegateChildTerminated {
+                                    status: SessionStatus::Cancelled,
+                                    reason: Some(safe_error("parent delegate run was cancelled")),
+                                },
+                            )?;
+                        }
                     }
                 }
                 self.ensure_parent_link_blocking(

@@ -116,7 +116,7 @@ impl PermissionPipeline {
             "read" => Ok(PermissionAction::Read),
             "write" | "edit" => Ok(PermissionAction::Write),
             "bash" => Ok(PermissionAction::Bash),
-            "delegate_subagent" | "get_subagent_result" | "cancel_subagent" => {
+            "delegate_subagent" | "get_subagent_result" | "steer_subagent" | "cancel_subagent" => {
                 Ok(PermissionAction::Delegate)
             }
             other => Err(PermissionError::UnknownAction(other.into())),
@@ -562,6 +562,39 @@ mod tests {
             decision.evaluations[0].trace.candidates[1].source_layer,
             SafeCode::new("agent_document").expect("safe code")
         );
+    }
+
+    #[test]
+    fn steer_subagent_uses_session_scoped_delegate_permission_and_can_be_denied() {
+        let session = cookie_agent_protocol::SessionId::new_v7().to_string();
+        let resource = resource(PermissionAction::Delegate, &session, session.as_bytes());
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(b"steer args"),
+            vec![ApprovalCapability {
+                action: PermissionAction::Delegate,
+                operation: PreparedCapabilityOperation::new("steer_subagent:steer")
+                    .expect("steer operation"),
+            }],
+            vec![resource],
+            Sha256Digest::of_bytes(b"context"),
+        )
+        .expect("prepared steer operation");
+        let decision = PermissionPipeline::default().decide_operation(
+            &policy(vec![rule(
+                "deny-session-tools",
+                PermissionAction::Delegate,
+                "*",
+                PermissionEffect::Deny,
+            )]),
+            &operation,
+            &[session],
+            std::path::Path::new("/workspace"),
+        );
+        assert_eq!(
+            PermissionPipeline::action_for_tool("steer_subagent").expect("steer action"),
+            PermissionAction::Delegate
+        );
+        assert_eq!(decision.effect, PermissionEffect::Deny);
     }
 
     #[test]

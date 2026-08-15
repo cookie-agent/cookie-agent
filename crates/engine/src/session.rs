@@ -223,8 +223,13 @@ impl SessionStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let current = self.get(id)?;
-        let first_user_message =
-            !current.log.is_persisted() && matches!(event, EventPayload::UserInputSubmitted { .. });
+        let first_user_message = !current.log.is_persisted()
+            && matches!(
+                event,
+                EventPayload::UserInputAdmitted { .. }
+                    | EventPayload::UserInputSubmitted { .. }
+                    | EventPayload::DelegatedContextSeeded { .. }
+            );
         let envelope = current.log.append(run, event)?;
         let rebuilt = projection(current.log.clone())?;
         if first_user_message {

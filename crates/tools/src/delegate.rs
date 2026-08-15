@@ -25,6 +25,9 @@ struct DelegateArgs {
     agent_type: AgentId,
     #[serde(default)]
     background: bool,
+    resume_session_id: Option<SessionId>,
+    #[serde(default)]
+    inherit_context: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -45,6 +48,13 @@ struct CancelArgs {
     reason: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SteerArgs {
+    session_id: SessionId,
+    message: String,
+}
+
 enum DelegateExecutor {
     Invoke {
         engine: Engine,
@@ -58,6 +68,10 @@ enum DelegateExecutor {
     Cancel {
         engine: Engine,
         args: CancelArgs,
+    },
+    Steer {
+        engine: Engine,
+        args: SteerArgs,
     },
 }
 
@@ -104,6 +118,36 @@ impl DelegateToolProvider {
             policy_labels: vec![agent_type.to_string()],
         })
     }
+
+    fn session_operation(
+        &self,
+        ctx: &ToolPreparationContext,
+        name: &str,
+        args: &impl Serialize,
+        operation_name: &str,
+        session_id: SessionId,
+    ) -> Result<PreparedToolParts, ToolError> {
+        let session = session_id.to_string();
+        let resource = prepared_resource(
+            PermissionAction::Delegate,
+            "session",
+            session.as_bytes(),
+            session.as_bytes(),
+            PreparedBindingLifetime::RestartStable,
+            ApprovalResourceSource::PrimaryOperation,
+        )?;
+        let cwd = fs_cap::cwd_context_bytes(&ctx.cwd)?;
+        Ok(PreparedToolParts {
+            operation: prepared_operation(
+                name,
+                args,
+                vec![(PermissionAction::Delegate, operation_name)],
+                vec![resource],
+                &cwd,
+            )?,
+            policy_labels: vec![session],
+        })
+    }
 }
 
 struct PreparedToolParts {
@@ -128,7 +172,9 @@ impl ToolProvider for DelegateToolProvider {
                             "description":{"type":"string"},
                             "prompt":{"type":"string"},
                             "agent_type":{"type":"string","enum":targets},
-                            "background":{"type":"boolean","default":false}
+                            "background":{"type":"boolean","default":false},
+                            "resume_session_id":{"type":"string"},
+                            "inherit_context":{"type":"boolean","default":false}
                         },
                         "required":["description","prompt","agent_type"]
                     }),
@@ -145,6 +191,19 @@ impl ToolProvider for DelegateToolProvider {
                             "limit":{"type":"integer","minimum":1,"maximum":4_294_967_295_u64,"default":2000}
                         },
                         "required":["session_id"]
+                    }),
+                },
+                ToolSpec {
+                    name: "steer_subagent".into(),
+                    description:
+                        "Send a user message to an owned running or queued subagent session.".into(),
+                    parameters: serde_json::json!({
+                        "type":"object","additionalProperties":false,
+                        "properties":{
+                            "session_id":{"type":"string"},
+                            "message":{"type":"string","minLength":1}
+                        },
+                        "required":["session_id","message"]
                     }),
                 },
                 ToolSpec {
@@ -171,6 +230,7 @@ impl ToolProvider for DelegateToolProvider {
         match name {
             "delegate_subagent" => Ok(parse_delegate(arguments)?.agent_type.to_string()),
             "get_subagent_result" => Ok(parse_result(arguments)?.session_id.to_string()),
+            "steer_subagent" => Ok(parse_steer(arguments)?.session_id.to_string()),
             "cancel_subagent" => Ok(parse_cancel(arguments)?.session_id.to_string()),
             _ => Err(ToolError::execution(
                 "delegate provider received another tool",
@@ -200,6 +260,11 @@ impl ToolProvider for DelegateToolProvider {
                 if args.description.trim().is_empty() || args.prompt.trim().is_empty() {
                     return Err(ToolError::execution(
                         "description and prompt must not be empty",
+                    ));
+                }
+                if args.resume_session_id.is_some() && args.inherit_context {
+                    return Err(ToolError::execution(
+                        "resume_session_id and inherit_context cannot both be set",
                     ));
                 }
                 if !self.targets(ctx.session)?.contains(&args.agent_type) {
@@ -251,6 +316,29 @@ impl ToolProvider for DelegateToolProvider {
                 };
                 (parts, normalized, executor)
             }
+            "steer_subagent" => {
+                let args = parse_steer(&call.arguments)?;
+                if args.message.trim().is_empty() {
+                    return Err(ToolError::execution("message must not be empty"));
+                }
+                self.engine
+                    .subagent_agent_type(ctx.session, args.session_id)
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                let parts = self.session_operation(
+                    &ctx,
+                    "steer_subagent",
+                    &args,
+                    "steer",
+                    args.session_id,
+                )?;
+                let normalized = serde_json::to_value(&args)
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                let executor = DelegateExecutor::Steer {
+                    engine: self.engine.clone(),
+                    args,
+                };
+                (parts, normalized, executor)
+            }
             _ => {
                 return Err(ToolError::execution(
                     "delegate provider received another tool",
@@ -293,6 +381,8 @@ impl PreparedExecutor for DelegateExecutor {
                         description: args.description,
                         prompt: args.prompt,
                         background,
+                        resume_session_id: args.resume_session_id,
+                        inherit_context: args.inherit_context,
                     })
                     .await
                     .map_err(|error| ToolError::execution(error.to_string()))?;
@@ -327,13 +417,23 @@ impl PreparedExecutor for DelegateExecutor {
                 .cancel_subagent(context.session, args.session_id, args.reason)
                 .await
                 .map_err(|error| ToolError::execution(error.to_string())),
+            Self::Steer { engine, args } => engine
+                .steer_subagent(context.session, args.session_id, args.message)
+                .await
+                .map_err(|error| ToolError::execution(error.to_string())),
         }
     }
 }
 
 fn parse_delegate(arguments: &serde_json::Value) -> Result<DelegateArgs, ToolError> {
-    serde_json::from_value(arguments.clone())
-        .map_err(|error| ToolError::execution(error.to_string()))
+    let args: DelegateArgs = serde_json::from_value(arguments.clone())
+        .map_err(|error| ToolError::execution(error.to_string()))?;
+    if args.resume_session_id.is_some() && args.inherit_context {
+        return Err(ToolError::execution(
+            "resume_session_id and inherit_context cannot both be set",
+        ));
+    }
+    Ok(args)
 }
 
 fn parse_result(arguments: &serde_json::Value) -> Result<GetResultArgs, ToolError> {
@@ -346,11 +446,16 @@ fn parse_cancel(arguments: &serde_json::Value) -> Result<CancelArgs, ToolError> 
         .map_err(|error| ToolError::execution(error.to_string()))
 }
 
+fn parse_steer(arguments: &serde_json::Value) -> Result<SteerArgs, ToolError> {
+    serde_json::from_value(arguments.clone())
+        .map_err(|error| ToolError::execution(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use cookie_agent_engine::ToolError;
 
-    use super::parse_delegate;
+    use super::{parse_delegate, parse_steer};
 
     #[test]
     fn delegate_arguments_use_agent_as_primary_and_description_as_display() {
@@ -362,9 +467,56 @@ mod tests {
         let args = parse_delegate(&arguments).expect("delegate arguments");
         assert_eq!(args.agent_type.as_str(), "reviewer");
         assert_eq!(args.description, "Review API");
+        assert_eq!(args.resume_session_id, None);
+        assert!(!args.inherit_context);
         assert!(matches!(
             parse_delegate(&serde_json::json!({"task":"review","agent":"reviewer"})),
             Err(ToolError::Failed(_))
         ));
+    }
+
+    #[test]
+    fn delegate_resume_and_context_arguments_are_strict_and_incompatible() {
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
+        let resumed = parse_delegate(&serde_json::json!({
+            "description":"Continue review",
+            "prompt":"Review the latest changes.",
+            "agent_type":"reviewer",
+            "resume_session_id":session_id
+        }))
+        .expect("resume arguments");
+        assert_eq!(resumed.resume_session_id, Some(session_id));
+        assert!(!resumed.inherit_context);
+        let error = parse_delegate(&serde_json::json!({
+            "description":"Invalid delegation",
+            "prompt":"Do not run.",
+            "agent_type":"reviewer",
+            "resume_session_id":session_id,
+            "inherit_context":true
+        }))
+        .expect_err("resume and inheritance are incompatible");
+        let text = error.to_string();
+        assert!(text.contains("resume_session_id"));
+        assert!(text.contains("inherit_context"));
+    }
+
+    #[test]
+    fn steer_arguments_are_strict_and_session_addressed() {
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
+        let args = parse_steer(&serde_json::json!({
+            "session_id":session_id,
+            "message":"revise the report"
+        }))
+        .expect("steer arguments");
+        assert_eq!(args.session_id, session_id);
+        assert_eq!(args.message, "revise the report");
+        assert!(
+            parse_steer(&serde_json::json!({
+                "session_id":session_id,
+                "message":"revise",
+                "unknown":true
+            }))
+            .is_err()
+        );
     }
 }

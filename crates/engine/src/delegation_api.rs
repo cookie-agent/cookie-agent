@@ -17,6 +17,8 @@ pub struct DelegateInvocation {
     pub description: String,
     pub prompt: String,
     pub background: bool,
+    pub resume_session_id: Option<SessionId>,
+    pub inherit_context: bool,
 }
 
 /// Stable child identity returned to the delegate tool provider.
