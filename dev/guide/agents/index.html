@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://cookie-agent.github.io/cookie-agent/dev/guide/agents/">
       
       
-        <link rel="prev" href="../permissions/">
+        <link rel="prev" href="../mcp/">
       
       
         <link rel="next" href="../configuration/">
@@ -514,6 +514,29 @@
   
   <span class="md-ellipsis">
     Permissions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    MCP servers
     
   </span>
   
@@ -1037,8 +1060,8 @@
 
 <h1 id="agents">Agents<a class="headerlink" href="#agents" title="Permanent link">&para;</a></h1>
 <p>Agents are Markdown documents with YAML frontmatter. The filename is the agent
-ID. An agent defines the system prompt, the tools it may use, its permission
-rules, its model fallback chain, and its runtime limits. The engine also runs
+ID. An agent defines the system prompt, permission-controlled tool access, its
+model fallback chain, and its runtime limits. The engine also runs
 four built-in agents that are part of the harness itself.</p>
 <h2 id="agent-document-structure">Agent document structure<a class="headerlink" href="#agent-document-structure" title="Permanent link">&para;</a></h2>
 <p>Each file has schema-4 YAML frontmatter and a nonempty Markdown body:</p>
@@ -1047,13 +1070,13 @@ four built-in agents that are part of the harness itself.</p>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>description: Reviews changes for correctness
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>mode: subagent
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>enabled: true
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>model_fallback:
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: &quot;openai/gpt-5&quot;, variant: null }
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>limits:
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>  timeout_ms: 30000
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  max_input_tokens: 16384
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>  max_output_tokens: 2048
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>tools: [read, bash]
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>tools: [read, bash]
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>model_fallback:
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: &quot;openai/gpt-5&quot;, variant: null }
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>limits:
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  timeout_ms: 30000
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>  max_input_tokens: 16384
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>  max_output_tokens: 2048
 <a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>permissions:
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>  read: allow
 <a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>  write: deny
@@ -1110,12 +1133,6 @@ four built-in agents that are part of the harness itself.</p>
 <td>table</td>
 <td>defaults below</td>
 <td>Timeouts and token bounds.</td>
-</tr>
-<tr>
-<td><code>tools</code></td>
-<td>array of strings</td>
-<td><em>(required)</em></td>
-<td>Tool allowlist: <code>read</code>, <code>write</code>, <code>edit</code>, <code>bash</code> (plus the implicit subagent tools controlled by the <code>delegate</code> permission). At most 256 entries, no duplicates.</td>
 </tr>
 <tr>
 <td><code>permissions</code></td>
@@ -1191,9 +1208,8 @@ authored document with one of those IDs must use <code>mode: internal</code> and
 the built-in document through normal layering. The ID <code>default</code> is reserved for
 the engine-supplied fallback agent and cannot be authored at all.</p>
 <p>If no authored agent is runnable as a root, the engine synthesizes the built-in
-<code>default</code> coding agent bound to the first available model selection. Its prompt,
-tools (<code>read</code>, <code>write</code>, <code>edit</code>, <code>bash</code>), and the standard read/write/bash
-permission map are fixed by the engine.</p>
+<code>default</code> coding agent bound to the first available model selection. Its prompt
+and standard read/write/bash permission map are fixed by the engine.</p>
 <h2 id="internal-agents">Internal agents<a class="headerlink" href="#internal-agents" title="Permanent link">&para;</a></h2>
 <p>The harness runs three internal agents. They are stateless, tool-less model
 calls with a strict text-only output contract, and they emit their own event
@@ -1254,10 +1270,9 @@ keeps its own selection:</p>
 <a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>  timeout_ms: 30000
 <a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>  max_input_tokens: 16384
 <a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>  max_output_tokens: 2048
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>tools: []
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="gu">permissions: {}</span>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="gu">---</span>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>Summarize conversation context faithfully within the supplied bounds. Return summary text only.
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="gu">permissions: {}</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="gu">---</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>Summarize conversation context faithfully within the supplied bounds. Return summary text only.
 </code></pre></div>
 <h2 id="selecting-an-agent">Selecting an agent<a class="headerlink" href="#selecting-an-agent" title="Permanent link">&para;</a></h2>
 <p>In the TUI, <code>/new</code> chooses the next root-run agent from the agents that are

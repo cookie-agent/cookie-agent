@@ -531,6 +531,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    MCP servers
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../agents/" class="md-nav__link">
         
   
@@ -1017,7 +1040,7 @@
 </thead>
 <tbody>
 <tr>
-<td>Runtime and providers</td>
+<td>Runtime, providers, and MCP servers</td>
 <td><code>~/.config/cookie_agent/config.toml</code> and <code>&lt;cwd&gt;/.cookie-agent/config.toml</code></td>
 <td>10</td>
 </tr>
@@ -1044,7 +1067,7 @@ key-by-key reference, see <a href="../../reference/configuration/">Configuration
 <p>There is no upward workspace search: configuration is loaded from the exact
 working directory the daemon started in. The user layer and the workspace layer
 are both optional. Workspace settings replace the corresponding user settings. A
-same-ID workspace provider or agent replaces the complete user definition;
+same-ID workspace provider, MCP server, or agent replaces the complete user definition;
 nested fields never merge. Unknown fields, wrong schema versions, and malformed
 values are rejected.</p>
 <h2 id="minimum-runtime-configuration">Minimum runtime configuration<a class="headerlink" href="#minimum-runtime-configuration" title="Permanent link">&para;</a></h2>
@@ -1100,6 +1123,8 @@ want to change:</p>
   limit. Foreground and nested delegations bypass the queue.</li>
 <li>Provider definitions are validated per provider ID (see
   <a href="../providers/">Providers</a>).</li>
+<li>MCP servers require exactly one stdio command or Streamable HTTP URL (see
+  <a href="../mcp/">MCP servers</a>).</li>
 </ul>
 <h2 id="environment-interpolation">Environment interpolation<a class="headerlink" href="#environment-interpolation" title="Permanent link">&para;</a></h2>
 <p><code>${env:NAME}</code> is a single-pass interpolation available only in approved provider
@@ -1128,16 +1153,15 @@ YAML frontmatter and a nonempty Markdown body used as the system prompt:</p>
 <a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>  timeout_ms: 30000
 <a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>  max_input_tokens: 16384
 <a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>  max_output_tokens: 2048
-<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>tools: [read, bash]
-<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>permissions:
-<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>  read: allow
-<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>  write: deny
-<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>  bash:
-<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>    &quot;git diff*&quot;: allow
-<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>    &quot;*&quot;: ask
-<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="gu">  delegate: deny</span>
-<a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a><span class="gu">---</span>
-<a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>Review the requested change and report concrete findings.
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>permissions:
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>  read: allow
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>  write: deny
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>  bash:
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>    &quot;git diff*&quot;: allow
+<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>    &quot;*&quot;: ask
+<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="gu">  delegate: deny</span>
+<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="gu">---</span>
+<a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>Review the requested change and report concrete findings.
 </code></pre></div>
 <p>Modes are <code>primary</code>, <code>subagent</code>, <code>all</code>, and <code>internal</code>. Internal agents are
 engine-only and cannot be selected as roots or delegation targets. The reserved

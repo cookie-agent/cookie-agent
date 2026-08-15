@@ -526,6 +526,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    MCP servers
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/agents/" class="md-nav__link">
         
   
@@ -789,6 +812,15 @@
   <a href="#delegation" class="md-nav__link">
     <span class="md-ellipsis">
       [delegation]
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mcpserversname" class="md-nav__link">
+    <span class="md-ellipsis">
+      [mcp.servers.&lt;name&gt;]
     </span>
   </a>
   
@@ -1083,6 +1115,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#mcpserversname" class="md-nav__link">
+    <span class="md-ellipsis">
+      [mcp.servers.&lt;name&gt;]
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#providers" class="md-nav__link">
     <span class="md-ellipsis">
       [providers]
@@ -1268,6 +1309,12 @@ the load completes.</p>
 <td>empty</td>
 <td>Provider definitions</td>
 </tr>
+<tr>
+<td><code>mcp</code></td>
+<td>table</td>
+<td>empty</td>
+<td>MCP tool server definitions</td>
+</tr>
 </tbody>
 </table>
 <p>Minimal valid file:</p>
@@ -1445,6 +1492,76 @@ truncated or replaced with artifact references.</p>
 <td>integer</td>
 <td><code>4</code></td>
 <td>Maximum concurrently running root-level background delegations. Excess calls queue FIFO, up to <code>4 × max_concurrency</code>; a full queue rejects admission. Foreground and nested delegations bypass this queue. A value of <code>0</code> is rejected.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="mcpserversname"><code>[mcp.servers.&lt;name&gt;]</code><a class="headerlink" href="#mcpserversname" title="Permanent link">&para;</a></h2>
+<p>MCP server definitions are layered by server name. A workspace definition
+replaces the same user-level server and requires hash-pinned approval before it
+can connect. See the <a href="../../guide/mcp/">MCP guide</a> for trust and naming behavior.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>command</code></td>
+<td>string</td>
+<td><em>(none)</em></td>
+<td>Stdio server executable. Exactly one of <code>command</code> or <code>url</code> is required.</td>
+</tr>
+<tr>
+<td><code>args</code></td>
+<td>array of strings</td>
+<td>empty</td>
+<td>Command arguments; valid only with <code>command</code>.</td>
+</tr>
+<tr>
+<td><code>env</code></td>
+<td>map of strings</td>
+<td>empty</td>
+<td>Command environment additions; valid only with <code>command</code>.</td>
+</tr>
+<tr>
+<td><code>cwd</code></td>
+<td>string</td>
+<td><em>(none)</em></td>
+<td>Child working directory; valid only with <code>command</code>.</td>
+</tr>
+<tr>
+<td><code>url</code></td>
+<td>string</td>
+<td><em>(none)</em></td>
+<td>Absolute HTTP or HTTPS Streamable HTTP endpoint. Exactly one of <code>url</code> or <code>command</code> is required.</td>
+</tr>
+<tr>
+<td><code>headers</code></td>
+<td>map of strings</td>
+<td>empty</td>
+<td>Static request headers; valid only with <code>url</code>.</td>
+</tr>
+<tr>
+<td><code>enabled</code></td>
+<td>boolean</td>
+<td><code>true</code></td>
+<td>Whether the server may connect.</td>
+</tr>
+<tr>
+<td><code>lazy</code></td>
+<td>boolean</td>
+<td><code>false</code></td>
+<td>Defer connection and tool listing until first named use.</td>
+</tr>
+<tr>
+<td><code>timeout_ms</code></td>
+<td>integer</td>
+<td><code>30000</code></td>
+<td>Positive timeout for connect, list, and call operations.</td>
 </tr>
 </tbody>
 </table>

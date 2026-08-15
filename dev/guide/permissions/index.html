@@ -16,7 +16,7 @@
         <link rel="prev" href="../sessions/">
       
       
-        <link rel="next" href="../agents/">
+        <link rel="next" href="../mcp/">
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
@@ -567,9 +567,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#tools-and-delegation" class="md-nav__link">
+  <a href="#tool-availability-and-delegation" class="md-nav__link">
     <span class="md-ellipsis">
-      Tools and delegation
+      Tool availability and delegation
     </span>
   </a>
   
@@ -588,6 +588,29 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    MCP servers
+    
+  </span>
+  
+
+      </a>
     </li>
   
 
@@ -915,9 +938,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#tools-and-delegation" class="md-nav__link">
+  <a href="#tool-availability-and-delegation" class="md-nav__link">
     <span class="md-ellipsis">
-      Tools and delegation
+      Tool availability and delegation
     </span>
   </a>
   
@@ -953,7 +976,7 @@
 
 <h1 id="permissions">Permissions<a class="headerlink" href="#permissions" title="Permanent link">&para;</a></h1>
 <p>Agent documents define an ordered permission map for <code>read</code>, <code>write</code>, <code>bash</code>,
-and <code>delegate</code>. Each action is either one bare effect or a resource-pattern map:</p>
+<code>delegate</code>, and <code>mcp</code>. Each action is either one bare effect or a resource-pattern map:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">permissions</span><span class="p">:</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">read</span><span class="p">:</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="s">&quot;*&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">allow</span>
@@ -965,6 +988,9 @@ and <code>delegate</code>. Each action is either one bare effect or a resource-p
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">  </span><span class="nt">delegate</span><span class="p">:</span>
 <a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span><span class="s">&quot;reviewer&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">allow</span>
 <a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span><span class="s">&quot;*&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">deny</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">  </span><span class="nt">mcp</span><span class="p">:</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">    </span><span class="s">&quot;github_*&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">allow</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">    </span><span class="nt">github_delete_repo</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">deny</span>
 </code></pre></div>
 <p>Effects are <code>allow</code>, <code>ask</code>, and <code>deny</code>. A bare effect is equivalent to mapping
 <code>"*"</code> to that effect. For matching patterns, more literal characters win, then
@@ -1006,11 +1032,19 @@ ask.</p>
 <td><code>delegate</code></td>
 <td>None (permission-name-only check)</td>
 </tr>
+<tr>
+<td><code>&lt;server&gt;_&lt;tool&gt;</code></td>
+<td><code>mcp</code></td>
+<td>The complete generated MCP tool name</td>
+</tr>
 </tbody>
 </table>
 <p>The <code>edit</code> tool uses the <code>write</code> permission action. Bash is not parsed into file
 operations: <code>cat .env</code> is controlled by <code>bash</code>, not <code>read</code>, and a pattern such
 as <code>git *</code> also matches a longer command beginning with <code>git</code>.</p>
+<p>MCP checks are always scoped. A rule such as <code>"github_*": allow</code> covers every
+tool from that generated server prefix, while a more-specific deny can override
+one tool. An unmatched MCP tool asks.</p>
 <p>When a tool has no resource label, only the permission's bare effect or <code>"*"</code>
 rule applies. Specific patterns are inapplicable rather than matching or
 denying. If neither a bare effect nor <code>"*"</code> exists, the normal unmatched result
@@ -1021,10 +1055,14 @@ such as <code>/etc/*</code> control outside-workspace paths. Permission patterns
 expand environment variables.</p>
 <p>Generic read allows do not override the built-in ask behavior for <code>.env</code> and
 <code>.env.*</code>; an exact or more-specific authored rule decides.</p>
-<h2 id="tools-and-delegation">Tools and delegation<a class="headerlink" href="#tools-and-delegation" title="Permanent link">&para;</a></h2>
-<p>The agent's <code>tools</code> list is a separate allowlist, and both the tool allowlist
-and permission rules must pass. A bare deny hides a tool. A mapped action hides
-it only when <code>"*": deny</code> exists with no non-deny exceptions.</p>
+<h2 id="tool-availability-and-delegation">Tool availability and delegation<a class="headerlink" href="#tool-availability-and-delegation" title="Permanent link">&para;</a></h2>
+<p>The agent's <code>tools</code> list remains a separate allowlist for the built-in tools,
+and both the allowlist and permission rules must pass for those. MCP tool
+availability is permission-driven instead: no <code>mcp</code> action hides them, as does
+a bare deny or <code>"*": deny</code> with no non-deny exception. Any non-fully-denied
+<code>mcp</code> entry exposes the action's tools; resource patterns still decide
+individual calls. Delegation is likewise absent unless the authored permission
+map names eligible targets.</p>
 <p>Delegation targets come from the keys in the <code>delegate</code> permission map and must
 resolve to enabled <code>subagent</code> or <code>all</code> agents. This action controls
 <code>delegate_subagent</code>, <code>get_subagent_result</code>, <code>steer_subagent</code>, and
