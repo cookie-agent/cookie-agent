@@ -934,7 +934,8 @@
 
 
 <h1 id="event-reference">Event Reference<a class="headerlink" href="#event-reference" title="Permanent link">&para;</a></h1>
-<p>Session persistence and subscriptions use event schema 15. Every stored event
+<p>Session persistence and subscriptions write event schema 17 and reopen schemas
+15-17. Every stored event
 contains <code>event_schema_version</code>, <code>session_id</code>, required nullable <code>run_id</code>, a
 positive physical <code>seq</code>, <code>timestamp</code>, and a tagged <code>payload</code>. Events requiring a
 run ID reject a null envelope value.</p>
@@ -949,7 +950,7 @@ run ID reject a null envelope value.</p>
 <tbody>
 <tr>
 <td>Session</td>
-<td><code>session_created</code>, <code>session_reverted</code>, <code>session_title_committed</code></td>
+<td><code>session_created</code>, <code>session_reverted</code>, <code>session_title_committed</code>, <code>delegated_context_seeded</code></td>
 </tr>
 <tr>
 <td>User input</td>
@@ -965,7 +966,7 @@ run ID reject a null envelope value.</p>
 </tr>
 <tr>
 <td>Tools</td>
-<td><code>tool_call_started</code>, <code>tool_call_progress</code>, <code>tool_call_terminated</code>, <code>tool_output_elided</code>, <code>tool_stdin_submitted</code>, <code>tool_call_linked</code>, <code>delegate_queued</code>, <code>delegate_finished</code></td>
+<td><code>tool_call_started</code>, <code>tool_call_progress</code>, <code>tool_call_terminated</code>, <code>tool_output_elided</code>, <code>tool_stdin_submitted</code>, <code>tool_call_linked</code>, <code>delegate_queued</code>, <code>delegate_finished</code>, <code>delegate_finished_v2</code></td>
 </tr>
 <tr>
 <td>Approvals</td>
@@ -988,10 +989,29 @@ written to the parent run and carries <code>{ session_id, status, preview,
 total_lines }</code>; <code>preview</code> is limited to the first 20 lines and 2 KiB. It becomes
 model-visible at the next turn boundary, while full output remains available
 through <code>get_subagent_result</code>.</p>
+<p>Schema 16 adds <code>delegated_context_seeded</code> and <code>delegate_finished_v2</code>.
+<code>delegated_context_seeded</code> is a runless creation event containing the bounded,
+text-only user/assistant turns copied by <code>inherit_context</code>; it must precede the
+child's first run and deterministically rebuilds the same initial model history
+after restart. <code>delegate_finished_v2</code> adds the delegation <code>invocation_id</code> to the
+same completion payload so repeated resumes of one child each receive exactly
+one teaser. Current engines emit the V2 completion form.</p>
+<p><code>user_input_admitted</code> normally belongs to an active run. A steer accepted for a
+queued delegated child is runless and requires that the session have no active
+run. It is persisted immediately and enters the next run's pending-input FIFO,
+including when a terminal child is queued for resume. A queued cancellation
+appends matching runless <code>user_input_recalled</code> events so those inputs cannot leak
+into a later resume. Promotion appends the ordinary run-owned
+<code>user_input_submitted</code> event, so transcript rendering and model history use the
+same path as interactive run steering.</p>
+<p>Running-resume rollback appends <code>user_input_recalled_v2</code> with the exact
+<code>user_input_seq</code> of its admission. Replay removes that specific pending input
+and preserves direct steers admitted after it. Legacy <code>user_input_recalled</code>
+continues to recall the newest pending input.</p>
 <h2 id="subscriptions">Subscriptions<a class="headerlink" href="#subscriptions" title="Permanent link">&para;</a></h2>
 <p><code>events.subscribe</code> returns all retained events after the optional cursor and
 starts <code>events.subscription</code> notifications. A notification is tagged as either:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;event&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;event_schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">15</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;event&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;event_schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">17</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
 </code></pre></div>
 <p>or a gap indicating that the subscriber must rebuild its disposable projection:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>

@@ -1009,8 +1009,10 @@ and permission rules must pass. A bare deny hides a tool. A mapped action hides
 it only when <code>"*": deny</code> exists with no non-deny exceptions.</p>
 <p>Delegation targets come from the keys in the <code>delegate</code> permission map and must
 resolve to enabled <code>subagent</code> or <code>all</code> agents. This action controls
-<code>delegate_subagent</code>, <code>get_subagent_result</code>, and <code>cancel_subagent</code>; result and
-cancel operations retain the child agent ID as their permission resource.
+<code>delegate_subagent</code>, <code>get_subagent_result</code>, <code>steer_subagent</code>, and
+<code>cancel_subagent</code>. Result and cancel operations retain the child agent ID as
+their permission resource. Steer uses the owned child session ID as its resource
+label and the operation verb <code>steer</code>.
 Runtime <code>delegation.max_depth</code> defaults to 3 and <code>max_concurrency</code> defaults to 4.</p>
 <p><code>delegate_subagent</code> replaces the former <code>delegate</code> tool name without an alias.
 Old tool calls and prepared-operation grants therefore fail closed. The

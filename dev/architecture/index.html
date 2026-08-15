@@ -1134,9 +1134,9 @@
 <p>cookie agent is a subagent-first coding harness built as a Rust workspace of nine
 crates. A local daemon owns provider connections, sessions, model execution,
 permissions, and persistence; a terminal UI communicates with it over a versioned
-JSON-RPC WebSocket protocol. The project is current-only: each durable surface
-accepts exactly one schema version and there are no migration readers or legacy
-protocol paths.</p>
+JSON-RPC WebSocket protocol. Writers emit only the current schema for each
+durable surface. Event logs reopen schemas 15-17 and delegation journals reopen
+schemas 11-14; other surfaces remain current-only.</p>
 <h2 id="process-model">Process model<a class="headerlink" href="#process-model" title="Permanent link">&para;</a></h2>
 <p>The <code>cookie</code> binary (<code>crates/cookie_agent</code>) is a thin composition root. Its CLI has
 four subcommands plus a default mode:</p>
@@ -1381,10 +1381,19 @@ canonical working directory:</p>
 <a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    cwd                            # canonical project path
 <a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    sessions/&lt;session-id&gt;/         # events.jsonl + meta.json cache
 <a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    artifacts/                     # content-addressed tool output
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    delegations.jsonl              # delegation journal (schema 11)
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    delegations.jsonl              # delegation journal (writes 14; reads 11-14)
 <a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    grant-invalidations.jsonl      # tree-grant invalidation journal
 <a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    runtime-revisions-v8.jsonl     # runtime revision index
 </code></pre></div>
+<p>Schema 12 is readable for unambiguous records. Its unshipped intermediate
+encoding used <code>delegation_run_started</code> for both a newly started resumed run and
+an attachment to an existing run; schema-12 resume/start pairs are rejected
+because their meaning cannot be recovered soundly. The error directs operators
+to move the affected project's <code>delegations.jsonl</code> aside and restart. This
+discards in-flight delegation recovery state AND historical child resumability:
+child session event logs remain intact, but without the journal those sessions
+no longer satisfy the journal-backed ownership checks required for
+<code>resume_session_id</code>.</p>
 <p>Project model-snapshot manifests live inside the workspace at
 <code>.cookie-agent/model-snapshots/</code> and are the only per-project engine state the
 workspace owns.</p>

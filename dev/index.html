@@ -930,10 +930,10 @@
 <p>cookie agent is a subagent-first coding harness. A local daemon owns provider
 connections, sessions, model execution, permissions, and persistence; the
 terminal UI communicates with it over the versioned JSON-RPC protocol.</p>
-<p>The project accepts only its current schemas. There are no migration readers or
-legacy protocol paths. <a href="architecture/">Architecture</a> describes how the pieces
-fit together; this site turns that implementation into task-oriented guides and
-reference material.</p>
+<p>Writers use current schemas. Readers reopen event schemas 15-17 and delegation
+journal schemas 11-14; other persisted and wire surfaces remain current-only.
+<a href="architecture/">Architecture</a> describes how the pieces fit together; this site
+turns that implementation into task-oriented guides and reference material.</p>
 <h2 id="quickstart">Quickstart<a class="headerlink" href="#quickstart" title="Permanent link">&para;</a></h2>
 <p>You need Rust 1.88 or newer and Python 3 for the documentation tooling.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/cookie-agent/cookie-agent.git
