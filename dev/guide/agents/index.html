@@ -1064,28 +1064,27 @@ ID. An agent defines the system prompt, permission-controlled tool access, its
 model fallback chain, and its runtime limits. The engine also runs
 four built-in agents that are part of the harness itself.</p>
 <h2 id="agent-document-structure">Agent document structure<a class="headerlink" href="#agent-document-structure" title="Permanent link">&para;</a></h2>
-<p>Each file has schema-4 YAML frontmatter and a nonempty Markdown body:</p>
+<p>Each file has schema-5 YAML frontmatter and a nonempty Markdown body:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>---
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>schema: 4
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>schema: 5
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>description: Reviews changes for correctness
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>mode: subagent
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>enabled: true
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>tools: [read, bash]
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>model_fallback:
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: &quot;openai/gpt-5&quot;, variant: null }
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>limits:
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  timeout_ms: 30000
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>  max_input_tokens: 16384
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>  max_output_tokens: 2048
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>permissions:
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>  read: allow
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>  write: deny
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>  bash:
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    &quot;git diff*&quot;: allow
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>    &quot;*&quot;: ask
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="gu">  delegate: deny</span>
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="gu">---</span>
-<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>Review the requested change and report concrete findings.
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>model_fallback:
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: &quot;openai/gpt-5&quot;, variant: null }
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>limits:
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>  timeout_ms: 30000
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  max_input_tokens: 16384
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>  max_output_tokens: 2048
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>permissions:
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>  read: allow
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>  write: deny
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>  bash:
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    &quot;git diff*&quot;: allow
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    &quot;*&quot;: ask
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="gu">  delegate: deny</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="gu">---</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>Review the requested change and report concrete findings.
 </code></pre></div>
 <h3 id="frontmatter-keys">Frontmatter keys<a class="headerlink" href="#frontmatter-keys" title="Permanent link">&para;</a></h3>
 <table>
@@ -1102,7 +1101,7 @@ four built-in agents that are part of the harness itself.</p>
 <td><code>schema</code></td>
 <td>integer</td>
 <td><em>(required)</em></td>
-<td>Must be exactly <code>4</code>.</td>
+<td>Must be exactly <code>5</code>.</td>
 </tr>
 <tr>
 <td><code>description</code></td>
@@ -1137,13 +1136,23 @@ four built-in agents that are part of the harness itself.</p>
 <tr>
 <td><code>permissions</code></td>
 <td>table</td>
-<td><em>(required)</em></td>
+<td><code>{}</code></td>
 <td>Ordered action permission map; see <a href="../permissions/">Permissions</a>. At most 256 rules.</td>
 </tr>
 </tbody>
 </table>
 <p><code>limits</code> defaults to <code>timeout_ms = 30000</code>, <code>max_input_tokens = 16384</code>,
 <code>max_output_tokens = 2048</code>. Every limit must be greater than zero.</p>
+<p>Tool visibility is derived only from <code>permissions</code>. With no <code>permissions</code> field,
+the <code>read</code>, <code>write</code>, <code>edit</code>, and <code>bash</code> tools are visible and unmatched calls ask
+by default. <code>edit</code> uses the <code>write</code> action. Delegation tools require a <code>delegate</code>
+map naming at least one eligible target, and MCP tools require a non-fully-denied
+<code>mcp</code> entry. A bare action deny hides that action's tools. A mapped action with
+<code>"*": deny</code> also hides them unless it contains a more specific <code>allow</code> or <code>ask</code>
+exception.</p>
+<p>Schema 5 removes the former <code>tools</code> field. Documents that still declare it fail
+with an error naming <code>tools</code> and directing the author to <code>permissions</code>; remove
+the field and express tool visibility and call policy in the permission map.</p>
 <p><code>model_fallback</code> entries are <code>{ model = "&lt;provider&gt;/&lt;model-id&gt;", variant = &lt;name|null|"base"&gt; }</code>.
 The <code>variant</code> field is optional: omitted (<code>null</code>) selects the model's configured
 default variant, the string <code>"base"</code> selects the base variant explicitly, and any
@@ -1251,7 +1260,7 @@ conversation it is asked to summarize.</p>
 <p>The title agent runs only for root sessions that still need an automatic title.
 Delegated sessions already have the <code>delegate_subagent</code> description as their
 title, so they never invoke the title agent.</p>
-<p>The built-in documents are replaced by authored schema-4 documents with the same
+<p>The built-in documents are replaced by authored schema-5 documents with the same
 ID, <code>mode: internal</code>, and an explicit <code>model_fallback</code>. <code>${parent_model}</code> is
 allowed only in internal agents. When an internal agent document is disabled, or
 its fallback chain yields no available model, the internal call fails safely
@@ -1260,7 +1269,7 @@ input excerpt) and an <code>internal_agent_failed</code> event is recorded.</p>
 <p>Example replacement — run compaction on a cheaper model while the primary run
 keeps its own selection:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>---
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>schema: 4
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>schema: 5
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>description: Context compaction on a fast model
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>mode: internal
 <a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>enabled: true

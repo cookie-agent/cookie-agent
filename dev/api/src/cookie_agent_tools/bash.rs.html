@@ -447,261 +447,260 @@
 <a href=#447 id=447 data-nosnippet>447</a>            document_fingerprint: Sha256Digest::of_bytes(<span class="string">b"test document"</span>),
 <a href=#448 id=448 data-nosnippet>448</a>            composed_prompt: <span class="string">"Test permission evaluation.\n"</span>.into(),
 <a href=#449 id=449 data-nosnippet>449</a>            prompt_fingerprint: Sha256Digest::of_bytes(<span class="string">b"Test permission evaluation.\n"</span>),
-<a href=#450 id=450 data-nosnippet>450</a>            tools: Vec::new(),
-<a href=#451 id=451 data-nosnippet>451</a>            permissions: rules,
-<a href=#452 id=452 data-nosnippet>452</a>            delegation: <span class="prelude-val">None</span>,
-<a href=#453 id=453 data-nosnippet>453</a>            fallback_chain: Vec::new(),
-<a href=#454 id=454 data-nosnippet>454</a>            selected_suffix_start: <span class="number">0</span>,
-<a href=#455 id=455 data-nosnippet>455</a>        }
-<a href=#456 id=456 data-nosnippet>456</a>    }
-<a href=#457 id=457 data-nosnippet>457</a>
-<a href=#458 id=458 data-nosnippet>458</a>    <span class="kw">fn </span>rule(action: PermissionAction, resource: <span class="kw-2">&amp;</span>str, effect: PermissionEffect) -&gt; PermissionRule {
-<a href=#459 id=459 data-nosnippet>459</a>        PermissionRule {
-<a href=#460 id=460 data-nosnippet>460</a>            action,
-<a href=#461 id=461 data-nosnippet>461</a>            resource: WildcardPattern::new(resource).expect(<span class="string">"wildcard"</span>),
-<a href=#462 id=462 data-nosnippet>462</a>            effect,
-<a href=#463 id=463 data-nosnippet>463</a>        }
-<a href=#464 id=464 data-nosnippet>464</a>    }
-<a href=#465 id=465 data-nosnippet>465</a>
-<a href=#466 id=466 data-nosnippet>466</a>    <span class="attr">#[tokio::test]
-<a href=#467 id=467 data-nosnippet>467</a>    </span><span class="kw">async fn </span>whole_command_label_is_one_resource() {
-<a href=#468 id=468 data-nosnippet>468</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
-<a href=#469 id=469 data-nosnippet>469</a>        <span class="kw">let </span>prepared = prepare(root.path(), <span class="string">"echo one; echo one"</span>).<span class="kw">await</span>;
-<a href=#470 id=470 data-nosnippet>470</a>        <span class="macro">assert_eq!</span>(
-<a href=#471 id=471 data-nosnippet>471</a>            prepared.policy_labels(),
-<a href=#472 id=472 data-nosnippet>472</a>            [<span class="prelude-val">Some</span>(<span class="string">"echo one; echo one"</span>.into())]
-<a href=#473 id=473 data-nosnippet>473</a>        );
-<a href=#474 id=474 data-nosnippet>474</a>        <span class="macro">assert_eq!</span>(
-<a href=#475 id=475 data-nosnippet>475</a>            prepared.operation().resources()[<span class="number">0</span>].capability,
-<a href=#476 id=476 data-nosnippet>476</a>            PermissionAction::Bash
-<a href=#477 id=477 data-nosnippet>477</a>        );
-<a href=#478 id=478 data-nosnippet>478</a>        <span class="macro">assert_eq!</span>(
-<a href=#479 id=479 data-nosnippet>479</a>            prepared.normalized_arguments(),
-<a href=#480 id=480 data-nosnippet>480</a>            <span class="kw-2">&amp;</span><span class="macro">serde_json::json!</span>({<span class="string">"command"</span>:<span class="string">"echo one; echo one"</span>})
-<a href=#481 id=481 data-nosnippet>481</a>        );
-<a href=#482 id=482 data-nosnippet>482</a>    }
-<a href=#483 id=483 data-nosnippet>483</a>
-<a href=#484 id=484 data-nosnippet>484</a>    <span class="attr">#[tokio::test]
-<a href=#485 id=485 data-nosnippet>485</a>    </span><span class="kw">async fn </span>bash_never_produces_read_or_write_resources() {
-<a href=#486 id=486 data-nosnippet>486</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
-<a href=#487 id=487 data-nosnippet>487</a>        <span class="kw">for </span>command <span class="kw">in </span>[
-<a href=#488 id=488 data-nosnippet>488</a>            <span class="string">"cat .env"</span>,
-<a href=#489 id=489 data-nosnippet>489</a>            <span class="string">"ls ordinary/"</span>,
-<a href=#490 id=490 data-nosnippet>490</a>            <span class="string">"rm -rf build/"</span>,
-<a href=#491 id=491 data-nosnippet>491</a>            <span class="string">"ls | tee out.txt"</span>,
-<a href=#492 id=492 data-nosnippet>492</a>        ] {
-<a href=#493 id=493 data-nosnippet>493</a>            <span class="kw">let </span>prepared = prepare(root.path(), command).<span class="kw">await</span>;
-<a href=#494 id=494 data-nosnippet>494</a>            <span class="macro">assert_eq!</span>(
-<a href=#495 id=495 data-nosnippet>495</a>                prepared.operation().resources()[<span class="number">0</span>].capability,
-<a href=#496 id=496 data-nosnippet>496</a>                PermissionAction::Bash
-<a href=#497 id=497 data-nosnippet>497</a>            );
-<a href=#498 id=498 data-nosnippet>498</a>        }
-<a href=#499 id=499 data-nosnippet>499</a>        <span class="kw">let </span>env = prepare(root.path(), <span class="string">"cat .env"</span>).<span class="kw">await</span>;
-<a href=#500 id=500 data-nosnippet>500</a>        <span class="macro">assert_eq!</span>(env.policy_labels(), [<span class="prelude-val">Some</span>(<span class="string">"cat .env"</span>.into())]);
-<a href=#501 id=501 data-nosnippet>501</a>        <span class="kw">let </span>decision = PermissionPipeline::default().decide_operation(
-<a href=#502 id=502 data-nosnippet>502</a>            <span class="kw-2">&amp;</span>policy(<span class="macro">vec!</span>[
-<a href=#503 id=503 data-nosnippet>503</a>                rule(PermissionAction::Bash, <span class="string">"*"</span>, PermissionEffect::Allow),
-<a href=#504 id=504 data-nosnippet>504</a>                rule(PermissionAction::Bash, <span class="string">"cat *"</span>, PermissionEffect::Deny),
-<a href=#505 id=505 data-nosnippet>505</a>            ]),
-<a href=#506 id=506 data-nosnippet>506</a>            env.operation(),
-<a href=#507 id=507 data-nosnippet>507</a>            env.policy_labels(),
-<a href=#508 id=508 data-nosnippet>508</a>            root.path(),
-<a href=#509 id=509 data-nosnippet>509</a>        );
-<a href=#510 id=510 data-nosnippet>510</a>        <span class="macro">assert_eq!</span>(decision.effect, PermissionEffect::Deny);
-<a href=#511 id=511 data-nosnippet>511</a>    }
-<a href=#512 id=512 data-nosnippet>512</a>
-<a href=#513 id=513 data-nosnippet>513</a>    <span class="attr">#[tokio::test]
-<a href=#514 id=514 data-nosnippet>514</a>    </span><span class="kw">async fn </span>compound_command_is_one_whole_command_resource() {
-<a href=#515 id=515 data-nosnippet>515</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
-<a href=#516 id=516 data-nosnippet>516</a>        <span class="kw">let </span>prepared = prepare(root.path(), <span class="string">"git status &amp;&amp; rm -rf x"</span>).<span class="kw">await</span>;
-<a href=#517 id=517 data-nosnippet>517</a>        <span class="macro">assert_eq!</span>(
-<a href=#518 id=518 data-nosnippet>518</a>            prepared.policy_labels(),
-<a href=#519 id=519 data-nosnippet>519</a>            [<span class="prelude-val">Some</span>(<span class="string">"git status &amp;&amp; rm -rf x"</span>.into())]
-<a href=#520 id=520 data-nosnippet>520</a>        );
-<a href=#521 id=521 data-nosnippet>521</a>        <span class="macro">assert_eq!</span>(
-<a href=#522 id=522 data-nosnippet>522</a>            prepared.normalized_arguments(),
-<a href=#523 id=523 data-nosnippet>523</a>            <span class="kw-2">&amp;</span><span class="macro">serde_json::json!</span>({<span class="string">"command"</span>:<span class="string">"git status &amp;&amp; rm -rf x"</span>})
-<a href=#524 id=524 data-nosnippet>524</a>        );
-<a href=#525 id=525 data-nosnippet>525</a>    }
-<a href=#526 id=526 data-nosnippet>526</a>
-<a href=#527 id=527 data-nosnippet>527</a>    <span class="attr">#[tokio::test]
-<a href=#528 id=528 data-nosnippet>528</a>    </span><span class="kw">async fn </span>git_star_matches_a_compound_command_by_wildcard_rules() {
-<a href=#529 id=529 data-nosnippet>529</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
-<a href=#530 id=530 data-nosnippet>530</a>        <span class="kw">let </span>prepared = prepare(root.path(), <span class="string">"git status &amp;&amp; rm -rf x"</span>).<span class="kw">await</span>;
-<a href=#531 id=531 data-nosnippet>531</a>        <span class="kw">let </span>decision = PermissionPipeline::default().decide_operation(
-<a href=#532 id=532 data-nosnippet>532</a>            <span class="kw-2">&amp;</span>policy(<span class="macro">vec!</span>[rule(
-<a href=#533 id=533 data-nosnippet>533</a>                PermissionAction::Bash,
-<a href=#534 id=534 data-nosnippet>534</a>                <span class="string">"git *"</span>,
-<a href=#535 id=535 data-nosnippet>535</a>                PermissionEffect::Allow,
-<a href=#536 id=536 data-nosnippet>536</a>            )]),
-<a href=#537 id=537 data-nosnippet>537</a>            prepared.operation(),
-<a href=#538 id=538 data-nosnippet>538</a>            prepared.policy_labels(),
-<a href=#539 id=539 data-nosnippet>539</a>            root.path(),
-<a href=#540 id=540 data-nosnippet>540</a>        );
-<a href=#541 id=541 data-nosnippet>541</a>        <span class="macro">assert_eq!</span>(decision.effect, PermissionEffect::Allow);
-<a href=#542 id=542 data-nosnippet>542</a>    }
-<a href=#543 id=543 data-nosnippet>543</a>
-<a href=#544 id=544 data-nosnippet>544</a>    <span class="attr">#[tokio::test]
-<a href=#545 id=545 data-nosnippet>545</a>    </span><span class="kw">async fn </span>prefix_rm_star_does_not_match_a_compound_git_command() {
-<a href=#546 id=546 data-nosnippet>546</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
-<a href=#547 id=547 data-nosnippet>547</a>        <span class="kw">let </span>prepared = prepare(root.path(), <span class="string">"git status &amp;&amp; rm -rf x"</span>).<span class="kw">await</span>;
-<a href=#548 id=548 data-nosnippet>548</a>        <span class="kw">let </span>decision = PermissionPipeline::default().decide_operation(
-<a href=#549 id=549 data-nosnippet>549</a>            <span class="kw-2">&amp;</span>policy(<span class="macro">vec!</span>[
-<a href=#550 id=550 data-nosnippet>550</a>                rule(PermissionAction::Bash, <span class="string">"*"</span>, PermissionEffect::Allow),
-<a href=#551 id=551 data-nosnippet>551</a>                rule(PermissionAction::Bash, <span class="string">"rm *"</span>, PermissionEffect::Deny),
-<a href=#552 id=552 data-nosnippet>552</a>            ]),
-<a href=#553 id=553 data-nosnippet>553</a>            prepared.operation(),
-<a href=#554 id=554 data-nosnippet>554</a>            prepared.policy_labels(),
-<a href=#555 id=555 data-nosnippet>555</a>            root.path(),
-<a href=#556 id=556 data-nosnippet>556</a>        );
-<a href=#557 id=557 data-nosnippet>557</a>        <span class="macro">assert_eq!</span>(decision.effect, PermissionEffect::Allow);
-<a href=#558 id=558 data-nosnippet>558</a>    }
-<a href=#559 id=559 data-nosnippet>559</a>
-<a href=#560 id=560 data-nosnippet>560</a>    <span class="attr">#[tokio::test]
-<a href=#561 id=561 data-nosnippet>561</a>    </span><span class="kw">async fn </span>containment_rm_denies_a_compound_command() {
-<a href=#562 id=562 data-nosnippet>562</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
-<a href=#563 id=563 data-nosnippet>563</a>        <span class="kw">let </span>prepared = prepare(root.path(), <span class="string">"git status &amp;&amp; rm -rf x"</span>).<span class="kw">await</span>;
-<a href=#564 id=564 data-nosnippet>564</a>        <span class="kw">let </span>decision = PermissionPipeline::default().decide_operation(
-<a href=#565 id=565 data-nosnippet>565</a>            <span class="kw-2">&amp;</span>policy(<span class="macro">vec!</span>[
-<a href=#566 id=566 data-nosnippet>566</a>                rule(PermissionAction::Bash, <span class="string">"*"</span>, PermissionEffect::Allow),
-<a href=#567 id=567 data-nosnippet>567</a>                rule(PermissionAction::Bash, <span class="string">"*rm*"</span>, PermissionEffect::Deny),
-<a href=#568 id=568 data-nosnippet>568</a>            ]),
-<a href=#569 id=569 data-nosnippet>569</a>            prepared.operation(),
-<a href=#570 id=570 data-nosnippet>570</a>            prepared.policy_labels(),
-<a href=#571 id=571 data-nosnippet>571</a>            root.path(),
-<a href=#572 id=572 data-nosnippet>572</a>        );
-<a href=#573 id=573 data-nosnippet>573</a>        <span class="macro">assert_eq!</span>(decision.effect, PermissionEffect::Deny);
-<a href=#574 id=574 data-nosnippet>574</a>    }
-<a href=#575 id=575 data-nosnippet>575</a>
-<a href=#576 id=576 data-nosnippet>576</a>    <span class="attr">#[tokio::test]
-<a href=#577 id=577 data-nosnippet>577</a>    </span><span class="kw">async fn </span>simple_command_is_matched_as_itself() {
-<a href=#578 id=578 data-nosnippet>578</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
-<a href=#579 id=579 data-nosnippet>579</a>        <span class="kw">let </span>prepared = prepare(root.path(), <span class="string">"pwd"</span>).<span class="kw">await</span>;
-<a href=#580 id=580 data-nosnippet>580</a>        <span class="macro">assert_eq!</span>(prepared.policy_labels(), [<span class="prelude-val">Some</span>(<span class="string">"pwd"</span>.into())]);
-<a href=#581 id=581 data-nosnippet>581</a>        <span class="kw">let </span>decision = PermissionPipeline::default().decide_operation(
-<a href=#582 id=582 data-nosnippet>582</a>            <span class="kw-2">&amp;</span>policy(<span class="macro">vec!</span>[rule(
-<a href=#583 id=583 data-nosnippet>583</a>                PermissionAction::Bash,
-<a href=#584 id=584 data-nosnippet>584</a>                <span class="string">"pwd"</span>,
-<a href=#585 id=585 data-nosnippet>585</a>                PermissionEffect::Allow,
-<a href=#586 id=586 data-nosnippet>586</a>            )]),
-<a href=#587 id=587 data-nosnippet>587</a>            prepared.operation(),
-<a href=#588 id=588 data-nosnippet>588</a>            prepared.policy_labels(),
-<a href=#589 id=589 data-nosnippet>589</a>            root.path(),
-<a href=#590 id=590 data-nosnippet>590</a>        );
-<a href=#591 id=591 data-nosnippet>591</a>        <span class="macro">assert_eq!</span>(decision.effect, PermissionEffect::Allow);
-<a href=#592 id=592 data-nosnippet>592</a>    }
-<a href=#593 id=593 data-nosnippet>593</a>
-<a href=#594 id=594 data-nosnippet>594</a>    <span class="attr">#[tokio::test]
-<a href=#595 id=595 data-nosnippet>595</a>    </span><span class="kw">async fn </span>complex_shell_constructs_keep_every_resource_on_bash() {
-<a href=#596 id=596 data-nosnippet>596</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
-<a href=#597 id=597 data-nosnippet>597</a>        <span class="kw">for </span>command <span class="kw">in </span>[<span class="string">"git status"</span>, <span class="string">"ls &amp;&amp; rm x"</span>, <span class="string">"ls &gt; out"</span>, <span class="string">"cat $(f)"</span>] {
-<a href=#598 id=598 data-nosnippet>598</a>            <span class="kw">let </span>prepared = prepare(root.path(), command).<span class="kw">await</span>;
-<a href=#599 id=599 data-nosnippet>599</a>            <span class="macro">assert_eq!</span>(
-<a href=#600 id=600 data-nosnippet>600</a>                prepared.operation().resources()[<span class="number">0</span>].capability,
-<a href=#601 id=601 data-nosnippet>601</a>                PermissionAction::Bash
-<a href=#602 id=602 data-nosnippet>602</a>            );
-<a href=#603 id=603 data-nosnippet>603</a>        }
-<a href=#604 id=604 data-nosnippet>604</a>    }
-<a href=#605 id=605 data-nosnippet>605</a>
-<a href=#606 id=606 data-nosnippet>606</a>    <span class="attr">#[test]
-<a href=#607 id=607 data-nosnippet>607</a>    </span><span class="kw">fn </span>fake_path_swap_cannot_change_prepared_executable() {
-<a href=#608 id=608 data-nosnippet>608</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
-<a href=#609 id=609 data-nosnippet>609</a>        <span class="kw">let </span>bin = root.path().join(<span class="string">"bin"</span>);
-<a href=#610 id=610 data-nosnippet>610</a>        fs::create_dir(<span class="kw-2">&amp;</span>bin).expect(<span class="string">"bin"</span>);
-<a href=#611 id=611 data-nosnippet>611</a>        <span class="kw">let </span>executable = bin.join(<span class="string">"bash"</span>);
-<a href=#612 id=612 data-nosnippet>612</a>        fs::write(<span class="kw-2">&amp;</span>executable, <span class="string">"#!/bin/sh\nexit 0\n"</span>).expect(<span class="string">"executable"</span>);
-<a href=#613 id=613 data-nosnippet>613</a>        fs::set_permissions(<span class="kw-2">&amp;</span>executable, fs::Permissions::from_mode(<span class="number">0o755</span>)).expect(<span class="string">"mode"</span>);
-<a href=#614 id=614 data-nosnippet>614</a>        <span class="kw">let </span>path = resolve_executable_in_path(<span class="string">"bash"</span>, bin.as_os_str()).expect(<span class="string">"resolve"</span>);
-<a href=#615 id=615 data-nosnippet>615</a>        <span class="kw">let </span>prepared = <span class="kw">crate</span>::fs_cap::prepare_existing(Path::new(<span class="string">"/"</span>), <span class="kw-2">&amp;</span>path).expect(<span class="string">"prepare"</span>);
-<a href=#616 id=616 data-nosnippet>616</a>        fs::rename(<span class="kw-2">&amp;</span>executable, bin.join(<span class="string">"old-bash"</span>)).expect(<span class="string">"swap old"</span>);
-<a href=#617 id=617 data-nosnippet>617</a>        fs::write(<span class="kw-2">&amp;</span>executable, <span class="string">"#!/bin/sh\nexit 42\n"</span>).expect(<span class="string">"replacement"</span>);
-<a href=#618 id=618 data-nosnippet>618</a>        fs::set_permissions(<span class="kw-2">&amp;</span>executable, fs::Permissions::from_mode(<span class="number">0o755</span>)).expect(<span class="string">"mode"</span>);
-<a href=#619 id=619 data-nosnippet>619</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
-<a href=#620 id=620 data-nosnippet>620</a>            prepared.revalidate(),
-<a href=#621 id=621 data-nosnippet>621</a>            <span class="prelude-val">Err</span>(ToolError::OperationChanged(<span class="kw">_</span>))
-<a href=#622 id=622 data-nosnippet>622</a>        ));
-<a href=#623 id=623 data-nosnippet>623</a>    }
-<a href=#624 id=624 data-nosnippet>624</a>
-<a href=#625 id=625 data-nosnippet>625</a>    <span class="attr">#[tokio::test]
-<a href=#626 id=626 data-nosnippet>626</a>    </span><span class="kw">async fn </span>interactive_is_rejected_during_prepare() {
-<a href=#627 id=627 data-nosnippet>627</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
-<a href=#628 id=628 data-nosnippet>628</a>        <span class="kw">let </span>tool = BashTool::new(root.path());
-<a href=#629 id=629 data-nosnippet>629</a>        <span class="kw">let </span>result = tool
-<a href=#630 id=630 data-nosnippet>630</a>            .prepare(
-<a href=#631 id=631 data-nosnippet>631</a>                cookie_agent_engine::ToolPreparationContext {
-<a href=#632 id=632 data-nosnippet>632</a>                    session: SessionId::new_v7(),
-<a href=#633 id=633 data-nosnippet>633</a>                    run: RunId::new_v7(),
-<a href=#634 id=634 data-nosnippet>634</a>                    cwd: root.path().to_owned(),
-<a href=#635 id=635 data-nosnippet>635</a>                    workspace_root: root.path().to_owned(),
-<a href=#636 id=636 data-nosnippet>636</a>                    turn_context: <span class="kw">crate</span>::test_turn_context(),
-<a href=#637 id=637 data-nosnippet>637</a>                },
-<a href=#638 id=638 data-nosnippet>638</a>                cookie_agent_engine::ToolCall {
-<a href=#639 id=639 data-nosnippet>639</a>                    id: ToolCallId::new_v7(),
-<a href=#640 id=640 data-nosnippet>640</a>                    name: <span class="string">"bash"</span>.into(),
-<a href=#641 id=641 data-nosnippet>641</a>                    arguments: <span class="macro">serde_json::json!</span>({
-<a href=#642 id=642 data-nosnippet>642</a>                        <span class="string">"command"</span>: <span class="string">"echo unsafe"</span>,
-<a href=#643 id=643 data-nosnippet>643</a>                        <span class="string">"interactive"</span>: <span class="bool-val">true
-<a href=#644 id=644 data-nosnippet>644</a>                    </span>}),
-<a href=#645 id=645 data-nosnippet>645</a>                },
-<a href=#646 id=646 data-nosnippet>646</a>            )
-<a href=#647 id=647 data-nosnippet>647</a>            .<span class="kw">await</span>;
-<a href=#648 id=648 data-nosnippet>648</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(result, <span class="prelude-val">Err</span>(ToolError::UnsupportedSecurity(<span class="kw">_</span>))));
-<a href=#649 id=649 data-nosnippet>649</a>    }
-<a href=#650 id=650 data-nosnippet>650</a>
-<a href=#651 id=651 data-nosnippet>651</a>    <span class="attr">#[tokio::test]
-<a href=#652 id=652 data-nosnippet>652</a>    </span><span class="kw">async fn </span>killing_prepared_process_group_removes_descendants() {
-<a href=#653 id=653 data-nosnippet>653</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
-<a href=#654 id=654 data-nosnippet>654</a>        <span class="kw">let </span>pid_file = root.path().join(<span class="string">"pid"</span>);
-<a href=#655 id=655 data-nosnippet>655</a>        <span class="kw">let </span>shell = resolve_executable_in_path(
-<a href=#656 id=656 data-nosnippet>656</a>            <span class="string">"bash"</span>,
-<a href=#657 id=657 data-nosnippet>657</a>            std::ffi::OsStr::new(<span class="string">"/usr/local/bin:/usr/bin:/bin"</span>),
-<a href=#658 id=658 data-nosnippet>658</a>        )
-<a href=#659 id=659 data-nosnippet>659</a>        .expect(<span class="string">"shell"</span>);
-<a href=#660 id=660 data-nosnippet>660</a>        <span class="kw">let </span><span class="kw-2">mut </span>command = tokio::process::Command::new(shell);
-<a href=#661 id=661 data-nosnippet>661</a>        command
-<a href=#662 id=662 data-nosnippet>662</a>            .arg(<span class="string">"-c"</span>)
-<a href=#663 id=663 data-nosnippet>663</a>            .arg(<span class="macro">format!</span>(
-<a href=#664 id=664 data-nosnippet>664</a>                <span class="string">"sleep 30 &amp; echo $! &gt; '{}'; wait"</span>,
-<a href=#665 id=665 data-nosnippet>665</a>                pid_file.display()
-<a href=#666 id=666 data-nosnippet>666</a>            ))
-<a href=#667 id=667 data-nosnippet>667</a>            .stdout(std::process::Stdio::null())
-<a href=#668 id=668 data-nosnippet>668</a>            .stderr(std::process::Stdio::null());
-<a href=#669 id=669 data-nosnippet>669</a>        <span class="kw">unsafe </span>{
-<a href=#670 id=670 data-nosnippet>670</a>            command.pre_exec(|| {
-<a href=#671 id=671 data-nosnippet>671</a>                <span class="kw">if </span>libc::setsid() == -<span class="number">1 </span>{
-<a href=#672 id=672 data-nosnippet>672</a>                    <span class="prelude-val">Err</span>(std::io::Error::last_os_error())
-<a href=#673 id=673 data-nosnippet>673</a>                } <span class="kw">else </span>{
-<a href=#674 id=674 data-nosnippet>674</a>                    <span class="prelude-val">Ok</span>(())
-<a href=#675 id=675 data-nosnippet>675</a>                }
-<a href=#676 id=676 data-nosnippet>676</a>            });
-<a href=#677 id=677 data-nosnippet>677</a>        }
-<a href=#678 id=678 data-nosnippet>678</a>        <span class="kw">let </span>child = command.spawn().expect(<span class="string">"spawn group"</span>);
-<a href=#679 id=679 data-nosnippet>679</a>        <span class="kw">let </span>process_group = i32::try_from(child.id().expect(<span class="string">"pid"</span>)).expect(<span class="string">"pid fits"</span>);
-<a href=#680 id=680 data-nosnippet>680</a>        <span class="kw">let </span><span class="kw-2">mut </span>grouped = <span class="kw">super</span>::ProcessGroupChild {
-<a href=#681 id=681 data-nosnippet>681</a>            child: <span class="prelude-val">Some</span>(child),
-<a href=#682 id=682 data-nosnippet>682</a>            process_group,
-<a href=#683 id=683 data-nosnippet>683</a>            complete: <span class="bool-val">false</span>,
-<a href=#684 id=684 data-nosnippet>684</a>        };
-<a href=#685 id=685 data-nosnippet>685</a>        <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">100 </span>{
-<a href=#686 id=686 data-nosnippet>686</a>            <span class="kw">if </span>pid_file.exists() {
-<a href=#687 id=687 data-nosnippet>687</a>                <span class="kw">break</span>;
-<a href=#688 id=688 data-nosnippet>688</a>            }
-<a href=#689 id=689 data-nosnippet>689</a>            tokio::time::sleep(std::time::Duration::from_millis(<span class="number">5</span>)).<span class="kw">await</span>;
-<a href=#690 id=690 data-nosnippet>690</a>        }
-<a href=#691 id=691 data-nosnippet>691</a>        <span class="kw">let </span>descendant: i32 = fs::read_to_string(<span class="kw-2">&amp;</span>pid_file)
-<a href=#692 id=692 data-nosnippet>692</a>            .expect(<span class="string">"descendant pid"</span>)
-<a href=#693 id=693 data-nosnippet>693</a>            .trim()
-<a href=#694 id=694 data-nosnippet>694</a>            .parse()
-<a href=#695 id=695 data-nosnippet>695</a>            .expect(<span class="string">"numeric pid"</span>);
-<a href=#696 id=696 data-nosnippet>696</a>        grouped.kill_and_reap().<span class="kw">await</span>;
-<a href=#697 id=697 data-nosnippet>697</a>        <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">100 </span>{
-<a href=#698 id=698 data-nosnippet>698</a>            <span class="kw">let </span>alive = <span class="kw">unsafe </span>{ libc::kill(descendant, <span class="number">0</span>) == <span class="number">0 </span>};
-<a href=#699 id=699 data-nosnippet>699</a>            <span class="kw">if </span>!alive {
-<a href=#700 id=700 data-nosnippet>700</a>                <span class="kw">return</span>;
-<a href=#701 id=701 data-nosnippet>701</a>            }
-<a href=#702 id=702 data-nosnippet>702</a>            tokio::time::sleep(std::time::Duration::from_millis(<span class="number">5</span>)).<span class="kw">await</span>;
-<a href=#703 id=703 data-nosnippet>703</a>        }
-<a href=#704 id=704 data-nosnippet>704</a>        <span class="macro">panic!</span>(<span class="string">"descendant process survived process-group cancellation"</span>);
-<a href=#705 id=705 data-nosnippet>705</a>    }
-<a href=#706 id=706 data-nosnippet>706</a>}
+<a href=#450 id=450 data-nosnippet>450</a>            permissions: rules,
+<a href=#451 id=451 data-nosnippet>451</a>            delegation: <span class="prelude-val">None</span>,
+<a href=#452 id=452 data-nosnippet>452</a>            fallback_chain: Vec::new(),
+<a href=#453 id=453 data-nosnippet>453</a>            selected_suffix_start: <span class="number">0</span>,
+<a href=#454 id=454 data-nosnippet>454</a>        }
+<a href=#455 id=455 data-nosnippet>455</a>    }
+<a href=#456 id=456 data-nosnippet>456</a>
+<a href=#457 id=457 data-nosnippet>457</a>    <span class="kw">fn </span>rule(action: PermissionAction, resource: <span class="kw-2">&amp;</span>str, effect: PermissionEffect) -&gt; PermissionRule {
+<a href=#458 id=458 data-nosnippet>458</a>        PermissionRule {
+<a href=#459 id=459 data-nosnippet>459</a>            action,
+<a href=#460 id=460 data-nosnippet>460</a>            resource: WildcardPattern::new(resource).expect(<span class="string">"wildcard"</span>),
+<a href=#461 id=461 data-nosnippet>461</a>            effect,
+<a href=#462 id=462 data-nosnippet>462</a>        }
+<a href=#463 id=463 data-nosnippet>463</a>    }
+<a href=#464 id=464 data-nosnippet>464</a>
+<a href=#465 id=465 data-nosnippet>465</a>    <span class="attr">#[tokio::test]
+<a href=#466 id=466 data-nosnippet>466</a>    </span><span class="kw">async fn </span>whole_command_label_is_one_resource() {
+<a href=#467 id=467 data-nosnippet>467</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
+<a href=#468 id=468 data-nosnippet>468</a>        <span class="kw">let </span>prepared = prepare(root.path(), <span class="string">"echo one; echo one"</span>).<span class="kw">await</span>;
+<a href=#469 id=469 data-nosnippet>469</a>        <span class="macro">assert_eq!</span>(
+<a href=#470 id=470 data-nosnippet>470</a>            prepared.policy_labels(),
+<a href=#471 id=471 data-nosnippet>471</a>            [<span class="prelude-val">Some</span>(<span class="string">"echo one; echo one"</span>.into())]
+<a href=#472 id=472 data-nosnippet>472</a>        );
+<a href=#473 id=473 data-nosnippet>473</a>        <span class="macro">assert_eq!</span>(
+<a href=#474 id=474 data-nosnippet>474</a>            prepared.operation().resources()[<span class="number">0</span>].capability,
+<a href=#475 id=475 data-nosnippet>475</a>            PermissionAction::Bash
+<a href=#476 id=476 data-nosnippet>476</a>        );
+<a href=#477 id=477 data-nosnippet>477</a>        <span class="macro">assert_eq!</span>(
+<a href=#478 id=478 data-nosnippet>478</a>            prepared.normalized_arguments(),
+<a href=#479 id=479 data-nosnippet>479</a>            <span class="kw-2">&amp;</span><span class="macro">serde_json::json!</span>({<span class="string">"command"</span>:<span class="string">"echo one; echo one"</span>})
+<a href=#480 id=480 data-nosnippet>480</a>        );
+<a href=#481 id=481 data-nosnippet>481</a>    }
+<a href=#482 id=482 data-nosnippet>482</a>
+<a href=#483 id=483 data-nosnippet>483</a>    <span class="attr">#[tokio::test]
+<a href=#484 id=484 data-nosnippet>484</a>    </span><span class="kw">async fn </span>bash_never_produces_read_or_write_resources() {
+<a href=#485 id=485 data-nosnippet>485</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
+<a href=#486 id=486 data-nosnippet>486</a>        <span class="kw">for </span>command <span class="kw">in </span>[
+<a href=#487 id=487 data-nosnippet>487</a>            <span class="string">"cat .env"</span>,
+<a href=#488 id=488 data-nosnippet>488</a>            <span class="string">"ls ordinary/"</span>,
+<a href=#489 id=489 data-nosnippet>489</a>            <span class="string">"rm -rf build/"</span>,
+<a href=#490 id=490 data-nosnippet>490</a>            <span class="string">"ls | tee out.txt"</span>,
+<a href=#491 id=491 data-nosnippet>491</a>        ] {
+<a href=#492 id=492 data-nosnippet>492</a>            <span class="kw">let </span>prepared = prepare(root.path(), command).<span class="kw">await</span>;
+<a href=#493 id=493 data-nosnippet>493</a>            <span class="macro">assert_eq!</span>(
+<a href=#494 id=494 data-nosnippet>494</a>                prepared.operation().resources()[<span class="number">0</span>].capability,
+<a href=#495 id=495 data-nosnippet>495</a>                PermissionAction::Bash
+<a href=#496 id=496 data-nosnippet>496</a>            );
+<a href=#497 id=497 data-nosnippet>497</a>        }
+<a href=#498 id=498 data-nosnippet>498</a>        <span class="kw">let </span>env = prepare(root.path(), <span class="string">"cat .env"</span>).<span class="kw">await</span>;
+<a href=#499 id=499 data-nosnippet>499</a>        <span class="macro">assert_eq!</span>(env.policy_labels(), [<span class="prelude-val">Some</span>(<span class="string">"cat .env"</span>.into())]);
+<a href=#500 id=500 data-nosnippet>500</a>        <span class="kw">let </span>decision = PermissionPipeline::default().decide_operation(
+<a href=#501 id=501 data-nosnippet>501</a>            <span class="kw-2">&amp;</span>policy(<span class="macro">vec!</span>[
+<a href=#502 id=502 data-nosnippet>502</a>                rule(PermissionAction::Bash, <span class="string">"*"</span>, PermissionEffect::Allow),
+<a href=#503 id=503 data-nosnippet>503</a>                rule(PermissionAction::Bash, <span class="string">"cat *"</span>, PermissionEffect::Deny),
+<a href=#504 id=504 data-nosnippet>504</a>            ]),
+<a href=#505 id=505 data-nosnippet>505</a>            env.operation(),
+<a href=#506 id=506 data-nosnippet>506</a>            env.policy_labels(),
+<a href=#507 id=507 data-nosnippet>507</a>            root.path(),
+<a href=#508 id=508 data-nosnippet>508</a>        );
+<a href=#509 id=509 data-nosnippet>509</a>        <span class="macro">assert_eq!</span>(decision.effect, PermissionEffect::Deny);
+<a href=#510 id=510 data-nosnippet>510</a>    }
+<a href=#511 id=511 data-nosnippet>511</a>
+<a href=#512 id=512 data-nosnippet>512</a>    <span class="attr">#[tokio::test]
+<a href=#513 id=513 data-nosnippet>513</a>    </span><span class="kw">async fn </span>compound_command_is_one_whole_command_resource() {
+<a href=#514 id=514 data-nosnippet>514</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
+<a href=#515 id=515 data-nosnippet>515</a>        <span class="kw">let </span>prepared = prepare(root.path(), <span class="string">"git status &amp;&amp; rm -rf x"</span>).<span class="kw">await</span>;
+<a href=#516 id=516 data-nosnippet>516</a>        <span class="macro">assert_eq!</span>(
+<a href=#517 id=517 data-nosnippet>517</a>            prepared.policy_labels(),
+<a href=#518 id=518 data-nosnippet>518</a>            [<span class="prelude-val">Some</span>(<span class="string">"git status &amp;&amp; rm -rf x"</span>.into())]
+<a href=#519 id=519 data-nosnippet>519</a>        );
+<a href=#520 id=520 data-nosnippet>520</a>        <span class="macro">assert_eq!</span>(
+<a href=#521 id=521 data-nosnippet>521</a>            prepared.normalized_arguments(),
+<a href=#522 id=522 data-nosnippet>522</a>            <span class="kw-2">&amp;</span><span class="macro">serde_json::json!</span>({<span class="string">"command"</span>:<span class="string">"git status &amp;&amp; rm -rf x"</span>})
+<a href=#523 id=523 data-nosnippet>523</a>        );
+<a href=#524 id=524 data-nosnippet>524</a>    }
+<a href=#525 id=525 data-nosnippet>525</a>
+<a href=#526 id=526 data-nosnippet>526</a>    <span class="attr">#[tokio::test]
+<a href=#527 id=527 data-nosnippet>527</a>    </span><span class="kw">async fn </span>git_star_matches_a_compound_command_by_wildcard_rules() {
+<a href=#528 id=528 data-nosnippet>528</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
+<a href=#529 id=529 data-nosnippet>529</a>        <span class="kw">let </span>prepared = prepare(root.path(), <span class="string">"git status &amp;&amp; rm -rf x"</span>).<span class="kw">await</span>;
+<a href=#530 id=530 data-nosnippet>530</a>        <span class="kw">let </span>decision = PermissionPipeline::default().decide_operation(
+<a href=#531 id=531 data-nosnippet>531</a>            <span class="kw-2">&amp;</span>policy(<span class="macro">vec!</span>[rule(
+<a href=#532 id=532 data-nosnippet>532</a>                PermissionAction::Bash,
+<a href=#533 id=533 data-nosnippet>533</a>                <span class="string">"git *"</span>,
+<a href=#534 id=534 data-nosnippet>534</a>                PermissionEffect::Allow,
+<a href=#535 id=535 data-nosnippet>535</a>            )]),
+<a href=#536 id=536 data-nosnippet>536</a>            prepared.operation(),
+<a href=#537 id=537 data-nosnippet>537</a>            prepared.policy_labels(),
+<a href=#538 id=538 data-nosnippet>538</a>            root.path(),
+<a href=#539 id=539 data-nosnippet>539</a>        );
+<a href=#540 id=540 data-nosnippet>540</a>        <span class="macro">assert_eq!</span>(decision.effect, PermissionEffect::Allow);
+<a href=#541 id=541 data-nosnippet>541</a>    }
+<a href=#542 id=542 data-nosnippet>542</a>
+<a href=#543 id=543 data-nosnippet>543</a>    <span class="attr">#[tokio::test]
+<a href=#544 id=544 data-nosnippet>544</a>    </span><span class="kw">async fn </span>prefix_rm_star_does_not_match_a_compound_git_command() {
+<a href=#545 id=545 data-nosnippet>545</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
+<a href=#546 id=546 data-nosnippet>546</a>        <span class="kw">let </span>prepared = prepare(root.path(), <span class="string">"git status &amp;&amp; rm -rf x"</span>).<span class="kw">await</span>;
+<a href=#547 id=547 data-nosnippet>547</a>        <span class="kw">let </span>decision = PermissionPipeline::default().decide_operation(
+<a href=#548 id=548 data-nosnippet>548</a>            <span class="kw-2">&amp;</span>policy(<span class="macro">vec!</span>[
+<a href=#549 id=549 data-nosnippet>549</a>                rule(PermissionAction::Bash, <span class="string">"*"</span>, PermissionEffect::Allow),
+<a href=#550 id=550 data-nosnippet>550</a>                rule(PermissionAction::Bash, <span class="string">"rm *"</span>, PermissionEffect::Deny),
+<a href=#551 id=551 data-nosnippet>551</a>            ]),
+<a href=#552 id=552 data-nosnippet>552</a>            prepared.operation(),
+<a href=#553 id=553 data-nosnippet>553</a>            prepared.policy_labels(),
+<a href=#554 id=554 data-nosnippet>554</a>            root.path(),
+<a href=#555 id=555 data-nosnippet>555</a>        );
+<a href=#556 id=556 data-nosnippet>556</a>        <span class="macro">assert_eq!</span>(decision.effect, PermissionEffect::Allow);
+<a href=#557 id=557 data-nosnippet>557</a>    }
+<a href=#558 id=558 data-nosnippet>558</a>
+<a href=#559 id=559 data-nosnippet>559</a>    <span class="attr">#[tokio::test]
+<a href=#560 id=560 data-nosnippet>560</a>    </span><span class="kw">async fn </span>containment_rm_denies_a_compound_command() {
+<a href=#561 id=561 data-nosnippet>561</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
+<a href=#562 id=562 data-nosnippet>562</a>        <span class="kw">let </span>prepared = prepare(root.path(), <span class="string">"git status &amp;&amp; rm -rf x"</span>).<span class="kw">await</span>;
+<a href=#563 id=563 data-nosnippet>563</a>        <span class="kw">let </span>decision = PermissionPipeline::default().decide_operation(
+<a href=#564 id=564 data-nosnippet>564</a>            <span class="kw-2">&amp;</span>policy(<span class="macro">vec!</span>[
+<a href=#565 id=565 data-nosnippet>565</a>                rule(PermissionAction::Bash, <span class="string">"*"</span>, PermissionEffect::Allow),
+<a href=#566 id=566 data-nosnippet>566</a>                rule(PermissionAction::Bash, <span class="string">"*rm*"</span>, PermissionEffect::Deny),
+<a href=#567 id=567 data-nosnippet>567</a>            ]),
+<a href=#568 id=568 data-nosnippet>568</a>            prepared.operation(),
+<a href=#569 id=569 data-nosnippet>569</a>            prepared.policy_labels(),
+<a href=#570 id=570 data-nosnippet>570</a>            root.path(),
+<a href=#571 id=571 data-nosnippet>571</a>        );
+<a href=#572 id=572 data-nosnippet>572</a>        <span class="macro">assert_eq!</span>(decision.effect, PermissionEffect::Deny);
+<a href=#573 id=573 data-nosnippet>573</a>    }
+<a href=#574 id=574 data-nosnippet>574</a>
+<a href=#575 id=575 data-nosnippet>575</a>    <span class="attr">#[tokio::test]
+<a href=#576 id=576 data-nosnippet>576</a>    </span><span class="kw">async fn </span>simple_command_is_matched_as_itself() {
+<a href=#577 id=577 data-nosnippet>577</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
+<a href=#578 id=578 data-nosnippet>578</a>        <span class="kw">let </span>prepared = prepare(root.path(), <span class="string">"pwd"</span>).<span class="kw">await</span>;
+<a href=#579 id=579 data-nosnippet>579</a>        <span class="macro">assert_eq!</span>(prepared.policy_labels(), [<span class="prelude-val">Some</span>(<span class="string">"pwd"</span>.into())]);
+<a href=#580 id=580 data-nosnippet>580</a>        <span class="kw">let </span>decision = PermissionPipeline::default().decide_operation(
+<a href=#581 id=581 data-nosnippet>581</a>            <span class="kw-2">&amp;</span>policy(<span class="macro">vec!</span>[rule(
+<a href=#582 id=582 data-nosnippet>582</a>                PermissionAction::Bash,
+<a href=#583 id=583 data-nosnippet>583</a>                <span class="string">"pwd"</span>,
+<a href=#584 id=584 data-nosnippet>584</a>                PermissionEffect::Allow,
+<a href=#585 id=585 data-nosnippet>585</a>            )]),
+<a href=#586 id=586 data-nosnippet>586</a>            prepared.operation(),
+<a href=#587 id=587 data-nosnippet>587</a>            prepared.policy_labels(),
+<a href=#588 id=588 data-nosnippet>588</a>            root.path(),
+<a href=#589 id=589 data-nosnippet>589</a>        );
+<a href=#590 id=590 data-nosnippet>590</a>        <span class="macro">assert_eq!</span>(decision.effect, PermissionEffect::Allow);
+<a href=#591 id=591 data-nosnippet>591</a>    }
+<a href=#592 id=592 data-nosnippet>592</a>
+<a href=#593 id=593 data-nosnippet>593</a>    <span class="attr">#[tokio::test]
+<a href=#594 id=594 data-nosnippet>594</a>    </span><span class="kw">async fn </span>complex_shell_constructs_keep_every_resource_on_bash() {
+<a href=#595 id=595 data-nosnippet>595</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
+<a href=#596 id=596 data-nosnippet>596</a>        <span class="kw">for </span>command <span class="kw">in </span>[<span class="string">"git status"</span>, <span class="string">"ls &amp;&amp; rm x"</span>, <span class="string">"ls &gt; out"</span>, <span class="string">"cat $(f)"</span>] {
+<a href=#597 id=597 data-nosnippet>597</a>            <span class="kw">let </span>prepared = prepare(root.path(), command).<span class="kw">await</span>;
+<a href=#598 id=598 data-nosnippet>598</a>            <span class="macro">assert_eq!</span>(
+<a href=#599 id=599 data-nosnippet>599</a>                prepared.operation().resources()[<span class="number">0</span>].capability,
+<a href=#600 id=600 data-nosnippet>600</a>                PermissionAction::Bash
+<a href=#601 id=601 data-nosnippet>601</a>            );
+<a href=#602 id=602 data-nosnippet>602</a>        }
+<a href=#603 id=603 data-nosnippet>603</a>    }
+<a href=#604 id=604 data-nosnippet>604</a>
+<a href=#605 id=605 data-nosnippet>605</a>    <span class="attr">#[test]
+<a href=#606 id=606 data-nosnippet>606</a>    </span><span class="kw">fn </span>fake_path_swap_cannot_change_prepared_executable() {
+<a href=#607 id=607 data-nosnippet>607</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
+<a href=#608 id=608 data-nosnippet>608</a>        <span class="kw">let </span>bin = root.path().join(<span class="string">"bin"</span>);
+<a href=#609 id=609 data-nosnippet>609</a>        fs::create_dir(<span class="kw-2">&amp;</span>bin).expect(<span class="string">"bin"</span>);
+<a href=#610 id=610 data-nosnippet>610</a>        <span class="kw">let </span>executable = bin.join(<span class="string">"bash"</span>);
+<a href=#611 id=611 data-nosnippet>611</a>        fs::write(<span class="kw-2">&amp;</span>executable, <span class="string">"#!/bin/sh\nexit 0\n"</span>).expect(<span class="string">"executable"</span>);
+<a href=#612 id=612 data-nosnippet>612</a>        fs::set_permissions(<span class="kw-2">&amp;</span>executable, fs::Permissions::from_mode(<span class="number">0o755</span>)).expect(<span class="string">"mode"</span>);
+<a href=#613 id=613 data-nosnippet>613</a>        <span class="kw">let </span>path = resolve_executable_in_path(<span class="string">"bash"</span>, bin.as_os_str()).expect(<span class="string">"resolve"</span>);
+<a href=#614 id=614 data-nosnippet>614</a>        <span class="kw">let </span>prepared = <span class="kw">crate</span>::fs_cap::prepare_existing(Path::new(<span class="string">"/"</span>), <span class="kw-2">&amp;</span>path).expect(<span class="string">"prepare"</span>);
+<a href=#615 id=615 data-nosnippet>615</a>        fs::rename(<span class="kw-2">&amp;</span>executable, bin.join(<span class="string">"old-bash"</span>)).expect(<span class="string">"swap old"</span>);
+<a href=#616 id=616 data-nosnippet>616</a>        fs::write(<span class="kw-2">&amp;</span>executable, <span class="string">"#!/bin/sh\nexit 42\n"</span>).expect(<span class="string">"replacement"</span>);
+<a href=#617 id=617 data-nosnippet>617</a>        fs::set_permissions(<span class="kw-2">&amp;</span>executable, fs::Permissions::from_mode(<span class="number">0o755</span>)).expect(<span class="string">"mode"</span>);
+<a href=#618 id=618 data-nosnippet>618</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#619 id=619 data-nosnippet>619</a>            prepared.revalidate(),
+<a href=#620 id=620 data-nosnippet>620</a>            <span class="prelude-val">Err</span>(ToolError::OperationChanged(<span class="kw">_</span>))
+<a href=#621 id=621 data-nosnippet>621</a>        ));
+<a href=#622 id=622 data-nosnippet>622</a>    }
+<a href=#623 id=623 data-nosnippet>623</a>
+<a href=#624 id=624 data-nosnippet>624</a>    <span class="attr">#[tokio::test]
+<a href=#625 id=625 data-nosnippet>625</a>    </span><span class="kw">async fn </span>interactive_is_rejected_during_prepare() {
+<a href=#626 id=626 data-nosnippet>626</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
+<a href=#627 id=627 data-nosnippet>627</a>        <span class="kw">let </span>tool = BashTool::new(root.path());
+<a href=#628 id=628 data-nosnippet>628</a>        <span class="kw">let </span>result = tool
+<a href=#629 id=629 data-nosnippet>629</a>            .prepare(
+<a href=#630 id=630 data-nosnippet>630</a>                cookie_agent_engine::ToolPreparationContext {
+<a href=#631 id=631 data-nosnippet>631</a>                    session: SessionId::new_v7(),
+<a href=#632 id=632 data-nosnippet>632</a>                    run: RunId::new_v7(),
+<a href=#633 id=633 data-nosnippet>633</a>                    cwd: root.path().to_owned(),
+<a href=#634 id=634 data-nosnippet>634</a>                    workspace_root: root.path().to_owned(),
+<a href=#635 id=635 data-nosnippet>635</a>                    turn_context: <span class="kw">crate</span>::test_turn_context(),
+<a href=#636 id=636 data-nosnippet>636</a>                },
+<a href=#637 id=637 data-nosnippet>637</a>                cookie_agent_engine::ToolCall {
+<a href=#638 id=638 data-nosnippet>638</a>                    id: ToolCallId::new_v7(),
+<a href=#639 id=639 data-nosnippet>639</a>                    name: <span class="string">"bash"</span>.into(),
+<a href=#640 id=640 data-nosnippet>640</a>                    arguments: <span class="macro">serde_json::json!</span>({
+<a href=#641 id=641 data-nosnippet>641</a>                        <span class="string">"command"</span>: <span class="string">"echo unsafe"</span>,
+<a href=#642 id=642 data-nosnippet>642</a>                        <span class="string">"interactive"</span>: <span class="bool-val">true
+<a href=#643 id=643 data-nosnippet>643</a>                    </span>}),
+<a href=#644 id=644 data-nosnippet>644</a>                },
+<a href=#645 id=645 data-nosnippet>645</a>            )
+<a href=#646 id=646 data-nosnippet>646</a>            .<span class="kw">await</span>;
+<a href=#647 id=647 data-nosnippet>647</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(result, <span class="prelude-val">Err</span>(ToolError::UnsupportedSecurity(<span class="kw">_</span>))));
+<a href=#648 id=648 data-nosnippet>648</a>    }
+<a href=#649 id=649 data-nosnippet>649</a>
+<a href=#650 id=650 data-nosnippet>650</a>    <span class="attr">#[tokio::test]
+<a href=#651 id=651 data-nosnippet>651</a>    </span><span class="kw">async fn </span>killing_prepared_process_group_removes_descendants() {
+<a href=#652 id=652 data-nosnippet>652</a>        <span class="kw">let </span>root = tempfile::tempdir().expect(<span class="string">"root"</span>);
+<a href=#653 id=653 data-nosnippet>653</a>        <span class="kw">let </span>pid_file = root.path().join(<span class="string">"pid"</span>);
+<a href=#654 id=654 data-nosnippet>654</a>        <span class="kw">let </span>shell = resolve_executable_in_path(
+<a href=#655 id=655 data-nosnippet>655</a>            <span class="string">"bash"</span>,
+<a href=#656 id=656 data-nosnippet>656</a>            std::ffi::OsStr::new(<span class="string">"/usr/local/bin:/usr/bin:/bin"</span>),
+<a href=#657 id=657 data-nosnippet>657</a>        )
+<a href=#658 id=658 data-nosnippet>658</a>        .expect(<span class="string">"shell"</span>);
+<a href=#659 id=659 data-nosnippet>659</a>        <span class="kw">let </span><span class="kw-2">mut </span>command = tokio::process::Command::new(shell);
+<a href=#660 id=660 data-nosnippet>660</a>        command
+<a href=#661 id=661 data-nosnippet>661</a>            .arg(<span class="string">"-c"</span>)
+<a href=#662 id=662 data-nosnippet>662</a>            .arg(<span class="macro">format!</span>(
+<a href=#663 id=663 data-nosnippet>663</a>                <span class="string">"sleep 30 &amp; echo $! &gt; '{}'; wait"</span>,
+<a href=#664 id=664 data-nosnippet>664</a>                pid_file.display()
+<a href=#665 id=665 data-nosnippet>665</a>            ))
+<a href=#666 id=666 data-nosnippet>666</a>            .stdout(std::process::Stdio::null())
+<a href=#667 id=667 data-nosnippet>667</a>            .stderr(std::process::Stdio::null());
+<a href=#668 id=668 data-nosnippet>668</a>        <span class="kw">unsafe </span>{
+<a href=#669 id=669 data-nosnippet>669</a>            command.pre_exec(|| {
+<a href=#670 id=670 data-nosnippet>670</a>                <span class="kw">if </span>libc::setsid() == -<span class="number">1 </span>{
+<a href=#671 id=671 data-nosnippet>671</a>                    <span class="prelude-val">Err</span>(std::io::Error::last_os_error())
+<a href=#672 id=672 data-nosnippet>672</a>                } <span class="kw">else </span>{
+<a href=#673 id=673 data-nosnippet>673</a>                    <span class="prelude-val">Ok</span>(())
+<a href=#674 id=674 data-nosnippet>674</a>                }
+<a href=#675 id=675 data-nosnippet>675</a>            });
+<a href=#676 id=676 data-nosnippet>676</a>        }
+<a href=#677 id=677 data-nosnippet>677</a>        <span class="kw">let </span>child = command.spawn().expect(<span class="string">"spawn group"</span>);
+<a href=#678 id=678 data-nosnippet>678</a>        <span class="kw">let </span>process_group = i32::try_from(child.id().expect(<span class="string">"pid"</span>)).expect(<span class="string">"pid fits"</span>);
+<a href=#679 id=679 data-nosnippet>679</a>        <span class="kw">let </span><span class="kw-2">mut </span>grouped = <span class="kw">super</span>::ProcessGroupChild {
+<a href=#680 id=680 data-nosnippet>680</a>            child: <span class="prelude-val">Some</span>(child),
+<a href=#681 id=681 data-nosnippet>681</a>            process_group,
+<a href=#682 id=682 data-nosnippet>682</a>            complete: <span class="bool-val">false</span>,
+<a href=#683 id=683 data-nosnippet>683</a>        };
+<a href=#684 id=684 data-nosnippet>684</a>        <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">100 </span>{
+<a href=#685 id=685 data-nosnippet>685</a>            <span class="kw">if </span>pid_file.exists() {
+<a href=#686 id=686 data-nosnippet>686</a>                <span class="kw">break</span>;
+<a href=#687 id=687 data-nosnippet>687</a>            }
+<a href=#688 id=688 data-nosnippet>688</a>            tokio::time::sleep(std::time::Duration::from_millis(<span class="number">5</span>)).<span class="kw">await</span>;
+<a href=#689 id=689 data-nosnippet>689</a>        }
+<a href=#690 id=690 data-nosnippet>690</a>        <span class="kw">let </span>descendant: i32 = fs::read_to_string(<span class="kw-2">&amp;</span>pid_file)
+<a href=#691 id=691 data-nosnippet>691</a>            .expect(<span class="string">"descendant pid"</span>)
+<a href=#692 id=692 data-nosnippet>692</a>            .trim()
+<a href=#693 id=693 data-nosnippet>693</a>            .parse()
+<a href=#694 id=694 data-nosnippet>694</a>            .expect(<span class="string">"numeric pid"</span>);
+<a href=#695 id=695 data-nosnippet>695</a>        grouped.kill_and_reap().<span class="kw">await</span>;
+<a href=#696 id=696 data-nosnippet>696</a>        <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">100 </span>{
+<a href=#697 id=697 data-nosnippet>697</a>            <span class="kw">let </span>alive = <span class="kw">unsafe </span>{ libc::kill(descendant, <span class="number">0</span>) == <span class="number">0 </span>};
+<a href=#698 id=698 data-nosnippet>698</a>            <span class="kw">if </span>!alive {
+<a href=#699 id=699 data-nosnippet>699</a>                <span class="kw">return</span>;
+<a href=#700 id=700 data-nosnippet>700</a>            }
+<a href=#701 id=701 data-nosnippet>701</a>            tokio::time::sleep(std::time::Duration::from_millis(<span class="number">5</span>)).<span class="kw">await</span>;
+<a href=#702 id=702 data-nosnippet>702</a>        }
+<a href=#703 id=703 data-nosnippet>703</a>        <span class="macro">panic!</span>(<span class="string">"descendant process survived process-group cancellation"</span>);
+<a href=#704 id=704 data-nosnippet>704</a>    }
+<a href=#705 id=705 data-nosnippet>705</a>}
 </code></pre></div></section></main></body></html>

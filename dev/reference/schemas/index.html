@@ -899,8 +899,8 @@ outside those ranges and unversioned formats are rejected.</p>
 </tr>
 <tr>
 <td>Agent document</td>
-<td style="text-align: right;">4</td>
-<td style="text-align: right;">4</td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">5</td>
 </tr>
 <tr>
 <td>Protocol</td>
@@ -924,8 +924,8 @@ outside those ranges and unversioned formats are rejected.</p>
 </tr>
 <tr>
 <td>Runtime snapshot</td>
-<td style="text-align: right;">3</td>
-<td style="text-align: right;">3</td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">4</td>
 </tr>
 <tr>
 <td>Catalog cache</td>
@@ -949,6 +949,11 @@ outside those ranges and unversioned formats are rejected.</p>
 </tr>
 </tbody>
 </table>
+<p>Agent snapshots embedded in accepted event and delegation-journal versions also
+read the exact schema-4 snapshot shape written before agent document schema 5.
+The legacy <code>tools</code> list is discarded during upconversion; subsequent writes use
+schema 5 and permission-driven visibility. Unknown snapshot fields remain
+rejected.</p>
 <p>[^journal-12]: Unambiguous schema-12 records reopen. The unshipped schema-12
     resume/start encoding is rejected because it cannot distinguish a newly
     started run from attachment to an existing run. Move the affected project's

@@ -1232,7 +1232,7 @@ so the CLI keeps working even when built without the <code>tui</code> feature.</
 </tr>
 <tr>
 <td><code>config</code></td>
-<td>Strict schema-10 runtime configuration and schema-4 Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports <code>AgentMode</code>, <code>ToolName</code>, <code>PermissionAction</code>, <code>PermissionEffect</code>, <code>PermissionRule</code>, and <code>AgentDocumentSource</code> from <code>protocol</code>.</td>
+<td>Strict schema-10 runtime configuration and schema-5 Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports <code>AgentMode</code>, <code>PermissionAction</code>, <code>PermissionEffect</code>, <code>PermissionRule</code>, and <code>AgentDocumentSource</code> from <code>protocol</code>.</td>
 </tr>
 <tr>
 <td><code>engine</code></td>
@@ -1259,7 +1259,7 @@ so the CLI keeps working even when built without the <code>tui</code> feature.</
 <h3 id="type-unification">Type unification<a class="headerlink" href="#type-unification" title="Permanent link">&para;</a></h3>
 <p>The refactor consolidated shared wire types in <code>protocol</code>:</p>
 <ul>
-<li><strong>Unified:</strong> <code>config</code> re-exports <code>AgentMode</code>, <code>ToolName</code>, <code>PermissionAction</code>,
+<li><strong>Unified:</strong> <code>config</code> re-exports <code>AgentMode</code>, <code>PermissionAction</code>,
   <code>PermissionEffect</code>, <code>PermissionRule</code>, and <code>AgentDocumentSource</code> from
   <code>protocol</code>; <code>models</code> re-exports <code>Modality</code>, <code>MediaKind</code>, <code>MimeType</code>,
   <code>MediaCapability</code>, <code>ReplayCapability</code>, <code>CancellationCapability</code>, <code>FiniteF32</code>,
@@ -1424,7 +1424,7 @@ workspace owns.</p>
 <p>The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
 an authenticated WebSocket at <code>/ws</code>, protocol 9 current-only, <code>handshake</code> first.
 Discovery is a single <code>runtime.snapshot.get</code> call that returns one coherent
-runtime snapshot (schema 3). Session events stream through <code>events.subscribe</code>
+runtime snapshot (schema 4). Session events stream through <code>events.subscribe</code>
 and tool output streams through separate snapshot/delta/gap notifications.</p>
 <p>What moved is where the mechanics live: handshake, request/response
 correlation, notification demux, replay/gap recovery, and shutdown are now

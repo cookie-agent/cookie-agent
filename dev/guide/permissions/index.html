@@ -1056,13 +1056,16 @@ expand environment variables.</p>
 <p>Generic read allows do not override the built-in ask behavior for <code>.env</code> and
 <code>.env.*</code>; an exact or more-specific authored rule decides.</p>
 <h2 id="tool-availability-and-delegation">Tool availability and delegation<a class="headerlink" href="#tool-availability-and-delegation" title="Permanent link">&para;</a></h2>
-<p>The agent's <code>tools</code> list remains a separate allowlist for the built-in tools,
-and both the allowlist and permission rules must pass for those. MCP tool
-availability is permission-driven instead: no <code>mcp</code> action hides them, as does
-a bare deny or <code>"*": deny</code> with no non-deny exception. Any non-fully-denied
-<code>mcp</code> entry exposes the action's tools; resource patterns still decide
-individual calls. Delegation is likewise absent unless the authored permission
-map names eligible targets.</p>
+<p>Tool availability is permission-driven for every action. <code>read</code>, <code>write</code>
+(including <code>edit</code>), and <code>bash</code> are visible when their action is omitted because
+unmatched calls ask by default. A bare deny hides an action's tools. A mapped
+action with <code>"*": deny</code> also hides them when it has no more-specific non-deny
+exception; resource patterns still decide individual calls once tools are
+visible.</p>
+<p>MCP tools are absent when the <code>mcp</code> action is omitted and appear only for a
+non-fully-denied <code>mcp</code> entry. Delegation tools are absent unless the <code>delegate</code>
+map names at least one eligible target with <code>allow</code> or <code>ask</code>. There is no
+separate tool allowlist.</p>
 <p>Delegation targets come from the keys in the <code>delegate</code> permission map and must
 resolve to enabled <code>subagent</code> or <code>all</code> agents. This action controls
 <code>delegate_subagent</code>, <code>get_subagent_result</code>, <code>steer_subagent</code>, and

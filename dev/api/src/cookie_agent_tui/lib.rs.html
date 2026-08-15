@@ -148,385 +148,384 @@
 <a href=#148 id=148 data-nosnippet>148</a>                    variant: <span class="prelude-val">None</span>,
 <a href=#149 id=149 data-nosnippet>149</a>                }],
 <a href=#150 id=150 data-nosnippet>150</a>                limits: cookie_agent_config::AgentLimits::default(),
-<a href=#151 id=151 data-nosnippet>151</a>                tools: Vec::new(),
-<a href=#152 id=152 data-nosnippet>152</a>                permissions: Default::default(),
-<a href=#153 id=153 data-nosnippet>153</a>            },
-<a href=#154 id=154 data-nosnippet>154</a>            body: body.to_owned(),
-<a href=#155 id=155 data-nosnippet>155</a>            source: AgentDocumentSource::Workspace,
-<a href=#156 id=156 data-nosnippet>156</a>            document_fingerprint: test_digest(<span class="string">"primary document"</span>),
-<a href=#157 id=157 data-nosnippet>157</a>            prompt_fingerprint: test_digest(body),
-<a href=#158 id=158 data-nosnippet>158</a>        }
-<a href=#159 id=159 data-nosnippet>159</a>    }
-<a href=#160 id=160 data-nosnippet>160</a>
-<a href=#161 id=161 data-nosnippet>161</a>    <span class="kw">fn </span>in_process_server() -&gt; (tempfile::TempDir, Arc&lt;Server&gt;) {
-<a href=#162 id=162 data-nosnippet>162</a>        <span class="kw">let </span>directory = tempfile::tempdir().expect(<span class="string">"temporary data directory"</span>);
-<a href=#163 id=163 data-nosnippet>163</a>        <span class="attr">#[cfg(unix)]
-<a href=#164 id=164 data-nosnippet>164</a>        </span>{
-<a href=#165 id=165 data-nosnippet>165</a>            <span class="kw">use </span>std::os::unix::fs::PermissionsExt <span class="kw">as _</span>;
-<a href=#166 id=166 data-nosnippet>166</a>            fs::set_permissions(directory.path(), fs::Permissions::from_mode(<span class="number">0o700</span>))
-<a href=#167 id=167 data-nosnippet>167</a>                .expect(<span class="string">"private test root"</span>);
-<a href=#168 id=168 data-nosnippet>168</a>        }
-<a href=#169 id=169 data-nosnippet>169</a>        <span class="kw">let </span>providers = test_providers();
-<a href=#170 id=170 data-nosnippet>170</a>        <span class="kw">let </span>provider_store = directory.path().join(<span class="string">"provider-store"</span>);
-<a href=#171 id=171 data-nosnippet>171</a>        fs::create_dir(<span class="kw-2">&amp;</span>provider_store).expect(<span class="string">"provider store directory"</span>);
-<a href=#172 id=172 data-nosnippet>172</a>        <span class="attr">#[cfg(unix)]
-<a href=#173 id=173 data-nosnippet>173</a>        </span>fs::set_permissions(<span class="kw-2">&amp;</span>provider_store, fs::Permissions::from_mode(<span class="number">0o700</span>))
-<a href=#174 id=174 data-nosnippet>174</a>            .expect(<span class="string">"private provider store"</span>);
-<a href=#175 id=175 data-nosnippet>175</a>        <span class="kw">let </span>revision =
-<a href=#176 id=176 data-nosnippet>176</a>            cookie_agent_protocol::CatalogRevision::new(<span class="macro">format!</span>(<span class="string">"sha256:{}"</span>, <span class="string">"0"</span>.repeat(<span class="number">64</span>)))
-<a href=#177 id=177 data-nosnippet>177</a>                .expect(<span class="string">"catalog revision"</span>);
-<a href=#178 id=178 data-nosnippet>178</a>        <span class="kw">let </span>now = Timestamp::now();
-<a href=#179 id=179 data-nosnippet>179</a>        <span class="kw">let </span>catalog = Arc::new(CatalogSnapshot {
-<a href=#180 id=180 data-nosnippet>180</a>            revision,
-<a href=#181 id=181 data-nosnippet>181</a>            source: CatalogSource::Bootstrap,
-<a href=#182 id=182 data-nosnippet>182</a>            state: CatalogRuntimeState {
-<a href=#183 id=183 data-nosnippet>183</a>                availability: CatalogAvailability::Bootstrap,
-<a href=#184 id=184 data-nosnippet>184</a>                age: CatalogAgeState::Current,
-<a href=#185 id=185 data-nosnippet>185</a>                last_error: <span class="prelude-val">None</span>,
-<a href=#186 id=186 data-nosnippet>186</a>            },
-<a href=#187 id=187 data-nosnippet>187</a>            validated_at: now,
-<a href=#188 id=188 data-nosnippet>188</a>            last_checked_at: now,
-<a href=#189 id=189 data-nosnippet>189</a>            etag: <span class="prelude-val">None</span>,
-<a href=#190 id=190 data-nosnippet>190</a>            providers: BTreeMap::new(),
-<a href=#191 id=191 data-nosnippet>191</a>            canonical_models: BTreeMap::new(),
-<a href=#192 id=192 data-nosnippet>192</a>            quarantine: Vec::new(),
-<a href=#193 id=193 data-nosnippet>193</a>        });
-<a href=#194 id=194 data-nosnippet>194</a>        <span class="kw">let </span>model_manager = Arc::new(
-<a href=#195 id=195 data-nosnippet>195</a>            ModelManager::new(
-<a href=#196 id=196 data-nosnippet>196</a>                providers.clone(),
-<a href=#197 id=197 data-nosnippet>197</a>                catalog,
-<a href=#198 id=198 data-nosnippet>198</a>                ProviderStore::open(<span class="kw-2">&amp;</span>provider_store).expect(<span class="string">"provider store"</span>),
-<a href=#199 id=199 data-nosnippet>199</a>            )
-<a href=#200 id=200 data-nosnippet>200</a>            .expect(<span class="string">"model manager"</span>),
-<a href=#201 id=201 data-nosnippet>201</a>        );
-<a href=#202 id=202 data-nosnippet>202</a>        <span class="kw">let </span>agent_id = AgentId::new(<span class="string">"primary"</span>).expect(<span class="string">"agent id"</span>);
-<a href=#203 id=203 data-nosnippet>203</a>        <span class="kw">let </span>config = LoadedConfiguration {
-<a href=#204 id=204 data-nosnippet>204</a>            runtime: RuntimeConfig {
-<a href=#205 id=205 data-nosnippet>205</a>                schema_version: ConfigSchemaVersion,
-<a href=#206 id=206 data-nosnippet>206</a>                server: ServerConfig::default(),
-<a href=#207 id=207 data-nosnippet>207</a>                tool_output: ToolOutputConfig::default(),
-<a href=#208 id=208 data-nosnippet>208</a>                approval: ApprovalConfig::default(),
-<a href=#209 id=209 data-nosnippet>209</a>                context_compaction: ContextCompactionConfig::default(),
-<a href=#210 id=210 data-nosnippet>210</a>                session_title: SessionTitleConfig::default(),
-<a href=#211 id=211 data-nosnippet>211</a>                delegation: cookie_agent_config::DelegationConfig::default(),
-<a href=#212 id=212 data-nosnippet>212</a>                providers,
-<a href=#213 id=213 data-nosnippet>213</a>            },
-<a href=#214 id=214 data-nosnippet>214</a>            agents: BTreeMap::from([(agent_id.clone(), test_agent_document(<span class="kw-2">&amp;</span>agent_id))]),
-<a href=#215 id=215 data-nosnippet>215</a>            mcp_servers: BTreeMap::new(),
-<a href=#216 id=216 data-nosnippet>216</a>        };
-<a href=#217 id=217 data-nosnippet>217</a>        <span class="kw">let </span>engine = Engine::open(EngineOptions {
-<a href=#218 id=218 data-nosnippet>218</a>            data_dir: directory.path().join(<span class="string">"data"</span>),
-<a href=#219 id=219 data-nosnippet>219</a>            cwd: directory.path().to_owned(),
-<a href=#220 id=220 data-nosnippet>220</a>            config,
-<a href=#221 id=221 data-nosnippet>221</a>            model_manager: Arc::clone(<span class="kw-2">&amp;</span>model_manager),
-<a href=#222 id=222 data-nosnippet>222</a>            tools: Vec::new(),
-<a href=#223 id=223 data-nosnippet>223</a>        })
-<a href=#224 id=224 data-nosnippet>224</a>        .expect(<span class="string">"open engine"</span>);
-<a href=#225 id=225 data-nosnippet>225</a>        (directory, Arc::new(Server::new(engine)))
-<a href=#226 id=226 data-nosnippet>226</a>    }
-<a href=#227 id=227 data-nosnippet>227</a>
-<a href=#228 id=228 data-nosnippet>228</a>    <span class="kw">fn </span>call_id() -&gt; ToolCallId {
-<a href=#229 id=229 data-nosnippet>229</a>        ToolCallId::new_v7()
-<a href=#230 id=230 data-nosnippet>230</a>    }
-<a href=#231 id=231 data-nosnippet>231</a>
-<a href=#232 id=232 data-nosnippet>232</a>    <span class="kw">fn </span>approval_request() -&gt; ApprovalRequest {
-<a href=#233 id=233 data-nosnippet>233</a>        <span class="kw">let </span>resource = PreparedApprovalResource {
-<a href=#234 id=234 data-nosnippet>234</a>            capability: PermissionAction::Bash,
-<a href=#235 id=235 data-nosnippet>235</a>            canonical: PreparedResourceIdentity::new(<span class="string">"command:git-status"</span>)
-<a href=#236 id=236 data-nosnippet>236</a>                .expect(<span class="string">"prepared resource identity"</span>),
-<a href=#237 id=237 data-nosnippet>237</a>            binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(<span class="string">b"git status"</span>),
-<a href=#238 id=238 data-nosnippet>238</a>            binding_lifetime: PreparedBindingLifetime::ProcessLocal,
-<a href=#239 id=239 data-nosnippet>239</a>            boundary: ApprovalBoundary::CommandPrefix {
-<a href=#240 id=240 data-nosnippet>240</a>                prefix: <span class="string">"git status"</span>.into(),
-<a href=#241 id=241 data-nosnippet>241</a>            },
-<a href=#242 id=242 data-nosnippet>242</a>            source: ApprovalResourceSource::ModelRequest,
-<a href=#243 id=243 data-nosnippet>243</a>        };
-<a href=#244 id=244 data-nosnippet>244</a>        <span class="kw">let </span>resource_digest = resource.binding_digest.clone();
-<a href=#245 id=245 data-nosnippet>245</a>        <span class="kw">let </span>operation = PreparedOperationIdentity::new(
-<a href=#246 id=246 data-nosnippet>246</a>            Sha256Digest::of_bytes(<span class="string">b"normalized arguments"</span>),
-<a href=#247 id=247 data-nosnippet>247</a>            <span class="macro">vec!</span>[ApprovalCapability {
-<a href=#248 id=248 data-nosnippet>248</a>                action: PermissionAction::Bash,
-<a href=#249 id=249 data-nosnippet>249</a>                operation: PreparedCapabilityOperation::new(<span class="string">"execute"</span>)
-<a href=#250 id=250 data-nosnippet>250</a>                    .expect(<span class="string">"prepared capability operation"</span>),
-<a href=#251 id=251 data-nosnippet>251</a>            }],
-<a href=#252 id=252 data-nosnippet>252</a>            <span class="macro">vec!</span>[resource],
-<a href=#253 id=253 data-nosnippet>253</a>            Sha256Digest::of_bytes(<span class="string">b"execution context"</span>),
-<a href=#254 id=254 data-nosnippet>254</a>        )
-<a href=#255 id=255 data-nosnippet>255</a>        .expect(<span class="string">"prepared operation"</span>);
-<a href=#256 id=256 data-nosnippet>256</a>        ApprovalRequest::new(
-<a href=#257 id=257 data-nosnippet>257</a>            ApprovalId::new_v7(),
-<a href=#258 id=258 data-nosnippet>258</a>            <span class="number">7</span>,
-<a href=#259 id=259 data-nosnippet>259</a>            ApprovalTrigger::PermissionPolicy,
-<a href=#260 id=260 data-nosnippet>260</a>            operation,
-<a href=#261 id=261 data-nosnippet>261</a>            <span class="macro">vec!</span>[ApprovalEvaluation {
-<a href=#262 id=262 data-nosnippet>262</a>                resource_digest,
-<a href=#263 id=263 data-nosnippet>263</a>                effect: PermissionEffect::Ask,
-<a href=#264 id=264 data-nosnippet>264</a>                trace: DecisionTrace {
-<a href=#265 id=265 data-nosnippet>265</a>                    action: PermissionAction::Bash,
-<a href=#266 id=266 data-nosnippet>266</a>                    normalized_resource: <span class="string">"git status"</span>.into(),
-<a href=#267 id=267 data-nosnippet>267</a>                    candidates: <span class="macro">vec!</span>[MatchedPermissionRule {
-<a href=#268 id=268 data-nosnippet>268</a>                        source_layer: SafeCode::new(<span class="string">"test"</span>).expect(<span class="string">"safe code"</span>),
-<a href=#269 id=269 data-nosnippet>269</a>                        action: PermissionAction::Bash,
-<a href=#270 id=270 data-nosnippet>270</a>                        resource: cookie_agent_protocol::WildcardPattern::new(<span class="string">"git status"</span>)
-<a href=#271 id=271 data-nosnippet>271</a>                            .expect(<span class="string">"wildcard"</span>),
-<a href=#272 id=272 data-nosnippet>272</a>                        effect: PermissionEffect::Ask,
-<a href=#273 id=273 data-nosnippet>273</a>                    }],
-<a href=#274 id=274 data-nosnippet>274</a>                    effect: PermissionEffect::Ask,
-<a href=#275 id=275 data-nosnippet>275</a>                    precedence_reason: <span class="string">"test"</span>.into(),
-<a href=#276 id=276 data-nosnippet>276</a>                },
-<a href=#277 id=277 data-nosnippet>277</a>            }],
-<a href=#278 id=278 data-nosnippet>278</a>            ApprovalConstraints {
-<a href=#279 id=279 data-nosnippet>279</a>                allow_once: <span class="bool-val">true</span>,
-<a href=#280 id=280 data-nosnippet>280</a>                allow_tree_grant: <span class="bool-val">false</span>,
-<a href=#281 id=281 data-nosnippet>281</a>                cancellable: <span class="bool-val">true</span>,
-<a href=#282 id=282 data-nosnippet>282</a>                expires_at: <span class="prelude-val">None</span>,
-<a href=#283 id=283 data-nosnippet>283</a>            },
-<a href=#284 id=284 data-nosnippet>284</a>        )
-<a href=#285 id=285 data-nosnippet>285</a>        .expect(<span class="string">"approval request"</span>)
-<a href=#286 id=286 data-nosnippet>286</a>    }
-<a href=#287 id=287 data-nosnippet>287</a>
-<a href=#288 id=288 data-nosnippet>288</a>    <span class="kw">fn </span>text_event(
-<a href=#289 id=289 data-nosnippet>289</a>        session_id: SessionId,
-<a href=#290 id=290 data-nosnippet>290</a>        seq: u64,
-<a href=#291 id=291 data-nosnippet>291</a>        run_id: cookie_agent_protocol::RunId,
-<a href=#292 id=292 data-nosnippet>292</a>        attempt_id: cookie_agent_protocol::AttemptId,
-<a href=#293 id=293 data-nosnippet>293</a>        text: <span class="kw-2">&amp;</span>str,
-<a href=#294 id=294 data-nosnippet>294</a>    ) -&gt; StoredEvent {
-<a href=#295 id=295 data-nosnippet>295</a>        StoredEvent {
-<a href=#296 id=296 data-nosnippet>296</a>            event_schema_version: EventSchemaVersion::current(),
-<a href=#297 id=297 data-nosnippet>297</a>            session_id,
-<a href=#298 id=298 data-nosnippet>298</a>            run_id: <span class="prelude-val">Some</span>(run_id),
-<a href=#299 id=299 data-nosnippet>299</a>            seq,
-<a href=#300 id=300 data-nosnippet>300</a>            timestamp: Timestamp::now(),
-<a href=#301 id=301 data-nosnippet>301</a>            payload: EventPayload::TextDelta {
-<a href=#302 id=302 data-nosnippet>302</a>                attempt_id,
-<a href=#303 id=303 data-nosnippet>303</a>                text: text.into(),
-<a href=#304 id=304 data-nosnippet>304</a>            },
-<a href=#305 id=305 data-nosnippet>305</a>        }
-<a href=#306 id=306 data-nosnippet>306</a>    }
-<a href=#307 id=307 data-nosnippet>307</a>
-<a href=#308 id=308 data-nosnippet>308</a>    <span class="attr">#[test]
-<a href=#309 id=309 data-nosnippet>309</a>    </span><span class="kw">fn </span>output_snapshot_handoff_and_out_of_order_deltas_are_lossless() {
-<a href=#310 id=310 data-nosnippet>310</a>        <span class="kw">let </span><span class="kw-2">mut </span>output = OrderedOutput::default();
-<a href=#311 id=311 data-nosnippet>311</a>        output.replace_snapshot(
-<a href=#312 id=312 data-nosnippet>312</a>            <span class="number">0</span>,
-<a href=#313 id=313 data-nosnippet>313</a>            <span class="number">3</span>,
-<a href=#314 id=314 data-nosnippet>314</a>            <span class="macro">vec!</span>[OutputDelta {
-<a href=#315 id=315 data-nosnippet>315</a>                call_id: call_id(),
-<a href=#316 id=316 data-nosnippet>316</a>                stream: OutputStream::Stdout,
-<a href=#317 id=317 data-nosnippet>317</a>                byte_offset: <span class="number">0</span>,
-<a href=#318 id=318 data-nosnippet>318</a>                data: STANDARD.encode(<span class="string">b"one"</span>),
-<a href=#319 id=319 data-nosnippet>319</a>            }],
-<a href=#320 id=320 data-nosnippet>320</a>        );
-<a href=#321 id=321 data-nosnippet>321</a>        output.push(OutputDelta {
-<a href=#322 id=322 data-nosnippet>322</a>            call_id: call_id(),
-<a href=#323 id=323 data-nosnippet>323</a>            stream: OutputStream::Stdout,
-<a href=#324 id=324 data-nosnippet>324</a>            byte_offset: <span class="number">6</span>,
-<a href=#325 id=325 data-nosnippet>325</a>            data: STANDARD.encode(<span class="string">b"six"</span>),
-<a href=#326 id=326 data-nosnippet>326</a>        });
-<a href=#327 id=327 data-nosnippet>327</a>        output.push(OutputDelta {
-<a href=#328 id=328 data-nosnippet>328</a>            call_id: call_id(),
-<a href=#329 id=329 data-nosnippet>329</a>            stream: OutputStream::Stdout,
-<a href=#330 id=330 data-nosnippet>330</a>            byte_offset: <span class="number">3</span>,
-<a href=#331 id=331 data-nosnippet>331</a>            data: STANDARD.encode(<span class="string">b"two"</span>),
-<a href=#332 id=332 data-nosnippet>332</a>        });
-<a href=#333 id=333 data-nosnippet>333</a>        <span class="macro">assert_eq!</span>(output.text(), <span class="string">"onetwosix"</span>);
-<a href=#334 id=334 data-nosnippet>334</a>        <span class="macro">assert_eq!</span>(output.next_offset, <span class="number">9</span>);
-<a href=#335 id=335 data-nosnippet>335</a>    }
-<a href=#336 id=336 data-nosnippet>336</a>
-<a href=#337 id=337 data-nosnippet>337</a>    <span class="attr">#[test]
-<a href=#338 id=338 data-nosnippet>338</a>    </span><span class="kw">fn </span>empty_snapshot_keeps_its_explicit_stream_identity() {
-<a href=#339 id=339 data-nosnippet>339</a>        <span class="kw">let </span>envelope = OutputSnapshotEnvelope {
-<a href=#340 id=340 data-nosnippet>340</a>            stream: OutputStream::Stderr,
-<a href=#341 id=341 data-nosnippet>341</a>            snapshot: OutputSnapshot {
-<a href=#342 id=342 data-nosnippet>342</a>                call_id: call_id(),
-<a href=#343 id=343 data-nosnippet>343</a>                start_offset: <span class="number">0</span>,
-<a href=#344 id=344 data-nosnippet>344</a>                end_offset: <span class="number">0</span>,
-<a href=#345 id=345 data-nosnippet>345</a>                chunks: Vec::new(),
-<a href=#346 id=346 data-nosnippet>346</a>            },
-<a href=#347 id=347 data-nosnippet>347</a>        };
-<a href=#348 id=348 data-nosnippet>348</a>        <span class="macro">assert_eq!</span>(envelope.stream, OutputStream::Stderr);
-<a href=#349 id=349 data-nosnippet>349</a>    }
-<a href=#350 id=350 data-nosnippet>350</a>
-<a href=#351 id=351 data-nosnippet>351</a>    <span class="attr">#[test]
-<a href=#352 id=352 data-nosnippet>352</a>    </span><span class="kw">fn </span>terminal_run_expires_pending_approvals() {
-<a href=#353 id=353 data-nosnippet>353</a>        <span class="kw">let </span>session = SessionId::new_v7();
-<a href=#354 id=354 data-nosnippet>354</a>        <span class="kw">let </span>run_id = cookie_agent_protocol::RunId::new_v7();
-<a href=#355 id=355 data-nosnippet>355</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = StateStore::default();
-<a href=#356 id=356 data-nosnippet>356</a>        store.apply_event(StoredEvent {
-<a href=#357 id=357 data-nosnippet>357</a>            event_schema_version: EventSchemaVersion::current(),
-<a href=#358 id=358 data-nosnippet>358</a>            session_id: session,
-<a href=#359 id=359 data-nosnippet>359</a>            run_id: <span class="prelude-val">Some</span>(run_id),
-<a href=#360 id=360 data-nosnippet>360</a>            seq: <span class="number">1</span>,
-<a href=#361 id=361 data-nosnippet>361</a>            timestamp: Timestamp::now(),
-<a href=#362 id=362 data-nosnippet>362</a>            payload: EventPayload::ApprovalRequested {
-<a href=#363 id=363 data-nosnippet>363</a>                request: approval_request(),
-<a href=#364 id=364 data-nosnippet>364</a>            },
-<a href=#365 id=365 data-nosnippet>365</a>        });
-<a href=#366 id=366 data-nosnippet>366</a>        store.apply_event(StoredEvent {
-<a href=#367 id=367 data-nosnippet>367</a>            event_schema_version: EventSchemaVersion::current(),
-<a href=#368 id=368 data-nosnippet>368</a>            session_id: session,
-<a href=#369 id=369 data-nosnippet>369</a>            run_id: <span class="prelude-val">Some</span>(run_id),
-<a href=#370 id=370 data-nosnippet>370</a>            seq: <span class="number">2</span>,
-<a href=#371 id=371 data-nosnippet>371</a>            timestamp: Timestamp::now(),
-<a href=#372 id=372 data-nosnippet>372</a>            payload: EventPayload::RunCompleted { final_text: <span class="prelude-val">None </span>},
-<a href=#373 id=373 data-nosnippet>373</a>        });
-<a href=#374 id=374 data-nosnippet>374</a>        <span class="macro">assert!</span>(store.sessions[<span class="kw-2">&amp;</span>session].approvals.is_empty());
-<a href=#375 id=375 data-nosnippet>375</a>    }
-<a href=#376 id=376 data-nosnippet>376</a>
-<a href=#377 id=377 data-nosnippet>377</a>    <span class="attr">#[tokio::test]
-<a href=#378 id=378 data-nosnippet>378</a>    </span><span class="kw">async fn </span>app_draws_conversation_approval_tree_and_input() {
-<a href=#379 id=379 data-nosnippet>379</a>        <span class="kw">let </span>(_directory, server) = in_process_server();
-<a href=#380 id=380 data-nosnippet>380</a>        <span class="kw">let </span>client = Client::connect_in_process(server);
-<a href=#381 id=381 data-nosnippet>381</a>        client.handshake().<span class="kw">await</span>.expect(<span class="string">"handshake"</span>);
-<a href=#382 id=382 data-nosnippet>382</a>        <span class="kw">let </span>models = client.runtime_snapshot().<span class="kw">await</span>.expect(<span class="string">"runtime snapshot"</span>);
-<a href=#383 id=383 data-nosnippet>383</a>        <span class="macro">assert_eq!</span>(
-<a href=#384 id=384 data-nosnippet>384</a>            models.snapshot.models[<span class="number">0</span>].key.as_str(),
-<a href=#385 id=385 data-nosnippet>385</a>            <span class="string">"custom.gateway/arbitrary-model"
-<a href=#386 id=386 data-nosnippet>386</a>        </span>);
-<a href=#387 id=387 data-nosnippet>387</a>        <span class="kw">let </span>session = client
-<a href=#388 id=388 data-nosnippet>388</a>            .create_session(SessionCreateParams {
-<a href=#389 id=389 data-nosnippet>389</a>                selection: test_run_selection(),
-<a href=#390 id=390 data-nosnippet>390</a>            })
-<a href=#391 id=391 data-nosnippet>391</a>            .<span class="kw">await
-<a href=#392 id=392 data-nosnippet>392</a>            </span>.expect(<span class="string">"session"</span>)
-<a href=#393 id=393 data-nosnippet>393</a>            .session;
-<a href=#394 id=394 data-nosnippet>394</a>        <span class="kw">let </span><span class="kw-2">mut </span>app = App::new(client).<span class="kw">await</span>.expect(<span class="string">"TUI config"</span>);
-<a href=#395 id=395 data-nosnippet>395</a>        <span class="kw">let </span>request = approval_request();
-<a href=#396 id=396 data-nosnippet>396</a>        <span class="kw">let </span>approval_id = request.approval_id();
-<a href=#397 id=397 data-nosnippet>397</a>        app.store.apply_event(StoredEvent {
-<a href=#398 id=398 data-nosnippet>398</a>            event_schema_version: EventSchemaVersion::current(),
-<a href=#399 id=399 data-nosnippet>399</a>            session_id: session.session_id,
-<a href=#400 id=400 data-nosnippet>400</a>            run_id: <span class="prelude-val">Some</span>(cookie_agent_protocol::RunId::new_v7()),
-<a href=#401 id=401 data-nosnippet>401</a>            seq: <span class="number">2</span>,
-<a href=#402 id=402 data-nosnippet>402</a>            timestamp: Timestamp::now(),
-<a href=#403 id=403 data-nosnippet>403</a>            payload: EventPayload::ApprovalRequested { request },
-<a href=#404 id=404 data-nosnippet>404</a>        });
-<a href=#405 id=405 data-nosnippet>405</a>        app.store.apply_event(StoredEvent {
-<a href=#406 id=406 data-nosnippet>406</a>            event_schema_version: EventSchemaVersion::current(),
-<a href=#407 id=407 data-nosnippet>407</a>            session_id: session.session_id,
-<a href=#408 id=408 data-nosnippet>408</a>            run_id: <span class="prelude-val">Some</span>(cookie_agent_protocol::RunId::new_v7()),
-<a href=#409 id=409 data-nosnippet>409</a>            seq: <span class="number">3</span>,
-<a href=#410 id=410 data-nosnippet>410</a>            timestamp: Timestamp::now(),
-<a href=#411 id=411 data-nosnippet>411</a>            payload: EventPayload::ApprovalEscalated {
-<a href=#412 id=412 data-nosnippet>412</a>                approval_id,
-<a href=#413 id=413 data-nosnippet>413</a>                reason_code: cookie_agent_protocol::ApprovalReasonCode::Escalated,
-<a href=#414 id=414 data-nosnippet>414</a>            },
-<a href=#415 id=415 data-nosnippet>415</a>        });
-<a href=#416 id=416 data-nosnippet>416</a>        <span class="kw">for </span>(width, height) <span class="kw">in </span>[(<span class="number">40</span>, <span class="number">12</span>), (<span class="number">80</span>, <span class="number">24</span>), (<span class="number">160</span>, <span class="number">50</span>)] {
-<a href=#417 id=417 data-nosnippet>417</a>            <span class="kw">let </span>backend = TestBackend::new(width, height);
-<a href=#418 id=418 data-nosnippet>418</a>            <span class="kw">let </span><span class="kw-2">mut </span>terminal = Terminal::new(backend).expect(<span class="string">"test terminal"</span>);
-<a href=#419 id=419 data-nosnippet>419</a>            terminal
-<a href=#420 id=420 data-nosnippet>420</a>                .draw(|frame| app.draw_for_test(frame))
-<a href=#421 id=421 data-nosnippet>421</a>                .expect(<span class="string">"app render"</span>);
-<a href=#422 id=422 data-nosnippet>422</a>            <span class="kw">let </span>buffer = terminal.backend().buffer();
-<a href=#423 id=423 data-nosnippet>423</a>            <span class="kw">let </span>rendered = (<span class="number">0</span>..buffer.area.height)
-<a href=#424 id=424 data-nosnippet>424</a>                .flat_map(|y| {
-<a href=#425 id=425 data-nosnippet>425</a>                    (<span class="number">0</span>..buffer.area.width).map(<span class="kw">move </span>|x| buffer[(x, y)].symbol().to_owned())
-<a href=#426 id=426 data-nosnippet>426</a>                })
-<a href=#427 id=427 data-nosnippet>427</a>                .collect::&lt;String&gt;();
-<a href=#428 id=428 data-nosnippet>428</a>            <span class="macro">assert!</span>(rendered.contains(<span class="string">"Approval"</span>));
-<a href=#429 id=429 data-nosnippet>429</a>            <span class="macro">assert!</span>(rendered.contains(<span class="string">"Agents"</span>));
-<a href=#430 id=430 data-nosnippet>430</a>            <span class="kw">if </span>width &gt;= <span class="number">80 </span>{
-<a href=#431 id=431 data-nosnippet>431</a>                <span class="macro">assert!</span>(rendered.contains(<span class="string">"Conversation"</span>));
-<a href=#432 id=432 data-nosnippet>432</a>            }
-<a href=#433 id=433 data-nosnippet>433</a>            <span class="kw">if </span>(width, height) == (<span class="number">80</span>, <span class="number">24</span>) {
-<a href=#434 id=434 data-nosnippet>434</a>                <span class="macro">assert!</span>(rendered.contains(<span class="string">"git status"</span>));
-<a href=#435 id=435 data-nosnippet>435</a>                <span class="macro">assert!</span>(rendered.contains(<span class="string">"primary • custom.gateway/arbitrary-model[base]"</span>));
-<a href=#436 id=436 data-nosnippet>436</a>            }
-<a href=#437 id=437 data-nosnippet>437</a>        }
-<a href=#438 id=438 data-nosnippet>438</a>    }
-<a href=#439 id=439 data-nosnippet>439</a>
-<a href=#440 id=440 data-nosnippet>440</a>    <span class="attr">#[tokio::test]
-<a href=#441 id=441 data-nosnippet>441</a>    </span><span class="kw">async fn </span>client_round_trips_handshake_create_and_event_replay_in_process() {
-<a href=#442 id=442 data-nosnippet>442</a>        <span class="kw">let </span>(_directory, server) = in_process_server();
-<a href=#443 id=443 data-nosnippet>443</a>        <span class="kw">let </span>client = Client::connect_in_process(server);
-<a href=#444 id=444 data-nosnippet>444</a>        client.handshake().<span class="kw">await</span>.expect(<span class="string">"handshake"</span>);
-<a href=#445 id=445 data-nosnippet>445</a>        <span class="kw">let </span>session = client
-<a href=#446 id=446 data-nosnippet>446</a>            .create_session(SessionCreateParams {
-<a href=#447 id=447 data-nosnippet>447</a>                selection: test_run_selection(),
-<a href=#448 id=448 data-nosnippet>448</a>            })
-<a href=#449 id=449 data-nosnippet>449</a>            .<span class="kw">await
-<a href=#450 id=450 data-nosnippet>450</a>            </span>.expect(<span class="string">"create session"</span>)
-<a href=#451 id=451 data-nosnippet>451</a>            .session;
-<a href=#452 id=452 data-nosnippet>452</a>        <span class="kw">let </span><span class="kw-2">mut </span>deliveries = client.subscribe_deliveries().expect(<span class="string">"delivery receiver"</span>);
-<a href=#453 id=453 data-nosnippet>453</a>        client
-<a href=#454 id=454 data-nosnippet>454</a>            .subscribe_events(session.session_id, <span class="prelude-val">None</span>)
-<a href=#455 id=455 data-nosnippet>455</a>            .<span class="kw">await
-<a href=#456 id=456 data-nosnippet>456</a>            </span>.expect(<span class="string">"subscribe events"</span>);
-<a href=#457 id=457 data-nosnippet>457</a>        <span class="kw">let </span><span class="kw-2">mut </span>replayed = Vec::new();
-<a href=#458 id=458 data-nosnippet>458</a>        <span class="kw">loop </span>{
-<a href=#459 id=459 data-nosnippet>459</a>            <span class="kw">match </span>deliveries.recv().<span class="kw">await</span>.expect(<span class="string">"delivery"</span>) {
-<a href=#460 id=460 data-nosnippet>460</a>                <span class="kw">crate</span>::ClientDelivery::ReplayEvent { event, .. } =&gt; replayed.push(<span class="kw-2">*</span>event),
-<a href=#461 id=461 data-nosnippet>461</a>                <span class="kw">crate</span>::ClientDelivery::ReplayEnd { .. } =&gt; <span class="kw">break</span>,
-<a href=#462 id=462 data-nosnippet>462</a>                <span class="kw">_ </span>=&gt; {}
-<a href=#463 id=463 data-nosnippet>463</a>            }
-<a href=#464 id=464 data-nosnippet>464</a>        }
-<a href=#465 id=465 data-nosnippet>465</a>        <span class="macro">assert!</span>(!replayed.is_empty());
-<a href=#466 id=466 data-nosnippet>466</a>        <span class="macro">assert!</span>(
-<a href=#467 id=467 data-nosnippet>467</a>            replayed
-<a href=#468 id=468 data-nosnippet>468</a>                .iter()
-<a href=#469 id=469 data-nosnippet>469</a>                .all(|event| event.session_id == session.session_id)
-<a href=#470 id=470 data-nosnippet>470</a>        );
-<a href=#471 id=471 data-nosnippet>471</a>    }
-<a href=#472 id=472 data-nosnippet>472</a>
-<a href=#473 id=473 data-nosnippet>473</a>    <span class="attr">#[tokio::test]
-<a href=#474 id=474 data-nosnippet>474</a>    </span><span class="kw">async fn </span>local_startup_creates_a_fresh_root_while_attach_keeps_existing_selection() {
-<a href=#475 id=475 data-nosnippet>475</a>        <span class="kw">let </span>(_directory, server) = in_process_server();
-<a href=#476 id=476 data-nosnippet>476</a>        <span class="kw">let </span>setup = Client::connect_in_process(server.clone());
-<a href=#477 id=477 data-nosnippet>477</a>        setup.handshake().<span class="kw">await</span>.expect(<span class="string">"setup handshake"</span>);
-<a href=#478 id=478 data-nosnippet>478</a>        <span class="kw">let </span>existing = setup
-<a href=#479 id=479 data-nosnippet>479</a>            .create_session(SessionCreateParams {
-<a href=#480 id=480 data-nosnippet>480</a>                selection: test_run_selection(),
-<a href=#481 id=481 data-nosnippet>481</a>            })
-<a href=#482 id=482 data-nosnippet>482</a>            .<span class="kw">await
-<a href=#483 id=483 data-nosnippet>483</a>            </span>.expect(<span class="string">"existing session"</span>)
-<a href=#484 id=484 data-nosnippet>484</a>            .session;
-<a href=#485 id=485 data-nosnippet>485</a>
-<a href=#486 id=486 data-nosnippet>486</a>        <span class="kw">let </span>attached = Client::connect_in_process(server.clone());
-<a href=#487 id=487 data-nosnippet>487</a>        attached.handshake().<span class="kw">await</span>.expect(<span class="string">"attach handshake"</span>);
-<a href=#488 id=488 data-nosnippet>488</a>        <span class="kw">let </span>attached_app = App::new(attached).<span class="kw">await</span>.expect(<span class="string">"attached TUI config"</span>);
-<a href=#489 id=489 data-nosnippet>489</a>        <span class="macro">assert_eq!</span>(attached_app.store.sessions.len(), <span class="number">1</span>);
-<a href=#490 id=490 data-nosnippet>490</a>        <span class="macro">assert!</span>(
-<a href=#491 id=491 data-nosnippet>491</a>            attached_app
-<a href=#492 id=492 data-nosnippet>492</a>                .store
-<a href=#493 id=493 data-nosnippet>493</a>                .sessions
-<a href=#494 id=494 data-nosnippet>494</a>                .contains_key(<span class="kw-2">&amp;</span>existing.session_id)
-<a href=#495 id=495 data-nosnippet>495</a>        );
-<a href=#496 id=496 data-nosnippet>496</a>
-<a href=#497 id=497 data-nosnippet>497</a>        <span class="kw">let </span>local = Client::connect_in_process(server);
-<a href=#498 id=498 data-nosnippet>498</a>        local.handshake().<span class="kw">await</span>.expect(<span class="string">"local handshake"</span>);
-<a href=#499 id=499 data-nosnippet>499</a>        <span class="kw">let </span>local_app = App::new_with_new_session(local)
-<a href=#500 id=500 data-nosnippet>500</a>            .<span class="kw">await
-<a href=#501 id=501 data-nosnippet>501</a>            </span>.expect(<span class="string">"local TUI config"</span>);
-<a href=#502 id=502 data-nosnippet>502</a>        <span class="macro">assert_eq!</span>(local_app.store.sessions.len(), <span class="number">1</span>);
-<a href=#503 id=503 data-nosnippet>503</a>        <span class="kw">let </span>local_session = local_app
-<a href=#504 id=504 data-nosnippet>504</a>            .store
-<a href=#505 id=505 data-nosnippet>505</a>            .sessions
-<a href=#506 id=506 data-nosnippet>506</a>            .keys()
-<a href=#507 id=507 data-nosnippet>507</a>            .next()
-<a href=#508 id=508 data-nosnippet>508</a>            .copied()
-<a href=#509 id=509 data-nosnippet>509</a>            .expect(<span class="string">"new local root session"</span>);
-<a href=#510 id=510 data-nosnippet>510</a>        <span class="macro">assert_ne!</span>(local_session, existing.session_id);
-<a href=#511 id=511 data-nosnippet>511</a>    }
-<a href=#512 id=512 data-nosnippet>512</a>
-<a href=#513 id=513 data-nosnippet>513</a>    <span class="attr">#[test]
-<a href=#514 id=514 data-nosnippet>514</a>    </span><span class="kw">fn </span>state_store_reduces_events_and_surfaces_gap_cursor() {
-<a href=#515 id=515 data-nosnippet>515</a>        <span class="kw">let </span>session = SessionId::new_v7();
-<a href=#516 id=516 data-nosnippet>516</a>        <span class="kw">let </span>run_id = cookie_agent_protocol::RunId::new_v7();
-<a href=#517 id=517 data-nosnippet>517</a>        <span class="kw">let </span>attempt_id = cookie_agent_protocol::AttemptId::new_v7();
-<a href=#518 id=518 data-nosnippet>518</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = StateStore::default();
-<a href=#519 id=519 data-nosnippet>519</a>        store.apply_event(text_event(session, <span class="number">1</span>, run_id, attempt_id, <span class="string">"hello"</span>));
-<a href=#520 id=520 data-nosnippet>520</a>        <span class="comment">// Replayed duplicate is ignored, preserving the projection.
-<a href=#521 id=521 data-nosnippet>521</a>        </span>store.apply_event(text_event(session, <span class="number">1</span>, run_id, attempt_id, <span class="string">"duplicate"</span>));
-<a href=#522 id=522 data-nosnippet>522</a>        <span class="macro">assert_eq!</span>(store.sessions[<span class="kw-2">&amp;</span>session].last_seq, <span class="number">1</span>);
-<a href=#523 id=523 data-nosnippet>523</a>        <span class="macro">assert_eq!</span>(
-<a href=#524 id=524 data-nosnippet>524</a>            store.apply_subscription(EventSubscriptionMessage::Gap {
-<a href=#525 id=525 data-nosnippet>525</a>                session_id: session,
-<a href=#526 id=526 data-nosnippet>526</a>                last_delivered_seq: <span class="number">1</span>,
-<a href=#527 id=527 data-nosnippet>527</a>            }),
-<a href=#528 id=528 data-nosnippet>528</a>            <span class="prelude-val">Some</span>(<span class="number">1</span>)
-<a href=#529 id=529 data-nosnippet>529</a>        );
-<a href=#530 id=530 data-nosnippet>530</a>    }
-<a href=#531 id=531 data-nosnippet>531</a>}
+<a href=#151 id=151 data-nosnippet>151</a>                permissions: Default::default(),
+<a href=#152 id=152 data-nosnippet>152</a>            },
+<a href=#153 id=153 data-nosnippet>153</a>            body: body.to_owned(),
+<a href=#154 id=154 data-nosnippet>154</a>            source: AgentDocumentSource::Workspace,
+<a href=#155 id=155 data-nosnippet>155</a>            document_fingerprint: test_digest(<span class="string">"primary document"</span>),
+<a href=#156 id=156 data-nosnippet>156</a>            prompt_fingerprint: test_digest(body),
+<a href=#157 id=157 data-nosnippet>157</a>        }
+<a href=#158 id=158 data-nosnippet>158</a>    }
+<a href=#159 id=159 data-nosnippet>159</a>
+<a href=#160 id=160 data-nosnippet>160</a>    <span class="kw">fn </span>in_process_server() -&gt; (tempfile::TempDir, Arc&lt;Server&gt;) {
+<a href=#161 id=161 data-nosnippet>161</a>        <span class="kw">let </span>directory = tempfile::tempdir().expect(<span class="string">"temporary data directory"</span>);
+<a href=#162 id=162 data-nosnippet>162</a>        <span class="attr">#[cfg(unix)]
+<a href=#163 id=163 data-nosnippet>163</a>        </span>{
+<a href=#164 id=164 data-nosnippet>164</a>            <span class="kw">use </span>std::os::unix::fs::PermissionsExt <span class="kw">as _</span>;
+<a href=#165 id=165 data-nosnippet>165</a>            fs::set_permissions(directory.path(), fs::Permissions::from_mode(<span class="number">0o700</span>))
+<a href=#166 id=166 data-nosnippet>166</a>                .expect(<span class="string">"private test root"</span>);
+<a href=#167 id=167 data-nosnippet>167</a>        }
+<a href=#168 id=168 data-nosnippet>168</a>        <span class="kw">let </span>providers = test_providers();
+<a href=#169 id=169 data-nosnippet>169</a>        <span class="kw">let </span>provider_store = directory.path().join(<span class="string">"provider-store"</span>);
+<a href=#170 id=170 data-nosnippet>170</a>        fs::create_dir(<span class="kw-2">&amp;</span>provider_store).expect(<span class="string">"provider store directory"</span>);
+<a href=#171 id=171 data-nosnippet>171</a>        <span class="attr">#[cfg(unix)]
+<a href=#172 id=172 data-nosnippet>172</a>        </span>fs::set_permissions(<span class="kw-2">&amp;</span>provider_store, fs::Permissions::from_mode(<span class="number">0o700</span>))
+<a href=#173 id=173 data-nosnippet>173</a>            .expect(<span class="string">"private provider store"</span>);
+<a href=#174 id=174 data-nosnippet>174</a>        <span class="kw">let </span>revision =
+<a href=#175 id=175 data-nosnippet>175</a>            cookie_agent_protocol::CatalogRevision::new(<span class="macro">format!</span>(<span class="string">"sha256:{}"</span>, <span class="string">"0"</span>.repeat(<span class="number">64</span>)))
+<a href=#176 id=176 data-nosnippet>176</a>                .expect(<span class="string">"catalog revision"</span>);
+<a href=#177 id=177 data-nosnippet>177</a>        <span class="kw">let </span>now = Timestamp::now();
+<a href=#178 id=178 data-nosnippet>178</a>        <span class="kw">let </span>catalog = Arc::new(CatalogSnapshot {
+<a href=#179 id=179 data-nosnippet>179</a>            revision,
+<a href=#180 id=180 data-nosnippet>180</a>            source: CatalogSource::Bootstrap,
+<a href=#181 id=181 data-nosnippet>181</a>            state: CatalogRuntimeState {
+<a href=#182 id=182 data-nosnippet>182</a>                availability: CatalogAvailability::Bootstrap,
+<a href=#183 id=183 data-nosnippet>183</a>                age: CatalogAgeState::Current,
+<a href=#184 id=184 data-nosnippet>184</a>                last_error: <span class="prelude-val">None</span>,
+<a href=#185 id=185 data-nosnippet>185</a>            },
+<a href=#186 id=186 data-nosnippet>186</a>            validated_at: now,
+<a href=#187 id=187 data-nosnippet>187</a>            last_checked_at: now,
+<a href=#188 id=188 data-nosnippet>188</a>            etag: <span class="prelude-val">None</span>,
+<a href=#189 id=189 data-nosnippet>189</a>            providers: BTreeMap::new(),
+<a href=#190 id=190 data-nosnippet>190</a>            canonical_models: BTreeMap::new(),
+<a href=#191 id=191 data-nosnippet>191</a>            quarantine: Vec::new(),
+<a href=#192 id=192 data-nosnippet>192</a>        });
+<a href=#193 id=193 data-nosnippet>193</a>        <span class="kw">let </span>model_manager = Arc::new(
+<a href=#194 id=194 data-nosnippet>194</a>            ModelManager::new(
+<a href=#195 id=195 data-nosnippet>195</a>                providers.clone(),
+<a href=#196 id=196 data-nosnippet>196</a>                catalog,
+<a href=#197 id=197 data-nosnippet>197</a>                ProviderStore::open(<span class="kw-2">&amp;</span>provider_store).expect(<span class="string">"provider store"</span>),
+<a href=#198 id=198 data-nosnippet>198</a>            )
+<a href=#199 id=199 data-nosnippet>199</a>            .expect(<span class="string">"model manager"</span>),
+<a href=#200 id=200 data-nosnippet>200</a>        );
+<a href=#201 id=201 data-nosnippet>201</a>        <span class="kw">let </span>agent_id = AgentId::new(<span class="string">"primary"</span>).expect(<span class="string">"agent id"</span>);
+<a href=#202 id=202 data-nosnippet>202</a>        <span class="kw">let </span>config = LoadedConfiguration {
+<a href=#203 id=203 data-nosnippet>203</a>            runtime: RuntimeConfig {
+<a href=#204 id=204 data-nosnippet>204</a>                schema_version: ConfigSchemaVersion,
+<a href=#205 id=205 data-nosnippet>205</a>                server: ServerConfig::default(),
+<a href=#206 id=206 data-nosnippet>206</a>                tool_output: ToolOutputConfig::default(),
+<a href=#207 id=207 data-nosnippet>207</a>                approval: ApprovalConfig::default(),
+<a href=#208 id=208 data-nosnippet>208</a>                context_compaction: ContextCompactionConfig::default(),
+<a href=#209 id=209 data-nosnippet>209</a>                session_title: SessionTitleConfig::default(),
+<a href=#210 id=210 data-nosnippet>210</a>                delegation: cookie_agent_config::DelegationConfig::default(),
+<a href=#211 id=211 data-nosnippet>211</a>                providers,
+<a href=#212 id=212 data-nosnippet>212</a>            },
+<a href=#213 id=213 data-nosnippet>213</a>            agents: BTreeMap::from([(agent_id.clone(), test_agent_document(<span class="kw-2">&amp;</span>agent_id))]),
+<a href=#214 id=214 data-nosnippet>214</a>            mcp_servers: BTreeMap::new(),
+<a href=#215 id=215 data-nosnippet>215</a>        };
+<a href=#216 id=216 data-nosnippet>216</a>        <span class="kw">let </span>engine = Engine::open(EngineOptions {
+<a href=#217 id=217 data-nosnippet>217</a>            data_dir: directory.path().join(<span class="string">"data"</span>),
+<a href=#218 id=218 data-nosnippet>218</a>            cwd: directory.path().to_owned(),
+<a href=#219 id=219 data-nosnippet>219</a>            config,
+<a href=#220 id=220 data-nosnippet>220</a>            model_manager: Arc::clone(<span class="kw-2">&amp;</span>model_manager),
+<a href=#221 id=221 data-nosnippet>221</a>            tools: Vec::new(),
+<a href=#222 id=222 data-nosnippet>222</a>        })
+<a href=#223 id=223 data-nosnippet>223</a>        .expect(<span class="string">"open engine"</span>);
+<a href=#224 id=224 data-nosnippet>224</a>        (directory, Arc::new(Server::new(engine)))
+<a href=#225 id=225 data-nosnippet>225</a>    }
+<a href=#226 id=226 data-nosnippet>226</a>
+<a href=#227 id=227 data-nosnippet>227</a>    <span class="kw">fn </span>call_id() -&gt; ToolCallId {
+<a href=#228 id=228 data-nosnippet>228</a>        ToolCallId::new_v7()
+<a href=#229 id=229 data-nosnippet>229</a>    }
+<a href=#230 id=230 data-nosnippet>230</a>
+<a href=#231 id=231 data-nosnippet>231</a>    <span class="kw">fn </span>approval_request() -&gt; ApprovalRequest {
+<a href=#232 id=232 data-nosnippet>232</a>        <span class="kw">let </span>resource = PreparedApprovalResource {
+<a href=#233 id=233 data-nosnippet>233</a>            capability: PermissionAction::Bash,
+<a href=#234 id=234 data-nosnippet>234</a>            canonical: PreparedResourceIdentity::new(<span class="string">"command:git-status"</span>)
+<a href=#235 id=235 data-nosnippet>235</a>                .expect(<span class="string">"prepared resource identity"</span>),
+<a href=#236 id=236 data-nosnippet>236</a>            binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(<span class="string">b"git status"</span>),
+<a href=#237 id=237 data-nosnippet>237</a>            binding_lifetime: PreparedBindingLifetime::ProcessLocal,
+<a href=#238 id=238 data-nosnippet>238</a>            boundary: ApprovalBoundary::CommandPrefix {
+<a href=#239 id=239 data-nosnippet>239</a>                prefix: <span class="string">"git status"</span>.into(),
+<a href=#240 id=240 data-nosnippet>240</a>            },
+<a href=#241 id=241 data-nosnippet>241</a>            source: ApprovalResourceSource::ModelRequest,
+<a href=#242 id=242 data-nosnippet>242</a>        };
+<a href=#243 id=243 data-nosnippet>243</a>        <span class="kw">let </span>resource_digest = resource.binding_digest.clone();
+<a href=#244 id=244 data-nosnippet>244</a>        <span class="kw">let </span>operation = PreparedOperationIdentity::new(
+<a href=#245 id=245 data-nosnippet>245</a>            Sha256Digest::of_bytes(<span class="string">b"normalized arguments"</span>),
+<a href=#246 id=246 data-nosnippet>246</a>            <span class="macro">vec!</span>[ApprovalCapability {
+<a href=#247 id=247 data-nosnippet>247</a>                action: PermissionAction::Bash,
+<a href=#248 id=248 data-nosnippet>248</a>                operation: PreparedCapabilityOperation::new(<span class="string">"execute"</span>)
+<a href=#249 id=249 data-nosnippet>249</a>                    .expect(<span class="string">"prepared capability operation"</span>),
+<a href=#250 id=250 data-nosnippet>250</a>            }],
+<a href=#251 id=251 data-nosnippet>251</a>            <span class="macro">vec!</span>[resource],
+<a href=#252 id=252 data-nosnippet>252</a>            Sha256Digest::of_bytes(<span class="string">b"execution context"</span>),
+<a href=#253 id=253 data-nosnippet>253</a>        )
+<a href=#254 id=254 data-nosnippet>254</a>        .expect(<span class="string">"prepared operation"</span>);
+<a href=#255 id=255 data-nosnippet>255</a>        ApprovalRequest::new(
+<a href=#256 id=256 data-nosnippet>256</a>            ApprovalId::new_v7(),
+<a href=#257 id=257 data-nosnippet>257</a>            <span class="number">7</span>,
+<a href=#258 id=258 data-nosnippet>258</a>            ApprovalTrigger::PermissionPolicy,
+<a href=#259 id=259 data-nosnippet>259</a>            operation,
+<a href=#260 id=260 data-nosnippet>260</a>            <span class="macro">vec!</span>[ApprovalEvaluation {
+<a href=#261 id=261 data-nosnippet>261</a>                resource_digest,
+<a href=#262 id=262 data-nosnippet>262</a>                effect: PermissionEffect::Ask,
+<a href=#263 id=263 data-nosnippet>263</a>                trace: DecisionTrace {
+<a href=#264 id=264 data-nosnippet>264</a>                    action: PermissionAction::Bash,
+<a href=#265 id=265 data-nosnippet>265</a>                    normalized_resource: <span class="string">"git status"</span>.into(),
+<a href=#266 id=266 data-nosnippet>266</a>                    candidates: <span class="macro">vec!</span>[MatchedPermissionRule {
+<a href=#267 id=267 data-nosnippet>267</a>                        source_layer: SafeCode::new(<span class="string">"test"</span>).expect(<span class="string">"safe code"</span>),
+<a href=#268 id=268 data-nosnippet>268</a>                        action: PermissionAction::Bash,
+<a href=#269 id=269 data-nosnippet>269</a>                        resource: cookie_agent_protocol::WildcardPattern::new(<span class="string">"git status"</span>)
+<a href=#270 id=270 data-nosnippet>270</a>                            .expect(<span class="string">"wildcard"</span>),
+<a href=#271 id=271 data-nosnippet>271</a>                        effect: PermissionEffect::Ask,
+<a href=#272 id=272 data-nosnippet>272</a>                    }],
+<a href=#273 id=273 data-nosnippet>273</a>                    effect: PermissionEffect::Ask,
+<a href=#274 id=274 data-nosnippet>274</a>                    precedence_reason: <span class="string">"test"</span>.into(),
+<a href=#275 id=275 data-nosnippet>275</a>                },
+<a href=#276 id=276 data-nosnippet>276</a>            }],
+<a href=#277 id=277 data-nosnippet>277</a>            ApprovalConstraints {
+<a href=#278 id=278 data-nosnippet>278</a>                allow_once: <span class="bool-val">true</span>,
+<a href=#279 id=279 data-nosnippet>279</a>                allow_tree_grant: <span class="bool-val">false</span>,
+<a href=#280 id=280 data-nosnippet>280</a>                cancellable: <span class="bool-val">true</span>,
+<a href=#281 id=281 data-nosnippet>281</a>                expires_at: <span class="prelude-val">None</span>,
+<a href=#282 id=282 data-nosnippet>282</a>            },
+<a href=#283 id=283 data-nosnippet>283</a>        )
+<a href=#284 id=284 data-nosnippet>284</a>        .expect(<span class="string">"approval request"</span>)
+<a href=#285 id=285 data-nosnippet>285</a>    }
+<a href=#286 id=286 data-nosnippet>286</a>
+<a href=#287 id=287 data-nosnippet>287</a>    <span class="kw">fn </span>text_event(
+<a href=#288 id=288 data-nosnippet>288</a>        session_id: SessionId,
+<a href=#289 id=289 data-nosnippet>289</a>        seq: u64,
+<a href=#290 id=290 data-nosnippet>290</a>        run_id: cookie_agent_protocol::RunId,
+<a href=#291 id=291 data-nosnippet>291</a>        attempt_id: cookie_agent_protocol::AttemptId,
+<a href=#292 id=292 data-nosnippet>292</a>        text: <span class="kw-2">&amp;</span>str,
+<a href=#293 id=293 data-nosnippet>293</a>    ) -&gt; StoredEvent {
+<a href=#294 id=294 data-nosnippet>294</a>        StoredEvent {
+<a href=#295 id=295 data-nosnippet>295</a>            event_schema_version: EventSchemaVersion::current(),
+<a href=#296 id=296 data-nosnippet>296</a>            session_id,
+<a href=#297 id=297 data-nosnippet>297</a>            run_id: <span class="prelude-val">Some</span>(run_id),
+<a href=#298 id=298 data-nosnippet>298</a>            seq,
+<a href=#299 id=299 data-nosnippet>299</a>            timestamp: Timestamp::now(),
+<a href=#300 id=300 data-nosnippet>300</a>            payload: EventPayload::TextDelta {
+<a href=#301 id=301 data-nosnippet>301</a>                attempt_id,
+<a href=#302 id=302 data-nosnippet>302</a>                text: text.into(),
+<a href=#303 id=303 data-nosnippet>303</a>            },
+<a href=#304 id=304 data-nosnippet>304</a>        }
+<a href=#305 id=305 data-nosnippet>305</a>    }
+<a href=#306 id=306 data-nosnippet>306</a>
+<a href=#307 id=307 data-nosnippet>307</a>    <span class="attr">#[test]
+<a href=#308 id=308 data-nosnippet>308</a>    </span><span class="kw">fn </span>output_snapshot_handoff_and_out_of_order_deltas_are_lossless() {
+<a href=#309 id=309 data-nosnippet>309</a>        <span class="kw">let </span><span class="kw-2">mut </span>output = OrderedOutput::default();
+<a href=#310 id=310 data-nosnippet>310</a>        output.replace_snapshot(
+<a href=#311 id=311 data-nosnippet>311</a>            <span class="number">0</span>,
+<a href=#312 id=312 data-nosnippet>312</a>            <span class="number">3</span>,
+<a href=#313 id=313 data-nosnippet>313</a>            <span class="macro">vec!</span>[OutputDelta {
+<a href=#314 id=314 data-nosnippet>314</a>                call_id: call_id(),
+<a href=#315 id=315 data-nosnippet>315</a>                stream: OutputStream::Stdout,
+<a href=#316 id=316 data-nosnippet>316</a>                byte_offset: <span class="number">0</span>,
+<a href=#317 id=317 data-nosnippet>317</a>                data: STANDARD.encode(<span class="string">b"one"</span>),
+<a href=#318 id=318 data-nosnippet>318</a>            }],
+<a href=#319 id=319 data-nosnippet>319</a>        );
+<a href=#320 id=320 data-nosnippet>320</a>        output.push(OutputDelta {
+<a href=#321 id=321 data-nosnippet>321</a>            call_id: call_id(),
+<a href=#322 id=322 data-nosnippet>322</a>            stream: OutputStream::Stdout,
+<a href=#323 id=323 data-nosnippet>323</a>            byte_offset: <span class="number">6</span>,
+<a href=#324 id=324 data-nosnippet>324</a>            data: STANDARD.encode(<span class="string">b"six"</span>),
+<a href=#325 id=325 data-nosnippet>325</a>        });
+<a href=#326 id=326 data-nosnippet>326</a>        output.push(OutputDelta {
+<a href=#327 id=327 data-nosnippet>327</a>            call_id: call_id(),
+<a href=#328 id=328 data-nosnippet>328</a>            stream: OutputStream::Stdout,
+<a href=#329 id=329 data-nosnippet>329</a>            byte_offset: <span class="number">3</span>,
+<a href=#330 id=330 data-nosnippet>330</a>            data: STANDARD.encode(<span class="string">b"two"</span>),
+<a href=#331 id=331 data-nosnippet>331</a>        });
+<a href=#332 id=332 data-nosnippet>332</a>        <span class="macro">assert_eq!</span>(output.text(), <span class="string">"onetwosix"</span>);
+<a href=#333 id=333 data-nosnippet>333</a>        <span class="macro">assert_eq!</span>(output.next_offset, <span class="number">9</span>);
+<a href=#334 id=334 data-nosnippet>334</a>    }
+<a href=#335 id=335 data-nosnippet>335</a>
+<a href=#336 id=336 data-nosnippet>336</a>    <span class="attr">#[test]
+<a href=#337 id=337 data-nosnippet>337</a>    </span><span class="kw">fn </span>empty_snapshot_keeps_its_explicit_stream_identity() {
+<a href=#338 id=338 data-nosnippet>338</a>        <span class="kw">let </span>envelope = OutputSnapshotEnvelope {
+<a href=#339 id=339 data-nosnippet>339</a>            stream: OutputStream::Stderr,
+<a href=#340 id=340 data-nosnippet>340</a>            snapshot: OutputSnapshot {
+<a href=#341 id=341 data-nosnippet>341</a>                call_id: call_id(),
+<a href=#342 id=342 data-nosnippet>342</a>                start_offset: <span class="number">0</span>,
+<a href=#343 id=343 data-nosnippet>343</a>                end_offset: <span class="number">0</span>,
+<a href=#344 id=344 data-nosnippet>344</a>                chunks: Vec::new(),
+<a href=#345 id=345 data-nosnippet>345</a>            },
+<a href=#346 id=346 data-nosnippet>346</a>        };
+<a href=#347 id=347 data-nosnippet>347</a>        <span class="macro">assert_eq!</span>(envelope.stream, OutputStream::Stderr);
+<a href=#348 id=348 data-nosnippet>348</a>    }
+<a href=#349 id=349 data-nosnippet>349</a>
+<a href=#350 id=350 data-nosnippet>350</a>    <span class="attr">#[test]
+<a href=#351 id=351 data-nosnippet>351</a>    </span><span class="kw">fn </span>terminal_run_expires_pending_approvals() {
+<a href=#352 id=352 data-nosnippet>352</a>        <span class="kw">let </span>session = SessionId::new_v7();
+<a href=#353 id=353 data-nosnippet>353</a>        <span class="kw">let </span>run_id = cookie_agent_protocol::RunId::new_v7();
+<a href=#354 id=354 data-nosnippet>354</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = StateStore::default();
+<a href=#355 id=355 data-nosnippet>355</a>        store.apply_event(StoredEvent {
+<a href=#356 id=356 data-nosnippet>356</a>            event_schema_version: EventSchemaVersion::current(),
+<a href=#357 id=357 data-nosnippet>357</a>            session_id: session,
+<a href=#358 id=358 data-nosnippet>358</a>            run_id: <span class="prelude-val">Some</span>(run_id),
+<a href=#359 id=359 data-nosnippet>359</a>            seq: <span class="number">1</span>,
+<a href=#360 id=360 data-nosnippet>360</a>            timestamp: Timestamp::now(),
+<a href=#361 id=361 data-nosnippet>361</a>            payload: EventPayload::ApprovalRequested {
+<a href=#362 id=362 data-nosnippet>362</a>                request: approval_request(),
+<a href=#363 id=363 data-nosnippet>363</a>            },
+<a href=#364 id=364 data-nosnippet>364</a>        });
+<a href=#365 id=365 data-nosnippet>365</a>        store.apply_event(StoredEvent {
+<a href=#366 id=366 data-nosnippet>366</a>            event_schema_version: EventSchemaVersion::current(),
+<a href=#367 id=367 data-nosnippet>367</a>            session_id: session,
+<a href=#368 id=368 data-nosnippet>368</a>            run_id: <span class="prelude-val">Some</span>(run_id),
+<a href=#369 id=369 data-nosnippet>369</a>            seq: <span class="number">2</span>,
+<a href=#370 id=370 data-nosnippet>370</a>            timestamp: Timestamp::now(),
+<a href=#371 id=371 data-nosnippet>371</a>            payload: EventPayload::RunCompleted { final_text: <span class="prelude-val">None </span>},
+<a href=#372 id=372 data-nosnippet>372</a>        });
+<a href=#373 id=373 data-nosnippet>373</a>        <span class="macro">assert!</span>(store.sessions[<span class="kw-2">&amp;</span>session].approvals.is_empty());
+<a href=#374 id=374 data-nosnippet>374</a>    }
+<a href=#375 id=375 data-nosnippet>375</a>
+<a href=#376 id=376 data-nosnippet>376</a>    <span class="attr">#[tokio::test]
+<a href=#377 id=377 data-nosnippet>377</a>    </span><span class="kw">async fn </span>app_draws_conversation_approval_tree_and_input() {
+<a href=#378 id=378 data-nosnippet>378</a>        <span class="kw">let </span>(_directory, server) = in_process_server();
+<a href=#379 id=379 data-nosnippet>379</a>        <span class="kw">let </span>client = Client::connect_in_process(server);
+<a href=#380 id=380 data-nosnippet>380</a>        client.handshake().<span class="kw">await</span>.expect(<span class="string">"handshake"</span>);
+<a href=#381 id=381 data-nosnippet>381</a>        <span class="kw">let </span>models = client.runtime_snapshot().<span class="kw">await</span>.expect(<span class="string">"runtime snapshot"</span>);
+<a href=#382 id=382 data-nosnippet>382</a>        <span class="macro">assert_eq!</span>(
+<a href=#383 id=383 data-nosnippet>383</a>            models.snapshot.models[<span class="number">0</span>].key.as_str(),
+<a href=#384 id=384 data-nosnippet>384</a>            <span class="string">"custom.gateway/arbitrary-model"
+<a href=#385 id=385 data-nosnippet>385</a>        </span>);
+<a href=#386 id=386 data-nosnippet>386</a>        <span class="kw">let </span>session = client
+<a href=#387 id=387 data-nosnippet>387</a>            .create_session(SessionCreateParams {
+<a href=#388 id=388 data-nosnippet>388</a>                selection: test_run_selection(),
+<a href=#389 id=389 data-nosnippet>389</a>            })
+<a href=#390 id=390 data-nosnippet>390</a>            .<span class="kw">await
+<a href=#391 id=391 data-nosnippet>391</a>            </span>.expect(<span class="string">"session"</span>)
+<a href=#392 id=392 data-nosnippet>392</a>            .session;
+<a href=#393 id=393 data-nosnippet>393</a>        <span class="kw">let </span><span class="kw-2">mut </span>app = App::new(client).<span class="kw">await</span>.expect(<span class="string">"TUI config"</span>);
+<a href=#394 id=394 data-nosnippet>394</a>        <span class="kw">let </span>request = approval_request();
+<a href=#395 id=395 data-nosnippet>395</a>        <span class="kw">let </span>approval_id = request.approval_id();
+<a href=#396 id=396 data-nosnippet>396</a>        app.store.apply_event(StoredEvent {
+<a href=#397 id=397 data-nosnippet>397</a>            event_schema_version: EventSchemaVersion::current(),
+<a href=#398 id=398 data-nosnippet>398</a>            session_id: session.session_id,
+<a href=#399 id=399 data-nosnippet>399</a>            run_id: <span class="prelude-val">Some</span>(cookie_agent_protocol::RunId::new_v7()),
+<a href=#400 id=400 data-nosnippet>400</a>            seq: <span class="number">2</span>,
+<a href=#401 id=401 data-nosnippet>401</a>            timestamp: Timestamp::now(),
+<a href=#402 id=402 data-nosnippet>402</a>            payload: EventPayload::ApprovalRequested { request },
+<a href=#403 id=403 data-nosnippet>403</a>        });
+<a href=#404 id=404 data-nosnippet>404</a>        app.store.apply_event(StoredEvent {
+<a href=#405 id=405 data-nosnippet>405</a>            event_schema_version: EventSchemaVersion::current(),
+<a href=#406 id=406 data-nosnippet>406</a>            session_id: session.session_id,
+<a href=#407 id=407 data-nosnippet>407</a>            run_id: <span class="prelude-val">Some</span>(cookie_agent_protocol::RunId::new_v7()),
+<a href=#408 id=408 data-nosnippet>408</a>            seq: <span class="number">3</span>,
+<a href=#409 id=409 data-nosnippet>409</a>            timestamp: Timestamp::now(),
+<a href=#410 id=410 data-nosnippet>410</a>            payload: EventPayload::ApprovalEscalated {
+<a href=#411 id=411 data-nosnippet>411</a>                approval_id,
+<a href=#412 id=412 data-nosnippet>412</a>                reason_code: cookie_agent_protocol::ApprovalReasonCode::Escalated,
+<a href=#413 id=413 data-nosnippet>413</a>            },
+<a href=#414 id=414 data-nosnippet>414</a>        });
+<a href=#415 id=415 data-nosnippet>415</a>        <span class="kw">for </span>(width, height) <span class="kw">in </span>[(<span class="number">40</span>, <span class="number">12</span>), (<span class="number">80</span>, <span class="number">24</span>), (<span class="number">160</span>, <span class="number">50</span>)] {
+<a href=#416 id=416 data-nosnippet>416</a>            <span class="kw">let </span>backend = TestBackend::new(width, height);
+<a href=#417 id=417 data-nosnippet>417</a>            <span class="kw">let </span><span class="kw-2">mut </span>terminal = Terminal::new(backend).expect(<span class="string">"test terminal"</span>);
+<a href=#418 id=418 data-nosnippet>418</a>            terminal
+<a href=#419 id=419 data-nosnippet>419</a>                .draw(|frame| app.draw_for_test(frame))
+<a href=#420 id=420 data-nosnippet>420</a>                .expect(<span class="string">"app render"</span>);
+<a href=#421 id=421 data-nosnippet>421</a>            <span class="kw">let </span>buffer = terminal.backend().buffer();
+<a href=#422 id=422 data-nosnippet>422</a>            <span class="kw">let </span>rendered = (<span class="number">0</span>..buffer.area.height)
+<a href=#423 id=423 data-nosnippet>423</a>                .flat_map(|y| {
+<a href=#424 id=424 data-nosnippet>424</a>                    (<span class="number">0</span>..buffer.area.width).map(<span class="kw">move </span>|x| buffer[(x, y)].symbol().to_owned())
+<a href=#425 id=425 data-nosnippet>425</a>                })
+<a href=#426 id=426 data-nosnippet>426</a>                .collect::&lt;String&gt;();
+<a href=#427 id=427 data-nosnippet>427</a>            <span class="macro">assert!</span>(rendered.contains(<span class="string">"Approval"</span>));
+<a href=#428 id=428 data-nosnippet>428</a>            <span class="macro">assert!</span>(rendered.contains(<span class="string">"Agents"</span>));
+<a href=#429 id=429 data-nosnippet>429</a>            <span class="kw">if </span>width &gt;= <span class="number">80 </span>{
+<a href=#430 id=430 data-nosnippet>430</a>                <span class="macro">assert!</span>(rendered.contains(<span class="string">"Conversation"</span>));
+<a href=#431 id=431 data-nosnippet>431</a>            }
+<a href=#432 id=432 data-nosnippet>432</a>            <span class="kw">if </span>(width, height) == (<span class="number">80</span>, <span class="number">24</span>) {
+<a href=#433 id=433 data-nosnippet>433</a>                <span class="macro">assert!</span>(rendered.contains(<span class="string">"git status"</span>));
+<a href=#434 id=434 data-nosnippet>434</a>                <span class="macro">assert!</span>(rendered.contains(<span class="string">"primary • custom.gateway/arbitrary-model[base]"</span>));
+<a href=#435 id=435 data-nosnippet>435</a>            }
+<a href=#436 id=436 data-nosnippet>436</a>        }
+<a href=#437 id=437 data-nosnippet>437</a>    }
+<a href=#438 id=438 data-nosnippet>438</a>
+<a href=#439 id=439 data-nosnippet>439</a>    <span class="attr">#[tokio::test]
+<a href=#440 id=440 data-nosnippet>440</a>    </span><span class="kw">async fn </span>client_round_trips_handshake_create_and_event_replay_in_process() {
+<a href=#441 id=441 data-nosnippet>441</a>        <span class="kw">let </span>(_directory, server) = in_process_server();
+<a href=#442 id=442 data-nosnippet>442</a>        <span class="kw">let </span>client = Client::connect_in_process(server);
+<a href=#443 id=443 data-nosnippet>443</a>        client.handshake().<span class="kw">await</span>.expect(<span class="string">"handshake"</span>);
+<a href=#444 id=444 data-nosnippet>444</a>        <span class="kw">let </span>session = client
+<a href=#445 id=445 data-nosnippet>445</a>            .create_session(SessionCreateParams {
+<a href=#446 id=446 data-nosnippet>446</a>                selection: test_run_selection(),
+<a href=#447 id=447 data-nosnippet>447</a>            })
+<a href=#448 id=448 data-nosnippet>448</a>            .<span class="kw">await
+<a href=#449 id=449 data-nosnippet>449</a>            </span>.expect(<span class="string">"create session"</span>)
+<a href=#450 id=450 data-nosnippet>450</a>            .session;
+<a href=#451 id=451 data-nosnippet>451</a>        <span class="kw">let </span><span class="kw-2">mut </span>deliveries = client.subscribe_deliveries().expect(<span class="string">"delivery receiver"</span>);
+<a href=#452 id=452 data-nosnippet>452</a>        client
+<a href=#453 id=453 data-nosnippet>453</a>            .subscribe_events(session.session_id, <span class="prelude-val">None</span>)
+<a href=#454 id=454 data-nosnippet>454</a>            .<span class="kw">await
+<a href=#455 id=455 data-nosnippet>455</a>            </span>.expect(<span class="string">"subscribe events"</span>);
+<a href=#456 id=456 data-nosnippet>456</a>        <span class="kw">let </span><span class="kw-2">mut </span>replayed = Vec::new();
+<a href=#457 id=457 data-nosnippet>457</a>        <span class="kw">loop </span>{
+<a href=#458 id=458 data-nosnippet>458</a>            <span class="kw">match </span>deliveries.recv().<span class="kw">await</span>.expect(<span class="string">"delivery"</span>) {
+<a href=#459 id=459 data-nosnippet>459</a>                <span class="kw">crate</span>::ClientDelivery::ReplayEvent { event, .. } =&gt; replayed.push(<span class="kw-2">*</span>event),
+<a href=#460 id=460 data-nosnippet>460</a>                <span class="kw">crate</span>::ClientDelivery::ReplayEnd { .. } =&gt; <span class="kw">break</span>,
+<a href=#461 id=461 data-nosnippet>461</a>                <span class="kw">_ </span>=&gt; {}
+<a href=#462 id=462 data-nosnippet>462</a>            }
+<a href=#463 id=463 data-nosnippet>463</a>        }
+<a href=#464 id=464 data-nosnippet>464</a>        <span class="macro">assert!</span>(!replayed.is_empty());
+<a href=#465 id=465 data-nosnippet>465</a>        <span class="macro">assert!</span>(
+<a href=#466 id=466 data-nosnippet>466</a>            replayed
+<a href=#467 id=467 data-nosnippet>467</a>                .iter()
+<a href=#468 id=468 data-nosnippet>468</a>                .all(|event| event.session_id == session.session_id)
+<a href=#469 id=469 data-nosnippet>469</a>        );
+<a href=#470 id=470 data-nosnippet>470</a>    }
+<a href=#471 id=471 data-nosnippet>471</a>
+<a href=#472 id=472 data-nosnippet>472</a>    <span class="attr">#[tokio::test]
+<a href=#473 id=473 data-nosnippet>473</a>    </span><span class="kw">async fn </span>local_startup_creates_a_fresh_root_while_attach_keeps_existing_selection() {
+<a href=#474 id=474 data-nosnippet>474</a>        <span class="kw">let </span>(_directory, server) = in_process_server();
+<a href=#475 id=475 data-nosnippet>475</a>        <span class="kw">let </span>setup = Client::connect_in_process(server.clone());
+<a href=#476 id=476 data-nosnippet>476</a>        setup.handshake().<span class="kw">await</span>.expect(<span class="string">"setup handshake"</span>);
+<a href=#477 id=477 data-nosnippet>477</a>        <span class="kw">let </span>existing = setup
+<a href=#478 id=478 data-nosnippet>478</a>            .create_session(SessionCreateParams {
+<a href=#479 id=479 data-nosnippet>479</a>                selection: test_run_selection(),
+<a href=#480 id=480 data-nosnippet>480</a>            })
+<a href=#481 id=481 data-nosnippet>481</a>            .<span class="kw">await
+<a href=#482 id=482 data-nosnippet>482</a>            </span>.expect(<span class="string">"existing session"</span>)
+<a href=#483 id=483 data-nosnippet>483</a>            .session;
+<a href=#484 id=484 data-nosnippet>484</a>
+<a href=#485 id=485 data-nosnippet>485</a>        <span class="kw">let </span>attached = Client::connect_in_process(server.clone());
+<a href=#486 id=486 data-nosnippet>486</a>        attached.handshake().<span class="kw">await</span>.expect(<span class="string">"attach handshake"</span>);
+<a href=#487 id=487 data-nosnippet>487</a>        <span class="kw">let </span>attached_app = App::new(attached).<span class="kw">await</span>.expect(<span class="string">"attached TUI config"</span>);
+<a href=#488 id=488 data-nosnippet>488</a>        <span class="macro">assert_eq!</span>(attached_app.store.sessions.len(), <span class="number">1</span>);
+<a href=#489 id=489 data-nosnippet>489</a>        <span class="macro">assert!</span>(
+<a href=#490 id=490 data-nosnippet>490</a>            attached_app
+<a href=#491 id=491 data-nosnippet>491</a>                .store
+<a href=#492 id=492 data-nosnippet>492</a>                .sessions
+<a href=#493 id=493 data-nosnippet>493</a>                .contains_key(<span class="kw-2">&amp;</span>existing.session_id)
+<a href=#494 id=494 data-nosnippet>494</a>        );
+<a href=#495 id=495 data-nosnippet>495</a>
+<a href=#496 id=496 data-nosnippet>496</a>        <span class="kw">let </span>local = Client::connect_in_process(server);
+<a href=#497 id=497 data-nosnippet>497</a>        local.handshake().<span class="kw">await</span>.expect(<span class="string">"local handshake"</span>);
+<a href=#498 id=498 data-nosnippet>498</a>        <span class="kw">let </span>local_app = App::new_with_new_session(local)
+<a href=#499 id=499 data-nosnippet>499</a>            .<span class="kw">await
+<a href=#500 id=500 data-nosnippet>500</a>            </span>.expect(<span class="string">"local TUI config"</span>);
+<a href=#501 id=501 data-nosnippet>501</a>        <span class="macro">assert_eq!</span>(local_app.store.sessions.len(), <span class="number">1</span>);
+<a href=#502 id=502 data-nosnippet>502</a>        <span class="kw">let </span>local_session = local_app
+<a href=#503 id=503 data-nosnippet>503</a>            .store
+<a href=#504 id=504 data-nosnippet>504</a>            .sessions
+<a href=#505 id=505 data-nosnippet>505</a>            .keys()
+<a href=#506 id=506 data-nosnippet>506</a>            .next()
+<a href=#507 id=507 data-nosnippet>507</a>            .copied()
+<a href=#508 id=508 data-nosnippet>508</a>            .expect(<span class="string">"new local root session"</span>);
+<a href=#509 id=509 data-nosnippet>509</a>        <span class="macro">assert_ne!</span>(local_session, existing.session_id);
+<a href=#510 id=510 data-nosnippet>510</a>    }
+<a href=#511 id=511 data-nosnippet>511</a>
+<a href=#512 id=512 data-nosnippet>512</a>    <span class="attr">#[test]
+<a href=#513 id=513 data-nosnippet>513</a>    </span><span class="kw">fn </span>state_store_reduces_events_and_surfaces_gap_cursor() {
+<a href=#514 id=514 data-nosnippet>514</a>        <span class="kw">let </span>session = SessionId::new_v7();
+<a href=#515 id=515 data-nosnippet>515</a>        <span class="kw">let </span>run_id = cookie_agent_protocol::RunId::new_v7();
+<a href=#516 id=516 data-nosnippet>516</a>        <span class="kw">let </span>attempt_id = cookie_agent_protocol::AttemptId::new_v7();
+<a href=#517 id=517 data-nosnippet>517</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = StateStore::default();
+<a href=#518 id=518 data-nosnippet>518</a>        store.apply_event(text_event(session, <span class="number">1</span>, run_id, attempt_id, <span class="string">"hello"</span>));
+<a href=#519 id=519 data-nosnippet>519</a>        <span class="comment">// Replayed duplicate is ignored, preserving the projection.
+<a href=#520 id=520 data-nosnippet>520</a>        </span>store.apply_event(text_event(session, <span class="number">1</span>, run_id, attempt_id, <span class="string">"duplicate"</span>));
+<a href=#521 id=521 data-nosnippet>521</a>        <span class="macro">assert_eq!</span>(store.sessions[<span class="kw-2">&amp;</span>session].last_seq, <span class="number">1</span>);
+<a href=#522 id=522 data-nosnippet>522</a>        <span class="macro">assert_eq!</span>(
+<a href=#523 id=523 data-nosnippet>523</a>            store.apply_subscription(EventSubscriptionMessage::Gap {
+<a href=#524 id=524 data-nosnippet>524</a>                session_id: session,
+<a href=#525 id=525 data-nosnippet>525</a>                last_delivered_seq: <span class="number">1</span>,
+<a href=#526 id=526 data-nosnippet>526</a>            }),
+<a href=#527 id=527 data-nosnippet>527</a>            <span class="prelude-val">Some</span>(<span class="number">1</span>)
+<a href=#528 id=528 data-nosnippet>528</a>        );
+<a href=#529 id=529 data-nosnippet>529</a>    }
+<a href=#530 id=530 data-nosnippet>530</a>}
 </code></pre></div></section></main></body></html>
