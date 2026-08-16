@@ -2213,52 +2213,35 @@ async fn scripted_delegation_server() -> (String, tokio::task::JoinHandle<Vec<St
 }
 
 async fn scripted_background_delegation_server() -> (String, tokio::task::JoinHandle<Vec<String>>) {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("background delegation listener");
-    let address = listener.local_addr().expect("listener address");
-    let task = tokio::spawn(async move {
-        let bodies = [
-            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"background-delegate-call\",\"type\":\"function\",\"function\":{\"name\":\"delegate_subagent\",\"arguments\":\"{\\\"agent_type\\\":\\\"worker\\\",\\\"description\\\":\\\"Write report\\\",\\\"prompt\\\":\\\"write report\\\",\\\"background\\\":true}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
-            "data: {\"choices\":[{\"delta\":{\"content\":\"first line\\nsecond line\\nthird line\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-            "data: {\"choices\":[{\"delta\":{\"content\":\"parent continued after admission\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-        ];
-        let mut requests = Vec::new();
-        for body in bodies {
-            let (mut socket, _) = listener
-                .accept()
-                .await
-                .expect("background delegation accept");
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 8192];
-            loop {
-                let read = socket
-                    .read(&mut buffer)
-                    .await
-                    .expect("background delegation read");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            socket
-                .write_all(response.as_bytes())
-                .await
-                .expect("background delegation response");
-            requests.push(String::from_utf8(request).expect("UTF-8 request"));
-        }
-        requests
-    });
-    (format!("http://{address}/v1"), task)
+    let (endpoint, responses, task) = scripted_channel_server(3).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_body(
+                "background-delegate-call",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Write report",
+                    "prompt":"write report",
+                    "background":true
+                }),
+            ),
+        ))
+        .expect("background tool response");
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "write report",
+            scripted_text_body("first line\nsecond line\nthird line"),
+        ))
+        .expect("background child response");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("parent continued after admission"),
+        ))
+        .expect("background parent response");
+    (endpoint, task)
 }
 
 async fn read_scripted_http_request(socket: &mut tokio::net::TcpStream) -> Vec<u8> {
@@ -2314,28 +2297,96 @@ async fn scripted_channel_server(
     expected_requests: usize,
 ) -> (
     String,
-    tokio::sync::mpsc::UnboundedSender<String>,
+    tokio::sync::mpsc::UnboundedSender<MatchedScriptedResponse>,
     tokio::task::JoinHandle<Vec<String>>,
 ) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("channel script listener");
     let address = listener.local_addr().expect("listener address");
-    let (responses, mut response_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (responses, mut response_rx) =
+        tokio::sync::mpsc::unbounded_channel::<MatchedScriptedResponse>();
     let task = tokio::spawn(async move {
         let mut requests = Vec::with_capacity(expected_requests);
+        let mut pending_responses = Vec::<MatchedScriptedResponse>::new();
         for _ in 0..expected_requests {
             let (mut socket, _) = listener.accept().await.expect("channel script accept");
-            requests.push(
-                String::from_utf8(read_scripted_http_request(&mut socket).await)
-                    .expect("channel script request"),
-            );
-            let body = response_rx.recv().await.expect("channel script response");
+            let request = read_scripted_http_request(&mut socket).await;
+            let body = loop {
+                if let Some(index) = pending_responses
+                    .iter()
+                    .position(|response| response.matches(&request))
+                {
+                    break pending_responses.remove(index).body;
+                }
+                pending_responses.push(
+                    response_rx
+                        .recv()
+                        .await
+                        .expect("matching channel script response"),
+                );
+            };
+            requests.push(String::from_utf8(request).expect("channel script request"));
             write_scripted_sse(&mut socket, &body).await;
         }
         requests
     });
     (format!("http://{address}/v1"), responses, task)
+}
+
+struct MatchedScriptedResponse {
+    matcher: ScriptedRequestMatcher,
+    body: String,
+}
+
+enum ScriptedRequestMatcher {
+    LastMessageRole(String),
+    LastMessageContains(String),
+}
+
+impl MatchedScriptedResponse {
+    fn last_message_role(role: &str, body: String) -> Self {
+        Self {
+            matcher: ScriptedRequestMatcher::LastMessageRole(role.into()),
+            body,
+        }
+    }
+
+    fn last_message_contains(text: &str, body: String) -> Self {
+        Self {
+            matcher: ScriptedRequestMatcher::LastMessageContains(text.into()),
+            body,
+        }
+    }
+
+    fn matches(&self, request: &[u8]) -> bool {
+        let Some(body_start) = request
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|position| position + 4)
+        else {
+            return false;
+        };
+        let Ok(request) = serde_json::from_slice::<serde_json::Value>(&request[body_start..])
+        else {
+            return false;
+        };
+        let Some(last_message) = request
+            .get("messages")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|messages| messages.last())
+        else {
+            return false;
+        };
+        match &self.matcher {
+            ScriptedRequestMatcher::LastMessageRole(role) => {
+                last_message.get("role").and_then(serde_json::Value::as_str) == Some(role)
+            }
+            ScriptedRequestMatcher::LastMessageContains(text) => {
+                last_message.to_string().contains(text)
+            }
+        }
+    }
 }
 
 fn scripted_text_body(text: &str) -> String {
@@ -6919,22 +6970,31 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
         .create_session(selection.clone())
         .expect("resume parent");
     responses
-        .send(scripted_tool_body(
-            "resume-fresh",
-            "delegate_subagent",
-            serde_json::json!({
-                "agent_type":"worker",
-                "description":"Original identity",
-                "prompt":"first child task",
-                "background":true
-            }),
+        .send(MatchedScriptedResponse::last_message_contains(
+            "create a resumable child",
+            scripted_tool_body(
+                "resume-fresh",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Original identity",
+                    "prompt":"first child task",
+                    "background":true
+                }),
+            ),
         ))
         .expect("fresh tool response");
     responses
-        .send(scripted_text_body("first child result"))
+        .send(MatchedScriptedResponse::last_message_contains(
+            "first child task",
+            scripted_text_body("first child result"),
+        ))
         .expect("first child response");
     responses
-        .send(scripted_text_body("parent after first delegation"))
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("parent after first delegation"),
+        ))
         .expect("first parent response");
     fixture
         .engine
@@ -7005,23 +7065,32 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
     assert!(ancestor_error.to_string().contains("ancestor"));
 
     responses
-        .send(scripted_tool_body(
-            "resume-terminal",
-            "delegate_subagent",
-            serde_json::json!({
-                "agent_type":"worker",
-                "description":"Do not replace the title",
-                "prompt":"second child task",
-                "background":true,
-                "resume_session_id":child_session_id
-            }),
+        .send(MatchedScriptedResponse::last_message_contains(
+            "resume the existing child",
+            scripted_tool_body(
+                "resume-terminal",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Do not replace the title",
+                    "prompt":"second child task",
+                    "background":true,
+                    "resume_session_id":child_session_id
+                }),
+            ),
         ))
         .expect("resume tool response");
     responses
-        .send(scripted_text_body("second child result"))
+        .send(MatchedScriptedResponse::last_message_contains(
+            "second child task",
+            scripted_text_body("second child result"),
+        ))
         .expect("second child response");
     responses
-        .send(scripted_text_body("parent after resumed delegation"))
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("parent after resumed delegation"),
+        ))
         .expect("second parent response");
     fixture
         .engine
@@ -7548,14 +7617,16 @@ async fn inherited_context_is_text_only_journaled_and_deterministic_after_restar
         .create_session(selection.clone())
         .expect("context parent");
     responses
-        .send(scripted_tool_body(
-            "context-write",
-            "write",
-            serde_json::json!({}),
+        .send(MatchedScriptedResponse::last_message_contains(
+            "parent history input",
+            scripted_tool_body("context-write", "write", serde_json::json!({})),
         ))
         .expect("write response");
     responses
-        .send(scripted_text_body("parent assistant context"))
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("parent assistant context"),
+        ))
         .expect("parent context response");
     fixture
         .engine
@@ -7570,23 +7641,32 @@ async fn inherited_context_is_text_only_journaled_and_deterministic_after_restar
     wait_for_session_not_running(&fixture.engine, parent.session_id).await;
 
     responses
-        .send(scripted_tool_body(
-            "context-delegate",
-            "delegate_subagent",
-            serde_json::json!({
-                "agent_type":"worker",
-                "description":"Inherited context child",
-                "prompt":"inherited child task",
-                "background":true,
-                "inherit_context":true
-            }),
+        .send(MatchedScriptedResponse::last_message_contains(
+            "delegate using assembled history",
+            scripted_tool_body(
+                "context-delegate",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Inherited context child",
+                    "prompt":"inherited child task",
+                    "background":true,
+                    "inherit_context":true
+                }),
+            ),
         ))
         .expect("inherit delegation response");
     responses
-        .send(scripted_text_body("inherited child done"))
+        .send(MatchedScriptedResponse::last_message_contains(
+            "inherited child task",
+            scripted_text_body("inherited child done"),
+        ))
         .expect("inherited child response");
     responses
-        .send(scripted_text_body("parent after inherited delegation"))
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("parent after inherited delegation"),
+        ))
         .expect("inherit parent response");
     fixture
         .engine
