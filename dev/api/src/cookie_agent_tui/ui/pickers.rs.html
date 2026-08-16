@@ -1,6 +1,6 @@
 <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `crates/tui/src/ui/pickers.rs`."><title>pickers.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="cookie_agent_tui" data-themes="" data-resource-suffix="" data-rustdoc-version="1.97.1 (8bab26f4f 2026-07-14)" data-channel="1.97.1" data-search-js="search-fd9372ac.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../static.files/src-script-813739b1.js"></script><script defer src="../../../src-files.js"></script><script defer src="../../../static.files/main-fcd733ba.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">cookie_agent_tui/ui/</div>pickers.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! Session/agent/provider picker presentation, filtering, and tree flattening.
 <a href=#2 id=2 data-nosnippet>2</a>
-<a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span>std::collections::HashSet;
+<a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span>std::collections::{HashMap, HashSet};
 <a href=#4 id=4 data-nosnippet>4</a>
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>cookie_agent_protocol::{ProviderDescriptor, SessionId, SessionMeta, SessionTree};
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>jiff::{Timestamp, civil::Date, tz::TimeZone};
@@ -11,7 +11,7 @@
 <a href=#11 id=11 data-nosnippet>11</a>    widgets::{Block, Borders, List, ListItem, ListState},
 <a href=#12 id=12 data-nosnippet>12</a>};
 <a href=#13 id=13 data-nosnippet>13</a>
-<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span><span class="kw">crate</span>::theme::Theme;
+<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use crate</span>::{state::SessionState, theme::Theme};
 <a href=#15 id=15 data-nosnippet>15</a>
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span><span class="kw">super</span>::input::{<span class="self">self</span>, InputState, RenderedInput};
 <a href=#17 id=17 data-nosnippet>17</a>
@@ -323,274 +323,540 @@
 <a href=#323 id=323 data-nosnippet>323</a>    tree: <span class="kw-2">&amp;</span>SessionTree,
 <a href=#324 id=324 data-nosnippet>324</a>    depth: usize,
 <a href=#325 id=325 data-nosnippet>325</a>    collapsed: <span class="kw-2">&amp;</span>HashSet&lt;SessionId&gt;,
-<a href=#326 id=326 data-nosnippet>326</a>    entries: <span class="kw-2">&amp;mut </span>Vec&lt;(SessionId, SessionMeta, usize)&gt;,
-<a href=#327 id=327 data-nosnippet>327</a>) {
-<a href=#328 id=328 data-nosnippet>328</a>    entries.push((tree.session.session_id, tree.session.clone(), depth));
-<a href=#329 id=329 data-nosnippet>329</a>    <span class="kw">if </span>!collapsed.contains(<span class="kw-2">&amp;</span>tree.session.session_id) {
-<a href=#330 id=330 data-nosnippet>330</a>        <span class="kw">for </span>child <span class="kw">in </span><span class="kw-2">&amp;</span>tree.children {
-<a href=#331 id=331 data-nosnippet>331</a>            flatten_tree(child, depth + <span class="number">1</span>, collapsed, entries);
-<a href=#332 id=332 data-nosnippet>332</a>        }
-<a href=#333 id=333 data-nosnippet>333</a>    }
-<a href=#334 id=334 data-nosnippet>334</a>}
-<a href=#335 id=335 data-nosnippet>335</a>
-<a href=#336 id=336 data-nosnippet>336</a><span class="kw">fn </span>inner_rect(area: Rect) -&gt; Rect {
-<a href=#337 id=337 data-nosnippet>337</a>    Rect::new(
-<a href=#338 id=338 data-nosnippet>338</a>        area.x.saturating_add(<span class="number">1</span>),
-<a href=#339 id=339 data-nosnippet>339</a>        area.y.saturating_add(<span class="number">1</span>),
-<a href=#340 id=340 data-nosnippet>340</a>        area.width.saturating_sub(<span class="number">2</span>),
-<a href=#341 id=341 data-nosnippet>341</a>        area.height.saturating_sub(<span class="number">2</span>),
-<a href=#342 id=342 data-nosnippet>342</a>    )
-<a href=#343 id=343 data-nosnippet>343</a>}
-<a href=#344 id=344 data-nosnippet>344</a>
-<a href=#345 id=345 data-nosnippet>345</a><span class="attr">#[cfg(test)]
-<a href=#346 id=346 data-nosnippet>346</a></span><span class="kw">mod </span>tests {
-<a href=#347 id=347 data-nosnippet>347</a>    <span class="kw">use </span>cookie_agent_protocol::{
-<a href=#348 id=348 data-nosnippet>348</a>        AgentId, ModelSelection, ProviderDescriptor, RunSelection, SessionId, SessionMeta,
-<a href=#349 id=349 data-nosnippet>349</a>        SessionMetaSchemaVersion, SessionOrigin, SessionStatus,
-<a href=#350 id=350 data-nosnippet>350</a>    };
-<a href=#351 id=351 data-nosnippet>351</a>
-<a href=#352 id=352 data-nosnippet>352</a>    <span class="kw">use </span>ratatui::widgets::ListState;
-<a href=#353 id=353 data-nosnippet>353</a>
-<a href=#354 id=354 data-nosnippet>354</a>    <span class="kw">use super</span>::{
-<a href=#355 id=355 data-nosnippet>355</a>        SessionSearchRow, clamp_tree_view, cycle_selection, move_selection, provider_matches,
-<a href=#356 id=356 data-nosnippet>356</a>        session_matches, session_search_rows, short_id,
-<a href=#357 id=357 data-nosnippet>357</a>    };
-<a href=#358 id=358 data-nosnippet>358</a>
-<a href=#359 id=359 data-nosnippet>359</a>    <span class="kw">fn </span>provider() -&gt; ProviderDescriptor {
-<a href=#360 id=360 data-nosnippet>360</a>        serde_json::from_value(<span class="macro">serde_json::json!</span>({
-<a href=#361 id=361 data-nosnippet>361</a>            <span class="string">"id"</span>: <span class="string">"acme-ai"</span>,
-<a href=#362 id=362 data-nosnippet>362</a>            <span class="string">"display_name"</span>: <span class="string">"Acme AI"</span>,
-<a href=#363 id=363 data-nosnippet>363</a>            <span class="string">"presence"</span>: <span class="string">"current"</span>,
-<a href=#364 id=364 data-nosnippet>364</a>            <span class="string">"support"</span>: {<span class="string">"state"</span>: <span class="string">"supported"</span>, <span class="string">"reason"</span>: null},
-<a href=#365 id=365 data-nosnippet>365</a>            <span class="string">"setup_fields"</span>: [{
-<a href=#366 id=366 data-nosnippet>366</a>                <span class="string">"id"</span>: <span class="string">"region"</span>,
-<a href=#367 id=367 data-nosnippet>367</a>                <span class="string">"display_name"</span>: <span class="string">"Region"</span>,
-<a href=#368 id=368 data-nosnippet>368</a>                <span class="string">"help"</span>: <span class="string">"API region endpoint"</span>,
-<a href=#369 id=369 data-nosnippet>369</a>                <span class="string">"required"</span>: <span class="bool-val">true</span>,
-<a href=#370 id=370 data-nosnippet>370</a>                <span class="string">"default"</span>: <span class="string">"us-east-1"</span>,
-<a href=#371 id=371 data-nosnippet>371</a>                <span class="string">"validation"</span>: {<span class="string">"value_type"</span>: <span class="string">"string"</span>, <span class="string">"min_length"</span>: <span class="number">1</span>, <span class="string">"max_length"</span>: <span class="number">32</span>, <span class="string">"minimum"</span>: null, <span class="string">"maximum"</span>: null},
-<a href=#372 id=372 data-nosnippet>372</a>                <span class="string">"safe_to_project"</span>: <span class="bool-val">true
-<a href=#373 id=373 data-nosnippet>373</a>            </span>}],
-<a href=#374 id=374 data-nosnippet>374</a>            <span class="string">"auth_methods"</span>: [{
-<a href=#375 id=375 data-nosnippet>375</a>                <span class="string">"id"</span>: <span class="string">"api-key"</span>,
-<a href=#376 id=376 data-nosnippet>376</a>                <span class="string">"display_name"</span>: <span class="string">"API key"</span>,
-<a href=#377 id=377 data-nosnippet>377</a>                <span class="string">"credentials"</span>: [{
-<a href=#378 id=378 data-nosnippet>378</a>                    <span class="string">"id"</span>: <span class="string">"api_key"</span>,
-<a href=#379 id=379 data-nosnippet>379</a>                    <span class="string">"display_name"</span>: <span class="string">"Acme API Key"</span>,
-<a href=#380 id=380 data-nosnippet>380</a>                    <span class="string">"help"</span>: <span class="string">"ACME_API_KEY credential"</span>,
-<a href=#381 id=381 data-nosnippet>381</a>                    <span class="string">"required"</span>: <span class="bool-val">true</span>,
-<a href=#382 id=382 data-nosnippet>382</a>                    <span class="string">"credential_type"</span>: <span class="string">"api_key"
-<a href=#383 id=383 data-nosnippet>383</a>                </span>}]
-<a href=#384 id=384 data-nosnippet>384</a>            }],
-<a href=#385 id=385 data-nosnippet>385</a>            <span class="string">"configuration"</span>: <span class="string">"unconfigured"</span>,
-<a href=#386 id=386 data-nosnippet>386</a>            <span class="string">"effective_auth_state"</span>: <span class="string">"unavailable"</span>,
-<a href=#387 id=387 data-nosnippet>387</a>            <span class="string">"durable_connection"</span>: null,
-<a href=#388 id=388 data-nosnippet>388</a>            <span class="string">"quarantine"</span>: null
-<a href=#389 id=389 data-nosnippet>389</a>        }))
-<a href=#390 id=390 data-nosnippet>390</a>        .expect(<span class="string">"provider descriptor"</span>)
-<a href=#391 id=391 data-nosnippet>391</a>    }
-<a href=#392 id=392 data-nosnippet>392</a>
-<a href=#393 id=393 data-nosnippet>393</a>    <span class="kw">fn </span>revision&lt;T&gt;(value: <span class="kw-2">&amp;</span>str) -&gt; T
-<a href=#394 id=394 data-nosnippet>394</a>    <span class="kw">where
-<a href=#395 id=395 data-nosnippet>395</a>        </span>T: serde::de::DeserializeOwned,
-<a href=#396 id=396 data-nosnippet>396</a>    {
-<a href=#397 id=397 data-nosnippet>397</a>        serde_json::from_value(<span class="macro">serde_json::json!</span>(<span class="macro">format!</span>(<span class="string">"sha256:{}"</span>, value.repeat(<span class="number">64</span>))))
-<a href=#398 id=398 data-nosnippet>398</a>            .expect(<span class="string">"revision"</span>)
-<a href=#399 id=399 data-nosnippet>399</a>    }
-<a href=#400 id=400 data-nosnippet>400</a>
-<a href=#401 id=401 data-nosnippet>401</a>    <span class="kw">fn </span>session_meta(session_id: SessionId) -&gt; SessionMeta {
-<a href=#402 id=402 data-nosnippet>402</a>        SessionMeta {
-<a href=#403 id=403 data-nosnippet>403</a>            meta_schema_version: SessionMetaSchemaVersion::current(),
-<a href=#404 id=404 data-nosnippet>404</a>            session_id,
-<a href=#405 id=405 data-nosnippet>405</a>            origin: SessionOrigin::Root,
-<a href=#406 id=406 data-nosnippet>406</a>            cwd_identity: cookie_agent_protocol::CwdIdentity::new(<span class="string">"/workspace"</span>)
-<a href=#407 id=407 data-nosnippet>407</a>                .expect(<span class="string">"cwd identity"</span>),
-<a href=#408 id=408 data-nosnippet>408</a>            creation_selection: RunSelection {
-<a href=#409 id=409 data-nosnippet>409</a>                agent: AgentId::new(<span class="string">"primary"</span>).expect(<span class="string">"agent id"</span>),
-<a href=#410 id=410 data-nosnippet>410</a>                model: ModelSelection {
-<a href=#411 id=411 data-nosnippet>411</a>                    model: <span class="string">"provider/model"</span>.parse().expect(<span class="string">"model key"</span>),
-<a href=#412 id=412 data-nosnippet>412</a>                    variant: <span class="prelude-val">None</span>,
-<a href=#413 id=413 data-nosnippet>413</a>                },
-<a href=#414 id=414 data-nosnippet>414</a>            },
-<a href=#415 id=415 data-nosnippet>415</a>            runtime_revision: revision(<span class="string">"1"</span>),
-<a href=#416 id=416 data-nosnippet>416</a>            catalog_revision: revision(<span class="string">"2"</span>),
-<a href=#417 id=417 data-nosnippet>417</a>            provider_state_revision: revision(<span class="string">"3"</span>),
-<a href=#418 id=418 data-nosnippet>418</a>            model_revision: revision(<span class="string">"4"</span>),
-<a href=#419 id=419 data-nosnippet>419</a>            agent_revision: revision(<span class="string">"5"</span>),
-<a href=#420 id=420 data-nosnippet>420</a>            recipe_registry_revision: revision(<span class="string">"6"</span>),
-<a href=#421 id=421 data-nosnippet>421</a>            manifest_revision: revision(<span class="string">"7"</span>),
-<a href=#422 id=422 data-nosnippet>422</a>            title: <span class="prelude-val">None</span>,
-<a href=#423 id=423 data-nosnippet>423</a>            title_updated_seq: <span class="number">0</span>,
-<a href=#424 id=424 data-nosnippet>424</a>            last_event_seq: <span class="number">1</span>,
-<a href=#425 id=425 data-nosnippet>425</a>            last_activity: <span class="string">"2026-08-06T12:00:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>),
-<a href=#426 id=426 data-nosnippet>426</a>            status: SessionStatus::Idle,
-<a href=#427 id=427 data-nosnippet>427</a>        }
-<a href=#428 id=428 data-nosnippet>428</a>    }
-<a href=#429 id=429 data-nosnippet>429</a>
-<a href=#430 id=430 data-nosnippet>430</a>    <span class="attr">#[test]
-<a href=#431 id=431 data-nosnippet>431</a>    </span><span class="kw">fn </span>provider_filter_matches_id_and_display_name_case_insensitively() {
-<a href=#432 id=432 data-nosnippet>432</a>        <span class="kw">let </span>provider = provider();
-<a href=#433 id=433 data-nosnippet>433</a>        <span class="kw">for </span>query <span class="kw">in </span>[<span class="string">"acme"</span>, <span class="string">"ACME-AI"</span>, <span class="string">"me aI"</span>] {
-<a href=#434 id=434 data-nosnippet>434</a>            <span class="macro">assert!</span>(provider_matches(<span class="kw-2">&amp;</span>provider, query), <span class="string">"query {query}"</span>);
-<a href=#435 id=435 data-nosnippet>435</a>        }
-<a href=#436 id=436 data-nosnippet>436</a>        <span class="macro">assert!</span>(!provider_matches(<span class="kw-2">&amp;</span>provider, <span class="string">"other-vendor"</span>));
-<a href=#437 id=437 data-nosnippet>437</a>        <span class="macro">assert!</span>(!provider_matches(<span class="kw-2">&amp;</span>provider, <span class="string">"region"</span>));
-<a href=#438 id=438 data-nosnippet>438</a>        <span class="macro">assert!</span>(!provider_matches(<span class="kw-2">&amp;</span>provider, <span class="string">"api_key"</span>));
-<a href=#439 id=439 data-nosnippet>439</a>        <span class="macro">assert!</span>(provider_matches(<span class="kw-2">&amp;</span>provider, <span class="string">""</span>));
-<a href=#440 id=440 data-nosnippet>440</a>    }
-<a href=#441 id=441 data-nosnippet>441</a>
-<a href=#442 id=442 data-nosnippet>442</a>    <span class="attr">#[test]
-<a href=#443 id=443 data-nosnippet>443</a>    </span><span class="kw">fn </span>empty_picker_navigation_keeps_selection_absent() {
-<a href=#444 id=444 data-nosnippet>444</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = ListState::default().with_selected(<span class="prelude-val">Some</span>(<span class="number">0</span>));
-<a href=#445 id=445 data-nosnippet>445</a>
-<a href=#446 id=446 data-nosnippet>446</a>        move_selection(<span class="kw-2">&amp;mut </span>state, <span class="number">0</span>, <span class="bool-val">false</span>);
-<a href=#447 id=447 data-nosnippet>447</a>        <span class="macro">assert_eq!</span>(state.selected(), <span class="prelude-val">None</span>);
-<a href=#448 id=448 data-nosnippet>448</a>
-<a href=#449 id=449 data-nosnippet>449</a>        state.select(<span class="prelude-val">Some</span>(<span class="number">0</span>));
-<a href=#450 id=450 data-nosnippet>450</a>        cycle_selection(<span class="kw-2">&amp;mut </span>state, <span class="number">0</span>, <span class="bool-val">false</span>);
-<a href=#451 id=451 data-nosnippet>451</a>        <span class="macro">assert_eq!</span>(state.selected(), <span class="prelude-val">None</span>);
+<a href=#326 id=326 data-nosnippet>326</a>    states: <span class="kw-2">&amp;</span>HashMap&lt;SessionId, SessionState&gt;,
+<a href=#327 id=327 data-nosnippet>327</a>    entries: <span class="kw-2">&amp;mut </span>Vec&lt;(SessionId, SessionMeta, usize)&gt;,
+<a href=#328 id=328 data-nosnippet>328</a>) {
+<a href=#329 id=329 data-nosnippet>329</a>    entries.push((tree.session.session_id, tree.session.clone(), depth));
+<a href=#330 id=330 data-nosnippet>330</a>    <span class="kw">if </span>!collapsed.contains(<span class="kw-2">&amp;</span>tree.session.session_id) {
+<a href=#331 id=331 data-nosnippet>331</a>        <span class="kw">let </span><span class="kw-2">mut </span>children = tree.children.iter().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;();
+<a href=#332 id=332 data-nosnippet>332</a>        children.sort_by(|left, right| {
+<a href=#333 id=333 data-nosnippet>333</a>            <span class="kw">let </span>left_state = states.get(<span class="kw-2">&amp;</span>left.session.session_id);
+<a href=#334 id=334 data-nosnippet>334</a>            <span class="kw">let </span>right_state = states.get(<span class="kw-2">&amp;</span>right.session.session_id);
+<a href=#335 id=335 data-nosnippet>335</a>            right_state
+<a href=#336 id=336 data-nosnippet>336</a>                .and_then(|state| state.last_agent_activity)
+<a href=#337 id=337 data-nosnippet>337</a>                .cmp(<span class="kw-2">&amp;</span>left_state.and_then(|state| state.last_agent_activity))
+<a href=#338 id=338 data-nosnippet>338</a>                .then_with(|| {
+<a href=#339 id=339 data-nosnippet>339</a>                    <span class="kw">match </span>(
+<a href=#340 id=340 data-nosnippet>340</a>                        left_state.and_then(|state| state.created_at),
+<a href=#341 id=341 data-nosnippet>341</a>                        right_state.and_then(|state| state.created_at),
+<a href=#342 id=342 data-nosnippet>342</a>                    ) {
+<a href=#343 id=343 data-nosnippet>343</a>                        (<span class="prelude-val">Some</span>(left), <span class="prelude-val">Some</span>(right)) =&gt; left.cmp(<span class="kw-2">&amp;</span>right),
+<a href=#344 id=344 data-nosnippet>344</a>                        <span class="kw">_ </span>=&gt; left.session.session_id.cmp(<span class="kw-2">&amp;</span>right.session.session_id),
+<a href=#345 id=345 data-nosnippet>345</a>                    }
+<a href=#346 id=346 data-nosnippet>346</a>                })
+<a href=#347 id=347 data-nosnippet>347</a>                .then_with(|| left.session.session_id.cmp(<span class="kw-2">&amp;</span>right.session.session_id))
+<a href=#348 id=348 data-nosnippet>348</a>        });
+<a href=#349 id=349 data-nosnippet>349</a>        <span class="kw">for </span>child <span class="kw">in </span>children {
+<a href=#350 id=350 data-nosnippet>350</a>            flatten_tree(child, depth + <span class="number">1</span>, collapsed, states, entries);
+<a href=#351 id=351 data-nosnippet>351</a>        }
+<a href=#352 id=352 data-nosnippet>352</a>    }
+<a href=#353 id=353 data-nosnippet>353</a>}
+<a href=#354 id=354 data-nosnippet>354</a>
+<a href=#355 id=355 data-nosnippet>355</a><span class="kw">fn </span>inner_rect(area: Rect) -&gt; Rect {
+<a href=#356 id=356 data-nosnippet>356</a>    Rect::new(
+<a href=#357 id=357 data-nosnippet>357</a>        area.x.saturating_add(<span class="number">1</span>),
+<a href=#358 id=358 data-nosnippet>358</a>        area.y.saturating_add(<span class="number">1</span>),
+<a href=#359 id=359 data-nosnippet>359</a>        area.width.saturating_sub(<span class="number">2</span>),
+<a href=#360 id=360 data-nosnippet>360</a>        area.height.saturating_sub(<span class="number">2</span>),
+<a href=#361 id=361 data-nosnippet>361</a>    )
+<a href=#362 id=362 data-nosnippet>362</a>}
+<a href=#363 id=363 data-nosnippet>363</a>
+<a href=#364 id=364 data-nosnippet>364</a><span class="attr">#[cfg(test)]
+<a href=#365 id=365 data-nosnippet>365</a></span><span class="kw">mod </span>tests {
+<a href=#366 id=366 data-nosnippet>366</a>    <span class="kw">use </span>std::collections::{HashMap, HashSet};
+<a href=#367 id=367 data-nosnippet>367</a>
+<a href=#368 id=368 data-nosnippet>368</a>    <span class="kw">use </span>cookie_agent_protocol::{
+<a href=#369 id=369 data-nosnippet>369</a>        AgentId, AssistantToolCallRef, AttemptId, EventPayload, EventSchemaVersion, ModelCallId,
+<a href=#370 id=370 data-nosnippet>370</a>        ModelSelection, PersistedToolResult, ProviderDescriptor, RunSelection, SafeDisplayText,
+<a href=#371 id=371 data-nosnippet>371</a>        SessionId, SessionMeta, SessionMetaSchemaVersion, SessionOrigin, SessionStatus,
+<a href=#372 id=372 data-nosnippet>372</a>        StoredEvent, ToolCallId, ToolCallTermination, ToolTerminationOutcome,
+<a href=#373 id=373 data-nosnippet>373</a>    };
+<a href=#374 id=374 data-nosnippet>374</a>
+<a href=#375 id=375 data-nosnippet>375</a>    <span class="kw">use </span>ratatui::widgets::ListState;
+<a href=#376 id=376 data-nosnippet>376</a>
+<a href=#377 id=377 data-nosnippet>377</a>    <span class="kw">use super</span>::{
+<a href=#378 id=378 data-nosnippet>378</a>        SessionSearchRow, clamp_tree_view, cycle_selection, flatten_tree, move_selection,
+<a href=#379 id=379 data-nosnippet>379</a>        provider_matches, session_matches, session_search_rows, short_id,
+<a href=#380 id=380 data-nosnippet>380</a>    };
+<a href=#381 id=381 data-nosnippet>381</a>    <span class="kw">use </span><span class="kw">crate</span>::state::{SessionState, StateStore};
+<a href=#382 id=382 data-nosnippet>382</a>
+<a href=#383 id=383 data-nosnippet>383</a>    <span class="kw">fn </span>provider() -&gt; ProviderDescriptor {
+<a href=#384 id=384 data-nosnippet>384</a>        serde_json::from_value(<span class="macro">serde_json::json!</span>({
+<a href=#385 id=385 data-nosnippet>385</a>            <span class="string">"id"</span>: <span class="string">"acme-ai"</span>,
+<a href=#386 id=386 data-nosnippet>386</a>            <span class="string">"display_name"</span>: <span class="string">"Acme AI"</span>,
+<a href=#387 id=387 data-nosnippet>387</a>            <span class="string">"presence"</span>: <span class="string">"current"</span>,
+<a href=#388 id=388 data-nosnippet>388</a>            <span class="string">"support"</span>: {<span class="string">"state"</span>: <span class="string">"supported"</span>, <span class="string">"reason"</span>: null},
+<a href=#389 id=389 data-nosnippet>389</a>            <span class="string">"setup_fields"</span>: [{
+<a href=#390 id=390 data-nosnippet>390</a>                <span class="string">"id"</span>: <span class="string">"region"</span>,
+<a href=#391 id=391 data-nosnippet>391</a>                <span class="string">"display_name"</span>: <span class="string">"Region"</span>,
+<a href=#392 id=392 data-nosnippet>392</a>                <span class="string">"help"</span>: <span class="string">"API region endpoint"</span>,
+<a href=#393 id=393 data-nosnippet>393</a>                <span class="string">"required"</span>: <span class="bool-val">true</span>,
+<a href=#394 id=394 data-nosnippet>394</a>                <span class="string">"default"</span>: <span class="string">"us-east-1"</span>,
+<a href=#395 id=395 data-nosnippet>395</a>                <span class="string">"validation"</span>: {<span class="string">"value_type"</span>: <span class="string">"string"</span>, <span class="string">"min_length"</span>: <span class="number">1</span>, <span class="string">"max_length"</span>: <span class="number">32</span>, <span class="string">"minimum"</span>: null, <span class="string">"maximum"</span>: null},
+<a href=#396 id=396 data-nosnippet>396</a>                <span class="string">"safe_to_project"</span>: <span class="bool-val">true
+<a href=#397 id=397 data-nosnippet>397</a>            </span>}],
+<a href=#398 id=398 data-nosnippet>398</a>            <span class="string">"auth_methods"</span>: [{
+<a href=#399 id=399 data-nosnippet>399</a>                <span class="string">"id"</span>: <span class="string">"api-key"</span>,
+<a href=#400 id=400 data-nosnippet>400</a>                <span class="string">"display_name"</span>: <span class="string">"API key"</span>,
+<a href=#401 id=401 data-nosnippet>401</a>                <span class="string">"credentials"</span>: [{
+<a href=#402 id=402 data-nosnippet>402</a>                    <span class="string">"id"</span>: <span class="string">"api_key"</span>,
+<a href=#403 id=403 data-nosnippet>403</a>                    <span class="string">"display_name"</span>: <span class="string">"Acme API Key"</span>,
+<a href=#404 id=404 data-nosnippet>404</a>                    <span class="string">"help"</span>: <span class="string">"ACME_API_KEY credential"</span>,
+<a href=#405 id=405 data-nosnippet>405</a>                    <span class="string">"required"</span>: <span class="bool-val">true</span>,
+<a href=#406 id=406 data-nosnippet>406</a>                    <span class="string">"credential_type"</span>: <span class="string">"api_key"
+<a href=#407 id=407 data-nosnippet>407</a>                </span>}]
+<a href=#408 id=408 data-nosnippet>408</a>            }],
+<a href=#409 id=409 data-nosnippet>409</a>            <span class="string">"configuration"</span>: <span class="string">"unconfigured"</span>,
+<a href=#410 id=410 data-nosnippet>410</a>            <span class="string">"effective_auth_state"</span>: <span class="string">"unavailable"</span>,
+<a href=#411 id=411 data-nosnippet>411</a>            <span class="string">"durable_connection"</span>: null,
+<a href=#412 id=412 data-nosnippet>412</a>            <span class="string">"quarantine"</span>: null
+<a href=#413 id=413 data-nosnippet>413</a>        }))
+<a href=#414 id=414 data-nosnippet>414</a>        .expect(<span class="string">"provider descriptor"</span>)
+<a href=#415 id=415 data-nosnippet>415</a>    }
+<a href=#416 id=416 data-nosnippet>416</a>
+<a href=#417 id=417 data-nosnippet>417</a>    <span class="kw">fn </span>revision&lt;T&gt;(value: <span class="kw-2">&amp;</span>str) -&gt; T
+<a href=#418 id=418 data-nosnippet>418</a>    <span class="kw">where
+<a href=#419 id=419 data-nosnippet>419</a>        </span>T: serde::de::DeserializeOwned,
+<a href=#420 id=420 data-nosnippet>420</a>    {
+<a href=#421 id=421 data-nosnippet>421</a>        serde_json::from_value(<span class="macro">serde_json::json!</span>(<span class="macro">format!</span>(<span class="string">"sha256:{}"</span>, value.repeat(<span class="number">64</span>))))
+<a href=#422 id=422 data-nosnippet>422</a>            .expect(<span class="string">"revision"</span>)
+<a href=#423 id=423 data-nosnippet>423</a>    }
+<a href=#424 id=424 data-nosnippet>424</a>
+<a href=#425 id=425 data-nosnippet>425</a>    <span class="kw">fn </span>session_meta(session_id: SessionId) -&gt; SessionMeta {
+<a href=#426 id=426 data-nosnippet>426</a>        SessionMeta {
+<a href=#427 id=427 data-nosnippet>427</a>            meta_schema_version: SessionMetaSchemaVersion::current(),
+<a href=#428 id=428 data-nosnippet>428</a>            session_id,
+<a href=#429 id=429 data-nosnippet>429</a>            origin: SessionOrigin::Root,
+<a href=#430 id=430 data-nosnippet>430</a>            cwd_identity: cookie_agent_protocol::CwdIdentity::new(<span class="string">"/workspace"</span>)
+<a href=#431 id=431 data-nosnippet>431</a>                .expect(<span class="string">"cwd identity"</span>),
+<a href=#432 id=432 data-nosnippet>432</a>            creation_selection: RunSelection {
+<a href=#433 id=433 data-nosnippet>433</a>                agent: AgentId::new(<span class="string">"primary"</span>).expect(<span class="string">"agent id"</span>),
+<a href=#434 id=434 data-nosnippet>434</a>                model: ModelSelection {
+<a href=#435 id=435 data-nosnippet>435</a>                    model: <span class="string">"provider/model"</span>.parse().expect(<span class="string">"model key"</span>),
+<a href=#436 id=436 data-nosnippet>436</a>                    variant: <span class="prelude-val">None</span>,
+<a href=#437 id=437 data-nosnippet>437</a>                },
+<a href=#438 id=438 data-nosnippet>438</a>            },
+<a href=#439 id=439 data-nosnippet>439</a>            runtime_revision: revision(<span class="string">"1"</span>),
+<a href=#440 id=440 data-nosnippet>440</a>            catalog_revision: revision(<span class="string">"2"</span>),
+<a href=#441 id=441 data-nosnippet>441</a>            provider_state_revision: revision(<span class="string">"3"</span>),
+<a href=#442 id=442 data-nosnippet>442</a>            model_revision: revision(<span class="string">"4"</span>),
+<a href=#443 id=443 data-nosnippet>443</a>            agent_revision: revision(<span class="string">"5"</span>),
+<a href=#444 id=444 data-nosnippet>444</a>            recipe_registry_revision: revision(<span class="string">"6"</span>),
+<a href=#445 id=445 data-nosnippet>445</a>            manifest_revision: revision(<span class="string">"7"</span>),
+<a href=#446 id=446 data-nosnippet>446</a>            title: <span class="prelude-val">None</span>,
+<a href=#447 id=447 data-nosnippet>447</a>            title_updated_seq: <span class="number">0</span>,
+<a href=#448 id=448 data-nosnippet>448</a>            last_event_seq: <span class="number">1</span>,
+<a href=#449 id=449 data-nosnippet>449</a>            last_activity: <span class="string">"2026-08-06T12:00:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>),
+<a href=#450 id=450 data-nosnippet>450</a>            status: SessionStatus::Idle,
+<a href=#451 id=451 data-nosnippet>451</a>        }
 <a href=#452 id=452 data-nosnippet>452</a>    }
 <a href=#453 id=453 data-nosnippet>453</a>
-<a href=#454 id=454 data-nosnippet>454</a>    <span class="attr">#[test]
-<a href=#455 id=455 data-nosnippet>455</a>    </span><span class="kw">fn </span>session_filter_matches_title_and_untitled_placeholder_only() {
-<a href=#456 id=456 data-nosnippet>456</a>        <span class="kw">let </span>session_id = SessionId::new_v7();
-<a href=#457 id=457 data-nosnippet>457</a>        <span class="kw">let </span><span class="kw-2">mut </span>session = SessionMeta {
-<a href=#458 id=458 data-nosnippet>458</a>            session_id,
-<a href=#459 id=459 data-nosnippet>459</a>            title: <span class="prelude-val">Some</span>(
-<a href=#460 id=460 data-nosnippet>460</a>                cookie_agent_protocol::SessionTitle::new(<span class="string">"Quarterly report cleanup"</span>)
-<a href=#461 id=461 data-nosnippet>461</a>                    .expect(<span class="string">"title"</span>),
-<a href=#462 id=462 data-nosnippet>462</a>            ),
-<a href=#463 id=463 data-nosnippet>463</a>            ..session_meta(session_id)
-<a href=#464 id=464 data-nosnippet>464</a>        };
-<a href=#465 id=465 data-nosnippet>465</a>        <span class="macro">assert!</span>(session_matches(<span class="kw-2">&amp;</span>session, <span class="string">"quarterly"</span>));
-<a href=#466 id=466 data-nosnippet>466</a>        <span class="macro">assert!</span>(session_matches(<span class="kw-2">&amp;</span>session, <span class="string">"REPORT"</span>));
-<a href=#467 id=467 data-nosnippet>467</a>        <span class="macro">assert!</span>(!session_matches(<span class="kw-2">&amp;</span>session, <span class="string">"primary"</span>));
-<a href=#468 id=468 data-nosnippet>468</a>        <span class="macro">assert!</span>(!session_matches(<span class="kw-2">&amp;</span>session, <span class="kw-2">&amp;</span>session_id.to_string()));
-<a href=#469 id=469 data-nosnippet>469</a>        <span class="macro">assert!</span>(!session_matches(<span class="kw-2">&amp;</span>session, <span class="string">"unrelated words"</span>));
-<a href=#470 id=470 data-nosnippet>470</a>        session.title = <span class="prelude-val">None</span>;
-<a href=#471 id=471 data-nosnippet>471</a>        <span class="macro">assert!</span>(!session_matches(<span class="kw-2">&amp;</span>session, <span class="string">"quarterly"</span>));
-<a href=#472 id=472 data-nosnippet>472</a>        <span class="macro">assert!</span>(session_matches(<span class="kw-2">&amp;</span>session, <span class="string">"UNTITLED"</span>));
-<a href=#473 id=473 data-nosnippet>473</a>    }
-<a href=#474 id=474 data-nosnippet>474</a>
-<a href=#475 id=475 data-nosnippet>475</a>    <span class="attr">#[test]
-<a href=#476 id=476 data-nosnippet>476</a>    </span><span class="kw">fn </span>session_search_groups_local_days_and_sorts_newest_first() {
-<a href=#477 id=477 data-nosnippet>477</a>        <span class="kw">let </span>now = <span class="string">"2026-08-06T12:00:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>);
-<a href=#478 id=478 data-nosnippet>478</a>        <span class="kw">let </span>time_zone = jiff::tz::TimeZone::UTC;
-<a href=#479 id=479 data-nosnippet>479</a>        <span class="kw">let </span><span class="kw-2">mut </span>today_old = session_meta(SessionId::new_v7());
-<a href=#480 id=480 data-nosnippet>480</a>        today_old.title =
-<a href=#481 id=481 data-nosnippet>481</a>            <span class="prelude-val">Some</span>(cookie_agent_protocol::SessionTitle::new(<span class="string">"today old"</span>).expect(<span class="string">"title"</span>));
-<a href=#482 id=482 data-nosnippet>482</a>        today_old.last_activity = <span class="string">"2026-08-06T09:00:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>);
-<a href=#483 id=483 data-nosnippet>483</a>        <span class="kw">let </span><span class="kw-2">mut </span>today_new = session_meta(SessionId::new_v7());
-<a href=#484 id=484 data-nosnippet>484</a>        today_new.title =
-<a href=#485 id=485 data-nosnippet>485</a>            <span class="prelude-val">Some</span>(cookie_agent_protocol::SessionTitle::new(<span class="string">"today new"</span>).expect(<span class="string">"title"</span>));
-<a href=#486 id=486 data-nosnippet>486</a>        today_new.last_activity = <span class="string">"2026-08-06T11:00:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>);
-<a href=#487 id=487 data-nosnippet>487</a>        <span class="kw">let </span><span class="kw-2">mut </span>yesterday = session_meta(SessionId::new_v7());
-<a href=#488 id=488 data-nosnippet>488</a>        yesterday.title =
-<a href=#489 id=489 data-nosnippet>489</a>            <span class="prelude-val">Some</span>(cookie_agent_protocol::SessionTitle::new(<span class="string">"yesterday"</span>).expect(<span class="string">"title"</span>));
-<a href=#490 id=490 data-nosnippet>490</a>        yesterday.last_activity = <span class="string">"2026-08-05T18:00:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>);
-<a href=#491 id=491 data-nosnippet>491</a>        <span class="kw">let </span><span class="kw-2">mut </span>older = session_meta(SessionId::new_v7());
-<a href=#492 id=492 data-nosnippet>492</a>        older.title = <span class="prelude-val">Some</span>(cookie_agent_protocol::SessionTitle::new(<span class="string">"older"</span>).expect(<span class="string">"title"</span>));
-<a href=#493 id=493 data-nosnippet>493</a>        older.last_activity = <span class="string">"2026-08-04T18:00:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>);
-<a href=#494 id=494 data-nosnippet>494</a>
-<a href=#495 id=495 data-nosnippet>495</a>        <span class="kw">let </span>rows = session_search_rows(
-<a href=#496 id=496 data-nosnippet>496</a>            <span class="kw-2">&amp;</span>[today_old, older, today_new, yesterday],
-<a href=#497 id=497 data-nosnippet>497</a>            <span class="string">""</span>,
-<a href=#498 id=498 data-nosnippet>498</a>            now,
-<a href=#499 id=499 data-nosnippet>499</a>            <span class="kw-2">&amp;</span>time_zone,
-<a href=#500 id=500 data-nosnippet>500</a>        );
-<a href=#501 id=501 data-nosnippet>501</a>        <span class="macro">assert_eq!</span>(rows[<span class="number">0</span>], SessionSearchRow::Header(<span class="string">"Today"</span>.into()));
-<a href=#502 id=502 data-nosnippet>502</a>        <span class="macro">assert!</span>(
-<a href=#503 id=503 data-nosnippet>503</a>            <span class="macro">matches!</span>(<span class="kw-2">&amp;</span>rows[<span class="number">1</span>], SessionSearchRow::Session { label, .. } <span class="kw">if </span>label.starts_with(<span class="string">"today new"</span>))
-<a href=#504 id=504 data-nosnippet>504</a>        );
-<a href=#505 id=505 data-nosnippet>505</a>        <span class="macro">assert!</span>(
-<a href=#506 id=506 data-nosnippet>506</a>            <span class="macro">matches!</span>(<span class="kw-2">&amp;</span>rows[<span class="number">2</span>], SessionSearchRow::Session { label, .. } <span class="kw">if </span>label.starts_with(<span class="string">"today old"</span>))
-<a href=#507 id=507 data-nosnippet>507</a>        );
-<a href=#508 id=508 data-nosnippet>508</a>        <span class="macro">assert_eq!</span>(rows[<span class="number">3</span>], SessionSearchRow::Header(<span class="string">"Yesterday"</span>.into()));
-<a href=#509 id=509 data-nosnippet>509</a>        <span class="macro">assert!</span>(
-<a href=#510 id=510 data-nosnippet>510</a>            <span class="macro">matches!</span>(<span class="kw-2">&amp;</span>rows[<span class="number">4</span>], SessionSearchRow::Session { label, .. } <span class="kw">if </span>label.starts_with(<span class="string">"yesterday"</span>))
-<a href=#511 id=511 data-nosnippet>511</a>        );
-<a href=#512 id=512 data-nosnippet>512</a>        <span class="macro">assert_eq!</span>(rows[<span class="number">5</span>], SessionSearchRow::Header(<span class="string">"Aug 4"</span>.into()));
-<a href=#513 id=513 data-nosnippet>513</a>        <span class="macro">assert!</span>(
-<a href=#514 id=514 data-nosnippet>514</a>            <span class="macro">matches!</span>(<span class="kw-2">&amp;</span>rows[<span class="number">6</span>], SessionSearchRow::Session { label, .. } <span class="kw">if </span>label.starts_with(<span class="string">"older"</span>))
-<a href=#515 id=515 data-nosnippet>515</a>        );
-<a href=#516 id=516 data-nosnippet>516</a>        <span class="macro">assert!</span>(rows.iter().filter_map(SessionSearchRow::session_id).count() == <span class="number">4</span>);
-<a href=#517 id=517 data-nosnippet>517</a>        <span class="macro">assert!</span>(
-<a href=#518 id=518 data-nosnippet>518</a>            rows.iter()
-<a href=#519 id=519 data-nosnippet>519</a>                .filter(|row| <span class="macro">matches!</span>(row, SessionSearchRow::Header(<span class="kw">_</span>)))
-<a href=#520 id=520 data-nosnippet>520</a>                .all(|row| row.session_id().is_none())
-<a href=#521 id=521 data-nosnippet>521</a>        );
-<a href=#522 id=522 data-nosnippet>522</a>    }
-<a href=#523 id=523 data-nosnippet>523</a>
-<a href=#524 id=524 data-nosnippet>524</a>    <span class="attr">#[test]
-<a href=#525 id=525 data-nosnippet>525</a>    </span><span class="kw">fn </span>short_id_is_subdued_metadata_not_the_full_identity() {
-<a href=#526 id=526 data-nosnippet>526</a>        <span class="kw">let </span>session_id = SessionId::new_v7();
-<a href=#527 id=527 data-nosnippet>527</a>        <span class="macro">assert_eq!</span>(short_id(session_id).len(), <span class="number">8</span>);
-<a href=#528 id=528 data-nosnippet>528</a>        <span class="macro">assert!</span>(session_id.to_string().starts_with(<span class="kw-2">&amp;</span>short_id(session_id)));
-<a href=#529 id=529 data-nosnippet>529</a>    }
-<a href=#530 id=530 data-nosnippet>530</a>
-<a href=#531 id=531 data-nosnippet>531</a>    <span class="attr">#[test]
-<a href=#532 id=532 data-nosnippet>532</a>    </span><span class="kw">fn </span>picker_rows_ellipsize_and_the_footer_explains_the_keys() {
-<a href=#533 id=533 data-nosnippet>533</a>        <span class="kw">use </span>ratatui::{Terminal, backend::TestBackend};
-<a href=#534 id=534 data-nosnippet>534</a>
-<a href=#535 id=535 data-nosnippet>535</a>        <span class="kw">let </span>theme = <span class="kw">crate</span>::theme::Theme::default();
-<a href=#536 id=536 data-nosnippet>536</a>        <span class="kw">let </span><span class="kw-2">mut </span>terminal = Terminal::new(TestBackend::new(<span class="number">30</span>, <span class="number">8</span>)).expect(<span class="string">"terminal"</span>);
-<a href=#537 id=537 data-nosnippet>537</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = ListState::default().with_selected(<span class="prelude-val">Some</span>(<span class="number">0</span>));
-<a href=#538 id=538 data-nosnippet>538</a>        terminal
-<a href=#539 id=539 data-nosnippet>539</a>            .draw(|frame| {
-<a href=#540 id=540 data-nosnippet>540</a>                <span class="kw">super</span>::render(
-<a href=#541 id=541 data-nosnippet>541</a>                    frame,
-<a href=#542 id=542 data-nosnippet>542</a>                    <span class="kw">super</span>::PickerChrome {
-<a href=#543 id=543 data-nosnippet>543</a>                        title: <span class="string">"Model"</span>,
-<a href=#544 id=544 data-nosnippet>544</a>                        empty_message: <span class="prelude-val">None</span>,
-<a href=#545 id=545 data-nosnippet>545</a>                        hint: <span class="prelude-val">Some</span>(<span class="string">"↑↓ move · enter: select · esc: close"</span>),
-<a href=#546 id=546 data-nosnippet>546</a>                    },
-<a href=#547 id=547 data-nosnippet>547</a>                    <span class="macro">vec!</span>[<span class="string">"a/very/long/model-name[variant] — Display Name"</span>.to_owned()],
-<a href=#548 id=548 data-nosnippet>548</a>                    frame.area(),
-<a href=#549 id=549 data-nosnippet>549</a>                    <span class="kw-2">&amp;mut </span>state,
-<a href=#550 id=550 data-nosnippet>550</a>                    <span class="kw-2">&amp;</span>theme,
-<a href=#551 id=551 data-nosnippet>551</a>                );
-<a href=#552 id=552 data-nosnippet>552</a>            })
-<a href=#553 id=553 data-nosnippet>553</a>            .expect(<span class="string">"render picker"</span>);
-<a href=#554 id=554 data-nosnippet>554</a>        <span class="kw">let </span>buffer = terminal.backend().buffer();
-<a href=#555 id=555 data-nosnippet>555</a>        <span class="kw">let </span>text = (<span class="number">0</span>..<span class="number">8</span>)
-<a href=#556 id=556 data-nosnippet>556</a>            .flat_map(|y| (<span class="number">0</span>..<span class="number">30</span>).map(<span class="kw">move </span>|x| buffer[(x, y)].symbol().to_owned()))
-<a href=#557 id=557 data-nosnippet>557</a>            .collect::&lt;String&gt;();
-<a href=#558 id=558 data-nosnippet>558</a>        <span class="comment">// The long row ellipsizes instead of clipping mid-word…
-<a href=#559 id=559 data-nosnippet>559</a>        </span><span class="macro">assert!</span>(text.contains(<span class="string">'…'</span>), <span class="string">"{text}"</span>);
-<a href=#560 id=560 data-nosnippet>560</a>        <span class="macro">assert!</span>(!text.contains(<span class="string">"Display Name"</span>), <span class="string">"{text}"</span>);
-<a href=#561 id=561 data-nosnippet>561</a>        <span class="comment">// …and never spills over the right border.
-<a href=#562 id=562 data-nosnippet>562</a>        </span><span class="macro">assert_eq!</span>(buffer[(<span class="number">29</span>, <span class="number">1</span>)].symbol(), <span class="string">"│"</span>);
-<a href=#563 id=563 data-nosnippet>563</a>        <span class="comment">// The bottom border carries the key hints.
-<a href=#564 id=564 data-nosnippet>564</a>        </span><span class="macro">assert!</span>(text.contains(<span class="string">"enter: select"</span>), <span class="string">"{text}"</span>);
-<a href=#565 id=565 data-nosnippet>565</a>        <span class="macro">assert!</span>(text.contains(<span class="string">"esc: close"</span>), <span class="string">"{text}"</span>);
-<a href=#566 id=566 data-nosnippet>566</a>    }
-<a href=#567 id=567 data-nosnippet>567</a>
-<a href=#568 id=568 data-nosnippet>568</a>    <span class="attr">#[test]
-<a href=#569 id=569 data-nosnippet>569</a>    </span><span class="kw">fn </span>tree_view_keeps_selection_inside_the_visible_window() {
-<a href=#570 id=570 data-nosnippet>570</a>        <span class="kw">let </span><span class="kw-2">mut </span>selection = <span class="number">0</span>;
-<a href=#571 id=571 data-nosnippet>571</a>        <span class="kw">let </span><span class="kw-2">mut </span>offset = <span class="number">0</span>;
-<a href=#572 id=572 data-nosnippet>572</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
-<a href=#573 id=573 data-nosnippet>573</a>        selection = <span class="number">7</span>;
-<a href=#574 id=574 data-nosnippet>574</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
-<a href=#575 id=575 data-nosnippet>575</a>        <span class="macro">assert_eq!</span>(offset, <span class="number">4</span>);
-<a href=#576 id=576 data-nosnippet>576</a>        selection = <span class="number">2</span>;
-<a href=#577 id=577 data-nosnippet>577</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
-<a href=#578 id=578 data-nosnippet>578</a>        <span class="macro">assert_eq!</span>(offset, <span class="number">2</span>);
-<a href=#579 id=579 data-nosnippet>579</a>        selection = <span class="number">99</span>;
-<a href=#580 id=580 data-nosnippet>580</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
-<a href=#581 id=581 data-nosnippet>581</a>        <span class="macro">assert_eq!</span>((selection, offset), (<span class="number">19</span>, <span class="number">16</span>));
-<a href=#582 id=582 data-nosnippet>582</a>    }
-<a href=#583 id=583 data-nosnippet>583</a>
-<a href=#584 id=584 data-nosnippet>584</a>    <span class="attr">#[test]
-<a href=#585 id=585 data-nosnippet>585</a>    </span><span class="kw">fn </span>empty_or_zero_height_tree_view_resets_state() {
-<a href=#586 id=586 data-nosnippet>586</a>        <span class="kw">let </span><span class="kw-2">mut </span>selection = <span class="number">8</span>;
-<a href=#587 id=587 data-nosnippet>587</a>        <span class="kw">let </span><span class="kw-2">mut </span>offset = <span class="number">5</span>;
-<a href=#588 id=588 data-nosnippet>588</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">0</span>, <span class="number">4</span>);
-<a href=#589 id=589 data-nosnippet>589</a>        <span class="macro">assert_eq!</span>((selection, offset), (<span class="number">0</span>, <span class="number">0</span>));
-<a href=#590 id=590 data-nosnippet>590</a>        selection = <span class="number">8</span>;
-<a href=#591 id=591 data-nosnippet>591</a>        offset = <span class="number">5</span>;
-<a href=#592 id=592 data-nosnippet>592</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">0</span>);
-<a href=#593 id=593 data-nosnippet>593</a>        <span class="macro">assert_eq!</span>((selection, offset), (<span class="number">8</span>, <span class="number">0</span>));
-<a href=#594 id=594 data-nosnippet>594</a>    }
-<a href=#595 id=595 data-nosnippet>595</a>}
+<a href=#454 id=454 data-nosnippet>454</a>    <span class="kw">fn </span>session_id(ordinal: u8) -&gt; SessionId {
+<a href=#455 id=455 data-nosnippet>455</a>        <span class="macro">format!</span>(<span class="string">"018f0000-0000-7000-8000-{ordinal:012x}"</span>)
+<a href=#456 id=456 data-nosnippet>456</a>            .parse()
+<a href=#457 id=457 data-nosnippet>457</a>            .expect(<span class="string">"session ID"</span>)
+<a href=#458 id=458 data-nosnippet>458</a>    }
+<a href=#459 id=459 data-nosnippet>459</a>
+<a href=#460 id=460 data-nosnippet>460</a>    <span class="kw">fn </span>tree(
+<a href=#461 id=461 data-nosnippet>461</a>        session_id: SessionId,
+<a href=#462 id=462 data-nosnippet>462</a>        children: Vec&lt;cookie_agent_protocol::SessionTree&gt;,
+<a href=#463 id=463 data-nosnippet>463</a>    ) -&gt; cookie_agent_protocol::SessionTree {
+<a href=#464 id=464 data-nosnippet>464</a>        cookie_agent_protocol::SessionTree {
+<a href=#465 id=465 data-nosnippet>465</a>            session: session_meta(session_id),
+<a href=#466 id=466 data-nosnippet>466</a>            children,
+<a href=#467 id=467 data-nosnippet>467</a>        }
+<a href=#468 id=468 data-nosnippet>468</a>    }
+<a href=#469 id=469 data-nosnippet>469</a>
+<a href=#470 id=470 data-nosnippet>470</a>    <span class="kw">fn </span>state(created_at: <span class="kw-2">&amp;</span>str, activity: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt;) -&gt; SessionState {
+<a href=#471 id=471 data-nosnippet>471</a>        SessionState {
+<a href=#472 id=472 data-nosnippet>472</a>            created_at: <span class="prelude-val">Some</span>(created_at.parse().expect(<span class="string">"creation timestamp"</span>)),
+<a href=#473 id=473 data-nosnippet>473</a>            last_agent_activity: activity.map(|value| value.parse().expect(<span class="string">"activity timestamp"</span>)),
+<a href=#474 id=474 data-nosnippet>474</a>            ..SessionState::default()
+<a href=#475 id=475 data-nosnippet>475</a>        }
+<a href=#476 id=476 data-nosnippet>476</a>    }
+<a href=#477 id=477 data-nosnippet>477</a>
+<a href=#478 id=478 data-nosnippet>478</a>    <span class="kw">fn </span>flattened(
+<a href=#479 id=479 data-nosnippet>479</a>        tree: <span class="kw-2">&amp;</span>cookie_agent_protocol::SessionTree,
+<a href=#480 id=480 data-nosnippet>480</a>        states: <span class="kw-2">&amp;</span>HashMap&lt;SessionId, SessionState&gt;,
+<a href=#481 id=481 data-nosnippet>481</a>    ) -&gt; Vec&lt;(SessionId, usize)&gt; {
+<a href=#482 id=482 data-nosnippet>482</a>        <span class="kw">let </span><span class="kw-2">mut </span>entries = Vec::new();
+<a href=#483 id=483 data-nosnippet>483</a>        flatten_tree(tree, <span class="number">0</span>, <span class="kw-2">&amp;</span>HashSet::new(), states, <span class="kw-2">&amp;mut </span>entries);
+<a href=#484 id=484 data-nosnippet>484</a>        entries
+<a href=#485 id=485 data-nosnippet>485</a>            .into_iter()
+<a href=#486 id=486 data-nosnippet>486</a>            .map(|(session_id, <span class="kw">_</span>, depth)| (session_id, depth))
+<a href=#487 id=487 data-nosnippet>487</a>            .collect()
+<a href=#488 id=488 data-nosnippet>488</a>    }
+<a href=#489 id=489 data-nosnippet>489</a>
+<a href=#490 id=490 data-nosnippet>490</a>    <span class="kw">fn </span>stored_event(
+<a href=#491 id=491 data-nosnippet>491</a>        session_id: SessionId,
+<a href=#492 id=492 data-nosnippet>492</a>        seq: u64,
+<a href=#493 id=493 data-nosnippet>493</a>        timestamp: <span class="kw-2">&amp;</span>str,
+<a href=#494 id=494 data-nosnippet>494</a>        payload: EventPayload,
+<a href=#495 id=495 data-nosnippet>495</a>    ) -&gt; StoredEvent {
+<a href=#496 id=496 data-nosnippet>496</a>        StoredEvent {
+<a href=#497 id=497 data-nosnippet>497</a>            event_schema_version: EventSchemaVersion::current(),
+<a href=#498 id=498 data-nosnippet>498</a>            session_id,
+<a href=#499 id=499 data-nosnippet>499</a>            run_id: <span class="prelude-val">None</span>,
+<a href=#500 id=500 data-nosnippet>500</a>            seq,
+<a href=#501 id=501 data-nosnippet>501</a>            timestamp: timestamp.parse().expect(<span class="string">"event timestamp"</span>),
+<a href=#502 id=502 data-nosnippet>502</a>            payload,
+<a href=#503 id=503 data-nosnippet>503</a>        }
+<a href=#504 id=504 data-nosnippet>504</a>    }
+<a href=#505 id=505 data-nosnippet>505</a>
+<a href=#506 id=506 data-nosnippet>506</a>    <span class="attr">#[test]
+<a href=#507 id=507 data-nosnippet>507</a>    </span><span class="kw">fn </span>provider_filter_matches_id_and_display_name_case_insensitively() {
+<a href=#508 id=508 data-nosnippet>508</a>        <span class="kw">let </span>provider = provider();
+<a href=#509 id=509 data-nosnippet>509</a>        <span class="kw">for </span>query <span class="kw">in </span>[<span class="string">"acme"</span>, <span class="string">"ACME-AI"</span>, <span class="string">"me aI"</span>] {
+<a href=#510 id=510 data-nosnippet>510</a>            <span class="macro">assert!</span>(provider_matches(<span class="kw-2">&amp;</span>provider, query), <span class="string">"query {query}"</span>);
+<a href=#511 id=511 data-nosnippet>511</a>        }
+<a href=#512 id=512 data-nosnippet>512</a>        <span class="macro">assert!</span>(!provider_matches(<span class="kw-2">&amp;</span>provider, <span class="string">"other-vendor"</span>));
+<a href=#513 id=513 data-nosnippet>513</a>        <span class="macro">assert!</span>(!provider_matches(<span class="kw-2">&amp;</span>provider, <span class="string">"region"</span>));
+<a href=#514 id=514 data-nosnippet>514</a>        <span class="macro">assert!</span>(!provider_matches(<span class="kw-2">&amp;</span>provider, <span class="string">"api_key"</span>));
+<a href=#515 id=515 data-nosnippet>515</a>        <span class="macro">assert!</span>(provider_matches(<span class="kw-2">&amp;</span>provider, <span class="string">""</span>));
+<a href=#516 id=516 data-nosnippet>516</a>    }
+<a href=#517 id=517 data-nosnippet>517</a>
+<a href=#518 id=518 data-nosnippet>518</a>    <span class="attr">#[test]
+<a href=#519 id=519 data-nosnippet>519</a>    </span><span class="kw">fn </span>empty_picker_navigation_keeps_selection_absent() {
+<a href=#520 id=520 data-nosnippet>520</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = ListState::default().with_selected(<span class="prelude-val">Some</span>(<span class="number">0</span>));
+<a href=#521 id=521 data-nosnippet>521</a>
+<a href=#522 id=522 data-nosnippet>522</a>        move_selection(<span class="kw-2">&amp;mut </span>state, <span class="number">0</span>, <span class="bool-val">false</span>);
+<a href=#523 id=523 data-nosnippet>523</a>        <span class="macro">assert_eq!</span>(state.selected(), <span class="prelude-val">None</span>);
+<a href=#524 id=524 data-nosnippet>524</a>
+<a href=#525 id=525 data-nosnippet>525</a>        state.select(<span class="prelude-val">Some</span>(<span class="number">0</span>));
+<a href=#526 id=526 data-nosnippet>526</a>        cycle_selection(<span class="kw-2">&amp;mut </span>state, <span class="number">0</span>, <span class="bool-val">false</span>);
+<a href=#527 id=527 data-nosnippet>527</a>        <span class="macro">assert_eq!</span>(state.selected(), <span class="prelude-val">None</span>);
+<a href=#528 id=528 data-nosnippet>528</a>    }
+<a href=#529 id=529 data-nosnippet>529</a>
+<a href=#530 id=530 data-nosnippet>530</a>    <span class="attr">#[test]
+<a href=#531 id=531 data-nosnippet>531</a>    </span><span class="kw">fn </span>session_filter_matches_title_and_untitled_placeholder_only() {
+<a href=#532 id=532 data-nosnippet>532</a>        <span class="kw">let </span>session_id = SessionId::new_v7();
+<a href=#533 id=533 data-nosnippet>533</a>        <span class="kw">let </span><span class="kw-2">mut </span>session = SessionMeta {
+<a href=#534 id=534 data-nosnippet>534</a>            session_id,
+<a href=#535 id=535 data-nosnippet>535</a>            title: <span class="prelude-val">Some</span>(
+<a href=#536 id=536 data-nosnippet>536</a>                cookie_agent_protocol::SessionTitle::new(<span class="string">"Quarterly report cleanup"</span>)
+<a href=#537 id=537 data-nosnippet>537</a>                    .expect(<span class="string">"title"</span>),
+<a href=#538 id=538 data-nosnippet>538</a>            ),
+<a href=#539 id=539 data-nosnippet>539</a>            ..session_meta(session_id)
+<a href=#540 id=540 data-nosnippet>540</a>        };
+<a href=#541 id=541 data-nosnippet>541</a>        <span class="macro">assert!</span>(session_matches(<span class="kw-2">&amp;</span>session, <span class="string">"quarterly"</span>));
+<a href=#542 id=542 data-nosnippet>542</a>        <span class="macro">assert!</span>(session_matches(<span class="kw-2">&amp;</span>session, <span class="string">"REPORT"</span>));
+<a href=#543 id=543 data-nosnippet>543</a>        <span class="macro">assert!</span>(!session_matches(<span class="kw-2">&amp;</span>session, <span class="string">"primary"</span>));
+<a href=#544 id=544 data-nosnippet>544</a>        <span class="macro">assert!</span>(!session_matches(<span class="kw-2">&amp;</span>session, <span class="kw-2">&amp;</span>session_id.to_string()));
+<a href=#545 id=545 data-nosnippet>545</a>        <span class="macro">assert!</span>(!session_matches(<span class="kw-2">&amp;</span>session, <span class="string">"unrelated words"</span>));
+<a href=#546 id=546 data-nosnippet>546</a>        session.title = <span class="prelude-val">None</span>;
+<a href=#547 id=547 data-nosnippet>547</a>        <span class="macro">assert!</span>(!session_matches(<span class="kw-2">&amp;</span>session, <span class="string">"quarterly"</span>));
+<a href=#548 id=548 data-nosnippet>548</a>        <span class="macro">assert!</span>(session_matches(<span class="kw-2">&amp;</span>session, <span class="string">"UNTITLED"</span>));
+<a href=#549 id=549 data-nosnippet>549</a>    }
+<a href=#550 id=550 data-nosnippet>550</a>
+<a href=#551 id=551 data-nosnippet>551</a>    <span class="attr">#[test]
+<a href=#552 id=552 data-nosnippet>552</a>    </span><span class="kw">fn </span>session_search_groups_local_days_and_sorts_newest_first() {
+<a href=#553 id=553 data-nosnippet>553</a>        <span class="kw">let </span>now = <span class="string">"2026-08-06T12:00:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>);
+<a href=#554 id=554 data-nosnippet>554</a>        <span class="kw">let </span>time_zone = jiff::tz::TimeZone::UTC;
+<a href=#555 id=555 data-nosnippet>555</a>        <span class="kw">let </span><span class="kw-2">mut </span>today_old = session_meta(SessionId::new_v7());
+<a href=#556 id=556 data-nosnippet>556</a>        today_old.title =
+<a href=#557 id=557 data-nosnippet>557</a>            <span class="prelude-val">Some</span>(cookie_agent_protocol::SessionTitle::new(<span class="string">"today old"</span>).expect(<span class="string">"title"</span>));
+<a href=#558 id=558 data-nosnippet>558</a>        today_old.last_activity = <span class="string">"2026-08-06T09:00:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>);
+<a href=#559 id=559 data-nosnippet>559</a>        <span class="kw">let </span><span class="kw-2">mut </span>today_new = session_meta(SessionId::new_v7());
+<a href=#560 id=560 data-nosnippet>560</a>        today_new.title =
+<a href=#561 id=561 data-nosnippet>561</a>            <span class="prelude-val">Some</span>(cookie_agent_protocol::SessionTitle::new(<span class="string">"today new"</span>).expect(<span class="string">"title"</span>));
+<a href=#562 id=562 data-nosnippet>562</a>        today_new.last_activity = <span class="string">"2026-08-06T11:00:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>);
+<a href=#563 id=563 data-nosnippet>563</a>        <span class="kw">let </span><span class="kw-2">mut </span>yesterday = session_meta(SessionId::new_v7());
+<a href=#564 id=564 data-nosnippet>564</a>        yesterday.title =
+<a href=#565 id=565 data-nosnippet>565</a>            <span class="prelude-val">Some</span>(cookie_agent_protocol::SessionTitle::new(<span class="string">"yesterday"</span>).expect(<span class="string">"title"</span>));
+<a href=#566 id=566 data-nosnippet>566</a>        yesterday.last_activity = <span class="string">"2026-08-05T18:00:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>);
+<a href=#567 id=567 data-nosnippet>567</a>        <span class="kw">let </span><span class="kw-2">mut </span>older = session_meta(SessionId::new_v7());
+<a href=#568 id=568 data-nosnippet>568</a>        older.title = <span class="prelude-val">Some</span>(cookie_agent_protocol::SessionTitle::new(<span class="string">"older"</span>).expect(<span class="string">"title"</span>));
+<a href=#569 id=569 data-nosnippet>569</a>        older.last_activity = <span class="string">"2026-08-04T18:00:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>);
+<a href=#570 id=570 data-nosnippet>570</a>
+<a href=#571 id=571 data-nosnippet>571</a>        <span class="kw">let </span>rows = session_search_rows(
+<a href=#572 id=572 data-nosnippet>572</a>            <span class="kw-2">&amp;</span>[today_old, older, today_new, yesterday],
+<a href=#573 id=573 data-nosnippet>573</a>            <span class="string">""</span>,
+<a href=#574 id=574 data-nosnippet>574</a>            now,
+<a href=#575 id=575 data-nosnippet>575</a>            <span class="kw-2">&amp;</span>time_zone,
+<a href=#576 id=576 data-nosnippet>576</a>        );
+<a href=#577 id=577 data-nosnippet>577</a>        <span class="macro">assert_eq!</span>(rows[<span class="number">0</span>], SessionSearchRow::Header(<span class="string">"Today"</span>.into()));
+<a href=#578 id=578 data-nosnippet>578</a>        <span class="macro">assert!</span>(
+<a href=#579 id=579 data-nosnippet>579</a>            <span class="macro">matches!</span>(<span class="kw-2">&amp;</span>rows[<span class="number">1</span>], SessionSearchRow::Session { label, .. } <span class="kw">if </span>label.starts_with(<span class="string">"today new"</span>))
+<a href=#580 id=580 data-nosnippet>580</a>        );
+<a href=#581 id=581 data-nosnippet>581</a>        <span class="macro">assert!</span>(
+<a href=#582 id=582 data-nosnippet>582</a>            <span class="macro">matches!</span>(<span class="kw-2">&amp;</span>rows[<span class="number">2</span>], SessionSearchRow::Session { label, .. } <span class="kw">if </span>label.starts_with(<span class="string">"today old"</span>))
+<a href=#583 id=583 data-nosnippet>583</a>        );
+<a href=#584 id=584 data-nosnippet>584</a>        <span class="macro">assert_eq!</span>(rows[<span class="number">3</span>], SessionSearchRow::Header(<span class="string">"Yesterday"</span>.into()));
+<a href=#585 id=585 data-nosnippet>585</a>        <span class="macro">assert!</span>(
+<a href=#586 id=586 data-nosnippet>586</a>            <span class="macro">matches!</span>(<span class="kw-2">&amp;</span>rows[<span class="number">4</span>], SessionSearchRow::Session { label, .. } <span class="kw">if </span>label.starts_with(<span class="string">"yesterday"</span>))
+<a href=#587 id=587 data-nosnippet>587</a>        );
+<a href=#588 id=588 data-nosnippet>588</a>        <span class="macro">assert_eq!</span>(rows[<span class="number">5</span>], SessionSearchRow::Header(<span class="string">"Aug 4"</span>.into()));
+<a href=#589 id=589 data-nosnippet>589</a>        <span class="macro">assert!</span>(
+<a href=#590 id=590 data-nosnippet>590</a>            <span class="macro">matches!</span>(<span class="kw-2">&amp;</span>rows[<span class="number">6</span>], SessionSearchRow::Session { label, .. } <span class="kw">if </span>label.starts_with(<span class="string">"older"</span>))
+<a href=#591 id=591 data-nosnippet>591</a>        );
+<a href=#592 id=592 data-nosnippet>592</a>        <span class="macro">assert!</span>(rows.iter().filter_map(SessionSearchRow::session_id).count() == <span class="number">4</span>);
+<a href=#593 id=593 data-nosnippet>593</a>        <span class="macro">assert!</span>(
+<a href=#594 id=594 data-nosnippet>594</a>            rows.iter()
+<a href=#595 id=595 data-nosnippet>595</a>                .filter(|row| <span class="macro">matches!</span>(row, SessionSearchRow::Header(<span class="kw">_</span>)))
+<a href=#596 id=596 data-nosnippet>596</a>                .all(|row| row.session_id().is_none())
+<a href=#597 id=597 data-nosnippet>597</a>        );
+<a href=#598 id=598 data-nosnippet>598</a>    }
+<a href=#599 id=599 data-nosnippet>599</a>
+<a href=#600 id=600 data-nosnippet>600</a>    <span class="attr">#[test]
+<a href=#601 id=601 data-nosnippet>601</a>    </span><span class="kw">fn </span>short_id_is_subdued_metadata_not_the_full_identity() {
+<a href=#602 id=602 data-nosnippet>602</a>        <span class="kw">let </span>session_id = SessionId::new_v7();
+<a href=#603 id=603 data-nosnippet>603</a>        <span class="macro">assert_eq!</span>(short_id(session_id).len(), <span class="number">8</span>);
+<a href=#604 id=604 data-nosnippet>604</a>        <span class="macro">assert!</span>(session_id.to_string().starts_with(<span class="kw-2">&amp;</span>short_id(session_id)));
+<a href=#605 id=605 data-nosnippet>605</a>    }
+<a href=#606 id=606 data-nosnippet>606</a>
+<a href=#607 id=607 data-nosnippet>607</a>    <span class="attr">#[test]
+<a href=#608 id=608 data-nosnippet>608</a>    </span><span class="kw">fn </span>picker_rows_ellipsize_and_the_footer_explains_the_keys() {
+<a href=#609 id=609 data-nosnippet>609</a>        <span class="kw">use </span>ratatui::{Terminal, backend::TestBackend};
+<a href=#610 id=610 data-nosnippet>610</a>
+<a href=#611 id=611 data-nosnippet>611</a>        <span class="kw">let </span>theme = <span class="kw">crate</span>::theme::Theme::default();
+<a href=#612 id=612 data-nosnippet>612</a>        <span class="kw">let </span><span class="kw-2">mut </span>terminal = Terminal::new(TestBackend::new(<span class="number">30</span>, <span class="number">8</span>)).expect(<span class="string">"terminal"</span>);
+<a href=#613 id=613 data-nosnippet>613</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = ListState::default().with_selected(<span class="prelude-val">Some</span>(<span class="number">0</span>));
+<a href=#614 id=614 data-nosnippet>614</a>        terminal
+<a href=#615 id=615 data-nosnippet>615</a>            .draw(|frame| {
+<a href=#616 id=616 data-nosnippet>616</a>                <span class="kw">super</span>::render(
+<a href=#617 id=617 data-nosnippet>617</a>                    frame,
+<a href=#618 id=618 data-nosnippet>618</a>                    <span class="kw">super</span>::PickerChrome {
+<a href=#619 id=619 data-nosnippet>619</a>                        title: <span class="string">"Model"</span>,
+<a href=#620 id=620 data-nosnippet>620</a>                        empty_message: <span class="prelude-val">None</span>,
+<a href=#621 id=621 data-nosnippet>621</a>                        hint: <span class="prelude-val">Some</span>(<span class="string">"↑↓ move · enter: select · esc: close"</span>),
+<a href=#622 id=622 data-nosnippet>622</a>                    },
+<a href=#623 id=623 data-nosnippet>623</a>                    <span class="macro">vec!</span>[<span class="string">"a/very/long/model-name[variant] — Display Name"</span>.to_owned()],
+<a href=#624 id=624 data-nosnippet>624</a>                    frame.area(),
+<a href=#625 id=625 data-nosnippet>625</a>                    <span class="kw-2">&amp;mut </span>state,
+<a href=#626 id=626 data-nosnippet>626</a>                    <span class="kw-2">&amp;</span>theme,
+<a href=#627 id=627 data-nosnippet>627</a>                );
+<a href=#628 id=628 data-nosnippet>628</a>            })
+<a href=#629 id=629 data-nosnippet>629</a>            .expect(<span class="string">"render picker"</span>);
+<a href=#630 id=630 data-nosnippet>630</a>        <span class="kw">let </span>buffer = terminal.backend().buffer();
+<a href=#631 id=631 data-nosnippet>631</a>        <span class="kw">let </span>text = (<span class="number">0</span>..<span class="number">8</span>)
+<a href=#632 id=632 data-nosnippet>632</a>            .flat_map(|y| (<span class="number">0</span>..<span class="number">30</span>).map(<span class="kw">move </span>|x| buffer[(x, y)].symbol().to_owned()))
+<a href=#633 id=633 data-nosnippet>633</a>            .collect::&lt;String&gt;();
+<a href=#634 id=634 data-nosnippet>634</a>        <span class="comment">// The long row ellipsizes instead of clipping mid-word…
+<a href=#635 id=635 data-nosnippet>635</a>        </span><span class="macro">assert!</span>(text.contains(<span class="string">'…'</span>), <span class="string">"{text}"</span>);
+<a href=#636 id=636 data-nosnippet>636</a>        <span class="macro">assert!</span>(!text.contains(<span class="string">"Display Name"</span>), <span class="string">"{text}"</span>);
+<a href=#637 id=637 data-nosnippet>637</a>        <span class="comment">// …and never spills over the right border.
+<a href=#638 id=638 data-nosnippet>638</a>        </span><span class="macro">assert_eq!</span>(buffer[(<span class="number">29</span>, <span class="number">1</span>)].symbol(), <span class="string">"│"</span>);
+<a href=#639 id=639 data-nosnippet>639</a>        <span class="comment">// The bottom border carries the key hints.
+<a href=#640 id=640 data-nosnippet>640</a>        </span><span class="macro">assert!</span>(text.contains(<span class="string">"enter: select"</span>), <span class="string">"{text}"</span>);
+<a href=#641 id=641 data-nosnippet>641</a>        <span class="macro">assert!</span>(text.contains(<span class="string">"esc: close"</span>), <span class="string">"{text}"</span>);
+<a href=#642 id=642 data-nosnippet>642</a>    }
+<a href=#643 id=643 data-nosnippet>643</a>
+<a href=#644 id=644 data-nosnippet>644</a>    <span class="attr">#[test]
+<a href=#645 id=645 data-nosnippet>645</a>    </span><span class="kw">fn </span>sibling_agents_sort_by_recent_activity_with_root_pinned() {
+<a href=#646 id=646 data-nosnippet>646</a>        <span class="kw">let </span>root = session_id(<span class="number">1</span>);
+<a href=#647 id=647 data-nosnippet>647</a>        <span class="kw">let </span>older = session_id(<span class="number">2</span>);
+<a href=#648 id=648 data-nosnippet>648</a>        <span class="kw">let </span>newer = session_id(<span class="number">3</span>);
+<a href=#649 id=649 data-nosnippet>649</a>        <span class="kw">let </span>tree = tree(root, <span class="macro">vec!</span>[tree(older, Vec::new()), tree(newer, Vec::new())]);
+<a href=#650 id=650 data-nosnippet>650</a>        <span class="kw">let </span>states = HashMap::from([
+<a href=#651 id=651 data-nosnippet>651</a>            (root, state(<span class="string">"2026-08-06T10:00:00Z"</span>, <span class="prelude-val">None</span>)),
+<a href=#652 id=652 data-nosnippet>652</a>            (
+<a href=#653 id=653 data-nosnippet>653</a>                older,
+<a href=#654 id=654 data-nosnippet>654</a>                state(<span class="string">"2026-08-06T10:01:00Z"</span>, <span class="prelude-val">Some</span>(<span class="string">"2026-08-06T11:00:00Z"</span>)),
+<a href=#655 id=655 data-nosnippet>655</a>            ),
+<a href=#656 id=656 data-nosnippet>656</a>            (
+<a href=#657 id=657 data-nosnippet>657</a>                newer,
+<a href=#658 id=658 data-nosnippet>658</a>                state(<span class="string">"2026-08-06T10:02:00Z"</span>, <span class="prelude-val">Some</span>(<span class="string">"2026-08-06T12:00:00Z"</span>)),
+<a href=#659 id=659 data-nosnippet>659</a>            ),
+<a href=#660 id=660 data-nosnippet>660</a>        ]);
+<a href=#661 id=661 data-nosnippet>661</a>
+<a href=#662 id=662 data-nosnippet>662</a>        <span class="macro">assert_eq!</span>(
+<a href=#663 id=663 data-nosnippet>663</a>            flattened(<span class="kw-2">&amp;</span>tree, <span class="kw-2">&amp;</span>states),
+<a href=#664 id=664 data-nosnippet>664</a>            [(root, <span class="number">0</span>), (newer, <span class="number">1</span>), (older, <span class="number">1</span>)]
+<a href=#665 id=665 data-nosnippet>665</a>        );
+<a href=#666 id=666 data-nosnippet>666</a>    }
+<a href=#667 id=667 data-nosnippet>667</a>
+<a href=#668 id=668 data-nosnippet>668</a>    <span class="attr">#[test]
+<a href=#669 id=669 data-nosnippet>669</a>    </span><span class="kw">fn </span>grandchildren_sort_only_within_their_parent() {
+<a href=#670 id=670 data-nosnippet>670</a>        <span class="kw">let </span>root = session_id(<span class="number">1</span>);
+<a href=#671 id=671 data-nosnippet>671</a>        <span class="kw">let </span>first_parent = session_id(<span class="number">2</span>);
+<a href=#672 id=672 data-nosnippet>672</a>        <span class="kw">let </span>second_parent = session_id(<span class="number">3</span>);
+<a href=#673 id=673 data-nosnippet>673</a>        <span class="kw">let </span>first_old = session_id(<span class="number">4</span>);
+<a href=#674 id=674 data-nosnippet>674</a>        <span class="kw">let </span>first_new = session_id(<span class="number">5</span>);
+<a href=#675 id=675 data-nosnippet>675</a>        <span class="kw">let </span>second_child = session_id(<span class="number">6</span>);
+<a href=#676 id=676 data-nosnippet>676</a>        <span class="kw">let </span>tree = tree(
+<a href=#677 id=677 data-nosnippet>677</a>            root,
+<a href=#678 id=678 data-nosnippet>678</a>            <span class="macro">vec!</span>[
+<a href=#679 id=679 data-nosnippet>679</a>                tree(
+<a href=#680 id=680 data-nosnippet>680</a>                    first_parent,
+<a href=#681 id=681 data-nosnippet>681</a>                    <span class="macro">vec!</span>[tree(first_old, Vec::new()), tree(first_new, Vec::new())],
+<a href=#682 id=682 data-nosnippet>682</a>                ),
+<a href=#683 id=683 data-nosnippet>683</a>                tree(second_parent, <span class="macro">vec!</span>[tree(second_child, Vec::new())]),
+<a href=#684 id=684 data-nosnippet>684</a>            ],
+<a href=#685 id=685 data-nosnippet>685</a>        );
+<a href=#686 id=686 data-nosnippet>686</a>        <span class="kw">let </span>states = HashMap::from([
+<a href=#687 id=687 data-nosnippet>687</a>            (first_parent, state(<span class="string">"2026-08-06T10:01:00Z"</span>, <span class="prelude-val">None</span>)),
+<a href=#688 id=688 data-nosnippet>688</a>            (
+<a href=#689 id=689 data-nosnippet>689</a>                second_parent,
+<a href=#690 id=690 data-nosnippet>690</a>                state(<span class="string">"2026-08-06T10:02:00Z"</span>, <span class="prelude-val">Some</span>(<span class="string">"2026-08-06T11:00:00Z"</span>)),
+<a href=#691 id=691 data-nosnippet>691</a>            ),
+<a href=#692 id=692 data-nosnippet>692</a>            (
+<a href=#693 id=693 data-nosnippet>693</a>                first_old,
+<a href=#694 id=694 data-nosnippet>694</a>                state(<span class="string">"2026-08-06T10:03:00Z"</span>, <span class="prelude-val">Some</span>(<span class="string">"2026-08-06T11:30:00Z"</span>)),
+<a href=#695 id=695 data-nosnippet>695</a>            ),
+<a href=#696 id=696 data-nosnippet>696</a>            (
+<a href=#697 id=697 data-nosnippet>697</a>                first_new,
+<a href=#698 id=698 data-nosnippet>698</a>                state(<span class="string">"2026-08-06T10:04:00Z"</span>, <span class="prelude-val">Some</span>(<span class="string">"2026-08-06T12:00:00Z"</span>)),
+<a href=#699 id=699 data-nosnippet>699</a>            ),
+<a href=#700 id=700 data-nosnippet>700</a>            (
+<a href=#701 id=701 data-nosnippet>701</a>                second_child,
+<a href=#702 id=702 data-nosnippet>702</a>                state(<span class="string">"2026-08-06T10:05:00Z"</span>, <span class="prelude-val">Some</span>(<span class="string">"2026-08-06T13:00:00Z"</span>)),
+<a href=#703 id=703 data-nosnippet>703</a>            ),
+<a href=#704 id=704 data-nosnippet>704</a>        ]);
+<a href=#705 id=705 data-nosnippet>705</a>
+<a href=#706 id=706 data-nosnippet>706</a>        <span class="macro">assert_eq!</span>(
+<a href=#707 id=707 data-nosnippet>707</a>            flattened(<span class="kw-2">&amp;</span>tree, <span class="kw-2">&amp;</span>states),
+<a href=#708 id=708 data-nosnippet>708</a>            [
+<a href=#709 id=709 data-nosnippet>709</a>                (root, <span class="number">0</span>),
+<a href=#710 id=710 data-nosnippet>710</a>                (second_parent, <span class="number">1</span>),
+<a href=#711 id=711 data-nosnippet>711</a>                (second_child, <span class="number">2</span>),
+<a href=#712 id=712 data-nosnippet>712</a>                (first_parent, <span class="number">1</span>),
+<a href=#713 id=713 data-nosnippet>713</a>                (first_new, <span class="number">2</span>),
+<a href=#714 id=714 data-nosnippet>714</a>                (first_old, <span class="number">2</span>),
+<a href=#715 id=715 data-nosnippet>715</a>            ]
+<a href=#716 id=716 data-nosnippet>716</a>        );
+<a href=#717 id=717 data-nosnippet>717</a>    }
+<a href=#718 id=718 data-nosnippet>718</a>
+<a href=#719 id=719 data-nosnippet>719</a>    <span class="attr">#[test]
+<a href=#720 id=720 data-nosnippet>720</a>    </span><span class="kw">fn </span>activity_ties_fall_back_to_creation_order() {
+<a href=#721 id=721 data-nosnippet>721</a>        <span class="kw">let </span>root = session_id(<span class="number">1</span>);
+<a href=#722 id=722 data-nosnippet>722</a>        <span class="kw">let </span>created_first = session_id(<span class="number">2</span>);
+<a href=#723 id=723 data-nosnippet>723</a>        <span class="kw">let </span>created_second = session_id(<span class="number">3</span>);
+<a href=#724 id=724 data-nosnippet>724</a>        <span class="kw">let </span>tree = tree(
+<a href=#725 id=725 data-nosnippet>725</a>            root,
+<a href=#726 id=726 data-nosnippet>726</a>            <span class="macro">vec!</span>[
+<a href=#727 id=727 data-nosnippet>727</a>                tree(created_second, Vec::new()),
+<a href=#728 id=728 data-nosnippet>728</a>                tree(created_first, Vec::new()),
+<a href=#729 id=729 data-nosnippet>729</a>            ],
+<a href=#730 id=730 data-nosnippet>730</a>        );
+<a href=#731 id=731 data-nosnippet>731</a>        <span class="kw">let </span>tied = <span class="prelude-val">Some</span>(<span class="string">"2026-08-06T12:00:00Z"</span>);
+<a href=#732 id=732 data-nosnippet>732</a>        <span class="kw">let </span>states = HashMap::from([
+<a href=#733 id=733 data-nosnippet>733</a>            (created_first, state(<span class="string">"2026-08-06T10:01:00Z"</span>, tied)),
+<a href=#734 id=734 data-nosnippet>734</a>            (created_second, state(<span class="string">"2026-08-06T10:02:00Z"</span>, tied)),
+<a href=#735 id=735 data-nosnippet>735</a>        ]);
+<a href=#736 id=736 data-nosnippet>736</a>
+<a href=#737 id=737 data-nosnippet>737</a>        <span class="macro">assert_eq!</span>(
+<a href=#738 id=738 data-nosnippet>738</a>            flattened(<span class="kw-2">&amp;</span>tree, <span class="kw-2">&amp;</span>states),
+<a href=#739 id=739 data-nosnippet>739</a>            [(root, <span class="number">0</span>), (created_first, <span class="number">1</span>), (created_second, <span class="number">1</span>)]
+<a href=#740 id=740 data-nosnippet>740</a>        );
+<a href=#741 id=741 data-nosnippet>741</a>    }
+<a href=#742 id=742 data-nosnippet>742</a>
+<a href=#743 id=743 data-nosnippet>743</a>    <span class="attr">#[test]
+<a href=#744 id=744 data-nosnippet>744</a>    </span><span class="kw">fn </span>admitted_user_message_live_resorts_siblings() {
+<a href=#745 id=745 data-nosnippet>745</a>        <span class="kw">let </span>root = session_id(<span class="number">1</span>);
+<a href=#746 id=746 data-nosnippet>746</a>        <span class="kw">let </span>first = session_id(<span class="number">2</span>);
+<a href=#747 id=747 data-nosnippet>747</a>        <span class="kw">let </span>second = session_id(<span class="number">3</span>);
+<a href=#748 id=748 data-nosnippet>748</a>        <span class="kw">let </span>tree = tree(
+<a href=#749 id=749 data-nosnippet>749</a>            root,
+<a href=#750 id=750 data-nosnippet>750</a>            <span class="macro">vec!</span>[tree(first, Vec::new()), tree(second, Vec::new())],
+<a href=#751 id=751 data-nosnippet>751</a>        );
+<a href=#752 id=752 data-nosnippet>752</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = StateStore::default();
+<a href=#753 id=753 data-nosnippet>753</a>        store
+<a href=#754 id=754 data-nosnippet>754</a>            .sessions
+<a href=#755 id=755 data-nosnippet>755</a>            .insert(first, state(<span class="string">"2026-08-06T10:01:00Z"</span>, <span class="prelude-val">None</span>));
+<a href=#756 id=756 data-nosnippet>756</a>        store
+<a href=#757 id=757 data-nosnippet>757</a>            .sessions
+<a href=#758 id=758 data-nosnippet>758</a>            .insert(second, state(<span class="string">"2026-08-06T10:02:00Z"</span>, <span class="prelude-val">None</span>));
+<a href=#759 id=759 data-nosnippet>759</a>        <span class="macro">assert_eq!</span>(flattened(<span class="kw-2">&amp;</span>tree, <span class="kw-2">&amp;</span>store.sessions)[<span class="number">1</span>].<span class="number">0</span>, first);
+<a href=#760 id=760 data-nosnippet>760</a>
+<a href=#761 id=761 data-nosnippet>761</a>        <span class="macro">assert!</span>(store.apply_event(stored_event(
+<a href=#762 id=762 data-nosnippet>762</a>            second,
+<a href=#763 id=763 data-nosnippet>763</a>            <span class="number">1</span>,
+<a href=#764 id=764 data-nosnippet>764</a>            <span class="string">"2026-08-06T12:00:00Z"</span>,
+<a href=#765 id=765 data-nosnippet>765</a>            EventPayload::UserInputAdmitted {
+<a href=#766 id=766 data-nosnippet>766</a>                input: <span class="string">"new work"</span>.into(),
+<a href=#767 id=767 data-nosnippet>767</a>            },
+<a href=#768 id=768 data-nosnippet>768</a>        )));
+<a href=#769 id=769 data-nosnippet>769</a>
+<a href=#770 id=770 data-nosnippet>770</a>        <span class="macro">assert_eq!</span>(flattened(<span class="kw-2">&amp;</span>tree, <span class="kw-2">&amp;</span>store.sessions)[<span class="number">1</span>].<span class="number">0</span>, second);
+<a href=#771 id=771 data-nosnippet>771</a>    }
+<a href=#772 id=772 data-nosnippet>772</a>
+<a href=#773 id=773 data-nosnippet>773</a>    <span class="attr">#[test]
+<a href=#774 id=774 data-nosnippet>774</a>    </span><span class="kw">fn </span>assistant_and_tool_result_events_do_not_resort_siblings() {
+<a href=#775 id=775 data-nosnippet>775</a>        <span class="kw">let </span>root = session_id(<span class="number">1</span>);
+<a href=#776 id=776 data-nosnippet>776</a>        <span class="kw">let </span>active = session_id(<span class="number">2</span>);
+<a href=#777 id=777 data-nosnippet>777</a>        <span class="kw">let </span>background = session_id(<span class="number">3</span>);
+<a href=#778 id=778 data-nosnippet>778</a>        <span class="kw">let </span>tree = tree(
+<a href=#779 id=779 data-nosnippet>779</a>            root,
+<a href=#780 id=780 data-nosnippet>780</a>            <span class="macro">vec!</span>[tree(active, Vec::new()), tree(background, Vec::new())],
+<a href=#781 id=781 data-nosnippet>781</a>        );
+<a href=#782 id=782 data-nosnippet>782</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = StateStore::default();
+<a href=#783 id=783 data-nosnippet>783</a>        store.sessions.insert(
+<a href=#784 id=784 data-nosnippet>784</a>            active,
+<a href=#785 id=785 data-nosnippet>785</a>            state(<span class="string">"2026-08-06T10:01:00Z"</span>, <span class="prelude-val">Some</span>(<span class="string">"2026-08-06T11:00:00Z"</span>)),
+<a href=#786 id=786 data-nosnippet>786</a>        );
+<a href=#787 id=787 data-nosnippet>787</a>        store.sessions.insert(
+<a href=#788 id=788 data-nosnippet>788</a>            background,
+<a href=#789 id=789 data-nosnippet>789</a>            state(<span class="string">"2026-08-06T10:02:00Z"</span>, <span class="prelude-val">Some</span>(<span class="string">"2026-08-06T10:30:00Z"</span>)),
+<a href=#790 id=790 data-nosnippet>790</a>        );
+<a href=#791 id=791 data-nosnippet>791</a>        <span class="kw">let </span>owner = AssistantToolCallRef {
+<a href=#792 id=792 data-nosnippet>792</a>            model_turn_seq: <span class="number">1</span>,
+<a href=#793 id=793 data-nosnippet>793</a>            content_index: <span class="number">0</span>,
+<a href=#794 id=794 data-nosnippet>794</a>            model_call_id: ModelCallId::new(<span class="string">"background-call"</span>).expect(<span class="string">"model call ID"</span>),
+<a href=#795 id=795 data-nosnippet>795</a>            provider_item_id: <span class="prelude-val">None</span>,
+<a href=#796 id=796 data-nosnippet>796</a>        };
+<a href=#797 id=797 data-nosnippet>797</a>        <span class="macro">assert!</span>(store.apply_event(stored_event(
+<a href=#798 id=798 data-nosnippet>798</a>            background,
+<a href=#799 id=799 data-nosnippet>799</a>            <span class="number">1</span>,
+<a href=#800 id=800 data-nosnippet>800</a>            <span class="string">"2026-08-06T12:00:00Z"</span>,
+<a href=#801 id=801 data-nosnippet>801</a>            EventPayload::TextDelta {
+<a href=#802 id=802 data-nosnippet>802</a>                attempt_id: AttemptId::new_v7(),
+<a href=#803 id=803 data-nosnippet>803</a>                text: <span class="string">"background output"</span>.into(),
+<a href=#804 id=804 data-nosnippet>804</a>            },
+<a href=#805 id=805 data-nosnippet>805</a>        )));
+<a href=#806 id=806 data-nosnippet>806</a>        <span class="macro">assert!</span>(store.apply_event(stored_event(
+<a href=#807 id=807 data-nosnippet>807</a>            background,
+<a href=#808 id=808 data-nosnippet>808</a>            <span class="number">2</span>,
+<a href=#809 id=809 data-nosnippet>809</a>            <span class="string">"2026-08-06T12:01:00Z"</span>,
+<a href=#810 id=810 data-nosnippet>810</a>            EventPayload::ToolCallTerminated {
+<a href=#811 id=811 data-nosnippet>811</a>                termination: ToolCallTermination {
+<a href=#812 id=812 data-nosnippet>812</a>                    tool_call_id: ToolCallId::new_v7(),
+<a href=#813 id=813 data-nosnippet>813</a>                    owner,
+<a href=#814 id=814 data-nosnippet>814</a>                    outcome: ToolTerminationOutcome::Completed,
+<a href=#815 id=815 data-nosnippet>815</a>                    result: <span class="prelude-val">Some</span>(PersistedToolResult {
+<a href=#816 id=816 data-nosnippet>816</a>                        title: SafeDisplayText::new(<span class="string">"completed"</span>).expect(<span class="string">"title"</span>),
+<a href=#817 id=817 data-nosnippet>817</a>                        output: <span class="string">"result"</span>.into(),
+<a href=#818 id=818 data-nosnippet>818</a>                        metadata: serde_json::Value::Null,
+<a href=#819 id=819 data-nosnippet>819</a>                        truncation: <span class="prelude-val">None</span>,
+<a href=#820 id=820 data-nosnippet>820</a>                        attachments: Vec::new(),
+<a href=#821 id=821 data-nosnippet>821</a>                    }),
+<a href=#822 id=822 data-nosnippet>822</a>                    error: <span class="prelude-val">None</span>,
+<a href=#823 id=823 data-nosnippet>823</a>                },
+<a href=#824 id=824 data-nosnippet>824</a>            },
+<a href=#825 id=825 data-nosnippet>825</a>        )));
+<a href=#826 id=826 data-nosnippet>826</a>
+<a href=#827 id=827 data-nosnippet>827</a>        <span class="macro">assert_eq!</span>(flattened(<span class="kw-2">&amp;</span>tree, <span class="kw-2">&amp;</span>store.sessions)[<span class="number">1</span>].<span class="number">0</span>, active);
+<a href=#828 id=828 data-nosnippet>828</a>        <span class="macro">assert_eq!</span>(
+<a href=#829 id=829 data-nosnippet>829</a>            store.sessions[<span class="kw-2">&amp;</span>background].last_agent_activity,
+<a href=#830 id=830 data-nosnippet>830</a>            <span class="prelude-val">Some</span>(<span class="string">"2026-08-06T10:30:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>))
+<a href=#831 id=831 data-nosnippet>831</a>        );
+<a href=#832 id=832 data-nosnippet>832</a>    }
+<a href=#833 id=833 data-nosnippet>833</a>
+<a href=#834 id=834 data-nosnippet>834</a>    <span class="attr">#[test]
+<a href=#835 id=835 data-nosnippet>835</a>    </span><span class="kw">fn </span>tree_view_keeps_selection_inside_the_visible_window() {
+<a href=#836 id=836 data-nosnippet>836</a>        <span class="kw">let </span><span class="kw-2">mut </span>selection = <span class="number">0</span>;
+<a href=#837 id=837 data-nosnippet>837</a>        <span class="kw">let </span><span class="kw-2">mut </span>offset = <span class="number">0</span>;
+<a href=#838 id=838 data-nosnippet>838</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
+<a href=#839 id=839 data-nosnippet>839</a>        selection = <span class="number">7</span>;
+<a href=#840 id=840 data-nosnippet>840</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
+<a href=#841 id=841 data-nosnippet>841</a>        <span class="macro">assert_eq!</span>(offset, <span class="number">4</span>);
+<a href=#842 id=842 data-nosnippet>842</a>        selection = <span class="number">2</span>;
+<a href=#843 id=843 data-nosnippet>843</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
+<a href=#844 id=844 data-nosnippet>844</a>        <span class="macro">assert_eq!</span>(offset, <span class="number">2</span>);
+<a href=#845 id=845 data-nosnippet>845</a>        selection = <span class="number">99</span>;
+<a href=#846 id=846 data-nosnippet>846</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
+<a href=#847 id=847 data-nosnippet>847</a>        <span class="macro">assert_eq!</span>((selection, offset), (<span class="number">19</span>, <span class="number">16</span>));
+<a href=#848 id=848 data-nosnippet>848</a>    }
+<a href=#849 id=849 data-nosnippet>849</a>
+<a href=#850 id=850 data-nosnippet>850</a>    <span class="attr">#[test]
+<a href=#851 id=851 data-nosnippet>851</a>    </span><span class="kw">fn </span>empty_or_zero_height_tree_view_resets_state() {
+<a href=#852 id=852 data-nosnippet>852</a>        <span class="kw">let </span><span class="kw-2">mut </span>selection = <span class="number">8</span>;
+<a href=#853 id=853 data-nosnippet>853</a>        <span class="kw">let </span><span class="kw-2">mut </span>offset = <span class="number">5</span>;
+<a href=#854 id=854 data-nosnippet>854</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">0</span>, <span class="number">4</span>);
+<a href=#855 id=855 data-nosnippet>855</a>        <span class="macro">assert_eq!</span>((selection, offset), (<span class="number">0</span>, <span class="number">0</span>));
+<a href=#856 id=856 data-nosnippet>856</a>        selection = <span class="number">8</span>;
+<a href=#857 id=857 data-nosnippet>857</a>        offset = <span class="number">5</span>;
+<a href=#858 id=858 data-nosnippet>858</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">0</span>);
+<a href=#859 id=859 data-nosnippet>859</a>        <span class="macro">assert_eq!</span>((selection, offset), (<span class="number">8</span>, <span class="number">0</span>));
+<a href=#860 id=860 data-nosnippet>860</a>    }
+<a href=#861 id=861 data-nosnippet>861</a>}
 </code></pre></div></section></main></body></html>
