@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["EXIT_CANCELLED","EXIT_ENVIRONMENT","EXIT_FAILURE","EXIT_PERMISSION"],"enum":["AllowedTool","OutputMode","PermissionModeArg"],"fn":["execute","execute_with_io"],"struct":["RunArgs"]};
