@@ -9,8 +9,8 @@
 <a href=#9 id=9 data-nosnippet>9</a><span class="kw">use crate</span>::{
 <a href=#10 id=10 data-nosnippet>10</a>    ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
 <a href=#11 id=11 data-nosnippet>11</a>    ClientHello, ClientRenameId, ErrorResponse, EventsSubscribeParams, EventsSubscribeResult,
-<a href=#12 id=12 data-nosnippet>12</a>    JsonRpcError, JsonRpcId, JsonRpcVersion, McpApprovalListParams, McpApprovalListResult,
-<a href=#13 id=13 data-nosnippet>13</a>    McpApprovalRespondParams, McpApprovalRespondResult, McpServerAddParams, McpServerEditParams,
+<a href=#12 id=12 data-nosnippet>12</a>    JsonRpcError, JsonRpcId, JsonRpcVersion, McpAuthBeginParams, McpAuthBeginResult,
+<a href=#13 id=13 data-nosnippet>13</a>    McpAuthCancelParams, McpAuthCancelResult, McpServerAddParams, McpServerEditParams,
 <a href=#14 id=14 data-nosnippet>14</a>    McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
 <a href=#15 id=15 data-nosnippet>15</a>    McpServerPersistParams, McpServerSetEnabledParams, MessageFrame, Notification,
 <a href=#16 id=16 data-nosnippet>16</a>    ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
@@ -143,14 +143,14 @@
 <a href=#143 id=143 data-nosnippet>143</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
 <a href=#144 id=144 data-nosnippet>144</a>        params: ApprovalListParams,
 <a href=#145 id=145 data-nosnippet>145</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;ApprovalListResult, ServerFault&gt;;
-<a href=#146 id=146 data-nosnippet>146</a>    <span class="kw">async fn </span>list_mcp_approvals(
+<a href=#146 id=146 data-nosnippet>146</a>    <span class="kw">async fn </span>begin_mcp_auth(
 <a href=#147 id=147 data-nosnippet>147</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#148 id=148 data-nosnippet>148</a>        params: McpApprovalListParams,
-<a href=#149 id=149 data-nosnippet>149</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;McpApprovalListResult, ServerFault&gt;;
-<a href=#150 id=150 data-nosnippet>150</a>    <span class="kw">async fn </span>respond_mcp_approval(
+<a href=#148 id=148 data-nosnippet>148</a>        params: McpAuthBeginParams,
+<a href=#149 id=149 data-nosnippet>149</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;McpAuthBeginResult, ServerFault&gt;;
+<a href=#150 id=150 data-nosnippet>150</a>    <span class="kw">async fn </span>cancel_mcp_auth(
 <a href=#151 id=151 data-nosnippet>151</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#152 id=152 data-nosnippet>152</a>        params: McpApprovalRespondParams,
-<a href=#153 id=153 data-nosnippet>153</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;McpApprovalRespondResult, ServerFault&gt;;
+<a href=#152 id=152 data-nosnippet>152</a>        params: McpAuthCancelParams,
+<a href=#153 id=153 data-nosnippet>153</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;McpAuthCancelResult, ServerFault&gt;;
 <a href=#154 id=154 data-nosnippet>154</a>    <span class="kw">async fn </span>list_mcp_servers(
 <a href=#155 id=155 data-nosnippet>155</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
 <a href=#156 id=156 data-nosnippet>156</a>        params: McpServerListParams,
@@ -349,8 +349,8 @@
 <a href=#349 id=349 data-nosnippet>349</a>        <span class="string">"events.subscribe" </span>=&gt; value(server.subscribe_events(decode(params)<span class="question-mark">?</span>, context).<span class="kw">await</span><span class="question-mark">?</span>),
 <a href=#350 id=350 data-nosnippet>350</a>        <span class="string">"approval.respond" </span>=&gt; value(server.respond_approval(decode(params)<span class="question-mark">?</span>).<span class="kw">await</span><span class="question-mark">?</span>),
 <a href=#351 id=351 data-nosnippet>351</a>        <span class="string">"approval.list" </span>=&gt; value(server.list_approvals(decode(params)<span class="question-mark">?</span>).<span class="kw">await</span><span class="question-mark">?</span>),
-<a href=#352 id=352 data-nosnippet>352</a>        <span class="string">"mcp.approval.list" </span>=&gt; value(server.list_mcp_approvals(decode_default(params)<span class="question-mark">?</span>).<span class="kw">await</span><span class="question-mark">?</span>),
-<a href=#353 id=353 data-nosnippet>353</a>        <span class="string">"mcp.approval.respond" </span>=&gt; value(server.respond_mcp_approval(decode(params)<span class="question-mark">?</span>).<span class="kw">await</span><span class="question-mark">?</span>),
+<a href=#352 id=352 data-nosnippet>352</a>        <span class="string">"mcp.auth.begin" </span>=&gt; value(server.begin_mcp_auth(decode(params)<span class="question-mark">?</span>).<span class="kw">await</span><span class="question-mark">?</span>),
+<a href=#353 id=353 data-nosnippet>353</a>        <span class="string">"mcp.auth.cancel" </span>=&gt; value(server.cancel_mcp_auth(decode(params)<span class="question-mark">?</span>).<span class="kw">await</span><span class="question-mark">?</span>),
 <a href=#354 id=354 data-nosnippet>354</a>        <span class="string">"mcp.server.list" </span>=&gt; value(server.list_mcp_servers(decode_default(params)<span class="question-mark">?</span>).<span class="kw">await</span><span class="question-mark">?</span>),
 <a href=#355 id=355 data-nosnippet>355</a>        <span class="string">"mcp.server.add" </span>=&gt; value(server.add_mcp_server(decode(params)<span class="question-mark">?</span>).<span class="kw">await</span><span class="question-mark">?</span>),
 <a href=#356 id=356 data-nosnippet>356</a>        <span class="string">"mcp.server.edit" </span>=&gt; value(server.edit_mcp_server(decode(params)<span class="question-mark">?</span>).<span class="kw">await</span><span class="question-mark">?</span>),

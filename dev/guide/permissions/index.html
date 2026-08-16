@@ -1084,6 +1084,12 @@ visible.</p>
 non-fully-denied <code>mcp</code> entry. Delegation tools are absent unless the <code>delegate</code>
 map names at least one eligible target with <code>allow</code> or <code>ask</code>. There is no
 separate tool allowlist.</p>
+<p>There is also no separate MCP server approval prompt or trust store. Configured,
+enabled servers follow their normal lazy or eager connection lifecycle, while
+the agent's <code>mcp</code> map remains the sole visibility and call gate. Project MCP
+configuration and project agent documents are version-controlled content
+equivalent to code: a repository can ship both a server definition and an agent
+that permits it. Review them and work only in repositories you trust.</p>
 <p>Delegation targets come from the keys in the <code>delegate</code> permission map and must
 resolve to enabled <code>subagent</code> or <code>all</code> agents. This action controls
 <code>delegate_subagent</code>, <code>get_subagent_result</code>, <code>steer_subagent</code>, and

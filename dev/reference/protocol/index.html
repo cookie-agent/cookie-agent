@@ -1014,6 +1014,9 @@
 <p>The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at <code>/ws</code>.
 Protocol 9 is current-only. A client must call <code>handshake</code> with
 <code>{ "protocol_version": 9 }</code> before any other method.</p>
+<p>The unreleased MCP approval methods and their <code>pending_approval</code> and <code>rejected</code>
+server states were removed before any release. They are not compatibility
+members of protocol 9.</p>
 <h2 id="session-mechanics">Session mechanics<a class="headerlink" href="#session-mechanics" title="Permanent link">&para;</a></h2>
 <p>The JSON-RPC session layer lives in the <code>protocol</code> crate so the server, the TUI,
 and the CLI share one implementation of the protocol mechanics.</p>

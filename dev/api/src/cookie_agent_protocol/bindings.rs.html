@@ -104,10 +104,10 @@
 <a href=#104 id=104 data-nosnippet>104</a>            ApprovalRespondError,
 <a href=#105 id=105 data-nosnippet>105</a>            ApprovalListParams,
 <a href=#106 id=106 data-nosnippet>106</a>            ApprovalListResult,
-<a href=#107 id=107 data-nosnippet>107</a>            McpApprovalListParams,
-<a href=#108 id=108 data-nosnippet>108</a>            McpApprovalListResult,
-<a href=#109 id=109 data-nosnippet>109</a>            McpApprovalRespondParams,
-<a href=#110 id=110 data-nosnippet>110</a>            McpApprovalRespondResult,
+<a href=#107 id=107 data-nosnippet>107</a>            McpAuthBeginParams,
+<a href=#108 id=108 data-nosnippet>108</a>            McpAuthBeginResult,
+<a href=#109 id=109 data-nosnippet>109</a>            McpAuthCancelParams,
+<a href=#110 id=110 data-nosnippet>110</a>            McpAuthCancelResult,
 <a href=#111 id=111 data-nosnippet>111</a>            McpServerListParams,
 <a href=#112 id=112 data-nosnippet>112</a>            McpServerListResult,
 <a href=#113 id=113 data-nosnippet>113</a>            McpServerAddParams,
@@ -257,46 +257,42 @@
 <a href=#257 id=257 data-nosnippet>257</a>import type {
 <a href=#258 id=258 data-nosnippet>258</a>  ClientHello,
 <a href=#259 id=259 data-nosnippet>259</a>  ModelSnapshotManifestV1,
-<a href=#260 id=260 data-nosnippet>260</a>  McpApprovalListResult,
-<a href=#261 id=261 data-nosnippet>261</a>  McpApprovalRespondParams,
-<a href=#262 id=262 data-nosnippet>262</a>  ProviderConnectResult,
-<a href=#263 id=263 data-nosnippet>263</a>  ProviderDisconnectParams,
-<a href=#264 id=264 data-nosnippet>264</a>  Request,
-<a href=#265 id=265 data-nosnippet>265</a>  RuntimeChangedNotification,
-<a href=#266 id=266 data-nosnippet>266</a>  RuntimeSnapshotResult,
-<a href=#267 id=267 data-nosnippet>267</a>  RunStartParams,
-<a href=#268 id=268 data-nosnippet>268</a>  SessionCreateParams,
-<a href=#269 id=269 data-nosnippet>269</a>  StoredEvent,
-<a href=#270 id=270 data-nosnippet>270</a>} from "./index.js";
-<a href=#271 id=271 data-nosnippet>271</a>
-<a href=#272 id=272 data-nosnippet>272</a>const roots: [
-<a href=#273 id=273 data-nosnippet>273</a>  ClientHello,
-<a href=#274 id=274 data-nosnippet>274</a>  Request,
-<a href=#275 id=275 data-nosnippet>275</a>  SessionCreateParams,
-<a href=#276 id=276 data-nosnippet>276</a>  RunStartParams,
-<a href=#277 id=277 data-nosnippet>277</a>  StoredEvent,
-<a href=#278 id=278 data-nosnippet>278</a>  RuntimeSnapshotResult,
-<a href=#279 id=279 data-nosnippet>279</a>  RuntimeChangedNotification,
-<a href=#280 id=280 data-nosnippet>280</a>  ProviderConnectResult,
-<a href=#281 id=281 data-nosnippet>281</a>  ProviderDisconnectParams,
-<a href=#282 id=282 data-nosnippet>282</a>  ModelSnapshotManifestV1,
-<a href=#283 id=283 data-nosnippet>283</a>  McpApprovalListResult,
-<a href=#284 id=284 data-nosnippet>284</a>  McpApprovalRespondParams,
-<a href=#285 id=285 data-nosnippet>285</a>] | null = null;
-<a href=#286 id=286 data-nosnippet>286</a>
-<a href=#287 id=287 data-nosnippet>287</a>export { roots };
-<a href=#288 id=288 data-nosnippet>288</a>"#</span>;
-<a href=#289 id=289 data-nosnippet>289</a>
-<a href=#290 id=290 data-nosnippet>290</a><span class="kw">pub const </span>TYPESCRIPT_CONFIG: <span class="kw-2">&amp;</span>str = <span class="string">r#"{
-<a href=#291 id=291 data-nosnippet>291</a>  "compilerOptions": {
-<a href=#292 id=292 data-nosnippet>292</a>    "strict": true,
-<a href=#293 id=293 data-nosnippet>293</a>    "noEmit": true,
-<a href=#294 id=294 data-nosnippet>294</a>    "target": "ES2022",
-<a href=#295 id=295 data-nosnippet>295</a>    "module": "NodeNext",
-<a href=#296 id=296 data-nosnippet>296</a>    "moduleResolution": "NodeNext",
-<a href=#297 id=297 data-nosnippet>297</a>    "skipLibCheck": false
-<a href=#298 id=298 data-nosnippet>298</a>  },
-<a href=#299 id=299 data-nosnippet>299</a>  "include": ["./**/*.ts", "./globals.d.ts"]
-<a href=#300 id=300 data-nosnippet>300</a>}
-<a href=#301 id=301 data-nosnippet>301</a>"#</span>;
+<a href=#260 id=260 data-nosnippet>260</a>  ProviderConnectResult,
+<a href=#261 id=261 data-nosnippet>261</a>  ProviderDisconnectParams,
+<a href=#262 id=262 data-nosnippet>262</a>  Request,
+<a href=#263 id=263 data-nosnippet>263</a>  RuntimeChangedNotification,
+<a href=#264 id=264 data-nosnippet>264</a>  RuntimeSnapshotResult,
+<a href=#265 id=265 data-nosnippet>265</a>  RunStartParams,
+<a href=#266 id=266 data-nosnippet>266</a>  SessionCreateParams,
+<a href=#267 id=267 data-nosnippet>267</a>  StoredEvent,
+<a href=#268 id=268 data-nosnippet>268</a>} from "./index.js";
+<a href=#269 id=269 data-nosnippet>269</a>
+<a href=#270 id=270 data-nosnippet>270</a>const roots: [
+<a href=#271 id=271 data-nosnippet>271</a>  ClientHello,
+<a href=#272 id=272 data-nosnippet>272</a>  Request,
+<a href=#273 id=273 data-nosnippet>273</a>  SessionCreateParams,
+<a href=#274 id=274 data-nosnippet>274</a>  RunStartParams,
+<a href=#275 id=275 data-nosnippet>275</a>  StoredEvent,
+<a href=#276 id=276 data-nosnippet>276</a>  RuntimeSnapshotResult,
+<a href=#277 id=277 data-nosnippet>277</a>  RuntimeChangedNotification,
+<a href=#278 id=278 data-nosnippet>278</a>  ProviderConnectResult,
+<a href=#279 id=279 data-nosnippet>279</a>  ProviderDisconnectParams,
+<a href=#280 id=280 data-nosnippet>280</a>  ModelSnapshotManifestV1,
+<a href=#281 id=281 data-nosnippet>281</a>] | null = null;
+<a href=#282 id=282 data-nosnippet>282</a>
+<a href=#283 id=283 data-nosnippet>283</a>export { roots };
+<a href=#284 id=284 data-nosnippet>284</a>"#</span>;
+<a href=#285 id=285 data-nosnippet>285</a>
+<a href=#286 id=286 data-nosnippet>286</a><span class="kw">pub const </span>TYPESCRIPT_CONFIG: <span class="kw-2">&amp;</span>str = <span class="string">r#"{
+<a href=#287 id=287 data-nosnippet>287</a>  "compilerOptions": {
+<a href=#288 id=288 data-nosnippet>288</a>    "strict": true,
+<a href=#289 id=289 data-nosnippet>289</a>    "noEmit": true,
+<a href=#290 id=290 data-nosnippet>290</a>    "target": "ES2022",
+<a href=#291 id=291 data-nosnippet>291</a>    "module": "NodeNext",
+<a href=#292 id=292 data-nosnippet>292</a>    "moduleResolution": "NodeNext",
+<a href=#293 id=293 data-nosnippet>293</a>    "skipLibCheck": false
+<a href=#294 id=294 data-nosnippet>294</a>  },
+<a href=#295 id=295 data-nosnippet>295</a>  "include": ["./**/*.ts", "./globals.d.ts"]
+<a href=#296 id=296 data-nosnippet>296</a>}
+<a href=#297 id=297 data-nosnippet>297</a>"#</span>;
 </code></pre></div></section></main></body></html>

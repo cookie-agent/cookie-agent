@@ -590,6 +590,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#oauth-for-remote-servers" class="md-nav__link">
+    <span class="md-ellipsis">
+      OAuth for remote servers
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#tui-management" class="md-nav__link">
     <span class="md-ellipsis">
       TUI management
@@ -599,9 +608,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#trust" class="md-nav__link">
+  <a href="#repository-security" class="md-nav__link">
     <span class="md-ellipsis">
-      Trust
+      Repository security
     </span>
   </a>
   
@@ -947,6 +956,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#oauth-for-remote-servers" class="md-nav__link">
+    <span class="md-ellipsis">
+      OAuth for remote servers
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#tui-management" class="md-nav__link">
     <span class="md-ellipsis">
       TUI management
@@ -956,9 +974,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#trust" class="md-nav__link">
+  <a href="#repository-security" class="md-nav__link">
     <span class="md-ellipsis">
-      Trust
+      Repository security
     </span>
   </a>
   
@@ -1008,7 +1026,7 @@ roots, or other interactive input are rejected.</p>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="k">[mcp.servers.remote]</span>
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://mcp.example.com/mcp&quot;</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">headers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">Authorization</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;Bearer token&quot;</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">oauth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 <a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="n">lazy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </code></pre></div>
 <p>Each server must set exactly one of <code>command</code> or <code>url</code>. <code>args</code>, <code>env</code>, and <code>cwd</code>
@@ -1020,13 +1038,70 @@ to 30000. Eager servers connect in parallel. The first run waits for every
 eager server's initial connection and <code>tools/list</code> attempt to finish, so its tool
 context is not built from a partial startup snapshot. Each wait remains bounded
 by that server's <code>timeout_ms</code>; one server's failure does not block the others.</p>
+<h2 id="oauth-for-remote-servers">OAuth for remote servers<a class="headerlink" href="#oauth-for-remote-servers" title="Permanent link">&para;</a></h2>
+<p>Streamable HTTP servers use OAuth automatically when an unauthenticated request
+returns an authorization challenge. OAuth can be selected explicitly or disabled:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[mcp.servers.remote]</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://mcp.example.com/mcp&quot;</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">oauth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">[mcp.servers.pre_registered]</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://other.example.com/mcp&quot;</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">oauth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">client_id</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;cookie-agent&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">scopes</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;mcp&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="k">[mcp.servers.no_oauth]</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="n">url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://static.example.com/mcp&quot;</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="n">oauth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="n">headers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">Authorization</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;Bearer static-token&quot;</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<p>Omitting <code>oauth</code> is the default auto mode. <code>true</code> and <code>{}</code> enable the same
+reactive flow. The settings object may contain <code>client_id</code>, <code>client_secret</code>,
+<code>client_metadata_url</code>, and <code>scopes</code>. Cookie Agent follows protected-resource and
+authorization-server discovery, uses S256 PKCE, and selects a pre-registered
+client, a server-supported Client ID Metadata Document, or Dynamic Client
+Registration in that order. A static <code>Authorization</code> header takes precedence
+over OAuth when both are configured; other static headers are sent alongside
+OAuth requests. OAuth is not used for stdio servers.</p>
+<p>An authorization challenge changes the server state to <code>needs_auth</code>. Run
+<code>cookie mcp auth &lt;server&gt;</code>, or select the server in <code>/mcp</code> and press <code>a</code>, then
+open the displayed URL. The daemon listens on an ephemeral <code>127.0.0.1</code> callback
+port for five minutes. The TUI can copy the URL with <code>c</code> and cancel the wait with
+Escape. Successful authorization stores the token and reconnects the server.
+Expired tokens refresh automatically. A rejected refresh or revoked token
+returns the server to <code>needs_auth</code> instead of repeatedly opening a browser flow.
+A transient refresh failure also returns to <code>needs_auth</code> immediately; Cookie
+Agent does not silently retry token requests or open a browser flow.</p>
+<p>Authorization codes are held only by a one-shot in-memory relay. Cookie Agent
+passes a fixed redacted surrogate through rmcp's traced exchange path and restores
+the real code only in the outbound token request, preventing debug logs from
+containing the browser callback code.</p>
+<p>OAuth credentials are user-level and stored in the single
+<code>~/.local/share/cookie_agent/mcp-oauth.json</code> file. On Unix the file is owner-only
+(<code>0600</code>). The unversioned file is parsed strictly, and malformed contents, unsafe
+permissions, or symlinks stop engine startup. Stop the daemon and delete this
+file to revoke all locally stored MCP OAuth credentials. Removing a server
+through MCP management removes its credential. Writers serialize through the
+owner-only <code>mcp-oauth.lock</code>, reread the current file, and merge one credential
+key before each atomic replacement.</p>
+<p>Each credential is keyed by the server name and a SHA-256 hash of its canonical
+resource URL, and is also bound to that URL and the configured OAuth client
+identity. Canonicalization lowercases the scheme and host, removes default HTTP
+and HTTPS ports, and resolves dot-segments. Path bytes after dot-segment
+resolution, including trailing slashes, remain significant. It does not combine
+query strings or different subpaths. Editing the endpoint or client
+identity invalidates the record before the replacement server can connect, even
+when both resources advertise the same authorization-server issuer. The same
+server name and canonical URL can reuse authorization across projects.</p>
+<p>OAuth credentials establish identity with the remote server. They do not alter
+which agents can see or call that server's tools; agent permissions control that
+separately.</p>
 <h2 id="tui-management">TUI management<a class="headerlink" href="#tui-management" title="Permanent link">&para;</a></h2>
 <p>Run <code>/mcp</code> to open the live MCP panel. The list reports <code>connected</code> with its
 tool count, <code>connecting</code>, <code>failed</code> with the connection error,
-<code>pending_approval</code>, <code>disabled</code>, and <code>lazy-not-connected</code>. The panel polls the
-daemon while it is open. Select a pending project server to inspect the complete
-command, arguments, environment, and working directory, or URL and headers;
-press <code>a</code> to approve or <code>x</code> to reject it.</p>
+<code>needs_auth</code>, <code>disabled</code>, and <code>lazy-not-connected</code>. The panel polls the daemon
+while it is open. Select a server to inspect its complete command, arguments,
+environment, and working directory, or URL and headers. Press <code>a</code> on a
+<code>needs_auth</code> remote server to begin OAuth.</p>
 <p>The panel can reconnect a failed server, toggle enablement, and add, edit, or
 remove definitions. Add/edit forms accept either a command, JSON string array
 of arguments, JSON string object of environment variables, and optional working
@@ -1037,36 +1112,20 @@ Edits do not rename a server; remove the old name and add the new one instead.</
 2026-07-28 discovery lifecycle use that version. Remote servers use Streamable
 HTTP, including SSE responses on that endpoint; the retired two-endpoint legacy
 SSE transport is not supported.</p>
-<h2 id="trust">Trust<a class="headerlink" href="#trust" title="Permanent link">&para;</a></h2>
-<p>Servers from <code>~/.config/cookie_agent/config.toml</code> are trusted. A server authored
-under <code>&lt;cwd&gt;/.cookie-agent/config.toml</code> remains <code>pending_approval</code> and is not
-started until explicitly approved. The approval presents the complete command
-and arguments, environment, and working directory, or the URL and headers.
-Approval is stored for that server name in the current project. Existing grants
-are recorded in the per-project <code>mcp-trust-grants.jsonl</code> file. This store is not
-versioned. An incompatible or malformed complete record is a startup error; fix
-the record or delete the per-project <code>mcp-trust-grants.jsonl</code> file to reset MCP
-approvals.</p>
-<p>Approvals are keyed by server name; a later change to a project file can replace
-the server command under an existing approval — only enable project servers from
+<h2 id="repository-security">Repository security<a class="headerlink" href="#repository-security" title="Permanent link">&para;</a></h2>
+<p>There is no separate MCP trust store or approval prompt. Every configured,
+enabled server enters the normal lazy or eager connection lifecycle. MCP tools
+are permission-gated like normal tools: an agent with no <code>mcp</code> permission entry
+cannot see them, and scoped rules decide each call.</p>
+<p>Project MCP configuration and project agent documents are version-controlled
+content equivalent to code. A repository can ship both a server definition and
+an agent document that permits its tools. Review those files and work only in
 repositories you trust.</p>
-<p>With the daemon running, inspect and respond to project requests through:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="go">cookie mcp list</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="go">cookie mcp approve github</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="go">cookie mcp reject github</span>
-</code></pre></div>
-<p>Approval is durable for the server name in that project, including across later
-configuration changes. Rejection lasts for the current daemon lifetime; a later
-restart presents the project request again. Approving a
-non-lazy server starts its connection immediately. Runs started after the
-approval response wait for that bounded connection and initial tool listing
-before assembling their tool context.</p>
 <p>Connection failures are isolated per server. A failed server publishes no tools
 and does not prevent other servers from connecting.</p>
 <p>Definitions created or changed through the TUI are runtime-layer entries and
-are trusted by construction. They live only for the current daemon unless
-explicitly written to a file. A runtime entry continues to win after write-back;
-on restart the persisted file entry follows normal user/project trust rules.</p>
+live only for the current daemon unless explicitly written to a file. A runtime
+entry continues to win after write-back.</p>
 <h2 id="tool-names-and-permissions">Tool names and permissions<a class="headerlink" href="#tool-names-and-permissions" title="Permanent link">&para;</a></h2>
 <p>An MCP tool is exposed as <code>&lt;server&gt;_&lt;tool&gt;</code>. Both components replace characters
 outside <code>[a-zA-Z0-9_-]</code> with <code>_</code>; there is no <code>mcp_</code> prefix. For example,
