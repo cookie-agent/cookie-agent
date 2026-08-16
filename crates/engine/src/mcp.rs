@@ -29,7 +29,7 @@ use process_wrap::tokio::JobObject;
 use process_wrap::tokio::ProcessGroup;
 use rmcp::transport::auth::{AuthorizationCallback, OAuthClientConfig, OAuthTokenResponse};
 use rmcp::{
-    ClientHandler, ClientLifecycleMode, ClientServiceExt,
+    ClientHandler, ClientLifecycleMode, ClientServiceExt, Peer,
     model::{
         CallToolRequestParams, ContentBlock, CreateMessageRequestParams, CreateMessageResult,
         ElicitRequestParams, ElicitResult, ErrorCode, ErrorData, ListRootsResult,
@@ -62,6 +62,7 @@ use crate::{
 };
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+const TOOL_LIST_DEBOUNCE: Duration = Duration::from_millis(750);
 #[cfg(not(test))]
 const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 #[cfg(test)]
@@ -108,6 +109,7 @@ struct ServerRuntime {
     tools: Mutex<Vec<CachedTool>>,
     list_generation: AtomicU64,
     publication: Mutex<()>,
+    tool_refresh: Mutex<ToolRefreshDebounce>,
     connect_lock: AsyncMutex<()>,
     service: AsyncMutex<Option<ClientService>>,
     superseded: CancellationToken,
@@ -117,6 +119,47 @@ struct ServerRuntime {
     auth_flow: Mutex<Option<OAuthFlowState>>,
     auth_generation: AtomicU64,
     auth_lock: AsyncMutex<()>,
+}
+
+struct ToolRefreshDebounce {
+    peer: Option<Peer<RoleClient>>,
+    cancellation: CancellationToken,
+    notify: Arc<Notify>,
+    worker: Option<tokio::task::JoinHandle<()>>,
+    #[cfg(test)]
+    armed: Arc<AtomicU64>,
+}
+
+impl Default for ToolRefreshDebounce {
+    fn default() -> Self {
+        Self {
+            peer: None,
+            cancellation: CancellationToken::new(),
+            notify: Arc::new(Notify::new()),
+            worker: None,
+            #[cfg(test)]
+            armed: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl ToolRefreshDebounce {
+    fn cancel(&mut self) {
+        self.peer = None;
+        self.cancellation.cancel();
+        if let Some(worker) = self.worker.take() {
+            worker.abort();
+        }
+    }
+}
+
+impl Drop for ServerRuntime {
+    fn drop(&mut self) {
+        self.tool_refresh
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .cancel();
+    }
 }
 
 struct RegistryInner {
@@ -400,24 +443,7 @@ impl ClientHandler for McpClientHandler {
         let Some(server) = self.server.upgrade() else {
             return;
         };
-        let peer = context.peer;
-        tokio::spawn(async move {
-            let generation = server.next_list_generation();
-            let timeout = server.timeout();
-            let result = tokio::time::timeout(timeout, peer.list_all_tools()).await;
-            match result {
-                Ok(Ok(tools)) => server.publish_tools(generation, tools),
-                Ok(Err(error)) if server.oauth_enabled() && service_error_requires_auth(&error) => {
-                    server.mark_needs_auth(auth_challenge(&error));
-                }
-                Ok(Err(error)) => server.publish_refresh_failure(
-                    generation,
-                    format!("tools/list refresh failed: {error}"),
-                ),
-                Err(_) => server
-                    .publish_refresh_failure(generation, "tools/list refresh timed out".into()),
-            }
-        });
+        server.schedule_tool_refresh(context.peer);
     }
 }
 
@@ -1103,6 +1129,7 @@ impl McpRegistry {
                 tools: Mutex::new(Vec::new()),
                 list_generation: AtomicU64::new(0),
                 publication: Mutex::new(()),
+                tool_refresh: Mutex::new(ToolRefreshDebounce::default()),
                 connect_lock: AsyncMutex::new(()),
                 service: AsyncMutex::new(None),
                 superseded: CancellationToken::new(),
@@ -1193,6 +1220,9 @@ impl McpRegistry {
 
     pub async fn shutdown(&self) {
         self.inner.shutdown.cancel();
+        for server in self.servers() {
+            server.cancel_tool_refresh();
+        }
         let tasks = self
             .inner
             .connection_tasks
@@ -1301,6 +1331,7 @@ impl McpRegistry {
             tools: Mutex::new(Vec::new()),
             list_generation: AtomicU64::new(0),
             publication: Mutex::new(()),
+            tool_refresh: Mutex::new(ToolRefreshDebounce::default()),
             connect_lock: AsyncMutex::new(()),
             service: AsyncMutex::new(None),
             superseded: CancellationToken::new(),
@@ -1377,6 +1408,7 @@ impl McpRegistry {
                 "MCP server `{name}` is disabled"
             )));
         }
+        server.cancel_tool_refresh();
         server.clear_claims();
         server
             .tools
@@ -1560,6 +1592,7 @@ impl ServerRuntime {
 
     fn supersede(&self) {
         self.superseded.cancel();
+        self.cancel_tool_refresh_task();
         if let Some(flow) = self
             .auth_flow
             .lock()
@@ -1781,6 +1814,7 @@ impl ServerRuntime {
                 .auth_challenge
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            server.cancel_tool_refresh();
             if let Some(mut service) = server.service.lock().await.take() {
                 let _ = service.close_with_timeout(Duration::from_secs(4)).await;
             }
@@ -1861,6 +1895,7 @@ impl ServerRuntime {
             }
             McpServerState::Disconnected | McpServerState::Connecting | McpServerState::Failed => {}
         }
+        self.reset_tool_refresh();
         self.set_status(McpServerState::Connecting, None);
         let handler = McpClientHandler {
             server: Arc::downgrade(self),
@@ -2075,6 +2110,125 @@ impl ServerRuntime {
         self.list_generation.fetch_add(1, Ordering::AcqRel) + 1
     }
 
+    fn schedule_tool_refresh(self: &Arc<Self>, peer: Peer<RoleClient>) {
+        let Some(registry) = self.registry.upgrade() else {
+            return;
+        };
+        let mut refresh = self
+            .tool_refresh
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if refresh.cancellation.is_cancelled() {
+            return;
+        }
+        refresh.peer = Some(peer);
+        if refresh.worker.is_none() {
+            let server = Arc::downgrade(self);
+            let notify = Arc::clone(&refresh.notify);
+            let cancellation = refresh.cancellation.clone();
+            let shutdown = registry.shutdown.clone();
+            let superseded = self.superseded.clone();
+            #[cfg(test)]
+            let armed = Arc::clone(&refresh.armed);
+            refresh.worker = Some(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        () = notify.notified() => {}
+                        () = cancellation.cancelled() => return,
+                        () = shutdown.cancelled() => return,
+                        () = superseded.cancelled() => return,
+                    }
+                    loop {
+                        #[cfg(test)]
+                        armed.fetch_add(1, Ordering::Release);
+                        tokio::select! {
+                            () = tokio::time::sleep(TOOL_LIST_DEBOUNCE) => break,
+                            () = notify.notified() => {}
+                            () = cancellation.cancelled() => return,
+                            () = shutdown.cancelled() => return,
+                            () = superseded.cancelled() => return,
+                        }
+                    }
+
+                    let Some(server) = server.upgrade() else {
+                        return;
+                    };
+                    if cancellation.is_cancelled() {
+                        return;
+                    }
+                    let peer = {
+                        let refresh = server
+                            .tool_refresh
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        if !Arc::ptr_eq(&refresh.notify, &notify) {
+                            return;
+                        }
+                        refresh.peer.clone()
+                    };
+                    if let Some(peer) = peer
+                        && !peer.is_transport_closed()
+                    {
+                        server.refresh_tools(peer, &cancellation, &shutdown).await;
+                    }
+                }
+            }));
+        }
+        refresh.notify.notify_one();
+    }
+
+    async fn refresh_tools(
+        &self,
+        peer: Peer<RoleClient>,
+        cancellation: &CancellationToken,
+        shutdown: &CancellationToken,
+    ) {
+        let generation = self.next_list_generation();
+        let timeout = self.timeout();
+        let result = tokio::select! {
+            result = tokio::time::timeout(timeout, peer.list_all_tools()) => result,
+            () = cancellation.cancelled() => return,
+            () = shutdown.cancelled() => return,
+            () = self.superseded.cancelled() => return,
+        };
+        if cancellation.is_cancelled() || shutdown.is_cancelled() {
+            return;
+        }
+        match result {
+            Ok(Ok(tools)) => self.publish_tools(generation, tools),
+            Ok(Err(error)) if self.oauth_enabled() && service_error_requires_auth(&error) => {
+                self.mark_needs_auth(auth_challenge(&error));
+            }
+            Ok(Err(error)) => self
+                .publish_refresh_failure(generation, format!("tools/list refresh failed: {error}")),
+            Err(_) => {
+                self.publish_refresh_failure(generation, "tools/list refresh timed out".into());
+            }
+        }
+    }
+
+    fn reset_tool_refresh(&self) {
+        let mut refresh = self
+            .tool_refresh
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        refresh.cancel();
+        *refresh = ToolRefreshDebounce::default();
+    }
+
+    fn cancel_tool_refresh_task(&self) {
+        let mut refresh = self
+            .tool_refresh
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        refresh.cancel();
+    }
+
+    fn cancel_tool_refresh(&self) {
+        self.cancel_tool_refresh_task();
+        self.next_list_generation();
+    }
+
     fn superseded_error(&self) -> ToolError {
         ToolError::execution(format!("MCP server `{}` was superseded", self.name))
     }
@@ -2124,6 +2278,22 @@ impl ServerRuntime {
                 return;
             }
         };
+        let unchanged = {
+            let current = self
+                .tools
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            current.len() == converted.len()
+                && current.iter().zip(&converted).all(|(current, refreshed)| {
+                    current.raw_name == refreshed.raw_name
+                        && current.spec.name == refreshed.spec.name
+                        && current.spec.description == refreshed.spec.description
+                        && current.spec.parameters == refreshed.spec.parameters
+                })
+        };
+        if unchanged {
+            return;
+        }
         let Some(registry) = self.registry.upgrade() else {
             return;
         };
@@ -2475,7 +2645,10 @@ fn safe_title(value: &str) -> SafeDisplayText {
 mod tests {
     use std::{
         collections::BTreeMap,
-        sync::{Arc, atomic::Ordering},
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
         time::Duration,
     };
 
@@ -2493,7 +2666,10 @@ mod tests {
         ToolProvider as _, TurnAgentContext, events::OutputHub, runtime::ArtifactStore,
     };
 
-    use super::{McpRegistry, McpServerState, OAUTH_STORE_FILE, convert_tool, sanitize_name};
+    use super::{
+        McpRegistry, McpServerState, OAUTH_STORE_FILE, TOOL_LIST_DEBOUNCE, convert_tool,
+        sanitize_name,
+    };
 
     fn fixture_config(lazy: bool) -> McpServerConfig {
         McpServerConfig {
@@ -2525,6 +2701,89 @@ mod tests {
             directory.path().join(OAUTH_STORE_FILE),
         )
         .expect("MCP registry")
+    }
+
+    fn notification_fixture_config(
+        directory: &tempfile::TempDir,
+        notifications: usize,
+        relist_name: &str,
+    ) -> McpServerConfig {
+        let mut config = fixture_config(true);
+        config.args = vec![
+            "-c".into(),
+            r#"import json
+import os
+import sys
+
+count = 0
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    request_id = message.get("id")
+    if method == "server/discover":
+        print(json.dumps({"jsonrpc":"2.0","id":request_id,"error":{"code":-32601,"message":"legacy"}}), flush=True)
+    elif method == "initialize":
+        print(json.dumps({"jsonrpc":"2.0","id":request_id,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{"listChanged":True}},"serverInfo":{"name":"debounce-fixture","version":"1.0"}}}), flush=True)
+    elif method == "tools/list":
+        count += 1
+        with open(os.environ["MCP_LIST_COUNT_FILE"], "w", encoding="utf-8") as count_file:
+            count_file.write(str(count))
+        name = "old" if count == 1 else os.environ["MCP_RELIST_NAME"]
+        tools = [{"name":name,"description":"stable","inputSchema":{"type":"object","properties":{}}}]
+        print(json.dumps({"jsonrpc":"2.0","id":request_id,"result":{"tools":tools}}), flush=True)
+        if count == 1:
+            for _ in range(int(os.environ["MCP_NOTIFICATION_COUNT"])):
+                print(json.dumps({"jsonrpc":"2.0","method":"notifications/tools/list_changed"}), flush=True)
+"#
+            .into(),
+        ];
+        config.env.insert(
+            "MCP_LIST_COUNT_FILE".into(),
+            directory
+                .path()
+                .join("list-count")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        config
+            .env
+            .insert("MCP_NOTIFICATION_COUNT".into(), notifications.to_string());
+        config
+            .env
+            .insert("MCP_RELIST_NAME".into(), relist_name.into());
+        config
+    }
+
+    fn list_count(directory: &tempfile::TempDir) -> usize {
+        std::fs::read_to_string(directory.path().join("list-count"))
+            .expect("tools/list count")
+            .parse()
+            .expect("numeric tools/list count")
+    }
+
+    async fn wait_for_list_count(directory: &tempfile::TempDir, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while list_count(directory) < expected {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("tools/list count did not reach {expected}"));
+    }
+
+    async fn wait_until_debounce_armed(armed: &AtomicU64, expected: u64) {
+        const MAX_YIELDS: usize = 10_000;
+
+        for _ in 0..MAX_YIELDS {
+            if armed.load(Ordering::Acquire) >= expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        let observed = armed.load(Ordering::Acquire);
+        panic!(
+            "debounce worker did not arm: expected counter >= {expected}, observed {observed} after {MAX_YIELDS} yields"
+        );
     }
 
     fn turn_context() -> Arc<TurnAgentContext> {
@@ -2674,6 +2933,184 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_list_notification_burst_makes_one_refresh_round_trip() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let config = notification_fixture_config(&directory, 10, "new");
+        let registry = McpRegistry::new(
+            BTreeMap::from([(
+                "fixture".into(),
+                LoadedMcpServer {
+                    source: McpServerSource::UserFile,
+                    config,
+                },
+            )]),
+            directory.path().join(OAUTH_STORE_FILE),
+        )
+        .expect("registry");
+        let server = registry.server("fixture").expect("server");
+        server.connect().await.expect("connect fixture");
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while list_count(&directory) < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("debounced tools/list refresh");
+        tokio::time::sleep(TOOL_LIST_DEBOUNCE + Duration::from_millis(250)).await;
+
+        assert_eq!(list_count(&directory), 2);
+        assert_eq!(server.tools.lock().expect("tools")[0].raw_name, "new");
+        registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn tool_list_debounce_resets_from_each_notification() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let config = notification_fixture_config(&directory, 0, "new");
+        let registry = McpRegistry::new(
+            BTreeMap::from([(
+                "fixture".into(),
+                LoadedMcpServer {
+                    source: McpServerSource::UserFile,
+                    config,
+                },
+            )]),
+            directory.path().join(OAUTH_STORE_FILE),
+        )
+        .expect("registry");
+        let server = registry.server("fixture").expect("server");
+        server.connect().await.expect("connect fixture");
+        let peer = server
+            .service
+            .lock()
+            .await
+            .as_ref()
+            .expect("service")
+            .peer()
+            .clone();
+        let armed = Arc::clone(&server.tool_refresh.lock().expect("tool refresh").armed);
+        tokio::time::pause();
+
+        server.schedule_tool_refresh(peer.clone());
+        wait_until_debounce_armed(&armed, 1).await;
+        tokio::time::advance(Duration::from_millis(500)).await;
+        server.schedule_tool_refresh(peer);
+        wait_until_debounce_armed(&armed, 2).await;
+        tokio::time::advance(TOOL_LIST_DEBOUNCE - Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(list_count(&directory), 1);
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::time::resume();
+        wait_for_list_count(&directory, 2).await;
+        assert_eq!(list_count(&directory), 2);
+        registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn reset_pending_tool_refresh_starts_an_isolated_worker() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let config = notification_fixture_config(&directory, 0, "new");
+        let registry = McpRegistry::new(
+            BTreeMap::from([(
+                "fixture".into(),
+                LoadedMcpServer {
+                    source: McpServerSource::UserFile,
+                    config,
+                },
+            )]),
+            directory.path().join(OAUTH_STORE_FILE),
+        )
+        .expect("registry");
+        let server = registry.server("fixture").expect("server");
+        server.connect().await.expect("connect fixture");
+        let peer = server
+            .service
+            .lock()
+            .await
+            .as_ref()
+            .expect("service")
+            .peer()
+            .clone();
+        tokio::time::pause();
+
+        server.schedule_tool_refresh(peer.clone());
+        let (old_notify, old_worker, old_armed) = {
+            let refresh = server.tool_refresh.lock().expect("tool refresh");
+            (
+                Arc::clone(&refresh.notify),
+                refresh.worker.as_ref().expect("worker").abort_handle(),
+                Arc::clone(&refresh.armed),
+            )
+        };
+        wait_until_debounce_armed(&old_armed, 1).await;
+        server.reset_tool_refresh();
+        assert!(!Arc::ptr_eq(
+            &old_notify,
+            &server.tool_refresh.lock().expect("tool refresh").notify
+        ));
+        let new_armed = Arc::clone(&server.tool_refresh.lock().expect("tool refresh").armed);
+
+        server.schedule_tool_refresh(peer);
+        wait_until_debounce_armed(&new_armed, 1).await;
+        tokio::time::advance(TOOL_LIST_DEBOUNCE).await;
+        tokio::time::resume();
+        wait_for_list_count(&directory, 2).await;
+
+        assert!(old_worker.is_finished());
+        assert_eq!(list_count(&directory), 2);
+        registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn dropping_registry_aborts_idle_tool_refresh_worker() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let config = notification_fixture_config(&directory, 0, "new");
+        let registry = McpRegistry::new(
+            BTreeMap::from([(
+                "fixture".into(),
+                LoadedMcpServer {
+                    source: McpServerSource::UserFile,
+                    config,
+                },
+            )]),
+            directory.path().join(OAUTH_STORE_FILE),
+        )
+        .expect("registry");
+        let server = registry.server("fixture").expect("server");
+        server.connect().await.expect("connect fixture");
+        let peer = server
+            .service
+            .lock()
+            .await
+            .as_ref()
+            .expect("service")
+            .peer()
+            .clone();
+        server.schedule_tool_refresh(peer);
+        wait_for_list_count(&directory, 2).await;
+        let worker = server
+            .tool_refresh
+            .lock()
+            .expect("tool refresh")
+            .worker
+            .as_ref()
+            .expect("worker")
+            .abort_handle();
+
+        drop(server);
+        drop(registry);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !worker.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("tool refresh worker stopped");
+    }
+
+    #[tokio::test]
     async fn lazy_server_connects_on_first_named_use() {
         let directory = tempfile::tempdir().expect("tempdir");
         let registry = registry(&directory, McpServerSource::UserFile, true);
@@ -2714,6 +3151,83 @@ mod tests {
             server.tools.lock().expect("tools")[0].spec.name,
             "fixture_new"
         );
+    }
+
+    #[test]
+    fn identical_relist_keeps_tools_and_claims_untouched() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let registry = registry(&directory, McpServerSource::UserFile, true);
+        let server = registry.server("fixture").expect("server");
+        let tool = || Tool::new("same", "same", Arc::new(Map::new()));
+        server.list_generation.store(1, Ordering::Release);
+        server.publish_tools(1, vec![tool()]);
+        let tools_pointer = server.tools.lock().expect("tools").as_ptr();
+        registry
+            .inner
+            .claimed_names
+            .lock()
+            .expect("claimed names")
+            .insert("fixture_same".into(), "sentinel".into());
+
+        server.list_generation.store(2, Ordering::Release);
+        server.publish_tools(2, vec![tool()]);
+
+        assert_eq!(server.tools.lock().expect("tools").as_ptr(), tools_pointer);
+        assert_eq!(
+            registry
+                .inner
+                .claimed_names
+                .lock()
+                .expect("claimed names")
+                .get("fixture_same")
+                .map(String::as_str),
+            Some("sentinel")
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_server_cancels_pending_tool_list_refresh() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let config = notification_fixture_config(&directory, 1, "new");
+        let registry = McpRegistry::new(
+            BTreeMap::from([(
+                "fixture".into(),
+                LoadedMcpServer {
+                    source: McpServerSource::UserFile,
+                    config,
+                },
+            )]),
+            directory.path().join(OAUTH_STORE_FILE),
+        )
+        .expect("registry");
+        let server = registry.server("fixture").expect("server");
+        server.connect().await.expect("connect fixture");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if server
+                    .tool_refresh
+                    .lock()
+                    .expect("tool refresh")
+                    .worker
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("pending tool refresh");
+
+        registry
+            .remove_server("fixture")
+            .await
+            .expect("remove fixture");
+        tokio::time::sleep(TOOL_LIST_DEBOUNCE + Duration::from_millis(250)).await;
+
+        assert_eq!(list_count(&directory), 1);
+        assert_eq!(server.tools.lock().expect("tools")[0].raw_name, "old");
+        registry.shutdown().await;
     }
 
     #[test]
