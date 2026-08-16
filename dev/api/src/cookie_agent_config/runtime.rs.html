@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>cookie_agent_identity::ProviderId;
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>cookie_agent_models::ProviderDefinition;
-<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>serde::Deserialize;
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>serde::{Deserialize, Serialize};
 <a href=#6 id=6 data-nosnippet>6</a>
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span><span class="kw">crate</span>::ConfigError;
 <a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span><span class="kw">crate</span>::toml_values::{SensitiveProviderValues, zeroize_toml_value};
@@ -18,7 +18,7 @@
 <a href=#18 id=18 data-nosnippet>18</a>    </span><span class="kw">pub </span>servers: BTreeMap&lt;String, McpServerConfig&gt;,
 <a href=#19 id=19 data-nosnippet>19</a>}
 <a href=#20 id=20 data-nosnippet>20</a>
-<a href=#21 id=21 data-nosnippet>21</a><span class="attr">#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+<a href=#21 id=21 data-nosnippet>21</a><span class="attr">#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 <a href=#22 id=22 data-nosnippet>22</a>#[serde(deny_unknown_fields)]
 <a href=#23 id=23 data-nosnippet>23</a></span><span class="kw">pub struct </span>McpServerConfig {
 <a href=#24 id=24 data-nosnippet>24</a>    <span class="kw">pub </span>command: <span class="prelude-ty">Option</span>&lt;String&gt;,
@@ -38,7 +38,7 @@
 <a href=#38 id=38 data-nosnippet>38</a>}
 <a href=#39 id=39 data-nosnippet>39</a>
 <a href=#40 id=40 data-nosnippet>40</a><span class="kw">impl </span>McpServerConfig {
-<a href=#41 id=41 data-nosnippet>41</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>validate(<span class="kw-2">&amp;</span><span class="self">self</span>, name: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;(), ConfigError&gt; {
+<a href=#41 id=41 data-nosnippet>41</a>    <span class="kw">pub fn </span>validate(<span class="kw-2">&amp;</span><span class="self">self</span>, name: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;(), ConfigError&gt; {
 <a href=#42 id=42 data-nosnippet>42</a>        <span class="kw">let </span>invalid_name =
 <a href=#43 id=43 data-nosnippet>43</a>            name.is_empty() || name.len() &gt; <span class="number">128 </span>|| name.chars().any(char::is_control);
 <a href=#44 id=44 data-nosnippet>44</a>        <span class="kw">let </span>transport_count = usize::from(<span class="self">self</span>.command.is_some()) + usize::from(<span class="self">self</span>.url.is_some());

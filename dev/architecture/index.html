@@ -1158,7 +1158,7 @@
 crates. A local daemon owns provider connections, sessions, model execution,
 permissions, and persistence; a terminal UI communicates with it over a versioned
 JSON-RPC WebSocket protocol. Writers emit only the current schema for each
-durable surface. Event logs reopen schemas 15-17 and delegation journals reopen
+durable surface. Event logs reopen schemas 15-18 and delegation journals reopen
 schemas 11-14; other surfaces remain current-only.</p>
 <h2 id="process-model">Process model<a class="headerlink" href="#process-model" title="Permanent link">&para;</a></h2>
 <p>The <code>cookie</code> binary (<code>crates/cookie_agent</code>) is a thin composition root. Its CLI has

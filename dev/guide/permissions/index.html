@@ -584,6 +584,15 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#session-permission-overlays" class="md-nav__link">
+    <span class="md-ellipsis">
+      Session permission overlays
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -955,6 +964,15 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#session-permission-overlays" class="md-nav__link">
+    <span class="md-ellipsis">
+      Session permission overlays
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1099,6 +1117,27 @@ Old tool calls and prepared-operation grants therefore fail closed. The
 <p>Hard denies, the doom-loop guard, and existing tree grants are evaluated before
 the mode shortcut. Changing a mode does not alter an already pending approval
 and does not cascade to delegated sessions.</p>
+<h2 id="session-permission-overlays">Session permission overlays<a class="headerlink" href="#session-permission-overlays" title="Permanent link">&para;</a></h2>
+<p>Run <code>/permissions</code> to edit the selected session's permission overlay. Each
+action exposes its effective <code>allow</code>, <code>ask</code>, or <code>deny</code> effect and its individual
+resource patterns. Source labels distinguish <code>session_overlay</code>,
+<code>agent_document</code>, and <code>default</code>. Left/right changes an effect, <code>n</code> adds a
+validated wildcard pattern, and <code>d</code> removes a selected session-overlay rule.
+The editor does not accept freeform YAML.</p>
+<p>An overlay rule is evaluated before matching rules from the frozen agent
+snapshot. If no overlay rule matches, evaluation falls back to the agent
+document and then the normal default (<code>ask</code>; MCP remains hidden when neither
+layer configures it). Changes affect subsequent visibility and permission
+evaluations only. They do not rewrite an active run's frozen agent/model
+identity or retroactively cancel an operation already executing. A pending
+tree-approval response is rejected as changed if the session overlay changed
+after that approval was requested, so it cannot commit a stale durable grant.</p>
+<p>Every change appends a complete <code>session_permission_overlay_set</code> event to the
+session log. Overlay state therefore survives daemon restart and follows normal
+revert and fork branch semantics. Tightening a rule durably invalidates existing
+tree grants for that action under the session root before the overlay event is
+committed. Invalidation is action-wide because tree-grant records retain opaque
+prepared identities rather than normalized resource labels.</p>
 
 
 

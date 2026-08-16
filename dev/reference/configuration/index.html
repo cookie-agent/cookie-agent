@@ -1240,6 +1240,26 @@ providers/agents wholesale by ID; nested fields never merge.</p>
 actionable path, key, and line where available. No authored-file migrations or
 unknown-field ignores exist. Decoded values that hold secrets are zeroized when
 the load completes.</p>
+<p>The running engine adds a mutable <code>Runtime</code> layer for MCP server entries. It
+wins over the workspace and user file layers and lasts for the daemon lifetime.
+Runtime removals are tombstones: the named server is absent even when a file
+layer defines it. Runtime entries are trusted by construction; user-file entries
+are trusted, while effective workspace-file entries use the existing name-keyed
+project approval. Nothing is written automatically.</p>
+<p>Explicit MCP write-back replaces only <code>[mcp.servers.&lt;name&gt;]</code> in the selected
+user or project file using a format-preserving TOML document edit. Unrelated
+keys, tables, and comments are retained. The complete candidate is passed
+through the strict configuration loader before an atomic replacement; an
+existing unknown field, type conflict, or malformed table fails without
+changing the file. The replacement syncs the candidate before rename and syncs
+the containing directory afterward, and preserves the existing file's
+permission mode (new files are owner-only). The source file is re-read and
+compared immediately before replacement, and a mismatch fails with a conflict
+instead of overwriting the external edit. A modification landing between that
+comparison and the rename itself cannot be detected — a narrow residual race
+that only matters if another writer edits the file in the same instant; avoid
+concurrent external edits while applying changes. The runtime entry remains the effective layer after a successful
+write, so normal file-layer provenance and trust resume on restart.</p>
 <p>TOML-level limits (enforced before deserialization):</p>
 <ul>
 <li>Configuration file at most 1 MiB; agent document at most 256 KiB.</li>
@@ -1486,7 +1506,7 @@ truncated or replaced with artifact references.</p>
 </table>
 <h2 id="mcpserversname"><code>[mcp.servers.&lt;name&gt;]</code><a class="headerlink" href="#mcpserversname" title="Permanent link">&para;</a></h2>
 <p>MCP server definitions are layered by server name. A workspace definition
-replaces the same user-level server and requires hash-pinned approval before it
+replaces the same user-level server and requires name-keyed approval before it
 can connect. See the <a href="../../guide/mcp/">MCP guide</a> for trust and naming behavior.</p>
 <table>
 <thead>
