@@ -1232,7 +1232,7 @@ so the CLI keeps working even when built without the <code>tui</code> feature.</
 </tr>
 <tr>
 <td><code>config</code></td>
-<td>Strict schema-10 runtime configuration and schema-5 Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports <code>AgentMode</code>, <code>PermissionAction</code>, <code>PermissionEffect</code>, <code>PermissionRule</code>, and <code>AgentDocumentSource</code> from <code>protocol</code>.</td>
+<td>Strict runtime configuration and Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports <code>AgentMode</code>, <code>PermissionAction</code>, <code>PermissionEffect</code>, <code>PermissionRule</code>, and <code>AgentDocumentSource</code> from <code>protocol</code>.</td>
 </tr>
 <tr>
 <td><code>engine</code></td>
@@ -1331,8 +1331,9 @@ through the <code>ClientProtocol</code> trait.</p>
 </code></pre></div>
 <p>There is no upward workspace search. A workspace setting replaces the
 corresponding user setting; a same-ID workspace provider or agent replaces the
-complete user definition. Unknown keys, wrong schema versions, and malformed
-values are rejected. The TUI additionally reads an independent
+complete user definition. Unknown keys, leftover schema/version fields, wrong
+types, and malformed values are rejected without migration or silent ignores.
+The TUI additionally reads an independent
 <code>~/.config/cookie_agent/tui.toml</code> (or <code>$XDG_CONFIG_HOME/cookie_agent/tui.toml</code>).</p>
 <p>See <a href="../guide/configuration/">Configuration</a> and the
 <a href="../reference/configuration/">configuration reference</a> for every key.</p>

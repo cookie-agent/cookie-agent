@@ -962,7 +962,7 @@ turns that implementation into task-oriented guides and reference material.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/cookie-agent/cookie-agent.git
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>cookie-agent
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>.cookie-agent
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;schema_version = 10\n[providers]\n&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>.cookie-agent/config.toml
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;[providers]\n&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>.cookie-agent/config.toml
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>cargo<span class="w"> </span>run<span class="w"> </span>--locked<span class="w"> </span>-p<span class="w"> </span>cookie_agent<span class="w"> </span>--<span class="w"> </span>daemon
 </code></pre></div>
 <p>In another terminal, open the TUI:</p>
