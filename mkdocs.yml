@@ -58,6 +58,7 @@ nav:
       - Configuration: guide/configuration.md
       - Providers: guide/providers.md
       - Compaction: guide/compaction.md
+      - Usage and cost: guide/usage.md
   - Reference:
       - Configuration: reference/configuration.md
       - Protocol: reference/protocol.md

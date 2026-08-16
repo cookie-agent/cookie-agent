@@ -1997,6 +1997,7 @@ mod tests {
                 context_compaction: ContextCompactionConfig::default(),
                 session_title: SessionTitleConfig::default(),
                 delegation: cookie_agent_config::DelegationConfig::default(),
+                pricing: cookie_agent_config::PricingConfig::default(),
                 providers: BTreeMap::new(),
             },
             agents: BTreeMap::new(),
@@ -2051,6 +2052,7 @@ mod tests {
             shape: None,
             provider: None,
             reasoning_options: Vec::new(),
+            cost: None,
             interleaved: None,
             canonical_provenance: None,
         };

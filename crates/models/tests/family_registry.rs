@@ -53,6 +53,7 @@ fn model() -> CatalogModelRecord {
         shape: None,
         provider: None,
         reasoning_options: Vec::new(),
+        cost: None,
         interleaved: Some(CatalogInterleaved::ReasoningContent),
         canonical_provenance: None,
     }

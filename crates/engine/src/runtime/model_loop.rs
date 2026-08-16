@@ -808,6 +808,17 @@ impl Engine {
                             },
                         )
                         .await?;
+                        self.append(
+                            session,
+                            Some(run),
+                            Event::ModelUsageRecorded {
+                                model_turn_seq,
+                                agent_id: policy.agent.agent.clone(),
+                                resolved_model: wire_model(binding),
+                                usage: turn.usage.clone(),
+                            },
+                        )
+                        .await?;
                         self.inner
                             .context_token_estimators
                             .lock()

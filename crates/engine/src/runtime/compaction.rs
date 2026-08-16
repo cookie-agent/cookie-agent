@@ -647,20 +647,28 @@ fn usage_reaches_compaction_trigger(observed_tokens: u64, trigger_tokens: u64) -
 }
 
 fn latest_real_usage(events: &[StoredEvent]) -> Option<(u64, u64)> {
-    events.iter().rev().find_map(|event| match &event.payload {
-        Event::ModelTurnCommitted { turn, .. } => {
-            let input = turn.usage.input_tokens;
-            let output = turn.usage.output_tokens;
-            (input.is_some() || output.is_some()).then(|| {
-                (
-                    event.seq,
-                    input
-                        .unwrap_or_default()
-                        .saturating_add(output.unwrap_or_default()),
-                )
-            })
-        }
+    let recorded = events.iter().rev().find_map(|event| match &event.payload {
+        Event::ModelUsageRecorded { usage, .. } => usage_total(event.seq, usage),
         _ => None,
+    });
+    recorded.or_else(|| {
+        events.iter().rev().find_map(|event| match &event.payload {
+            Event::ModelTurnCommitted { turn, .. } => usage_total(event.seq, &turn.usage),
+            _ => None,
+        })
+    })
+}
+
+fn usage_total(seq: u64, usage: &cookie_agent_protocol::Usage) -> Option<(u64, u64)> {
+    let input = usage.input_tokens;
+    let output = usage.output_tokens;
+    (input.is_some() || output.is_some()).then(|| {
+        (
+            seq,
+            input
+                .unwrap_or_default()
+                .saturating_add(output.unwrap_or_default()),
+        )
     })
 }
 

@@ -14,6 +14,7 @@ Ctrl-P opens the command palette. The available commands are:
 | `/new` | Choose the next root-run agent |
 | `/connect` | Connect or update a managed provider |
 | `/sessions` | Choose a session |
+| `/usage` | Show selected-session and global usage |
 | `/cancel` | Cancel the active run |
 | `/compact [focus]` | Compact the selected idle session |
 | `/approve once\|all\|reject\|cancel` | Answer the current approval |
@@ -74,3 +75,13 @@ The permission mode appears in the bottom bar. Click it to cycle
 `auto-approve -> ask -> yolo`; the mode applies only to subsequent approvals in
 the selected session. Hard policy denies and doom-loop rejection still win in
 every mode. See [Permissions](permissions.md).
+
+## Usage dashboard
+
+`/usage` opens a read-only view with the selected session and project-wide
+rollups. Each section shows request count, input and output tokens, cache reads
+and writes, cache hit percentage, estimated cost when configured, and a
+per-model breakdown. `unpriced` means the active configuration does not provide
+all rates needed for the observed token categories. Press Esc to close.
+
+See [Usage and cost](usage.md) for recording and pricing semantics.

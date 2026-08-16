@@ -22,6 +22,7 @@ pub mod session;
 #[cfg(test)]
 mod test_support;
 mod tool_api;
+mod usage;
 
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};

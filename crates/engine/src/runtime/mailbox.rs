@@ -13,6 +13,8 @@ use cookie_agent_protocol::{
 };
 use tokio::sync::{mpsc, oneshot};
 
+#[cfg(test)]
+use super::PagingRaceHook;
 use super::ToolCallFailureCode;
 use super::{
     ApprovalTerminal, Engine, EngineError, Event, MAX_COMPACTION_DEFERRED_COMMANDS,
@@ -200,19 +202,24 @@ impl Engine {
         session: SessionId,
         command: impl FnOnce(oneshot::Sender<Result<T, EngineError>>) -> SessionCommand,
     ) -> Result<T, EngineError> {
-        let actor = self
-            .inner
-            .actors
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&session)
-            .cloned()
-            .ok_or(EngineError::MissingActor(session))?;
         let (reply, receiver) = oneshot::channel();
-        actor
-            .send(command(reply))
-            .await
-            .map_err(|_| EngineError::ActorStopped)?;
+        {
+            let _residency = self.inner.residency_mutation.lock().await;
+            self.inner.store.get(session)?;
+            self.spawn_actor(session);
+            let actor = self
+                .inner
+                .actors
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&session)
+                .cloned()
+                .ok_or(EngineError::MissingActor(session))?;
+            actor
+                .send(command(reply))
+                .await
+                .map_err(|_| EngineError::ActorStopped)?;
+        }
         receiver.await.map_err(|_| EngineError::ActorStopped)?
     }
 
@@ -266,23 +273,76 @@ impl Engine {
             .contains_key(&run)
     }
 
-    pub(super) fn request_blocking<T>(
+    #[cfg(test)]
+    pub(crate) fn actor_resident_for_test(&self, session: SessionId) -> bool {
+        self.inner
+            .actors
+            .lock()
+            .expect("actor registry lock poisoned")
+            .contains_key(&session)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_compaction_execution_hook_for_test(
+        &self,
+    ) -> (oneshot::Receiver<()>, std::sync::Arc<tokio::sync::Notify>) {
+        let (reached, receiver) = oneshot::channel();
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        *self
+            .inner
+            .compaction_execution_hook
+            .lock()
+            .expect("compaction execution hook lock poisoned") =
+            Some(std::sync::Arc::new(PagingRaceHook {
+                reached: std::sync::Mutex::new(Some(reached)),
+                release: std::sync::Arc::clone(&release),
+            }));
+        (receiver, release)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn enqueue_compact_without_residency_for_test(
         &self,
         session: SessionId,
-        command: impl FnOnce(oneshot::Sender<Result<T, EngineError>>) -> SessionCommand,
-    ) -> Result<T, EngineError> {
+    ) -> Result<oneshot::Receiver<Result<bool, EngineError>>, EngineError> {
         let actor = self
             .inner
             .actors
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .expect("actor registry lock poisoned")
             .get(&session)
             .cloned()
             .ok_or(EngineError::MissingActor(session))?;
         let (reply, receiver) = oneshot::channel();
         actor
-            .blocking_send(command(reply))
+            .send(SessionCommand::Compact { focus: None, reply })
+            .await
             .map_err(|_| EngineError::ActorStopped)?;
+        Ok(receiver)
+    }
+
+    pub(super) fn request_blocking<T>(
+        &self,
+        session: SessionId,
+        command: impl FnOnce(oneshot::Sender<Result<T, EngineError>>) -> SessionCommand,
+    ) -> Result<T, EngineError> {
+        let (reply, receiver) = oneshot::channel();
+        {
+            let _residency = self.inner.residency_mutation.blocking_lock();
+            self.inner.store.get(session)?;
+            self.spawn_actor(session);
+            let actor = self
+                .inner
+                .actors
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&session)
+                .cloned()
+                .ok_or(EngineError::MissingActor(session))?;
+            actor
+                .blocking_send(command(reply))
+                .map_err(|_| EngineError::ActorStopped)?;
+        }
         receiver
             .blocking_recv()
             .map_err(|_| EngineError::ActorStopped)?
@@ -383,6 +443,9 @@ impl Engine {
             return;
         }
         match command {
+            SessionCommand::EvictionBarrier { reply } => {
+                let _ = reply.send(Ok(()));
+            }
             SessionCommand::Append { run, event, reply } => {
                 let _ = reply.send(self.append_direct(session, run, event));
             }
@@ -664,6 +727,25 @@ impl Engine {
                 } else {
                     let engine = self.clone();
                     tokio::spawn(async move {
+                        #[cfg(test)]
+                        let hook = engine
+                            .inner
+                            .compaction_execution_hook
+                            .lock()
+                            .expect("compaction execution hook lock poisoned")
+                            .take();
+                        #[cfg(test)]
+                        if let Some(hook) = hook {
+                            if let Some(reached) = hook
+                                .reached
+                                .lock()
+                                .expect("compaction execution reached lock poisoned")
+                                .take()
+                            {
+                                let _ = reached.send(());
+                            }
+                            hook.release.notified().await;
+                        }
                         let mut result = engine
                             .compact_session_direct(session, focus.as_deref())
                             .await;
@@ -717,10 +799,7 @@ impl Engine {
                     .inner
                     .store
                     .fork(session, through_seq)
-                    .map(|session_id| {
-                        self.spawn_actor(session_id);
-                        SessionForkResult { session_id }
-                    });
+                    .map(|session_id| SessionForkResult { session_id });
                 let _ = reply.send(result.map_err(EngineError::from));
             }
             SessionCommand::CompactionFinished { reply } => {

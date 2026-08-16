@@ -14,17 +14,17 @@ use cookie_agent_protocol::{
     AgentDescriptor, AgentId, ApprovalListParams, ApprovalListResult, ApprovalRespondError,
     ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision,
     AvailableModelDescriptor, ClientConnectId, ClientRequestId, ClientResponseId, ClientRunId,
-    EventPayload, McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams, McpServerAddParams,
-    McpServerEditParams, McpServerInfo, McpServerNameParams, McpServerPersistParams,
-    McpServerSetEnabledParams, McpServerState, ModelKey, ModelSelection, PermissionAction,
-    PermissionEffect, PermissionMode, PermissionRuleSource, ProviderConnectParams,
-    ProviderDescriptor, ProviderDisconnectParams, RunCancelParams, RunRecallSteerParams,
-    RunSelection, RunStartParams, RunSteerParams, RunToolStdinParams, SafeDisplayText,
-    SessionCompactParams, SessionCreateParams, SessionForkParams, SessionId, SessionListParams,
-    SessionMeta, SessionPermissionClearParams, SessionPermissionGetParams,
+    EventPayload, GlobalUsageResult, McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams,
+    McpServerAddParams, McpServerEditParams, McpServerInfo, McpServerNameParams,
+    McpServerPersistParams, McpServerSetEnabledParams, McpServerState, ModelKey, ModelSelection,
+    PermissionAction, PermissionEffect, PermissionMode, PermissionRuleSource,
+    ProviderConnectParams, ProviderDescriptor, ProviderDisconnectParams, RunCancelParams,
+    RunRecallSteerParams, RunSelection, RunStartParams, RunSteerParams, RunToolStdinParams,
+    SafeDisplayText, SessionCompactParams, SessionCreateParams, SessionForkParams, SessionId,
+    SessionListParams, SessionMeta, SessionPermissionClearParams, SessionPermissionGetParams,
     SessionPermissionGetResult, SessionPermissionSetParams, SessionRevertParams,
     SessionSetPermissionModeParams, SessionStatus, SessionTitle, SessionTitleChange, SessionTree,
-    SessionTreeParams, VariantId,
+    SessionTreeParams, SessionUsageParams, SessionUsageResult, VariantId,
 };
 use crossterm::{
     event::{
@@ -63,7 +63,8 @@ use crate::{
 use super::events::{RenderScheduler, TerminalRestore};
 use super::input::{self, InputState};
 use super::management::{
-    McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm, PermissionPanel, cycle_effect,
+    McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm, PermissionPanel, UsagePanel,
+    cycle_effect,
 };
 use super::pickers::{
     SearchPickerFocus, SearchPickerState, SessionSearchRow, cycle_selection, flatten_tree,
@@ -97,6 +98,7 @@ pub(super) enum Modal {
     RevertConfirm,
     Mcp,
     Permissions,
+    Usage,
 }
 
 /// Where copied text goes: the terminal's OSC 52 clipboard escape in
@@ -415,6 +417,7 @@ pub struct App {
     pub(super) permission_modes: HashMap<SessionId, PermissionMode>,
     pub(super) mcp_panel: McpPanel,
     pub(super) permission_panel: PermissionPanel,
+    pub(super) usage_panel: UsagePanel,
     pub(super) conversation_scroll: ConversationScroll,
     pub(super) scrollbar_geometry: Option<ScrollbarGeometry>,
     pub(super) scrollbar_drag: Option<ScrollbarDrag>,
@@ -550,6 +553,11 @@ pub(super) enum RpcUpdate {
     PermissionsLoaded {
         session_id: SessionId,
         result: Result<SessionPermissionGetResult, String>,
+    },
+    UsageLoaded {
+        session_id: Option<SessionId>,
+        session: Result<Option<SessionUsageResult>, String>,
+        global: Result<GlobalUsageResult, String>,
     },
 }
 
@@ -687,6 +695,7 @@ impl App {
             permission_modes: HashMap::new(),
             mcp_panel: McpPanel::default(),
             permission_panel: PermissionPanel::default(),
+            usage_panel: UsagePanel::default(),
             conversation_scroll: ConversationScroll::default(),
             scrollbar_geometry: None,
             scrollbar_drag: None,
@@ -1855,6 +1864,23 @@ impl App {
                     Err(error) => self.status = format!("permission update failed: {error}"),
                 }
             }
+            RpcUpdate::UsageLoaded {
+                session_id,
+                session,
+                global,
+            } => {
+                self.usage_panel.loading = false;
+                if self.selected == session_id {
+                    match session {
+                        Ok(result) => self.usage_panel.session = result,
+                        Err(error) => self.status = format!("session usage failed: {error}"),
+                    }
+                }
+                match global {
+                    Ok(result) => self.usage_panel.global = Some(result),
+                    Err(error) => self.status = format!("global usage failed: {error}"),
+                }
+            }
         }
     }
 
@@ -2212,6 +2238,37 @@ impl App {
                 .await
                 .map_err(|error| error.to_string());
             let _ = updates.send(RpcUpdate::PermissionsLoaded { session_id, result });
+        });
+    }
+
+    fn load_usage(&mut self) {
+        let session_id = self.selected;
+        self.usage_panel.begin_load();
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let session = async {
+                match session_id {
+                    Some(session_id) => client
+                        .session_usage(SessionUsageParams { session_id })
+                        .await
+                        .map(Some)
+                        .map_err(|error| error.to_string()),
+                    None => Ok(None),
+                }
+            };
+            let global = async {
+                client
+                    .global_usage()
+                    .await
+                    .map_err(|error| error.to_string())
+            };
+            let (session, global) = tokio::join!(session, global);
+            let _ = updates.send(RpcUpdate::UsageLoaded {
+                session_id,
+                session,
+                global,
+            });
         });
     }
 
@@ -2579,6 +2636,11 @@ impl App {
             Modal::RevertConfirm => self.handle_revert_confirm_key(key).await,
             Modal::Mcp => self.handle_mcp_key(key).await,
             Modal::Permissions => self.handle_permissions_key(key).await,
+            Modal::Usage => {
+                if key.code == KeyCode::Esc {
+                    self.modal = Modal::None;
+                }
+            }
             Modal::None
                 if self.current_approval().is_none()
                     && !self.command_palette_visible()
@@ -2719,7 +2781,7 @@ impl App {
             Modal::Models => self.draft_models().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
             Modal::UserMessage => USER_MENU_ITEMS.len(),
-            Modal::Mcp | Modal::Permissions => 0,
+            Modal::Mcp | Modal::Permissions | Modal::Usage => 0,
             Modal::ConnectDetails
             | Modal::ConnectSetup
             | Modal::ConnectError
@@ -3587,6 +3649,7 @@ impl App {
                     | Modal::RevertConfirm
                     | Modal::Mcp
                     | Modal::Permissions
+                    | Modal::Usage
                     | Modal::None => 0,
                 };
                 move_picker_selection(&mut self.picker_state, len, up);
@@ -4448,7 +4511,7 @@ impl App {
             | Modal::DisconnectConfirm => {}
             Modal::UserMessage => self.activate_user_menu_entry(index),
             Modal::RevertConfirm => {}
-            Modal::Mcp | Modal::Permissions => {}
+            Modal::Mcp | Modal::Permissions | Modal::Usage => {}
             Modal::None => {}
         }
     }
@@ -4996,6 +5059,10 @@ impl App {
                     self.permission_panel.begin_load();
                     self.load_permissions();
                 }
+            }
+            SlashCommand::Usage => {
+                self.modal = Modal::Usage;
+                self.load_usage();
             }
             SlashCommand::Sessions => {
                 self.modal = Modal::Sessions;
@@ -5657,6 +5724,14 @@ impl App {
                     frame,
                     centered(frame.area(), 82, 76),
                     &mut self.permission_panel,
+                    &self.theme,
+                );
+            }
+            Modal::Usage => {
+                super::management::render_usage(
+                    frame,
+                    centered(frame.area(), 86, 78),
+                    &self.usage_panel,
                     &self.theme,
                 );
             }

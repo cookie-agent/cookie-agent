@@ -190,6 +190,21 @@ impl Engine {
             }
             match result {
                 Ok(completed) => {
+                    self.append_internal_agent_event(
+                        session,
+                        parent_run,
+                        Event::InternalAgentUsageRecorded {
+                            internal_run_id,
+                            kind,
+                            agent_id: policy.agent.agent.clone(),
+                            resolved_model: wire_model(binding),
+                            usage: crate::model_history::persist_usage(
+                                completed.turn.finish.usage.clone(),
+                            ),
+                        },
+                        execution.actor_direct,
+                    )
+                    .await?;
                     if invalid_internal_output(
                         &completed.turn.message.content,
                         input.reject_non_text,

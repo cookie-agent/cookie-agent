@@ -1,7 +1,7 @@
 //! Session directories, projections, and rebuildable metadata caches.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap, HashSet},
     fs::{self, OpenOptions},
     hash::{Hash, Hasher},
     io::Write,
@@ -14,10 +14,10 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    AgentSnapshot, ChildSummary, ClientRenameId, ClientRunId, EventPayload, RunId, RunSelection,
-    SessionId, SessionMeta, SessionMetaSchemaVersion, SessionOrigin, SessionPermissionOverlay,
-    SessionRenameRecord, SessionStatus, SessionTitle, SessionTitleChange, SessionTree, ToolCallId,
-    Usage,
+    AgentId, AgentSnapshot, ChildSummary, ClientRenameId, ClientRunId, EventPayload, RunId,
+    RunSelection, SessionId, SessionMeta, SessionMetaSchemaVersion, SessionOrigin,
+    SessionPermissionOverlay, SessionRenameRecord, SessionStatus, SessionTitle, SessionTitleChange,
+    SessionTree, ToolCallId, Usage, UsageRollup,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -72,10 +72,20 @@ pub struct SessionProjection {
     pub creation_agent: AgentSnapshot,
     pub status: SessionStatus,
     pub usage: Option<Usage>,
+    pub usage_rollup: UsageRollup,
+    pub agent_usage: BTreeMap<AgentId, UsageRollup>,
     pub runs: HashMap<RunId, RunProjection>,
     pub rename_records: HashMap<cookie_agent_protocol::ClientRenameId, SessionRenameRecord>,
     pub permission_overlay: SessionPermissionOverlay,
     pub log: Arc<EventLog>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionSummary {
+    pub meta: SessionMeta,
+    pub usage: Option<Usage>,
+    pub usage_rollup: UsageRollup,
+    pub agent_usage: BTreeMap<AgentId, UsageRollup>,
 }
 
 impl SessionProjection {
@@ -83,6 +93,19 @@ impl SessionProjection {
     pub fn metadata(&self) -> SessionMeta {
         self.meta.clone()
     }
+}
+
+#[derive(Debug, Default)]
+struct SessionResidency {
+    resident: HashMap<SessionId, SessionProjection>,
+    evicted: HashMap<SessionId, SessionSummary>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct EvictionTransitionHook {
+    reached: Mutex<Option<tokio::sync::oneshot::Sender<SessionId>>>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
 #[derive(Deserialize)]
@@ -95,8 +118,10 @@ pub struct SessionStore {
     project_dir: PathBuf,
     sessions_dir: PathBuf,
     cwd: PathBuf,
-    sessions: Mutex<HashMap<SessionId, SessionProjection>>,
+    residency: Mutex<SessionResidency>,
     mutation: Mutex<()>,
+    #[cfg(test)]
+    eviction_transition_hook: Mutex<Option<EvictionTransitionHook>>,
 }
 
 impl SessionStore {
@@ -121,8 +146,10 @@ impl SessionStore {
             project_dir,
             sessions_dir: sessions_dir.clone(),
             cwd: cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned()),
-            sessions: Mutex::new(HashMap::new()),
+            residency: Mutex::new(SessionResidency::default()),
             mutation: Mutex::new(()),
+            #[cfg(test)]
+            eviction_transition_hook: Mutex::new(None),
         });
         for entry in fs::read_dir(&sessions_dir).map_err(|source| SessionError::Io {
             path: sessions_dir.clone(),
@@ -149,9 +176,10 @@ impl SessionStore {
             let log = EventLog::open(entry.path().join("events.jsonl"), id)?;
             let projection = projection(log)?;
             store
-                .sessions
+                .residency
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .resident
                 .insert(id, projection);
         }
         Ok(store)
@@ -177,9 +205,10 @@ impl SessionStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(existing) = self
-            .sessions
+            .residency
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resident
             .get(&session_id)
             .cloned()
         {
@@ -190,28 +219,138 @@ impl SessionStore {
             read_cache_version(&final_dir.join("meta.json"))?;
             let log = EventLog::open(final_dir.join("events.jsonl"), session_id)?;
             let existing = projection(log.clone())?;
-            self.sessions
+            let mut residency = self
+                .residency
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .insert(session_id, existing);
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            residency.resident.insert(session_id, existing);
+            residency.evicted.remove(&session_id);
             return Ok((log, false));
         }
         let log = EventLog::create_buffered(final_dir.join("events.jsonl"), session_id, creation)?;
         let result = projection(log.clone())?;
-        self.sessions
+        let mut residency = self
+            .residency
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(session_id, result);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        residency.resident.insert(session_id, result);
+        residency.evicted.remove(&session_id);
         Ok((log, true))
     }
 
     pub fn get(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
-        self.sessions
+        if let Some(session) = self.get_resident(id) {
+            return Ok(session);
+        }
+        self.reopen(id)
+    }
+
+    #[must_use]
+    pub fn get_resident(&self, id: SessionId) -> Option<SessionProjection> {
+        self.residency
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resident
             .get(&id)
             .cloned()
-            .ok_or(SessionError::Missing(id))
+    }
+
+    fn reopen(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(session) = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resident
+            .get(&id)
+            .cloned()
+        {
+            return Ok(session);
+        }
+        let session_dir = self.sessions_dir.join(id.to_string());
+        if !session_dir.is_dir() {
+            return Err(SessionError::Missing(id));
+        }
+        read_cache_version(&session_dir.join("meta.json"))?;
+        let log = EventLog::open(session_dir.join("events.jsonl"), id)?;
+        let reopened = projection(log)?;
+        let mut residency = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        residency.resident.insert(id, reopened.clone());
+        residency.evicted.remove(&id);
+        Ok(reopened)
+    }
+
+    pub fn evict(&self, id: SessionId) -> Result<bool, SessionError> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut residency = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(session) = residency.resident.get(&id) else {
+            return Ok(false);
+        };
+        if !session.log.is_persisted() {
+            return Ok(false);
+        }
+        // Persisted EventLog appends complete sync_data before projections update.
+        let summary = SessionSummary {
+            meta: session.meta.clone(),
+            usage: session.usage.clone(),
+            usage_rollup: session.usage_rollup.clone(),
+            agent_usage: session.agent_usage.clone(),
+        };
+        residency.evicted.insert(id, summary);
+        #[cfg(test)]
+        if let Some(hook) = self
+            .eviction_transition_hook
+            .lock()
+            .expect("eviction transition hook lock poisoned")
+            .take()
+        {
+            if let Some(reached) = hook
+                .reached
+                .lock()
+                .expect("eviction transition reached lock poisoned")
+                .take()
+            {
+                let _ = reached.send(id);
+            }
+            let _ = hook
+                .release
+                .lock()
+                .expect("eviction transition release lock poisoned")
+                .recv();
+        }
+        residency.resident.remove(&id);
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_eviction_transition_hook_for_test(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<SessionId>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (reached, receiver) = tokio::sync::oneshot::channel();
+        let (release, release_receiver) = std::sync::mpsc::channel();
+        *self
+            .eviction_transition_hook
+            .lock()
+            .expect("eviction transition hook lock poisoned") = Some(EvictionTransitionHook {
+            reached: Mutex::new(Some(reached)),
+            release: Mutex::new(release_receiver),
+        });
+        (receiver, release)
     }
 
     pub fn append(
@@ -243,10 +382,12 @@ impl SessionStore {
                 &rebuilt.meta,
             )?;
         }
-        self.sessions
+        let mut residency = self
+            .residency
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(id, rebuilt);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        residency.resident.insert(id, rebuilt);
+        residency.evicted.remove(&id);
         Ok(envelope)
     }
 
@@ -336,9 +477,10 @@ impl SessionStore {
             fsync_directory(&self.sessions_dir)?;
             let log = EventLog::open(final_dir.join("events.jsonl"), session_id)?;
             let fork_projection = projection(log)?;
-            self.sessions
+            self.residency
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .resident
                 .insert(session_id, fork_projection);
             Ok(session_id)
         })();
@@ -385,12 +527,73 @@ impl SessionStore {
 
     #[must_use]
     pub fn all(&self) -> Vec<SessionProjection> {
-        self.sessions
+        self.residency
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resident
             .values()
             .cloned()
             .collect()
+    }
+    #[must_use]
+    pub fn all_summaries(&self) -> Vec<SessionSummary> {
+        let residency = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut summaries = residency.evicted.clone();
+        summaries.extend(residency.resident.iter().map(|(session_id, session)| {
+            (
+                *session_id,
+                SessionSummary {
+                    meta: session.meta.clone(),
+                    usage: session.usage.clone(),
+                    usage_rollup: session.usage_rollup.clone(),
+                    agent_usage: session.agent_usage.clone(),
+                },
+            )
+        }));
+        summaries.into_values().collect()
+    }
+
+    pub fn summary(&self, id: SessionId) -> Result<SessionSummary, SessionError> {
+        let residency = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(session) = residency.resident.get(&id) {
+            return Ok(SessionSummary {
+                meta: session.meta.clone(),
+                usage: session.usage.clone(),
+                usage_rollup: session.usage_rollup.clone(),
+                agent_usage: session.agent_usage.clone(),
+            });
+        }
+        residency
+            .evicted
+            .get(&id)
+            .cloned()
+            .ok_or(SessionError::Missing(id))
+    }
+
+    #[must_use]
+    pub fn is_resident(&self, id: SessionId) -> bool {
+        self.residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resident
+            .contains_key(&id)
+    }
+
+    #[must_use]
+    pub fn resident_subagent_count(&self) -> usize {
+        self.residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resident
+            .values()
+            .filter(|session| matches!(session.meta.origin, SessionOrigin::Delegated { .. }))
+            .count()
     }
     #[must_use]
     pub fn project_dir_path(&self) -> &Path {
@@ -514,11 +717,20 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
     let mut runs = HashMap::<RunId, RunProjection>::new();
     let mut status = SessionStatus::Idle;
     let mut usage = None;
+    let mut usage_rollup = UsageRollup::default();
+    let mut agent_usage = BTreeMap::<AgentId, UsageRollup>::new();
     let mut rename_records = HashMap::new();
     let mut permission_overlay = SessionPermissionOverlay::default();
     let mut automatic_title = None;
     let mut delegated_title = None;
     let mut user_title: Option<Option<cookie_agent_protocol::SessionTitle>> = None;
+    let recorded_usage_turns = events
+        .iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::ModelUsageRecorded { model_turn_seq, .. } => Some(model_turn_seq),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
     for envelope in &events {
         if let EventPayload::SessionPermissionOverlaySet { overlay } = &envelope.payload {
             permission_overlay = overlay.clone();
@@ -633,7 +845,12 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
                     run.pending_calls.remove(&termination.tool_call_id);
                 }
             }
-            EventPayload::ModelTurnCommitted { turn, .. } => {
+            EventPayload::ModelTurnCommitted {
+                model_turn_seq,
+                resolved_model,
+                turn,
+                ..
+            } => {
                 let reported = &turn.usage;
                 let total = usage.get_or_insert_with(Usage::default);
                 add_usage(&mut total.input_tokens, reported.input_tokens);
@@ -655,6 +872,42 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
                     &mut total.output_tokens_reasoning,
                     reported.output_tokens_reasoning,
                 );
+                if !recorded_usage_turns.contains(model_turn_seq) {
+                    crate::usage::record(&mut usage_rollup, resolved_model, reported);
+                    if let Some(agent) = runs.get(&run_id).map(|run| run.agent.agent.clone()) {
+                        crate::usage::record(
+                            agent_usage.entry(agent).or_default(),
+                            resolved_model,
+                            reported,
+                        );
+                    }
+                }
+            }
+            EventPayload::ModelUsageRecorded {
+                agent_id,
+                resolved_model,
+                usage: reported,
+                ..
+            } => {
+                crate::usage::record(&mut usage_rollup, resolved_model, reported);
+                crate::usage::record(
+                    agent_usage.entry(agent_id.clone()).or_default(),
+                    resolved_model,
+                    reported,
+                );
+            }
+            EventPayload::InternalAgentUsageRecorded {
+                agent_id,
+                resolved_model,
+                usage: reported,
+                ..
+            } => {
+                crate::usage::record(&mut usage_rollup, resolved_model, reported);
+                crate::usage::record(
+                    agent_usage.entry(agent_id.clone()).or_default(),
+                    resolved_model,
+                    reported,
+                );
             }
             _ => {}
         }
@@ -665,6 +918,8 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
         creation_agent,
         status,
         usage,
+        usage_rollup,
+        agent_usage,
         runs,
         rename_records,
         permission_overlay,
@@ -792,6 +1047,7 @@ fn project_cwd_is_current(path: &Path, expected: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeMap,
         ffi::OsString,
         fs,
         os::unix::{
@@ -801,7 +1057,16 @@ mod tests {
         path::Path,
     };
 
-    use super::{PROJECT_CWD_FILE, SessionStore};
+    use cookie_agent_protocol::{
+        AgentId, AgentMode, AgentRevision, AttemptId, CatalogRevision, ClientRunId, EventPayload,
+        InternalAgentBackend, InternalAgentFailure, InternalAgentInvocationId, InternalAgentKind,
+        InternalAgentRunId, ModelFinishReason, ModelRevision, PersistedModelTurn,
+        ProviderStateRevision, RecipeRegistryRevision, RunId, RuntimeRevision, SafeCode,
+        SafeDisplayText, SafeErrorMessage, SafeInternalAgentCall, SafeInternalAgentResult,
+        SessionId, SessionOrigin, Sha256Digest, Usage,
+    };
+
+    use super::{PROJECT_CWD_FILE, SessionStore, projection};
 
     fn cwd_file(data_root: &Path, cwd: &Path) -> std::path::PathBuf {
         SessionStore::project_dir(data_root, cwd).join(PROJECT_CWD_FILE)
@@ -930,5 +1195,341 @@ mod tests {
         );
         assert!(project.join("sessions").is_dir());
         assert!(project.join(PROJECT_CWD_FILE).is_file());
+    }
+
+    #[test]
+    fn usage_event_survives_log_reopen_and_rebuilds_rollup() {
+        let temp = tempfile::tempdir().expect("temp");
+        let path = temp.path().join("events.jsonl");
+        let session_id = SessionId::new_v7();
+        let run_id = RunId::new_v7();
+        let attempt_id = AttemptId::new_v7();
+        let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
+        let selection = crate::test_support::run_selection("test");
+        let binding = agent.fallback_chain[0].clone();
+        let resolved_model = crate::model_history::wire_model(&binding);
+        let runtime_revision = RuntimeRevision::new(format!("sha256:{}", "1".repeat(64))).unwrap();
+        let catalog_revision = CatalogRevision::new(format!("sha256:{}", "2".repeat(64))).unwrap();
+        let provider_state_revision =
+            ProviderStateRevision::new(format!("sha256:{}", "3".repeat(64))).unwrap();
+        let model_revision = ModelRevision::new(format!("sha256:{}", "4".repeat(64))).unwrap();
+        let agent_revision = AgentRevision::new(format!("sha256:{}", "5".repeat(64))).unwrap();
+        let recipe_registry_revision =
+            RecipeRegistryRevision::new(format!("sha256:{}", "6".repeat(64))).unwrap();
+        let log = crate::events::EventLog::create(
+            path.clone(),
+            session_id,
+            EventPayload::SessionCreated {
+                origin: SessionOrigin::Root,
+                cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
+                creation_selection: selection.clone(),
+                creation_agent: Box::new(agent.clone()),
+                runtime_revision: runtime_revision.clone(),
+                catalog_revision: catalog_revision.clone(),
+                provider_state_revision: provider_state_revision.clone(),
+                model_revision: model_revision.clone(),
+                agent_revision: agent_revision.clone(),
+                recipe_registry_revision: recipe_registry_revision.clone(),
+                manifest_revision: binding.manifest_revision.clone(),
+            },
+        )
+        .unwrap();
+        log.append(
+            Some(run_id),
+            EventPayload::RunStarted {
+                client_run_id: ClientRunId::new("usage-replay").unwrap(),
+                selection,
+                agent: Box::new(agent.clone()),
+                runtime_revision,
+                catalog_revision,
+                provider_state_revision,
+                model_revision,
+                agent_revision,
+                recipe_registry_revision,
+                manifest_revision: binding.manifest_revision.clone(),
+                selected_suffix: vec![binding],
+                input_through_seq: 1,
+            },
+        )
+        .unwrap();
+        log.append(
+            Some(run_id),
+            EventPayload::ModelAttemptStarted {
+                attempt_id,
+                attempt_ordinal: 1,
+                fallback_index: 0,
+                retry_ordinal: 0,
+                resolved_model: resolved_model.clone(),
+                prompt_fingerprint: agent.prompt_fingerprint.clone(),
+            },
+        )
+        .unwrap();
+        let usage = Usage {
+            input_tokens: Some(120),
+            input_tokens_no_cache: Some(70),
+            input_tokens_cache_read: Some(40),
+            input_tokens_cache_write: Some(10),
+            output_tokens: Some(30),
+            ..Usage::default()
+        };
+        log.append(
+            Some(run_id),
+            EventPayload::ModelTurnCommitted {
+                attempt_id,
+                model_turn_seq: 1,
+                resolved_model: resolved_model.clone(),
+                input_through_seq: 1,
+                turn: PersistedModelTurn {
+                    content: Vec::new(),
+                    provider_options: BTreeMap::new(),
+                    finish_reason: ModelFinishReason::Stop,
+                    usage: usage.clone(),
+                    response_metadata: BTreeMap::new(),
+                    provider_metadata: BTreeMap::new(),
+                    native_replay: None,
+                },
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap();
+        log.append(
+            Some(run_id),
+            EventPayload::ModelUsageRecorded {
+                model_turn_seq: 1,
+                agent_id: agent.agent.clone(),
+                resolved_model,
+                usage,
+            },
+        )
+        .unwrap();
+        drop(log);
+
+        let reopened = crate::events::EventLog::open(path, session_id).unwrap();
+        let rebuilt = projection(reopened).unwrap();
+        assert_eq!(rebuilt.usage_rollup.request_count, 1);
+        assert_eq!(rebuilt.usage_rollup.input_tokens, 120);
+        assert_eq!(rebuilt.usage_rollup.output_tokens, 30);
+        assert_eq!(rebuilt.usage_rollup.cache_read_tokens, 40);
+        assert_eq!(rebuilt.usage_rollup.cache_write_tokens, 10);
+        assert_eq!(rebuilt.agent_usage[&agent.agent].request_count, 1);
+    }
+
+    #[test]
+    fn internal_usage_is_once_per_fallback_phase_and_all_kinds_survive_reopen() {
+        let temp = tempfile::tempdir().expect("temp");
+        let path = temp.path().join("internal-usage-events.jsonl");
+        let session_id = SessionId::new_v7();
+        let run_id = RunId::new_v7();
+        let owner = crate::test_support::agent_snapshot("test", AgentMode::Primary);
+        let selection = crate::test_support::run_selection("test");
+        let binding = owner.fallback_chain[0].clone();
+        let resolved_model = crate::model_history::wire_model(&binding);
+        let fallback_model = crate::model_history::wire_model(
+            &crate::test_support::model_binding_named("fallback-one"),
+        );
+        let revision = |value: char| format!("sha256:{}", value.to_string().repeat(64));
+        let runtime_revision = RuntimeRevision::new(revision('1')).unwrap();
+        let catalog_revision = CatalogRevision::new(revision('2')).unwrap();
+        let provider_state_revision = ProviderStateRevision::new(revision('3')).unwrap();
+        let model_revision = ModelRevision::new(revision('4')).unwrap();
+        let agent_revision = AgentRevision::new(revision('5')).unwrap();
+        let recipe_registry_revision = RecipeRegistryRevision::new(revision('6')).unwrap();
+        let log = crate::events::EventLog::create(
+            path.clone(),
+            session_id,
+            EventPayload::SessionCreated {
+                origin: SessionOrigin::Root,
+                cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
+                creation_selection: selection.clone(),
+                creation_agent: Box::new(owner.clone()),
+                runtime_revision: runtime_revision.clone(),
+                catalog_revision: catalog_revision.clone(),
+                provider_state_revision: provider_state_revision.clone(),
+                model_revision: model_revision.clone(),
+                agent_revision: agent_revision.clone(),
+                recipe_registry_revision: recipe_registry_revision.clone(),
+                manifest_revision: binding.manifest_revision.clone(),
+            },
+        )
+        .unwrap();
+        log.append(
+            Some(run_id),
+            EventPayload::RunStarted {
+                client_run_id: ClientRunId::new("internal-usage-replay").unwrap(),
+                selection,
+                agent: Box::new(owner),
+                runtime_revision,
+                catalog_revision,
+                provider_state_revision,
+                model_revision,
+                agent_revision,
+                recipe_registry_revision,
+                manifest_revision: binding.manifest_revision.clone(),
+                selected_suffix: vec![binding],
+                input_through_seq: 1,
+            },
+        )
+        .unwrap();
+
+        let kinds = [
+            (
+                InternalAgentKind::Approval,
+                cookie_agent_config::BUILT_IN_APPROVAL_AGENT_ID,
+            ),
+            (
+                InternalAgentKind::ContextCompaction,
+                cookie_agent_config::BUILT_IN_COMPACTION_AGENT_ID,
+            ),
+            (
+                InternalAgentKind::SessionTitle,
+                cookie_agent_config::BUILT_IN_TITLE_AGENT_ID,
+            ),
+        ];
+        for (index, (kind, agent_name)) in kinds.into_iter().enumerate() {
+            let invocation_id = InternalAgentInvocationId::new_v7();
+            let internal_run_id = InternalAgentRunId::new_v7();
+            let agent_id = AgentId::new(agent_name).unwrap();
+            log.append(
+                Some(run_id),
+                EventPayload::InternalAgentStarted {
+                    invocation_id,
+                    internal_run_id,
+                    kind,
+                    backend: InternalAgentBackend::Model {
+                        resolved_model: resolved_model.clone(),
+                    },
+                    call: SafeInternalAgentCall {
+                        name: SafeCode::new("internal").unwrap(),
+                        input_summary: SafeDisplayText::new("bounded input").unwrap(),
+                        input_digest: Sha256Digest::of_bytes(b"input"),
+                    },
+                },
+            )
+            .unwrap();
+            let usage = Usage {
+                input_tokens: Some(100 + index as u64),
+                input_tokens_cache_read: Some(0),
+                output_tokens: Some(10),
+                output_tokens_reasoning: Some(0),
+                ..Usage::default()
+            };
+            log.append(
+                Some(run_id),
+                EventPayload::InternalAgentUsageRecorded {
+                    internal_run_id,
+                    kind,
+                    agent_id: agent_id.clone(),
+                    resolved_model: resolved_model.clone(),
+                    usage: usage.clone(),
+                },
+            )
+            .unwrap();
+            if index == 0 {
+                assert!(
+                    log.append(
+                        Some(run_id),
+                        EventPayload::InternalAgentUsageRecorded {
+                            internal_run_id,
+                            kind,
+                            agent_id: agent_id.clone(),
+                            resolved_model: resolved_model.clone(),
+                            usage: usage.clone(),
+                        },
+                    )
+                    .is_err()
+                );
+                let failure = || InternalAgentFailure {
+                    code: SafeCode::new("fallback").unwrap(),
+                    message: SafeErrorMessage::new("test fallback").unwrap(),
+                    retryable: true,
+                    model_error: None,
+                };
+                log.append(
+                    Some(run_id),
+                    EventPayload::InternalAgentFallback {
+                        invocation_id,
+                        internal_run_id,
+                        kind,
+                        from: InternalAgentBackend::Model {
+                            resolved_model: resolved_model.clone(),
+                        },
+                        to: InternalAgentBackend::Model {
+                            resolved_model: fallback_model.clone(),
+                        },
+                        failure: failure(),
+                        attempts: 1,
+                    },
+                )
+                .unwrap();
+                log.append(
+                    Some(run_id),
+                    EventPayload::InternalAgentUsageRecorded {
+                        internal_run_id,
+                        kind,
+                        agent_id: agent_id.clone(),
+                        resolved_model: fallback_model.clone(),
+                        usage: usage.clone(),
+                    },
+                )
+                .unwrap();
+                log.append(
+                    Some(run_id),
+                    EventPayload::InternalAgentFallback {
+                        invocation_id,
+                        internal_run_id,
+                        kind,
+                        from: InternalAgentBackend::Model {
+                            resolved_model: fallback_model.clone(),
+                        },
+                        to: InternalAgentBackend::Model {
+                            resolved_model: resolved_model.clone(),
+                        },
+                        failure: failure(),
+                        attempts: 2,
+                    },
+                )
+                .unwrap();
+                log.append(
+                    Some(run_id),
+                    EventPayload::InternalAgentUsageRecorded {
+                        internal_run_id,
+                        kind,
+                        agent_id: agent_id.clone(),
+                        resolved_model: resolved_model.clone(),
+                        usage,
+                    },
+                )
+                .unwrap();
+            }
+            log.append(
+                Some(run_id),
+                EventPayload::InternalAgentCompleted {
+                    invocation_id,
+                    internal_run_id,
+                    kind,
+                    result: SafeInternalAgentResult {
+                        output_summary: SafeDisplayText::new("validated output").unwrap(),
+                        output_digest: Sha256Digest::of_bytes(b"output"),
+                    },
+                },
+            )
+            .unwrap();
+        }
+        drop(log);
+
+        let reopened = crate::events::EventLog::open(path, session_id).unwrap();
+        let rebuilt = projection(reopened).unwrap();
+        assert_eq!(rebuilt.usage_rollup.request_count, 5);
+        assert_eq!(rebuilt.usage_rollup.input_tokens, 503);
+        for (kind, agent_name) in kinds {
+            assert_eq!(
+                rebuilt.agent_usage[&AgentId::new(agent_name).unwrap()].request_count,
+                if kind == InternalAgentKind::Approval {
+                    3
+                } else {
+                    1
+                }
+            );
+        }
     }
 }

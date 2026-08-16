@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
-use cookie_agent_identity::ProviderId;
+use cookie_agent_identity::{ModelKey, ProviderId};
 use cookie_agent_models::ProviderDefinition;
+pub use cookie_agent_models::catalog::PicoUsdPerMillion;
 use serde::{Deserialize, Serialize};
 
 use crate::ConfigError;
@@ -215,6 +216,8 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub delegation: DelegationConfig,
     #[serde(default)]
+    pub pricing: PricingConfig,
+    #[serde(default)]
     pub providers: BTreeMap<ProviderId, ProviderDefinition>,
 }
 
@@ -227,9 +230,27 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) context_compaction: Option<ContextCompactionConfig>,
     pub(crate) session_title: Option<SessionTitleConfig>,
     pub(crate) delegation: Option<DelegationConfig>,
+    pub(crate) pricing: Option<PricingConfig>,
     pub(crate) mcp: Option<McpConfig>,
     #[serde(default)]
     pub(crate) providers: SensitiveProviderValues,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingConfig {
+    #[serde(default)]
+    pub models: BTreeMap<ModelKey, ModelPricing>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelPricing {
+    pub input_per_million_usd: Option<PicoUsdPerMillion>,
+    pub output_per_million_usd: Option<PicoUsdPerMillion>,
+    pub reasoning_per_million_usd: Option<PicoUsdPerMillion>,
+    pub cache_read_per_million_usd: Option<PicoUsdPerMillion>,
+    pub cache_write_per_million_usd: Option<PicoUsdPerMillion>,
 }
 
 impl Drop for RawRuntimeLayer {
@@ -303,12 +324,21 @@ pub struct DelegationConfig {
     pub max_depth: u32,
     #[serde(default = "default_delegation_concurrency")]
     pub max_concurrency: Option<u32>,
+    #[serde(default = "default_max_resident_subagents")]
+    pub max_resident_subagents: usize,
+    #[serde(
+        default = "default_idle_eviction_after",
+        deserialize_with = "deserialize_duration"
+    )]
+    pub idle_eviction_after: Duration,
 }
 impl Default for DelegationConfig {
     fn default() -> Self {
         Self {
             max_depth: default_delegation_depth(),
             max_concurrency: default_delegation_concurrency(),
+            max_resident_subagents: default_max_resident_subagents(),
+            idle_eviction_after: default_idle_eviction_after(),
         }
     }
 }
@@ -317,6 +347,37 @@ const fn default_delegation_depth() -> u32 {
 }
 const fn default_delegation_concurrency() -> Option<u32> {
     Some(4)
+}
+const fn default_max_resident_subagents() -> usize {
+    20
+}
+const fn default_idle_eviction_after() -> Duration {
+    Duration::from_secs(60 * 60)
+}
+
+fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    parse_duration(&value).ok_or_else(|| {
+        serde::de::Error::custom("duration must be an integer followed by ms, s, m, h, or d")
+    })
+}
+
+fn parse_duration(value: &str) -> Option<Duration> {
+    let unit_start = value.find(|character: char| !character.is_ascii_digit())?;
+    let amount = value[..unit_start].parse::<u64>().ok()?;
+    let unit = &value[unit_start..];
+    let milliseconds = match unit {
+        "ms" => amount,
+        "s" => amount.checked_mul(1_000)?,
+        "m" => amount.checked_mul(60_000)?,
+        "h" => amount.checked_mul(3_600_000)?,
+        "d" => amount.checked_mul(86_400_000)?,
+        _ => return None,
+    };
+    Some(Duration::from_millis(milliseconds))
 }
 impl Default for ApprovalConfig {
     fn default() -> Self {
@@ -444,6 +505,9 @@ pub(crate) fn apply_settings(runtime: &mut RuntimeConfig, layer: &RawRuntimeLaye
     }
     if let Some(value) = &layer.delegation {
         runtime.delegation = value.clone();
+    }
+    if let Some(value) = &layer.pricing {
+        runtime.pricing = value.clone();
     }
 }
 

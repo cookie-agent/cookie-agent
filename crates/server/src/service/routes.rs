@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use cookie_agent_engine::{EngineError, session::SessionError};
 use cookie_agent_protocol::{
-    ApprovalListParams, ApprovalListResult, ApprovalRespondErrorCode, ApprovalRespondParams,
-    ApprovalRespondResult, EventsSubscribeParams, EventsSubscribeResult, McpAuthBeginParams,
+    AgentUsageParams, AgentUsageResult, ApprovalListParams, ApprovalListResult,
+    ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalRespondResult, EventsSubscribeParams,
+    EventsSubscribeResult, GlobalUsageParams, GlobalUsageResult, McpAuthBeginParams,
     McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult, McpServerAddParams,
     McpServerEditParams, McpServerListParams, McpServerListResult, McpServerMutationResult,
     McpServerNameParams, McpServerPersistParams, McpServerSetEnabledParams, ProviderConnectParams,
@@ -17,7 +18,8 @@ use cookie_agent_protocol::{
     SessionPermissionMutationResult, SessionPermissionSetParams, SessionRenameErrorCode,
     SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
     SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
-    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult,
+    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, SessionUsageParams,
+    SessionUsageResult,
 };
 
 use super::Server;
@@ -58,6 +60,20 @@ impl ServerProtocol for Server {
             .get_session(params.session_id)
             .map(|session| SessionGetResult { session })
             .map_err(protocol_fault)
+    }
+
+    async fn session_usage(&self, params: SessionUsageParams) -> Result<SessionUsageResult> {
+        self.engine
+            .session_usage(params.session_id)
+            .map_err(protocol_fault)
+    }
+
+    async fn agent_usage(&self, params: AgentUsageParams) -> Result<AgentUsageResult> {
+        Ok(self.engine.agent_usage(params.agent_id))
+    }
+
+    async fn global_usage(&self, _: GlobalUsageParams) -> Result<GlobalUsageResult> {
+        Ok(self.engine.global_usage())
     }
 
     async fn session_children(

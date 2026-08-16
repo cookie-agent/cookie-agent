@@ -287,15 +287,25 @@ fn delegation_runtime_defaults_and_limits_are_strict() {
     let loaded = load_from_roots(None, Some(&defaults)).unwrap();
     assert_eq!(loaded.runtime.delegation.max_depth, 3);
     assert_eq!(loaded.runtime.delegation.max_concurrency, Some(4));
+    assert_eq!(loaded.runtime.delegation.max_resident_subagents, 20);
+    assert_eq!(
+        loaded.runtime.delegation.idle_eviction_after,
+        std::time::Duration::from_secs(60 * 60)
+    );
 
     let authored = temp.path().join("delegation-authored");
     write_config(
         &authored,
-        "[delegation]\nmax_depth = 5\nmax_concurrency = 2\n",
+        "[delegation]\nmax_depth = 5\nmax_concurrency = 2\nmax_resident_subagents = 7\nidle_eviction_after = \"90m\"\n",
     );
     let loaded = load_from_roots(None, Some(&authored)).unwrap();
     assert_eq!(loaded.runtime.delegation.max_depth, 5);
     assert_eq!(loaded.runtime.delegation.max_concurrency, Some(2));
+    assert_eq!(loaded.runtime.delegation.max_resident_subagents, 7);
+    assert_eq!(
+        loaded.runtime.delegation.idle_eviction_after,
+        std::time::Duration::from_secs(90 * 60)
+    );
 
     let invalid = temp.path().join("delegation-invalid");
     write_config(&invalid, "[delegation]\nmax_concurrency = 0\n");
@@ -303,6 +313,50 @@ fn delegation_runtime_defaults_and_limits_are_strict() {
         load_from_roots(None, Some(&invalid)),
         Err(ConfigError::InvalidRuntime)
     ));
+    write_config(&invalid, "[delegation]\nidle_eviction_after = \"later\"\n");
+    assert!(load_from_roots(None, Some(&invalid)).is_err());
+}
+
+#[test]
+fn pricing_defaults_empty_and_rejects_invalid_rates() {
+    let temp = TempDir::new().unwrap();
+    let defaults = temp.path().join("pricing-defaults");
+    write_config(&defaults, "");
+    let loaded = load_from_roots(None, Some(&defaults)).unwrap();
+    assert!(loaded.runtime.pricing.models.is_empty());
+
+    let authored = temp.path().join("pricing-authored");
+    write_config(
+        &authored,
+        "[pricing.models.\"custom.test/model\"]\ninput_per_million_usd = \"10000.000000000001\"\noutput_per_million_usd = \"5.0\"\nreasoning_per_million_usd = \"7.5\"\ncache_read_per_million_usd = \"0.125\"\ncache_write_per_million_usd = \"0.000000000001\"\n",
+    );
+    let loaded = load_from_roots(None, Some(&authored)).unwrap();
+    let rates = loaded
+        .runtime
+        .pricing
+        .models
+        .get(&"custom.test/model".parse().unwrap())
+        .unwrap();
+    assert_eq!(
+        rates.input_per_million_usd.unwrap().value(),
+        10_000_000_000_000_001
+    );
+    assert_eq!(
+        rates.output_per_million_usd.unwrap().value(),
+        5_000_000_000_000
+    );
+    assert_eq!(
+        rates.reasoning_per_million_usd.unwrap().value(),
+        7_500_000_000_000
+    );
+    assert_eq!(rates.cache_write_per_million_usd.unwrap().value(), 1);
+
+    let invalid = temp.path().join("pricing-invalid");
+    write_config(
+        &invalid,
+        "[pricing.models.\"custom.test/model\"]\ninput_per_million_usd = \"-1.0\"\n",
+    );
+    assert!(load_from_roots(None, Some(&invalid)).is_err());
 }
 
 #[test]

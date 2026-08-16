@@ -1410,6 +1410,40 @@
         {
           "type": "object",
           "properties": {
+            "agent_id": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+            },
+            "model_turn_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 1
+            },
+            "resolved_model": {
+              "$ref": "#/$defs/ResolvedModelRef"
+            },
+            "type": {
+              "type": "string",
+              "const": "model_usage_recorded"
+            },
+            "usage": {
+              "$ref": "#/$defs/Usage"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "model_turn_seq",
+            "agent_id",
+            "resolved_model",
+            "usage"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "attempts_on_from": {
               "type": "integer",
               "format": "uint32",
@@ -2010,6 +2044,43 @@
             "internal_run_id",
             "kind",
             "result"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "agent_id": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+            },
+            "internal_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/$defs/InternalAgentKind"
+            },
+            "resolved_model": {
+              "$ref": "#/$defs/ResolvedModelRef"
+            },
+            "type": {
+              "type": "string",
+              "const": "internal_agent_usage_recorded"
+            },
+            "usage": {
+              "$ref": "#/$defs/Usage"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "internal_run_id",
+            "kind",
+            "agent_id",
+            "resolved_model",
+            "usage"
           ]
         },
         {
@@ -4985,7 +5056,9 @@
             15,
             16,
             17,
-            18
+            18,
+            19,
+            20
           ]
         },
         "payload": {

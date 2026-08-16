@@ -15,10 +15,10 @@ use cookie_agent_models::{
     BoundedSetupString, ProviderDefinition, SafeSetupValue,
     adapters::OvenAdapterFamily,
     catalog::{
-        CatalogAgeState, CatalogAvailability, CatalogLimits, CatalogModalities, CatalogModelEntry,
-        CatalogModelRecord, CatalogModelStatus, CatalogProviderEntry, CatalogProviderRecord,
-        CatalogRequest, CatalogRuntimeState, CatalogSnapshot, CatalogSource, CatalogTransport,
-        CatalogTransportFuture, CatalogTransportResponse,
+        CatalogAgeState, CatalogAvailability, CatalogLimits, CatalogModalities, CatalogModelCost,
+        CatalogModelEntry, CatalogModelRecord, CatalogModelStatus, CatalogProviderEntry,
+        CatalogProviderRecord, CatalogRequest, CatalogRuntimeState, CatalogSnapshot, CatalogSource,
+        CatalogTransport, CatalogTransportFuture, CatalogTransportResponse, PicoUsdPerMillion,
     },
     manager::{
         EffectiveCredentialSource, ModelManager, ModelManagerError, ProviderConnectRequest,
@@ -73,6 +73,7 @@ fn catalog() -> Arc<CatalogSnapshot> {
         shape: None,
         provider: None,
         reasoning_options: Vec::new(),
+        cost: None,
         interleaved: None,
         canonical_provenance: None,
     };
@@ -157,6 +158,7 @@ fn cloud_catalog(
         shape: None,
         provider: None,
         reasoning_options: Vec::new(),
+        cost: None,
         interleaved: None,
         canonical_provenance: None,
     };
@@ -212,6 +214,48 @@ fn setup_values(values: &[(&str, &str)]) -> BTreeMap<SetupFieldId, SafeSetupValu
             )
         })
         .collect()
+}
+
+#[test]
+fn catalog_cost_reaches_the_compiled_runtime_model() {
+    let temporary = TempDir::new().unwrap();
+    let mut snapshot = (*catalog()).clone();
+    snapshot
+        .providers
+        .get_mut(&ProviderId::new("openai").unwrap())
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .models
+        .get_mut(&ProviderModelId::new("gpt-5-mini").unwrap())
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .cost = Some(CatalogModelCost {
+        input: PicoUsdPerMillion::new(2_000_000_000_000),
+        output: PicoUsdPerMillion::new(12_000_000_000_000),
+        reasoning: None,
+        cache_read: Some(PicoUsdPerMillion::new(200_000_000_000)),
+        cache_write: Some(PicoUsdPerMillion::new(2_500_000_000_000)),
+        context_over_200k: None,
+        tiers: Vec::new(),
+    });
+    let manager =
+        ModelManager::new(BTreeMap::new(), Arc::new(snapshot), store(&temporary)).unwrap();
+    let runtime = manager.current();
+    let cost = runtime
+        .model(&"openai/gpt-5-mini".parse().unwrap())
+        .unwrap()
+        .model
+        .cost
+        .as_ref()
+        .unwrap();
+    assert_eq!(cost.input.value(), 2_000_000_000_000);
+    assert_eq!(cost.output.value(), 12_000_000_000_000);
+    assert_eq!(cost.cache_read.unwrap().value(), 200_000_000_000);
+    assert_eq!(cost.cache_write.unwrap().value(), 2_500_000_000_000);
 }
 
 #[test]

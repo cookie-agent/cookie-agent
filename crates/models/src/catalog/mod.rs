@@ -18,10 +18,11 @@ pub use cache::{
 pub use manager::{CatalogError, CatalogManager};
 pub use records::{
     CanonicalModelProvenance, CanonicalModelRecord, CatalogAgeState, CatalogAvailability,
-    CatalogInterleaved, CatalogLimits, CatalogModalities, CatalogModelEntry,
-    CatalogModelProviderMetadata, CatalogModelRecord, CatalogModelStatus, CatalogProviderEntry,
-    CatalogProviderRecord, CatalogQuarantineEntry, CatalogQuarantineReason, CatalogReasoningOption,
-    CatalogRuntimeState, CatalogSafeErrorMeta, CatalogSnapshot, CatalogSource,
+    CatalogInterleaved, CatalogLimits, CatalogModalities, CatalogModelCost, CatalogModelCostRates,
+    CatalogModelCostTier, CatalogModelEntry, CatalogModelProviderMetadata, CatalogModelRecord,
+    CatalogModelStatus, CatalogProviderEntry, CatalogProviderRecord, CatalogQuarantineEntry,
+    CatalogQuarantineReason, CatalogReasoningOption, CatalogRuntimeState, CatalogSafeErrorMeta,
+    CatalogSnapshot, CatalogSource, PicoUsdPerMillion,
 };
 pub use transport::{
     CatalogBodyStream, CatalogRequest, CatalogTransport, CatalogTransportError,

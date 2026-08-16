@@ -1,6 +1,6 @@
 {
   "delegation_journal_schema_version": 14,
-  "event_schema_version": 18,
+  "event_schema_version": 20,
   "protocol_version": 9,
   "schemas": [
     "ClientHello.schema.json",
@@ -20,6 +20,13 @@
     "SessionListResult.schema.json",
     "SessionGetParams.schema.json",
     "SessionGetResult.schema.json",
+    "SessionUsageParams.schema.json",
+    "SessionUsageResult.schema.json",
+    "AgentUsageParams.schema.json",
+    "AgentUsageResult.schema.json",
+    "GlobalUsageParams.schema.json",
+    "GlobalUsageResult.schema.json",
+    "ModelUsageRollup.schema.json",
     "SessionChildrenParams.schema.json",
     "SessionChildrenResult.schema.json",
     "SessionTreeParams.schema.json",
@@ -83,6 +90,6 @@
     "ModelSnapshotManifestV1.schema.json",
     "StoredDelegationJournalRecord.schema.json"
   ],
-  "session_jsonl_schema_version": 18,
+  "session_jsonl_schema_version": 20,
   "session_meta_schema_version": 9
 }

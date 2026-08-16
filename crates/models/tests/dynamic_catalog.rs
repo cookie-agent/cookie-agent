@@ -102,6 +102,82 @@ fn candidate() -> Vec<u8> {
     .unwrap()
 }
 
+#[tokio::test]
+async fn catalog_model_costs_are_preserved_with_cache_and_reasoning_rates() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut document: serde_json::Value = serde_json::from_slice(&candidate()).unwrap();
+    document["providers"]["test"]["models"]["group/model"]["cost"] = serde_json::json!({
+        "input": "__EXACT_NUMERIC_RATE__",
+        "output": 12.0,
+        "reasoning": 15.0,
+        "cache_read": 0.2,
+        "cache_write": 2.5,
+        "context_over_200k": {
+            "input": 3.0,
+            "output": 18.0,
+            "reasoning": 20.0,
+            "cache_read": 0.3,
+            "cache_write": 3.5
+        },
+        "tiers": [{
+            "input": 4.0,
+            "output": 24.0,
+            "reasoning": 25.0,
+            "cache_read": 0.4,
+            "cache_write": 4.5,
+            "tier": {"type": "context", "size": 300000}
+        }]
+    });
+    let document = serde_json::to_string(&document)
+        .unwrap()
+        .replace("\"__EXACT_NUMERIC_RATE__\"", "10000.000000000001");
+    let snapshot = manager(
+        ScriptedTransport::with([CatalogTransportResponse::from_bytes(
+            200,
+            document.into_bytes(),
+        )]),
+        &temporary,
+    )
+    .refresh_at(now())
+    .await
+    .unwrap();
+    let cost = snapshot
+        .model(
+            &ProviderId::new("test").unwrap(),
+            &ProviderModelId::new("group/model").unwrap(),
+        )
+        .unwrap()
+        .record
+        .as_ref()
+        .unwrap()
+        .cost
+        .as_ref()
+        .unwrap();
+    assert_eq!(cost.input.value(), 10_000_000_000_000_001);
+    assert_eq!(cost.output.value(), 12_000_000_000_000);
+    assert_eq!(cost.reasoning.unwrap().value(), 15_000_000_000_000);
+    assert_eq!(cost.cache_read.unwrap().value(), 200_000_000_000);
+    assert_eq!(cost.cache_write.unwrap().value(), 2_500_000_000_000);
+    assert_eq!(
+        cost.context_over_200k.unwrap().input.value(),
+        3_000_000_000_000
+    );
+    assert_eq!(cost.tiers[0].context_tokens, 300_000);
+    assert_eq!(cost.tiers[0].rates.output.value(), 24_000_000_000_000);
+    assert_eq!(
+        cost.rates_for_input(199_999).input.value(),
+        10_000_000_000_000_001
+    );
+    assert_eq!(
+        cost.rates_for_input(200_000).input.value(),
+        3_000_000_000_000
+    );
+    assert_eq!(
+        cost.rates_for_input(300_000).input.value(),
+        4_000_000_000_000
+    );
+}
+
 fn manager(
     transport: ScriptedTransport,
     temporary: &tempfile::TempDir,

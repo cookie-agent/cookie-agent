@@ -1123,7 +1123,7 @@ fn restore_native_context(
     .map_err(|error| HistoryError::Corrupt(error.to_string()))
 }
 
-fn persist_usage(usage: oven_sdk::Usage) -> Usage {
+pub(crate) fn persist_usage(usage: oven_sdk::Usage) -> Usage {
     Usage {
         input_tokens: usage.input_tokens,
         input_tokens_no_cache: usage.input_tokens_no_cache,

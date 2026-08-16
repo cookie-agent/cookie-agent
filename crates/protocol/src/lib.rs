@@ -127,7 +127,7 @@ pub use setup_value::*;
 /// The only protocol version supported by this build.
 pub const PROTOCOL_VERSION: u32 = 9;
 /// The current durable event/session-JSONL schema written by this build.
-pub const EVENT_SCHEMA_VERSION: u32 = 18;
+pub const EVENT_SCHEMA_VERSION: u32 = 20;
 /// The only session metadata schema supported by this build.
 pub const SESSION_META_SCHEMA_VERSION: u32 = 9;
 /// The current delegation-journal schema written by this build.
@@ -205,7 +205,7 @@ macro_rules! exact_numeric_wire_type {
 exact_numeric_wire_type!(ProtocolVersion, 9, "9", "The exact protocol wire version.");
 /// An event/session-JSONL schema accepted by this build.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, TS)]
-#[ts(type = "15 | 16 | 17 | 18")]
+#[ts(type = "15 | 16 | 17 | 18 | 19 | 20")]
 pub struct EventSchemaVersion(u32);
 
 impl EventSchemaVersion {
@@ -241,11 +241,11 @@ impl<'de> Deserialize<'de> for EventSchemaVersion {
         D: serde::Deserializer<'de>,
     {
         let value = u32::deserialize(deserializer)?;
-        if matches!(value, 15..=18) {
+        if matches!(value, 15..=20) {
             Ok(Self(value))
         } else {
             Err(serde::de::Error::custom(format!(
-                "unsupported event schema version {value}; expected 15, 16, 17, or 18"
+                "unsupported event schema version {value}; expected 15, 16, 17, 18, 19, or 20"
             )))
         }
     }
@@ -261,7 +261,7 @@ impl JsonSchema for EventSchemaVersion {
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type": "integer", "enum": [15, 16, 17, 18]})
+        json_schema!({"type": "integer", "enum": [15, 16, 17, 18, 19, 20]})
     }
 }
 exact_numeric_wire_type!(

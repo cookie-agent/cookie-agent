@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentUsageParams",
+  "type": "object",
+  "properties": {
+    "agent_id": {
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "agent_id"
+  ]
+}

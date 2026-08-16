@@ -67,6 +67,7 @@ mod internal_agents;
 mod mailbox;
 mod model_loop;
 mod recovery;
+mod residency;
 mod runs;
 mod sessions;
 mod titles;
@@ -403,6 +404,18 @@ struct PromptSnapshotHook {
 }
 
 #[cfg(test)]
+struct PagingRaceHook {
+    reached: Mutex<Option<oneshot::Sender<()>>>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+struct ReadOnlyReopenHook {
+    reached: Mutex<Option<oneshot::Sender<()>>>,
+    release: Mutex<std_mpsc::Receiver<()>>,
+}
+
+#[cfg(test)]
 struct ApprovalEvaluationHook {
     reached: Mutex<Option<oneshot::Sender<()>>>,
     release: tokio::sync::Notify,
@@ -657,6 +670,9 @@ enum SessionCommand {
         run: RunId,
         reply: oneshot::Sender<Result<Vec<StoredEvent>, EngineError>>,
     },
+    EvictionBarrier {
+        reply: oneshot::Sender<Result<(), EngineError>>,
+    },
 }
 
 impl SessionCommand {
@@ -723,6 +739,7 @@ pub(crate) struct Inner {
     next_admission_generation: AtomicU64,
     subscribers: Mutex<HashMap<SessionId, Vec<PersistedSubscriber>>>,
     actors: Mutex<HashMap<SessionId, SessionActor<SessionCommand>>>,
+    residency_mutation: tokio::sync::Mutex<()>,
     output_hubs: Mutex<HashMap<ToolCallId, OutputHub>>,
     finalized_output_hubs: Mutex<VecDeque<ToolCallId>>,
     pub(crate) pending_approvals: Mutex<HashMap<(SessionId, ApprovalId), PendingApproval>>,
@@ -732,12 +749,19 @@ pub(crate) struct Inner {
     compaction_deferred: Mutex<HashMap<SessionId, VecDeque<SessionCommand>>>,
     context_token_estimators: Mutex<HashMap<SessionId, ContextTokenEstimator>>,
     runtime: Option<tokio::runtime::Handle>,
+    janitor_task: Mutex<Option<JoinHandle<()>>>,
     admission_tasks: Mutex<Vec<JoinHandle<()>>>,
     admission_blocking_tasks: Mutex<Vec<JoinHandle<()>>>,
     admission_tasks_closing: AtomicBool,
     recovery_waiters: Mutex<HashSet<(SessionId, RunId, ToolCallId)>>,
     #[cfg(test)]
     prompt_snapshot_hook: Mutex<Option<Arc<PromptSnapshotHook>>>,
+    #[cfg(test)]
+    janitor_before_barrier_hook: Mutex<Option<Arc<PagingRaceHook>>>,
+    #[cfg(test)]
+    compaction_execution_hook: Mutex<Option<Arc<PagingRaceHook>>>,
+    #[cfg(test)]
+    read_only_reopen_hook: Mutex<Option<ReadOnlyReopenHook>>,
     #[cfg(test)]
     approval_evaluation_hook: Mutex<Option<Arc<ApprovalEvaluationHook>>>,
     #[cfg(test)]
@@ -842,6 +866,7 @@ impl Engine {
                 next_admission_generation: AtomicU64::new(1),
                 subscribers: Mutex::new(HashMap::new()),
                 actors: Mutex::new(HashMap::new()),
+                residency_mutation: tokio::sync::Mutex::new(()),
                 output_hubs: Mutex::new(HashMap::new()),
                 finalized_output_hubs: Mutex::new(VecDeque::new()),
                 pending_approvals: Mutex::new(HashMap::new()),
@@ -851,12 +876,19 @@ impl Engine {
                 compaction_deferred: Mutex::new(HashMap::new()),
                 context_token_estimators: Mutex::new(HashMap::new()),
                 runtime: tokio::runtime::Handle::try_current().ok(),
+                janitor_task: Mutex::new(None),
                 admission_tasks: Mutex::new(Vec::new()),
                 admission_blocking_tasks: Mutex::new(Vec::new()),
                 admission_tasks_closing: AtomicBool::new(false),
                 recovery_waiters: Mutex::new(HashSet::new()),
                 #[cfg(test)]
                 prompt_snapshot_hook: Mutex::new(None),
+                #[cfg(test)]
+                janitor_before_barrier_hook: Mutex::new(None),
+                #[cfg(test)]
+                compaction_execution_hook: Mutex::new(None),
+                #[cfg(test)]
+                read_only_reopen_hook: Mutex::new(None),
                 #[cfg(test)]
                 approval_evaluation_hook: Mutex::new(None),
                 #[cfg(test)]
@@ -902,6 +934,7 @@ impl Engine {
         if let Some(runtime) = &engine.inner.runtime {
             engine.inner.mcp.start_eager(runtime);
         }
+        engine.start_subagent_janitor();
         Ok(engine)
     }
 
@@ -1328,6 +1361,16 @@ impl Engine {
         self.inner
             .admission_tasks_closing
             .store(true, Ordering::Release);
+        let janitor = self
+            .inner
+            .janitor_task
+            .lock()
+            .ok()
+            .and_then(|mut task| task.take());
+        if let Some(task) = janitor {
+            task.abort();
+            let _ = task.await;
+        }
         let tasks = self
             .inner
             .admission_tasks

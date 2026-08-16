@@ -950,26 +950,23 @@ impl Engine {
                         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                     }
                 }
-                SessionStatus::Completed => {
-                    let result = terminal_delegate_result(
-                        &child,
-                        handle.child_run_id,
-                        SessionStatus::Completed,
-                    );
-                    self.clear_delegate_admissions(handle.invocation_id);
-                    return Ok(result);
-                }
-                SessionStatus::Cancelled => {
-                    let result = terminal_delegate_result(
-                        &child,
-                        handle.child_run_id,
-                        SessionStatus::Cancelled,
-                    );
-                    self.clear_delegate_admissions(handle.invocation_id);
-                    return Ok(result);
-                }
-                SessionStatus::Failed | SessionStatus::Interrupted => {
+                SessionStatus::Completed
+                | SessionStatus::Cancelled
+                | SessionStatus::Failed
+                | SessionStatus::Interrupted => {
                     let result = terminal_delegate_result(&child, handle.child_run_id, status);
+                    let mut records = self
+                        .inner
+                        .delegations_by_session
+                        .lock()
+                        .map_err(|_| EngineError::ActorStopped)?;
+                    if let Some(record) = records
+                        .get_mut(&handle.child_session_id)
+                        .filter(|record| record.invocation_id == handle.invocation_id)
+                    {
+                        record.state = DelegationState::Finished(status);
+                    }
+                    drop(records);
                     self.clear_delegate_admissions(handle.invocation_id);
                     return Ok(result);
                 }
@@ -1612,7 +1609,13 @@ impl Engine {
         } else {
             Ok(())
         };
-        notification_result.and(drain_result)
+        let completion = notification_result.and(drain_result);
+        if completion.is_ok()
+            && let Err(error) = self.evict_idle_subagents().await
+        {
+            eprintln!("subagent session completion eviction failed: {error}");
+        }
+        completion
     }
 
     async fn terminalize_child_without_run(

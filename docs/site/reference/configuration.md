@@ -66,6 +66,7 @@ Only these optional keys are allowed at the top of `config.toml`.
 | `context_compaction` | table | defaults below | Automatic context compaction |
 | `session_title` | table | defaults below | Automatic session titles |
 | `delegation` | table | defaults below | Delegation depth and concurrency |
+| `pricing` | table | empty | Optional model-rate overrides for cost estimates |
 | `providers` | table | empty | Provider definitions |
 | `mcp` | table | empty | MCP tool server definitions |
 
@@ -128,6 +129,44 @@ Controls automatic session titles generated from the first user message.
 |---|---|---|---|
 | `max_depth` | integer | `3` | Maximum delegation depth below a root session. Must be greater than zero. |
 | `max_concurrency` | integer | `4` | Maximum concurrently running root-level background delegations. Excess calls queue FIFO, up to `4 × max_concurrency`; a full queue rejects admission. Foreground and nested delegations bypass this queue. A value of `0` is rejected. |
+| `max_resident_subagents` | integer | `20` | Soft trigger for resident delegated sessions. Above this count, the janitor evicts eligible idle children oldest-first until the count reaches the trigger or no eligible child remains. Recently active children may keep residency above the trigger. |
+| `idle_eviction_after` | duration string | `"1h"` | Minimum time since a delegated session's last run ended before it can be evicted. Compact `ms`, `s`, `m`, `h`, and `d` suffixes are accepted. |
+
+## `[pricing.models."<provider/model>"]`
+
+Pricing overrides are empty by default. Managed models use prices from the
+selected models.dev catalog. Add an entry for a custom model absent from the
+catalog, or to override catalog prices with the provider terms that apply to
+your account. Catalog context tiers are selected independently for each request
+from its reported input-token count. Keys are canonical model identities,
+including the provider ID.
+
+```toml
+[pricing.models."custom.example/model-name"]
+input_per_million_usd = "1.25"
+output_per_million_usd = "5.0"
+```
+
+All fields are optional quoted, finite, nonnegative decimal USD rates per
+million tokens. Quoting preserves the authored decimal exactly:
+
+| Key | Applies to |
+|---|---|
+| `input_per_million_usd` | Input tokens not attributed to cache reads or writes |
+| `output_per_million_usd` | Plain, non-reasoning output tokens |
+| `reasoning_per_million_usd` | Reasoning output tokens; falls back to the output rate when omitted |
+| `cache_read_per_million_usd` | Provider-reported cache-read input tokens |
+| `cache_write_per_million_usd` | Provider-reported cache-write input tokens |
+
+Precedence is config override, then catalog price, then no estimate. A config
+entry replaces the catalog rate set for that model. When a selected rate set
+does not distinguish cache reads or writes, those tokens use its plain input
+rate; reasoning tokens similarly use its output rate when no reasoning rate is
+present. An estimate is returned only when the selected source prices every
+nonzero observed category and the provider reports every split needed by a
+distinct rate. A session, agent, or global total is unpriced if any
+model within it is unpriced. These are estimates from provider-reported token
+counts, not invoices.
 
 ## `[mcp.servers.<name>]`
 

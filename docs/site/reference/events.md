@@ -1,7 +1,7 @@
 # Event Reference
 
-Session persistence and subscriptions write event schema 18 and reopen schemas
-15-18. Every stored event
+Session persistence and subscriptions write event schema 20 and reopen schemas
+15-20. Every stored event
 contains `event_schema_version`, `session_id`, required nullable `run_id`, a
 positive physical `seq`, `timestamp`, and a tagged `payload`. Events requiring a
 run ID reject a null envelope value.
@@ -13,10 +13,10 @@ run ID reject a null envelope value.
 | Session | `session_created`, `session_reverted`, `session_permission_overlay_set`, `session_title_committed`, `delegated_context_seeded` |
 | User input | `user_input_admitted`, `user_input_submitted`, `user_input_recalled`, `user_input_applied` |
 | Run | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_interrupted` |
-| Model | `model_attempt_started`, `text_delta`, `reasoning_delta`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_fallback` |
+| Model | `model_attempt_started`, `text_delta`, `reasoning_delta`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback` |
 | Tools | `tool_call_started`, `tool_call_progress`, `tool_call_terminated`, `tool_output_elided`, `tool_stdin_submitted`, `tool_call_linked`, `delegate_queued`, `delegate_finished`, `delegate_finished_v2` |
 | Approvals | `approval_requested`, `approval_evaluated`, `approval_escalated`, `approval_user_decision_recorded`, `approval_finalized`, `approval_cancelled`, `approval_doom_loop_detected`, `tree_approval_grant_committed` |
-| Internal agents | `internal_agent_started`, `internal_agent_completed`, `internal_agent_failed`, `internal_agent_cancelled`, `internal_agent_interrupted`, `internal_agent_fallback` |
+| Internal agents | `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_completed`, `internal_agent_failed`, `internal_agent_cancelled`, `internal_agent_interrupted`, `internal_agent_fallback` |
 | Compaction | `context_checkpoint_committed`, `context_rehydrated`, `context_compaction_auto_disabled` |
 
 `context_compaction_auto_disabled` is a legacy durable event retained for old
@@ -42,6 +42,18 @@ the session. The latest visible event wins. Because it is an ordinary branch
 event, restart replay, revert, and fork recover the same overlay without a
 sidecar file.
 
+Schema 19 adds `model_usage_recorded`. It follows a committed provider turn and
+contains the positive `model_turn_seq`, agent ID, resolved model identity, and
+Oven's normalized usage fields: inclusive input/output totals plus optional
+uncached input, cache-read input, cache-write input, text output, and reasoning
+output counts. Event-log validation requires its run, agent, model, and turn to
+match and rejects duplicate records for one turn. Session, agent, and global
+usage projections rebuild from these events after restart, revert, and fork.
+
+Schema 20 adds `internal_agent_usage_recorded`. It attributes each completed
+internal model request to its internal run, internal agent ID, kind, and resolved
+model. The same session, agent, and global projections include these records.
+
 `user_input_admitted` normally belongs to an active run. A steer accepted for a
 queued delegated child is runless and requires that the session have no active
 run. It is persisted immediately and enters the next run's pending-input FIFO,
@@ -62,7 +74,7 @@ continues to recall the newest pending input.
 starts `events.subscription` notifications. A notification is tagged as either:
 
 ```json
-{ "type": "event", "event": { "event_schema_version": 18 } }
+{ "type": "event", "event": { "event_schema_version": 20 } }
 ```
 
 or a gap indicating that the subscriber must rebuild its disposable projection:

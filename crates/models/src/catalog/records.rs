@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use cookie_agent_identity::{CanonicalModelId, CatalogRevision, ProviderId, ProviderModelId};
 use jiff::Timestamp;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Exact selected source for one dynamic catalog snapshot.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -151,8 +151,200 @@ pub struct CatalogModelRecord {
     pub shape: Option<String>,
     pub provider: Option<CatalogModelProviderMetadata>,
     pub reasoning_options: Vec<CatalogReasoningOption>,
+    // Catalog prices are runtime metadata; frozen manifest inputs prohibit JSON floats.
+    #[serde(default, skip_serializing)]
+    pub cost: Option<CatalogModelCost>,
     pub interleaved: Option<CatalogInterleaved>,
     pub canonical_provenance: Option<CanonicalModelProvenance>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct PicoUsdPerMillion(u128);
+
+impl PicoUsdPerMillion {
+    const SCALE: i32 = 12;
+
+    #[must_use]
+    pub const fn new(value: u128) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u128 {
+        self.0
+    }
+
+    fn decimal_string(self) -> String {
+        let whole = self.0 / 1_000_000_000_000;
+        let fraction = self.0 % 1_000_000_000_000;
+        if fraction == 0 {
+            whole.to_string()
+        } else {
+            let fraction = format!("{fraction:012}");
+            format!("{whole}.{}", fraction.trim_end_matches('0'))
+        }
+    }
+
+    pub fn from_decimal_str(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if value.is_empty() || value.starts_with('-') {
+            return None;
+        }
+        let value = value.strip_prefix('+').unwrap_or(value);
+        let (coefficient, exponent) =
+            value
+                .split_once(['e', 'E'])
+                .map_or((value, 0), |(coefficient, exponent)| {
+                    exponent
+                        .parse::<i32>()
+                        .map(|exponent| (coefficient, exponent))
+                        .unwrap_or(("", 0))
+                });
+        if coefficient.is_empty() {
+            return None;
+        }
+        let (whole, fraction) = coefficient
+            .split_once('.')
+            .map_or((coefficient, ""), |parts| parts);
+        if (whole.is_empty() && fraction.is_empty())
+            || !whole.bytes().all(|byte| byte.is_ascii_digit())
+            || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return None;
+        }
+        let digits = format!("{whole}{fraction}");
+        let mut significant = digits.trim_start_matches('0');
+        if significant.is_empty() {
+            return Some(Self(0));
+        }
+        let fraction_digits = i32::try_from(fraction.len()).ok()?;
+        let mut shift = Self::SCALE
+            .checked_add(exponent)?
+            .checked_sub(fraction_digits)?;
+        if shift < 0 {
+            let excess = usize::try_from(shift.unsigned_abs()).ok()?;
+            let retained = significant.len().checked_sub(excess)?;
+            if retained == 0 || !significant[retained..].bytes().all(|byte| byte == b'0') {
+                return None;
+            }
+            significant = &significant[..retained];
+            shift = 0;
+        }
+        let coefficient = significant.parse::<u128>().ok()?;
+        let scaled = coefficient.checked_mul(checked_power_of_ten(u32::try_from(shift).ok()?)?)?;
+        (scaled > 0).then_some(Self(scaled))
+    }
+}
+
+fn checked_power_of_ten(exponent: u32) -> Option<u128> {
+    (0..exponent).try_fold(1_u128, |value, _| value.checked_mul(10))
+}
+
+impl<'de> Deserialize<'de> for PicoUsdPerMillion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_decimal_str(&value)
+            .ok_or_else(|| serde::de::Error::custom("invalid pico-USD pricing rate"))
+    }
+}
+
+impl Serialize for PicoUsdPerMillion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.decimal_string())
+    }
+}
+
+#[cfg(test)]
+mod pricing_tests {
+    use super::PicoUsdPerMillion;
+
+    #[test]
+    fn exact_decimal_rates_accept_supported_forms_and_reject_loss() {
+        assert_eq!(
+            PicoUsdPerMillion::from_decimal_str("0.125")
+                .unwrap()
+                .value(),
+            125_000_000_000
+        );
+        assert_eq!(
+            PicoUsdPerMillion::from_decimal_str("1.250000000000")
+                .unwrap()
+                .value(),
+            1_250_000_000_000
+        );
+        assert!(PicoUsdPerMillion::from_decimal_str("0.0000000000015").is_none());
+        assert!(
+            PicoUsdPerMillion::from_decimal_str("340282366920938463463374607431768211455")
+                .is_none()
+        );
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogModelCost {
+    pub input: PicoUsdPerMillion,
+    pub output: PicoUsdPerMillion,
+    pub reasoning: Option<PicoUsdPerMillion>,
+    pub cache_read: Option<PicoUsdPerMillion>,
+    pub cache_write: Option<PicoUsdPerMillion>,
+    #[serde(default)]
+    pub context_over_200k: Option<CatalogModelCostRates>,
+    #[serde(default)]
+    pub tiers: Vec<CatalogModelCostTier>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogModelCostRates {
+    pub input: PicoUsdPerMillion,
+    pub output: PicoUsdPerMillion,
+    pub reasoning: Option<PicoUsdPerMillion>,
+    pub cache_read: Option<PicoUsdPerMillion>,
+    pub cache_write: Option<PicoUsdPerMillion>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogModelCostTier {
+    pub context_tokens: u64,
+    pub rates: CatalogModelCostRates,
+}
+
+impl CatalogModelCost {
+    #[must_use]
+    pub fn rates_for_input(&self, input_tokens: u64) -> CatalogModelCostRates {
+        let mut selected = CatalogModelCostRates {
+            input: self.input,
+            output: self.output,
+            reasoning: self.reasoning,
+            cache_read: self.cache_read,
+            cache_write: self.cache_write,
+        };
+        let mut selected_threshold = 0;
+        if input_tokens >= 200_000
+            && let Some(rates) = self.context_over_200k
+        {
+            selected = rates;
+            selected_threshold = 200_000;
+        }
+        for tier in &self.tiers {
+            if input_tokens < tier.context_tokens {
+                break;
+            }
+            if tier.context_tokens >= selected_threshold {
+                selected = tier.rates;
+                selected_threshold = tier.context_tokens;
+            }
+        }
+        selected
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

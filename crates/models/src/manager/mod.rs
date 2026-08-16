@@ -1424,6 +1424,7 @@ fn compile_frozen_managed(
         capabilities,
         defaults: defaults.request.clone(),
         options: options.clone(),
+        cost: None,
         variants: BTreeMap::new(),
         variant_order: Vec::new(),
         default_variant: None,

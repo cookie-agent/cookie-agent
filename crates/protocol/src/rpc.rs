@@ -209,6 +209,92 @@ pub struct SessionGetResult {
     pub session: SessionMeta,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct UsageRollup {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub request_count: u64,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<f64>", required)]
+    pub cache_hit_rate: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<f64>", required)]
+    pub estimated_cost_usd: Option<f64>,
+    #[ts(type = "Record<ModelKey, import(\"./ModelUsageRollup.js\").ModelUsageRollup>")]
+    pub by_model: BTreeMap<ModelKey, ModelUsageRollup>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub arithmetic_overflow: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ModelUsageRollup {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub request_count: u64,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<f64>", required)]
+    pub cache_hit_rate: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<f64>", required)]
+    pub estimated_cost_usd: Option<f64>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub observations: Vec<Usage>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub arithmetic_overflow: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionUsageParams {
+    pub session_id: SessionId,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionUsageResult {
+    pub session_id: SessionId,
+    pub usage: UsageRollup,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct AgentUsageParams {
+    #[ts(type = "AgentId")]
+    pub agent_id: AgentId,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct AgentUsageResult {
+    #[ts(type = "AgentId")]
+    pub agent_id: AgentId,
+    pub usage: UsageRollup,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GlobalUsageParams {}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GlobalUsageResult {
+    pub usage: UsageRollup,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ChildSummary {

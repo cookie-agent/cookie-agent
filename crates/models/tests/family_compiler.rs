@@ -43,6 +43,7 @@ fn record(npm: &str, api: Option<&str>) -> CatalogProviderRecord {
         shape: None,
         provider: None,
         reasoning_options: Vec::new(),
+        cost: None,
         interleaved: Some(CatalogInterleaved::Reasoning),
         canonical_provenance: None,
     };

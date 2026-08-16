@@ -91,6 +91,7 @@ pub fn load_from_roots(
         context_compaction: ContextCompactionConfig::default(),
         session_title: SessionTitleConfig::default(),
         delegation: DelegationConfig::default(),
+        pricing: Default::default(),
         providers: BTreeMap::new(),
     };
     let mut agents = BTreeMap::new();
@@ -229,6 +230,7 @@ fn decode_runtime_layer(
         "context_compaction",
         "session_title",
         "delegation",
+        "pricing",
         "mcp",
         "providers",
     ];

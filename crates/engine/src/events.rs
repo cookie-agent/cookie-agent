@@ -184,6 +184,7 @@ impl EventLog {
 
 #[derive(Debug)]
 struct RunAttribution {
+    agent_id: cookie_agent_protocol::AgentId,
     prompt_fingerprint: cookie_agent_protocol::Sha256Digest,
     selected_suffix: Vec<cookie_agent_protocol::ResolvedModelRef>,
     active_fallback_index: usize,
@@ -199,6 +200,15 @@ struct AttemptAttribution {
     finished: bool,
 }
 
+#[derive(Debug)]
+struct InternalRunAttribution {
+    invocation_id: cookie_agent_protocol::InternalAgentInvocationId,
+    kind: cookie_agent_protocol::InternalAgentKind,
+    run_id: RunId,
+    active_model: Option<cookie_agent_protocol::ResolvedModelRef>,
+    usage_recorded_in_phase: bool,
+}
+
 fn validate_records(
     path: &Path,
     session_id: SessionId,
@@ -208,6 +218,10 @@ fn validate_records(
     let mut approval_owners = HashMap::new();
     let mut attempts = HashMap::<AttemptId, AttemptAttribution>::new();
     let mut turns = HashMap::<u64, (RunId, cookie_agent_protocol::PersistedModelTurn)>::new();
+    let mut turn_models = HashMap::<u64, cookie_agent_protocol::ResolvedModelRef>::new();
+    let mut usage_turns = HashSet::<u64>::new();
+    let mut internal_runs =
+        HashMap::<cookie_agent_protocol::InternalAgentRunId, InternalRunAttribution>::new();
     let mut model_call_owners = HashMap::<(RunId, ModelCallId), AssistantToolCallRef>::new();
     let mut provider_item_owners = HashMap::<(RunId, ProviderItemId), AssistantToolCallRef>::new();
     let mut tool_starts = HashMap::<ToolCallId, (RunId, ToolCallStart)>::new();
@@ -311,6 +325,7 @@ fn validate_records(
                     return corrupt(path, "RunStarted is missing run_id");
                 };
                 let attribution = RunAttribution {
+                    agent_id: agent.agent.clone(),
                     prompt_fingerprint: agent.prompt_fingerprint.clone(),
                     selected_suffix: selected_suffix
                         .iter()
@@ -478,6 +493,121 @@ fn validate_records(
                 {
                     return corrupt(path, "model turn sequence is duplicated");
                 }
+                turn_models.insert(*model_turn_seq, resolved_model.clone());
+            }
+            EventPayload::ModelUsageRecorded {
+                model_turn_seq,
+                agent_id,
+                resolved_model,
+                ..
+            } => {
+                let run_id = require_started_run(path, &runs, record.run_id)?;
+                let Some((turn_run, _)) = turns.get(model_turn_seq) else {
+                    return corrupt(path, "usage references an unknown committed model turn");
+                };
+                if *turn_run != run_id
+                    || turn_models.get(model_turn_seq) != Some(resolved_model)
+                    || runs.get(&run_id).map(|run| &run.agent_id) != Some(agent_id)
+                    || !usage_turns.insert(*model_turn_seq)
+                {
+                    return corrupt(path, "usage ownership does not match its model turn");
+                }
+            }
+            EventPayload::InternalAgentStarted {
+                invocation_id,
+                internal_run_id,
+                kind,
+                backend,
+                ..
+            } => {
+                let run_id = require_started_run(path, &runs, record.run_id)?;
+                let active_model = match backend {
+                    cookie_agent_protocol::InternalAgentBackend::Model { resolved_model } => {
+                        Some(resolved_model.clone())
+                    }
+                    cookie_agent_protocol::InternalAgentBackend::Builtin { .. } => None,
+                };
+                if internal_runs
+                    .insert(
+                        *internal_run_id,
+                        InternalRunAttribution {
+                            invocation_id: *invocation_id,
+                            kind: *kind,
+                            run_id,
+                            active_model,
+                            usage_recorded_in_phase: false,
+                        },
+                    )
+                    .is_some()
+                {
+                    return corrupt(path, "internal_run_id has more than one start");
+                }
+            }
+            EventPayload::InternalAgentFallback {
+                invocation_id,
+                internal_run_id,
+                kind,
+                from,
+                to,
+                ..
+            } => {
+                let run_id = require_started_run(path, &runs, record.run_id)?;
+                let Some(internal) = internal_runs.get_mut(internal_run_id) else {
+                    return corrupt(path, "internal fallback appeared before its start");
+                };
+                let from_model = match from {
+                    cookie_agent_protocol::InternalAgentBackend::Model { resolved_model } => {
+                        Some(resolved_model)
+                    }
+                    cookie_agent_protocol::InternalAgentBackend::Builtin { .. } => None,
+                };
+                if internal.invocation_id != *invocation_id
+                    || internal.kind != *kind
+                    || internal.run_id != run_id
+                    || internal.active_model.as_ref() != from_model
+                {
+                    return corrupt(path, "internal fallback ownership does not match its run");
+                }
+                internal.active_model = match to {
+                    cookie_agent_protocol::InternalAgentBackend::Model { resolved_model } => {
+                        Some(resolved_model.clone())
+                    }
+                    cookie_agent_protocol::InternalAgentBackend::Builtin { .. } => None,
+                };
+                internal.usage_recorded_in_phase = false;
+            }
+            EventPayload::InternalAgentUsageRecorded {
+                internal_run_id,
+                kind,
+                agent_id,
+                resolved_model,
+                ..
+            } => {
+                let run_id = require_started_run(path, &runs, record.run_id)?;
+                let Some(internal) = internal_runs.get_mut(internal_run_id) else {
+                    return corrupt(path, "internal usage appeared before its start");
+                };
+                let expected_agent = cookie_agent_protocol::AgentId::new(match kind {
+                    cookie_agent_protocol::InternalAgentKind::Approval => {
+                        cookie_agent_config::BUILT_IN_APPROVAL_AGENT_ID
+                    }
+                    cookie_agent_protocol::InternalAgentKind::ContextCompaction => {
+                        cookie_agent_config::BUILT_IN_COMPACTION_AGENT_ID
+                    }
+                    cookie_agent_protocol::InternalAgentKind::SessionTitle => {
+                        cookie_agent_config::BUILT_IN_TITLE_AGENT_ID
+                    }
+                })
+                .expect("built-in internal agent IDs are valid");
+                if internal.kind != *kind
+                    || internal.run_id != run_id
+                    || internal.active_model.as_ref() != Some(resolved_model)
+                    || *agent_id != expected_agent
+                    || internal.usage_recorded_in_phase
+                {
+                    return corrupt(path, "internal usage ownership does not match its run");
+                }
+                internal.usage_recorded_in_phase = true;
             }
             EventPayload::ModelFallback {
                 from,

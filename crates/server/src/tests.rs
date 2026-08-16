@@ -97,6 +97,7 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
             context_compaction: ContextCompactionConfig::default(),
             session_title: SessionTitleConfig::default(),
             delegation: cookie_agent_config::DelegationConfig::default(),
+            pricing: cookie_agent_config::PricingConfig::default(),
             providers: BTreeMap::new(),
         },
         agents: BTreeMap::new(),
@@ -239,6 +240,7 @@ fn openai_catalog() -> Arc<CatalogSnapshot> {
         shape: None,
         provider: None,
         reasoning_options: Vec::new(),
+        cost: None,
         interleaved: None,
         canonical_provenance: None,
     };
@@ -311,6 +313,7 @@ fn harness_with_catalog(
             context_compaction: ContextCompactionConfig::default(),
             session_title: SessionTitleConfig::default(),
             delegation: cookie_agent_config::DelegationConfig::default(),
+            pricing: cookie_agent_config::PricingConfig::default(),
             providers: BTreeMap::new(),
         },
         agents: BTreeMap::new(),

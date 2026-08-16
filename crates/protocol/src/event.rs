@@ -1512,6 +1512,14 @@ pub enum EventPayload {
         #[schemars(length(max = 256))]
         warnings: Vec<SafeErrorMessage>,
     },
+    ModelUsageRecorded {
+        #[schemars(range(min = 1))]
+        model_turn_seq: u64,
+        #[ts(type = "AgentId")]
+        agent_id: AgentId,
+        resolved_model: ResolvedModelRef,
+        usage: Usage,
+    },
     ModelFallback {
         from: ResolvedModelRef,
         to: ResolvedModelRef,
@@ -1621,6 +1629,14 @@ pub enum EventPayload {
         internal_run_id: InternalAgentRunId,
         kind: InternalAgentKind,
         result: SafeInternalAgentResult,
+    },
+    InternalAgentUsageRecorded {
+        internal_run_id: InternalAgentRunId,
+        kind: InternalAgentKind,
+        #[ts(type = "AgentId")]
+        agent_id: AgentId,
+        resolved_model: ResolvedModelRef,
+        usage: Usage,
     },
     InternalAgentFailed {
         invocation_id: InternalAgentInvocationId,
@@ -1755,6 +1771,23 @@ impl EventPayload {
                     .validate()
                     .map_err(|_| EventSchemaError::InvalidResolvedModel)?;
                 turn.validate_for(resolved_model)?;
+            }
+            Self::ModelUsageRecorded {
+                model_turn_seq,
+                resolved_model,
+                ..
+            } => {
+                if *model_turn_seq == 0 {
+                    return Err(EventSchemaError::InvalidModelTurnCommit);
+                }
+                resolved_model
+                    .validate()
+                    .map_err(|_| EventSchemaError::InvalidResolvedModel)?;
+            }
+            Self::InternalAgentUsageRecorded { resolved_model, .. } => {
+                resolved_model
+                    .validate()
+                    .map_err(|_| EventSchemaError::InvalidResolvedModel)?;
             }
             Self::ModelFallback {
                 from,

@@ -45,6 +45,9 @@ and the CLI share one implementation of the protocol mechanics.
 | `session.create` | Run selection | Session metadata |
 | `session.list` | Optional cwd identity | Session metadata list |
 | `session.get` | Session ID | Session metadata |
+| `session.usage` | Session ID | Token/request rollup, cache hit rate, optional estimated cost, and per-model breakdown |
+| `agent.usage` | Agent ID | Rollup across turns attributed to that agent |
+| `usage.global` | Empty object | Rollup across all project sessions |
 | `session.children` | Session ID | Direct child summaries |
 | `session.tree` | Session ID | Recursive session tree |
 | `session.resume` | Session ID | Resumed session metadata |
@@ -105,4 +108,4 @@ The shared client maps these to `ClientDelivery` variants (`Live`, replay
 deliveries, output stream events, `RuntimeChanged`, `RecoveryFailed`), so a UI
 consumes one ordered stream and never parses raw JSON-RPC frames.
 
-See [Events](events.md) for schema-14 event payloads.
+See [Events](events.md) for schema-20 event payloads.

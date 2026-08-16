@@ -206,6 +206,7 @@ mod tests {
                 context_compaction: ContextCompactionConfig::default(),
                 session_title: SessionTitleConfig::default(),
                 delegation: cookie_agent_config::DelegationConfig::default(),
+                pricing: cookie_agent_config::PricingConfig::default(),
                 providers,
             },
             agents: BTreeMap::from([(agent_id.clone(), test_agent_document(&agent_id))]),

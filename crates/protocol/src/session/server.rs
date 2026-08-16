@@ -7,8 +7,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
-    ClientHello, ClientRenameId, ErrorResponse, EventsSubscribeParams, EventsSubscribeResult,
+    AgentUsageParams, AgentUsageResult, ApprovalListParams, ApprovalListResult,
+    ApprovalRespondParams, ApprovalRespondResult, ClientHello, ClientRenameId, ErrorResponse,
+    EventsSubscribeParams, EventsSubscribeResult, GlobalUsageParams, GlobalUsageResult,
     JsonRpcError, JsonRpcId, JsonRpcVersion, McpAuthBeginParams, McpAuthBeginResult,
     McpAuthCancelParams, McpAuthCancelResult, McpServerAddParams, McpServerEditParams,
     McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
@@ -25,7 +26,8 @@ use crate::{
     SessionRenameChange, SessionRenameError, SessionRenameErrorCode, SessionRenameParams,
     SessionRenameResult, SessionResumeParams, SessionResumeResult, SessionRevertParams,
     SessionRevertResult, SessionSetPermissionModeParams, SessionSetPermissionModeResult,
-    SessionTitle, SessionTreeParams, SessionTreeResult, SuccessResponse, Transport, TransportError,
+    SessionTitle, SessionTreeParams, SessionTreeResult, SessionUsageParams, SessionUsageResult,
+    SuccessResponse, Transport, TransportError,
 };
 
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
@@ -75,6 +77,15 @@ pub trait ServerProtocol: Send + Sync + 'static {
         params: SessionListParams,
     ) -> Result<SessionListResult, ServerFault>;
     async fn get_session(&self, params: SessionGetParams) -> Result<SessionGetResult, ServerFault>;
+    async fn session_usage(
+        &self,
+        params: SessionUsageParams,
+    ) -> Result<SessionUsageResult, ServerFault>;
+    async fn agent_usage(&self, params: AgentUsageParams) -> Result<AgentUsageResult, ServerFault>;
+    async fn global_usage(
+        &self,
+        params: GlobalUsageParams,
+    ) -> Result<GlobalUsageResult, ServerFault>;
     async fn session_children(
         &self,
         params: SessionChildrenParams,
@@ -328,6 +339,9 @@ async fn dispatch<S: ServerProtocol>(
         "session.create" => value(server.create_session(decode(params)?).await?),
         "session.list" => value(server.list_sessions(decode_default(params)?).await?),
         "session.get" => value(server.get_session(decode(params)?).await?),
+        "session.usage" => value(server.session_usage(decode(params)?).await?),
+        "agent.usage" => value(server.agent_usage(decode(params)?).await?),
+        "usage.global" => value(server.global_usage(decode_default(params)?).await?),
         "session.children" => value(server.session_children(decode(params)?).await?),
         "session.tree" => value(server.session_tree(decode(params)?).await?),
         "session.resume" => value(server.resume_session(decode(params)?).await?),

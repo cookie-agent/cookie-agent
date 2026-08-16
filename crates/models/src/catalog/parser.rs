@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
     sync::Arc,
 };
@@ -426,6 +426,10 @@ fn parse_model(
         .map(|value| parse_reasoning_options(value))
         .transpose()?
         .unwrap_or_default();
+    let cost = fields
+        .get("cost")
+        .map(|value| parse_output_cost(value, reasoning))
+        .transpose()?;
     let interleaved = fields
         .get("interleaved")
         .map(|value| parse_interleaved(value))
@@ -433,7 +437,7 @@ fn parse_model(
     if reasoning != fields.contains_key("reasoning_options") {
         return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
     }
-    validate_model_ignored_fields(&fields, reasoning)?;
+    validate_model_ignored_fields(&fields)?;
     let canonical_provenance = canonical.map(|(id, digest)| CanonicalModelProvenance {
         id: id.clone(),
         metadata_digest: digest.clone(),
@@ -457,6 +461,7 @@ fn parse_model(
         shape,
         provider,
         reasoning_options,
+        cost,
         interleaved,
         canonical_provenance,
     })
@@ -785,11 +790,7 @@ fn parse_reasoning_options(
 
 fn validate_model_ignored_fields(
     fields: &BTreeMap<&str, &JsonValue>,
-    reasoning: bool,
 ) -> Result<(), CatalogQuarantineReason> {
-    if let Some(cost) = fields.get("cost") {
-        validate_output_cost(cost, reasoning)?;
-    }
     fields
         .get("knowledge")
         .map(|value| date_text(value).map(|_| ()))
@@ -835,7 +836,10 @@ fn validate_canonical_ignored_fields(
     Ok(())
 }
 
-fn validate_output_cost(value: &JsonValue, reasoning: bool) -> Result<(), CatalogQuarantineReason> {
+fn parse_output_cost(
+    value: &JsonValue,
+    reasoning: bool,
+) -> Result<crate::catalog::CatalogModelCost, CatalogQuarantineReason> {
     let fields = cost_fields(
         value,
         &[
@@ -854,10 +858,15 @@ fn validate_output_cost(value: &JsonValue, reasoning: bool) -> Result<(), Catalo
     if !reasoning && fields.contains_key("reasoning") {
         return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
     }
-    fields
+    let context_over_200k = fields
         .get("context_over_200k")
-        .map(|value| validate_base_cost(&cost_fields(value, BASE_COST_FIELDS)?))
+        .map(|value| {
+            let fields = cost_fields(value, BASE_COST_FIELDS)?;
+            validate_base_cost(&fields)?;
+            Ok(parsed_cost_rates(&fields))
+        })
         .transpose()?;
+    let mut parsed_tiers = Vec::new();
     if let Some(value) = fields.get("tiers") {
         let tiers = value
             .as_array()
@@ -895,9 +904,52 @@ fn validate_output_cost(value: &JsonValue, reasoning: bool) -> Result<(), Catalo
             if !sizes.insert(size) {
                 return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
             }
+            parsed_tiers.push(crate::catalog::CatalogModelCostTier {
+                context_tokens: size,
+                rates: parsed_cost_rates(&fields),
+            });
         }
     }
-    Ok(())
+    parsed_tiers.sort_by_key(|tier| tier.context_tokens);
+    Ok(crate::catalog::CatalogModelCost {
+        input: parsed_catalog_rate(fields["input"]).expect("validated input catalog cost"),
+        output: parsed_catalog_rate(fields["output"]).expect("validated output catalog cost"),
+        reasoning: fields
+            .get("reasoning")
+            .and_then(|value| parsed_catalog_rate(value)),
+        cache_read: fields
+            .get("cache_read")
+            .and_then(|value| parsed_catalog_rate(value)),
+        cache_write: fields
+            .get("cache_write")
+            .and_then(|value| parsed_catalog_rate(value)),
+        context_over_200k,
+        tiers: parsed_tiers,
+    })
+}
+
+fn parsed_cost_rates(fields: &BTreeMap<&str, &JsonValue>) -> crate::catalog::CatalogModelCostRates {
+    crate::catalog::CatalogModelCostRates {
+        input: parsed_catalog_rate(fields["input"]).expect("validated input catalog cost"),
+        output: parsed_catalog_rate(fields["output"]).expect("validated output catalog cost"),
+        reasoning: fields
+            .get("reasoning")
+            .and_then(|value| parsed_catalog_rate(value)),
+        cache_read: fields
+            .get("cache_read")
+            .and_then(|value| parsed_catalog_rate(value)),
+        cache_write: fields
+            .get("cache_write")
+            .and_then(|value| parsed_catalog_rate(value)),
+    }
+}
+
+fn parsed_catalog_rate(value: &JsonValue) -> Option<crate::catalog::PicoUsdPerMillion> {
+    match value {
+        JsonValue::Number(value) => crate::catalog::PicoUsdPerMillion::from_decimal_str(value),
+        JsonValue::String(value) => crate::catalog::PicoUsdPerMillion::from_decimal_str(value),
+        _ => None,
+    }
 }
 
 const BASE_COST_FIELDS: &[&str] = &[
@@ -928,7 +980,7 @@ fn cost_fields<'a>(
 fn validate_base_cost(fields: &BTreeMap<&str, &JsonValue>) -> Result<(), CatalogQuarantineReason> {
     for field in BASE_COST_FIELDS {
         if let Some(value) = fields.get(field)
-            && !value.as_f64().is_some_and(|value| value >= 0.0)
+            && parsed_catalog_rate(value).is_none()
         {
             return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
         }
@@ -1438,7 +1490,7 @@ fn candidate(message: &'static str) -> CatalogError {
 enum JsonValue {
     Null,
     Bool(bool),
-    Number(serde_json::Number),
+    Number(String),
     String(String),
     Array(Vec<JsonValue>),
     Object(Vec<(String, JsonValue)>),
@@ -1475,49 +1527,74 @@ impl JsonValue {
 
     fn as_u64(&self) -> Option<u64> {
         match self {
-            Self::Number(value) => value.as_u64(),
+            Self::Number(value) => value.parse().ok(),
             _ => None,
         }
     }
 
     fn as_i64(&self) -> Option<i64> {
         match self {
-            Self::Number(value) => value.as_i64(),
+            Self::Number(value) => value.parse().ok(),
             _ => None,
         }
     }
 
     fn as_f64(&self) -> Option<f64> {
         match self {
-            Self::Number(value) => value.as_f64(),
+            Self::Number(value) => value.parse().ok(),
             _ => None,
         }
     }
 
     fn canonical_bytes(&self) -> Vec<u8> {
-        fn value(raw: &JsonValue) -> serde_json::Value {
+        fn write(raw: &JsonValue, output: &mut Vec<u8>) {
             match raw {
-                JsonValue::Null => serde_json::Value::Null,
-                JsonValue::Bool(value) => serde_json::Value::Bool(*value),
-                JsonValue::Number(value) => serde_json::Value::Number(value.clone()),
-                JsonValue::String(value) => serde_json::Value::String(value.clone()),
-                JsonValue::Array(values) => {
-                    serde_json::Value::Array(values.iter().map(value).collect())
+                JsonValue::Null => output.extend_from_slice(b"null"),
+                JsonValue::Bool(value) => {
+                    output.extend_from_slice(if *value { b"true" } else { b"false" })
                 }
-                JsonValue::Object(fields) => serde_json::Value::Object(
-                    fields
-                        .iter()
-                        .map(|(key, raw)| (key.clone(), value(raw)))
-                        .collect(),
-                ),
+                JsonValue::Number(value) => output.extend_from_slice(value.as_bytes()),
+                JsonValue::String(value) => {
+                    output
+                        .extend_from_slice(&serde_json::to_vec(value).expect("string serializes"));
+                }
+                JsonValue::Array(values) => {
+                    output.push(b'[');
+                    for (index, value) in values.iter().enumerate() {
+                        if index > 0 {
+                            output.push(b',');
+                        }
+                        write(value, output);
+                    }
+                    output.push(b']');
+                }
+                JsonValue::Object(fields) => {
+                    let mut fields = fields.iter().collect::<Vec<_>>();
+                    fields.sort_by(|(left, _), (right, _)| left.cmp(right));
+                    output.push(b'{');
+                    for (index, (key, value)) in fields.into_iter().enumerate() {
+                        if index > 0 {
+                            output.push(b',');
+                        }
+                        output.extend_from_slice(
+                            &serde_json::to_vec(key).expect("object key serializes"),
+                        );
+                        output.push(b':');
+                        write(value, output);
+                    }
+                    output.push(b'}');
+                }
             }
         }
-        serde_json::to_vec(&value(self)).expect("JSON AST is serializable")
+        let mut output = Vec::new();
+        write(self, &mut output);
+        output
     }
 }
 
 struct ParseState {
     entries: usize,
+    numbers: VecDeque<String>,
 }
 
 struct JsonSeed<'a> {
@@ -1566,21 +1643,30 @@ impl<'de> Visitor<'de> for JsonVisitor<'_> {
         Ok(JsonValue::Bool(value))
     }
 
-    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
-        Ok(JsonValue::Number(value.into()))
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        let _ = value;
+        Ok(JsonValue::Number(next_number::<E>(self.state)?))
     }
 
-    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
-        Ok(JsonValue::Number(value.into()))
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        let _ = value;
+        Ok(JsonValue::Number(next_number::<E>(self.state)?))
     }
 
     fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
     where
         E: serde::de::Error,
     {
-        serde_json::Number::from_f64(value)
-            .map(JsonValue::Number)
-            .ok_or_else(|| E::custom("non-finite JSON number"))
+        if !value.is_finite() {
+            return Err(E::custom("non-finite JSON number"));
+        }
+        Ok(JsonValue::Number(next_number::<E>(self.state)?))
     }
 
     fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
@@ -1646,8 +1732,58 @@ fn count_entry<E: serde::de::Error>(state: &std::cell::RefCell<ParseState>) -> R
     }
 }
 
+fn next_number<E: serde::de::Error>(state: &std::cell::RefCell<ParseState>) -> Result<String, E> {
+    state
+        .borrow_mut()
+        .numbers
+        .pop_front()
+        .ok_or_else(|| E::custom("JSON number tracking mismatch"))
+}
+
+fn number_lexemes(bytes: &[u8]) -> VecDeque<String> {
+    let mut numbers = VecDeque::new();
+    let mut index = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'-' || byte.is_ascii_digit() {
+            let start = index;
+            index += 1;
+            while index < bytes.len()
+                && matches!(bytes[index], b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
+            {
+                index += 1;
+            }
+            numbers.push_back(String::from_utf8_lossy(&bytes[start..index]).into_owned());
+            continue;
+        }
+        index += 1;
+    }
+    numbers
+}
+
 fn parse_json(bytes: &[u8]) -> Result<JsonValue, CatalogError> {
-    let state = std::cell::RefCell::new(ParseState { entries: 0 });
+    let state = std::cell::RefCell::new(ParseState {
+        entries: 0,
+        numbers: number_lexemes(bytes),
+    });
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let value = JsonSeed {
         depth: 0,
@@ -1658,5 +1794,8 @@ fn parse_json(bytes: &[u8]) -> Result<JsonValue, CatalogError> {
     deserializer
         .end()
         .map_err(|_| candidate("catalog JSON has trailing data"))?;
+    if !state.borrow().numbers.is_empty() {
+        return Err(candidate("catalog JSON number tracking mismatch"));
+    }
     Ok(value)
 }

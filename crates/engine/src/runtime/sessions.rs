@@ -1,9 +1,12 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+};
 
 use cookie_agent_protocol::{
-    AgentId, ChildSummary, PermissionMode, RunSelection, SessionForkResult, SessionId, SessionMeta,
-    SessionOrigin, SessionRenameChange, SessionRenameParams, SessionRenameResult,
-    SessionRevertResult,
+    AgentId, AgentUsageResult, ChildSummary, GlobalUsageResult, PermissionMode, RunSelection,
+    SessionForkResult, SessionId, SessionMeta, SessionOrigin, SessionRenameChange,
+    SessionRenameParams, SessionRenameResult, SessionRevertResult, SessionUsageResult, UsageRollup,
 };
 
 use super::{
@@ -85,13 +88,112 @@ impl Engine {
     pub fn list_sessions(&self) -> Vec<SessionMeta> {
         self.inner
             .store
-            .all()
+            .all_summaries()
             .into_iter()
-            .map(|session| session.metadata())
+            .map(|session| session.meta)
             .collect()
     }
     pub fn get_session(&self, id: SessionId) -> Result<SessionMeta, EngineError> {
-        Ok(self.inner.store.get(id)?.metadata())
+        let session = self.inner.store.get(id)?;
+        #[cfg(test)]
+        let hook = self
+            .inner
+            .read_only_reopen_hook
+            .lock()
+            .expect("read-only reopen hook lock poisoned")
+            .take();
+        #[cfg(test)]
+        if let Some(hook) = hook {
+            if let Some(reached) = hook
+                .reached
+                .lock()
+                .expect("read-only reopen reached lock poisoned")
+                .take()
+            {
+                let _ = reached.send(());
+            }
+            let _ = hook
+                .release
+                .lock()
+                .expect("read-only reopen release lock poisoned")
+                .recv();
+        }
+        Ok(session.metadata())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_read_only_reopen_hook_for_test(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (reached, receiver) = tokio::sync::oneshot::channel();
+        let (release, release_receiver) = std::sync::mpsc::channel();
+        *self
+            .inner
+            .read_only_reopen_hook
+            .lock()
+            .expect("read-only reopen hook lock poisoned") = Some(super::ReadOnlyReopenHook {
+            reached: std::sync::Mutex::new(Some(reached)),
+            release: std::sync::Mutex::new(release_receiver),
+        });
+        (receiver, release)
+    }
+    pub fn session_usage(&self, id: SessionId) -> Result<SessionUsageResult, EngineError> {
+        let usage = self.inner.store.summary(id)?.usage_rollup;
+        let catalog = self.catalog_pricing();
+        Ok(SessionUsageResult {
+            session_id: id,
+            usage: crate::usage::with_pricing(usage, &self.inner.config.runtime.pricing, &catalog),
+        })
+    }
+    pub fn agent_usage(&self, agent_id: AgentId) -> AgentUsageResult {
+        let mut usage = UsageRollup::default();
+        for session in self.inner.store.all_summaries() {
+            if let Some(agent) = session.agent_usage.get(&agent_id) {
+                crate::usage::merge(&mut usage, agent);
+            }
+        }
+        AgentUsageResult {
+            agent_id,
+            usage: crate::usage::with_pricing(
+                usage,
+                &self.inner.config.runtime.pricing,
+                &self.catalog_pricing(),
+            ),
+        }
+    }
+    pub fn global_usage(&self) -> GlobalUsageResult {
+        let mut usage = UsageRollup::default();
+        for session in self.inner.store.all_summaries() {
+            crate::usage::merge(&mut usage, &session.usage_rollup);
+        }
+        GlobalUsageResult {
+            usage: crate::usage::with_pricing(
+                usage,
+                &self.inner.config.runtime.pricing,
+                &self.catalog_pricing(),
+            ),
+        }
+    }
+    fn catalog_pricing(
+        &self,
+    ) -> BTreeMap<cookie_agent_protocol::ModelKey, cookie_agent_models::catalog::CatalogModelCost>
+    {
+        self.inner
+            .model_manager
+            .current()
+            .models()
+            .iter()
+            .filter_map(|(model, runtime)| {
+                runtime
+                    .model
+                    .cost
+                    .as_ref()
+                    .map(|cost| (model.clone(), cost.clone()))
+            })
+            .collect()
     }
     pub fn delegate_targets(&self, id: SessionId) -> Result<Vec<AgentId>, EngineError> {
         let session = self.inner.store.get(id)?;
@@ -146,7 +248,7 @@ impl Engine {
             .collect();
         self.inner
             .store
-            .all()
+            .all_summaries()
             .into_iter()
             .filter_map(|child| match child.meta.origin {
                 SessionOrigin::Delegated {
@@ -165,7 +267,7 @@ impl Engine {
                         agent: child.meta.creation_selection.agent.clone(),
                         title: child.meta.title.clone(),
                         title_updated_seq: child.meta.title_updated_seq,
-                        status: child.status,
+                        status: child.meta.status,
                         usage: child.usage,
                     })
                 }
@@ -174,12 +276,20 @@ impl Engine {
             .collect()
     }
     pub fn tree(&self, id: SessionId) -> Result<cookie_agent_protocol::SessionTree, EngineError> {
+        self.inner.store.get(id)?;
+        self.tree_summary(id)
+    }
+
+    fn tree_summary(
+        &self,
+        id: SessionId,
+    ) -> Result<cookie_agent_protocol::SessionTree, EngineError> {
         Ok(cookie_agent_protocol::SessionTree {
-            session: self.inner.store.get(id)?.metadata(),
+            session: self.inner.store.summary(id)?.meta,
             children: self
                 .children(id)
                 .into_iter()
-                .map(|child| self.tree(child.session_id))
+                .map(|child| self.tree_summary(child.session_id))
                 .collect::<Result<Vec<_>, _>>()?,
         })
     }

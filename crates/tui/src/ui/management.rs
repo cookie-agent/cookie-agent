@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use cookie_agent_protocol::{
-    McpConfigTarget, McpServerDefinition, McpServerInfo, McpServerState, PermissionAction,
-    PermissionEffect, PermissionRuleSource, SessionPermissionGetResult,
+    GlobalUsageResult, McpConfigTarget, McpServerDefinition, McpServerInfo, McpServerState,
+    PermissionAction, PermissionEffect, PermissionRuleSource, SessionPermissionGetResult,
+    SessionUsageResult, UsageRollup,
 };
 use ratatui::{
     Frame,
@@ -386,6 +387,21 @@ pub(super) struct PermissionPanel {
     pub(super) form: Option<PermissionForm>,
 }
 
+#[derive(Default)]
+pub(super) struct UsagePanel {
+    pub(super) session: Option<SessionUsageResult>,
+    pub(super) global: Option<GlobalUsageResult>,
+    pub(super) loading: bool,
+}
+
+impl UsagePanel {
+    pub(super) fn begin_load(&mut self) {
+        self.session = None;
+        self.global = None;
+        self.loading = true;
+    }
+}
+
 impl PermissionPanel {
     pub(super) fn begin_load(&mut self) {
         self.result = None;
@@ -658,6 +674,102 @@ pub(super) fn render_permissions(
     );
 }
 
+pub(super) fn render_usage(frame: &mut Frame, area: Rect, panel: &UsagePanel, theme: &Theme) {
+    paint_panel(frame, area, theme);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+    render_usage_section(
+        frame,
+        chunks[0],
+        "Session usage",
+        panel.session.as_ref().map(|result| &result.usage),
+        panel.loading,
+        theme,
+    );
+    render_usage_section(
+        frame,
+        chunks[1],
+        "Global usage",
+        panel.global.as_ref().map(|result| &result.usage),
+        panel.loading,
+        theme,
+    );
+}
+
+fn render_usage_section(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    usage: Option<&UsageRollup>,
+    loading: bool,
+    theme: &Theme,
+) {
+    let lines = usage.map_or_else(
+        || {
+            vec![Line::from(if loading {
+                "Loading usage..."
+            } else {
+                "No usage available."
+            })]
+        },
+        usage_lines,
+    );
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme.panel_border())
+                .title(title)
+                .title_bottom(
+                    Line::from(Span::styled("esc close", theme.internal())).right_aligned(),
+                ),
+        ),
+        area,
+    );
+}
+
+fn usage_lines(usage: &UsageRollup) -> Vec<Line<'static>> {
+    let hit_rate = usage
+        .cache_hit_rate
+        .map_or_else(|| "n/a".to_owned(), |rate| format!("{:.1}%", rate * 100.0));
+    let cost = usage
+        .estimated_cost_usd
+        .map_or_else(|| "unpriced".to_owned(), |cost| format!("${cost:.6}"));
+    let mut lines = vec![
+        Line::from(format!("Requests: {}", usage.request_count)),
+        Line::from(format!(
+            "Input: {}  Output: {}  Reasoning: {}",
+            usage.input_tokens, usage.output_tokens, usage.reasoning_tokens
+        )),
+        Line::from(format!(
+            "Cache read: {}  write: {}  hit: {hit_rate}",
+            usage.cache_read_tokens, usage.cache_write_tokens
+        )),
+        Line::from(format!("Estimated cost: {cost}")),
+    ];
+    for (model, model_usage) in &usage.by_model {
+        let model_hit = model_usage
+            .cache_hit_rate
+            .map_or_else(|| "n/a".to_owned(), |rate| format!("{:.1}%", rate * 100.0));
+        let model_cost = model_usage
+            .estimated_cost_usd
+            .map_or_else(|| "unpriced".to_owned(), |cost| format!("${cost:.6}"));
+        lines.push(Line::from(format!(
+            "{}  req {}  in {}  out {}  reasoning {}  cache {}  {}",
+            model,
+            model_usage.request_count,
+            model_usage.input_tokens,
+            model_usage.output_tokens,
+            model_usage.reasoning_tokens,
+            model_hit,
+            model_cost
+        )));
+    }
+    lines
+}
+
 fn definition_display(definition: &McpServerDefinition) -> String {
     if let Some(command) = &definition.command {
         let mut parts = vec![command.clone()];
@@ -731,9 +843,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use cookie_agent_protocol::{
-        EffectivePermissionAction, McpConfigSource, McpOAuthDefinition, McpServerDefinition,
-        McpServerInfo, McpServerState, PermissionAction, PermissionEffect, PermissionRuleSource,
-        SessionPermissionGetResult,
+        EffectivePermissionAction, GlobalUsageResult, McpConfigSource, McpOAuthDefinition,
+        McpServerDefinition, McpServerInfo, McpServerState, ModelUsageRollup, PermissionAction,
+        PermissionEffect, PermissionRuleSource, SessionId, SessionPermissionGetResult,
+        SessionUsageResult, UsageRollup,
     };
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -928,5 +1041,62 @@ mod tests {
 
         assert!(panel.rows().is_empty());
         assert!(panel.selected().is_none());
+    }
+
+    #[test]
+    fn usage_panel_renders_session_global_models_and_unpriced_costs() {
+        let usage = UsageRollup {
+            input_tokens: 1_000,
+            output_tokens: 200,
+            reasoning_tokens: 50,
+            cache_read_tokens: 500,
+            cache_write_tokens: 100,
+            request_count: 3,
+            cache_hit_rate: Some(0.5),
+            estimated_cost_usd: None,
+            by_model: BTreeMap::from([(
+                "test/model".parse().unwrap(),
+                ModelUsageRollup {
+                    input_tokens: 1_000,
+                    output_tokens: 200,
+                    reasoning_tokens: 50,
+                    cache_read_tokens: 500,
+                    cache_write_tokens: 100,
+                    request_count: 3,
+                    cache_hit_rate: Some(0.5),
+                    estimated_cost_usd: None,
+                    ..ModelUsageRollup::default()
+                },
+            )]),
+            ..UsageRollup::default()
+        };
+        let panel = super::UsagePanel {
+            session: Some(SessionUsageResult {
+                session_id: SessionId::new_v7(),
+                usage: usage.clone(),
+            }),
+            global: Some(GlobalUsageResult { usage }),
+            loading: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                super::render_usage(frame, frame.area(), &panel, &crate::theme::Theme::default());
+            })
+            .expect("render usage panel");
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Session usage"), "{text}");
+        assert!(text.contains("Global usage"), "{text}");
+        assert!(text.contains("test/model"), "{text}");
+        assert!(text.contains("hit: 50.0%"), "{text}");
+        assert!(text.contains("Reasoning: 50"), "{text}");
+        assert!(text.contains("reasoning 50"), "{text}");
+        assert!(text.contains("Estimated cost: unpriced"), "{text}");
     }
 }

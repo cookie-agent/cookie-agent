@@ -123,6 +123,19 @@ model response when the queue starts it. Use `cancel_subagent` with the owned
 operations reject sessions that are not direct children of the caller, and
 steering rejects terminal children.
 
+Terminal delegated sessions are paged out of memory when resident child count
+exceeds `delegation.max_resident_subagents` and their last run has been idle for
+longer than `delegation.idle_eviction_after`. This is a soft trigger: running,
+queued, recently active, pending-input, pending-approval, and not-yet-notified
+children remain resident even above the configured count. Root sessions are
+never evicted. Eligible children are selected oldest-idle first.
+
+Paging happens only after event appends have been synced and, for background
+work, after the parent completion teaser is durable. Session listings retain
+lightweight metadata for paged children. Opening one in the TUI, reading its
+result, steering it, or using `resume_session_id` transparently reopens its event
+log and rebuilds the in-memory projection and actor.
+
 ## Layering and replacement
 
 User-layer and workspace-layer agent directories merge into one registry by
