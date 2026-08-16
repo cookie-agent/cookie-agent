@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
+use cookie_agent::run;
 use cookie_agent_engine::{Engine, EngineOptions};
 use cookie_agent_models::{
     ModelManager,
@@ -21,9 +22,9 @@ use cookie_agent_protocol::{
     ProviderDisconnectParams, ProviderDisconnectResult, ProviderId, ProviderSupportState,
     RuntimeSnapshotResult, SafeCode, SafeSetupValue, parse_setup_value, setup_value_text,
 };
-#[cfg(feature = "tui")]
-use cookie_agent_server::in_process_pair;
-use cookie_agent_server::{Client, ClientProtocol, Server, validate_websocket_url};
+use cookie_agent_server::{
+    Client, ClientProtocol, Server, in_process_pair, validate_websocket_url,
+};
 use cookie_agent_tools::{BuiltinTools, delegate::DelegateToolProvider};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
@@ -38,6 +39,45 @@ use std::sync::atomic::{AtomicUsize as TestAtomicUsize, Ordering as TestOrdering
 const DEFAULT_WEBSOCKET_URL: &str = "ws://127.0.0.1:7419/ws";
 const CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
+enum RunCatalogTransport {
+    Http(HttpCatalogTransport),
+    #[cfg(debug_assertions)]
+    Bundled,
+}
+
+impl CatalogTransport for RunCatalogTransport {
+    fn fetch(
+        &self,
+        request: cookie_agent_models::catalog::CatalogRequest,
+    ) -> cookie_agent_models::catalog::CatalogTransportFuture<'_> {
+        match self {
+            Self::Http(transport) => transport.fetch(request),
+            #[cfg(debug_assertions)]
+            Self::Bundled => Box::pin(async {
+                Ok(
+                    cookie_agent_models::catalog::CatalogTransportResponse::from_bytes(
+                        200,
+                        cookie_agent_models::catalog::MODELS_DEV_BOOTSTRAP.to_vec(),
+                    ),
+                )
+            }),
+        }
+    }
+}
+
+fn run_catalog_transport() -> anyhow::Result<RunCatalogTransport> {
+    #[cfg(debug_assertions)]
+    if matches!(
+        env::var("COOKIE_AGENT_TEST_BUNDLED_CATALOG").as_deref(),
+        Ok("1")
+    ) {
+        return Ok(RunCatalogTransport::Bundled);
+    }
+    HttpCatalogTransport::new()
+        .context("construct fixed catalog transport")
+        .map(RunCatalogTransport::Http)
+}
+
 #[cfg(test)]
 static SECRET_VALUES_WIPED: TestAtomicUsize = TestAtomicUsize::new(0);
 
@@ -50,6 +90,11 @@ struct Cli {
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 enum Command {
+    /// Run one prompt without the interactive TUI.
+    Run {
+        #[command(flatten)]
+        args: Box<run::RunArgs>,
+    },
     /// Serve the protocol-v9 JSON-RPC WebSocket daemon on localhost.
     Daemon,
     /// Attach the TUI to an existing daemon.
@@ -168,8 +213,55 @@ impl ConnectIo for StdioConnectIo {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let Cli { command } = Cli::parse();
-    let workspace = local_workspace(&command, env::current_dir)?;
+    if let Some(Command::Run { args }) = &command
+        && let Err(message) = args.validate_cli()
+    {
+        clap::Error::raw(clap::error::ErrorKind::ArgumentConflict, message).exit();
+    }
+    let workspace = if matches!(&command, Some(Command::Run { .. })) {
+        None
+    } else {
+        local_workspace(&command, env::current_dir)?
+    };
     match command {
+        Some(Command::Run { args }) => {
+            let workspace = match env::current_dir().context("determine current run workspace") {
+                Ok(path) => path,
+                Err(error) => {
+                    eprintln!("cookie run: {error:#}");
+                    std::process::exit(run::EXIT_ENVIRONMENT);
+                }
+            };
+            let data_dir = match args.data_dir.clone().map_or_else(data_dir, Ok) {
+                Ok(path) => path,
+                Err(error) => {
+                    eprintln!("cookie run: {error:#}");
+                    std::process::exit(run::EXIT_ENVIRONMENT);
+                }
+            };
+            let mut runtime = match compose_with(
+                &workspace,
+                run_catalog_transport,
+                CatalogManager::standard,
+                ProviderStore::standard,
+                || Ok(data_dir),
+            )
+            .await
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("cookie run: {error:#}");
+                    std::process::exit(run::EXIT_ENVIRONMENT);
+                }
+            };
+            let exit_code = run::execute(&runtime.engine, *args).await;
+            runtime.stop_catalog_refresh().await;
+            runtime.engine.shutdown().await;
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+            Ok(())
+        }
         Some(Command::Daemon) => {
             run_daemon(compose(workspace.as_deref().expect("daemon workspace")).await?).await
         }
@@ -256,9 +348,13 @@ async fn compose_with<T: CatalogTransport + 'static>(
         tools: vec![Arc::new(BuiltinTools::new(workspace))],
     })
     .context("open manifests, rehydrate project state, and reconcile engine")?;
-    engine
+    if let Err(error) = engine
         .try_register_tool_provider(Arc::new(DelegateToolProvider::new(engine.clone())))
-        .context("register delegate tools")?;
+        .context("register delegate tools")
+    {
+        engine.shutdown().await;
+        return Err(error);
+    }
     let server = Arc::new(Server::new(engine.clone()));
     let catalog_refresh_shutdown = CancellationToken::new();
     let catalog_refresh_task = tokio::spawn(run_catalog_refresh_loop(
@@ -1038,6 +1134,109 @@ mod tests {
                 url: DEFAULT_WEBSOCKET_URL.into(),
             })
         );
+        assert_eq!(
+            Cli::try_parse_from([
+                "cookie",
+                "run",
+                "check the build",
+                "--permission-mode",
+                "ask",
+                "--allowed-tools",
+                "read,bash",
+                "--max-turns",
+                "7",
+                "--timeout",
+                "30",
+                "--output",
+                "json",
+                "--agent",
+                "primary",
+                "--model",
+                "custom.local/test",
+                "--variant",
+                "base",
+                "--output-file",
+                "result.jsonl",
+                "--verbose",
+            ])
+            .unwrap()
+            .command,
+            Some(Command::Run {
+                args: Box::new(run::RunArgs {
+                    positional_prompt: Some("check the build".into()),
+                    prompt: None,
+                    prompt_file: None,
+                    agent: Some("primary".parse().unwrap()),
+                    model: Some("custom.local/test".parse().unwrap()),
+                    variant: Some("base".into()),
+                    permission_mode: run::PermissionModeArg::Ask,
+                    allowed_tools: vec![run::AllowedTool::Read, run::AllowedTool::Bash],
+                    max_turns: 7,
+                    timeout: 30,
+                    resume_session: None,
+                    data_dir: None,
+                    output: Some(run::OutputMode::Json),
+                    output_file: Some("result.jsonl".into()),
+                    verbose: true,
+                    json: false,
+                }),
+            })
+        );
+        for prompt in [
+            ["cookie", "run", "-p", "named"],
+            ["cookie", "run", "--prompt", "-"],
+            ["cookie", "run", "-f", "prompt.txt"],
+        ] {
+            assert!(Cli::try_parse_from(prompt).is_ok());
+        }
+        let Command::Run { args } = Cli::try_parse_from([
+            "cookie",
+            "run",
+            "-p",
+            "repeat tools",
+            "--allowed-tools",
+            "read",
+            "--allowed-tools",
+            "bash,mcp",
+            "--json",
+        ])
+        .unwrap()
+        .command
+        .unwrap() else {
+            panic!("run command");
+        };
+        assert_eq!(
+            args.allowed_tools,
+            [
+                run::AllowedTool::Read,
+                run::AllowedTool::Bash,
+                run::AllowedTool::Mcp,
+            ]
+        );
+        assert_eq!(args.output_mode(), run::OutputMode::Json);
+        assert!(Cli::try_parse_from(["cookie", "run"]).is_err());
+        assert!(Cli::try_parse_from(["cookie", "run", "positional", "-p", "named"]).is_err());
+        assert!(Cli::try_parse_from(["cookie", "run", "-p", "named", "-f", "prompt.txt"]).is_err());
+        assert!(
+            Cli::try_parse_from(["cookie", "run", "prompt", "--json", "--output", "text"]).is_err()
+        );
+        let Command::Run { args } = Cli::try_parse_from([
+            "cookie",
+            "run",
+            "prompt",
+            "--output",
+            "none",
+            "--output-file",
+            "result.txt",
+        ])
+        .unwrap()
+        .command
+        .unwrap() else {
+            panic!("run command");
+        };
+        assert!(args.validate_cli().is_err());
+        assert!(Cli::try_parse_from(["cookie", "run", "prompt", "--max-turns", "0"]).is_err());
+        assert!(Cli::try_parse_from(["cookie", "run", "prompt", "--timeout", "0"]).is_err());
     }
 
     #[test]

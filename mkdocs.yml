@@ -51,6 +51,7 @@ nav:
   - Getting Started: getting-started.md
   - Guide:
       - TUI: guide/tui.md
+      - Headless runs: guide/headless.md
       - Sessions: guide/sessions.md
       - Permissions: guide/permissions.md
       - MCP servers: guide/mcp.md
