@@ -1095,21 +1095,19 @@ wrong type, or malformed YAML construct is also rejected.</p>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>description: Reviews changes for correctness
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>mode: subagent
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>enabled: true
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>model_fallback:
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>models:
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: &quot;openai/gpt-5&quot;, variant: null }
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>limits:
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  timeout_ms: 30000
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>  max_input_tokens: 16384
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  max_output_tokens: 2048
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>permissions:
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>  read: allow
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>  write: deny
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>  bash:
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    &quot;git diff*&quot;: allow
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    &quot;*&quot;: ask
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="gu">  delegate: deny</span>
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="gu">---</span>
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>Review the requested change and report concrete findings.
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  max_output_tokens: 2048
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>permissions:
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  read: allow
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>  write: deny
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>  bash:
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    &quot;git diff*&quot;: allow
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    &quot;*&quot;: ask
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="gu">  delegate: deny</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="gu">---</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>Review the requested change and report concrete findings.
 </code></pre></div>
 <h3 id="frontmatter-keys">Frontmatter keys<a class="headerlink" href="#frontmatter-keys" title="Permanent link">&para;</a></h3>
 <table>
@@ -1141,7 +1139,7 @@ wrong type, or malformed YAML construct is also rejected.</p>
 <td>Disabled agents are never runnable as roots, delegation targets, or internal backends.</td>
 </tr>
 <tr>
-<td><code>model_fallback</code></td>
+<td><code>models</code></td>
 <td>array</td>
 <td><em>(required for <code>primary</code>)</em></td>
 <td>Ordered model chain; see below.</td>
@@ -1160,8 +1158,14 @@ wrong type, or malformed YAML construct is also rejected.</p>
 </tr>
 </tbody>
 </table>
-<p><code>limits</code> defaults to <code>timeout_ms = 30000</code>, <code>max_input_tokens = 16384</code>,
-<code>max_output_tokens = 2048</code>. Every limit must be greater than zero.</p>
+<p><code>max_output_tokens</code> applies in every mode. A nonzero value caps each request at
+the smaller of the document value and the model's own output limit. It defaults
+to no document cap for the non-internal <code>primary</code>, <code>subagent</code>, and <code>all</code> modes.
+Internal agents retain a 2,048-token default; setting it explicitly to zero
+removes that document cap.
+<code>timeout_ms</code> applies only to internal agents. For other modes, a nonzero value is
+a hard error. Internal agents use the 30-second invocation timeout when
+<code>timeout_ms</code> is zero or omitted.</p>
 <p>Tool visibility is derived only from <code>permissions</code>. With no <code>permissions</code> field,
 the <code>read</code>, <code>write</code>, <code>edit</code>, and <code>bash</code> tools are visible and unmatched calls ask
 by default. <code>edit</code> uses the <code>write</code> action. Delegation tools require a <code>delegate</code>
@@ -1172,7 +1176,16 @@ exception.</p>
 <p>The former <code>tools</code> field is removed. Documents that still declare it fail
 with an error naming <code>tools</code> and directing the author to <code>permissions</code>; remove
 the field and express tool visibility and call policy in the permission map.</p>
-<p><code>model_fallback</code> entries are <code>{ model = "&lt;provider&gt;/&lt;model-id&gt;", variant = &lt;name|null|"base"&gt; }</code>.
+<p>The former <code>model_fallback</code> field is also removed. Documents that still declare
+it fail with an error directing the author to <code>models</code>.</p>
+<p>The former <code>limits.max_input_tokens</code> field is removed. Internal-agent input
+budgets now come from each resolved model's context limit minus its effective
+output reserve; candidates that cannot fit an invocation are skipped. A model
+whose context limit is unknown uses a 16,384-token input budget.</p>
+<p>The durable protocol event for advancing through a model chain remains named
+<code>model_fallback</code> for wire-schema compatibility. This event name is independent
+of the agent-frontmatter <code>models</code> key.</p>
+<p><code>models</code> entries are <code>{ model = "&lt;provider&gt;/&lt;model-id&gt;", variant = &lt;name|null|"base"&gt; }</code>.
 The <code>variant</code> field is optional: omitted (<code>null</code>) selects the model's configured
 default variant, the string <code>"base"</code> selects the base variant explicitly, and any
 other string selects that named variant. A primary agent must
@@ -1267,31 +1280,32 @@ family (<code>internal_agent_started</code>, <code>internal_agent_completed</cod
 <td><code>approval</code></td>
 <td>Stateless approval classifier for <code>auto_approve</code> mode</td>
 <td><code>${parent_model}</code></td>
-<td>30 s timeout; 16,384 max input tokens; 2,048 max output tokens</td>
+<td>30 s timeout; model-derived input budget; 2,048 max output tokens</td>
 </tr>
 <tr>
 <td><code>compaction</code></td>
 <td>Summarizes context into a checkpoint</td>
 <td><code>${parent_model}</code></td>
-<td>30 s timeout; 16,384 max input tokens; 2,048 max output tokens</td>
+<td>30 s timeout; model-derived input budget; 2,048 max output tokens</td>
 </tr>
 <tr>
 <td><code>title</code></td>
 <td>Generates a concise session title from the opening user messages (the first <code>session_title.max_input_messages</code>, default 4)</td>
 <td><code>${parent_model}</code></td>
-<td>10 s timeout; 4,096 max input tokens; 128 max output tokens</td>
+<td>10 s timeout; model-derived input budget; 128 max output tokens</td>
 </tr>
 </tbody>
 </table>
 <p>All three default to <code>${parent_model}</code>, so they run on the model the parent run
-is currently using. The compaction agent's input limit additionally scales to
-the largest context window among its resolved models, so it can read the full
-conversation it is asked to summarize.</p>
+is currently using. An internal agent's input budget is derived from each
+resolved model's context limit after reserving its effective maximum output,
+with a minimum of one token. A model with an unknown context limit uses a
+16,384-token input budget. Agent documents cannot set an input-token cap.</p>
 <p>The title agent runs only for root sessions that still need an automatic title.
 Delegated sessions already have the <code>delegate_subagent</code> description as their
 title, so they never invoke the title agent.</p>
 <p>The built-in documents are replaced by authored documents with the same ID,
-<code>mode: internal</code>, and an explicit <code>model_fallback</code>. <code>${parent_model}</code> is
+<code>mode: internal</code>, and an explicit <code>models</code> list. <code>${parent_model}</code> is
 allowed only in internal agents. When an internal agent document is disabled, or
 its fallback chain yields no available model, the internal call fails safely
 (approval degrades to asking, compaction is skipped, and title falls back to an
@@ -1302,15 +1316,14 @@ keeps its own selection:</p>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>description: Context compaction on a fast model
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>mode: internal
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>enabled: true
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>model_fallback:
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>models:
 <a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: &quot;openai/gpt-5-mini&quot;, variant: null }
 <a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>limits:
 <a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>  timeout_ms: 30000
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>  max_input_tokens: 16384
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>  max_output_tokens: 2048
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="gu">permissions: {}</span>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="gu">---</span>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>Summarize conversation context faithfully within the supplied bounds. Return summary text only.
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>  max_output_tokens: 2048
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="gu">permissions: {}</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="gu">---</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>Summarize conversation context faithfully within the supplied bounds. Return summary text only.
 </code></pre></div>
 <h2 id="selecting-an-agent">Selecting an agent<a class="headerlink" href="#selecting-an-agent" title="Permanent link">&para;</a></h2>
 <p>In the TUI, <code>/new</code> chooses the next root-run agent from the agents that are

@@ -55,36 +55,40 @@
 <a href=#55 id=55 data-nosnippet>55</a>        <span class="string">"agent `{0}` uses the removed `tools` field; use `permissions` entries to control tool visibility"
 <a href=#56 id=56 data-nosnippet>56</a>    </span>)]
 <a href=#57 id=57 data-nosnippet>57</a>    </span>AgentToolsRemoved(AgentId),
-<a href=#58 id=58 data-nosnippet>58</a>    <span class="attr">#[error(
-<a href=#59 id=59 data-nosnippet>59</a>        <span class="string">"agent `{0}` permission resources support only `${{workspace_dir}}`, and only for read or write"
-<a href=#60 id=60 data-nosnippet>60</a>    </span>)]
-<a href=#61 id=61 data-nosnippet>61</a>    </span>AgentPermissionExpression(AgentId),
-<a href=#62 id=62 data-nosnippet>62</a>    <span class="attr">#[error(<span class="string">"agent YAML resource limit exceeded"</span>)]
-<a href=#63 id=63 data-nosnippet>63</a>    </span>AgentYamlLimit,
-<a href=#64 id=64 data-nosnippet>64</a>    <span class="attr">#[error(<span class="string">"agent `{0}` has an empty system prompt"</span>)]
-<a href=#65 id=65 data-nosnippet>65</a>    </span>EmptyPrompt(AgentId),
-<a href=#66 id=66 data-nosnippet>66</a>    <span class="attr">#[error(<span class="string">"agent `{agent}` has invalid `{field}`"</span>)]
-<a href=#67 id=67 data-nosnippet>67</a>    </span>AgentField { agent: AgentId, field: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str },
-<a href=#68 id=68 data-nosnippet>68</a>    <span class="attr">#[error(<span class="string">"agent `{0}` exceeds a list limit"</span>)]
-<a href=#69 id=69 data-nosnippet>69</a>    </span>AgentLimit(AgentId),
-<a href=#70 id=70 data-nosnippet>70</a>    <span class="attr">#[error(<span class="string">"primary agent `{0}` requires a nonempty fallback"</span>)]
-<a href=#71 id=71 data-nosnippet>71</a>    </span>PrimaryFallback(AgentId),
-<a href=#72 id=72 data-nosnippet>72</a>    <span class="attr">#[error(<span class="string">"agent `{0}` has invalid delegation"</span>)]
-<a href=#73 id=73 data-nosnippet>73</a>    </span>Delegation(AgentId),
-<a href=#74 id=74 data-nosnippet>74</a>    <span class="attr">#[error(<span class="string">"agent `{agent}` delegates to unknown agent `{target}`"</span>)]
-<a href=#75 id=75 data-nosnippet>75</a>    </span>UnknownDelegationTarget { agent: AgentId, target: AgentId },
-<a href=#76 id=76 data-nosnippet>76</a>    <span class="attr">#[error(<span class="string">"agent `{agent}` delegates to ineligible agent `{target}`"</span>)]
-<a href=#77 id=77 data-nosnippet>77</a>    </span>IneligibleDelegationTarget { agent: AgentId, target: AgentId },
-<a href=#78 id=78 data-nosnippet>78</a>    <span class="attr">#[error(<span class="string">"agent `{agent}` repeats fallback model `{model}`"</span>)]
-<a href=#79 id=79 data-nosnippet>79</a>    </span>DuplicateFallbackModel { agent: AgentId, model: ModelKey },
-<a href=#80 id=80 data-nosnippet>80</a>}
-<a href=#81 id=81 data-nosnippet>81</a>
-<a href=#82 id=82 data-nosnippet>82</a><span class="kw">impl </span>fmt::Debug <span class="kw">for </span>ConfigError {
-<a href=#83 id=83 data-nosnippet>83</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, formatter: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
-<a href=#84 id=84 data-nosnippet>84</a>        formatter
-<a href=#85 id=85 data-nosnippet>85</a>            .debug_tuple(<span class="string">"ConfigError"</span>)
-<a href=#86 id=86 data-nosnippet>86</a>            .field(<span class="kw-2">&amp;</span><span class="self">self</span>.to_string())
-<a href=#87 id=87 data-nosnippet>87</a>            .finish()
-<a href=#88 id=88 data-nosnippet>88</a>    }
-<a href=#89 id=89 data-nosnippet>89</a>}
+<a href=#58 id=58 data-nosnippet>58</a>    <span class="attr">#[error(<span class="string">"agent `{0}` uses the removed `model_fallback` field; use `models` instead"</span>)]
+<a href=#59 id=59 data-nosnippet>59</a>    </span>AgentModelsRenamed(AgentId),
+<a href=#60 id=60 data-nosnippet>60</a>    <span class="attr">#[error(<span class="string">"agent `{0}`: timeout_ms is only supported for internal agents"</span>)]
+<a href=#61 id=61 data-nosnippet>61</a>    </span>AgentTimeoutInternalOnly(AgentId),
+<a href=#62 id=62 data-nosnippet>62</a>    <span class="attr">#[error(
+<a href=#63 id=63 data-nosnippet>63</a>        <span class="string">"agent `{0}` permission resources support only `${{workspace_dir}}`, and only for read or write"
+<a href=#64 id=64 data-nosnippet>64</a>    </span>)]
+<a href=#65 id=65 data-nosnippet>65</a>    </span>AgentPermissionExpression(AgentId),
+<a href=#66 id=66 data-nosnippet>66</a>    <span class="attr">#[error(<span class="string">"agent YAML resource limit exceeded"</span>)]
+<a href=#67 id=67 data-nosnippet>67</a>    </span>AgentYamlLimit,
+<a href=#68 id=68 data-nosnippet>68</a>    <span class="attr">#[error(<span class="string">"agent `{0}` has an empty system prompt"</span>)]
+<a href=#69 id=69 data-nosnippet>69</a>    </span>EmptyPrompt(AgentId),
+<a href=#70 id=70 data-nosnippet>70</a>    <span class="attr">#[error(<span class="string">"agent `{agent}` has invalid `{field}`"</span>)]
+<a href=#71 id=71 data-nosnippet>71</a>    </span>AgentField { agent: AgentId, field: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str },
+<a href=#72 id=72 data-nosnippet>72</a>    <span class="attr">#[error(<span class="string">"agent `{0}` exceeds a list limit"</span>)]
+<a href=#73 id=73 data-nosnippet>73</a>    </span>AgentLimit(AgentId),
+<a href=#74 id=74 data-nosnippet>74</a>    <span class="attr">#[error(<span class="string">"primary agent `{0}` requires a nonempty fallback"</span>)]
+<a href=#75 id=75 data-nosnippet>75</a>    </span>PrimaryFallback(AgentId),
+<a href=#76 id=76 data-nosnippet>76</a>    <span class="attr">#[error(<span class="string">"agent `{0}` has invalid delegation"</span>)]
+<a href=#77 id=77 data-nosnippet>77</a>    </span>Delegation(AgentId),
+<a href=#78 id=78 data-nosnippet>78</a>    <span class="attr">#[error(<span class="string">"agent `{agent}` delegates to unknown agent `{target}`"</span>)]
+<a href=#79 id=79 data-nosnippet>79</a>    </span>UnknownDelegationTarget { agent: AgentId, target: AgentId },
+<a href=#80 id=80 data-nosnippet>80</a>    <span class="attr">#[error(<span class="string">"agent `{agent}` delegates to ineligible agent `{target}`"</span>)]
+<a href=#81 id=81 data-nosnippet>81</a>    </span>IneligibleDelegationTarget { agent: AgentId, target: AgentId },
+<a href=#82 id=82 data-nosnippet>82</a>    <span class="attr">#[error(<span class="string">"agent `{agent}` repeats fallback model `{model}`"</span>)]
+<a href=#83 id=83 data-nosnippet>83</a>    </span>DuplicateFallbackModel { agent: AgentId, model: ModelKey },
+<a href=#84 id=84 data-nosnippet>84</a>}
+<a href=#85 id=85 data-nosnippet>85</a>
+<a href=#86 id=86 data-nosnippet>86</a><span class="kw">impl </span>fmt::Debug <span class="kw">for </span>ConfigError {
+<a href=#87 id=87 data-nosnippet>87</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, formatter: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
+<a href=#88 id=88 data-nosnippet>88</a>        formatter
+<a href=#89 id=89 data-nosnippet>89</a>            .debug_tuple(<span class="string">"ConfigError"</span>)
+<a href=#90 id=90 data-nosnippet>90</a>            .field(<span class="kw-2">&amp;</span><span class="self">self</span>.to_string())
+<a href=#91 id=91 data-nosnippet>91</a>            .finish()
+<a href=#92 id=92 data-nosnippet>92</a>    }
+<a href=#93 id=93 data-nosnippet>93</a>}
 </code></pre></div></section></main></body></html>

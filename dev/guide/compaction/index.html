@@ -1101,11 +1101,14 @@ model.</p>
 <li><strong>Raw-context fit check.</strong> The engine first assembles the unmodified history.
    It uses the session's calibrated tokens-per-byte estimate when available and
    otherwise estimates tokens as serialized bytes ÷ 4. A latest real usage value
-   at or below the budget is accepted without estimating. The budget is the
-   compaction agent's effective input limit, or the bound model's context limit
-   for native compaction, minus the compaction agent's output-token allowance.
-   If a replayed policy has no output allowance, the engine reserves 20,000
-   tokens as conservative summary-output headroom.</li>
+   at or below the budget is accepted without estimating. For internal
+   summarization, fit is checked against each resolved compaction model's context
+   limit minus its effective output reserve. An undersized candidate is skipped
+   through the normal fallback path; an unknown context limit uses 16,384 tokens.
+   Agent documents do not cap this input budget. Native compaction uses the bound
+   model's context limit minus the effective compaction output allowance. If that
+   allowance is unknown, the engine reserves 20,000 tokens as conservative
+   summary-output headroom.</li>
 <li><strong>Overflow elision.</strong> When the raw context exceeds that budget, or when a
    normal model request has already failed for context length, bulky tool outputs
    (8 KiB or more) from turns older than the last two are replaced with
