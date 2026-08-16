@@ -364,6 +364,8 @@ pub(crate) struct FrozenInternalAgentPolicy {
     pub(crate) models: Vec<cookie_agent_protocol::FrozenModelBinding>,
     pub(crate) runtime: Option<Arc<PublishedRuntime>>,
     pub(crate) limits: InternalAgentLimits,
+    pub(crate) prompt_cache_strategy:
+        Option<cookie_agent_models::adapters::AnthropicCacheStrategyConfig>,
 }
 
 #[derive(Clone, Debug)]

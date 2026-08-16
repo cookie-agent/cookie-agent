@@ -88,6 +88,7 @@ impl Engine {
                     &params.selection.model,
                     self.inner.config.runtime.delegation.max_depth,
                     result_limits,
+                    self.inner.config.runtime.prompt_caching.strategy(),
                 )?
             }
             SessionOrigin::Delegated { .. } => {
@@ -100,6 +101,7 @@ impl Engine {
                     &params.selection,
                     result_limits.tool_output_max_lines,
                     result_limits.tool_output_max_bytes,
+                    self.inner.config.runtime.prompt_caching.strategy(),
                 )?
             }
         };
@@ -691,7 +693,10 @@ impl Engine {
                 if let Some(native_context) = context.native_context {
                     request = request.with_native_context(native_context);
                 }
-                let request = model.prepare_request(request);
+                let request = model.prepare_request_with_cache_strategy(
+                    request,
+                    policy.prompt_cache_strategy.as_ref(),
+                );
                 let abort = AbortBridge::new(cancellation.clone());
                 let response = tokio::select! {
                     result = model.model().stream(request, abort.signal()) => result,

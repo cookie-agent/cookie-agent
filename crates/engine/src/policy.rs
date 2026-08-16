@@ -17,12 +17,19 @@ pub(crate) struct ResultLimits {
 }
 
 #[derive(Clone)]
+pub(crate) struct FreezeOptions {
+    pub result_limits: ResultLimits,
+    pub prompt_cache_strategy: Option<cookie_agent_models::adapters::AnthropicCacheStrategyConfig>,
+}
+
+#[derive(Clone)]
 pub(crate) struct FrozenRunPolicy {
     pub agent: protocol::AgentSnapshot,
     pub selected_suffix: Vec<protocol::FrozenModelBinding>,
     pub runtime: Arc<PublishedRuntime>,
     pub registry: Arc<AgentRegistry>,
     pub result_limits: ResultLimits,
+    pub prompt_cache_strategy: Option<cookie_agent_models::adapters::AnthropicCacheStrategyConfig>,
 }
 
 impl std::fmt::Debug for FrozenRunPolicy {
@@ -67,6 +74,7 @@ pub(crate) fn freeze_root_agent_policy(
     selection: &protocol::ModelSelection,
     max_depth: u32,
     result_limits: ResultLimits,
+    prompt_cache_strategy: Option<cookie_agent_models::adapters::AnthropicCacheStrategyConfig>,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if !agent.runnable_as_root {
         return Err(EngineError::NoRunnableModel);
@@ -109,7 +117,10 @@ pub(crate) fn freeze_root_agent_policy(
         selections,
         selection,
         Some(max_depth),
-        result_limits,
+        FreezeOptions {
+            result_limits,
+            prompt_cache_strategy,
+        },
     )
 }
 
@@ -120,7 +131,7 @@ pub(crate) fn freeze_delegated_agent_policy(
     selection: &protocol::ModelSelection,
     inherited_suffix: &[protocol::FrozenModelBinding],
     inherited_depth_ceiling: u32,
-    result_limits: ResultLimits,
+    options: FreezeOptions,
 ) -> Result<FrozenRunPolicy, EngineError> {
     let bindings = if agent.resolved_fallback.is_empty() {
         if inherited_suffix.first().map(|binding| &binding.selection) != Some(selection) {
@@ -167,7 +178,7 @@ pub(crate) fn freeze_delegated_agent_policy(
         bindings,
         selection,
         Some(inherited_depth_ceiling),
-        result_limits,
+        options,
     )
 }
 
@@ -178,7 +189,7 @@ fn freeze_planned_policy(
     selections: Vec<protocol::ModelSelection>,
     selection: &protocol::ModelSelection,
     inherited_depth_ceiling: Option<u32>,
-    result_limits: ResultLimits,
+    options: FreezeOptions,
 ) -> Result<FrozenRunPolicy, EngineError> {
     let bindings = selections
         .iter()
@@ -193,7 +204,7 @@ fn freeze_planned_policy(
         bindings,
         selection,
         inherited_depth_ceiling,
-        result_limits,
+        options,
     )
 }
 
@@ -204,7 +215,7 @@ fn freeze_with_bindings(
     bindings: Vec<protocol::FrozenModelBinding>,
     selection: &protocol::ModelSelection,
     inherited_depth_ceiling: Option<u32>,
-    result_limits: ResultLimits,
+    options: FreezeOptions,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if bindings.is_empty() {
         return Err(EngineError::NoRunnableModel);
@@ -247,7 +258,8 @@ fn freeze_with_bindings(
         selected_suffix: bindings,
         runtime,
         registry,
-        result_limits,
+        result_limits: options.result_limits,
+        prompt_cache_strategy: options.prompt_cache_strategy,
     })
 }
 
@@ -258,6 +270,7 @@ pub(crate) fn policy_for_session_selection(
     selection: &protocol::RunSelection,
     tool_output_max_lines: usize,
     tool_output_max_bytes: usize,
+    prompt_cache_strategy: Option<cookie_agent_models::adapters::AnthropicCacheStrategyConfig>,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if selection.agent != agent.agent {
         return Err(EngineError::NoRunnableModel);
@@ -276,6 +289,7 @@ pub(crate) fn policy_for_session_selection(
         runtime,
         tool_output_max_lines,
         tool_output_max_bytes,
+        prompt_cache_strategy,
     )
 }
 
@@ -286,6 +300,7 @@ pub(crate) fn policy_from_snapshot(
     runtime: Arc<PublishedRuntime>,
     tool_output_max_lines: usize,
     tool_output_max_bytes: usize,
+    prompt_cache_strategy: Option<cookie_agent_models::adapters::AnthropicCacheStrategyConfig>,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if selected_suffix.is_empty() {
         return Err(EngineError::NoRunnableModel);
@@ -299,6 +314,7 @@ pub(crate) fn policy_from_snapshot(
             tool_output_max_lines,
             tool_output_max_bytes,
         },
+        prompt_cache_strategy,
     })
 }
 

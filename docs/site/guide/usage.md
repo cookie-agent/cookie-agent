@@ -24,3 +24,11 @@ prices for custom models or override catalog prices, as described in the
 The precedence is config override, catalog, then no cost. An aggregate remains
 unpriced when any used model lacks a required rate or when a provider omits a
 usage split needed to apply a distinct cache or reasoning price.
+
+To evaluate prompt caching, compare equivalent workloads before and after
+enabling `[prompt_caching]`. Track `cache_hit_rate` after the first turn and
+`estimated_cost_usd` over the whole session. A healthy multi-turn workload
+normally reports cache writes on the first request and cache reads on later
+requests; compare totals only after enough repeated-prefix turns to amortize the
+initial write. Use `enabled = false` as the baseline, where the strategy emits no
+cache markers and provider-reported cache reads and writes should remain zero.

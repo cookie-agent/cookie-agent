@@ -451,6 +451,11 @@ fn anthropic_options(options: &ProviderOptions, reasoning: Option<&ReasoningBeha
         "thinking": thinking,
         "effort": reasoning.and_then(reasoning_effort),
         "cache_ttl": Value::Null,
+        "cache_strategy": {
+            "system": "one_hour",
+            "tools": "one_hour",
+            "rolling": "five_minutes"
+        },
         "user_id": Value::Null,
         "betas": options.beta
     })

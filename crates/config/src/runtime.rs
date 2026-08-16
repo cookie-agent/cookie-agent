@@ -1,8 +1,11 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use cookie_agent_identity::{ModelKey, ProviderId};
-use cookie_agent_models::ProviderDefinition;
 pub use cookie_agent_models::catalog::PicoUsdPerMillion;
+use cookie_agent_models::{
+    ProviderDefinition,
+    adapters::{AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::ConfigError;
@@ -212,6 +215,8 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub context_compaction: ContextCompactionConfig,
     #[serde(default)]
+    pub prompt_caching: PromptCachingConfig,
+    #[serde(default)]
     pub session_title: SessionTitleConfig,
     #[serde(default)]
     pub delegation: DelegationConfig,
@@ -228,6 +233,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) tool_output: Option<ToolOutputConfig>,
     pub(crate) approval: Option<ApprovalConfig>,
     pub(crate) context_compaction: Option<ContextCompactionConfig>,
+    pub(crate) prompt_caching: Option<PromptCachingConfig>,
     pub(crate) session_title: Option<SessionTitleConfig>,
     pub(crate) delegation: Option<DelegationConfig>,
     pub(crate) pricing: Option<PricingConfig>,
@@ -251,6 +257,49 @@ pub struct ModelPricing {
     pub reasoning_per_million_usd: Option<PicoUsdPerMillion>,
     pub cache_read_per_million_usd: Option<PicoUsdPerMillion>,
     pub cache_write_per_million_usd: Option<PicoUsdPerMillion>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PromptCachingConfig {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default = "one_hour")]
+    pub system_ttl: AnthropicCacheTtlConfig,
+    #[serde(default = "one_hour")]
+    pub tools_ttl: AnthropicCacheTtlConfig,
+    #[serde(default = "five_minutes")]
+    pub rolling_ttl: AnthropicCacheTtlConfig,
+}
+
+impl PromptCachingConfig {
+    #[must_use]
+    pub fn strategy(&self) -> Option<AnthropicCacheStrategyConfig> {
+        self.enabled.then_some(AnthropicCacheStrategyConfig {
+            system: Some(self.system_ttl),
+            tools: Some(self.tools_ttl),
+            rolling: Some(self.rolling_ttl),
+        })
+    }
+}
+
+impl Default for PromptCachingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            system_ttl: one_hour(),
+            tools_ttl: one_hour(),
+            rolling_ttl: five_minutes(),
+        }
+    }
+}
+
+const fn one_hour() -> AnthropicCacheTtlConfig {
+    AnthropicCacheTtlConfig::OneHour
+}
+
+const fn five_minutes() -> AnthropicCacheTtlConfig {
+    AnthropicCacheTtlConfig::FiveMinutes
 }
 
 impl Drop for RawRuntimeLayer {
@@ -500,6 +549,9 @@ pub(crate) fn apply_settings(runtime: &mut RuntimeConfig, layer: &RawRuntimeLaye
     if let Some(value) = &layer.context_compaction {
         runtime.context_compaction = value.clone();
     }
+    if let Some(value) = &layer.prompt_caching {
+        runtime.prompt_caching = value.clone();
+    }
     if let Some(value) = &layer.session_title {
         runtime.session_title = value.clone();
     }
@@ -534,6 +586,16 @@ pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigErro
         return Err(ConfigError::InvalidRuntime);
     }
     if runtime.session_title.max_chars == 0 || runtime.session_title.max_input_messages == 0 {
+        return Err(ConfigError::InvalidRuntime);
+    }
+    let caching = &runtime.prompt_caching;
+    if caching.enabled
+        && (caching.tools_ttl == AnthropicCacheTtlConfig::FiveMinutes
+            && (caching.system_ttl == AnthropicCacheTtlConfig::OneHour
+                || caching.rolling_ttl == AnthropicCacheTtlConfig::OneHour)
+            || caching.system_ttl == AnthropicCacheTtlConfig::FiveMinutes
+                && caching.rolling_ttl == AnthropicCacheTtlConfig::OneHour)
+    {
         return Err(ConfigError::InvalidRuntime);
     }
     for (id, provider) in &runtime.providers {

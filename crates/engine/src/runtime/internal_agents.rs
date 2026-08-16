@@ -156,7 +156,10 @@ impl Engine {
                 input.tools.clone(),
                 max_output_tokens,
             );
-            let request = model.prepare_request(request);
+            let request = model.prepare_request_with_cache_strategy(
+                request,
+                policy.prompt_cache_strategy.as_ref(),
+            );
             let abort = AbortBridge::new(execution.cancellation.child_token());
             let call_future = model.model().complete(request, abort.signal());
             let result = tokio::select! {
@@ -428,6 +431,14 @@ impl Engine {
             selected_suffix_start: 0,
         };
         let limits = &document.frontmatter.limits;
+        let mut prompt_cache_strategy = owner.prompt_cache_strategy.clone();
+        if matches!(
+            kind,
+            InternalAgentKind::Approval | InternalAgentKind::SessionTitle
+        ) && let Some(strategy) = &mut prompt_cache_strategy
+        {
+            strategy.rolling = None;
+        }
         Ok(FrozenInternalAgentPolicy {
             agent: snapshot,
             models,
@@ -436,6 +447,7 @@ impl Engine {
                 max_output_tokens: limits.max_output_tokens,
                 timeout_ms: limits.timeout_ms,
             },
+            prompt_cache_strategy,
         })
     }
 }
@@ -593,6 +605,7 @@ mod tests {
                 max_output_tokens: 2_048,
                 timeout_ms: 30_000,
             },
+            prompt_cache_strategy: None,
         };
         assert_eq!(
             internal_agent_input_limit(&policy.models[0], &policy),
@@ -623,6 +636,7 @@ mod tests {
                 max_output_tokens: 2_048,
                 timeout_ms: 30_000,
             },
+            prompt_cache_strategy: None,
         };
 
         let small_first = policy(vec![small.clone(), large.clone()]);

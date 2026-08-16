@@ -1995,6 +1995,7 @@ mod tests {
                 tool_output: ToolOutputConfig::default(),
                 approval: ApprovalConfig::default(),
                 context_compaction: ContextCompactionConfig::default(),
+                prompt_caching: cookie_agent_config::PromptCachingConfig::default(),
                 session_title: SessionTitleConfig::default(),
                 delegation: cookie_agent_config::DelegationConfig::default(),
                 pricing: cookie_agent_config::PricingConfig::default(),

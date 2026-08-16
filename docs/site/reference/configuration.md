@@ -64,6 +64,7 @@ Only these optional keys are allowed at the top of `config.toml`.
 | `tool_output` | table | defaults below | Tool output truncation limits |
 | `approval` | table | defaults below | Approval expiry |
 | `context_compaction` | table | defaults below | Automatic context compaction |
+| `prompt_caching` | table | defaults below | Anthropic prompt-cache breakpoints |
 | `session_title` | table | defaults below | Automatic session titles |
 | `delegation` | table | defaults below | Delegation depth and concurrency |
 | `pricing` | table | empty | Optional model-rate overrides for cost estimates |
@@ -111,6 +112,29 @@ Controls the automatic context-limit behavior documented in
 | `trigger` | inline table | `{ percent = 70 }` | Trigger threshold selection. `{ percent = N }` uses `N%` of the model context limit, where `N` must be from 1 through 99. `{ buffer_tokens = N }` subtracts positive `N` from the context limit, saturating at zero. |
 | `buffer_tokens` | integer | unset | Legacy alias for `trigger = { buffer_tokens = N }`. Must be greater than zero and cannot be set together with `trigger`. |
 | `max_summary_bytes` | integer | `262144` (`256 * 1024`) | Hard byte limit for a compaction summary produced by the internal `compaction` agent. Must be greater than zero and at most `2 * 1024 * 1024` (2 MiB). |
+
+## `[prompt_caching]`
+
+Controls declarative Anthropic prompt-cache breakpoints. The strategy is applied
+only when the selected adaptor declares prompt-caching capability. Other
+adaptors are unchanged. Defaults opt managed Anthropic models in:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `true` | Enables cache marker normalization. Set to `false` to emit no strategy markers. |
+| `system_ttl` | string | `"one_hour"` | TTL for `history[0]` when it is a non-empty system turn. |
+| `tools_ttl` | string | `"one_hour"` | TTL for the final emitted tool definition. |
+| `rolling_ttl` | string | `"five_minutes"` | TTL for the last eligible non-empty history turn, walking backward over empty and tool-result-only turns. |
+
+TTL values are `"one_hour"` and `"five_minutes"`. Configuration is rejected if
+a one-hour marker would follow a five-minute marker in Oven's actual marker
+order: tools, system blocks, non-system history, then the optional request-level
+marker. The rolling marker is recomputed on every request.
+
+The lower-level Anthropic adaptor option `cache_ttl` remains supported. It maps
+to Oven's request-level `cache_control`, which is a final, optional fourth
+breakpoint; `cache_strategy` maps to the three normalized tool/message
+breakpoints above.
 
 ## `[session_title]`
 

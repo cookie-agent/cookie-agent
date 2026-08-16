@@ -768,6 +768,7 @@ fn fixture() -> Fixture {
             tool_output: ToolOutputConfig::default(),
             approval: ApprovalConfig::default(),
             context_compaction: ContextCompactionConfig::default(),
+            prompt_caching: cookie_agent_config::PromptCachingConfig::default(),
             session_title: SessionTitleConfig::default(),
             delegation: cookie_agent_config::DelegationConfig::default(),
             pricing: cookie_agent_config::PricingConfig::default(),
@@ -1485,6 +1486,33 @@ fn custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
     context_tokens: u64,
     worker_agent: Option<&str>,
 ) -> (Fixture, RunSelection) {
+    custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+        endpoint,
+        primary_agent,
+        internal,
+        compaction_buffer_tokens,
+        generate_titles,
+        max_concurrency,
+        mcp_server,
+        context_tokens,
+        worker_agent,
+        "openai-compatible",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+    endpoint: &str,
+    primary_agent: &str,
+    internal: Option<(&str, &str)>,
+    compaction_buffer_tokens: Option<u64>,
+    generate_titles: bool,
+    max_concurrency: Option<u32>,
+    mcp_server: Option<LoadedMcpServer>,
+    context_tokens: u64,
+    worker_agent: Option<&str>,
+    adaptor: &str,
+) -> (Fixture, RunSelection) {
     let directory = TempDir::new().expect("temp directory");
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
         .expect("private temp directory");
@@ -1522,9 +1550,21 @@ media = {}
 "#
     .replace("http://127.0.0.1:9/v1", endpoint)
     .replace(
+        "adaptor = \"openai-compatible\"",
+        &format!("adaptor = \"{adaptor}\""),
+    )
+    .replace(
         "context_tokens = 4096",
         &format!("context_tokens = {context_tokens}"),
     );
+    let config_text = if adaptor.starts_with("anthropic") {
+        config_text.replace("seed = true", "seed = false").replace(
+            "auth = { method = \"no-auth-v1\", values = {} }",
+            "auth = { method = \"anthropic-api-key-v1\", values = { api_key = \"test-key\" } }",
+        )
+    } else {
+        config_text
+    };
     let config_text = max_concurrency.map_or(config_text.clone(), |max_concurrency| {
         config_text.replace(
             "[delegation]\nmax_depth = 1",
@@ -1638,6 +1678,7 @@ fn frozen_root_policy(
             tool_output_max_lines: 2_000,
             tool_output_max_bytes: 50 * 1024,
         },
+        fixture.config.runtime.prompt_caching.strategy(),
     )
     .expect("frozen root policy")
 }
@@ -1842,6 +1883,7 @@ fn parent_model_resolves_exact_binding_skips_parentless_and_replays_historically
         Arc::clone(&owner.runtime),
         owner.result_limits.tool_output_max_lines,
         owner.result_limits.tool_output_max_bytes,
+        owner.prompt_cache_strategy.clone(),
     )
     .expect("replayed owner policy");
     let replayed = fixture
@@ -1853,6 +1895,82 @@ fn parent_model_resolves_exact_binding_skips_parentless_and_replays_historically
         )
         .expect("replayed internal policy");
     assert_eq!(replayed.models, vec![parent]);
+}
+
+#[tokio::test]
+async fn internal_agent_cache_strategy_omits_rolling_for_stateless_kinds() {
+    let primary = "---\ndescription: Cache policy owner\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nStable owner prompt.\n";
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+            "http://127.0.0.1:9/v1",
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            None,
+            "anthropic-compatible",
+        );
+    let owner = frozen_root_policy(&fixture, &selection);
+    let parent = owner.selected_suffix.first().unwrap();
+    let marker = |options: &oven_sdk::ProviderOptions| {
+        options
+            .get("anthropic")
+            .and_then(|value| value.get("cache_control"))
+            .and_then(|value| value.get("ttl"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+
+    for kind in [
+        InternalAgentKind::SessionTitle,
+        InternalAgentKind::Approval,
+        InternalAgentKind::ContextCompaction,
+    ] {
+        let policy = fixture
+            .engine
+            .internal_agent_policy(kind, &owner, Some(parent))
+            .unwrap();
+        let binding = policy.models.first().unwrap();
+        let model =
+            crate::policy::resolve_model(binding, policy.runtime.as_ref().unwrap()).unwrap();
+        let request = oven_sdk::Request::new(vec![
+            oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
+                oven_sdk::SystemPart::Text(oven_sdk::TextPart::new("reusable system")),
+            ])),
+            oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(vec![
+                oven_sdk::InputPart::Text(oven_sdk::TextPart::new("unique payload")),
+            ])),
+        ])
+        .with_tools(vec![oven_sdk::ToolDefinition::new(
+            "lookup",
+            "lookup tool",
+            oven_sdk::JsonSchema::new(serde_json::json!({"type":"object"})).unwrap(),
+        )]);
+        let prepared = model
+            .prepare_request_with_cache_strategy(request, policy.prompt_cache_strategy.as_ref());
+        let oven_sdk::HistoryTurn::System(system) = &prepared.history[0] else {
+            panic!("system turn");
+        };
+        let oven_sdk::HistoryTurn::User(user) = &prepared.history[1] else {
+            panic!("user turn");
+        };
+        assert_eq!(
+            marker(&system.provider_options).as_deref(),
+            Some("one_hour")
+        );
+        assert_eq!(
+            marker(&prepared.tools[0].provider_options).as_deref(),
+            Some("one_hour")
+        );
+        assert_eq!(
+            marker(&user.provider_options).as_deref(),
+            (kind == InternalAgentKind::ContextCompaction).then_some("five_minutes")
+        );
+    }
+    fixture.engine.shutdown().await;
 }
 
 #[test]
@@ -6110,6 +6228,294 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
         cookie_agent_protocol::SessionStatus::Completed
     );
     reopened.shutdown().await;
+}
+
+fn anthropic_usage_body(
+    text: &str,
+    input_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+) -> String {
+    format!(
+        "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"usage\":{{\"input_tokens\":{input_tokens},\"cache_read_input_tokens\":{cache_read_tokens},\"cache_creation_input_tokens\":{cache_write_tokens}}}}}}}\n\nevent: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\nevent: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{text}\"}}}}\n\nevent: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":0}}\n\nevent: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":1}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n"
+    )
+}
+
+fn request_body(request: &str) -> serde_json::Value {
+    serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap()
+}
+
+fn cache_marker_count(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Object(object) => {
+            usize::from(object.contains_key("cache_control"))
+                + object.values().map(cache_marker_count).sum::<usize>()
+        }
+        serde_json::Value::Array(values) => values.iter().map(cache_marker_count).sum(),
+        _ => 0,
+    }
+}
+
+#[tokio::test]
+async fn anthropic_prompt_caching_records_wire_markers_usage_and_rollup() {
+    let bodies = vec![
+        anthropic_usage_body("first", 10, 0, 20),
+        anthropic_usage_body("second", 5, 25, 0),
+        anthropic_usage_body("third", 5, 25, 0),
+    ];
+    let (endpoint, captured, _reached, _release) =
+        scripted_server_with_delayed_response(bodies, usize::MAX).await;
+    let primary = "---\ndescription: Anthropic cache test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nStable cache system prompt.\n";
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+            &endpoint,
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            None,
+            "anthropic-compatible",
+        );
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::new(AtomicBool::new(false)),
+        }));
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    for index in 0..3 {
+        fixture
+            .engine
+            .start_run(RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new(format!("anthropic-cache-{index}")).unwrap(),
+                selection: selection.clone(),
+                input: format!("turn {index}"),
+            })
+            .await
+            .unwrap();
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    }
+
+    let requests = captured.await.unwrap();
+    assert_eq!(requests.len(), 3);
+    for request in &requests {
+        let body = request_body(request);
+        assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
+        assert_eq!(body["tools"][0]["cache_control"]["ttl"], "1h");
+        assert_eq!(cache_marker_count(&body), 3);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(
+            messages.last().unwrap()["content"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()["cache_control"]["ttl"],
+            "5m"
+        );
+    }
+
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let usage = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ModelUsageRecorded { usage, .. } => Some(usage),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(usage.len(), 3);
+    assert_eq!(usage[0].input_tokens_cache_write, Some(20));
+    assert_eq!(usage[0].input_tokens_cache_read, Some(0));
+    assert_eq!(usage[1].input_tokens_cache_write, Some(0));
+    assert_eq!(usage[1].input_tokens_cache_read, Some(25));
+    assert_eq!(usage[2].input_tokens_cache_read, Some(25));
+
+    let rollup = fixture
+        .engine
+        .session_usage(session.session_id)
+        .unwrap()
+        .usage;
+    assert_eq!(rollup.cache_write_tokens, 20);
+    assert_eq!(rollup.cache_read_tokens, 50);
+    assert_eq!(rollup.request_count, 3);
+    assert_eq!(rollup.cache_hit_rate, Some(50.0 / 90.0));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
+    let bodies = vec![
+        anthropic_usage_body("first turn", 600, 0, 0),
+        anthropic_usage_body("checkpoint summary", 600, 0, 0),
+        anthropic_usage_body("after reopen", 100, 0, 0),
+    ];
+    let (endpoint, captured, _reached, _release) =
+        scripted_server_with_delayed_response(bodies, usize::MAX).await;
+    let primary = "---\ndescription: Anthropic checkpoint cache test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nStable checkpoint system prompt.\n";
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+            &endpoint,
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            None,
+            "anthropic-compatible",
+        );
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::new(AtomicBool::new(false)),
+        }));
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("anthropic-before-checkpoint").unwrap(),
+            selection: selection.clone(),
+            input: "old context ".repeat(300),
+        })
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    assert!(
+        fixture
+            .engine
+            .compact_session(session.session_id, None)
+            .await
+            .unwrap()
+    );
+    assert!(fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events()
+        .iter()
+        .any(|event| matches!(
+            event.payload,
+            EventPayload::ContextCheckpointCommitted {
+                commit: cookie_agent_protocol::ContextCheckpointCommit {
+                    checkpoint: cookie_agent_protocol::ContextCheckpoint::InternalSummary { .. },
+                    ..
+                }
+            }
+        )));
+
+    fixture.engine.shutdown().await;
+    let reopened = reopen_engine(&fixture);
+    reopened.register_tool_provider(Arc::new(TestWriteProvider {
+        executed: Arc::new(AtomicBool::new(false)),
+    }));
+    reopened
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("anthropic-after-checkpoint").unwrap(),
+            selection,
+            input: "new live turn".into(),
+        })
+        .await
+        .unwrap();
+    wait_for_session_not_running(&reopened, session.session_id).await;
+
+    let requests = captured.await.unwrap();
+    assert_eq!(requests.len(), 3);
+    let compaction_body = request_body(&requests[1]);
+    assert_eq!(cache_marker_count(&compaction_body), 3);
+    let body = request_body(&requests[2]);
+    assert_eq!(cache_marker_count(&body), 3);
+    assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
+    assert_eq!(body["tools"][0]["cache_control"]["ttl"], "1h");
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages[0]["role"], "user");
+    assert!(
+        messages[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("checkpoint summary")
+    );
+    assert_eq!(
+        messages.last().unwrap()["content"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["cache_control"]["ttl"],
+        "5m"
+    );
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn anthropic_prompt_caching_disabled_emits_no_markers_or_cache_usage() {
+    let (endpoint, captured, _reached, _release) = scripted_server_with_delayed_response(
+        vec![anthropic_usage_body("uncached", 10, 0, 0)],
+        usize::MAX,
+    )
+    .await;
+    let primary = "---\ndescription: Anthropic cache baseline\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nUncached system prompt.\n";
+    let (mut fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+            &endpoint,
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            None,
+            "anthropic-compatible",
+        );
+    fixture.engine.shutdown().await;
+    fixture.config.runtime.prompt_caching.enabled = false;
+    fixture.engine = Engine::open(EngineOptions {
+        data_dir: fixture._directory.path().join("data"),
+        cwd: fixture._directory.path().to_owned(),
+        config: fixture.config.clone(),
+        model_manager: Arc::clone(&fixture.manager),
+        tools: Vec::new(),
+    })
+    .unwrap();
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("anthropic-cache-disabled").unwrap(),
+            selection,
+            input: "baseline".into(),
+        })
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    let requests = captured.await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(cache_marker_count(&request_body(&requests[0])), 0);
+    let rollup = fixture
+        .engine
+        .session_usage(session.session_id)
+        .unwrap()
+        .usage;
+    assert_eq!(rollup.cache_read_tokens, 0);
+    assert_eq!(rollup.cache_write_tokens, 0);
+    assert_eq!(rollup.cache_hit_rate, Some(0.0));
+    fixture.engine.shutdown().await;
 }
 
 #[tokio::test]

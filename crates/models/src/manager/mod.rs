@@ -28,7 +28,10 @@ use thiserror::Error;
 
 use crate::{
     BoundedSetupString, ProviderDefinition, SafeSetupValue, SecretString, Sha256Digest,
-    adapters::{OvenAdapterFamily, oven::ModelBuildError},
+    adapters::{
+        OvenAdapterFamily,
+        oven::{AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig, ModelBuildError},
+    },
     authoring::{AuthOverride, ModelsDevProvider},
     catalog::CatalogSnapshot,
     compiler::{
@@ -160,13 +163,151 @@ impl ResolvedExecutableModel {
 
     #[must_use]
     pub fn prepare_request(&self, request: Request) -> Request {
+        self.prepare_request_inner(request, None)
+    }
+
+    #[must_use]
+    pub fn prepare_request_with_cache_strategy(
+        &self,
+        request: Request,
+        strategy: Option<&AnthropicCacheStrategyConfig>,
+    ) -> Request {
+        self.prepare_request_inner(request, Some(strategy))
+    }
+
+    fn prepare_request_inner(
+        &self,
+        request: Request,
+        strategy_override: Option<Option<&AnthropicCacheStrategyConfig>>,
+    ) -> Request {
         let mut request = self
             .defaults
             .apply(&crate::ProviderOptions::default(), request);
         request
             .provider_options
             .extend(self.provider_options.clone());
+        if let Some(strategy) = strategy_override {
+            set_cache_strategy(&mut request.provider_options, strategy);
+        }
+        let strategy = take_cache_strategy(&mut request.provider_options);
+        if self
+            .model
+            .capabilities()
+            .features
+            .contains(Capability::PROMPT_CACHING)
+            && let Some(strategy) = strategy
+        {
+            apply_cache_strategy(&mut request, &strategy);
+        }
         request
+    }
+}
+
+fn set_cache_strategy(
+    options: &mut oven_sdk::ProviderOptions,
+    strategy: Option<&AnthropicCacheStrategyConfig>,
+) {
+    let Some(Value::Object(anthropic)) = options.get_mut("anthropic") else {
+        return;
+    };
+    match strategy {
+        Some(strategy) => {
+            anthropic.insert(
+                "cache_strategy".into(),
+                serde_json::to_value(strategy).expect("cache strategy is serializable"),
+            );
+        }
+        None => {
+            anthropic.remove("cache_strategy");
+        }
+    }
+}
+
+fn take_cache_strategy(
+    options: &mut oven_sdk::ProviderOptions,
+) -> Option<AnthropicCacheStrategyConfig> {
+    let Value::Object(anthropic) = options.get_mut("anthropic")? else {
+        return None;
+    };
+    serde_json::from_value(anthropic.remove("cache_strategy")?).ok()
+}
+
+fn clear_message_cache(options: &mut oven_sdk::ProviderOptions) {
+    if let Some(Value::Object(anthropic)) = options.get_mut("anthropic") {
+        anthropic.remove("cache_control");
+    }
+}
+
+fn set_message_cache(options: &mut oven_sdk::ProviderOptions, ttl: AnthropicCacheTtlConfig) {
+    let anthropic = options
+        .entry("anthropic".into())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if let Value::Object(anthropic) = anthropic {
+        anthropic.insert("cache_control".into(), json!({ "ttl": ttl }));
+    }
+}
+
+fn apply_cache_strategy(request: &mut Request, strategy: &AnthropicCacheStrategyConfig) {
+    for tool in &mut request.tools {
+        clear_message_cache(&mut tool.provider_options);
+    }
+    for turn in &mut request.history {
+        clear_message_cache(turn_provider_options_mut(turn));
+    }
+
+    let system_index = request.history.first().and_then(|turn| match turn {
+        oven_sdk::HistoryTurn::System(message) if system_message_is_eligible(message) => Some(0),
+        _ => None,
+    });
+    if let (Some(index), Some(ttl)) = (system_index, strategy.system) {
+        set_message_cache(turn_provider_options_mut(&mut request.history[index]), ttl);
+    }
+
+    if !request.tools.is_empty()
+        && !matches!(request.tool_choice, oven_sdk::ToolChoice::None)
+        && let Some(ttl) = strategy.tools
+        && let Some(tool) = request.tools.last_mut()
+    {
+        set_message_cache(&mut tool.provider_options, ttl);
+    }
+
+    if let Some(ttl) = strategy.rolling
+        && let Some(index) = request.history.iter().rposition(turn_is_rolling_eligible)
+        && Some(index) != system_index
+    {
+        set_message_cache(turn_provider_options_mut(&mut request.history[index]), ttl);
+    }
+}
+
+fn turn_provider_options_mut(turn: &mut oven_sdk::HistoryTurn) -> &mut oven_sdk::ProviderOptions {
+    match turn {
+        oven_sdk::HistoryTurn::System(message) => &mut message.provider_options,
+        oven_sdk::HistoryTurn::User(message) => &mut message.provider_options,
+        oven_sdk::HistoryTurn::Assistant(turn) => &mut turn.message.provider_options,
+        oven_sdk::HistoryTurn::Tool(message) => &mut message.provider_options,
+    }
+}
+
+fn system_message_is_eligible(message: &oven_sdk::SystemMessage) -> bool {
+    message
+        .content
+        .iter()
+        .any(|part| matches!(part, oven_sdk::SystemPart::Text(text) if !text.text.is_empty()))
+}
+
+fn turn_is_rolling_eligible(turn: &oven_sdk::HistoryTurn) -> bool {
+    match turn {
+        oven_sdk::HistoryTurn::System(message) => system_message_is_eligible(message),
+        oven_sdk::HistoryTurn::User(message) => message.content.iter().any(|part| match part {
+            oven_sdk::InputPart::Text(text) => !text.text.is_empty(),
+            oven_sdk::InputPart::File(_) => true,
+            oven_sdk::InputPart::Custom(_) => false,
+        }),
+        oven_sdk::HistoryTurn::Assistant(turn) => turn.message.content.iter().any(|part| {
+            matches!(part, oven_sdk::AssistantPart::Text(text) if !text.text.is_empty())
+                || matches!(part, oven_sdk::AssistantPart::ToolCall(_))
+        }),
+        oven_sdk::HistoryTurn::Tool(_) => false,
     }
 }
 
@@ -1226,7 +1367,7 @@ fn compile_behaviors(
         .iter()
         .map(|(name, value)| (name.as_str().to_owned(), value.as_str().to_owned()))
         .collect::<BTreeMap<_, _>>();
-    let capabilities = oven_capabilities(&model.capabilities)?;
+    let capabilities = oven_capabilities(&model.capabilities, model.adapter)?;
     let base = compile_executable(
         provider_id.as_str(),
         model,
@@ -2208,13 +2349,14 @@ fn safe_descriptor(
         )
         .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
         AdapterId::new(model.adapter_id.clone()),
-        oven_capabilities(&model.capabilities)?,
+        oven_capabilities(&model.capabilities, model.adapter)?,
     )
     .map_err(|_| ModelManagerError::RuntimeCompileFailed)
 }
 
 fn oven_capabilities(
     value: &crate::ModelCapabilities,
+    adapter: OvenAdapterFamily,
 ) -> Result<OvenCapabilities, ModelManagerError> {
     let mut features = Capability::MAX_OUTPUT_TOKENS;
     if value.tool_calling {
@@ -2234,6 +2376,12 @@ fn oven_capabilities(
     }
     if value.top_p {
         features |= Capability::TOP_P;
+    }
+    if matches!(
+        adapter,
+        OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible
+    ) {
+        features |= Capability::PROMPT_CACHING;
     }
     let modality = |value: &crate::Modality| match value {
         crate::Modality::Text => OvenModality::text(),
@@ -2304,6 +2452,171 @@ fn prepared_retained(
         .or_default()
         .push(Arc::clone(candidate));
     Arc::new(retained)
+}
+
+#[cfg(test)]
+mod cache_strategy_tests {
+    use super::*;
+    use crate::{ScriptedModel, ScriptedStep};
+    use oven_sdk::{
+        AbortSignal, InputPart, JsonSchema, StreamPart, SystemMessage, SystemPart, TextPart,
+        ToolDefinition, ToolMessage, UserMessage,
+    };
+
+    fn resolved(prompt_caching: bool, steps: usize) -> (ResolvedExecutableModel, ScriptedModel) {
+        let capabilities: OvenCapabilities = serde_json::from_value(json!({
+            "features": if prompt_caching { vec!["prompt_caching"] } else { Vec::<&str>::new() },
+            "limits": {"context": 4096, "input": null, "output": 1024},
+            "modalities": {"input": ["text"], "output": ["text"]},
+            "media": {"input": {}},
+            "cancellation": "local_only",
+            "compaction": "unsupported",
+            "replay": {"policy": "never", "capability": "unsupported", "reasoning": false}
+        }))
+        .unwrap();
+        let descriptor = LanguageModelDescriptor::new(
+            ModelIdentity::new(OvenProviderId::new("test"), ModelId::new("group/model")).unwrap(),
+            AdapterId::new("test.scripted"),
+            capabilities,
+        )
+        .unwrap();
+        let scripted = ScriptedModel::new(
+            descriptor,
+            (0..steps).map(|_| {
+                ScriptedStep::stream([Ok(StreamPart::StreamStart {
+                    warnings: Vec::new(),
+                })])
+            }),
+        );
+        let strategy = AnthropicCacheStrategyConfig {
+            system: Some(AnthropicCacheTtlConfig::OneHour),
+            tools: Some(AnthropicCacheTtlConfig::OneHour),
+            rolling: Some(AnthropicCacheTtlConfig::FiveMinutes),
+        };
+        let resolved = ResolvedExecutableModel {
+            selection: ModelSelection {
+                model: "test/group/model".parse().unwrap(),
+                variant: None,
+            },
+            model: Arc::new(scripted.clone()),
+            defaults: crate::ResolvedRequestDefaults::default(),
+            provider_options: BTreeMap::from([(
+                "anthropic".into(),
+                json!({ "cache_strategy": strategy }),
+            )]),
+            behavior_fingerprint: Sha256Digest::new("0".repeat(64)).unwrap(),
+        };
+        (resolved, scripted)
+    }
+
+    fn marker(options: &oven_sdk::ProviderOptions) -> Option<&str> {
+        options
+            .get("anthropic")?
+            .get("cache_control")?
+            .get("ttl")?
+            .as_str()
+    }
+
+    fn request() -> Request {
+        Request::new(vec![
+            oven_sdk::HistoryTurn::system(SystemMessage::new(vec![SystemPart::Text(
+                TextPart::new("stable system"),
+            )])),
+            oven_sdk::HistoryTurn::user(UserMessage::new(vec![InputPart::Text(TextPart::new(
+                "eligible user",
+            ))])),
+            oven_sdk::HistoryTurn::user(UserMessage::new(vec![InputPart::Text(TextPart::new(""))])),
+            oven_sdk::HistoryTurn::tool(ToolMessage::new(Vec::new())),
+        ])
+        .with_tools(vec![
+            ToolDefinition::new(
+                "first",
+                "first tool",
+                JsonSchema::new(json!({"type":"object"})).unwrap(),
+            ),
+            ToolDefinition::new(
+                "last",
+                "last tool",
+                JsonSchema::new(json!({"type":"object"})).unwrap(),
+            ),
+        ])
+    }
+
+    #[tokio::test]
+    async fn strategy_places_three_ordered_markers_with_empty_and_tool_fallback() {
+        let (resolved, scripted) = resolved(true, 1);
+        let prepared = resolved.prepare_request(request());
+        let _ = scripted
+            .stream(prepared, AbortSignal::default())
+            .await
+            .unwrap();
+        let captured = scripted.requests().pop().unwrap();
+
+        let oven_sdk::HistoryTurn::System(system) = &captured.history[0] else {
+            panic!("system turn");
+        };
+        let oven_sdk::HistoryTurn::User(rolling) = &captured.history[1] else {
+            panic!("rolling user turn");
+        };
+        assert_eq!(marker(&system.provider_options), Some("one_hour"));
+        assert_eq!(marker(&rolling.provider_options), Some("five_minutes"));
+        assert_eq!(marker(&captured.tools[0].provider_options), None);
+        assert_eq!(
+            marker(&captured.tools[1].provider_options),
+            Some("one_hour")
+        );
+        assert_eq!(
+            captured
+                .history
+                .iter()
+                .filter(|turn| marker(match turn {
+                    oven_sdk::HistoryTurn::System(message) => &message.provider_options,
+                    oven_sdk::HistoryTurn::User(message) => &message.provider_options,
+                    oven_sdk::HistoryTurn::Assistant(turn) => &turn.message.provider_options,
+                    oven_sdk::HistoryTurn::Tool(message) => &message.provider_options,
+                })
+                .is_some())
+                .count()
+                + captured
+                    .tools
+                    .iter()
+                    .filter(|tool| marker(&tool.provider_options).is_some())
+                    .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn capability_gate_and_compaction_reanchor_are_stable() {
+        let (without_capability, _) = resolved(false, 0);
+        let gated = without_capability.prepare_request(request());
+        assert!(gated.history.iter().all(|turn| {
+            marker(match turn {
+                oven_sdk::HistoryTurn::System(message) => &message.provider_options,
+                oven_sdk::HistoryTurn::User(message) => &message.provider_options,
+                oven_sdk::HistoryTurn::Assistant(turn) => &turn.message.provider_options,
+                oven_sdk::HistoryTurn::Tool(message) => &message.provider_options,
+            })
+            .is_none()
+        }));
+
+        let (resolved, _) = resolved(true, 0);
+        let mut compacted = request();
+        compacted
+            .history
+            .push(oven_sdk::HistoryTurn::system(SystemMessage::new(vec![
+                SystemPart::Text(TextPart::new("compacted summary")),
+            ])));
+        let prepared = resolved.prepare_request(compacted);
+        let oven_sdk::HistoryTurn::System(first) = &prepared.history[0] else {
+            panic!("first system turn");
+        };
+        let oven_sdk::HistoryTurn::System(last) = prepared.history.last().unwrap() else {
+            panic!("summary system turn");
+        };
+        assert_eq!(marker(&first.provider_options), Some("one_hour"));
+        assert_eq!(marker(&last.provider_options), Some("five_minutes"));
+    }
 }
 
 fn mutation_provider(mutation: &ProviderStoreMutation) -> &ProviderId {

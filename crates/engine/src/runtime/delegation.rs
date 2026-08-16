@@ -2496,7 +2496,10 @@ pub(crate) fn freeze_delegated_child_policy(
         child_selection,
         inherited_suffix,
         inherited_depth_ceiling,
-        result_limits,
+        policy::FreezeOptions {
+            result_limits,
+            prompt_cache_strategy: parent_policy.prompt_cache_strategy.clone(),
+        },
     )
 }
 

@@ -135,7 +135,7 @@ impl ConcreteModel {
                         declaration,
                         settings.to_oven()?,
                     ))?),
-                    namespace("anthropic", options.to_oven())?,
+                    namespace("anthropic", options.to_oven()?)?,
                 ),
                 AdapterConfig::AnthropicCompatible { settings, options } => (
                     Arc::new(AnthropicCompatibleModel::new(ModelConfig::new(
@@ -143,7 +143,7 @@ impl ConcreteModel {
                         declaration,
                         settings.to_oven()?,
                     ))?),
-                    namespace("anthropic", options.to_oven())?,
+                    namespace("anthropic", options.to_oven()?)?,
                 ),
                 AdapterConfig::OpenaiChat { settings, options } => (
                     Arc::new(OpenAiChatModel::new(ModelConfig::new(
@@ -780,11 +780,19 @@ impl From<AnthropicThinkingConfig> for AnthropicThinking {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnthropicCacheTtlConfig {
     FiveMinutes,
     OneHour,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnthropicCacheStrategyConfig {
+    pub system: Option<AnthropicCacheTtlConfig>,
+    pub tools: Option<AnthropicCacheTtlConfig>,
+    pub rolling: Option<AnthropicCacheTtlConfig>,
 }
 
 impl From<AnthropicCacheTtlConfig> for AnthropicCacheTtl {
@@ -801,15 +809,17 @@ impl From<AnthropicCacheTtlConfig> for AnthropicCacheTtl {
 pub struct AnthropicOptionsConfig {
     pub thinking: Option<AnthropicThinkingConfig>,
     pub effort: Option<String>,
+    /// Legacy request-level marker emitted after tool and message markers.
     pub cache_ttl: Option<AnthropicCacheTtlConfig>,
+    pub cache_strategy: Option<AnthropicCacheStrategyConfig>,
     pub user_id: Option<String>,
     #[serde(default)]
     pub betas: Vec<String>,
 }
 
 impl AnthropicOptionsConfig {
-    fn to_oven(&self) -> AnthropicRequestOptions {
-        AnthropicRequestOptions {
+    fn to_oven(&self) -> Result<Value, ModelBuildError> {
+        let options = AnthropicRequestOptions {
             thinking: self.thinking.clone().map(Into::into),
             effort: self.effort.clone(),
             cache_control: self
@@ -817,7 +827,13 @@ impl AnthropicOptionsConfig {
                 .map(|ttl| AnthropicCacheControl { ttl: ttl.into() }),
             user_id: self.user_id.clone(),
             betas: self.betas.clone(),
+        };
+        let mut value = serde_json::to_value(options).map_err(ModelBuildError::ProviderOptions)?;
+        if let Some(strategy) = &self.cache_strategy {
+            value["cache_strategy"] =
+                serde_json::to_value(strategy).map_err(ModelBuildError::ProviderOptions)?;
         }
+        Ok(value)
     }
 }
 
