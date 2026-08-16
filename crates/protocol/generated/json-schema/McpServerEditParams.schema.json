@@ -16,6 +16,49 @@
     "definition"
   ],
   "$defs": {
+    "McpOAuthDefinition": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/$defs/McpOAuthSettingsDefinition"
+        }
+      ]
+    },
+    "McpOAuthSettingsDefinition": {
+      "type": "object",
+      "properties": {
+        "client_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_metadata_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_secret": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopes": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "McpServerDefinition": {
       "type": "object",
       "properties": {
@@ -54,6 +97,16 @@
         },
         "lazy": {
           "type": "boolean"
+        },
+        "oauth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpOAuthDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "timeout_ms": {
           "type": [

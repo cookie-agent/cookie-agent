@@ -23,6 +23,7 @@ pub use loader::{LoadedMcpServer, McpServerSource};
 pub use mcp_store::write_mcp_server;
 pub use runtime::{
     ApprovalConfig, ContextCompactionConfig, ContextCompactionTrigger, DelegationConfig, McpConfig,
-    McpServerConfig, RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
+    McpOAuthConfig, McpOAuthSettings, McpServerConfig, RuntimeConfig, ServerConfig,
+    SessionTitleConfig, ToolOutputConfig,
 };
 pub use wildcard::simple_wildcard_match;

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use cookie_agent_protocol::{
-    McpConfigTarget, McpPendingApproval, McpServerDefinition, McpServerInfo, PermissionAction,
+    McpConfigTarget, McpServerDefinition, McpServerInfo, McpServerState, PermissionAction,
     PermissionEffect, PermissionRuleSource, SessionPermissionGetResult,
 };
 use ratatui::{
@@ -98,6 +98,7 @@ impl McpForm {
                 cwd: None,
                 url: None,
                 headers: BTreeMap::new(),
+                oauth: None,
                 enabled: true,
                 lazy: false,
                 timeout_ms: None,
@@ -268,25 +269,31 @@ fn json_input(value: &str) -> InputState {
 #[derive(Default)]
 pub(super) struct McpPanel {
     pub(super) servers: Vec<McpServerInfo>,
-    pub(super) approvals: BTreeMap<String, McpPendingApproval>,
     pub(super) selection: ListState,
     pub(super) form: Option<McpForm>,
     pub(super) refresh_in_flight: bool,
+    pub(super) auth: Option<McpAuthView>,
+}
+
+pub(super) struct McpAuthView {
+    pub(super) server: String,
+    pub(super) authorization_url: String,
 }
 
 impl McpPanel {
-    pub(super) fn install(
-        &mut self,
-        mut servers: Vec<McpServerInfo>,
-        approvals: Vec<McpPendingApproval>,
-    ) {
+    pub(super) fn install(&mut self, mut servers: Vec<McpServerInfo>) {
         servers.sort_by(|left, right| left.name.cmp(&right.name));
         self.servers = servers;
-        self.approvals = approvals
-            .into_iter()
-            .map(|approval| (approval.server.clone(), approval))
-            .collect();
         self.refresh_in_flight = false;
+        if self.auth.as_ref().is_some_and(|auth| {
+            !self.servers.iter().any(|server| {
+                server.name == auth.server
+                    && server.state == McpServerState::NeedsAuth
+                    && server.auth_in_progress == Some(true)
+            })
+        }) {
+            self.auth = None;
+        }
         self.clamp();
     }
 
@@ -455,23 +462,36 @@ pub(super) fn render_mcp(frame: &mut Frame, area: Rect, panel: &mut McpPanel, th
     let detail = panel.selected().map_or_else(
         || "No MCP servers configured.".to_owned(),
         |server| {
-            let connection = panel
-                .approvals
-                .get(&server.name)
-                .map(|approval| approval.connection.clone())
-                .unwrap_or_else(|| definition_display(&server.definition));
+            let connection = definition_display(&server.definition);
             let mut text = format!("{}\n{}", server.name, connection);
             if let Some(message) = &server.message {
                 text.push_str("\n\n");
                 text.push_str(message);
             }
+            if let Some(auth) = panel
+                .auth
+                .as_ref()
+                .filter(|auth| auth.server == server.name)
+            {
+                text.push_str("\n\nAuthorization URL:\n");
+                text.push_str(&auth.authorization_url);
+            }
             text
         },
     );
-    let hint = panel
-        .selected()
-        .is_some_and(|server| panel.approvals.contains_key(&server.name))
-        .then_some("a approve | x reject");
+    let hint = panel.selected().and_then(|server| {
+        if panel
+            .auth
+            .as_ref()
+            .is_some_and(|auth| auth.server == server.name)
+        {
+            Some("c copy URL | esc cancel")
+        } else if server.state == McpServerState::NeedsAuth {
+            Some("a authenticate")
+        } else {
+            None
+        }
+    });
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme.panel_border())
@@ -664,11 +684,10 @@ fn mcp_state_label(state: cookie_agent_protocol::McpServerState) -> &'static str
         cookie_agent_protocol::McpServerState::Connected => "connected",
         cookie_agent_protocol::McpServerState::Connecting => "connecting",
         cookie_agent_protocol::McpServerState::Failed => "failed",
-        cookie_agent_protocol::McpServerState::PendingApproval => "pending_approval",
+        cookie_agent_protocol::McpServerState::NeedsAuth => "needs_auth",
         cookie_agent_protocol::McpServerState::Disabled => "disabled",
         cookie_agent_protocol::McpServerState::LazyNotConnected => "lazy-not-connected",
         cookie_agent_protocol::McpServerState::Disconnected => "disconnected",
-        cookie_agent_protocol::McpServerState::Rejected => "rejected",
     }
 }
 
@@ -712,7 +731,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use cookie_agent_protocol::{
-        EffectivePermissionAction, McpConfigSource, McpPendingApproval, McpServerDefinition,
+        EffectivePermissionAction, McpConfigSource, McpOAuthDefinition, McpServerDefinition,
         McpServerInfo, McpServerState, PermissionAction, PermissionEffect, PermissionRuleSource,
         SessionPermissionGetResult,
     };
@@ -757,32 +776,28 @@ mod tests {
     }
 
     #[test]
-    fn mcp_panel_renders_live_state_and_full_pending_connection() {
+    fn mcp_panel_renders_live_state_and_connection() {
         let mut panel = super::McpPanel::default();
-        panel.install(
-            vec![McpServerInfo {
-                name: "remote".into(),
-                source: McpConfigSource::WorkspaceFile,
-                definition: McpServerDefinition {
-                    command: None,
-                    args: Vec::new(),
-                    env: BTreeMap::new(),
-                    cwd: None,
-                    url: Some("https://example.test/mcp".into()),
-                    headers: BTreeMap::from([("Authorization".into(), "Bearer test".into())]),
-                    enabled: true,
-                    lazy: false,
-                    timeout_ms: None,
-                },
-                state: McpServerState::PendingApproval,
-                tool_count: 0,
-                message: None,
-            }],
-            vec![McpPendingApproval {
-                server: "remote".into(),
-                connection: "https://example.test/mcp\nAuthorization: Bearer test".into(),
-            }],
-        );
+        panel.install(vec![McpServerInfo {
+            name: "remote".into(),
+            source: McpConfigSource::WorkspaceFile,
+            definition: McpServerDefinition {
+                command: None,
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                cwd: None,
+                url: Some("https://example.test/mcp".into()),
+                headers: BTreeMap::from([("Authorization".into(), "Bearer test".into())]),
+                oauth: Some(McpOAuthDefinition::Bool(true)),
+                enabled: true,
+                lazy: false,
+                timeout_ms: None,
+            },
+            state: McpServerState::Disconnected,
+            tool_count: 0,
+            message: None,
+            auth_in_progress: Some(false),
+        }]);
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
         terminal
             .draw(|frame| {
@@ -801,9 +816,67 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(text.contains("pending_approval"), "{text}");
+        assert!(text.contains("disconnected"), "{text}");
         assert!(text.contains("Authorization: Bearer test"), "{text}");
-        assert!(text.contains("a approve | x reject"), "{text}");
+    }
+
+    #[test]
+    fn mcp_panel_renders_copyable_oauth_wait() {
+        let mut panel = super::McpPanel::default();
+        panel.install(vec![McpServerInfo {
+            name: "remote".into(),
+            source: McpConfigSource::UserFile,
+            definition: McpServerDefinition {
+                command: None,
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                cwd: None,
+                url: Some("https://example.test/mcp".into()),
+                headers: BTreeMap::new(),
+                oauth: Some(McpOAuthDefinition::Bool(true)),
+                enabled: true,
+                lazy: false,
+                timeout_ms: None,
+            },
+            state: McpServerState::NeedsAuth,
+            tool_count: 0,
+            message: Some("waiting for OAuth browser callback".into()),
+            auth_in_progress: Some(true),
+        }]);
+        panel.auth = Some(super::McpAuthView {
+            server: "remote".into(),
+            authorization_url: "https://auth.example.test/authorize?state=test".into(),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                super::render_mcp(
+                    frame,
+                    frame.area(),
+                    &mut panel,
+                    &crate::theme::Theme::default(),
+                );
+            })
+            .expect("render MCP OAuth panel");
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("needs_auth"), "{text}");
+        assert!(
+            text.contains("https://auth.example.test/authorize?state=test"),
+            "{text}"
+        );
+        assert!(text.contains("c copy URL | esc cancel"), "{text}");
+
+        let mut terminal_state = panel.servers.clone();
+        terminal_state[0].auth_in_progress = Some(false);
+        terminal_state[0].message = Some("OAuth authorization timed out".into());
+        panel.install(terminal_state);
+        assert!(panel.auth.is_none());
     }
 
     #[test]

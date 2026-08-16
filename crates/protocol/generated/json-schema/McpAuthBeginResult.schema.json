@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "McpAuthBeginResult",
+  "type": "object",
+  "properties": {
+    "authorization_url": {
+      "type": "string"
+    },
+    "server": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "server",
+    "authorization_url"
+  ]
+}

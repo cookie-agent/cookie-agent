@@ -25,7 +25,7 @@ mod tool_api;
 
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
-pub use mcp::{McpApprovalRequest, McpRegistry, McpServerState, McpServerStatus};
+pub use mcp::{McpRegistry, McpServerState, McpServerStatus};
 pub use media::approved_media_type;
 pub use runtime::{ApprovalRespondFailure, Engine, EngineError, EngineHistoryView, EngineOptions};
 pub use runtime_snapshot::PublishedRuntime;

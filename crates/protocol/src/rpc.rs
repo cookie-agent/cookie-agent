@@ -623,44 +623,6 @@ pub struct ApprovalListResult {
     pub tree_grants: Vec<TreeApprovalGrant>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct McpApprovalListParams {}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct McpPendingApproval {
-    pub server: String,
-    pub connection: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct McpApprovalListResult {
-    pub approvals: Vec<McpPendingApproval>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum McpApprovalDecision {
-    Approve,
-    Reject,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct McpApprovalRespondParams {
-    pub server: String,
-    pub decision: McpApprovalDecision,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct McpApprovalRespondResult {
-    pub server: String,
-    pub decision: McpApprovalDecision,
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum McpConfigSource {
@@ -682,11 +644,49 @@ pub enum McpServerState {
     Connected,
     Connecting,
     Failed,
-    PendingApproval,
+    NeedsAuth,
     Disabled,
     LazyNotConnected,
     Disconnected,
-    Rejected,
+}
+
+#[derive(Clone, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpOAuthSettingsDefinition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub client_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub client_metadata_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scopes: Option<Vec<String>>,
+}
+
+impl std::fmt::Debug for McpOAuthSettingsDefinition {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpOAuthSettingsDefinition")
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("client_metadata_url", &self.client_metadata_url)
+            .field("scopes", &self.scopes)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(untagged)]
+pub enum McpOAuthDefinition {
+    Bool(bool),
+    Settings(McpOAuthSettingsDefinition),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
@@ -704,6 +704,9 @@ pub struct McpServerDefinition {
     #[schemars(with = "crate::NullableSchema<String>", required)]
     pub url: Option<String>,
     pub headers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub oauth: Option<McpOAuthDefinition>,
     pub enabled: bool,
     pub lazy: bool,
     #[serde(deserialize_with = "deserialize_required_option")]
@@ -722,6 +725,9 @@ pub struct McpServerInfo {
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<String>", required)]
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub auth_in_progress: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
@@ -774,4 +780,29 @@ pub struct McpServerMutationResult {
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<McpServerInfo>", required)]
     pub server: Option<McpServerInfo>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpAuthBeginParams {
+    pub server: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpAuthBeginResult {
+    pub server: String,
+    pub authorization_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpAuthCancelParams {
+    pub server: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpAuthCancelResult {
+    pub server: String,
 }

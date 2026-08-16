@@ -14,16 +14,17 @@ use cookie_agent_protocol::{
     AgentDescriptor, AgentId, ApprovalListParams, ApprovalListResult, ApprovalRespondError,
     ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision,
     AvailableModelDescriptor, ClientConnectId, ClientRequestId, ClientResponseId, ClientRunId,
-    EventPayload, McpApprovalDecision, McpApprovalRespondParams, McpServerAddParams,
+    EventPayload, McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams, McpServerAddParams,
     McpServerEditParams, McpServerInfo, McpServerNameParams, McpServerPersistParams,
-    McpServerSetEnabledParams, ModelKey, ModelSelection, PermissionAction, PermissionEffect,
-    PermissionMode, PermissionRuleSource, ProviderConnectParams, ProviderDescriptor,
-    ProviderDisconnectParams, RunCancelParams, RunRecallSteerParams, RunSelection, RunStartParams,
-    RunSteerParams, RunToolStdinParams, SafeDisplayText, SessionCompactParams, SessionCreateParams,
-    SessionForkParams, SessionId, SessionListParams, SessionMeta, SessionPermissionClearParams,
-    SessionPermissionGetParams, SessionPermissionGetResult, SessionPermissionSetParams,
-    SessionRevertParams, SessionSetPermissionModeParams, SessionStatus, SessionTitle,
-    SessionTitleChange, SessionTree, SessionTreeParams, VariantId,
+    McpServerSetEnabledParams, McpServerState, ModelKey, ModelSelection, PermissionAction,
+    PermissionEffect, PermissionMode, PermissionRuleSource, ProviderConnectParams,
+    ProviderDescriptor, ProviderDisconnectParams, RunCancelParams, RunRecallSteerParams,
+    RunSelection, RunStartParams, RunSteerParams, RunToolStdinParams, SafeDisplayText,
+    SessionCompactParams, SessionCreateParams, SessionForkParams, SessionId, SessionListParams,
+    SessionMeta, SessionPermissionClearParams, SessionPermissionGetParams,
+    SessionPermissionGetResult, SessionPermissionSetParams, SessionRevertParams,
+    SessionSetPermissionModeParams, SessionStatus, SessionTitle, SessionTitleChange, SessionTree,
+    SessionTreeParams, VariantId,
 };
 use crossterm::{
     event::{
@@ -62,7 +63,7 @@ use crate::{
 use super::events::{RenderScheduler, TerminalRestore};
 use super::input::{self, InputState};
 use super::management::{
-    McpForm, McpFormFocus, McpPanel, PermissionForm, PermissionPanel, cycle_effect,
+    McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm, PermissionPanel, cycle_effect,
 };
 use super::pickers::{
     SearchPickerFocus, SearchPickerState, SessionSearchRow, cycle_selection, flatten_tree,
@@ -535,16 +536,16 @@ pub(super) enum RpcUpdate {
         error: String,
     },
     McpRefreshed {
-        result: Result<
-            (
-                cookie_agent_protocol::McpServerListResult,
-                cookie_agent_protocol::McpApprovalListResult,
-            ),
-            String,
-        >,
+        result: Result<cookie_agent_protocol::McpServerListResult, String>,
     },
     McpMutation {
-        result: Result<Option<McpServerInfo>, String>,
+        result: Box<Result<Option<McpServerInfo>, String>>,
+    },
+    McpAuthBegan {
+        result: Result<McpAuthBeginResult, String>,
+    },
+    McpAuthCancelled {
+        result: Result<String, String>,
     },
     PermissionsLoaded {
         session_id: SessionId,
@@ -1803,18 +1804,47 @@ impl App {
             RpcUpdate::McpRefreshed { result } => {
                 self.mcp_panel.refresh_in_flight = false;
                 match result {
-                    Ok((servers, approvals)) => {
-                        self.mcp_panel.install(servers.servers, approvals.approvals);
+                    Ok(servers) => {
+                        self.mcp_panel.install(servers.servers);
                     }
                     Err(error) => self.status = format!("MCP refresh failed: {error}"),
                 }
             }
-            RpcUpdate::McpMutation { result } => match result {
+            RpcUpdate::McpMutation { result } => match *result {
                 Ok(_) => {
                     self.status = "MCP server state updated.".into();
                     self.poll_mcp();
                 }
                 Err(error) => self.status = format!("MCP update failed: {error}"),
+            },
+            RpcUpdate::McpAuthBegan { result } => match result {
+                Ok(result) => {
+                    self.mcp_panel.auth = Some(McpAuthView {
+                        server: result.server,
+                        authorization_url: result.authorization_url,
+                    });
+                    self.status = "waiting for MCP OAuth authorization".into();
+                }
+                Err(error) => self.status = format!("MCP authentication failed: {error}"),
+            },
+            RpcUpdate::McpAuthCancelled { result } => match result {
+                Ok(server) => {
+                    if self
+                        .mcp_panel
+                        .auth
+                        .as_ref()
+                        .is_some_and(|auth| auth.server == server)
+                    {
+                        self.mcp_panel.auth = None;
+                    }
+                    self.status = "MCP authentication cancelled.".into();
+                    self.poll_mcp();
+                }
+                Err(error) => {
+                    self.mcp_panel.auth = None;
+                    self.status = format!("MCP authentication cancel failed: {error}");
+                    self.poll_mcp();
+                }
             },
             RpcUpdate::PermissionsLoaded { session_id, result } => {
                 if self.selected != Some(session_id) {
@@ -2161,18 +2191,10 @@ impl App {
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
-            let result = async {
-                let servers = client
-                    .list_mcp_servers()
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let approvals = client
-                    .list_mcp_approvals()
-                    .await
-                    .map_err(|error| error.to_string())?;
-                Ok((servers, approvals))
-            }
-            .await;
+            let result = client
+                .list_mcp_servers()
+                .await
+                .map_err(|error| error.to_string());
             let _ = updates.send(RpcUpdate::McpRefreshed { result });
         });
     }
@@ -2240,6 +2262,16 @@ impl App {
             }
             return;
         }
+        if let Some(auth) = self.mcp_panel.auth.as_ref() {
+            match key.code {
+                KeyCode::Esc => self.dispatch_mcp_auth_cancel(auth.server.clone()),
+                KeyCode::Char('c') => {
+                    self.copy_to_clipboard(auth.authorization_url.clone());
+                }
+                _ => {}
+            }
+            return;
+        }
         let count = self.mcp_panel.servers.len();
         match key.code {
             KeyCode::Esc => self.modal = Modal::None,
@@ -2266,16 +2298,11 @@ impl App {
                     self.dispatch_mcp_reconnect(name);
                 }
             }
-            KeyCode::Char('a' | 'x') => {
-                if let Some(name) = self.mcp_panel.selected().map(|server| server.name.clone())
-                    && self.mcp_panel.approvals.contains_key(&name)
+            KeyCode::Char('a') => {
+                if let Some(server) = self.mcp_panel.selected().cloned()
+                    && server.state == McpServerState::NeedsAuth
                 {
-                    let decision = if key.code == KeyCode::Char('a') {
-                        McpApprovalDecision::Approve
-                    } else {
-                        McpApprovalDecision::Reject
-                    };
-                    self.dispatch_mcp_approval(name, decision);
+                    self.dispatch_mcp_auth_begin(server.name);
                 }
             }
             _ => {}
@@ -2332,7 +2359,9 @@ impl App {
                 Ok(mutation.server)
             }
             .await;
-            let _ = updates.send(RpcUpdate::McpMutation { result });
+            let _ = updates.send(RpcUpdate::McpMutation {
+                result: Box::new(result),
+            });
         });
     }
 
@@ -2345,7 +2374,9 @@ impl App {
                 .await
                 .map(|result| result.server)
                 .map_err(|error| error.to_string());
-            let _ = updates.send(RpcUpdate::McpMutation { result });
+            let _ = updates.send(RpcUpdate::McpMutation {
+                result: Box::new(result),
+            });
         });
     }
 
@@ -2358,7 +2389,9 @@ impl App {
                 .await
                 .map(|result| result.server)
                 .map_err(|error| error.to_string());
-            let _ = updates.send(RpcUpdate::McpMutation { result });
+            let _ = updates.send(RpcUpdate::McpMutation {
+                result: Box::new(result),
+            });
         });
     }
 
@@ -2371,20 +2404,36 @@ impl App {
                 .await
                 .map(|result| result.server)
                 .map_err(|error| error.to_string());
-            let _ = updates.send(RpcUpdate::McpMutation { result });
+            let _ = updates.send(RpcUpdate::McpMutation {
+                result: Box::new(result),
+            });
         });
     }
 
-    fn dispatch_mcp_approval(&self, server: String, decision: McpApprovalDecision) {
+    fn dispatch_mcp_auth_begin(&self, server: String) {
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
             let result = client
-                .respond_mcp_approval(McpApprovalRespondParams { server, decision })
+                .begin_mcp_auth(McpAuthBeginParams { server })
                 .await
-                .map(|_| None)
                 .map_err(|error| error.to_string());
-            let _ = updates.send(RpcUpdate::McpMutation { result });
+            let _ = updates.send(RpcUpdate::McpAuthBegan { result });
+        });
+    }
+
+    fn dispatch_mcp_auth_cancel(&self, server: String) {
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .cancel_mcp_auth(McpAuthCancelParams {
+                    server: server.clone(),
+                })
+                .await
+                .map(|_| server)
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::McpAuthCancelled { result });
         });
     }
 

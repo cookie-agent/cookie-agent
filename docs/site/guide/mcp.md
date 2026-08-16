@@ -19,7 +19,7 @@ timeout_ms = 30000
 
 [mcp.servers.remote]
 url = "https://mcp.example.com/mcp"
-headers = { Authorization = "Bearer token" }
+oauth = true
 lazy = true
 ```
 
@@ -33,14 +33,81 @@ eager server's initial connection and `tools/list` attempt to finish, so its too
 context is not built from a partial startup snapshot. Each wait remains bounded
 by that server's `timeout_ms`; one server's failure does not block the others.
 
+## OAuth for remote servers
+
+Streamable HTTP servers use OAuth automatically when an unauthenticated request
+returns an authorization challenge. OAuth can be selected explicitly or disabled:
+
+```toml
+[mcp.servers.remote]
+url = "https://mcp.example.com/mcp"
+oauth = true
+
+[mcp.servers.pre_registered]
+url = "https://other.example.com/mcp"
+oauth = { client_id = "cookie-agent", scopes = ["mcp"] }
+
+[mcp.servers.no_oauth]
+url = "https://static.example.com/mcp"
+oauth = false
+headers = { Authorization = "Bearer static-token" }
+```
+
+Omitting `oauth` is the default auto mode. `true` and `{}` enable the same
+reactive flow. The settings object may contain `client_id`, `client_secret`,
+`client_metadata_url`, and `scopes`. Cookie Agent follows protected-resource and
+authorization-server discovery, uses S256 PKCE, and selects a pre-registered
+client, a server-supported Client ID Metadata Document, or Dynamic Client
+Registration in that order. A static `Authorization` header takes precedence
+over OAuth when both are configured; other static headers are sent alongside
+OAuth requests. OAuth is not used for stdio servers.
+
+An authorization challenge changes the server state to `needs_auth`. Run
+`cookie mcp auth <server>`, or select the server in `/mcp` and press `a`, then
+open the displayed URL. The daemon listens on an ephemeral `127.0.0.1` callback
+port for five minutes. The TUI can copy the URL with `c` and cancel the wait with
+Escape. Successful authorization stores the token and reconnects the server.
+Expired tokens refresh automatically. A rejected refresh or revoked token
+returns the server to `needs_auth` instead of repeatedly opening a browser flow.
+A transient refresh failure also returns to `needs_auth` immediately; Cookie
+Agent does not silently retry token requests or open a browser flow.
+
+Authorization codes are held only by a one-shot in-memory relay. Cookie Agent
+passes a fixed redacted surrogate through rmcp's traced exchange path and restores
+the real code only in the outbound token request, preventing debug logs from
+containing the browser callback code.
+
+OAuth credentials are user-level and stored in the single
+`~/.local/share/cookie_agent/mcp-oauth.json` file. On Unix the file is owner-only
+(`0600`). The unversioned file is parsed strictly, and malformed contents, unsafe
+permissions, or symlinks stop engine startup. Stop the daemon and delete this
+file to revoke all locally stored MCP OAuth credentials. Removing a server
+through MCP management removes its credential. Writers serialize through the
+owner-only `mcp-oauth.lock`, reread the current file, and merge one credential
+key before each atomic replacement.
+
+Each credential is keyed by the server name and a SHA-256 hash of its canonical
+resource URL, and is also bound to that URL and the configured OAuth client
+identity. Canonicalization lowercases the scheme and host, removes default HTTP
+and HTTPS ports, and resolves dot-segments. Path bytes after dot-segment
+resolution, including trailing slashes, remain significant. It does not combine
+query strings or different subpaths. Editing the endpoint or client
+identity invalidates the record before the replacement server can connect, even
+when both resources advertise the same authorization-server issuer. The same
+server name and canonical URL can reuse authorization across projects.
+
+OAuth credentials establish identity with the remote server. They do not alter
+which agents can see or call that server's tools; agent permissions control that
+separately.
+
 ## TUI management
 
 Run `/mcp` to open the live MCP panel. The list reports `connected` with its
 tool count, `connecting`, `failed` with the connection error,
-`pending_approval`, `disabled`, and `lazy-not-connected`. The panel polls the
-daemon while it is open. Select a pending project server to inspect the complete
-command, arguments, environment, and working directory, or URL and headers;
-press `a` to approve or `x` to reject it.
+`needs_auth`, `disabled`, and `lazy-not-connected`. The panel polls the daemon
+while it is open. Select a server to inspect its complete command, arguments,
+environment, and working directory, or URL and headers. Press `a` on a
+`needs_auth` remote server to begin OAuth.
 
 The panel can reconnect a failed server, toggle enablement, and add, edit, or
 remove definitions. Add/edit forms accept either a command, JSON string array
@@ -54,44 +121,24 @@ Stdio servers negotiate MCP 2025-11-25 when needed. Servers that implement the
 HTTP, including SSE responses on that endpoint; the retired two-endpoint legacy
 SSE transport is not supported.
 
-## Trust
+## Repository security
 
-Servers from `~/.config/cookie_agent/config.toml` are trusted. A server authored
-under `<cwd>/.cookie-agent/config.toml` remains `pending_approval` and is not
-started until explicitly approved. The approval presents the complete command
-and arguments, environment, and working directory, or the URL and headers.
-Approval is stored for that server name in the current project. Existing grants
-are recorded in the per-project `mcp-trust-grants.jsonl` file. This store is not
-versioned. An incompatible or malformed complete record is a startup error; fix
-the record or delete the per-project `mcp-trust-grants.jsonl` file to reset MCP
-approvals.
+There is no separate MCP trust store or approval prompt. Every configured,
+enabled server enters the normal lazy or eager connection lifecycle. MCP tools
+are permission-gated like normal tools: an agent with no `mcp` permission entry
+cannot see them, and scoped rules decide each call.
 
-Approvals are keyed by server name; a later change to a project file can replace
-the server command under an existing approval — only enable project servers from
+Project MCP configuration and project agent documents are version-controlled
+content equivalent to code. A repository can ship both a server definition and
+an agent document that permits its tools. Review those files and work only in
 repositories you trust.
-
-With the daemon running, inspect and respond to project requests through:
-
-```console
-cookie mcp list
-cookie mcp approve github
-cookie mcp reject github
-```
-
-Approval is durable for the server name in that project, including across later
-configuration changes. Rejection lasts for the current daemon lifetime; a later
-restart presents the project request again. Approving a
-non-lazy server starts its connection immediately. Runs started after the
-approval response wait for that bounded connection and initial tool listing
-before assembling their tool context.
 
 Connection failures are isolated per server. A failed server publishes no tools
 and does not prevent other servers from connecting.
 
 Definitions created or changed through the TUI are runtime-layer entries and
-are trusted by construction. They live only for the current daemon unless
-explicitly written to a file. A runtime entry continues to win after write-back;
-on restart the persisted file entry follows normal user/project trust rules.
+live only for the current daemon unless explicitly written to a file. A runtime
+entry continues to win after write-back.
 
 ## Tool names and permissions
 

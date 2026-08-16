@@ -53,6 +53,40 @@ fn workspace_server_override_retains_workspace_provenance() {
 }
 
 #[test]
+fn remote_oauth_accepts_auto_booleans_and_strict_settings() {
+    for (oauth, enabled) in [
+        ("", true),
+        ("oauth = true\n", true),
+        ("oauth = false\n", false),
+        ("oauth = {}\n", true),
+        (
+            "oauth = { client_id = \"client\", client_secret = \"oauth-secret-sentinel\", scopes = [\"read\"] }\n",
+            true,
+        ),
+    ] {
+        let directory = root(&format!(
+            "[mcp.servers.remote]\nurl = \"https://example.test/mcp\"\n{oauth}"
+        ));
+        let loaded = load_from_roots(Some(directory.path()), None).expect("OAuth config");
+        assert_eq!(loaded.mcp_servers["remote"].config.oauth.enabled(), enabled);
+        assert!(
+            !format!("{:?}", loaded.mcp_servers["remote"].config).contains("oauth-secret-sentinel")
+        );
+    }
+
+    for oauth in [
+        "oauth = { unknown = true }\n",
+        "oauth = { client_secret = \"secret\" }\n",
+        "oauth = { client_metadata_url = \"http://example.test/client.json\" }\n",
+    ] {
+        let directory = root(&format!(
+            "[mcp.servers.remote]\nurl = \"https://example.test/mcp\"\n{oauth}"
+        ));
+        assert!(load_from_roots(Some(directory.path()), None).is_err());
+    }
+}
+
+#[test]
 fn write_back_replaces_only_the_named_table_and_round_trips_strictly() {
     let directory = root(
         "# keep this comment\n[tool_output]\nmax_lines = 42\nmax_bytes = 2048\n\n[mcp.servers.demo]\ncommand = \"old\"\n",
@@ -65,6 +99,7 @@ fn write_back_replaces_only_the_named_table_and_round_trips_strictly() {
         cwd: None,
         url: Some("https://example.test/mcp".into()),
         headers: std::collections::BTreeMap::from([("Authorization".into(), "Bearer x".into())]),
+        oauth: Default::default(),
         enabled: false,
         lazy: true,
         timeout_ms: Some(5000),
@@ -89,6 +124,7 @@ fn write_back_rejects_an_existing_strict_conflict_without_changing_the_file() {
         cwd: None,
         url: None,
         headers: Default::default(),
+        oauth: Default::default(),
         enabled: true,
         lazy: false,
         timeout_ms: None,

@@ -30,11 +30,120 @@ pub struct McpServerConfig {
     pub url: Option<String>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "McpOAuthConfig::is_auto")]
+    pub oauth: McpOAuthConfig,
     #[serde(default = "yes")]
     pub enabled: bool,
     #[serde(default)]
     pub lazy: bool,
     pub timeout_ms: Option<u64>,
+}
+
+#[derive(Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpOAuthSettings {
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub client_metadata_url: Option<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+impl std::fmt::Debug for McpOAuthSettings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpOAuthSettings")
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("client_metadata_url", &self.client_metadata_url)
+            .field("scopes", &self.scopes)
+            .finish()
+    }
+}
+
+#[derive(Clone, Default, Eq, PartialEq)]
+pub enum McpOAuthConfig {
+    #[default]
+    Auto,
+    Enabled,
+    Disabled,
+    Settings(McpOAuthSettings),
+}
+
+impl McpOAuthConfig {
+    #[must_use]
+    pub const fn is_auto(&self) -> bool {
+        matches!(self, Self::Auto)
+    }
+
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    #[must_use]
+    pub fn settings(&self) -> McpOAuthSettings {
+        match self {
+            Self::Settings(settings) => settings.clone(),
+            Self::Auto | Self::Enabled | Self::Disabled => McpOAuthSettings::default(),
+        }
+    }
+}
+
+impl std::fmt::Debug for McpOAuthConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => formatter.write_str("Auto"),
+            Self::Enabled => formatter.write_str("Enabled"),
+            Self::Disabled => formatter.write_str("Disabled"),
+            Self::Settings(settings) => formatter
+                .debug_struct("Settings")
+                .field("client_id", &settings.client_id)
+                .field(
+                    "client_secret",
+                    &settings.client_secret.as_ref().map(|_| "[REDACTED]"),
+                )
+                .field("client_metadata_url", &settings.client_metadata_url)
+                .field("scopes", &settings.scopes)
+                .finish(),
+        }
+    }
+}
+
+impl Serialize for McpOAuthConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Auto | Self::Enabled => serializer.serialize_bool(true),
+            Self::Disabled => serializer.serialize_bool(false),
+            Self::Settings(settings) => settings.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for McpOAuthConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum OAuthValue {
+            Bool(bool),
+            Settings(McpOAuthSettings),
+        }
+
+        Ok(match OAuthValue::deserialize(deserializer)? {
+            OAuthValue::Bool(true) => Self::Enabled,
+            OAuthValue::Bool(false) => Self::Disabled,
+            OAuthValue::Settings(settings) => Self::Settings(settings),
+        })
+    }
 }
 
 impl McpServerConfig {
@@ -49,19 +158,41 @@ impl McpServerConfig {
                 .map(|parsed| !matches!(parsed.scheme(), "http" | "https"))
                 .unwrap_or(true)
         });
-        let mixed = self.command.is_some() && !self.headers.is_empty()
+        let mixed = self.command.is_some() && (!self.headers.is_empty() || !self.oauth.is_auto())
             || self.url.is_some()
                 && (!self.args.is_empty() || !self.env.is_empty() || self.cwd.is_some());
+        let invalid_oauth = match &self.oauth {
+            McpOAuthConfig::Settings(settings) => {
+                settings.client_id.as_ref().is_some_and(String::is_empty)
+                    || settings
+                        .client_secret
+                        .as_ref()
+                        .is_some_and(String::is_empty)
+                    || settings.client_secret.is_some() && settings.client_id.is_none()
+                    || settings.scopes.iter().any(String::is_empty)
+                    || settings.client_metadata_url.as_ref().is_some_and(|value| {
+                        url::Url::parse(value)
+                            .map(|url| {
+                                url.scheme() != "https"
+                                    || url.host_str().is_none()
+                                    || url.path() == "/"
+                            })
+                            .unwrap_or(true)
+                    })
+            }
+            McpOAuthConfig::Auto | McpOAuthConfig::Enabled | McpOAuthConfig::Disabled => false,
+        };
         if invalid_name
             || transport_count != 1
             || invalid_stdio
             || invalid_remote
             || mixed
+            || invalid_oauth
             || self.timeout_ms == Some(0)
         {
             return Err(ConfigError::McpServer {
                 server: name.to_owned(),
-                reason: "configure exactly one of command or url; stdio-only and remote-only fields may not be mixed, and timeout_ms must be positive".into(),
+                reason: "configure exactly one of command or url; stdio-only and remote-only fields may not be mixed; OAuth client settings must be valid; and timeout_ms must be positive".into(),
             });
         }
         Ok(())

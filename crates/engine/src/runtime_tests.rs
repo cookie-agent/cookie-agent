@@ -6066,6 +6066,7 @@ fn delayed_mcp_server(source: McpServerSource) -> LoadedMcpServer {
             cwd: None,
             url: None,
             headers: BTreeMap::new(),
+            oauth: Default::default(),
             enabled: true,
             lazy: false,
             timeout_ms: Some(5_000),
@@ -6107,36 +6108,31 @@ async fn immediate_first_run_waits_for_complete_eager_mcp_listing() {
 }
 
 #[tokio::test]
-async fn immediate_run_after_project_approval_waits_for_mcp_listing() {
+async fn immediate_first_run_waits_for_project_mcp_listing_without_separate_approval() {
     let (endpoint, captured) = scripted_model_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
         &endpoint,
-        "---\ndescription: Approved MCP readiness agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  mcp: allow\n---\nUse approved MCP.\n",
+        "---\ndescription: Project MCP readiness agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  mcp: allow\n---\nUse project MCP.\n",
         None,
         None,
         false,
         None,
         Some(delayed_mcp_server(McpServerSource::WorkspaceFile)),
     );
-    let approval = fixture.engine.pending_mcp_approvals().remove(0);
-    fixture
-        .engine
-        .approve_project_mcp_server(&approval.server)
-        .expect("approve project MCP server");
     let session = fixture
         .engine
         .create_session(selection.clone())
-        .expect("session immediately after approval");
+        .expect("immediate project MCP session");
     fixture
         .engine
         .start_run(RunStartParams {
             session_id: session.session_id,
-            client_run_id: ClientRunId::new("post-approval-mcp-run").expect("run ID"),
+            client_run_id: ClientRunId::new("project-mcp-run").expect("run ID"),
             selection,
-            input: "use the approved tools".into(),
+            input: "use the project tools".into(),
         })
         .await
-        .expect("run immediately after approval");
+        .expect("first run after engine open");
     let status = fixture.engine.mcp_statuses().remove(0);
     assert_eq!(status.state, crate::McpServerState::Connected);
     assert_eq!(status.tools.len(), 2);

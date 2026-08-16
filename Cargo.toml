@@ -31,6 +31,7 @@ clap = { version = "4.6.4", features = ["derive"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 crc32fast = "1.5.0"
 flate2 = "1.1.9"
+fs2 = "0.4.3"
 futures-util = "0.3.33"
 indexmap = { version = "2.12.1", features = ["serde"] }
 jiff = { version = "0.2.35", features = ["serde"] }
@@ -72,7 +73,7 @@ oven-sdk-azure = "=0.4.0"
 oven-sdk-cohere = "=0.3.0"
 oven-sdk-open-responses = "=0.3.0"
 reqwest-oven = { package = "reqwest", version = "=0.12.28", default-features = false, features = ["json", "stream", "rustls-tls"] }
-rmcp = { version = "=3.1.2", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "client-side-sse"] }
+rmcp = { version = "=3.1.2", default-features = false, features = ["auth", "client", "transport-child-process", "transport-streamable-http-client-reqwest", "client-side-sse"] }
 
 [patch.crates-io]
 syntect = { path = "vendor/syntect" }

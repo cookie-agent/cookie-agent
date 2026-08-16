@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "McpAuthCancelParams",
+  "type": "object",
+  "properties": {
+    "server": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "server"
+  ]
+}

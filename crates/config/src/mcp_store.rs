@@ -197,6 +197,7 @@ mod tests {
             cwd: None,
             url: None,
             headers: Default::default(),
+            oauth: Default::default(),
             enabled: true,
             lazy: false,
             timeout_ms: None,

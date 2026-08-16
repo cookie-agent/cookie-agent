@@ -2,6 +2,9 @@
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    fs::{self, OpenOptions},
+    io::{Read as _, Write as _},
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -11,18 +14,20 @@ use std::{
 
 use async_trait::async_trait;
 use base64::Engine as _;
-use cookie_agent_config::{LoadedMcpServer, McpServerConfig, McpServerSource};
+use cookie_agent_config::{LoadedMcpServer, McpOAuthSettings, McpServerConfig};
 use cookie_agent_protocol::{
     ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, PermissionAction,
     PersistedToolResult as ToolResult, PreparedApprovalResource, PreparedBindingLifetime,
     PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
     PreparedResourceIdentity, SafeDisplayText, Sha256Digest, ToolAttachment, ToolCallId,
 };
+use futures_util::StreamExt as _;
 use process_wrap::tokio::CommandWrap;
 #[cfg(windows)]
 use process_wrap::tokio::JobObject;
 #[cfg(unix)]
 use process_wrap::tokio::ProcessGroup;
+use rmcp::transport::auth::{AuthorizationCallback, OAuthClientConfig, OAuthTokenResponse};
 use rmcp::{
     ClientHandler, ClientLifecycleMode, ClientServiceExt,
     model::{
@@ -34,12 +39,21 @@ use rmcp::{
         NotificationContext, RequestContext, RoleClient, RunningService, RxJsonRpcMessage,
         TxJsonRpcMessage,
     },
-    transport::{StreamableHttpClientTransport, TokioChildProcess, Transport},
+    transport::{
+        AuthClient, AuthorizationManager, AuthorizationRequest, AuthorizationSession,
+        CredentialStore, OAuthHttpClient, OAuthHttpClientFuture, OAuthHttpRedirectPolicy,
+        StoredCredentials, StreamableHttpClientTransport, TokioChildProcess, Transport,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tokio::sync::Mutex as AsyncMutex;
+use sha2::{Digest as _, Sha256};
 use tokio::sync::Notify;
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    net::{TcpListener, TcpStream},
+    sync::Mutex as AsyncMutex,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -48,17 +62,25 @@ use crate::{
 };
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+#[cfg(not(test))]
+const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+#[cfg(test)]
+const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_millis(200);
+const OAUTH_STORE_FILE: &str = "mcp-oauth.json";
+const OAUTH_STORE_LOCK_FILE: &str = "mcp-oauth.lock";
+const OAUTH_CALLBACK_MAX_BYTES: usize = 16 * 1024;
+const OAUTH_STORE_MAX_BYTES: u64 = 1024 * 1024;
+const REDACTED_AUTHORIZATION_CODE: &str = "cookie-agent-redacted-authorization-code";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum McpServerState {
     Disabled,
-    PendingApproval,
     Disconnected,
     Connecting,
     Connected,
+    NeedsAuth,
     Failed,
-    Rejected,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -67,18 +89,7 @@ pub struct McpServerStatus {
     pub state: McpServerState,
     pub message: Option<String>,
     pub tools: Vec<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct McpApprovalRequest {
-    pub server: String,
-    pub connection: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct McpNameTrustGrant {
-    server: String,
+    pub auth_in_progress: bool,
 }
 
 #[derive(Clone)]
@@ -102,14 +113,17 @@ struct ServerRuntime {
     superseded: CancellationToken,
     registry: Weak<RegistryInner>,
     progress: AsyncMutex<HashMap<ToolCallId, crate::ProgressSink>>,
+    auth_challenge: Mutex<Option<String>>,
+    auth_flow: Mutex<Option<OAuthFlowState>>,
+    auth_generation: AtomicU64,
+    auth_lock: AsyncMutex<()>,
 }
 
 struct RegistryInner {
     servers: Mutex<BTreeMap<String, Arc<ServerRuntime>>>,
     reserved_names: Mutex<HashSet<String>>,
     claimed_names: Mutex<HashMap<String, String>>,
-    trusted_names: Mutex<HashSet<String>>,
-    trust_path: std::path::PathBuf,
+    oauth_credentials: OAuthCredentialFile,
     shutdown: CancellationToken,
     connection_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     active_connects: AtomicUsize,
@@ -117,6 +131,82 @@ struct RegistryInner {
     eager_pending: AtomicUsize,
     eager_ready: Notify,
 }
+
+struct OAuthFlowState {
+    generation: u64,
+    authorization_url: String,
+    cancellation: CancellationToken,
+}
+
+#[derive(Clone)]
+struct OAuthCredentialFile {
+    inner: Arc<OAuthCredentialFileInner>,
+}
+
+struct OAuthCredentialFileInner {
+    path: PathBuf,
+    transaction: Mutex<()>,
+}
+
+struct OAuthStoreLock {
+    file: fs::File,
+}
+
+#[derive(Clone)]
+struct ServerCredentialStore {
+    file: OAuthCredentialFile,
+    key: String,
+    binding: OAuthCredentialBinding,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedOAuthCredential {
+    binding: OAuthCredentialBinding,
+    credentials: StrictStoredCredentials,
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OAuthCredentialBinding {
+    resource_url: String,
+    configured_client_id: Option<String>,
+    client_metadata_url: Option<String>,
+    client_secret_sha256: Option<String>,
+    scopes: Vec<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StrictStoredCredentials {
+    client_id: String,
+    token_response: Option<OAuthTokenResponse>,
+    granted_scopes: Vec<String>,
+    token_received_at: Option<u64>,
+    issuer: Option<String>,
+}
+
+struct RedactingOAuthHttpClient {
+    follow_redirects: reqwest::Client,
+    stop_redirects: reqwest::Client,
+    authorization_code: OAuthAuthorizationCodeRelay,
+}
+
+#[derive(Clone, Default)]
+struct OAuthAuthorizationCodeRelay {
+    code: Arc<Mutex<Option<zeroize::Zeroizing<String>>>>,
+}
+
+#[derive(Debug)]
+struct OAuthHttpFailure;
+
+impl std::fmt::Display for OAuthHttpFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("OAuth HTTP operation failed")
+    }
+}
+
+impl std::error::Error for OAuthHttpFailure {}
 
 #[derive(Clone)]
 pub struct McpRegistry {
@@ -317,6 +407,9 @@ impl ClientHandler for McpClientHandler {
             let result = tokio::time::timeout(timeout, peer.list_all_tools()).await;
             match result {
                 Ok(Ok(tools)) => server.publish_tools(generation, tools),
+                Ok(Err(error)) if server.oauth_enabled() && service_error_requires_auth(&error) => {
+                    server.mark_needs_auth(auth_challenge(&error));
+                }
                 Ok(Err(error)) => server.publish_refresh_failure(
                     generation,
                     format!("tools/list refresh failed: {error}"),
@@ -336,27 +429,631 @@ fn unsupported_server_request(method: &str) -> ErrorData {
     )
 }
 
-fn load_trust_records(path: &std::path::Path) -> Result<Vec<McpNameTrustGrant>, ToolError> {
-    crate::events::load_jsonl(path).map_err(|error| {
-        ToolError::execution(format!(
-            "invalid MCP trust store `{}`; fix the records or remove the file to reset project MCP approvals: {error}",
-            path.display()
-        ))
-    })
+fn oauth_enabled_config(config: &McpServerConfig) -> bool {
+    config.url.is_some()
+        && config.oauth.enabled()
+        && !config
+            .headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("authorization"))
+}
+
+fn auth_challenge(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    use rmcp::transport::streamable_http_client::{AuthRequiredError, InsufficientScopeError};
+
+    let mut source = Some(error);
+    while let Some(current) = source {
+        if let Some(required) = current.downcast_ref::<AuthRequiredError>() {
+            return Some(required.www_authenticate_header.clone());
+        }
+        if let Some(scope) = current.downcast_ref::<InsufficientScopeError>() {
+            return Some(scope.www_authenticate_header.clone());
+        }
+        source = current.source();
+    }
+    None
+}
+
+fn oauth_requires_auth(error: &(dyn std::error::Error + 'static)) -> bool {
+    if auth_challenge(error).is_some() {
+        return true;
+    }
+    let mut source = Some(error);
+    while let Some(current) = source {
+        if let Some(auth) = current.downcast_ref::<rmcp::transport::AuthError>()
+            && matches!(
+                auth,
+                rmcp::transport::AuthError::AuthorizationRequired
+                    | rmcp::transport::AuthError::TokenExpired
+                    | rmcp::transport::AuthError::TokenRefreshFailed(_)
+                    | rmcp::transport::AuthError::TokenRefreshRejected(_)
+            )
+        {
+            return true;
+        }
+        source = current.source();
+    }
+    false
+}
+
+fn initialize_error_requires_auth(error: &rmcp::service::ClientInitializeError) -> bool {
+    error.is_authorization_required()
+        || match error {
+            rmcp::service::ClientInitializeError::TransportError { error, .. } => {
+                oauth_requires_auth(error.error.as_ref())
+            }
+            _ => false,
+        }
+}
+
+fn service_error_requires_auth(error: &rmcp::service::ServiceError) -> bool {
+    match error {
+        rmcp::service::ServiceError::TransportSend(error) => {
+            oauth_requires_auth(error.error.as_ref())
+        }
+        _ => oauth_requires_auth(error),
+    }
+}
+
+impl OAuthCredentialFile {
+    fn open(path: PathBuf) -> Result<Self, ToolError> {
+        load_oauth_store(&path).map_err(|()| oauth_store_startup_error(&path))?;
+        Ok(Self {
+            inner: Arc::new(OAuthCredentialFileInner {
+                path,
+                transaction: Mutex::new(()),
+            }),
+        })
+    }
+
+    fn scoped(&self, server: &str, binding: OAuthCredentialBinding) -> ServerCredentialStore {
+        ServerCredentialStore {
+            file: self.clone(),
+            key: oauth_credential_key(server, &binding.resource_url),
+            binding,
+        }
+    }
+
+    fn remove(&self, server: &str, binding: &OAuthCredentialBinding) -> Result<(), ToolError> {
+        let key = oauth_credential_key(server, &binding.resource_url);
+        self.update(|credentials| {
+            credentials.remove(&key);
+        })
+        .map_err(|()| oauth_store_runtime_error(&self.inner.path))
+    }
+
+    fn update(
+        &self,
+        update: impl FnOnce(&mut BTreeMap<String, PersistedOAuthCredential>),
+    ) -> Result<(), ()> {
+        let _transaction = self
+            .inner
+            .transaction
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _file_lock = OAuthStoreLock::acquire(&self.inner.path)?;
+        let mut candidate = load_oauth_store(&self.inner.path)?;
+        update(&mut candidate);
+        persist_oauth_store(&self.inner.path, &candidate)?;
+        Ok(())
+    }
+
+    fn get(&self, key: &str) -> Result<Option<PersistedOAuthCredential>, ()> {
+        let _transaction = self
+            .inner
+            .transaction
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _file_lock = OAuthStoreLock::acquire(&self.inner.path)?;
+        Ok(load_oauth_store(&self.inner.path)?.get(key).cloned())
+    }
+}
+
+#[async_trait]
+impl CredentialStore for ServerCredentialStore {
+    async fn load(&self) -> Result<Option<StoredCredentials>, rmcp::transport::AuthError> {
+        let stored = self
+            .file
+            .get(&self.key)
+            .map_err(|()| oauth_store_auth_error())?;
+        let Some(stored) = stored else {
+            return Ok(None);
+        };
+        if stored.binding != self.binding {
+            self.clear().await?;
+            return Ok(None);
+        }
+        Ok(Some(stored.credentials.into_rmcp()))
+    }
+
+    async fn save(&self, credentials: StoredCredentials) -> Result<(), rmcp::transport::AuthError> {
+        let stored = PersistedOAuthCredential {
+            binding: self.binding.clone(),
+            credentials: StrictStoredCredentials::from_rmcp(credentials),
+        };
+        self.file
+            .update(|all| {
+                all.insert(self.key.clone(), stored);
+            })
+            .map_err(|()| oauth_store_auth_error())
+    }
+
+    async fn clear(&self) -> Result<(), rmcp::transport::AuthError> {
+        self.file
+            .update(|all| {
+                all.remove(&self.key);
+            })
+            .map_err(|()| oauth_store_auth_error())
+    }
+}
+
+impl OAuthCredentialBinding {
+    fn from_config(config: &McpServerConfig) -> Option<Self> {
+        let resource_url = canonical_oauth_resource_url(config.url.as_deref()?);
+        let settings = config.oauth.settings();
+        let client_secret_sha256 = settings.client_secret.as_ref().map(|secret| {
+            let digest = Sha256::digest(secret.as_bytes());
+            digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        });
+        Some(Self {
+            resource_url,
+            configured_client_id: settings.client_id,
+            client_metadata_url: settings.client_metadata_url,
+            client_secret_sha256,
+            scopes: settings.scopes,
+        })
+    }
+}
+
+fn canonical_oauth_resource_url(resource_url: &str) -> String {
+    let Ok(mut url) = url::Url::parse(resource_url) else {
+        // Invalid URLs stay fully distinct instead of falling back to a broader key.
+        return resource_url.to_owned();
+    };
+    if matches!(
+        (url.scheme(), url.port()),
+        ("http", Some(80)) | ("https", Some(443))
+    ) {
+        let _ = url.set_port(None);
+    }
+    url.into()
+}
+
+fn oauth_credential_key(server: &str, canonical_resource_url: &str) -> String {
+    let digest = Sha256::digest(canonical_resource_url.as_bytes());
+    let hash = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{server}:{hash}")
+}
+
+impl StrictStoredCredentials {
+    fn from_rmcp(credentials: StoredCredentials) -> Self {
+        Self {
+            client_id: credentials.client_id,
+            token_response: credentials.token_response,
+            granted_scopes: credentials.granted_scopes,
+            token_received_at: credentials.token_received_at,
+            issuer: credentials.issuer,
+        }
+    }
+
+    fn into_rmcp(self) -> StoredCredentials {
+        StoredCredentials::new(
+            self.client_id,
+            self.token_response,
+            self.granted_scopes,
+            self.token_received_at,
+        )
+        .with_issuer(self.issuer)
+    }
+}
+
+impl RedactingOAuthHttpClient {
+    fn new(authorization_code: OAuthAuthorizationCodeRelay) -> Result<Self, ToolError> {
+        let base = || {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .pool_max_idle_per_host(0)
+        };
+        let follow_redirects = base()
+            .build()
+            .map_err(|_| ToolError::execution("MCP OAuth HTTP client setup failed"))?;
+        let stop_redirects = base()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| ToolError::execution("MCP OAuth HTTP client setup failed"))?;
+        Ok(Self {
+            follow_redirects,
+            stop_redirects,
+            authorization_code,
+        })
+    }
+}
+
+impl OAuthAuthorizationCodeRelay {
+    fn install(&self, code: String) {
+        *self
+            .code
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(zeroize::Zeroizing::new(code));
+    }
+
+    fn restore_in_request(&self, request: &mut http::Request<Vec<u8>>) {
+        let parameters = url::form_urlencoded::parse(request.body())
+            .into_owned()
+            .collect::<Vec<_>>();
+        if !parameters
+            .iter()
+            .any(|(name, value)| name == "code" && value == REDACTED_AUTHORIZATION_CODE)
+        {
+            return;
+        }
+        let Some(code) = self
+            .code
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        else {
+            return;
+        };
+        let mut encoded = url::form_urlencoded::Serializer::new(String::new());
+        for (name, value) in parameters {
+            encoded.append_pair(
+                &name,
+                if name == "code" && value == REDACTED_AUTHORIZATION_CODE {
+                    code.as_str()
+                } else {
+                    &value
+                },
+            );
+        }
+        *request.body_mut() = encoded.finish().into_bytes();
+    }
+}
+
+impl OAuthHttpClient for RedactingOAuthHttpClient {
+    fn execute(&self, operation: rmcp::transport::OAuthHttpRequest) -> OAuthHttpClientFuture<'_> {
+        Box::pin(async move {
+            let client = match operation.redirect_policy {
+                OAuthHttpRedirectPolicy::Follow => &self.follow_redirects,
+                OAuthHttpRedirectPolicy::Stop => &self.stop_redirects,
+                _ => &self.stop_redirects,
+            };
+            let timeout = operation.timeout;
+            let mut oauth_request = operation.request;
+            self.authorization_code
+                .restore_in_request(&mut oauth_request);
+            let mut request = reqwest::Request::try_from(oauth_request)
+                .map_err(|_| Box::new(OAuthHttpFailure) as rmcp::transport::OAuthHttpClientError)?;
+            *request.timeout_mut() = timeout;
+            let response = client
+                .execute(request)
+                .await
+                .map_err(|_| Box::new(OAuthHttpFailure) as rmcp::transport::OAuthHttpClientError)?;
+            let status = response.status();
+            let version = response.version();
+            let headers = response.headers().clone();
+            let mut body = Vec::new();
+            let mut stream = response.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|_| {
+                    Box::new(OAuthHttpFailure) as rmcp::transport::OAuthHttpClientError
+                })?;
+                if chunk.len() > OAUTH_STORE_MAX_BYTES as usize - body.len() {
+                    return Err(Box::new(OAuthHttpFailure) as rmcp::transport::OAuthHttpClientError);
+                }
+                body.extend_from_slice(&chunk);
+            }
+            if !status.is_success() {
+                body = redacted_oauth_error_body(status, &body);
+            }
+            let mut response = http::Response::builder().status(status).version(version);
+            for (name, value) in &headers {
+                response = response.header(name, value);
+            }
+            response
+                .body(body)
+                .map_err(|_| Box::new(OAuthHttpFailure) as rmcp::transport::OAuthHttpClientError)
+        })
+    }
+}
+
+fn redacted_oauth_error_body(status: reqwest::StatusCode, body: &[u8]) -> Vec<u8> {
+    let reported = serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+    let code = match reported.as_deref() {
+        Some(
+            code @ ("invalid_request"
+            | "invalid_client"
+            | "invalid_grant"
+            | "unauthorized_client"
+            | "unsupported_grant_type"
+            | "invalid_scope"),
+        ) => code,
+        _ if status.is_server_error() => "server_error",
+        _ => "invalid_request",
+    };
+    serde_json::to_vec(&serde_json::json!({ "error": code })).unwrap_or_default()
+}
+
+fn oauth_store_startup_error(path: &Path) -> ToolError {
+    ToolError::execution(format!(
+        "invalid MCP OAuth credential store `{}`; fix its permissions and contents or remove the file to reset user MCP OAuth credentials",
+        path.display()
+    ))
+}
+
+fn oauth_store_runtime_error(path: &Path) -> ToolError {
+    ToolError::execution(format!(
+        "MCP OAuth credential storage failed at `{}`",
+        path.display()
+    ))
+}
+
+fn oauth_store_auth_error() -> rmcp::transport::AuthError {
+    rmcp::transport::AuthError::InternalError("OAuth credential storage failed".into())
+}
+
+impl OAuthStoreLock {
+    fn acquire(store_path: &Path) -> Result<Self, ()> {
+        let parent = store_path.parent().ok_or(())?;
+        fs::create_dir_all(parent).map_err(|_| ())?;
+        let path = parent.join(OAUTH_STORE_LOCK_FILE);
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        let file = options.open(&path).map_err(|_| ())?;
+        validate_oauth_file(&file).map_err(|_| ())?;
+        fs2::FileExt::lock_exclusive(&file).map_err(|_| ())?;
+        validate_oauth_lock_entry(&path, &file)?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for OAuthStoreLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
+fn validate_oauth_lock_entry(path: &Path, file: &fs::File) -> Result<(), ()> {
+    validate_oauth_file(file)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let current = fs::metadata(path).map_err(|_| ())?;
+        let held = file.metadata().map_err(|_| ())?;
+        if current.dev() != held.dev() || current.ino() != held.ino() {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+fn load_oauth_store(path: &Path) -> Result<BTreeMap<String, PersistedOAuthCredential>, ()> {
+    let Some(mut file) = open_oauth_store(path)? else {
+        return Ok(BTreeMap::new());
+    };
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(OAUTH_STORE_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ())?;
+    if bytes.len() as u64 > OAUTH_STORE_MAX_BYTES {
+        return Err(());
+    }
+    serde_json::from_slice(&bytes).map_err(|_| ())
+}
+
+fn open_oauth_store(path: &Path) -> Result<Option<fs::File>, ()> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    match options.open(path) {
+        Ok(file) => {
+            validate_oauth_file(&file).map_err(|_| ())?;
+            Ok(Some(file))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(()),
+    }
+}
+
+fn validate_oauth_file(file: &fs::File) -> Result<(), ()> {
+    let metadata = file.metadata().map_err(|_| ())?;
+    if !metadata.is_file() || metadata.len() > OAUTH_STORE_MAX_BYTES {
+        return Err(());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if metadata.uid() != rustix::process::getuid().as_raw()
+            || metadata.mode() & 0o777 != 0o600
+            || metadata.nlink() != 1
+        {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+fn persist_oauth_store(
+    path: &Path,
+    credentials: &BTreeMap<String, PersistedOAuthCredential>,
+) -> Result<(), ()> {
+    let parent = path.parent().ok_or(())?;
+    fs::create_dir_all(parent).map_err(|_| ())?;
+    let bytes = serde_json::to_vec(credentials).map_err(|_| ())?;
+    let temporary = parent.join(format!(".{OAUTH_STORE_FILE}.{}.tmp", uuid::Uuid::now_v7()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let mut file = options.open(&temporary).map_err(|_| ())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|_| ())?;
+    }
+    let result = (|| {
+        file.write_all(&bytes).map_err(|_| ())?;
+        file.sync_all().map_err(|_| ())?;
+        drop(file);
+        fs::rename(&temporary, path).map_err(|_| ())?;
+        sync_oauth_directory(parent).map_err(|_| ())?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
+#[cfg(unix)]
+fn sync_oauth_directory(path: &Path) -> std::io::Result<()> {
+    fs::File::open(path)?.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_oauth_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?
+        .sync_all()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn sync_oauth_directory(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn apply_oauth_settings(
+    mut request: AuthorizationRequest,
+    settings: &McpOAuthSettings,
+) -> AuthorizationRequest {
+    if !settings.scopes.is_empty() {
+        request = request.with_scopes(settings.scopes.clone());
+    }
+    if let Some(client_id) = &settings.client_id {
+        request = request.with_preregistered_client(client_id);
+    }
+    if let Some(client_secret) = &settings.client_secret {
+        request = request.with_client_secret(client_secret);
+    }
+    if let Some(client_metadata_url) = &settings.client_metadata_url {
+        request = request.with_client_metadata_url(client_metadata_url);
+    }
+    request
+}
+
+async fn receive_oauth_callback(listener: TcpListener) -> Result<(TcpStream, String), ()> {
+    loop {
+        let (mut stream, _) = listener.accept().await.map_err(|_| ())?;
+        let mut request = Vec::new();
+        loop {
+            let mut buffer = [0_u8; 1024];
+            let read = stream.read(&mut buffer).await.map_err(|_| ())?;
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+            if request.len() > OAUTH_CALLBACK_MAX_BYTES {
+                break;
+            }
+        }
+        if request.len() > OAUTH_CALLBACK_MAX_BYTES {
+            let _ = write_oauth_browser_response(&mut stream, false).await;
+            continue;
+        }
+        let Ok(request) = std::str::from_utf8(&request) else {
+            let _ = write_oauth_browser_response(&mut stream, false).await;
+            continue;
+        };
+        let Some(target) = request
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix("GET "))
+            .and_then(|line| line.split_once(' '))
+            .map(|(target, _)| target)
+        else {
+            let _ = write_oauth_browser_response(&mut stream, false).await;
+            continue;
+        };
+        let Ok(url) = url::Url::parse(&format!("http://127.0.0.1{target}")) else {
+            let _ = write_oauth_browser_response(&mut stream, false).await;
+            continue;
+        };
+        if url.path() != "/callback" {
+            let _ = write_oauth_browser_response(&mut stream, false).await;
+            continue;
+        }
+        return Ok((stream, url.to_string()));
+    }
+}
+
+async fn write_oauth_browser_response(
+    stream: &mut TcpStream,
+    success: bool,
+) -> std::io::Result<()> {
+    let (status, body) = if success {
+        (
+            "200 OK",
+            "Authorization complete. You can close this window.",
+        )
+    } else {
+        (
+            "400 Bad Request",
+            "Authorization failed. Return to Cookie Agent and try again.",
+        )
+    };
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await?;
+    stream.shutdown().await
 }
 
 impl McpRegistry {
     pub(crate) fn new(
         servers: BTreeMap<String, LoadedMcpServer>,
-        trust_path: std::path::PathBuf,
+        oauth_path: std::path::PathBuf,
     ) -> Result<Self, ToolError> {
-        let mut trusted_names = HashSet::new();
-        if trust_path.exists() {
-            let grants = load_trust_records(&trust_path)?;
-            for grant in grants {
-                trusted_names.insert(grant.server);
-            }
-        }
+        let oauth_credentials = OAuthCredentialFile::open(oauth_path)?;
         let inner = Arc::new(RegistryInner {
             servers: Mutex::new(BTreeMap::new()),
             reserved_names: Mutex::new(HashSet::from([
@@ -370,8 +1067,7 @@ impl McpRegistry {
                 "cancel_subagent".into(),
             ])),
             claimed_names: Mutex::new(HashMap::new()),
-            trusted_names: Mutex::new(trusted_names),
-            trust_path,
+            oauth_credentials,
             shutdown: CancellationToken::new(),
             connection_tasks: Mutex::new(Vec::new()),
             active_connects: AtomicUsize::new(0),
@@ -388,15 +1084,8 @@ impl McpRegistry {
                     "MCP server `{name}` collides with server `{existing}` after name sanitization"
                 )));
             }
-            let trusted_by_name = inner
-                .trusted_names
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .contains(&name);
             let state = if !loaded.config.enabled {
                 McpServerState::Disabled
-            } else if loaded.source == McpServerSource::WorkspaceFile && !trusted_by_name {
-                McpServerState::PendingApproval
             } else {
                 McpServerState::Disconnected
             };
@@ -409,6 +1098,7 @@ impl McpRegistry {
                     state,
                     message: None,
                     tools: Vec::new(),
+                    auth_in_progress: false,
                 }),
                 tools: Mutex::new(Vec::new()),
                 list_generation: AtomicU64::new(0),
@@ -418,6 +1108,10 @@ impl McpRegistry {
                 superseded: CancellationToken::new(),
                 registry: Arc::downgrade(&inner),
                 progress: AsyncMutex::new(HashMap::new()),
+                auth_challenge: Mutex::new(None),
+                auth_flow: Mutex::new(None),
+                auth_generation: AtomicU64::new(0),
+                auth_lock: AsyncMutex::new(()),
             });
             runtimes.insert(name, runtime);
         }
@@ -544,77 +1238,13 @@ impl McpRegistry {
             .collect()
     }
 
-    #[must_use]
-    pub fn pending_approvals(&self) -> Vec<McpApprovalRequest> {
-        self.servers()
-            .into_iter()
-            .filter(|server| server.current_state() == McpServerState::PendingApproval)
-            .map(|server| McpApprovalRequest {
-                server: server.name.clone(),
-                connection: approval_display(&server.loaded.config),
-            })
-            .collect()
-    }
-
-    pub fn approve_project_server(&self, server_name: &str) -> Result<(), ToolError> {
-        let server = self.server(server_name)?;
-        if server.loaded.source != McpServerSource::WorkspaceFile {
-            return Err(ToolError::execution(format!(
-                "MCP server `{server_name}` is not project-scoped"
-            )));
-        }
-        if server.current_state() != McpServerState::PendingApproval {
-            return Err(ToolError::execution(format!(
-                "MCP server `{server_name}` is not pending approval"
-            )));
-        }
-        let grant = McpNameTrustGrant {
-            server: server_name.to_owned(),
-        };
-        crate::events::append_jsonl(&self.inner.trust_path, &grant)
-            .map_err(|error| ToolError::execution(error.to_string()))?;
-        self.inner
-            .trusted_names
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(server_name.to_owned());
-        server.set_status(McpServerState::Disconnected, None);
-        if !server.loaded.config.lazy
-            && let Ok(handle) = tokio::runtime::Handle::try_current()
-        {
-            self.inner.eager_pending.fetch_add(1, Ordering::AcqRel);
-            let readiness = EagerConnect(Arc::clone(&self.inner));
-            self.spawn_connection(server, &handle, Some(readiness))?;
-        }
-        Ok(())
-    }
-
-    pub fn reject_project_server(&self, server_name: &str) -> Result<(), ToolError> {
-        let server = self.server(server_name)?;
-        if server.loaded.source != McpServerSource::WorkspaceFile {
-            return Err(ToolError::execution(format!(
-                "MCP server `{server_name}` is not project-scoped"
-            )));
-        }
-        if server.current_state() != McpServerState::PendingApproval {
-            return Err(ToolError::execution(format!(
-                "MCP server `{server_name}` is not pending approval"
-            )));
-        }
-        server.set_status(
-            McpServerState::Rejected,
-            Some("project approval rejected".into()),
-        );
-        Ok(())
-    }
-
     pub(crate) async fn upsert_server(
         &self,
         name: String,
         loaded: LoadedMcpServer,
     ) -> Result<(), ToolError> {
         let sanitized_name = sanitize_name(&name);
-        {
+        let previous = {
             let servers = self
                 .inner
                 .servers
@@ -629,20 +1259,34 @@ impl McpRegistry {
                     existing.name
                 )));
             }
-        }
-        let trusted_by_name = self
-            .inner
-            .trusted_names
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains(&name);
+            servers.get(&name).cloned()
+        };
+        let previous_binding = previous
+            .as_ref()
+            .and_then(|server| OAuthCredentialBinding::from_config(&server.loaded.config));
+        let new_binding = OAuthCredentialBinding::from_config(&loaded.config);
+        let binding_changed = previous.is_some() && previous_binding != new_binding;
+        let _previous_auth = if let Some(previous) = &previous {
+            let auth = previous.auth_lock.lock().await;
+            if binding_changed && let Some(binding) = &previous_binding {
+                self.inner.oauth_credentials.remove(&name, binding)?;
+            }
+            previous.supersede();
+            Some(auth)
+        } else {
+            None
+        };
+        let needs_auth_after_edit = binding_changed && oauth_enabled_config(&loaded.config);
         let state = if !loaded.config.enabled {
             McpServerState::Disabled
-        } else if loaded.source == McpServerSource::WorkspaceFile && !trusted_by_name {
-            McpServerState::PendingApproval
+        } else if needs_auth_after_edit {
+            McpServerState::NeedsAuth
         } else {
             McpServerState::Disconnected
         };
+        let message = (state == McpServerState::NeedsAuth).then(|| {
+            "OAuth credentials invalidated by MCP server configuration change; authenticate to connect".into()
+        });
         let runtime = Arc::new(ServerRuntime {
             name: name.clone(),
             sanitized_name,
@@ -650,8 +1294,9 @@ impl McpRegistry {
             status: Mutex::new(McpServerStatus {
                 server: name.clone(),
                 state,
-                message: None,
+                message,
                 tools: Vec::new(),
+                auth_in_progress: false,
             }),
             tools: Mutex::new(Vec::new()),
             list_generation: AtomicU64::new(0),
@@ -661,20 +1306,20 @@ impl McpRegistry {
             superseded: CancellationToken::new(),
             registry: Arc::downgrade(&self.inner),
             progress: AsyncMutex::new(HashMap::new()),
+            auth_challenge: Mutex::new(None),
+            auth_flow: Mutex::new(None),
+            auth_generation: AtomicU64::new(0),
+            auth_lock: AsyncMutex::new(()),
         });
-        let previous = {
+        {
             let mut servers = self
                 .inner
                 .servers
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let previous = servers.get(&name).cloned();
-            if let Some(previous) = &previous {
-                previous.supersede();
-            }
             servers.insert(name, Arc::clone(&runtime));
-            previous
-        };
+        }
+        drop(_previous_auth);
         if let Some(previous) = previous
             && let Some(mut service) = previous.service.lock().await.take()
         {
@@ -692,6 +1337,12 @@ impl McpRegistry {
     }
 
     pub(crate) async fn remove_server(&self, name: &str) -> Result<(), ToolError> {
+        let server = self.server(name)?;
+        let _auth = server.auth_lock.lock().await;
+        if let Some(binding) = OAuthCredentialBinding::from_config(&server.loaded.config) {
+            self.inner.oauth_credentials.remove(name, &binding)?;
+        }
+        server.supersede();
         let removed = {
             let mut servers = self
                 .inner
@@ -702,12 +1353,19 @@ impl McpRegistry {
                 .get(name)
                 .cloned()
                 .ok_or_else(|| ToolError::execution(format!("unknown MCP server `{name}`")))?;
-            removed.supersede();
             servers.remove(name);
             removed
         };
         if let Some(mut service) = removed.service.lock().await.take() {
             let _ = service.close_with_timeout(Duration::from_secs(4)).await;
+        }
+        if let Some(flow) = removed
+            .auth_flow
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            flow.cancellation.cancel();
         }
         Ok(())
     }
@@ -717,11 +1375,6 @@ impl McpRegistry {
         if !server.loaded.config.enabled {
             return Err(ToolError::execution(format!(
                 "MCP server `{name}` is disabled"
-            )));
-        }
-        if server.current_state() == McpServerState::PendingApproval {
-            return Err(ToolError::execution(format!(
-                "MCP server `{name}` is pending project approval"
             )));
         }
         server.clear_claims();
@@ -741,6 +1394,32 @@ impl McpRegistry {
                 Err(error)
             }
         }
+    }
+
+    pub(crate) async fn begin_auth(&self, name: &str) -> Result<String, ToolError> {
+        let server = self.server(name)?;
+        server.begin_auth().await
+    }
+
+    pub(crate) fn cancel_auth(&self, name: &str) -> Result<(), ToolError> {
+        let server = self.server(name)?;
+        let flow = server
+            .auth_flow
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .ok_or_else(|| {
+                ToolError::execution(format!(
+                    "MCP server `{name}` has no OAuth authorization in progress"
+                ))
+            })?;
+        flow.cancellation.cancel();
+        server.set_auth_in_progress(false);
+        server.set_status(
+            McpServerState::NeedsAuth,
+            Some("OAuth authorization cancelled; authenticate to connect".into()),
+        );
+        Ok(())
     }
 
     fn spawn_connection(
@@ -841,8 +1520,18 @@ impl ServerRuntime {
             .collect();
     }
 
+    fn set_auth_in_progress(&self, active: bool) {
+        self.status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .auth_in_progress = active;
+    }
+
     fn fail(&self, message: String) {
         if self.superseded.is_cancelled() {
+            return;
+        }
+        if self.current_state() == McpServerState::NeedsAuth {
             return;
         }
         self.clear_claims();
@@ -850,8 +1539,36 @@ impl ServerRuntime {
         self.set_status(McpServerState::Failed, Some(message));
     }
 
+    fn mark_needs_auth(&self, challenge: Option<String>) {
+        if self.superseded.is_cancelled() {
+            return;
+        }
+        *self
+            .auth_challenge
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = challenge;
+        self.clear_claims();
+        self.tools
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        self.set_status(
+            McpServerState::NeedsAuth,
+            Some("OAuth authorization required; authenticate to connect".into()),
+        );
+    }
+
     fn supersede(&self) {
         self.superseded.cancel();
+        if let Some(flow) = self
+            .auth_flow
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            flow.cancellation.cancel();
+        }
+        self.set_auth_in_progress(false);
         self.next_list_generation();
         self.clear_claims();
     }
@@ -873,6 +1590,232 @@ impl ServerRuntime {
             .iter()
             .find(|tool| tool.spec.name == generated)
             .map(|tool| tool.raw_name.clone())
+    }
+
+    fn oauth_enabled(&self) -> bool {
+        oauth_enabled_config(&self.loaded.config)
+    }
+
+    fn oauth_binding(&self) -> Result<OAuthCredentialBinding, ToolError> {
+        OAuthCredentialBinding::from_config(&self.loaded.config)
+            .ok_or_else(|| ToolError::execution("OAuth is available only for remote MCP servers"))
+    }
+
+    fn oauth_store(&self) -> Result<ServerCredentialStore, ToolError> {
+        self.registry
+            .upgrade()
+            .map(|registry| {
+                self.oauth_binding()
+                    .map(|binding| registry.oauth_credentials.scoped(&self.name, binding))
+            })
+            .transpose()?
+            .ok_or_else(|| ToolError::execution("MCP registry is unavailable"))
+    }
+
+    async fn authorization_manager(
+        &self,
+    ) -> Result<(AuthorizationManager, OAuthAuthorizationCodeRelay), ToolError> {
+        let url = self.loaded.config.url.as_ref().ok_or_else(|| {
+            ToolError::execution("OAuth is available only for remote MCP servers")
+        })?;
+        let authorization_code = OAuthAuthorizationCodeRelay::default();
+        let http_client = RedactingOAuthHttpClient::new(authorization_code.clone())?;
+        let mut manager =
+            AuthorizationManager::new_with_oauth_http_client(url, Arc::new(http_client))
+                .await
+                .map_err(|_| ToolError::execution("MCP OAuth setup failed"))?;
+        manager.set_credential_store(self.oauth_store()?);
+        Ok((manager, authorization_code))
+    }
+
+    async fn begin_auth(self: &Arc<Self>) -> Result<String, ToolError> {
+        if !self.oauth_enabled() {
+            return Err(ToolError::execution(format!(
+                "MCP server `{}` does not use OAuth (stdio, oauth=false, or a static Authorization header takes precedence)",
+                self.name
+            )));
+        }
+        if self.current_state() != McpServerState::NeedsAuth {
+            return Err(ToolError::execution(format!(
+                "MCP server `{}` does not currently require OAuth authorization",
+                self.name
+            )));
+        }
+        if let Some(flow) = self
+            .auth_flow
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            return Ok(flow.authorization_url.clone());
+        }
+
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .map_err(|_| ToolError::execution("MCP OAuth callback listener failed"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|_| ToolError::execution("MCP OAuth callback listener failed"))?
+            .port();
+        let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+        let store = self.oauth_store()?;
+        store
+            .clear()
+            .await
+            .map_err(|_| ToolError::execution("MCP OAuth credential reset failed"))?;
+        let (mut manager, authorization_code) = self.authorization_manager().await?;
+        let settings = self.loaded.config.oauth.settings();
+        let mut request = AuthorizationRequest::new(&redirect_uri)
+            .with_client_name("Cookie Agent")
+            .with_application_type("native");
+        let challenge = self
+            .auth_challenge
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(challenge) = &challenge {
+            request = request.with_challenge(challenge);
+        }
+        let metadata = manager
+            .resolve_metadata_from_challenge(challenge.as_deref())
+            .await
+            .map_err(|_| ToolError::execution("MCP OAuth discovery failed"))?;
+        manager.set_metadata(metadata.metadata);
+        request = apply_oauth_settings(request, &settings);
+        let session = AuthorizationSession::new(manager, request)
+            .await
+            .map_err(|_| ToolError::execution("MCP OAuth client registration failed"))?;
+        let authorization_url = session.get_authorization_url().to_owned();
+        let cancellation = CancellationToken::new();
+        let generation = self.auth_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        {
+            let mut flow = self
+                .auth_flow
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(existing) = flow.as_ref() {
+                return Ok(existing.authorization_url.clone());
+            }
+            *flow = Some(OAuthFlowState {
+                generation,
+                authorization_url: authorization_url.clone(),
+                cancellation: cancellation.clone(),
+            });
+        }
+        self.set_auth_in_progress(true);
+        self.set_status(
+            McpServerState::NeedsAuth,
+            Some("waiting for OAuth browser callback".into()),
+        );
+
+        let registry = self
+            .registry
+            .upgrade()
+            .ok_or_else(|| ToolError::execution("MCP registry is unavailable"))?;
+        let server = Arc::clone(self);
+        let task_registry = Arc::clone(&registry);
+        let task = tokio::spawn(async move {
+            let callback = tokio::select! {
+                result = tokio::time::timeout(OAUTH_CALLBACK_TIMEOUT, receive_oauth_callback(listener)) => {
+                    match result {
+                        Ok(result) => result,
+                        Err(_) => {
+                            if server.finish_auth_flow(generation) {
+                                server.set_status(
+                                    McpServerState::NeedsAuth,
+                                    Some("OAuth authorization timed out; authenticate to try again".into()),
+                                );
+                            }
+                            return;
+                        }
+                    }
+                }
+                () = cancellation.cancelled() => return,
+                () = task_registry.shutdown.cancelled() => return,
+                () = server.superseded.cancelled() => return,
+            };
+            let Ok((mut browser, callback_url)) = callback else {
+                if server.finish_auth_flow(generation) {
+                    server.set_status(
+                        McpServerState::NeedsAuth,
+                        Some("invalid OAuth callback; authenticate to try again".into()),
+                    );
+                }
+                return;
+            };
+            let auth_guard = tokio::select! {
+                lock = server.auth_lock.lock() => lock,
+                () = cancellation.cancelled() => return,
+                () = task_registry.shutdown.cancelled() => return,
+                () = server.superseded.cancelled() => return,
+            };
+            let callback = AuthorizationCallback::from_redirect_url(&callback_url);
+            let exchanged = if let Ok(callback) = callback {
+                authorization_code.install(callback.code);
+                tokio::select! {
+                    result = session.handle_callback_with_issuer(
+                        REDACTED_AUTHORIZATION_CODE,
+                        &callback.csrf_token,
+                        callback.issuer.as_deref(),
+                    ) => result.is_ok(),
+                    () = cancellation.cancelled() => return,
+                    () = task_registry.shutdown.cancelled() => return,
+                    () = server.superseded.cancelled() => return,
+                }
+            } else {
+                false
+            };
+            drop(auth_guard);
+            let _ = write_oauth_browser_response(&mut browser, exchanged).await;
+            if !server.finish_auth_flow(generation) {
+                return;
+            }
+            if !exchanged {
+                server.set_status(
+                    McpServerState::NeedsAuth,
+                    Some("OAuth authorization failed; authenticate to try again".into()),
+                );
+                return;
+            }
+            *server
+                .auth_challenge
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            if let Some(mut service) = server.service.lock().await.take() {
+                let _ = service.close_with_timeout(Duration::from_secs(4)).await;
+            }
+            server.set_status(McpServerState::Disconnected, None);
+            if let Err(error) = server.connect().await {
+                server.fail(error.to_string());
+            }
+        });
+        registry
+            .connection_tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(task);
+        Ok(authorization_url)
+    }
+
+    fn finish_auth_flow(&self, generation: u64) -> bool {
+        let mut flow = self
+            .auth_flow
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let finished = if flow
+            .as_ref()
+            .is_some_and(|flow| flow.generation == generation)
+        {
+            *flow = None;
+            true
+        } else {
+            false
+        };
+        drop(flow);
+        if finished {
+            self.set_auth_in_progress(false);
+        }
+        finished
     }
 
     async fn connect(self: &Arc<Self>) -> Result<(), ToolError> {
@@ -910,15 +1853,9 @@ impl ServerRuntime {
                     self.name
                 )));
             }
-            McpServerState::PendingApproval => {
+            McpServerState::NeedsAuth => {
                 return Err(ToolError::execution(format!(
-                    "MCP server `{}` is pending project approval",
-                    self.name
-                )));
-            }
-            McpServerState::Rejected => {
-                return Err(ToolError::execution(format!(
-                    "MCP server `{}` project approval was rejected",
+                    "MCP server `{}` requires OAuth authorization",
                     self.name
                 )));
             }
@@ -1002,25 +1939,77 @@ impl ServerRuntime {
             }
             let config = rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(url.clone())
                 .custom_headers(headers);
-            let transport = StreamableHttpClientTransport::from_config(config);
-            tokio::select! {
-                result = tokio::time::timeout(timeout, handler.serve_with_lifecycle(transport, lifecycle)) => result,
-                () = registry.shutdown.cancelled() => {
-                    return Err(ToolError::execution("MCP registry is shutting down"));
+            let result = if self.oauth_enabled() {
+                let (mut manager, _authorization_code) = self.authorization_manager().await?;
+                let restored = manager
+                    .initialize_from_store()
+                    .await
+                    .map_err(|_| ToolError::execution("MCP OAuth credential loading failed"))?;
+                let settings = self.loaded.config.oauth.settings();
+                if restored && let Some(client_id) = settings.client_id {
+                    let mut client = OAuthClientConfig::new(client_id, "http://127.0.0.1")
+                        .with_scopes(settings.scopes);
+                    if let Some(client_secret) = settings.client_secret {
+                        client = client.with_client_secret(client_secret);
+                    }
+                    manager.configure_client(client).map_err(|_| {
+                        ToolError::execution("MCP OAuth stored-client setup failed")
+                    })?;
                 }
-                () = self.superseded.cancelled() => {
-                    return Err(self.superseded_error());
+                let client = reqwest::Client::builder()
+                    .pool_max_idle_per_host(0)
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .map_err(|_| ToolError::execution("MCP HTTP client setup failed"))?;
+                let transport = StreamableHttpClientTransport::with_client(
+                    AuthClient::new(client, manager),
+                    config,
+                );
+                tokio::select! {
+                    result = tokio::time::timeout(timeout, handler.serve_with_lifecycle(transport, lifecycle)) => result,
+                    () = registry.shutdown.cancelled() => {
+                        return Err(ToolError::execution("MCP registry is shutting down"));
+                    }
+                    () = self.superseded.cancelled() => {
+                        return Err(self.superseded_error());
+                    }
                 }
-            }
-                .map_err(|_| {
-                    ToolError::execution(format!("MCP server `{}` connect timed out", self.name))
-                })?
-                .map_err(|error| {
-                    ToolError::execution(format!(
+            } else {
+                let transport = StreamableHttpClientTransport::from_config(config);
+                tokio::select! {
+                    result = tokio::time::timeout(timeout, handler.serve_with_lifecycle(transport, lifecycle)) => result,
+                    () = registry.shutdown.cancelled() => {
+                        return Err(ToolError::execution("MCP registry is shutting down"));
+                    }
+                    () = self.superseded.cancelled() => {
+                        return Err(self.superseded_error());
+                    }
+                }
+            };
+            match result {
+                Err(_) => {
+                    return Err(ToolError::execution(format!(
+                        "MCP server `{}` connect timed out",
+                        self.name
+                    )));
+                }
+                Ok(Err(error))
+                    if self.oauth_enabled() && initialize_error_requires_auth(&error) =>
+                {
+                    self.mark_needs_auth(error.auth_challenge().map(str::to_owned));
+                    return Err(ToolError::execution(format!(
+                        "MCP server `{}` requires OAuth authorization",
+                        self.name
+                    )));
+                }
+                Ok(Err(error)) => {
+                    return Err(ToolError::execution(format!(
                         "MCP server `{}` connect failed: {error}",
                         self.name
-                    ))
-                })?
+                    )));
+                }
+                Ok(Ok(service)) => service,
+            }
         };
         let generation = self.next_list_generation();
         let tools = tokio::select! {
@@ -1036,13 +2025,24 @@ impl ServerRuntime {
         }
         .map_err(|_| {
             ToolError::execution(format!("MCP server `{}` tools/list timed out", self.name))
-        })?
-        .map_err(|error| {
-            ToolError::execution(format!(
-                "MCP server `{}` tools/list failed: {error}",
-                self.name
-            ))
         })?;
+        let tools = match tools {
+            Ok(tools) => tools,
+            Err(error) if self.oauth_enabled() && service_error_requires_auth(&error) => {
+                self.mark_needs_auth(auth_challenge(&error));
+                let _ = service.close_with_timeout(Duration::from_secs(4)).await;
+                return Err(ToolError::execution(format!(
+                    "MCP server `{}` requires OAuth authorization",
+                    self.name
+                )));
+            }
+            Err(error) => {
+                return Err(ToolError::execution(format!(
+                    "MCP server `{}` tools/list failed: {error}",
+                    self.name
+                )));
+            }
+        };
         self.publish_tools(generation, tools);
         if self.current_state() == McpServerState::Failed {
             return Err(ToolError::execution(
@@ -1310,7 +2310,19 @@ impl PreparedExecutor for McpExecutor {
         let call = service.call_tool(params);
         tokio::pin!(call);
         let result = tokio::select! {
-            result = &mut call => result.map_err(|error| ToolError::execution(error.to_string())),
+            result = &mut call => match result {
+                Err(error)
+                    if self.server.oauth_enabled() && service_error_requires_auth(&error) =>
+                {
+                    self.server.mark_needs_auth(auth_challenge(&error));
+                    Err(ToolError::execution(format!(
+                        "MCP server `{}` requires OAuth authorization",
+                        self.server.name
+                    )))
+                }
+                Err(error) => Err(ToolError::execution(error.to_string())),
+                Ok(result) => Ok(result),
+            },
             _ = context.cancellation.cancelled() => Err(ToolError::execution("MCP tool call cancelled")),
             _ = tokio::time::sleep(timeout) => Err(ToolError::execution("MCP tool call timed out")),
         };
@@ -1459,28 +2471,6 @@ fn safe_title(value: &str) -> SafeDisplayText {
     SafeDisplayText::new(title).expect("sanitized MCP title")
 }
 
-fn approval_display(config: &McpServerConfig) -> String {
-    if let Some(command) = &config.command {
-        let mut value = std::iter::once(command.as_str())
-            .chain(config.args.iter().map(String::as_str))
-            .collect::<Vec<_>>()
-            .join(" ");
-        if let Some(cwd) = &config.cwd {
-            value.push_str(&format!("\ncwd: {cwd}"));
-        }
-        for (name, env) in &config.env {
-            value.push_str(&format!("\nenv {name}={env}"));
-        }
-        value
-    } else {
-        let mut value = config.url.clone().unwrap_or_default();
-        for (name, header) in &config.headers {
-            value.push_str(&format!("\n{name}: {header}"));
-        }
-        value
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1503,7 +2493,7 @@ mod tests {
         ToolProvider as _, TurnAgentContext, events::OutputHub, runtime::ArtifactStore,
     };
 
-    use super::{McpRegistry, McpServerState, convert_tool, sanitize_name};
+    use super::{McpRegistry, McpServerState, OAUTH_STORE_FILE, convert_tool, sanitize_name};
 
     fn fixture_config(lazy: bool) -> McpServerConfig {
         McpServerConfig {
@@ -1516,6 +2506,7 @@ mod tests {
             cwd: None,
             url: None,
             headers: BTreeMap::new(),
+            oauth: Default::default(),
             enabled: true,
             lazy,
             timeout_ms: Some(5_000),
@@ -1531,7 +2522,7 @@ mod tests {
                     config: fixture_config(lazy),
                 },
             )]),
-            directory.path().join("trust.jsonl"),
+            directory.path().join(OAUTH_STORE_FILE),
         )
         .expect("MCP registry")
     }
@@ -1785,7 +2776,7 @@ mod tests {
                     config,
                 },
             )]),
-            directory.path().join("trust.jsonl"),
+            directory.path().join(OAUTH_STORE_FILE),
         )
         .expect("registry");
         registry.start_eager(&tokio::runtime::Handle::current());
@@ -1827,7 +2818,7 @@ mod tests {
                     config,
                 },
             )]),
-            directory.path().join("trust.jsonl"),
+            directory.path().join(OAUTH_STORE_FILE),
         )
         .expect("registry");
         let server = registry.server("fixture").expect("server");
@@ -1891,7 +2882,7 @@ mod tests {
                     config: delayed,
                 },
             )]),
-            directory.path().join("trust.jsonl"),
+            directory.path().join(OAUTH_STORE_FILE),
         )
         .expect("registry");
         let old = registry.server("fixture").expect("old server");
@@ -1950,7 +2941,7 @@ mod tests {
                     config,
                 },
             )]),
-            directory.path().join("trust.jsonl"),
+            directory.path().join(OAUTH_STORE_FILE),
         )
         .expect("registry");
 
@@ -1988,118 +2979,13 @@ mod tests {
                 },
             ),
         ]);
-        let error = McpRegistry::new(servers, directory.path().join("trust.jsonl"))
+        let error = McpRegistry::new(servers, directory.path().join(OAUTH_STORE_FILE))
             .expect_err("sanitized server collision");
         assert!(error.to_string().contains("git/hub"));
         assert!(error.to_string().contains("git hub"));
     }
-
-    #[test]
-    fn project_approval_is_keyed_by_name_and_rejection_stays_blocked() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let project_registry = registry(&directory, McpServerSource::WorkspaceFile, true);
-        assert_eq!(
-            project_registry.statuses()[0].state,
-            McpServerState::PendingApproval
-        );
-        let runtime_registry = registry(&directory, McpServerSource::Runtime, true);
-        assert_eq!(
-            runtime_registry.statuses()[0].state,
-            McpServerState::Disconnected
-        );
-        let approval = project_registry.pending_approvals().remove(0);
-        assert!(approval.connection.contains("mcp_server.py"));
-        project_registry
-            .approve_project_server("fixture")
-            .expect("approve project MCP server");
-        assert_eq!(
-            project_registry.statuses()[0].state,
-            McpServerState::Disconnected
-        );
-
-        let reopened = registry(&directory, McpServerSource::WorkspaceFile, true);
-        assert_eq!(reopened.statuses()[0].state, McpServerState::Disconnected);
-        assert_eq!(
-            std::fs::read_to_string(directory.path().join("trust.jsonl")).expect("trust file"),
-            "{\"server\":\"fixture\"}\n"
-        );
-
-        let mut changed = fixture_config(true);
-        changed.args.push("--changed".into());
-        let changed = McpRegistry::new(
-            BTreeMap::from([(
-                "fixture".into(),
-                LoadedMcpServer {
-                    source: McpServerSource::WorkspaceFile,
-                    config: changed,
-                },
-            )]),
-            directory.path().join("trust.jsonl"),
-        )
-        .expect("changed registry");
-        assert_eq!(changed.statuses()[0].state, McpServerState::Disconnected);
-
-        let renamed = McpRegistry::new(
-            BTreeMap::from([(
-                "renamed".into(),
-                LoadedMcpServer {
-                    source: McpServerSource::WorkspaceFile,
-                    config: fixture_config(true),
-                },
-            )]),
-            directory.path().join("trust.jsonl"),
-        )
-        .expect("renamed registry");
-        assert_eq!(renamed.statuses()[0].state, McpServerState::PendingApproval);
-        renamed
-            .reject_project_server("renamed")
-            .expect("reject renamed server");
-        assert_eq!(renamed.statuses()[0].state, McpServerState::Rejected);
-
-        let reoffered = McpRegistry::new(
-            BTreeMap::from([(
-                "renamed".into(),
-                LoadedMcpServer {
-                    source: McpServerSource::WorkspaceFile,
-                    config: fixture_config(true),
-                },
-            )]),
-            directory.path().join("trust.jsonl"),
-        )
-        .expect("reoffered registry");
-        assert_eq!(
-            reoffered.statuses()[0].state,
-            McpServerState::PendingApproval
-        );
-        reoffered
-            .approve_project_server("renamed")
-            .expect("reapprove renamed server");
-        assert_eq!(reoffered.statuses()[0].state, McpServerState::Disconnected);
-    }
-
-    #[test]
-    fn incompatible_trust_record_fails_with_reset_remediation() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let trust_path = directory.path().join("trust.jsonl");
-        std::fs::write(
-            &trust_path,
-            "{\"server\":\"fixture\",\"digest\":\"legacy\"}\n",
-        )
-        .expect("incompatible trust store");
-        let error = McpRegistry::new(
-            BTreeMap::from([(
-                "fixture".into(),
-                LoadedMcpServer {
-                    source: McpServerSource::WorkspaceFile,
-                    config: fixture_config(true),
-                },
-            )]),
-            trust_path.clone(),
-        )
-        .expect_err("incompatible trust records must fail startup");
-        let message = error.to_string();
-        assert!(message.contains(&trust_path.display().to_string()));
-        assert!(message.contains("fix the records or remove the file"));
-        assert!(message.contains("reset project MCP approvals"));
-    }
 }
+
+#[cfg(test)]
+#[path = "mcp/oauth_tests.rs"]
+mod oauth_tests;

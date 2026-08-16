@@ -19,6 +19,7 @@ cookie_agent_identity = { version = "=0.1.0", path = "../identity" }
 cookie_agent_models = { version = "=0.1.0", path = "../models" }
 cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
 crc32fast.workspace = true
+fs2.workspace = true
 futures-util.workspace = true
 image = { version = "0.25.8", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 indexmap.workspace = true
@@ -28,7 +29,9 @@ oven-sdk.workspace = true
 oven-sdk-azure.workspace = true
 oven-sdk-openai.workspace = true
 http.workspace = true
+libc.workspace = true
 process-wrap.workspace = true
+reqwest = { version = "=0.13.4", default-features = false, features = ["json", "stream", "rustls"] }
 rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -38,6 +41,8 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
+url.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 cookie_agent_models = { version = "=0.1.0", path = "../models", features = ["test-support"] }

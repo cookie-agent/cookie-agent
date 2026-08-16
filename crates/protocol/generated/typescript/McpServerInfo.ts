@@ -3,4 +3,4 @@ import type { McpConfigSource } from "./McpConfigSource.js";
 import type { McpServerDefinition } from "./McpServerDefinition.js";
 import type { McpServerState } from "./McpServerState.js";
 
-export type McpServerInfo = { name: string, source: McpConfigSource, definition: McpServerDefinition, state: McpServerState, tool_count: number, message: string | null, };
+export type McpServerInfo = { name: string, source: McpConfigSource, definition: McpServerDefinition, state: McpServerState, tool_count: number, message: string | null, auth_in_progress?: boolean, };

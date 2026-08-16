@@ -1,11 +1,12 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use cookie_agent_config::{
-    LoadedConfiguration, LoadedMcpServer, McpServerConfig, McpServerSource, write_mcp_server,
+    LoadedConfiguration, LoadedMcpServer, McpOAuthConfig, McpOAuthSettings, McpServerConfig,
+    McpServerSource, write_mcp_server,
 };
 use cookie_agent_protocol::{
-    McpConfigSource, McpConfigTarget, McpServerDefinition, McpServerInfo,
-    McpServerState as WireMcpServerState,
+    McpConfigSource, McpConfigTarget, McpOAuthDefinition, McpOAuthSettingsDefinition,
+    McpServerDefinition, McpServerInfo, McpServerState as WireMcpServerState,
 };
 
 use crate::{Engine, EngineError, McpServerState};
@@ -153,15 +154,14 @@ impl Engine {
                     .state
                 {
                     McpServerState::Disabled => WireMcpServerState::Disabled,
-                    McpServerState::PendingApproval => WireMcpServerState::PendingApproval,
                     McpServerState::Disconnected if loaded.config.lazy => {
                         WireMcpServerState::LazyNotConnected
                     }
                     McpServerState::Disconnected => WireMcpServerState::Disconnected,
                     McpServerState::Connecting => WireMcpServerState::Connecting,
                     McpServerState::Connected => WireMcpServerState::Connected,
+                    McpServerState::NeedsAuth => WireMcpServerState::NeedsAuth,
                     McpServerState::Failed => WireMcpServerState::Failed,
-                    McpServerState::Rejected => WireMcpServerState::Rejected,
                 });
                 McpServerInfo {
                     name,
@@ -170,6 +170,7 @@ impl Engine {
                     state,
                     tool_count: status.map_or(0, |status| status.tools.len() as u32),
                     message: status.and_then(|status| status.message.clone()),
+                    auth_in_progress: status.map(|status| status.auth_in_progress),
                 }
             })
             .collect()
@@ -227,6 +228,23 @@ impl Engine {
             .list_mcp_servers()
             .into_iter()
             .find(|server| server.name == name))
+    }
+
+    pub async fn begin_mcp_auth(&self, name: String) -> Result<String, EngineError> {
+        let _mutation = self.inner.mcp_mutation.lock().await;
+        self.inner
+            .mcp
+            .begin_auth(&name)
+            .await
+            .map_err(|error| EngineError::Mcp(error.to_string()))
+    }
+
+    pub async fn cancel_mcp_auth(&self, name: String) -> Result<(), EngineError> {
+        let _mutation = self.inner.mcp_mutation.lock().await;
+        self.inner
+            .mcp
+            .cancel_auth(&name)
+            .map_err(|error| EngineError::Mcp(error.to_string()))
     }
 
     pub async fn persist_mcp_server(
@@ -303,6 +321,18 @@ fn definition_to_wire(config: &McpServerConfig) -> McpServerDefinition {
         cwd: config.cwd.clone(),
         url: config.url.clone(),
         headers: config.headers.clone(),
+        oauth: Some(match &config.oauth {
+            McpOAuthConfig::Disabled => McpOAuthDefinition::Bool(false),
+            McpOAuthConfig::Auto | McpOAuthConfig::Enabled => McpOAuthDefinition::Bool(true),
+            McpOAuthConfig::Settings(settings) => {
+                McpOAuthDefinition::Settings(McpOAuthSettingsDefinition {
+                    client_id: settings.client_id.clone(),
+                    client_secret: settings.client_secret.clone(),
+                    client_metadata_url: settings.client_metadata_url.clone(),
+                    scopes: (!settings.scopes.is_empty()).then(|| settings.scopes.clone()),
+                })
+            }
+        }),
         enabled: config.enabled,
         lazy: config.lazy,
         timeout_ms: config.timeout_ms,
@@ -310,6 +340,7 @@ fn definition_to_wire(config: &McpServerConfig) -> McpServerDefinition {
 }
 
 fn definition_from_wire(definition: McpServerDefinition) -> McpServerConfig {
+    let stdio = definition.command.is_some();
     McpServerConfig {
         command: definition.command,
         args: definition.args,
@@ -317,6 +348,20 @@ fn definition_from_wire(definition: McpServerDefinition) -> McpServerConfig {
         cwd: definition.cwd,
         url: definition.url,
         headers: definition.headers,
+        oauth: match definition.oauth {
+            None => McpOAuthConfig::Auto,
+            Some(McpOAuthDefinition::Bool(true)) if stdio => McpOAuthConfig::Auto,
+            Some(McpOAuthDefinition::Bool(true)) => McpOAuthConfig::Enabled,
+            Some(McpOAuthDefinition::Bool(false)) => McpOAuthConfig::Disabled,
+            Some(McpOAuthDefinition::Settings(settings)) => {
+                McpOAuthConfig::Settings(McpOAuthSettings {
+                    client_id: settings.client_id,
+                    client_secret: settings.client_secret,
+                    client_metadata_url: settings.client_metadata_url,
+                    scopes: settings.scopes.unwrap_or_default(),
+                })
+            }
+        },
         enabled: definition.enabled,
         lazy: definition.lazy,
         timeout_ms: definition.timeout_ms,

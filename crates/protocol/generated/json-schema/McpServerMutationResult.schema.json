@@ -27,6 +27,49 @@
         "runtime"
       ]
     },
+    "McpOAuthDefinition": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/$defs/McpOAuthSettingsDefinition"
+        }
+      ]
+    },
+    "McpOAuthSettingsDefinition": {
+      "type": "object",
+      "properties": {
+        "client_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_metadata_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_secret": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopes": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "McpServerDefinition": {
       "type": "object",
       "properties": {
@@ -66,6 +109,16 @@
         "lazy": {
           "type": "boolean"
         },
+        "oauth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpOAuthDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "timeout_ms": {
           "type": [
             "integer",
@@ -97,6 +150,12 @@
     "McpServerInfo": {
       "type": "object",
       "properties": {
+        "auth_in_progress": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "definition": {
           "$ref": "#/$defs/McpServerDefinition"
         },
@@ -137,11 +196,10 @@
         "connected",
         "connecting",
         "failed",
-        "pending_approval",
+        "needs_auth",
         "disabled",
         "lazy_not_connected",
-        "disconnected",
-        "rejected"
+        "disconnected"
       ]
     }
   }

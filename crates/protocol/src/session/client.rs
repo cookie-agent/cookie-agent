@@ -15,8 +15,8 @@ use std::{
 use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
     ClientHello, EventPayload, EventSubscriptionMessage, EventsSubscribeParams,
-    EventsSubscribeResult, JsonRpcError, JsonRpcId, McpApprovalListParams, McpApprovalListResult,
-    McpApprovalRespondParams, McpApprovalRespondResult, McpServerAddParams, McpServerEditParams,
+    EventsSubscribeResult, JsonRpcError, JsonRpcId, McpAuthBeginParams, McpAuthBeginResult,
+    McpAuthCancelParams, McpAuthCancelResult, McpServerAddParams, McpServerEditParams,
     McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
     McpServerPersistParams, McpServerSetEnabledParams, MessageFrame, Notification, OutputDelta,
     OutputGap, OutputSnapshotEnvelope, OutputStream, ProtocolVersion, ProviderConnectParams,
@@ -162,11 +162,14 @@ pub trait ClientProtocol: Send + Sync {
         &self,
         params: ApprovalListParams,
     ) -> Result<ApprovalListResult, ClientError>;
-    async fn list_mcp_approvals(&self) -> Result<McpApprovalListResult, ClientError>;
-    async fn respond_mcp_approval(
+    async fn begin_mcp_auth(
         &self,
-        params: McpApprovalRespondParams,
-    ) -> Result<McpApprovalRespondResult, ClientError>;
+        params: McpAuthBeginParams,
+    ) -> Result<McpAuthBeginResult, ClientError>;
+    async fn cancel_mcp_auth(
+        &self,
+        params: McpAuthCancelParams,
+    ) -> Result<McpAuthCancelResult, ClientError>;
     async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError>;
     async fn add_mcp_server(
         &self,
@@ -643,16 +646,18 @@ impl Client {
         self.call("approval.list", &params).await
     }
 
-    pub async fn list_mcp_approvals(&self) -> Result<McpApprovalListResult, ClientError> {
-        self.call("mcp.approval.list", &McpApprovalListParams {})
-            .await
+    pub async fn begin_mcp_auth(
+        &self,
+        params: McpAuthBeginParams,
+    ) -> Result<McpAuthBeginResult, ClientError> {
+        self.call("mcp.auth.begin", &params).await
     }
 
-    pub async fn respond_mcp_approval(
+    pub async fn cancel_mcp_auth(
         &self,
-        params: McpApprovalRespondParams,
-    ) -> Result<McpApprovalRespondResult, ClientError> {
-        self.call("mcp.approval.respond", &params).await
+        params: McpAuthCancelParams,
+    ) -> Result<McpAuthCancelResult, ClientError> {
+        self.call("mcp.auth.cancel", &params).await
     }
 
     pub async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError> {
@@ -917,14 +922,17 @@ impl ClientProtocol for Client {
     ) -> Result<ApprovalListResult, ClientError> {
         Client::list_approvals(self, params).await
     }
-    async fn list_mcp_approvals(&self) -> Result<McpApprovalListResult, ClientError> {
-        Client::list_mcp_approvals(self).await
-    }
-    async fn respond_mcp_approval(
+    async fn begin_mcp_auth(
         &self,
-        params: McpApprovalRespondParams,
-    ) -> Result<McpApprovalRespondResult, ClientError> {
-        Client::respond_mcp_approval(self, params).await
+        params: McpAuthBeginParams,
+    ) -> Result<McpAuthBeginResult, ClientError> {
+        Client::begin_mcp_auth(self, params).await
+    }
+    async fn cancel_mcp_auth(
+        &self,
+        params: McpAuthCancelParams,
+    ) -> Result<McpAuthCancelResult, ClientError> {
+        Client::cancel_mcp_auth(self, params).await
     }
     async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError> {
         Client::list_mcp_servers(self).await
@@ -1119,14 +1127,17 @@ where
     ) -> Result<ApprovalListResult, ClientError> {
         self.deref().list_approvals(params).await
     }
-    async fn list_mcp_approvals(&self) -> Result<McpApprovalListResult, ClientError> {
-        self.deref().list_mcp_approvals().await
-    }
-    async fn respond_mcp_approval(
+    async fn begin_mcp_auth(
         &self,
-        params: McpApprovalRespondParams,
-    ) -> Result<McpApprovalRespondResult, ClientError> {
-        self.deref().respond_mcp_approval(params).await
+        params: McpAuthBeginParams,
+    ) -> Result<McpAuthBeginResult, ClientError> {
+        self.deref().begin_mcp_auth(params).await
+    }
+    async fn cancel_mcp_auth(
+        &self,
+        params: McpAuthCancelParams,
+    ) -> Result<McpAuthCancelResult, ClientError> {
+        self.deref().cancel_mcp_auth(params).await
     }
     async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError> {
         self.deref().list_mcp_servers().await

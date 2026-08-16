@@ -9,8 +9,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
     ClientHello, ClientRenameId, ErrorResponse, EventsSubscribeParams, EventsSubscribeResult,
-    JsonRpcError, JsonRpcId, JsonRpcVersion, McpApprovalListParams, McpApprovalListResult,
-    McpApprovalRespondParams, McpApprovalRespondResult, McpServerAddParams, McpServerEditParams,
+    JsonRpcError, JsonRpcId, JsonRpcVersion, McpAuthBeginParams, McpAuthBeginResult,
+    McpAuthCancelParams, McpAuthCancelResult, McpServerAddParams, McpServerEditParams,
     McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
     McpServerPersistParams, McpServerSetEnabledParams, MessageFrame, Notification,
     ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
@@ -143,14 +143,14 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: ApprovalListParams,
     ) -> Result<ApprovalListResult, ServerFault>;
-    async fn list_mcp_approvals(
+    async fn begin_mcp_auth(
         &self,
-        params: McpApprovalListParams,
-    ) -> Result<McpApprovalListResult, ServerFault>;
-    async fn respond_mcp_approval(
+        params: McpAuthBeginParams,
+    ) -> Result<McpAuthBeginResult, ServerFault>;
+    async fn cancel_mcp_auth(
         &self,
-        params: McpApprovalRespondParams,
-    ) -> Result<McpApprovalRespondResult, ServerFault>;
+        params: McpAuthCancelParams,
+    ) -> Result<McpAuthCancelResult, ServerFault>;
     async fn list_mcp_servers(
         &self,
         params: McpServerListParams,
@@ -349,8 +349,8 @@ async fn dispatch<S: ServerProtocol>(
         "events.subscribe" => value(server.subscribe_events(decode(params)?, context).await?),
         "approval.respond" => value(server.respond_approval(decode(params)?).await?),
         "approval.list" => value(server.list_approvals(decode(params)?).await?),
-        "mcp.approval.list" => value(server.list_mcp_approvals(decode_default(params)?).await?),
-        "mcp.approval.respond" => value(server.respond_mcp_approval(decode(params)?).await?),
+        "mcp.auth.begin" => value(server.begin_mcp_auth(decode(params)?).await?),
+        "mcp.auth.cancel" => value(server.cancel_mcp_auth(decode(params)?).await?),
         "mcp.server.list" => value(server.list_mcp_servers(decode_default(params)?).await?),
         "mcp.server.add" => value(server.add_mcp_server(decode(params)?).await?),
         "mcp.server.edit" => value(server.edit_mcp_server(decode(params)?).await?),

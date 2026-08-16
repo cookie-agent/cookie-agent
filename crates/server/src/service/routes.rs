@@ -2,11 +2,10 @@ use async_trait::async_trait;
 use cookie_agent_engine::{EngineError, session::SessionError};
 use cookie_agent_protocol::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondErrorCode, ApprovalRespondParams,
-    ApprovalRespondResult, EventsSubscribeParams, EventsSubscribeResult, McpApprovalDecision,
-    McpApprovalListParams, McpApprovalListResult, McpApprovalRespondParams,
-    McpApprovalRespondResult, McpPendingApproval, McpServerAddParams, McpServerEditParams,
-    McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
-    McpServerPersistParams, McpServerSetEnabledParams, ProviderConnectParams,
+    ApprovalRespondResult, EventsSubscribeParams, EventsSubscribeResult, McpAuthBeginParams,
+    McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult, McpServerAddParams,
+    McpServerEditParams, McpServerListParams, McpServerListResult, McpServerMutationResult,
+    McpServerNameParams, McpServerPersistParams, McpServerSetEnabledParams, ProviderConnectParams,
     ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, RunCancelParams,
     RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult,
     RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
@@ -231,32 +230,25 @@ impl ServerProtocol for Server {
             .list_approvals(params.root_session_id, params.status))
     }
 
-    async fn list_mcp_approvals(&self, _: McpApprovalListParams) -> Result<McpApprovalListResult> {
-        Ok(McpApprovalListResult {
-            approvals: self
-                .engine
-                .pending_mcp_approvals()
-                .into_iter()
-                .map(|approval| McpPendingApproval {
-                    server: approval.server,
-                    connection: approval.connection,
-                })
-                .collect(),
+    async fn begin_mcp_auth(&self, params: McpAuthBeginParams) -> Result<McpAuthBeginResult> {
+        let authorization_url = self
+            .engine
+            .begin_mcp_auth(params.server.clone())
+            .await
+            .map_err(protocol_fault)?;
+        Ok(McpAuthBeginResult {
+            server: params.server,
+            authorization_url,
         })
     }
 
-    async fn respond_mcp_approval(
-        &self,
-        params: McpApprovalRespondParams,
-    ) -> Result<McpApprovalRespondResult> {
-        match params.decision {
-            McpApprovalDecision::Approve => self.engine.approve_project_mcp_server(&params.server),
-            McpApprovalDecision::Reject => self.engine.reject_project_mcp_server(&params.server),
-        }
-        .map_err(protocol_fault)?;
-        Ok(McpApprovalRespondResult {
+    async fn cancel_mcp_auth(&self, params: McpAuthCancelParams) -> Result<McpAuthCancelResult> {
+        self.engine
+            .cancel_mcp_auth(params.server.clone())
+            .await
+            .map_err(protocol_fault)?;
+        Ok(McpAuthCancelResult {
             server: params.server,
-            decision: params.decision,
         })
     }
 

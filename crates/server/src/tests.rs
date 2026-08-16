@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt as _, sync::Arc};
 
 use cookie_agent_config::{
-    ApprovalConfig, ContextCompactionConfig, LoadedConfiguration, LoadedMcpServer, McpServerConfig,
-    McpServerSource, RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
+    ApprovalConfig, ContextCompactionConfig, LoadedConfiguration, LoadedMcpServer, McpServerSource,
+    RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
 };
 use cookie_agent_engine::{Engine, EngineOptions};
 use cookie_agent_models::{
@@ -18,7 +18,7 @@ use cookie_agent_models::{
     },
 };
 use cookie_agent_protocol::{
-    AuthFieldName, AuthMethodId, CatalogRevision, McpApprovalDecision, McpApprovalRespondParams,
+    AuthFieldName, AuthMethodId, CatalogRevision, McpAuthBeginParams, McpAuthCancelParams,
     McpConfigSource, McpServerAddParams, McpServerDefinition, McpServerEditParams,
     McpServerNameParams, ProviderId, ProviderSetupRecipeId, RUNTIME_CHANGED_METHOD,
     RecipeCompilerVersion, SessionListParams,
@@ -122,34 +122,8 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
 }
 
 #[tokio::test]
-async fn mcp_project_approval_is_reachable_through_protocol() {
-    let config = |lazy| McpServerConfig {
-        command: Some("not-started".into()),
-        args: Vec::new(),
-        env: BTreeMap::new(),
-        cwd: None,
-        url: None,
-        headers: BTreeMap::new(),
-        enabled: true,
-        lazy,
-        timeout_ms: Some(1_000),
-    };
-    let harness = harness_with_mcp(BTreeMap::from([
-        (
-            "approved".into(),
-            LoadedMcpServer {
-                source: McpServerSource::WorkspaceFile,
-                config: config(true),
-            },
-        ),
-        (
-            "rejected".into(),
-            LoadedMcpServer {
-                source: McpServerSource::WorkspaceFile,
-                config: config(true),
-            },
-        ),
-    ]));
+async fn mcp_management_is_reachable_through_protocol() {
+    let harness = harness();
     let client = Client::connect_in_process(Arc::clone(&harness.server));
     client.handshake().await.expect("handshake");
     let runtime_definition = McpServerDefinition {
@@ -159,6 +133,7 @@ async fn mcp_project_approval_is_reachable_through_protocol() {
         cwd: None,
         url: None,
         headers: BTreeMap::new(),
+        oauth: None,
         enabled: true,
         lazy: true,
         timeout_ms: Some(1000),
@@ -179,6 +154,22 @@ async fn mcp_project_approval_is_reachable_through_protocol() {
         .find(|server| server.name == "runtime")
         .expect("runtime server");
     assert_eq!(runtime.source, McpConfigSource::Runtime);
+    let auth_error = client
+        .begin_mcp_auth(McpAuthBeginParams {
+            server: "runtime".into(),
+        })
+        .await
+        .expect_err("stdio server cannot begin OAuth")
+        .to_string();
+    assert!(auth_error.contains("-32000"), "{auth_error}");
+    let cancel_error = client
+        .cancel_mcp_auth(McpAuthCancelParams {
+            server: "runtime".into(),
+        })
+        .await
+        .expect_err("no OAuth flow to cancel")
+        .to_string();
+    assert!(cancel_error.contains("-32000"), "{cancel_error}");
     let mut edited = runtime_definition;
     edited.args.push("--edited".into());
     client
@@ -194,34 +185,6 @@ async fn mcp_project_approval_is_reachable_through_protocol() {
         })
         .await
         .expect("remove runtime MCP server");
-    let pending = client
-        .list_mcp_approvals()
-        .await
-        .expect("list MCP approvals")
-        .approvals;
-    assert_eq!(pending.len(), 2);
-    for (server, decision) in [
-        ("approved", McpApprovalDecision::Approve),
-        ("rejected", McpApprovalDecision::Reject),
-    ] {
-        assert!(pending.iter().any(|approval| approval.server == server));
-        let result = client
-            .respond_mcp_approval(McpApprovalRespondParams {
-                server: server.into(),
-                decision,
-            })
-            .await
-            .expect("respond to MCP approval");
-        assert_eq!(result.decision, decision);
-    }
-    assert!(
-        client
-            .list_mcp_approvals()
-            .await
-            .expect("list after responses")
-            .approvals
-            .is_empty()
-    );
     client.shutdown();
     harness.server.shutdown();
     harness.engine.shutdown().await;

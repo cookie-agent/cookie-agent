@@ -792,7 +792,7 @@ impl Engine {
         let mcp = Arc::new(
             crate::McpRegistry::new(
                 options.config.mcp_servers.clone(),
-                store.project_dir_path().join("mcp-trust-grants.jsonl"),
+                options.data_dir.join("mcp-oauth.json"),
             )
             .map_err(|error| EngineError::MissingTool(error.to_string()))?,
         );
@@ -1320,25 +1320,6 @@ impl Engine {
     #[must_use]
     pub fn mcp_statuses(&self) -> Vec<crate::McpServerStatus> {
         self.inner.mcp.statuses()
-    }
-
-    #[must_use]
-    pub fn pending_mcp_approvals(&self) -> Vec<crate::McpApprovalRequest> {
-        self.inner.mcp.pending_approvals()
-    }
-
-    pub fn approve_project_mcp_server(&self, server: &str) -> Result<(), EngineError> {
-        self.inner
-            .mcp
-            .approve_project_server(server)
-            .map_err(|error| EngineError::MissingTool(error.to_string()))
-    }
-
-    pub fn reject_project_mcp_server(&self, server: &str) -> Result<(), EngineError> {
-        self.inner
-            .mcp
-            .reject_project_server(server)
-            .map_err(|error| EngineError::MissingTool(error.to_string()))
     }
 
     /// Stops new session mailbox traffic, cancels active work, and joins the

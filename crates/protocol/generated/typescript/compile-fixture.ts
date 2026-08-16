@@ -2,8 +2,6 @@
 import type {
   ClientHello,
   ModelSnapshotManifestV1,
-  McpApprovalListResult,
-  McpApprovalRespondParams,
   ProviderConnectResult,
   ProviderDisconnectParams,
   Request,
@@ -25,8 +23,6 @@ const roots: [
   ProviderConnectResult,
   ProviderDisconnectParams,
   ModelSnapshotManifestV1,
-  McpApprovalListResult,
-  McpApprovalRespondParams,
 ] | null = null;
 
 export { roots };

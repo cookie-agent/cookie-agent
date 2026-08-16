@@ -29,9 +29,8 @@ the load completes.
 The running engine adds a mutable `Runtime` layer for MCP server entries. It
 wins over the workspace and user file layers and lasts for the daemon lifetime.
 Runtime removals are tombstones: the named server is absent even when a file
-layer defines it. Runtime entries are trusted by construction; user-file entries
-are trusted, while effective workspace-file entries use the existing name-keyed
-project approval. Nothing is written automatically.
+layer defines it. Runtime, user-file, and workspace-file entries use the same
+connection lifecycle. Nothing is written automatically.
 
 Explicit MCP write-back replaces only `[mcp.servers.<name>]` in the selected
 user or project file using a format-preserving TOML document edit. Unrelated
@@ -45,8 +44,9 @@ compared immediately before replacement, and a mismatch fails with a conflict
 instead of overwriting the external edit. A modification landing between that
 comparison and the rename itself cannot be detected — a narrow residual race
 that only matters if another writer edits the file in the same instant; avoid
-concurrent external edits while applying changes. The runtime entry remains the effective layer after a successful
-write, so normal file-layer provenance and trust resume on restart.
+concurrent external edits while applying changes. The runtime entry remains the
+effective layer after a successful write, so normal file-layer provenance
+resumes on restart.
 
 TOML-level limits (enforced before deserialization):
 
@@ -132,8 +132,8 @@ Controls automatic session titles generated from the first user message.
 ## `[mcp.servers.<name>]`
 
 MCP server definitions are layered by server name. A workspace definition
-replaces the same user-level server and requires name-keyed approval before it
-can connect. See the [MCP guide](../guide/mcp.md) for trust and naming behavior.
+replaces the same user-level server. See the [MCP guide](../guide/mcp.md) for
+permission and naming behavior.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -143,6 +143,7 @@ can connect. See the [MCP guide](../guide/mcp.md) for trust and naming behavior.
 | `cwd` | string | *(none)* | Child working directory; valid only with `command`. |
 | `url` | string | *(none)* | Absolute HTTP or HTTPS Streamable HTTP endpoint. Exactly one of `url` or `command` is required. |
 | `headers` | map of strings | empty | Static request headers; valid only with `url`. |
+| `oauth` | boolean or table | auto | Streamable HTTP OAuth. Omit, set `true`, or use `{}` for reactive OAuth; set `false` to disable it. A table accepts optional `client_id`, `client_secret`, `client_metadata_url`, and `scopes`. A static `Authorization` header takes precedence. |
 | `enabled` | boolean | `true` | Whether the server may connect. |
 | `lazy` | boolean | `false` | Defer connection and tool listing until first named use. |
 | `timeout_ms` | integer | `30000` | Positive timeout for connect, list, and call operations. |
