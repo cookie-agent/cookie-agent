@@ -846,6 +846,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#prompt_caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      [prompt_caching]
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#session_title" class="md-nav__link">
     <span class="md-ellipsis">
       [session_title]
@@ -1152,6 +1161,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#prompt_caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      [prompt_caching]
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#session_title" class="md-nav__link">
     <span class="md-ellipsis">
       [session_title]
@@ -1367,6 +1385,12 @@ resumes on restart.</p>
 <td>Automatic context compaction</td>
 </tr>
 <tr>
+<td><code>prompt_caching</code></td>
+<td>table</td>
+<td>defaults below</td>
+<td>Anthropic prompt-cache breakpoints</td>
+</tr>
+<tr>
 <td><code>session_title</code></td>
 <td>table</td>
 <td>defaults below</td>
@@ -1511,6 +1535,54 @@ truncated or replaced with artifact references.</p>
 </tr>
 </tbody>
 </table>
+<h2 id="prompt_caching"><code>[prompt_caching]</code><a class="headerlink" href="#prompt_caching" title="Permanent link">&para;</a></h2>
+<p>Controls declarative Anthropic prompt-cache breakpoints. The strategy is applied
+only when the selected adaptor declares prompt-caching capability. Other
+adaptors are unchanged. Defaults opt managed Anthropic models in:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td>boolean</td>
+<td><code>true</code></td>
+<td>Enables cache marker normalization. Set to <code>false</code> to emit no strategy markers.</td>
+</tr>
+<tr>
+<td><code>system_ttl</code></td>
+<td>string</td>
+<td><code>"one_hour"</code></td>
+<td>TTL for <code>history[0]</code> when it is a non-empty system turn.</td>
+</tr>
+<tr>
+<td><code>tools_ttl</code></td>
+<td>string</td>
+<td><code>"one_hour"</code></td>
+<td>TTL for the final emitted tool definition.</td>
+</tr>
+<tr>
+<td><code>rolling_ttl</code></td>
+<td>string</td>
+<td><code>"five_minutes"</code></td>
+<td>TTL for the last eligible non-empty history turn, walking backward over empty and tool-result-only turns.</td>
+</tr>
+</tbody>
+</table>
+<p>TTL values are <code>"one_hour"</code> and <code>"five_minutes"</code>. Configuration is rejected if
+a one-hour marker would follow a five-minute marker in Oven's actual marker
+order: tools, system blocks, non-system history, then the optional request-level
+marker. The rolling marker is recomputed on every request.</p>
+<p>The lower-level Anthropic adaptor option <code>cache_ttl</code> remains supported. It maps
+to Oven's request-level <code>cache_control</code>, which is a final, optional fourth
+breakpoint; <code>cache_strategy</code> maps to the three normalized tool/message
+breakpoints above.</p>
 <h2 id="session_title"><code>[session_title]</code><a class="headerlink" href="#session_title" title="Permanent link">&para;</a></h2>
 <p>Controls automatic session titles generated from the first user message.</p>
 <table>
