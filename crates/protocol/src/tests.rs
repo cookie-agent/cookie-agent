@@ -107,6 +107,7 @@ fn child_agent(binding: FrozenModelBinding) -> AgentSnapshot {
         document_fingerprint: Sha256Digest::of_bytes(b"document"),
         composed_prompt: "Complete the delegated task.".into(),
         prompt_fingerprint: Sha256Digest::of_bytes(b"prompt"),
+        max_output_tokens: 0,
         permissions: Vec::new(),
         delegation: None,
         fallback_chain: vec![binding],
@@ -208,15 +209,28 @@ fn usage_rpc_shapes_are_additive_and_nullable_when_unpriced() {
 }
 
 #[test]
-fn legacy_agent_snapshot_upconversion_is_exact_and_writes_schema_five() {
-    let mut legacy = serde_json::to_value(child_agent(frozen_binding())).unwrap();
+fn prior_agent_snapshots_upconvert_exactly_and_write_schema_six() {
+    let current = serde_json::to_value(child_agent(frozen_binding())).unwrap();
+    let mut previous = current.clone();
+    previous["schema"] = json!(5);
+    previous
+        .as_object_mut()
+        .unwrap()
+        .remove("max_output_tokens");
+    let converted = serde_json::from_value::<AgentSnapshot>(previous).unwrap();
+    assert_eq!(converted.schema.value(), 6);
+    assert_eq!(converted.max_output_tokens, 0);
+
+    let mut legacy = current;
     legacy["schema"] = json!(4);
+    legacy.as_object_mut().unwrap().remove("max_output_tokens");
     legacy["tools"] = json!(["read", "write", "edit", "bash"]);
 
     let converted = serde_json::from_value::<AgentSnapshot>(legacy.clone()).unwrap();
-    assert_eq!(converted.schema.value(), 5);
+    assert_eq!(converted.schema.value(), 6);
     let current = serde_json::to_value(converted).unwrap();
-    assert_eq!(current["schema"], 5);
+    assert_eq!(current["schema"], 6);
+    assert_eq!(current["max_output_tokens"], 0);
     assert!(current.get("tools").is_none());
 
     let mut unknown_field = legacy.clone();

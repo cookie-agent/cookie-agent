@@ -2,7 +2,7 @@
 description: Primary agent pinned to the compatible chat model base behavior
 mode: primary
 enabled: true
-model_fallback:
+models:
   - { model: "quantumcookie.gateway/deepseek-v4-flash", variant: base }
 permissions:
   read:

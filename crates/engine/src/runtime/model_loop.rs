@@ -679,6 +679,15 @@ impl Engine {
                         .ok_or(EngineError::NoRunnableModel)?,
                 });
                 let mut request = ModelRequest::new(context.history).with_tools(tools.clone());
+                request.inference.max_output_tokens = match (
+                    binding.descriptor.capabilities.limits.output,
+                    policy.agent.max_output_tokens,
+                ) {
+                    (Some(model), 0) => Some(model),
+                    (Some(model), document) => Some(model.min(document)),
+                    (None, 0) => None,
+                    (None, document) => Some(document),
+                };
                 if let Some(native_context) = context.native_context {
                     request = request.with_native_context(native_context);
                 }

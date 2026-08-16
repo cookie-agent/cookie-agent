@@ -53,7 +53,7 @@ impl AgentRegistry {
                 return Err(EngineError::RuntimeCompileFailed);
             }
             let mut resolved_fallback = Vec::new();
-            for fallback in &document.frontmatter.model_fallback {
+            for fallback in &document.frontmatter.models {
                 match &fallback.model {
                     AgentModelRef::ParentModel => {
                         resolved_fallback.push(ResolvedAgentFallback::ParentModel);
@@ -158,13 +158,19 @@ fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, Eng
             BUILT_IN_APPROVAL_AGENT_ID,
             "Built-in approval evaluator",
             "Evaluate the supplied approval request conservatively. Return only the requested structured decision.\n",
-            AgentLimits::default(),
+            AgentLimits {
+                timeout_ms: 30_000,
+                max_output_tokens: 2_048,
+            },
         ),
         (
             BUILT_IN_COMPACTION_AGENT_ID,
             "Built-in context compaction agent",
             "Summarize conversation context faithfully within the supplied bounds. Return summary text only.\n",
-            AgentLimits::default(),
+            AgentLimits {
+                timeout_ms: 30_000,
+                max_output_tokens: 2_048,
+            },
         ),
         (
             BUILT_IN_TITLE_AGENT_ID,
@@ -172,7 +178,6 @@ fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, Eng
             "Generate a concise plain-text title from the supplied first user message. Return title text only.\n",
             AgentLimits {
                 timeout_ms: 10_000,
-                max_input_tokens: 4_096,
                 max_output_tokens: 128,
             },
         ),
@@ -197,7 +202,7 @@ fn built_in_internal_document(
         description: description.to_owned(),
         mode: AgentMode::Internal,
         enabled: true,
-        model_fallback: vec![AgentModelFallback {
+        models: vec![AgentModelFallback {
             model: AgentModelRef::ParentModel,
             variant: None,
         }],
@@ -205,8 +210,8 @@ fn built_in_internal_document(
         permissions: IndexMap::new(),
     };
     let document_fingerprint = fingerprint(
-        "cookie-agent/built-in-internal-agent-document/v1",
-        &(id.as_str(), description, &body, &frontmatter.limits),
+        "cookie-agent/built-in-internal-agent-document/v2",
+        &(id.as_str(), &frontmatter, &body),
     )?;
     let prompt_fingerprint = fingerprint("cookie-agent/system-prompt/v1", &body)?;
     Ok(AgentDocument {
@@ -227,7 +232,7 @@ fn built_in_default_document(selection: &ModelSelection) -> Result<AgentDocument
         description: "Built-in default coding agent".to_owned(),
         mode: AgentMode::Primary,
         enabled: true,
-        model_fallback: vec![AgentModelFallback {
+        models: vec![AgentModelFallback {
             model: AgentModelRef::Model(selection.model.clone()),
             variant: selection
                 .variant
@@ -237,7 +242,10 @@ fn built_in_default_document(selection: &ModelSelection) -> Result<AgentDocument
         limits: AgentLimits::default(),
         permissions: built_in_default_permissions()?,
     };
-    let document_fingerprint = fingerprint("cookie-agent/built-in-default-document/v1", selection)?;
+    let document_fingerprint = fingerprint(
+        "cookie-agent/built-in-default-document/v2",
+        &(id.as_str(), &frontmatter, &body),
+    )?;
     let prompt_fingerprint = fingerprint("cookie-agent/system-prompt/v1", &body)?;
     Ok(AgentDocument {
         id,

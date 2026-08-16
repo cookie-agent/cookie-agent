@@ -72,8 +72,8 @@ selected as roots or delegation targets and do not appear in TUI agent pickers.
 The runtime supplies built-in `approval`, `compaction`, and `title` internal
 documents; `.cookie-agent/agents/approval.md`, `compaction.md`, or `title.md`
 replace those defaults normally. Internal documents may use `${parent_model}` in
-`model_fallback` to inherit the parent run's exact frozen model and variant, and
-may configure `limits: { timeout_ms, max_input_tokens, max_output_tokens }`.
+`models` to inherit the parent run's exact frozen model and variant, and may
+configure `limits: { timeout_ms, max_output_tokens }`.
 Approval and title internal requests are structurally tool-less. The compaction
 fork deliberately retains the parent request's tool definitions to preserve a
 byte-identical cacheable prefix, but tool calls returned by the summarizer are

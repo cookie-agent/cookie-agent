@@ -2,7 +2,7 @@
 description: Primary agent pinned to the OpenAI Responses model and high variant
 mode: primary
 enabled: true
-model_fallback:
+models:
   - { model: "openai/gpt-5.6-luna", variant: high }
 permissions:
   read:

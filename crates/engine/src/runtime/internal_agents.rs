@@ -21,6 +21,9 @@ use crate::{
     policy::{self, FrozenRunPolicy},
 };
 
+const UNKNOWN_INTERNAL_CONTEXT_LIMIT: u64 = 16_384;
+const DEFAULT_INTERNAL_TIMEOUT_MS: u64 = 30_000;
+
 impl Engine {
     pub(super) async fn run_internal_text_agent(
         &self,
@@ -31,7 +34,7 @@ impl Engine {
         input: String,
         execution: InternalAgentExecution<'_>,
     ) -> Result<InternalAgentTextResult, EngineError> {
-        let max_input_bytes = usize::try_from(policy.limits.max_input_tokens)
+        let max_input_bytes = usize::try_from(internal_agent_max_input_limit(policy))
             .unwrap_or(usize::MAX)
             .saturating_mul(4);
         let input = truncate_utf8(&input, max_input_bytes);
@@ -77,13 +80,6 @@ impl Engine {
         };
         let policy = policy.clone();
         let input_tokens = internal_history_tokens(&input.history, &input.tools)?;
-        let max_input_tokens = internal_agent_input_limit(kind, &policy);
-        if input_tokens > max_input_tokens {
-            return Err(ModelError::invalid_request(format!(
-                "internal agent input is {input_tokens} estimated tokens, exceeding the frozen {max_input_tokens}-token limit"
-            ))
-            .into());
-        }
         let invocation_id = InternalAgentInvocationId::new_v7();
         let internal_run_id = InternalAgentRunId::new_v7();
         let call = SafeInternalAgentCall {
@@ -136,18 +132,25 @@ impl Engine {
                 )
                 .await?;
             }
+            let max_input_tokens = internal_agent_input_limit(binding, &policy);
+            if !internal_agent_input_fits(input_tokens, binding, &policy) {
+                last_failure = InternalAgentFailure {
+                    code: safe_code("input_too_large"),
+                    message: safe_error(&format!(
+                        "internal agent input is {input_tokens} estimated tokens, exceeding this model's frozen {max_input_tokens}-token limit"
+                    )),
+                    retryable: false,
+                    model_error: None,
+                };
+                previous_backend = Some(backend);
+                continue;
+            }
             let runtime = policy
                 .runtime
                 .as_ref()
                 .ok_or(EngineError::NoRunnableModel)?;
             let model = policy::resolve_model(binding, runtime)?;
-            let max_output_tokens = binding
-                .descriptor
-                .capabilities
-                .limits
-                .output
-                .unwrap_or(policy.limits.max_output_tokens)
-                .min(policy.limits.max_output_tokens);
+            let max_output_tokens = internal_agent_output_limit(binding, &policy);
             let request = internal_model_request(
                 input.history.clone(),
                 input.tools.clone(),
@@ -158,7 +161,10 @@ impl Engine {
             let call_future = model.model().complete(request, abort.signal());
             let result = tokio::select! {
                 result = tokio::time::timeout(
-                    std::time::Duration::from_millis(policy.limits.timeout_ms),
+                    std::time::Duration::from_millis(match policy.limits.timeout_ms {
+                        0 => DEFAULT_INTERNAL_TIMEOUT_MS,
+                        configured => configured,
+                    }),
                     call_future,
                 ) => match result {
                     Ok(result) => result,
@@ -230,10 +236,12 @@ impl Engine {
                             _ => None,
                         })
                         .collect::<String>();
-                    let max_output_bytes = usize::try_from(policy.limits.max_output_tokens)
-                        .unwrap_or(usize::MAX)
-                        .saturating_mul(4);
-                    if output.len() > max_output_bytes {
+                    let output_exceeds_document_limit = (policy.limits.max_output_tokens != 0)
+                        && output.len()
+                            > usize::try_from(policy.limits.max_output_tokens)
+                                .unwrap_or(usize::MAX)
+                                .saturating_mul(4);
+                    if output_exceeds_document_limit {
                         last_failure = InternalAgentFailure {
                             code: safe_code("output_too_large"),
                             message: safe_error("internal agent output exceeded its hard bound"),
@@ -413,6 +421,7 @@ impl Engine {
             composed_prompt: document.body.clone(),
             prompt_fingerprint: Sha256Digest::new(document.prompt_fingerprint.as_str())
                 .map_err(|_| EngineError::RuntimeCompileFailed)?,
+            max_output_tokens: document.frontmatter.limits.max_output_tokens,
             permissions: Vec::new(),
             delegation: None,
             fallback_chain: models.clone(),
@@ -424,7 +433,6 @@ impl Engine {
             models,
             runtime: Some(Arc::clone(&owner.runtime)),
             limits: InternalAgentLimits {
-                max_input_tokens: limits.max_input_tokens,
                 max_output_tokens: limits.max_output_tokens,
                 timeout_ms: limits.timeout_ms,
             },
@@ -432,29 +440,59 @@ impl Engine {
     }
 }
 
-pub(super) fn internal_agent_input_limit(
-    kind: InternalAgentKind,
-    policy: &FrozenInternalAgentPolicy,
-) -> u64 {
-    if kind != InternalAgentKind::ContextCompaction {
-        return policy.limits.max_input_tokens;
-    }
+fn internal_agent_max_input_limit(policy: &FrozenInternalAgentPolicy) -> u64 {
     policy
         .models
         .iter()
-        .filter_map(|binding| binding.descriptor.capabilities.limits.context)
+        .map(|binding| internal_agent_input_limit(binding, policy))
         .max()
-        .unwrap_or(0)
-        .max(policy.limits.max_input_tokens)
+        .unwrap_or(UNKNOWN_INTERNAL_CONTEXT_LIMIT)
+}
+
+pub(super) fn internal_agent_input_limit(
+    binding: &cookie_agent_protocol::FrozenModelBinding,
+    policy: &FrozenInternalAgentPolicy,
+) -> u64 {
+    binding.descriptor.capabilities.limits.context.map_or(
+        UNKNOWN_INTERNAL_CONTEXT_LIMIT,
+        |context| {
+            context
+                .saturating_sub(internal_agent_output_limit(binding, policy).unwrap_or(0))
+                .max(1)
+        },
+    )
+}
+
+pub(super) fn internal_agent_input_fits(
+    input_tokens: u64,
+    binding: &cookie_agent_protocol::FrozenModelBinding,
+    policy: &FrozenInternalAgentPolicy,
+) -> bool {
+    input_tokens <= internal_agent_input_limit(binding, policy)
+}
+
+pub(super) fn internal_agent_output_limit(
+    binding: &cookie_agent_protocol::FrozenModelBinding,
+    policy: &FrozenInternalAgentPolicy,
+) -> Option<u64> {
+    match (
+        binding.descriptor.capabilities.limits.output,
+        policy.limits.max_output_tokens,
+    ) {
+        (Some(model), 0) => Some(model),
+        (Some(model), document) => Some(model.min(document)),
+        (None, 0) => None,
+        (None, document) => Some(document),
+    }
 }
 
 fn internal_model_request(
     history: Vec<oven_sdk::HistoryTurn>,
     tools: Vec<ToolDefinition>,
-    max_output_tokens: u64,
+    max_output_tokens: Option<u64>,
 ) -> ModelRequest {
     let mut request = ModelRequest::new(history).with_tools(tools);
-    request.inference.max_output_tokens = Some(max_output_tokens);
+    request.inference.max_output_tokens = max_output_tokens;
     request
 }
 
@@ -496,14 +534,14 @@ pub(super) fn parse_internal_approval(value: &str) -> Option<ApprovalInternalDec
 #[cfg(test)]
 mod tests {
     use super::{
-        FrozenInternalAgentPolicy, InternalAgentKind, InternalAgentLimits,
-        internal_agent_input_limit, internal_history_tokens, internal_model_request,
-        invalid_internal_output,
+        FrozenInternalAgentPolicy, InternalAgentLimits, UNKNOWN_INTERNAL_CONTEXT_LIMIT,
+        internal_agent_input_fits, internal_agent_input_limit, internal_history_tokens,
+        internal_model_request, invalid_internal_output,
     };
 
     #[test]
     fn internal_model_requests_are_structurally_toolless() {
-        let request = internal_model_request(Vec::new(), Vec::new(), 128);
+        let request = internal_model_request(Vec::new(), Vec::new(), Some(128));
         assert!(request.tools.is_empty());
         assert_eq!(request.inference.max_output_tokens, Some(128));
     }
@@ -541,10 +579,10 @@ mod tests {
     }
 
     #[test]
-    fn compaction_input_limit_scales_to_parent_context_window() {
+    fn internal_input_limit_uses_model_context_minus_output_reserve() {
         let mut binding = crate::test_support::model_binding();
         binding.descriptor.capabilities.limits.context = Some(200_000);
-        let policy = FrozenInternalAgentPolicy {
+        let mut policy = FrozenInternalAgentPolicy {
             agent: crate::test_support::agent_snapshot(
                 "compaction",
                 cookie_agent_protocol::AgentMode::Internal,
@@ -552,18 +590,63 @@ mod tests {
             models: vec![binding],
             runtime: None,
             limits: InternalAgentLimits {
-                max_input_tokens: 16_384,
                 max_output_tokens: 2_048,
                 timeout_ms: 30_000,
             },
         };
         assert_eq!(
-            internal_agent_input_limit(InternalAgentKind::ContextCompaction, &policy),
-            200_000
+            internal_agent_input_limit(&policy.models[0], &policy),
+            197_952
         );
+
+        policy.models[0].descriptor.capabilities.limits.context = None;
         assert_eq!(
-            internal_agent_input_limit(InternalAgentKind::Approval, &policy),
-            16_384
+            internal_agent_input_limit(&policy.models[0], &policy),
+            UNKNOWN_INTERNAL_CONTEXT_LIMIT
         );
+    }
+
+    #[test]
+    fn mixed_context_fallbacks_fit_per_binding_in_either_order() {
+        let mut small = crate::test_support::model_binding_named("fallback-zero");
+        small.descriptor.capabilities.limits.context = Some(4_096);
+        let mut large = crate::test_support::model_binding_named("fallback-one");
+        large.descriptor.capabilities.limits.context = Some(200_000);
+        let policy = |models| FrozenInternalAgentPolicy {
+            agent: crate::test_support::agent_snapshot(
+                "compaction",
+                cookie_agent_protocol::AgentMode::Internal,
+            ),
+            models,
+            runtime: None,
+            limits: InternalAgentLimits {
+                max_output_tokens: 2_048,
+                timeout_ms: 30_000,
+            },
+        };
+
+        let small_first = policy(vec![small.clone(), large.clone()]);
+        assert!(!internal_agent_input_fits(
+            10_000,
+            &small_first.models[0],
+            &small_first
+        ));
+        assert!(internal_agent_input_fits(
+            10_000,
+            &small_first.models[1],
+            &small_first
+        ));
+
+        let large_first = policy(vec![large, small]);
+        assert!(internal_agent_input_fits(
+            10_000,
+            &large_first.models[0],
+            &large_first
+        ));
+        assert!(!internal_agent_input_fits(
+            10_000,
+            &large_first.models[1],
+            &large_first
+        ));
     }
 }

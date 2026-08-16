@@ -2,7 +2,7 @@
 description: General implementation agent with model fallback and worker delegation
 mode: primary
 enabled: true
-model_fallback:
+models:
   - { model: "kimi-for-coding/kimi-for-coding", variant: base }
   - { model: "openai/gpt-5.6-luna", variant: high }
   - { model: "quantumcookie.gateway/deepseek-v4-flash", variant: base }

@@ -152,6 +152,7 @@ pub(crate) fn agent_snapshot(agent: &str, mode: AgentMode) -> AgentSnapshot {
         document_fingerprint: Sha256Digest::of_bytes(format!("{agent} document").as_bytes()),
         composed_prompt: format!("You are the {agent} test agent.\n"),
         prompt_fingerprint: Sha256Digest::of_bytes(format!("{agent} prompt").as_bytes()),
+        max_output_tokens: 0,
         permissions: Vec::new(),
         delegation: None,
         fallback_chain: vec![binding],

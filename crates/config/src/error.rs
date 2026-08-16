@@ -55,6 +55,10 @@ pub enum ConfigError {
         "agent `{0}` uses the removed `tools` field; use `permissions` entries to control tool visibility"
     )]
     AgentToolsRemoved(AgentId),
+    #[error("agent `{0}` uses the removed `model_fallback` field; use `models` instead")]
+    AgentModelsRenamed(AgentId),
+    #[error("agent `{0}`: timeout_ms is only supported for internal agents")]
+    AgentTimeoutInternalOnly(AgentId),
     #[error(
         "agent `{0}` permission resources support only `${{workspace_dir}}`, and only for read or write"
     )]

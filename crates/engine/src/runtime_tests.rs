@@ -898,7 +898,7 @@ fn empty_provider_workspace(path: &std::path::Path) -> LoadedConfiguration {
     fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
     fs::write(
         agents.join("primary.md"),
-        "---\ndescription: Bedrock test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0\", variant: base }]\npermissions: {}\n---\nUse Bedrock.\n",
+        "---\ndescription: Bedrock test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0\", variant: base }]\npermissions: {}\n---\nUse Bedrock.\n",
     )
     .expect("agent");
     fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
@@ -966,7 +966,7 @@ compaction = "openai-responses-compact"
     fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
     fs::write(
         agents.join("primary.md"),
-        "---\ndescription: Native compaction test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"openai/gpt-test\", variant: base }]\npermissions: {}\n---\nTest native compaction.\n",
+        "---\ndescription: Native compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"openai/gpt-test\", variant: base }]\npermissions: {}\n---\nTest native compaction.\n",
     )
     .expect("agent");
     fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
@@ -1390,7 +1390,7 @@ async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly(
 fn custom_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest prompt.\n",
+        "---\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest prompt.\n",
     )
 }
 
@@ -1415,14 +1415,14 @@ async fn reopen_fixture_with_residency(
 fn approval_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
+        "---\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
     )
 }
 
 fn denied_approval_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\ndescription: Denied approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: deny\n---\nTest denied approval flow.\n",
+        "---\ndescription: Denied approval test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: deny\n---\nTest denied approval flow.\n",
     )
 }
 
@@ -1460,6 +1460,31 @@ fn custom_fixture_with_endpoint_primary_internal_and_concurrency(
     max_concurrency: Option<u32>,
     mcp_server: Option<LoadedMcpServer>,
 ) -> (Fixture, RunSelection) {
+    custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+        endpoint,
+        primary_agent,
+        internal,
+        compaction_buffer_tokens,
+        generate_titles,
+        max_concurrency,
+        mcp_server,
+        4_096,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+    endpoint: &str,
+    primary_agent: &str,
+    internal: Option<(&str, &str)>,
+    compaction_buffer_tokens: Option<u64>,
+    generate_titles: bool,
+    max_concurrency: Option<u32>,
+    mcp_server: Option<LoadedMcpServer>,
+    context_tokens: u64,
+    worker_agent: Option<&str>,
+) -> (Fixture, RunSelection) {
     let directory = TempDir::new().expect("temp directory");
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
         .expect("private temp directory");
@@ -1495,7 +1520,11 @@ native_replay = "unsupported"
 cancellation = "local_only"
 media = {}
 "#
-    .replace("http://127.0.0.1:9/v1", endpoint);
+    .replace("http://127.0.0.1:9/v1", endpoint)
+    .replace(
+        "context_tokens = 4096",
+        &format!("context_tokens = {context_tokens}"),
+    );
     let config_text = max_concurrency.map_or(config_text.clone(), |max_concurrency| {
         config_text.replace(
             "[delegation]\nmax_depth = 1",
@@ -1516,7 +1545,9 @@ media = {}
         .expect("private agent");
     fs::write(
         agents.join("worker.md"),
-        "---\ndescription: Worker test agent\nmode: subagent\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nWorker prompt.\n",
+        worker_agent.unwrap_or(
+            "---\ndescription: Worker test agent\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nWorker prompt.\n",
+        ),
     )
     .expect("worker agent");
     fs::set_permissions(agents.join("worker.md"), fs::Permissions::from_mode(0o600))
@@ -1701,7 +1732,7 @@ fn completed_read_events(
 async fn rehydration_skips_reads_denied_by_the_frozen_permission_pipeline() {
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         "http://127.0.0.1:9/v1",
-        "---\ndescription: Rehydration deny test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: deny\n---\nTest denied rehydration.\n",
+        "---\ndescription: Rehydration deny test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: deny\n---\nTest denied rehydration.\n",
     );
     let executed = Arc::new(AtomicBool::new(false));
     fixture
@@ -1733,7 +1764,7 @@ async fn rehydration_skips_reads_denied_by_the_frozen_permission_pipeline() {
 async fn rehydration_skips_a_symlink_swapped_after_capability_preparation() {
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         "http://127.0.0.1:9/v1",
-        "---\ndescription: Rehydration swap test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nTest swapped rehydration.\n",
+        "---\ndescription: Rehydration swap test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nTest swapped rehydration.\n",
     );
     fs::write(fixture._directory.path().join("allowed.txt"), "allowed").expect("allowed file");
     fs::write(fixture._directory.path().join("denied.txt"), "denied").expect("denied file");
@@ -1906,10 +1937,10 @@ fn manual_compaction_resolves_parent_model_from_nonzero_active_fallback() {
 fn workspace_internal_agent_replaces_builtin_document_and_limits() {
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         "http://127.0.0.1:9/v1",
-        "---\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nPrimary.\n",
+        "---\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nPrimary.\n",
         Some((
             "approval.md",
-            "---\ndescription: Workspace approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1234, max_input_tokens: 2345, max_output_tokens: 345 }\npermissions: {}\n---\nWorkspace approval prompt.\n",
+            "---\ndescription: Workspace approval\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1234, max_output_tokens: 345 }\npermissions: {}\n---\nWorkspace approval prompt.\n",
         )),
         None,
         false,
@@ -1930,7 +1961,6 @@ fn workspace_internal_agent_replaces_builtin_document_and_limits() {
     );
     assert_eq!(policy.agent.composed_prompt, "Workspace approval prompt.\n");
     assert_eq!(policy.limits.timeout_ms, 1234);
-    assert_eq!(policy.limits.max_input_tokens, 2345);
     assert_eq!(policy.limits.max_output_tokens, 345);
     assert!(policy.agent.permissions.is_empty());
 }
@@ -3595,24 +3625,30 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
     let root_body = "data: {\"choices\":[{\"delta\":{\"content\":\"initial complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
     let summary_body = "data: {\"choices\":[{\"delta\":{\"content\":\"compacted summary\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
 
-    for (output_bytes, latest_usage, expect_elision) in
-        [(8 * 1024, 100, false), (80 * 1024, 20_000, true)]
-    {
+    for (output_bytes, latest_usage, context_tokens, expect_elision) in [
+        (80 * 1024, 20_000, 100_000, false),
+        (80 * 1024, 20_000, 4_096, true),
+    ] {
         let (endpoint, captured, _reached, _release) = scripted_server_with_delayed_response(
             vec![root_body.to_owned(), summary_body.to_owned()],
             usize::MAX,
         )
         .await;
-        let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
-            &endpoint,
-            "---\ndescription: Raw-first compaction test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest raw-first compaction.\n",
-            Some((
-                "compaction.md",
-                "---\ndescription: Test compaction\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_input_tokens: 16384, max_output_tokens: 256 }\npermissions: {}\n---\nSummarize faithfully.\n",
-            )),
-            None,
-            false,
-        );
+        let (fixture, selection) =
+            custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+                &endpoint,
+                "---\ndescription: Raw-first compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest raw-first compaction.\n",
+                Some((
+                    "compaction.md",
+                    "---\ndescription: Test compaction\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 256 }\npermissions: {}\n---\nSummarize faithfully.\n",
+                )),
+                None,
+                false,
+                None,
+                None,
+                context_tokens,
+                None,
+            );
         let session = fixture
             .engine
             .create_session(selection.clone())
@@ -3929,7 +3965,7 @@ fn runtime_snapshot_model_descriptor_preserves_compiled_variant_order() {
 #[test]
 fn synthetic_default_replaces_no_authored_agent_and_unrunnable_authored_agents_only() {
     let unrunnable = synthetic_default_fixture(Some(
-        "---\ndescription: Unrunnable primary\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/missing\", variant: base }]\npermissions: {}\n---\nUnrunnable prompt.\n",
+        "---\ndescription: Unrunnable primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/missing\", variant: base }]\npermissions: {}\n---\nUnrunnable prompt.\n",
     ));
     let snapshot = unrunnable
         .engine
@@ -4702,6 +4738,10 @@ fn accepted_event_logs_reopen_schema_four_agent_snapshots() {
                 value["event_schema_version"] = serde_json::json!(version);
                 if value["payload"]["type"] == "session_created" {
                     value["payload"]["creation_agent"]["schema"] = serde_json::json!(4);
+                    value["payload"]["creation_agent"]
+                        .as_object_mut()
+                        .expect("creation agent object")
+                        .remove("max_output_tokens");
                     value["payload"]["creation_agent"]["tools"] =
                         serde_json::json!(["read", "write", "edit", "bash"]);
                 }
@@ -4722,7 +4762,7 @@ fn accepted_event_logs_reopen_schema_four_agent_snapshots() {
         else {
             panic!("first event must be session creation");
         };
-        assert_eq!(creation_agent.schema.value(), 5);
+        assert_eq!(creation_agent.schema.value(), 6);
         assert!(
             serde_json::to_value(creation_agent)
                 .expect("serialize up-converted creation agent")
@@ -5007,7 +5047,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         scripted_server_with_delayed_response(bodies, 2).await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\ndescription: Steering compaction test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest steering compaction.\n",
+        "---\ndescription: Steering compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest steering compaction.\n",
         None,
         Some(500),
         false,
@@ -5199,7 +5239,7 @@ async fn cancel_during_start_prediction_aborts_compaction_without_appending_inpu
         scripted_server_with_delayed_response(bodies, 1).await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\ndescription: Start cancellation test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest start cancellation.\n",
+        "---\ndescription: Start cancellation test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest start cancellation.\n",
         None,
         Some(500),
         false,
@@ -5329,7 +5369,7 @@ async fn steer_during_start_prediction_survives_initial_submission_and_reaches_m
         scripted_server_with_delayed_response(bodies, 1).await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\ndescription: Start steering race test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest start steering.\n",
+        "---\ndescription: Start steering race test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest start steering.\n",
         None,
         Some(500),
         false,
@@ -5445,10 +5485,10 @@ async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix()
     let (endpoint, captured) = scripted_two_approved_writes_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
+        "---\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
         Some((
             "approval.md",
-            "---\ndescription: Persistent approval evaluator\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_input_tokens: 4096, max_output_tokens: 128 }\npermissions: {}\n---\nEvaluate approval requests conservatively.\n",
+            "---\ndescription: Persistent approval evaluator\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 128 }\npermissions: {}\n---\nEvaluate approval requests conservatively.\n",
         )),
         None,
         false,
@@ -6072,6 +6112,48 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
     reopened.shutdown().await;
 }
 
+#[tokio::test]
+async fn primary_agent_max_output_tokens_caps_model_requests() {
+    let (endpoint, captured, _reached, _release) = scripted_server_with_delayed_response(
+        vec![scripted_text_body("capped response")],
+        usize::MAX,
+    )
+    .await;
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Output-capped primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\nlimits: { max_output_tokens: 128 }\npermissions: {}\n---\nKeep the response bounded.\n",
+    );
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("primary-output-cap").expect("run ID"),
+            selection,
+            input: "respond briefly".into(),
+        })
+        .await
+        .expect("start capped run");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    let requests = captured.await.expect("captured capped request");
+    let body = requests[0]
+        .split_once("\r\n\r\n")
+        .expect("HTTP request body")
+        .1;
+    let request: serde_json::Value = serde_json::from_str(body).expect("request JSON");
+    assert_eq!(
+        request
+            .get("max_tokens")
+            .and_then(serde_json::Value::as_u64),
+        Some(128)
+    );
+    fixture.engine.shutdown().await;
+}
+
 fn delayed_mcp_server(source: McpServerSource) -> LoadedMcpServer {
     let mut env = BTreeMap::new();
     env.insert("MCP_FIXTURE_LIST_DELAY_MS".into(), "100".into());
@@ -6100,7 +6182,7 @@ async fn immediate_first_run_waits_for_complete_eager_mcp_listing() {
     let (endpoint, captured) = scripted_model_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
         &endpoint,
-        "---\ndescription: MCP readiness agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  mcp: allow\n---\nUse MCP.\n",
+        "---\ndescription: MCP readiness agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  mcp: allow\n---\nUse MCP.\n",
         None,
         None,
         false,
@@ -6133,7 +6215,7 @@ async fn immediate_first_run_waits_for_project_mcp_listing_without_separate_appr
     let (endpoint, captured) = scripted_model_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
         &endpoint,
-        "---\ndescription: Project MCP readiness agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  mcp: allow\n---\nUse project MCP.\n",
+        "---\ndescription: Project MCP readiness agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  mcp: allow\n---\nUse project MCP.\n",
         None,
         None,
         false,
@@ -6493,7 +6575,7 @@ async fn registered_external_tool_must_declare_resource_and_cannot_bypass_deny()
     let (endpoint, captured) = scripted_zero_resource_tool_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\ndescription: Resource-bound test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: deny\n---\nReject denied tools.\n",
+        "---\ndescription: Resource-bound test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: deny\n---\nReject denied tools.\n",
     );
     let executed = Arc::new(AtomicBool::new(false));
     fixture
@@ -6757,7 +6839,7 @@ async fn delegated_child_uses_description_title_without_title_agent() {
         scripted_server_with_delayed_response(bodies, usize::MAX).await;
     let (mut fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\ndescription: Titled delegation parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest delegated titles.\n",
+        "---\ndescription: Titled delegation parent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest delegated titles.\n",
         None,
         None,
         true,
@@ -7460,6 +7542,121 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
 }
 
 #[tokio::test]
+async fn delegated_restart_retains_frozen_output_cap_after_agent_removal() {
+    let (endpoint, responses, server) = scripted_channel_server(4).await;
+    let (mut fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+            &endpoint,
+            "---\ndescription: Capped worker parent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nDelegate capped work.\n",
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            Some(
+                "---\ndescription: Capped worker\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\nlimits: { max_output_tokens: 128 }\npermissions: {}\n---\nKeep delegated responses bounded.\n",
+            ),
+        );
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("capped worker parent");
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "create capped child",
+            scripted_tool_body(
+                "create-capped-child",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Capped child",
+                    "prompt":"first capped child task",
+                    "background":true
+                }),
+            ),
+        ))
+        .expect("capped child tool response");
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "first capped child task",
+            scripted_text_body("first capped child result"),
+        ))
+        .expect("first capped child response");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("parent observed capped child"),
+        ))
+        .expect("capped parent continuation");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("create-capped-child").expect("run ID"),
+            selection,
+            input: "create capped child".into(),
+        })
+        .await
+        .expect("create capped child run");
+    wait_for_session_not_running(&fixture.engine, parent.session_id).await;
+    let child = fixture.engine.children(parent.session_id)[0].session_id;
+    wait_for_session_not_running(&fixture.engine, child).await;
+    let child_selection = fixture
+        .engine
+        .get_session(child)
+        .expect("capped child metadata")
+        .creation_selection;
+
+    fixture.engine.shutdown().await;
+    fixture
+        .config
+        .agents
+        .remove(&AgentId::new("worker").expect("worker agent ID"));
+    fixture.engine = reopen_engine(&fixture);
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "second capped child task",
+            scripted_text_body("second capped child result"),
+        ))
+        .expect("resumed capped child response");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: child,
+            client_run_id: ClientRunId::new("resume-capped-child").expect("run ID"),
+            selection: child_selection,
+            input: "second capped child task".into(),
+        })
+        .await
+        .expect("resume capped child after restart");
+    wait_for_session_not_running(&fixture.engine, child).await;
+
+    let requests = server.await.expect("capped restart server");
+    let resumed = requests
+        .iter()
+        .find(|request| request.contains("second capped child task"))
+        .expect("resumed child request");
+    let body = resumed
+        .split_once("\r\n\r\n")
+        .expect("resumed HTTP request body")
+        .1;
+    let request: serde_json::Value = serde_json::from_str(body).expect("resumed request JSON");
+    assert_eq!(
+        request
+            .get("max_tokens")
+            .and_then(serde_json::Value::as_u64),
+        Some(128)
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
     let (endpoint, responses, server) = scripted_channel_server(12).await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
@@ -8086,7 +8283,7 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
     let (endpoint, resume_id, queued, release, server) = scripted_queued_resume_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
         &endpoint,
-        "---\ndescription: Queued resume parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest queued resume.\n",
+        "---\ndescription: Queued resume parent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest queued resume.\n",
         None,
         None,
         false,
@@ -8265,7 +8462,7 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
     let (endpoint, resume_id, queued, _release, server) = scripted_queued_resume_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
         &endpoint,
-        "---\ndescription: Cancel queued resume parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest queued resume cancellation.\n",
+        "---\ndescription: Cancel queued resume parent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest queued resume cancellation.\n",
         None,
         None,
         false,
@@ -8417,7 +8614,7 @@ async fn inherited_context_is_text_only_journaled_and_deterministic_after_restar
     let (endpoint, responses, server) = scripted_channel_server(5).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\ndescription: Context delegation parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n  delegate:\n    worker: allow\n---\nTest inherited context.\n",
+        "---\ndescription: Context delegation parent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n  delegate:\n    worker: allow\n---\nTest inherited context.\n",
     );
     fixture
         .engine
@@ -8577,7 +8774,7 @@ async fn background_delegate_permission_approval_gates_child_admission() {
     let (endpoint, captured) = scripted_background_delegation_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\ndescription: Approval-gated delegation agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: ask\n---\nTest approval-gated delegation.\n",
+        "---\ndescription: Approval-gated delegation agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: ask\n---\nTest approval-gated delegation.\n",
     );
     fixture
         .engine
@@ -10304,6 +10501,10 @@ async fn root_run_and_current_delegation_reservation_reopen_exactly() {
     let head_path = head_directory.path().join("delegations.jsonl");
     let mut head_record = raw.clone();
     head_record["record"]["child_agent"]["schema"] = serde_json::json!(4);
+    head_record["record"]["child_agent"]
+        .as_object_mut()
+        .expect("child agent object")
+        .remove("max_output_tokens");
     head_record["record"]["child_agent"]["tools"] =
         serde_json::json!(["read", "write", "edit", "bash"]);
     fs::write(
@@ -10317,7 +10518,7 @@ async fn root_run_and_current_delegation_reservation_reopen_exactly() {
         .get(invocation_id)
         .expect("recover HEAD delegation reservation");
     assert_eq!(recovered.child_agent, agent);
-    assert_eq!(recovered.child_agent.schema.value(), 5);
+    assert_eq!(recovered.child_agent.schema.value(), 6);
     head_journal.shutdown();
     let legacy_directory = tempfile::tempdir().expect("legacy journal directory");
     let legacy_path = legacy_directory.path().join("delegations.jsonl");

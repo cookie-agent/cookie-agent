@@ -887,6 +887,7 @@ mod tests {
             document_fingerprint: Sha256Digest::of_bytes(b"test document"),
             composed_prompt: "Test permission evaluation.\n".into(),
             prompt_fingerprint: Sha256Digest::of_bytes(b"Test permission evaluation.\n"),
+            max_output_tokens: 0,
             permissions: rules,
             delegation: None,
             fallback_chain: Vec::new(),

@@ -24,7 +24,7 @@ use super::{
     Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
     InternalAgentHistoryInput, SessionCommand,
     helpers::{safe_display, truncate_utf8},
-    internal_agents::internal_agent_input_limit,
+    internal_agents::{internal_agent_input_fits, internal_agent_output_limit},
 };
 use crate::{
     events::OutputHub,
@@ -163,11 +163,10 @@ impl Engine {
             input.binding,
             &composed_prompt,
         )?;
-        let raw_budget = compaction_input_budget(input.binding, input.internal_policy);
         let raw_fits = if let Some(raw_fits) = raw_fit_from_real_usage(
             input.overflow_recovery,
             latest_real_usage(&events).map(|(_, observed_tokens)| observed_tokens),
-            raw_budget,
+            |tokens| compaction_input_fits(input.binding, input.internal_policy, tokens),
         ) {
             raw_fits
         } else {
@@ -179,7 +178,7 @@ impl Engine {
                 let (history, _) = compaction_history(context.history.clone(), input.focus);
                 self.estimated_request_tokens(input.session, &history, input.tools)?
             };
-            raw_fit_tokens <= raw_budget
+            compaction_input_fits(input.binding, input.internal_policy, raw_fit_tokens)
         };
         let context_tokens_before = if raw_fits {
             self.estimated_request_tokens(input.session, &context.history, input.tools)?
@@ -717,32 +716,43 @@ fn estimated_tokens_for_bytes(bytes: usize) -> u64 {
 fn raw_fit_from_real_usage(
     overflow_recovery: bool,
     observed_tokens: Option<u64>,
-    budget: u64,
+    fits: impl FnOnce(u64) -> bool,
 ) -> Option<bool> {
     if overflow_recovery {
         Some(false)
     } else {
-        observed_tokens
-            .filter(|tokens| *tokens <= budget)
-            .map(|_| true)
+        observed_tokens.filter(|tokens| fits(*tokens)).map(|_| true)
     }
 }
 
-fn compaction_input_budget(
+fn compaction_input_fits(
+    binding: &cookie_agent_protocol::FrozenModelBinding,
+    internal_policy: &FrozenInternalAgentPolicy,
+    input_tokens: u64,
+) -> bool {
+    if binding.descriptor.capabilities.compaction != CompactionCapability::Native {
+        return internal_policy
+            .models
+            .iter()
+            .any(|candidate| internal_agent_input_fits(input_tokens, candidate, internal_policy));
+    }
+    input_tokens <= native_compaction_input_budget(binding, internal_policy)
+}
+
+fn native_compaction_input_budget(
     binding: &cookie_agent_protocol::FrozenModelBinding,
     internal_policy: &FrozenInternalAgentPolicy,
 ) -> u64 {
-    let context_limit =
-        if binding.descriptor.capabilities.compaction == CompactionCapability::Native {
-            binding.descriptor.capabilities.limits.context.unwrap_or(0)
-        } else {
-            internal_agent_input_limit(InternalAgentKind::ContextCompaction, internal_policy)
-        };
-    let output_reserve = match internal_policy.limits.max_output_tokens {
-        0 => DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS,
-        configured => configured,
-    };
-    context_limit.saturating_sub(output_reserve)
+    let output_reserve = internal_agent_output_limit(binding, internal_policy)
+        .unwrap_or(DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS);
+    binding
+        .descriptor
+        .capabilities
+        .limits
+        .context
+        .unwrap_or(0)
+        .saturating_sub(output_reserve)
+        .max(1)
 }
 
 fn compaction_instruction(focus: Option<&str>) -> String {
@@ -863,9 +873,9 @@ mod tests {
     use super::{
         COMPACTION_INSTRUCTION, DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS,
         TOOL_OUTPUT_ELISION_MIN_BYTES, checkpoint_covers_input, compaction_gate,
-        compaction_history, compaction_input_budget, compaction_instruction,
-        raw_fit_from_real_usage, recent_read_candidates, resolve_compaction_trigger,
-        should_elide_tool_output, usage_reaches_compaction_trigger,
+        compaction_history, compaction_input_fits, compaction_instruction,
+        native_compaction_input_budget, raw_fit_from_real_usage, recent_read_candidates,
+        resolve_compaction_trigger, should_elide_tool_output, usage_reaches_compaction_trigger,
     };
     use crate::{
         model_history::{assemble_model_context, wire_model},
@@ -922,11 +932,12 @@ mod tests {
 
     #[test]
     fn real_usage_fit_is_inclusive_and_overflow_recovery_uses_elision_path() {
-        assert_eq!(raw_fit_from_real_usage(false, Some(99), 100), Some(true));
-        assert_eq!(raw_fit_from_real_usage(false, Some(100), 100), Some(true));
-        assert_eq!(raw_fit_from_real_usage(false, Some(101), 100), None);
-        assert_eq!(raw_fit_from_real_usage(false, None, 100), None);
-        assert_eq!(raw_fit_from_real_usage(true, Some(1), 100), Some(false));
+        let fits = |tokens| tokens <= 100;
+        assert_eq!(raw_fit_from_real_usage(false, Some(99), fits), Some(true));
+        assert_eq!(raw_fit_from_real_usage(false, Some(100), fits), Some(true));
+        assert_eq!(raw_fit_from_real_usage(false, Some(101), fits), None);
+        assert_eq!(raw_fit_from_real_usage(false, None, fits), None);
+        assert_eq!(raw_fit_from_real_usage(true, Some(1), fits), Some(false));
     }
 
     #[test]
@@ -941,25 +952,61 @@ mod tests {
             models: vec![harness_binding.clone()],
             runtime: None,
             limits: InternalAgentLimits {
-                max_input_tokens: 16_384,
                 max_output_tokens: 2_048,
                 timeout_ms: 30_000,
             },
         };
-        assert_eq!(compaction_input_budget(&harness_binding, &policy), 97_952);
+        assert!(compaction_input_fits(&harness_binding, &policy, 97_952));
+        assert!(!compaction_input_fits(&harness_binding, &policy, 97_953));
 
         let mut native_binding = harness_binding;
         native_binding.descriptor.capabilities.compaction = CompactionCapability::Native;
         native_binding.descriptor.capabilities.limits.context = Some(50_000);
-        assert_eq!(compaction_input_budget(&native_binding, &policy), 47_952);
+        assert_eq!(
+            native_compaction_input_budget(&native_binding, &policy),
+            47_952
+        );
 
         policy.limits.max_output_tokens = 0;
         assert_eq!(
-            compaction_input_budget(&native_binding, &policy),
+            native_compaction_input_budget(&native_binding, &policy),
+            47_952
+        );
+        native_binding.descriptor.capabilities.limits.output = None;
+        assert_eq!(
+            native_compaction_input_budget(&native_binding, &policy),
             50_000 - DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS
         );
         native_binding.descriptor.capabilities.limits.context = Some(10_000);
-        assert_eq!(compaction_input_budget(&native_binding, &policy), 0);
+        assert_eq!(native_compaction_input_budget(&native_binding, &policy), 1);
+    }
+
+    #[test]
+    fn compaction_raw_fit_accepts_any_fitting_fallback_order() {
+        let mut small = crate::test_support::model_binding_named("fallback-zero");
+        small.descriptor.capabilities.limits.context = Some(4_096);
+        let mut large = crate::test_support::model_binding_named("fallback-one");
+        large.descriptor.capabilities.limits.context = Some(200_000);
+        let owner = crate::test_support::model_binding();
+        let mut policy = FrozenInternalAgentPolicy {
+            agent: crate::test_support::agent_snapshot(
+                "compaction",
+                cookie_agent_protocol::AgentMode::Internal,
+            ),
+            models: vec![small.clone(), large.clone()],
+            runtime: None,
+            limits: InternalAgentLimits {
+                max_output_tokens: 2_048,
+                timeout_ms: 30_000,
+            },
+        };
+
+        assert!(compaction_input_fits(&owner, &policy, 10_000));
+        policy.models = vec![large, small];
+        assert!(compaction_input_fits(&owner, &policy, 10_000));
+        policy.models.truncate(1);
+        policy.models[0].descriptor.capabilities.limits.context = Some(4_096);
+        assert!(!compaction_input_fits(&owner, &policy, 10_000));
     }
 
     #[test]

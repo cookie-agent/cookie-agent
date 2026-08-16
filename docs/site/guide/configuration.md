@@ -118,11 +118,9 @@ YAML frontmatter and a nonempty Markdown body used as the system prompt:
 description: Reviews changes for correctness
 mode: subagent
 enabled: true
-model_fallback:
+models:
   - { model: "openai/gpt-5", variant: null }
 limits:
-  timeout_ms: 30000
-  max_input_tokens: 16384
   max_output_tokens: 2048
 permissions:
   read: allow
@@ -139,7 +137,7 @@ Modes are `primary`, `subagent`, `all`, and `internal`. Internal agents are
 engine-only and cannot be selected as roots or delegation targets. The reserved
 built-ins are `approval`, `compaction`, and `title`; same-ID authored internal
 documents replace them through normal layering, and only internal agents may use
-`${parent_model}` in a model fallback.
+`${parent_model}` in the `models` list.
 
 See [Agents](agents.md) for the full frontmatter reference and the built-in
 internal agents.

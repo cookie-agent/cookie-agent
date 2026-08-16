@@ -7,7 +7,7 @@ use ts_rs::TS;
 use crate::{AgentId, FrozenModelBinding, ModelKey, ModelSelection, Sha256Digest, WildcardPattern};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
-#[ts(type = "5")]
+#[ts(type = "6")]
 pub struct AgentSchemaVersion(());
 impl AgentSchemaVersion {
     #[must_use]
@@ -16,7 +16,7 @@ impl AgentSchemaVersion {
     }
     #[must_use]
     pub const fn value(self) -> u32 {
-        5
+        6
     }
 }
 impl Serialize for AgentSchemaVersion {
@@ -24,7 +24,7 @@ impl Serialize for AgentSchemaVersion {
     where
         S: serde::Serializer,
     {
-        s.serialize_u32(5)
+        s.serialize_u32(6)
     }
 }
 impl<'de> Deserialize<'de> for AgentSchemaVersion {
@@ -33,11 +33,11 @@ impl<'de> Deserialize<'de> for AgentSchemaVersion {
         D: serde::Deserializer<'de>,
     {
         let v = u32::deserialize(d)?;
-        if v == 5 {
+        if v == 6 {
             Ok(Self::current())
         } else {
             Err(serde::de::Error::custom(format!(
-                "unsupported exact agent schema {v}; expected 5"
+                "unsupported exact agent schema {v}; expected 6"
             )))
         }
     }
@@ -50,12 +50,31 @@ impl JsonSchema for AgentSchemaVersion {
         Cow::Borrowed("AgentSchemaVersion")
     }
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"integer","const":5})
+        json_schema!({"type":"integer","const":6})
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct LegacyAgentSchemaVersion;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PreviousAgentSchemaVersion;
+
+impl<'de> Deserialize<'de> for PreviousAgentSchemaVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = u32::deserialize(deserializer)?;
+        if value == 5 {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom(format!(
+                "unsupported previous agent schema {value}; expected 5"
+            )))
+        }
+    }
+}
 
 impl<'de> Deserialize<'de> for LegacyAgentSchemaVersion {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -236,6 +255,7 @@ pub struct AgentSnapshot {
     #[schemars(with = "AgentPromptSchema")]
     pub composed_prompt: String,
     pub prompt_fingerprint: Sha256Digest,
+    pub max_output_tokens: u64,
     #[schemars(length(max = 256))]
     pub permissions: Vec<PermissionRule>,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -344,6 +364,26 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
             document_fingerprint: Sha256Digest,
             composed_prompt: String,
             prompt_fingerprint: Sha256Digest,
+            max_output_tokens: u64,
+            permissions: Vec<PermissionRule>,
+            #[serde(deserialize_with = "crate::deserialize_required_option")]
+            delegation: Option<FrozenDelegationPolicy>,
+            fallback_chain: Vec<FrozenModelBinding>,
+            selected_suffix_start: u32,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct PreviousWire {
+            agent: AgentId,
+            #[serde(rename = "schema")]
+            _schema: PreviousAgentSchemaVersion,
+            mode: AgentMode,
+            description: String,
+            document_source: AgentDocumentSource,
+            document_fingerprint: Sha256Digest,
+            composed_prompt: String,
+            prompt_fingerprint: Sha256Digest,
             permissions: Vec<PermissionRule>,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             delegation: Option<FrozenDelegationPolicy>,
@@ -375,6 +415,7 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
         #[serde(untagged)]
         enum Wire {
             Current(CurrentWire),
+            Previous(PreviousWire),
             Legacy(LegacyWire),
         }
 
@@ -388,6 +429,22 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
                 document_fingerprint: w.document_fingerprint,
                 composed_prompt: w.composed_prompt,
                 prompt_fingerprint: w.prompt_fingerprint,
+                max_output_tokens: w.max_output_tokens,
+                permissions: w.permissions,
+                delegation: w.delegation,
+                fallback_chain: w.fallback_chain,
+                selected_suffix_start: w.selected_suffix_start,
+            },
+            Wire::Previous(w) => Self {
+                agent: w.agent,
+                schema: AgentSchemaVersion::current(),
+                mode: w.mode,
+                description: w.description,
+                document_source: w.document_source,
+                document_fingerprint: w.document_fingerprint,
+                composed_prompt: w.composed_prompt,
+                prompt_fingerprint: w.prompt_fingerprint,
+                max_output_tokens: 0,
                 permissions: w.permissions,
                 delegation: w.delegation,
                 fallback_chain: w.fallback_chain,
@@ -424,6 +481,7 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
                     document_fingerprint,
                     composed_prompt,
                     prompt_fingerprint,
+                    max_output_tokens: 0,
                     permissions,
                     delegation,
                     fallback_chain,

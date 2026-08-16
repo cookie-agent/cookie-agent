@@ -118,7 +118,7 @@ impl PermissionValue {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum AgentModelRef {
     Model(ModelKey),
     ParentModel,
@@ -141,42 +141,79 @@ impl<'de> Deserialize<'de> for AgentModelRef {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentModelFallback {
     pub model: AgentModelRef,
     pub variant: Option<ConfiguredVariantRef>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentLimits {
     pub timeout_ms: u64,
-    pub max_input_tokens: u64,
     pub max_output_tokens: u64,
 }
 
-impl Default for AgentLimits {
-    fn default() -> Self {
-        Self {
-            timeout_ms: 30_000,
-            max_input_tokens: 16_384,
-            max_output_tokens: 2_048,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentFrontmatter {
     pub description: String,
     pub mode: AgentMode,
     pub enabled: bool,
-    pub model_fallback: Vec<AgentModelFallback>,
+    pub models: Vec<AgentModelFallback>,
     #[serde(default)]
     pub limits: AgentLimits,
     #[serde(default, deserialize_with = "deserialize_permissions")]
     pub permissions: IndexMap<PermissionAction, PermissionValue>,
+}
+
+impl<'de> Deserialize<'de> for AgentFrontmatter {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Default, Deserialize)]
+        #[serde(default, deny_unknown_fields)]
+        struct RawLimits {
+            timeout_ms: Option<u64>,
+            max_output_tokens: Option<u64>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawFrontmatter {
+            description: String,
+            mode: AgentMode,
+            enabled: bool,
+            models: Vec<AgentModelFallback>,
+            #[serde(default)]
+            limits: RawLimits,
+            #[serde(default, deserialize_with = "deserialize_permissions")]
+            permissions: IndexMap<PermissionAction, PermissionValue>,
+        }
+
+        let raw = RawFrontmatter::deserialize(deserializer)?;
+        let internal = raw.mode == AgentMode::Internal;
+        Ok(Self {
+            description: raw.description,
+            mode: raw.mode,
+            enabled: raw.enabled,
+            models: raw.models,
+            limits: AgentLimits {
+                timeout_ms: raw
+                    .limits
+                    .timeout_ms
+                    .unwrap_or(if internal { 30_000 } else { 0 }),
+                max_output_tokens: raw.limits.max_output_tokens.unwrap_or(if internal {
+                    2_048
+                } else {
+                    0
+                }),
+            },
+            permissions: raw.permissions,
+        })
+    }
 }
 
 /// Validated authored-agent input for downstream runtime materialization.
@@ -251,7 +288,7 @@ fn authored_root_eligible(document: &AgentDocument) -> bool {
             document.frontmatter.mode,
             AgentMode::Primary | AgentMode::All
         )
-        && !document.frontmatter.model_fallback.is_empty()
+        && !document.frontmatter.models.is_empty()
 }
 
 fn validate_agent_document(
@@ -281,37 +318,31 @@ fn validate_agent_document(
             field: "description",
         });
     }
-    if matches!(frontmatter.mode, AgentMode::Primary) && frontmatter.model_fallback.is_empty() {
+    if matches!(frontmatter.mode, AgentMode::Primary) && frontmatter.models.is_empty() {
         return Err(ConfigError::PrimaryFallback(document.id.clone()));
     }
-    if frontmatter.model_fallback.len() > MAX_LIST {
+    if frontmatter.models.len() > MAX_LIST {
         return Err(ConfigError::AgentLimit(document.id.clone()));
     }
     let mut fallback_models = BTreeSet::new();
-    for fallback in &frontmatter.model_fallback {
+    for fallback in &frontmatter.models {
         if matches!(fallback.model, AgentModelRef::ParentModel)
             && (frontmatter.mode != AgentMode::Internal || fallback.variant.is_some())
         {
             return Err(ConfigError::AgentField {
                 agent: document.id.clone(),
-                field: "model_fallback",
+                field: "models",
             });
         }
         if !fallback_models.insert(fallback.model.clone()) {
             return Err(ConfigError::AgentField {
                 agent: document.id.clone(),
-                field: "model_fallback",
+                field: "models",
             });
         }
     }
-    if frontmatter.limits.timeout_ms == 0
-        || frontmatter.limits.max_input_tokens == 0
-        || frontmatter.limits.max_output_tokens == 0
-    {
-        return Err(ConfigError::AgentField {
-            agent: document.id.clone(),
-            field: "limits",
-        });
+    if frontmatter.mode != AgentMode::Internal && frontmatter.limits.timeout_ms != 0 {
+        return Err(ConfigError::AgentTimeoutInternalOnly(document.id.clone()));
     }
     let permission_rules = frontmatter
         .permissions

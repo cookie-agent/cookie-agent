@@ -87,6 +87,11 @@
           "maxItems": 256,
           "minItems": 1
         },
+        "max_output_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
         "mode": {
           "$ref": "#/$defs/AgentMode"
         },
@@ -105,7 +110,7 @@
         },
         "schema": {
           "type": "integer",
-          "const": 5
+          "const": 6
         },
         "selected_suffix_start": {
           "type": "integer",
@@ -123,6 +128,7 @@
         "document_fingerprint",
         "composed_prompt",
         "prompt_fingerprint",
+        "max_output_tokens",
         "permissions",
         "delegation",
         "fallback_chain",

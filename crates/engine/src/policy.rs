@@ -224,6 +224,7 @@ fn freeze_with_bindings(
         document_fingerprint: wire_digest(&document.document_fingerprint)?,
         composed_prompt: document.body.clone(),
         prompt_fingerprint: wire_digest(&document.prompt_fingerprint)?,
+        max_output_tokens: document.frontmatter.limits.max_output_tokens,
         permissions: document
             .frontmatter
             .permissions

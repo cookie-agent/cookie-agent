@@ -57,6 +57,7 @@ pub(crate) fn parse_agent(
     validate_yaml_limits(&yaml_value, 0)
         .map_err(|_| invalid_document(path, "YAML resource limit exceeded"))?;
     reject_schema_field(&yaml_value, yaml, path)?;
+    reject_renamed_models_field(&yaml_value, &id)?;
     reject_removed_tools_field(&yaml_value, &id)?;
     validate_permission_expressions(&yaml_value, &id)?;
     let frontmatter: AgentFrontmatter =
@@ -152,6 +153,20 @@ fn reject_removed_tools_field(
         .is_some_and(|frontmatter| frontmatter.contains_key(&tools))
     {
         return Err(ConfigError::AgentToolsRemoved(agent.clone()));
+    }
+    Ok(())
+}
+
+fn reject_renamed_models_field(
+    value: &serde_yaml::Value,
+    agent: &AgentId,
+) -> Result<(), ConfigError> {
+    let legacy = serde_yaml::Value::String("model_fallback".to_owned());
+    if value
+        .as_mapping()
+        .is_some_and(|frontmatter| frontmatter.contains_key(&legacy))
+    {
+        return Err(ConfigError::AgentModelsRenamed(agent.clone()));
     }
     Ok(())
 }

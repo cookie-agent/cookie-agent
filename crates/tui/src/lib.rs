@@ -138,7 +138,7 @@ mod tests {
                 description: "Test primary agent".into(),
                 mode: AgentMode::Primary,
                 enabled: true,
-                model_fallback: vec![cookie_agent_config::AgentModelFallback {
+                models: vec![cookie_agent_config::AgentModelFallback {
                     model: cookie_agent_config::AgentModelRef::Model(
                         "custom.gateway/arbitrary-model"
                             .parse::<ModelKey>()

@@ -2,7 +2,7 @@
 description: Focused read-oriented worker agent
 mode: subagent
 enabled: true
-model_fallback:
+models:
   - { model: "openai/gpt-5.6-luna", variant: high }
 permissions:
   read:

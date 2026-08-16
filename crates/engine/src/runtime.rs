@@ -368,7 +368,6 @@ pub(crate) struct FrozenInternalAgentPolicy {
 
 #[derive(Clone, Debug)]
 pub(crate) struct InternalAgentLimits {
-    pub(crate) max_input_tokens: u64,
     pub(crate) max_output_tokens: u64,
     pub(crate) timeout_ms: u64,
 }

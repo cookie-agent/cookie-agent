@@ -24,7 +24,7 @@ fn write_agent(root: &Path, name: &str, text: &str) {
 
 fn agent(description: &str, fallback: &str) -> String {
     format!(
-        "---\ndescription: {description}\nmode: primary\nenabled: true\nmodel_fallback: {fallback}\npermissions: {{}}\n---\nPrompt.\n"
+        "---\ndescription: {description}\nmode: primary\nenabled: true\nmodels: {fallback}\npermissions: {{}}\n---\nPrompt.\n"
     )
 }
 
@@ -222,12 +222,12 @@ fn agent_internal_mode_and_parent_model_are_strict() {
     write_agent(
         &normal_parent,
         "normal.md",
-        "---\ndescription: Normal\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\npermissions: {}\n---\nNormal.\n",
+        "---\ndescription: Normal\nmode: primary\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\npermissions: {}\n---\nNormal.\n",
     );
     assert!(matches!(
         load_from_roots(None, Some(&normal_parent)),
         Err(ConfigError::AgentField {
-            field: "model_fallback",
+            field: "models",
             ..
         })
     ));
@@ -237,7 +237,7 @@ fn agent_internal_mode_and_parent_model_are_strict() {
     write_agent(
         &legacy_type,
         "legacy.md",
-        "---\ntype: internal\ndescription: Legacy\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nLegacy.\n",
+        "---\ntype: internal\ndescription: Legacy\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nLegacy.\n",
     );
     assert!(matches!(
         load_from_roots(None, Some(&legacy_type)),
@@ -249,7 +249,7 @@ fn agent_internal_mode_and_parent_model_are_strict() {
     write_agent(
         &internal,
         "approval.md",
-        "---\ndescription: Internal approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1000, max_input_tokens: 2000, max_output_tokens: 100 }\npermissions: {}\n---\nApprove safely.\n",
+        "---\ndescription: Internal approval\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1000, max_output_tokens: 100 }\npermissions: {}\n---\nApprove safely.\n",
     );
     let loaded = load_from_roots(None, Some(&internal)).unwrap();
     let approval = loaded
@@ -266,17 +266,37 @@ fn agent_internal_mode_and_parent_model_are_strict() {
     write_agent(
         &delegation,
         "approval.md",
-        "---\ndescription: Internal approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\npermissions: {}\n---\nApprove.\n",
+        "---\ndescription: Internal approval\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\npermissions: {}\n---\nApprove.\n",
     );
     write_agent(
         &delegation,
         "primary.md",
-        "---\ndescription: Primary\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/model\" }]\npermissions:\n  delegate:\n    approval: allow\n---\nPrimary.\n",
+        "---\ndescription: Primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions:\n  delegate:\n    approval: allow\n---\nPrimary.\n",
     );
     assert!(matches!(
         load_from_roots(None, Some(&delegation)),
         Err(ConfigError::IneligibleDelegationTarget { .. })
     ));
+}
+
+#[test]
+fn timeout_ms_is_rejected_for_non_internal_agents() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("non-internal-timeout");
+    write_config(&root, "");
+    write_agent(
+        &root,
+        "primary.md",
+        "---\ndescription: Primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\nlimits: { timeout_ms: 1000 }\npermissions: {}\n---\nPrimary.\n",
+    );
+
+    let error = load_from_roots(None, Some(&root)).unwrap_err();
+    assert!(matches!(error, ConfigError::AgentTimeoutInternalOnly(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("timeout_ms is only supported for internal agents")
+    );
 }
 
 #[test]
@@ -378,13 +398,13 @@ fn authored_agent_registry_retains_slash_model_ids_without_model_compilation() {
     let input = registry.materialization_inputs().next().unwrap();
     assert!(input.root_eligible);
     let cookie_agent_config::AgentModelRef::Model(model) =
-        &input.document.frontmatter.model_fallback[0].model
+        &input.document.frontmatter.models[0].model
     else {
         panic!("expected concrete model fallback");
     };
     assert_eq!(model.model_id().as_str(), "group/model/deep");
     assert!(matches!(
-        input.document.frontmatter.model_fallback[0]
+        input.document.frontmatter.models[0]
             .variant
             .as_ref()
             .unwrap(),

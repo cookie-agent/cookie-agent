@@ -2,7 +2,7 @@
 description: Primary agent pinned to the Anthropic-wire model and high variant
 mode: primary
 enabled: true
-model_fallback:
+models:
   - { model: "kimi-for-coding/kimi-for-coding", variant: base }
 permissions:
   read:

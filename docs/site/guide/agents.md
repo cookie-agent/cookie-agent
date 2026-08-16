@@ -18,11 +18,9 @@ wrong type, or malformed YAML construct is also rejected.
 description: Reviews changes for correctness
 mode: subagent
 enabled: true
-model_fallback:
+models:
   - { model: "openai/gpt-5", variant: null }
 limits:
-  timeout_ms: 30000
-  max_input_tokens: 16384
   max_output_tokens: 2048
 permissions:
   read: allow
@@ -42,12 +40,18 @@ Review the requested change and report concrete findings.
 | `description` | string | *(required)* | 1–512 characters, no control characters. Shown in the TUI and snapshots. |
 | `mode` | string | *(required)* | `primary`, `subagent`, `all`, or `internal`. |
 | `enabled` | boolean | *(required)* | Disabled agents are never runnable as roots, delegation targets, or internal backends. |
-| `model_fallback` | array | *(required for `primary`)* | Ordered model chain; see below. |
+| `models` | array | *(required for `primary`)* | Ordered model chain; see below. |
 | `limits` | table | defaults below | Timeouts and token bounds. |
 | `permissions` | table | `{}` | Ordered action permission map; see [Permissions](permissions.md). At most 256 rules. |
 
-`limits` defaults to `timeout_ms = 30000`, `max_input_tokens = 16384`,
-`max_output_tokens = 2048`. Every limit must be greater than zero.
+`max_output_tokens` applies in every mode. A nonzero value caps each request at
+the smaller of the document value and the model's own output limit. It defaults
+to no document cap for the non-internal `primary`, `subagent`, and `all` modes.
+Internal agents retain a 2,048-token default; setting it explicitly to zero
+removes that document cap.
+`timeout_ms` applies only to internal agents. For other modes, a nonzero value is
+a hard error. Internal agents use the 30-second invocation timeout when
+`timeout_ms` is zero or omitted.
 
 Tool visibility is derived only from `permissions`. With no `permissions` field,
 the `read`, `write`, `edit`, and `bash` tools are visible and unmatched calls ask
@@ -61,7 +65,19 @@ The former `tools` field is removed. Documents that still declare it fail
 with an error naming `tools` and directing the author to `permissions`; remove
 the field and express tool visibility and call policy in the permission map.
 
-`model_fallback` entries are `{ model = "<provider>/<model-id>", variant = <name|null|"base"> }`.
+The former `model_fallback` field is also removed. Documents that still declare
+it fail with an error directing the author to `models`.
+
+The former `limits.max_input_tokens` field is removed. Internal-agent input
+budgets now come from each resolved model's context limit minus its effective
+output reserve; candidates that cannot fit an invocation are skipped. A model
+whose context limit is unknown uses a 16,384-token input budget.
+
+The durable protocol event for advancing through a model chain remains named
+`model_fallback` for wire-schema compatibility. This event name is independent
+of the agent-frontmatter `models` key.
+
+`models` entries are `{ model = "<provider>/<model-id>", variant = <name|null|"base"> }`.
 The `variant` field is optional: omitted (`null`) selects the model's configured
 default variant, the string `"base"` selects the base variant explicitly, and any
 other string selects that named variant. A primary agent must
@@ -157,21 +173,22 @@ family (`internal_agent_started`, `internal_agent_completed`, ...).
 
 | ID | Role | Default model | Default limits |
 |---|---|---|---|
-| `approval` | Stateless approval classifier for `auto_approve` mode | `${parent_model}` | 30 s timeout; 16,384 max input tokens; 2,048 max output tokens |
-| `compaction` | Summarizes context into a checkpoint | `${parent_model}` | 30 s timeout; 16,384 max input tokens; 2,048 max output tokens |
-| `title` | Generates a concise session title from the opening user messages (the first `session_title.max_input_messages`, default 4) | `${parent_model}` | 10 s timeout; 4,096 max input tokens; 128 max output tokens |
+| `approval` | Stateless approval classifier for `auto_approve` mode | `${parent_model}` | 30 s timeout; model-derived input budget; 2,048 max output tokens |
+| `compaction` | Summarizes context into a checkpoint | `${parent_model}` | 30 s timeout; model-derived input budget; 2,048 max output tokens |
+| `title` | Generates a concise session title from the opening user messages (the first `session_title.max_input_messages`, default 4) | `${parent_model}` | 10 s timeout; model-derived input budget; 128 max output tokens |
 
 All three default to `${parent_model}`, so they run on the model the parent run
-is currently using. The compaction agent's input limit additionally scales to
-the largest context window among its resolved models, so it can read the full
-conversation it is asked to summarize.
+is currently using. An internal agent's input budget is derived from each
+resolved model's context limit after reserving its effective maximum output,
+with a minimum of one token. A model with an unknown context limit uses a
+16,384-token input budget. Agent documents cannot set an input-token cap.
 
 The title agent runs only for root sessions that still need an automatic title.
 Delegated sessions already have the `delegate_subagent` description as their
 title, so they never invoke the title agent.
 
 The built-in documents are replaced by authored documents with the same ID,
-`mode: internal`, and an explicit `model_fallback`. `${parent_model}` is
+`mode: internal`, and an explicit `models` list. `${parent_model}` is
 allowed only in internal agents. When an internal agent document is disabled, or
 its fallback chain yields no available model, the internal call fails safely
 (approval degrades to asking, compaction is skipped, and title falls back to an
@@ -185,11 +202,10 @@ keeps its own selection:
 description: Context compaction on a fast model
 mode: internal
 enabled: true
-model_fallback:
+models:
   - { model: "openai/gpt-5-mini", variant: null }
 limits:
   timeout_ms: 30000
-  max_input_tokens: 16384
   max_output_tokens: 2048
 permissions: {}
 ---

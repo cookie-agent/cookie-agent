@@ -337,6 +337,30 @@ system prompt. Frontmatter at most 128 KiB, body at most 128 KiB; nested list or
 map size is capped at 256 entries and depth at 16. YAML anchors, aliases, tags,
 and merge keys are rejected, as is any `${env:` text.
 
+| Frontmatter key | Type | Default | Description |
+|---|---|---|---|
+| `description` | string | *(required)* | Nonempty display description, at most 512 bytes and without control characters. |
+| `mode` | string | *(required)* | `primary`, `subagent`, `all`, or `internal`. |
+| `enabled` | boolean | *(required)* | Controls root, delegation-target, or internal-backend eligibility. |
+| `models` | array | *(required for `primary`)* | Ordered `{ model, variant? }` model chain. `${parent_model}` is internal-only. |
+| `limits` | table | mode-specific | Supports `max_output_tokens` in every mode and `timeout_ms` for internal agents only. |
+| `permissions` | table | `{}` | Ordered action permission map with at most 256 rules. |
+
+For `primary`, `subagent`, and `all`, omitted or zero `max_output_tokens` adds no
+document cap. A nonzero value is combined with the model's output limit by taking
+the smaller value. Internal agents default to 2,048 output tokens; explicit zero
+removes that document cap. A nonzero `timeout_ms` is a hard error outside
+`internal` mode. Internal agents default to 30,000 ms when it is omitted or zero.
+
+The former `model_fallback` key is a targeted hard error; use `models`. The former
+`limits.max_input_tokens` key is removed. Internal input budgets are derived per
+resolved model from its context limit minus its effective output reserve, with a
+16,384-token fallback when context is unknown; an undersized model is skipped in
+favor of the next candidate.
+
+For durable wire-schema compatibility, the event emitted when advancing through
+the chain remains named `model_fallback`; only agent frontmatter uses `models`.
+
 See [Agents](../guide/agents.md) for the full frontmatter reference and reserved
 IDs.
 
