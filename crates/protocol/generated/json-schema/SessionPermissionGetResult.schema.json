@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionPermissionGetResult",
+  "type": "object",
+  "properties": {
+    "permissions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/EffectivePermissionAction"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "permissions"
+  ],
+  "$defs": {
+    "EffectivePermissionAction": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/PermissionAction"
+        },
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "patterns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EffectivePermissionRule"
+          }
+        },
+        "source": {
+          "$ref": "#/$defs/PermissionRuleSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "effect",
+        "source",
+        "patterns"
+      ]
+    },
+    "EffectivePermissionRule": {
+      "type": "object",
+      "properties": {
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "resource": {
+          "description": "Current wildcard grammar: '*' matches any characters, '?' matches one character, and the exact '${workspace_dir}' expression is allowed; controls, globstar, escapes, classes, and every other brace form are forbidden. Runtime deserialization additionally enforces a maximum of 4096 UTF-8 bytes; x-cookie-agent-maxUtf8Bytes records that byte limit because JSON Schema maxLength counts Unicode code points.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!.*\\*\\*)(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$",
+          "x-cookie-agent-maxUtf8Bytes": 4096
+        },
+        "source": {
+          "$ref": "#/$defs/PermissionRuleSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "resource",
+        "effect",
+        "source"
+      ]
+    },
+    "PermissionAction": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "bash",
+        "delegate",
+        "mcp"
+      ]
+    },
+    "PermissionEffect": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "ask",
+        "deny"
+      ]
+    },
+    "PermissionRuleSource": {
+      "type": "string",
+      "enum": [
+        "session_overlay",
+        "agent_document",
+        "default"
+      ]
+    }
+  }
+}

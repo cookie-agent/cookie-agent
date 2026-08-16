@@ -8,7 +8,8 @@
       "enum": [
         15,
         16,
-        17
+        17,
+        18
       ]
     },
     "payload": {
@@ -928,6 +929,23 @@
           "required": [
             "type",
             "through_seq"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "overlay": {
+              "$ref": "#/$defs/SessionPermissionOverlay"
+            },
+            "type": {
+              "type": "string",
+              "const": "session_permission_overlay_set"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "overlay"
           ]
         },
         {
@@ -4816,6 +4834,22 @@
             "depth"
           ]
         }
+      ]
+    },
+    "SessionPermissionOverlay": {
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PermissionRule"
+          },
+          "maxItems": 256
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "rules"
       ]
     },
     "SessionStatus": {

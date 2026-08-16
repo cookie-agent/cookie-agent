@@ -16,7 +16,9 @@ use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
     ClientHello, EventPayload, EventSubscriptionMessage, EventsSubscribeParams,
     EventsSubscribeResult, JsonRpcError, JsonRpcId, McpApprovalListParams, McpApprovalListResult,
-    McpApprovalRespondParams, McpApprovalRespondResult, MessageFrame, Notification, OutputDelta,
+    McpApprovalRespondParams, McpApprovalRespondResult, McpServerAddParams, McpServerEditParams,
+    McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
+    McpServerPersistParams, McpServerSetEnabledParams, MessageFrame, Notification, OutputDelta,
     OutputGap, OutputSnapshotEnvelope, OutputStream, ProtocolVersion, ProviderConnectParams,
     ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, Response,
     RunCancelParams, RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams,
@@ -24,10 +26,12 @@ use crate::{
     RuntimeSnapshotResult, ServerHello, SessionChildrenParams, SessionChildrenResult,
     SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
     SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionId,
-    SessionListParams, SessionListResult, SessionRenameParams, SessionRenameResult,
-    SessionResumeParams, SessionResumeResult, SessionRevertParams, SessionRevertResult,
-    SessionSetPermissionModeParams, SessionSetPermissionModeResult, SessionTreeParams,
-    SessionTreeResult, StoredEvent, ToolCallId, Transport, TransportError,
+    SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
+    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionSetParams,
+    SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
+    SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
+    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, StoredEvent, ToolCallId,
+    Transport, TransportError,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -115,6 +119,18 @@ pub trait ClientProtocol: Send + Sync {
         &self,
         params: SessionSetPermissionModeParams,
     ) -> Result<SessionSetPermissionModeResult, ClientError>;
+    async fn get_session_permissions(
+        &self,
+        params: SessionPermissionGetParams,
+    ) -> Result<SessionPermissionGetResult, ClientError>;
+    async fn set_session_permission(
+        &self,
+        params: SessionPermissionSetParams,
+    ) -> Result<SessionPermissionMutationResult, ClientError>;
+    async fn clear_session_permission(
+        &self,
+        params: SessionPermissionClearParams,
+    ) -> Result<SessionPermissionMutationResult, ClientError>;
     async fn compact_session(
         &self,
         params: SessionCompactParams,
@@ -151,6 +167,31 @@ pub trait ClientProtocol: Send + Sync {
         &self,
         params: McpApprovalRespondParams,
     ) -> Result<McpApprovalRespondResult, ClientError>;
+    async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError>;
+    async fn add_mcp_server(
+        &self,
+        params: McpServerAddParams,
+    ) -> Result<McpServerMutationResult, ClientError>;
+    async fn edit_mcp_server(
+        &self,
+        params: McpServerEditParams,
+    ) -> Result<McpServerMutationResult, ClientError>;
+    async fn remove_mcp_server(
+        &self,
+        params: McpServerNameParams,
+    ) -> Result<McpServerMutationResult, ClientError>;
+    async fn set_mcp_server_enabled(
+        &self,
+        params: McpServerSetEnabledParams,
+    ) -> Result<McpServerMutationResult, ClientError>;
+    async fn reconnect_mcp_server(
+        &self,
+        params: McpServerNameParams,
+    ) -> Result<McpServerMutationResult, ClientError>;
+    async fn persist_mcp_server(
+        &self,
+        params: McpServerPersistParams,
+    ) -> Result<McpServerMutationResult, ClientError>;
     async fn subscribe_events(
         &self,
         session_id: SessionId,
@@ -517,6 +558,27 @@ impl Client {
         self.call("session.set_permission_mode", &params).await
     }
 
+    pub async fn get_session_permissions(
+        &self,
+        params: SessionPermissionGetParams,
+    ) -> Result<SessionPermissionGetResult, ClientError> {
+        self.call("session.permission.get", &params).await
+    }
+
+    pub async fn set_session_permission(
+        &self,
+        params: SessionPermissionSetParams,
+    ) -> Result<SessionPermissionMutationResult, ClientError> {
+        self.call("session.permission.set", &params).await
+    }
+
+    pub async fn clear_session_permission(
+        &self,
+        params: SessionPermissionClearParams,
+    ) -> Result<SessionPermissionMutationResult, ClientError> {
+        self.call("session.permission.clear", &params).await
+    }
+
     pub async fn compact_session(
         &self,
         params: SessionCompactParams,
@@ -591,6 +653,52 @@ impl Client {
         params: McpApprovalRespondParams,
     ) -> Result<McpApprovalRespondResult, ClientError> {
         self.call("mcp.approval.respond", &params).await
+    }
+
+    pub async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError> {
+        self.call("mcp.server.list", &McpServerListParams {}).await
+    }
+
+    pub async fn add_mcp_server(
+        &self,
+        params: McpServerAddParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        self.call("mcp.server.add", &params).await
+    }
+
+    pub async fn edit_mcp_server(
+        &self,
+        params: McpServerEditParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        self.call("mcp.server.edit", &params).await
+    }
+
+    pub async fn remove_mcp_server(
+        &self,
+        params: McpServerNameParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        self.call("mcp.server.remove", &params).await
+    }
+
+    pub async fn set_mcp_server_enabled(
+        &self,
+        params: McpServerSetEnabledParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        self.call("mcp.server.set_enabled", &params).await
+    }
+
+    pub async fn reconnect_mcp_server(
+        &self,
+        params: McpServerNameParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        self.call("mcp.server.reconnect", &params).await
+    }
+
+    pub async fn persist_mcp_server(
+        &self,
+        params: McpServerPersistParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        self.call("mcp.server.persist", &params).await
     }
 
     /// Start an initial cursor replay. Its contents are delivered only through
@@ -740,6 +848,24 @@ impl ClientProtocol for Client {
     ) -> Result<SessionSetPermissionModeResult, ClientError> {
         Client::set_permission_mode(self, params).await
     }
+    async fn get_session_permissions(
+        &self,
+        params: SessionPermissionGetParams,
+    ) -> Result<SessionPermissionGetResult, ClientError> {
+        Client::get_session_permissions(self, params).await
+    }
+    async fn set_session_permission(
+        &self,
+        params: SessionPermissionSetParams,
+    ) -> Result<SessionPermissionMutationResult, ClientError> {
+        Client::set_session_permission(self, params).await
+    }
+    async fn clear_session_permission(
+        &self,
+        params: SessionPermissionClearParams,
+    ) -> Result<SessionPermissionMutationResult, ClientError> {
+        Client::clear_session_permission(self, params).await
+    }
     async fn compact_session(
         &self,
         params: SessionCompactParams,
@@ -799,6 +925,45 @@ impl ClientProtocol for Client {
         params: McpApprovalRespondParams,
     ) -> Result<McpApprovalRespondResult, ClientError> {
         Client::respond_mcp_approval(self, params).await
+    }
+    async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError> {
+        Client::list_mcp_servers(self).await
+    }
+    async fn add_mcp_server(
+        &self,
+        params: McpServerAddParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        Client::add_mcp_server(self, params).await
+    }
+    async fn edit_mcp_server(
+        &self,
+        params: McpServerEditParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        Client::edit_mcp_server(self, params).await
+    }
+    async fn remove_mcp_server(
+        &self,
+        params: McpServerNameParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        Client::remove_mcp_server(self, params).await
+    }
+    async fn set_mcp_server_enabled(
+        &self,
+        params: McpServerSetEnabledParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        Client::set_mcp_server_enabled(self, params).await
+    }
+    async fn reconnect_mcp_server(
+        &self,
+        params: McpServerNameParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        Client::reconnect_mcp_server(self, params).await
+    }
+    async fn persist_mcp_server(
+        &self,
+        params: McpServerPersistParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        Client::persist_mcp_server(self, params).await
     }
     async fn subscribe_events(
         &self,
@@ -885,6 +1050,24 @@ where
     ) -> Result<SessionSetPermissionModeResult, ClientError> {
         self.deref().set_permission_mode(params).await
     }
+    async fn get_session_permissions(
+        &self,
+        params: SessionPermissionGetParams,
+    ) -> Result<SessionPermissionGetResult, ClientError> {
+        self.deref().get_session_permissions(params).await
+    }
+    async fn set_session_permission(
+        &self,
+        params: SessionPermissionSetParams,
+    ) -> Result<SessionPermissionMutationResult, ClientError> {
+        self.deref().set_session_permission(params).await
+    }
+    async fn clear_session_permission(
+        &self,
+        params: SessionPermissionClearParams,
+    ) -> Result<SessionPermissionMutationResult, ClientError> {
+        self.deref().clear_session_permission(params).await
+    }
     async fn compact_session(
         &self,
         params: SessionCompactParams,
@@ -944,6 +1127,45 @@ where
         params: McpApprovalRespondParams,
     ) -> Result<McpApprovalRespondResult, ClientError> {
         self.deref().respond_mcp_approval(params).await
+    }
+    async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError> {
+        self.deref().list_mcp_servers().await
+    }
+    async fn add_mcp_server(
+        &self,
+        params: McpServerAddParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        self.deref().add_mcp_server(params).await
+    }
+    async fn edit_mcp_server(
+        &self,
+        params: McpServerEditParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        self.deref().edit_mcp_server(params).await
+    }
+    async fn remove_mcp_server(
+        &self,
+        params: McpServerNameParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        self.deref().remove_mcp_server(params).await
+    }
+    async fn set_mcp_server_enabled(
+        &self,
+        params: McpServerSetEnabledParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        self.deref().set_mcp_server_enabled(params).await
+    }
+    async fn reconnect_mcp_server(
+        &self,
+        params: McpServerNameParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        self.deref().reconnect_mcp_server(params).await
+    }
+    async fn persist_mcp_server(
+        &self,
+        params: McpServerPersistParams,
+    ) -> Result<McpServerMutationResult, ClientError> {
+        self.deref().persist_mcp_server(params).await
     }
     async fn subscribe_events(
         &self,

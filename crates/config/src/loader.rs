@@ -33,12 +33,22 @@ pub struct LoadedConfiguration {
     pub runtime: RuntimeConfig,
     pub agents: BTreeMap<AgentId, AgentDocument>,
     pub mcp_servers: BTreeMap<String, LoadedMcpServer>,
+    pub user_mcp_servers: BTreeMap<String, crate::McpServerConfig>,
+    pub workspace_mcp_servers: BTreeMap<String, crate::McpServerConfig>,
+    pub config_paths: ConfigLayerPaths,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ConfigLayerPaths {
+    pub user: Option<PathBuf>,
+    pub workspace: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum McpServerSource {
-    User,
-    Workspace,
+    UserFile,
+    WorkspaceFile,
+    Runtime,
 }
 
 #[derive(Clone, Debug)]
@@ -85,18 +95,29 @@ pub fn load_from_roots(
     };
     let mut agents = BTreeMap::new();
     let mut mcp_servers = BTreeMap::new();
+    let mut user_mcp_servers = BTreeMap::new();
+    let mut workspace_mcp_servers = BTreeMap::new();
     for root in [user.as_ref(), workspace.as_ref()].into_iter().flatten() {
         if let Some(mut layer) = root.load_runtime()? {
             apply_settings(&mut runtime, &layer);
             if let Some(mcp) = layer.mcp.take() {
                 let source = match root.source {
-                    AgentDocumentSource::User => McpServerSource::User,
-                    AgentDocumentSource::Workspace => McpServerSource::Workspace,
+                    AgentDocumentSource::User => McpServerSource::UserFile,
+                    AgentDocumentSource::Workspace => McpServerSource::WorkspaceFile,
                     AgentDocumentSource::BuiltIn => {
                         unreachable!("configuration roots are authored")
                     }
                 };
                 for (name, config) in mcp.servers {
+                    match source {
+                        McpServerSource::UserFile => {
+                            user_mcp_servers.insert(name.clone(), config.clone());
+                        }
+                        McpServerSource::WorkspaceFile => {
+                            workspace_mcp_servers.insert(name.clone(), config.clone());
+                        }
+                        McpServerSource::Runtime => unreachable!("file configuration layer"),
+                    }
                     mcp_servers.insert(name, LoadedMcpServer { source, config });
                 }
             }
@@ -129,6 +150,12 @@ pub fn load_from_roots(
         runtime,
         agents,
         mcp_servers,
+        user_mcp_servers,
+        workspace_mcp_servers,
+        config_paths: ConfigLayerPaths {
+            user: user_root.map(|root| root.join("config.toml")),
+            workspace: workspace_root.map(|root| root.join("config.toml")),
+        },
     })
 }
 

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, collections::BTreeMap, fmt};
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
@@ -282,6 +282,66 @@ pub struct SessionSetPermissionModeParams {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSetPermissionModeResult {}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionRuleSource {
+    SessionOverlay,
+    AgentDocument,
+    Default,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct EffectivePermissionRule {
+    pub resource: WildcardPattern,
+    pub effect: PermissionEffect,
+    pub source: PermissionRuleSource,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct EffectivePermissionAction {
+    pub action: PermissionAction,
+    pub effect: PermissionEffect,
+    pub source: PermissionRuleSource,
+    pub patterns: Vec<EffectivePermissionRule>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPermissionGetParams {
+    pub session_id: SessionId,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPermissionGetResult {
+    pub permissions: Vec<EffectivePermissionAction>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPermissionSetParams {
+    pub session_id: SessionId,
+    pub action: PermissionAction,
+    pub resource: WildcardPattern,
+    pub effect: PermissionEffect,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPermissionClearParams {
+    pub session_id: SessionId,
+    pub action: PermissionAction,
+    pub resource: WildcardPattern,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPermissionMutationResult {
+    pub permissions: Vec<EffectivePermissionAction>,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -599,4 +659,119 @@ pub struct McpApprovalRespondParams {
 pub struct McpApprovalRespondResult {
     pub server: String,
     pub decision: McpApprovalDecision,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum McpConfigSource {
+    UserFile,
+    WorkspaceFile,
+    Runtime,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum McpConfigTarget {
+    UserFile,
+    WorkspaceFile,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerState {
+    Connected,
+    Connecting,
+    Failed,
+    PendingApproval,
+    Disabled,
+    LazyNotConnected,
+    Disconnected,
+    Rejected,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerDefinition {
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<String>", required)]
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<String>", required)]
+    pub cwd: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<String>", required)]
+    pub url: Option<String>,
+    pub headers: BTreeMap<String, String>,
+    pub enabled: bool,
+    pub lazy: bool,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<u64>", required)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerInfo {
+    pub name: String,
+    pub source: McpConfigSource,
+    pub definition: McpServerDefinition,
+    pub state: McpServerState,
+    pub tool_count: u32,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<String>", required)]
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerListParams {}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerListResult {
+    pub servers: Vec<McpServerInfo>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerAddParams {
+    pub name: String,
+    pub definition: McpServerDefinition,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerEditParams {
+    pub name: String,
+    pub definition: McpServerDefinition,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerNameParams {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerSetEnabledParams {
+    pub name: String,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerPersistParams {
+    pub name: String,
+    pub target: McpConfigTarget,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerMutationResult {
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<McpServerInfo>", required)]
+    pub server: Option<McpServerInfo>,
 }

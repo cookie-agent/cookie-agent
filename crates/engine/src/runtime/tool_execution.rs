@@ -55,6 +55,7 @@ impl Engine {
             }
         };
         let depth = session_depth(&session.meta.origin);
+        let permission_overlay = &session.permission_overlay;
         let delegate_enabled = policy.agent.delegation.as_ref().is_some_and(|delegation| {
             depth < delegation.effective_depth_ceiling
                 && delegation.targets.iter().any(|target| {
@@ -106,7 +107,13 @@ impl Engine {
         };
         let delegation_tool = permission_name == "delegate";
         let enabled = !delegation_tool || delegate_enabled;
-        if !enabled || !PermissionPipeline::tool_visible(&policy.agent, &permission_name) {
+        if !enabled
+            || !PermissionPipeline::tool_visible_with_overlay(
+                &policy.agent,
+                Some(permission_overlay),
+                &permission_name,
+            )
+        {
             return PreparedToolCall {
                 prepared: Err(ToolFailure {
                     code: ToolCallFailureCode::ExecutionFailed,
@@ -158,8 +165,18 @@ impl Engine {
             } else {
                 None
             };
-            let permission = engine.inner.permissions.decide_operation(
+            let permission_overlay = engine
+                .inner
+                .store
+                .get(active.session)
+                .map_err(|error| ToolFailure {
+                    code: ToolCallFailureCode::ExecutionFailed,
+                    message: error.to_string(),
+                })?
+                .permission_overlay;
+            let permission = engine.inner.permissions.decide_operation_with_overlay(
                 &active.policy.agent,
+                Some(&permission_overlay),
                 &operation,
                 &policy_labels,
                 engine.inner.store.cwd(),
@@ -368,7 +385,8 @@ impl Engine {
         session: SessionId,
         policy: &FrozenRunPolicy,
     ) -> Result<Vec<ToolDefinition>, EngineError> {
-        let depth = session_depth(&self.inner.store.get(session)?.meta.origin);
+        let session_projection = self.inner.store.get(session)?;
+        let depth = session_depth(&session_projection.meta.origin);
         let delegate_enabled = policy.agent.delegation.as_ref().is_some_and(|delegation| {
             depth < delegation.effective_depth_ceiling
                 && delegation.targets.iter().any(|target| {
@@ -397,7 +415,12 @@ impl Engine {
             {
                 let delegation_tool = tool.permission_name == "delegate";
                 let enabled = !delegation_tool || delegate_enabled;
-                if enabled && PermissionPipeline::tool_visible(&policy.agent, &tool.permission_name)
+                if enabled
+                    && PermissionPipeline::tool_visible_with_overlay(
+                        &policy.agent,
+                        Some(&session_projection.permission_overlay),
+                        &tool.permission_name,
+                    )
                 {
                     if !names.insert(tool.name.clone()) {
                         return Err(EngineError::MissingTool(format!(

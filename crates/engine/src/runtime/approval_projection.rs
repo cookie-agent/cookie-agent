@@ -131,7 +131,14 @@ impl Engine {
             .pending_approvals
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert((session, approval_id), PendingApproval { sender, executor });
+            .insert(
+                (session, approval_id),
+                PendingApproval {
+                    sender,
+                    executor,
+                    permission_overlay_epoch: permission_overlay_epoch(&events),
+                },
+            );
         if replaced.is_some() {
             return Err(EngineError::ApprovalConflict);
         }
@@ -257,6 +264,23 @@ impl Engine {
                 ApprovalRespondErrorCode::DecisionNotAllowed,
                 Some(&record),
             ));
+        }
+        if params.decision == ApprovalUserDecision::ApproveTree {
+            let pending_epoch = self
+                .inner
+                .pending_approvals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&(params.session_id, params.approval_id))
+                .map(|pending| pending.permission_overlay_epoch)
+                .ok_or(EngineError::ApprovalConflict)?;
+            if pending_epoch != permission_overlay_epoch(&events) {
+                return Err(approval_response_failure(
+                    &params,
+                    ApprovalRespondErrorCode::OperationChanged,
+                    Some(&record),
+                ));
+            }
         }
         self.append_direct(
             params.session_id,
@@ -532,6 +556,14 @@ impl Engine {
         }
         Ok(true)
     }
+}
+
+pub(super) fn permission_overlay_epoch(events: &[StoredEvent]) -> u64 {
+    events
+        .iter()
+        .rev()
+        .find(|event| matches!(event.payload, Event::SessionPermissionOverlaySet { .. }))
+        .map_or(0, |event| event.seq)
 }
 
 pub(super) fn approval_response_failure(

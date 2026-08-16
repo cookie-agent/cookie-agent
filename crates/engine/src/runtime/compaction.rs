@@ -522,8 +522,13 @@ impl Engine {
             let Ok(prepared) = prepared.prepared else {
                 continue;
             };
-            let permission = self.inner.permissions.decide_operation(
+            let Ok(session) = self.inner.store.get(input.session) else {
+                continue;
+            };
+            let permission_overlay = session.permission_overlay;
+            let permission = self.inner.permissions.decide_operation_with_overlay(
                 &input.owner_policy.agent,
+                Some(&permission_overlay),
                 &prepared.operation,
                 &prepared.policy_labels,
                 self.inner.store.cwd(),

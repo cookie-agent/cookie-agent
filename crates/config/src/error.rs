@@ -9,6 +9,8 @@ pub enum ConfigError {
     Io(#[source] io::Error),
     #[error("configuration path is unsafe")]
     UnsafePath,
+    #[error("configuration changed on disk: {0}")]
+    ChangedOnDisk(PathBuf),
     #[error("required file was not found")]
     NotFound,
     #[error("{0} exceeds its byte limit")]

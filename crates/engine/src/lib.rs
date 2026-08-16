@@ -1,6 +1,7 @@
 //! The transport-free single-conversation cookie agent runtime.
 
 pub mod actor;
+mod config_store;
 mod delegation_api;
 pub mod events;
 pub mod grant_journal;

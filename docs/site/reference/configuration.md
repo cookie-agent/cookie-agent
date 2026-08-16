@@ -26,6 +26,28 @@ actionable path, key, and line where available. No authored-file migrations or
 unknown-field ignores exist. Decoded values that hold secrets are zeroized when
 the load completes.
 
+The running engine adds a mutable `Runtime` layer for MCP server entries. It
+wins over the workspace and user file layers and lasts for the daemon lifetime.
+Runtime removals are tombstones: the named server is absent even when a file
+layer defines it. Runtime entries are trusted by construction; user-file entries
+are trusted, while effective workspace-file entries use the existing name-keyed
+project approval. Nothing is written automatically.
+
+Explicit MCP write-back replaces only `[mcp.servers.<name>]` in the selected
+user or project file using a format-preserving TOML document edit. Unrelated
+keys, tables, and comments are retained. The complete candidate is passed
+through the strict configuration loader before an atomic replacement; an
+existing unknown field, type conflict, or malformed table fails without
+changing the file. The replacement syncs the candidate before rename and syncs
+the containing directory afterward, and preserves the existing file's
+permission mode (new files are owner-only). The source file is re-read and
+compared immediately before replacement, and a mismatch fails with a conflict
+instead of overwriting the external edit. A modification landing between that
+comparison and the rename itself cannot be detected — a narrow residual race
+that only matters if another writer edits the file in the same instant; avoid
+concurrent external edits while applying changes. The runtime entry remains the effective layer after a successful
+write, so normal file-layer provenance and trust resume on restart.
+
 TOML-level limits (enforced before deserialization):
 
 - Configuration file at most 1 MiB; agent document at most 256 KiB.
@@ -110,7 +132,7 @@ Controls automatic session titles generated from the first user message.
 ## `[mcp.servers.<name>]`
 
 MCP server definitions are layered by server name. A workspace definition
-replaces the same user-level server and requires hash-pinned approval before it
+replaces the same user-level server and requires name-keyed approval before it
 can connect. See the [MCP guide](../guide/mcp.md) for trust and naming behavior.
 
 | Key | Type | Default | Description |

@@ -3,6 +3,7 @@
 mod app;
 mod events;
 mod input;
+mod management;
 mod pickers;
 mod provider;
 mod slash;

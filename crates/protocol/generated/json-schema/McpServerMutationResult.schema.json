@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "McpServerMutationResult",
+  "type": "object",
+  "properties": {
+    "server": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/McpServerInfo"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "server"
+  ],
+  "$defs": {
+    "McpConfigSource": {
+      "type": "string",
+      "enum": [
+        "user_file",
+        "workspace_file",
+        "runtime"
+      ]
+    },
+    "McpServerDefinition": {
+      "type": "object",
+      "properties": {
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "lazy": {
+          "type": "boolean"
+        },
+        "timeout_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "args",
+        "env",
+        "cwd",
+        "url",
+        "headers",
+        "enabled",
+        "lazy",
+        "timeout_ms"
+      ]
+    },
+    "McpServerInfo": {
+      "type": "object",
+      "properties": {
+        "definition": {
+          "$ref": "#/$defs/McpServerDefinition"
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/McpConfigSource"
+        },
+        "state": {
+          "$ref": "#/$defs/McpServerState"
+        },
+        "tool_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "source",
+        "definition",
+        "state",
+        "tool_count",
+        "message"
+      ]
+    },
+    "McpServerState": {
+      "type": "string",
+      "enum": [
+        "connected",
+        "connecting",
+        "failed",
+        "pending_approval",
+        "disabled",
+        "lazy_not_connected",
+        "disconnected",
+        "rejected"
+      ]
+    }
+  }
+}

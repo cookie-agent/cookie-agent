@@ -1,6 +1,8 @@
 use std::fs;
 
-use cookie_agent_config::{ConfigError, McpServerSource, load_from_roots};
+use cookie_agent_config::{
+    ConfigError, McpServerConfig, McpServerSource, load_from_roots, write_mcp_server,
+};
 
 fn root(config: &str) -> tempfile::TempDir {
     let directory = tempfile::tempdir().expect("tempdir");
@@ -42,10 +44,55 @@ fn workspace_server_override_retains_workspace_provenance() {
     let workspace = root("[mcp.servers.github]\nurl = \"https://example.test/mcp\"\nlazy = true\n");
     let loaded = load_from_roots(Some(user.path()), Some(workspace.path())).expect("configuration");
     let server = &loaded.mcp_servers["github"];
-    assert_eq!(server.source, McpServerSource::Workspace);
+    assert_eq!(server.source, McpServerSource::WorkspaceFile);
     assert_eq!(
         server.config.url.as_deref(),
         Some("https://example.test/mcp")
     );
     assert!(server.config.lazy);
+}
+
+#[test]
+fn write_back_replaces_only_the_named_table_and_round_trips_strictly() {
+    let directory = root(
+        "# keep this comment\n[tool_output]\nmax_lines = 42\nmax_bytes = 2048\n\n[mcp.servers.demo]\ncommand = \"old\"\n",
+    );
+    let path = directory.path().join("config.toml");
+    let replacement = McpServerConfig {
+        command: None,
+        args: Vec::new(),
+        env: Default::default(),
+        cwd: None,
+        url: Some("https://example.test/mcp".into()),
+        headers: std::collections::BTreeMap::from([("Authorization".into(), "Bearer x".into())]),
+        enabled: false,
+        lazy: true,
+        timeout_ms: Some(5000),
+    };
+    write_mcp_server(&path, "demo", &replacement).expect("write MCP table");
+    let text = fs::read_to_string(&path).expect("written config");
+    assert!(text.contains("# keep this comment"));
+    assert!(text.contains("max_lines = 42"));
+    let loaded = load_from_roots(Some(directory.path()), None).expect("strict round trip");
+    assert_eq!(loaded.mcp_servers["demo"].config, replacement);
+}
+
+#[test]
+fn write_back_rejects_an_existing_strict_conflict_without_changing_the_file() {
+    let directory = root("unknown = true\n");
+    let path = directory.path().join("config.toml");
+    let before = fs::read_to_string(&path).expect("original config");
+    let config = McpServerConfig {
+        command: Some("server".into()),
+        args: Vec::new(),
+        env: Default::default(),
+        cwd: None,
+        url: None,
+        headers: Default::default(),
+        enabled: true,
+        lazy: false,
+        timeout_ms: None,
+    };
+    assert!(write_mcp_server(&path, "demo", &config).is_err());
+    assert_eq!(fs::read_to_string(path).expect("unchanged config"), before);
 }

@@ -99,6 +99,7 @@ struct ServerRuntime {
     publication: Mutex<()>,
     connect_lock: AsyncMutex<()>,
     service: AsyncMutex<Option<ClientService>>,
+    superseded: CancellationToken,
     registry: Weak<RegistryInner>,
     progress: AsyncMutex<HashMap<ToolCallId, crate::ProgressSink>>,
 }
@@ -394,7 +395,7 @@ impl McpRegistry {
                 .contains(&name);
             let state = if !loaded.config.enabled {
                 McpServerState::Disabled
-            } else if loaded.source == McpServerSource::Workspace && !trusted_by_name {
+            } else if loaded.source == McpServerSource::WorkspaceFile && !trusted_by_name {
                 McpServerState::PendingApproval
             } else {
                 McpServerState::Disconnected
@@ -414,6 +415,7 @@ impl McpRegistry {
                 publication: Mutex::new(()),
                 connect_lock: AsyncMutex::new(()),
                 service: AsyncMutex::new(None),
+                superseded: CancellationToken::new(),
                 registry: Arc::downgrade(&inner),
                 progress: AsyncMutex::new(HashMap::new()),
             });
@@ -556,7 +558,7 @@ impl McpRegistry {
 
     pub fn approve_project_server(&self, server_name: &str) -> Result<(), ToolError> {
         let server = self.server(server_name)?;
-        if server.loaded.source != McpServerSource::Workspace {
+        if server.loaded.source != McpServerSource::WorkspaceFile {
             return Err(ToolError::execution(format!(
                 "MCP server `{server_name}` is not project-scoped"
             )));
@@ -589,7 +591,7 @@ impl McpRegistry {
 
     pub fn reject_project_server(&self, server_name: &str) -> Result<(), ToolError> {
         let server = self.server(server_name)?;
-        if server.loaded.source != McpServerSource::Workspace {
+        if server.loaded.source != McpServerSource::WorkspaceFile {
             return Err(ToolError::execution(format!(
                 "MCP server `{server_name}` is not project-scoped"
             )));
@@ -604,6 +606,141 @@ impl McpRegistry {
             Some("project approval rejected".into()),
         );
         Ok(())
+    }
+
+    pub(crate) async fn upsert_server(
+        &self,
+        name: String,
+        loaded: LoadedMcpServer,
+    ) -> Result<(), ToolError> {
+        let sanitized_name = sanitize_name(&name);
+        {
+            let servers = self
+                .inner
+                .servers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(existing) = servers
+                .values()
+                .find(|server| server.name != name && server.sanitized_name == sanitized_name)
+            {
+                return Err(ToolError::execution(format!(
+                    "MCP server `{name}` collides with server `{}` after name sanitization",
+                    existing.name
+                )));
+            }
+        }
+        let trusted_by_name = self
+            .inner
+            .trusted_names
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&name);
+        let state = if !loaded.config.enabled {
+            McpServerState::Disabled
+        } else if loaded.source == McpServerSource::WorkspaceFile && !trusted_by_name {
+            McpServerState::PendingApproval
+        } else {
+            McpServerState::Disconnected
+        };
+        let runtime = Arc::new(ServerRuntime {
+            name: name.clone(),
+            sanitized_name,
+            loaded,
+            status: Mutex::new(McpServerStatus {
+                server: name.clone(),
+                state,
+                message: None,
+                tools: Vec::new(),
+            }),
+            tools: Mutex::new(Vec::new()),
+            list_generation: AtomicU64::new(0),
+            publication: Mutex::new(()),
+            connect_lock: AsyncMutex::new(()),
+            service: AsyncMutex::new(None),
+            superseded: CancellationToken::new(),
+            registry: Arc::downgrade(&self.inner),
+            progress: AsyncMutex::new(HashMap::new()),
+        });
+        let previous = {
+            let mut servers = self
+                .inner
+                .servers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous = servers.get(&name).cloned();
+            if let Some(previous) = &previous {
+                previous.supersede();
+            }
+            servers.insert(name, Arc::clone(&runtime));
+            previous
+        };
+        if let Some(previous) = previous
+            && let Some(mut service) = previous.service.lock().await.take()
+        {
+            let _ = service.close_with_timeout(Duration::from_secs(4)).await;
+        }
+        if runtime.loaded.config.enabled
+            && !runtime.loaded.config.lazy
+            && runtime.current_state() == McpServerState::Disconnected
+        {
+            let handle = tokio::runtime::Handle::try_current()
+                .map_err(|_| ToolError::execution("MCP runtime is unavailable"))?;
+            self.spawn_connection(runtime, &handle, None)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn remove_server(&self, name: &str) -> Result<(), ToolError> {
+        let removed = {
+            let mut servers = self
+                .inner
+                .servers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let removed = servers
+                .get(name)
+                .cloned()
+                .ok_or_else(|| ToolError::execution(format!("unknown MCP server `{name}`")))?;
+            removed.supersede();
+            servers.remove(name);
+            removed
+        };
+        if let Some(mut service) = removed.service.lock().await.take() {
+            let _ = service.close_with_timeout(Duration::from_secs(4)).await;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn reconnect_server(&self, name: &str) -> Result<(), ToolError> {
+        let server = self.server(name)?;
+        if !server.loaded.config.enabled {
+            return Err(ToolError::execution(format!(
+                "MCP server `{name}` is disabled"
+            )));
+        }
+        if server.current_state() == McpServerState::PendingApproval {
+            return Err(ToolError::execution(format!(
+                "MCP server `{name}` is pending project approval"
+            )));
+        }
+        server.clear_claims();
+        server
+            .tools
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        if let Some(mut service) = server.service.lock().await.take() {
+            let _ = service.close_with_timeout(Duration::from_secs(4)).await;
+        }
+        server.set_status(McpServerState::Disconnected, None);
+        match server.connect().await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                server.fail(error.to_string());
+                Err(error)
+            }
+        }
     }
 
     fn spawn_connection(
@@ -705,9 +842,18 @@ impl ServerRuntime {
     }
 
     fn fail(&self, message: String) {
+        if self.superseded.is_cancelled() {
+            return;
+        }
         self.clear_claims();
         self.tools.lock().unwrap_or_else(|p| p.into_inner()).clear();
         self.set_status(McpServerState::Failed, Some(message));
+    }
+
+    fn supersede(&self) {
+        self.superseded.cancel();
+        self.next_list_generation();
+        self.clear_claims();
     }
 
     fn clear_claims(&self) {
@@ -737,15 +883,24 @@ impl ServerRuntime {
         if registry.shutdown.is_cancelled() {
             return Err(ToolError::execution("MCP registry is shutting down"));
         }
+        if self.superseded.is_cancelled() {
+            return Err(self.superseded_error());
+        }
         let _active = ActiveConnect::new(Arc::clone(&registry));
         let _connect = tokio::select! {
             lock = self.connect_lock.lock() => lock,
             () = registry.shutdown.cancelled() => {
                 return Err(ToolError::execution("MCP registry is shutting down"));
             }
+            () = self.superseded.cancelled() => {
+                return Err(self.superseded_error());
+            }
         };
         if registry.shutdown.is_cancelled() {
             return Err(ToolError::execution("MCP registry is shutting down"));
+        }
+        if self.superseded.is_cancelled() {
+            return Err(self.superseded_error());
         }
         match self.current_state() {
             McpServerState::Connected => return Ok(()),
@@ -802,6 +957,7 @@ impl ServerRuntime {
             let outcome = tokio::select! {
                 result = tokio::time::timeout(timeout, handler.serve_with_lifecycle(transport, lifecycle)) => Some(result),
                 () = registry.shutdown.cancelled() => None,
+                () = self.superseded.cancelled() => None,
             };
             match outcome {
                 Some(Ok(Ok(service))) => service,
@@ -821,7 +977,11 @@ impl ServerRuntime {
                 }
                 None => {
                     cleanup.wait().await;
-                    return Err(ToolError::execution("MCP registry is shutting down"));
+                    return if self.superseded.is_cancelled() {
+                        Err(self.superseded_error())
+                    } else {
+                        Err(ToolError::execution("MCP registry is shutting down"))
+                    };
                 }
             }
         } else {
@@ -848,6 +1008,9 @@ impl ServerRuntime {
                 () = registry.shutdown.cancelled() => {
                     return Err(ToolError::execution("MCP registry is shutting down"));
                 }
+                () = self.superseded.cancelled() => {
+                    return Err(self.superseded_error());
+                }
             }
                 .map_err(|_| {
                     ToolError::execution(format!("MCP server `{}` connect timed out", self.name))
@@ -865,6 +1028,10 @@ impl ServerRuntime {
             () = registry.shutdown.cancelled() => {
                 let _ = service.close_with_timeout(Duration::from_secs(4)).await;
                 return Err(ToolError::execution("MCP registry is shutting down"));
+            }
+            () = self.superseded.cancelled() => {
+                let _ = service.close_with_timeout(Duration::from_secs(4)).await;
+                return Err(self.superseded_error());
             }
         }
         .map_err(|_| {
@@ -888,10 +1055,14 @@ impl ServerRuntime {
             ));
         }
         let mut installed = self.service.lock().await;
-        if registry.shutdown.is_cancelled() {
+        if registry.shutdown.is_cancelled() || self.superseded.is_cancelled() {
             drop(installed);
             let _ = service.close_with_timeout(Duration::from_secs(4)).await;
-            return Err(ToolError::execution("MCP registry is shutting down"));
+            return if self.superseded.is_cancelled() {
+                Err(self.superseded_error())
+            } else {
+                Err(ToolError::execution("MCP registry is shutting down"))
+            };
         }
         *installed = Some(service);
         drop(installed);
@@ -902,6 +1073,10 @@ impl ServerRuntime {
     fn next_list_generation(&self) -> u64 {
         let _publication = self.publication.lock().unwrap_or_else(|p| p.into_inner());
         self.list_generation.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    fn superseded_error(&self) -> ToolError {
+        ToolError::execution(format!("MCP server `{}` was superseded", self.name))
     }
 
     fn publish_tools(&self, generation: u64, tools: Vec<Tool>) {
@@ -937,7 +1112,9 @@ impl ServerRuntime {
             .collect::<Result<Vec<_>, _>>();
         before_commit();
         let publication = self.publication.lock().unwrap_or_else(|p| p.into_inner());
-        if self.list_generation.load(Ordering::Acquire) != generation {
+        if self.superseded.is_cancelled()
+            || self.list_generation.load(Ordering::Acquire) != generation
+        {
             return;
         }
         let converted = match converted {
@@ -1459,7 +1636,7 @@ mod tests {
     #[tokio::test]
     async fn stdio_lists_calls_and_refreshes_tools() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let registry = registry(&directory, McpServerSource::User, false);
+        let registry = registry(&directory, McpServerSource::UserFile, false);
         let server = registry.server("fixture").expect("fixture server");
         server.connect().await.expect("connect fixture");
         let specs = registry
@@ -1508,7 +1685,7 @@ mod tests {
     #[tokio::test]
     async fn lazy_server_connects_on_first_named_use() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let registry = registry(&directory, McpServerSource::User, true);
+        let registry = registry(&directory, McpServerSource::UserFile, true);
         assert!(
             registry
                 .tools_for_session(&SessionToolContext {
@@ -1532,7 +1709,7 @@ mod tests {
     #[test]
     fn stale_generation_created_during_publish_cannot_overwrite_newer_tools() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let registry = registry(&directory, McpServerSource::User, true);
+        let registry = registry(&directory, McpServerSource::UserFile, true);
         let server = registry.server("fixture").expect("server");
         server.list_generation.store(1, Ordering::Release);
         server.publish_tools_before_commit(
@@ -1551,7 +1728,7 @@ mod tests {
     #[test]
     fn stale_refresh_failure_cannot_invalidate_newer_publication() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let registry = registry(&directory, McpServerSource::User, true);
+        let registry = registry(&directory, McpServerSource::UserFile, true);
         let server = registry.server("fixture").expect("server");
         server.set_status(McpServerState::Connected, None);
         server.list_generation.store(1, Ordering::Release);
@@ -1573,7 +1750,7 @@ mod tests {
     #[test]
     fn collisions_fail_the_named_server() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let registry = registry(&directory, McpServerSource::User, true);
+        let registry = registry(&directory, McpServerSource::UserFile, true);
         let server = registry.server("fixture").expect("server");
         registry
             .inner
@@ -1604,7 +1781,7 @@ mod tests {
             BTreeMap::from([(
                 "fixture".into(),
                 LoadedMcpServer {
-                    source: McpServerSource::User,
+                    source: McpServerSource::UserFile,
                     config,
                 },
             )]),
@@ -1646,7 +1823,7 @@ mod tests {
             BTreeMap::from([(
                 "fixture".into(),
                 LoadedMcpServer {
-                    source: McpServerSource::User,
+                    source: McpServerSource::UserFile,
                     config,
                 },
             )]),
@@ -1699,6 +1876,99 @@ mod tests {
         let _ = fixture_pid;
     }
 
+    #[tokio::test]
+    async fn replacing_an_inflight_connect_cannot_publish_stale_tools() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut delayed = fixture_config(false);
+        delayed
+            .env
+            .insert("MCP_FIXTURE_LIST_DELAY_MS".into(), "10000".into());
+        let registry = McpRegistry::new(
+            BTreeMap::from([(
+                "fixture".into(),
+                LoadedMcpServer {
+                    source: McpServerSource::UserFile,
+                    config: delayed,
+                },
+            )]),
+            directory.path().join("trust.jsonl"),
+        )
+        .expect("registry");
+        let old = registry.server("fixture").expect("old server");
+        registry.start_eager(&tokio::runtime::Handle::current());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while old.current_state() != McpServerState::Connecting {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("old connection started");
+
+        registry
+            .upsert_server(
+                "fixture".into(),
+                LoadedMcpServer {
+                    source: McpServerSource::Runtime,
+                    config: fixture_config(true),
+                },
+            )
+            .await
+            .expect("replace server");
+        let replacement = registry.server("fixture").expect("replacement server");
+        replacement.connect().await.expect("connect replacement");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while registry.inner.active_connects.load(Ordering::Acquire) != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("old connection cancelled");
+
+        assert!(old.tools.lock().expect("old tools").is_empty());
+        assert_eq!(replacement.current_state(), McpServerState::Connected);
+        assert_eq!(registry.statuses()[0].tools.len(), 2);
+        registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn reconnect_failure_transitions_server_to_failed() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut config = fixture_config(true);
+        config.command = Some(
+            directory
+                .path()
+                .join("missing-server")
+                .display()
+                .to_string(),
+        );
+        config.args.clear();
+        let registry = McpRegistry::new(
+            BTreeMap::from([(
+                "fixture".into(),
+                LoadedMcpServer {
+                    source: McpServerSource::UserFile,
+                    config,
+                },
+            )]),
+            directory.path().join("trust.jsonl"),
+        )
+        .expect("registry");
+
+        registry
+            .reconnect_server("fixture")
+            .await
+            .expect_err("reconnect must fail");
+
+        let status = registry.statuses().remove(0);
+        assert_eq!(status.state, McpServerState::Failed);
+        assert!(
+            status
+                .message
+                .is_some_and(|message| message.contains("failed"))
+        );
+        registry.shutdown().await;
+    }
+
     #[test]
     fn sanitized_server_name_collisions_are_rejected_at_startup() {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -1706,14 +1976,14 @@ mod tests {
             (
                 "git hub".into(),
                 LoadedMcpServer {
-                    source: McpServerSource::User,
+                    source: McpServerSource::UserFile,
                     config: fixture_config(true),
                 },
             ),
             (
                 "git/hub".into(),
                 LoadedMcpServer {
-                    source: McpServerSource::User,
+                    source: McpServerSource::UserFile,
                     config: fixture_config(true),
                 },
             ),
@@ -1727,10 +1997,15 @@ mod tests {
     #[test]
     fn project_approval_is_keyed_by_name_and_rejection_stays_blocked() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let project_registry = registry(&directory, McpServerSource::Workspace, true);
+        let project_registry = registry(&directory, McpServerSource::WorkspaceFile, true);
         assert_eq!(
             project_registry.statuses()[0].state,
             McpServerState::PendingApproval
+        );
+        let runtime_registry = registry(&directory, McpServerSource::Runtime, true);
+        assert_eq!(
+            runtime_registry.statuses()[0].state,
+            McpServerState::Disconnected
         );
         let approval = project_registry.pending_approvals().remove(0);
         assert!(approval.connection.contains("mcp_server.py"));
@@ -1742,7 +2017,7 @@ mod tests {
             McpServerState::Disconnected
         );
 
-        let reopened = registry(&directory, McpServerSource::Workspace, true);
+        let reopened = registry(&directory, McpServerSource::WorkspaceFile, true);
         assert_eq!(reopened.statuses()[0].state, McpServerState::Disconnected);
         assert_eq!(
             std::fs::read_to_string(directory.path().join("trust.jsonl")).expect("trust file"),
@@ -1755,7 +2030,7 @@ mod tests {
             BTreeMap::from([(
                 "fixture".into(),
                 LoadedMcpServer {
-                    source: McpServerSource::Workspace,
+                    source: McpServerSource::WorkspaceFile,
                     config: changed,
                 },
             )]),
@@ -1768,7 +2043,7 @@ mod tests {
             BTreeMap::from([(
                 "renamed".into(),
                 LoadedMcpServer {
-                    source: McpServerSource::Workspace,
+                    source: McpServerSource::WorkspaceFile,
                     config: fixture_config(true),
                 },
             )]),
@@ -1785,7 +2060,7 @@ mod tests {
             BTreeMap::from([(
                 "renamed".into(),
                 LoadedMcpServer {
-                    source: McpServerSource::Workspace,
+                    source: McpServerSource::WorkspaceFile,
                     config: fixture_config(true),
                 },
             )]),
@@ -1815,7 +2090,7 @@ mod tests {
             BTreeMap::from([(
                 "fixture".into(),
                 LoadedMcpServer {
-                    source: McpServerSource::Workspace,
+                    source: McpServerSource::WorkspaceFile,
                     config: fixture_config(true),
                 },
             )]),

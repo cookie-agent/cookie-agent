@@ -14,11 +14,15 @@ use cookie_agent_protocol::{
     AgentDescriptor, AgentId, ApprovalListParams, ApprovalListResult, ApprovalRespondError,
     ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision,
     AvailableModelDescriptor, ClientConnectId, ClientRequestId, ClientResponseId, ClientRunId,
-    EventPayload, ModelKey, ModelSelection, PermissionMode, ProviderConnectParams,
-    ProviderDescriptor, ProviderDisconnectParams, RunCancelParams, RunRecallSteerParams,
-    RunSelection, RunStartParams, RunSteerParams, RunToolStdinParams, SafeDisplayText,
-    SessionCompactParams, SessionCreateParams, SessionForkParams, SessionId, SessionListParams,
-    SessionMeta, SessionRevertParams, SessionSetPermissionModeParams, SessionStatus, SessionTitle,
+    EventPayload, McpApprovalDecision, McpApprovalRespondParams, McpServerAddParams,
+    McpServerEditParams, McpServerInfo, McpServerNameParams, McpServerPersistParams,
+    McpServerSetEnabledParams, ModelKey, ModelSelection, PermissionAction, PermissionEffect,
+    PermissionMode, PermissionRuleSource, ProviderConnectParams, ProviderDescriptor,
+    ProviderDisconnectParams, RunCancelParams, RunRecallSteerParams, RunSelection, RunStartParams,
+    RunSteerParams, RunToolStdinParams, SafeDisplayText, SessionCompactParams, SessionCreateParams,
+    SessionForkParams, SessionId, SessionListParams, SessionMeta, SessionPermissionClearParams,
+    SessionPermissionGetParams, SessionPermissionGetResult, SessionPermissionSetParams,
+    SessionRevertParams, SessionSetPermissionModeParams, SessionStatus, SessionTitle,
     SessionTitleChange, SessionTree, SessionTreeParams, VariantId,
 };
 use crossterm::{
@@ -57,6 +61,9 @@ use crate::{
 
 use super::events::{RenderScheduler, TerminalRestore};
 use super::input::{self, InputState};
+use super::management::{
+    McpForm, McpFormFocus, McpPanel, PermissionForm, PermissionPanel, cycle_effect,
+};
 use super::pickers::{
     SearchPickerFocus, SearchPickerState, SessionSearchRow, cycle_selection, flatten_tree,
     move_selection as move_picker_selection, provider_matches, session_search_rows, short_id,
@@ -87,6 +94,8 @@ pub(super) enum Modal {
     UserMessage,
     /// Confirm guard behind the menu's revert action.
     RevertConfirm,
+    Mcp,
+    Permissions,
 }
 
 /// Where copied text goes: the terminal's OSC 52 clipboard escape in
@@ -332,6 +341,22 @@ fn edit_credential_input(input: &mut input::CredentialInput, key: KeyEvent) {
     }
 }
 
+fn edit_plain_input(input: &mut InputState, key: KeyEvent) {
+    match key.code {
+        KeyCode::Backspace => input.backspace(),
+        KeyCode::Delete => input.delete(),
+        KeyCode::Left => input.move_left(),
+        KeyCode::Right => input.move_right(),
+        KeyCode::Home => input.move_buffer_home(),
+        KeyCode::End => input.move_buffer_end(),
+        KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+            input.set_buffer(String::new())
+        }
+        KeyCode::Char(character) if is_printable_key(key) => input.insert(character),
+        _ => {}
+    }
+}
+
 fn is_newline_key(key: KeyEvent) -> bool {
     matches!(
         (key.code, key.modifiers),
@@ -387,6 +412,8 @@ pub struct App {
     pub(super) collapsed_sessions: HashSet<SessionId>,
     pub(super) expanded_blocks: HashMap<SessionId, HashSet<BlockId>>,
     pub(super) permission_modes: HashMap<SessionId, PermissionMode>,
+    pub(super) mcp_panel: McpPanel,
+    pub(super) permission_panel: PermissionPanel,
     pub(super) conversation_scroll: ConversationScroll,
     pub(super) scrollbar_geometry: Option<ScrollbarGeometry>,
     pub(super) scrollbar_drag: Option<ScrollbarDrag>,
@@ -506,6 +533,22 @@ pub(super) enum RpcUpdate {
         previous: PermissionMode,
         attempted: PermissionMode,
         error: String,
+    },
+    McpRefreshed {
+        result: Result<
+            (
+                cookie_agent_protocol::McpServerListResult,
+                cookie_agent_protocol::McpApprovalListResult,
+            ),
+            String,
+        >,
+    },
+    McpMutation {
+        result: Result<Option<McpServerInfo>, String>,
+    },
+    PermissionsLoaded {
+        session_id: SessionId,
+        result: Result<SessionPermissionGetResult, String>,
     },
 }
 
@@ -641,6 +684,8 @@ impl App {
             collapsed_sessions: HashSet::new(),
             expanded_blocks: HashMap::new(),
             permission_modes: HashMap::new(),
+            mcp_panel: McpPanel::default(),
+            permission_panel: PermissionPanel::default(),
             conversation_scroll: ConversationScroll::default(),
             scrollbar_geometry: None,
             scrollbar_drag: None,
@@ -1755,6 +1800,31 @@ impl App {
                 }
                 self.status = format!("permission mode update failed: {error}");
             }
+            RpcUpdate::McpRefreshed { result } => {
+                self.mcp_panel.refresh_in_flight = false;
+                match result {
+                    Ok((servers, approvals)) => {
+                        self.mcp_panel.install(servers.servers, approvals.approvals);
+                    }
+                    Err(error) => self.status = format!("MCP refresh failed: {error}"),
+                }
+            }
+            RpcUpdate::McpMutation { result } => match result {
+                Ok(_) => {
+                    self.status = "MCP server state updated.".into();
+                    self.poll_mcp();
+                }
+                Err(error) => self.status = format!("MCP update failed: {error}"),
+            },
+            RpcUpdate::PermissionsLoaded { session_id, result } => {
+                if self.selected != Some(session_id) {
+                    return;
+                }
+                match result {
+                    Ok(result) => self.permission_panel.install(result),
+                    Err(error) => self.status = format!("permission update failed: {error}"),
+                }
+            }
         }
     }
 
@@ -2083,6 +2153,367 @@ impl App {
         self.reconcile_pending_approval();
     }
 
+    pub(super) fn poll_mcp(&mut self) {
+        if self.modal != Modal::Mcp || self.mcp_panel.refresh_in_flight {
+            return;
+        }
+        self.mcp_panel.refresh_in_flight = true;
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = async {
+                let servers = client
+                    .list_mcp_servers()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let approvals = client
+                    .list_mcp_approvals()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok((servers, approvals))
+            }
+            .await;
+            let _ = updates.send(RpcUpdate::McpRefreshed { result });
+        });
+    }
+
+    fn load_permissions(&mut self) {
+        let Some(session_id) = self.selected else {
+            self.status = "select a session before editing permissions".into();
+            return;
+        };
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .get_session_permissions(SessionPermissionGetParams { session_id })
+                .await
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::PermissionsLoaded { session_id, result });
+        });
+    }
+
+    async fn handle_mcp_key(&mut self, key: KeyEvent) {
+        if self.mcp_panel.form.is_some() {
+            if key.code == KeyCode::Esc {
+                self.mcp_panel.form = None;
+                return;
+            }
+            if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+                self.mcp_panel
+                    .form
+                    .as_mut()
+                    .expect("form")
+                    .move_focus(key.code == KeyCode::BackTab);
+                return;
+            }
+            if matches!(
+                key.code,
+                KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+            ) && self.mcp_panel.form.as_ref().is_some_and(|form| {
+                matches!(
+                    form.focus,
+                    McpFormFocus::Transport
+                        | McpFormFocus::Enabled
+                        | McpFormFocus::Lazy
+                        | McpFormFocus::Persist
+                )
+            }) {
+                self.mcp_panel
+                    .form
+                    .as_mut()
+                    .expect("form")
+                    .cycle_choice(key.code == KeyCode::Left);
+                return;
+            }
+            if key.code == KeyCode::Enter {
+                self.submit_mcp_form();
+                return;
+            }
+            if let Some(input) = self
+                .mcp_panel
+                .form
+                .as_mut()
+                .and_then(McpForm::focused_input)
+            {
+                edit_plain_input(input, key);
+            }
+            return;
+        }
+        let count = self.mcp_panel.servers.len();
+        match key.code {
+            KeyCode::Esc => self.modal = Modal::None,
+            KeyCode::Up => move_picker_selection(&mut self.mcp_panel.selection, count, true),
+            KeyCode::Down => move_picker_selection(&mut self.mcp_panel.selection, count, false),
+            KeyCode::Char('n') => self.mcp_panel.form = Some(McpForm::add()),
+            KeyCode::Char('e') => {
+                if let Some(server) = self.mcp_panel.selected().cloned() {
+                    self.mcp_panel.form = Some(McpForm::edit(&server));
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(name) = self.mcp_panel.selected().map(|server| server.name.clone()) {
+                    self.dispatch_mcp_remove(name);
+                }
+            }
+            KeyCode::Char(' ') => {
+                if let Some(server) = self.mcp_panel.selected().cloned() {
+                    self.dispatch_mcp_toggle(server.name, !server.definition.enabled);
+                }
+            }
+            KeyCode::Char('r') => {
+                if let Some(name) = self.mcp_panel.selected().map(|server| server.name.clone()) {
+                    self.dispatch_mcp_reconnect(name);
+                }
+            }
+            KeyCode::Char('a' | 'x') => {
+                if let Some(name) = self.mcp_panel.selected().map(|server| server.name.clone())
+                    && self.mcp_panel.approvals.contains_key(&name)
+                {
+                    let decision = if key.code == KeyCode::Char('a') {
+                        McpApprovalDecision::Approve
+                    } else {
+                        McpApprovalDecision::Reject
+                    };
+                    self.dispatch_mcp_approval(name, decision);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn submit_mcp_form(&mut self) {
+        let Some(form) = self.mcp_panel.form.take() else {
+            return;
+        };
+        let persist = form.persist.target();
+        let editing = form.editing;
+        let original = form.original_name.clone();
+        let (name, definition) = match form.definition() {
+            Ok(value) => value,
+            Err(error) => {
+                self.status = error;
+                self.mcp_panel.form = Some(form);
+                return;
+            }
+        };
+        if editing && original.as_deref() != Some(name.as_str()) {
+            self.status = "editing cannot rename a server; remove it and add the new name".into();
+            self.mcp_panel.form = Some(form);
+            return;
+        }
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = async {
+                let mutation = if editing {
+                    client
+                        .edit_mcp_server(McpServerEditParams {
+                            name: name.clone(),
+                            definition,
+                        })
+                        .await
+                } else {
+                    client
+                        .add_mcp_server(McpServerAddParams {
+                            name: name.clone(),
+                            definition,
+                        })
+                        .await
+                }
+                .map_err(|error| error.to_string())?;
+                if let Some(target) = persist {
+                    return client
+                        .persist_mcp_server(McpServerPersistParams { name, target })
+                        .await
+                        .map(|result| result.server)
+                        .map_err(|error| error.to_string());
+                }
+                Ok(mutation.server)
+            }
+            .await;
+            let _ = updates.send(RpcUpdate::McpMutation { result });
+        });
+    }
+
+    fn dispatch_mcp_remove(&self, name: String) {
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .remove_mcp_server(McpServerNameParams { name })
+                .await
+                .map(|result| result.server)
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::McpMutation { result });
+        });
+    }
+
+    fn dispatch_mcp_toggle(&self, name: String, enabled: bool) {
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .set_mcp_server_enabled(McpServerSetEnabledParams { name, enabled })
+                .await
+                .map(|result| result.server)
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::McpMutation { result });
+        });
+    }
+
+    fn dispatch_mcp_reconnect(&self, name: String) {
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .reconnect_mcp_server(McpServerNameParams { name })
+                .await
+                .map(|result| result.server)
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::McpMutation { result });
+        });
+    }
+
+    fn dispatch_mcp_approval(&self, server: String, decision: McpApprovalDecision) {
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .respond_mcp_approval(McpApprovalRespondParams { server, decision })
+                .await
+                .map(|_| None)
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::McpMutation { result });
+        });
+    }
+
+    async fn handle_permissions_key(&mut self, key: KeyEvent) {
+        if let Some(form) = &mut self.permission_panel.form {
+            match key.code {
+                KeyCode::Esc => self.permission_panel.form = None,
+                KeyCode::Tab | KeyCode::BackTab => form.focus_pattern = !form.focus_pattern,
+                KeyCode::Up if !form.focus_pattern => form.cycle_action(true),
+                KeyCode::Down if !form.focus_pattern => form.cycle_action(false),
+                KeyCode::Left if !form.focus_pattern => {
+                    form.effect = cycle_effect(form.effect, true)
+                }
+                KeyCode::Right | KeyCode::Char(' ') if !form.focus_pattern => {
+                    form.effect = cycle_effect(form.effect, false)
+                }
+                KeyCode::Enter => self.submit_permission_form(),
+                _ if form.focus_pattern => edit_plain_input(&mut form.pattern, key),
+                _ => {}
+            }
+            return;
+        }
+        let rows = self.permission_panel.rows();
+        match key.code {
+            KeyCode::Esc => self.modal = Modal::None,
+            KeyCode::Up => {
+                move_picker_selection(&mut self.permission_panel.selection, rows.len(), true)
+            }
+            KeyCode::Down => {
+                move_picker_selection(&mut self.permission_panel.selection, rows.len(), false)
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') => {
+                if let Some(row) = self.permission_panel.selected() {
+                    let effect = cycle_effect(row.effect, key.code == KeyCode::Left);
+                    self.dispatch_permission_set(row.action, row.resource, effect);
+                }
+            }
+            KeyCode::Char('n') => {
+                let action = self
+                    .permission_panel
+                    .selected()
+                    .map_or(PermissionAction::Read, |row| row.action);
+                self.permission_panel.form = Some(PermissionForm::new(action));
+            }
+            KeyCode::Char('d') => {
+                if let Some(row) = self.permission_panel.selected() {
+                    if row.source == PermissionRuleSource::SessionOverlay {
+                        self.dispatch_permission_clear(row.action, row.resource);
+                    } else {
+                        self.status = "only session overlay rules can be cleared".into();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn submit_permission_form(&mut self) {
+        let Some(form) = self.permission_panel.form.take() else {
+            return;
+        };
+        let pattern = form.pattern.as_str().trim();
+        let resource = match cookie_agent_protocol::WildcardPattern::new(pattern) {
+            Ok(resource) => resource.to_string(),
+            Err(error) => {
+                self.status = format!("invalid permission pattern: {error}");
+                self.permission_panel.form = Some(form);
+                return;
+            }
+        };
+        self.dispatch_permission_set(form.action, resource, form.effect);
+    }
+
+    fn dispatch_permission_set(
+        &self,
+        action: PermissionAction,
+        resource: String,
+        effect: PermissionEffect,
+    ) {
+        let Some(session_id) = self.selected else {
+            return;
+        };
+        let Ok(resource) = cookie_agent_protocol::WildcardPattern::new(resource) else {
+            return;
+        };
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .set_session_permission(SessionPermissionSetParams {
+                    session_id,
+                    action,
+                    resource,
+                    effect,
+                })
+                .await
+                .map(|result| SessionPermissionGetResult {
+                    permissions: result.permissions,
+                })
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::PermissionsLoaded { session_id, result });
+        });
+    }
+
+    fn dispatch_permission_clear(&self, action: PermissionAction, resource: String) {
+        let Some(session_id) = self.selected else {
+            return;
+        };
+        let Ok(resource) = cookie_agent_protocol::WildcardPattern::new(resource) else {
+            return;
+        };
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .clear_session_permission(SessionPermissionClearParams {
+                    session_id,
+                    action,
+                    resource,
+                })
+                .await
+                .map(|result| SessionPermissionGetResult {
+                    permissions: result.permissions,
+                })
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::PermissionsLoaded { session_id, result });
+        });
+    }
+
     pub(super) async fn handle_key(&mut self, key: KeyEvent) {
         if key.code != KeyCode::Esc {
             self.last_escape = None;
@@ -2097,6 +2528,8 @@ impl App {
             Modal::DisconnectConfirm => self.handle_disconnect_confirm_key(key),
             Modal::UserMessage => self.handle_user_menu_key(key).await,
             Modal::RevertConfirm => self.handle_revert_confirm_key(key).await,
+            Modal::Mcp => self.handle_mcp_key(key).await,
+            Modal::Permissions => self.handle_permissions_key(key).await,
             Modal::None
                 if self.current_approval().is_none()
                     && !self.command_palette_visible()
@@ -2237,6 +2670,7 @@ impl App {
             Modal::Models => self.draft_models().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
             Modal::UserMessage => USER_MENU_ITEMS.len(),
+            Modal::Mcp | Modal::Permissions => 0,
             Modal::ConnectDetails
             | Modal::ConnectSetup
             | Modal::ConnectError
@@ -3102,6 +3536,8 @@ impl App {
                     | Modal::ConnectError
                     | Modal::DisconnectConfirm
                     | Modal::RevertConfirm
+                    | Modal::Mcp
+                    | Modal::Permissions
                     | Modal::None => 0,
                 };
                 move_picker_selection(&mut self.picker_state, len, up);
@@ -3393,6 +3829,25 @@ impl App {
                     }
                     ProviderFormFocus::AuthMethod | ProviderFormFocus::Submit => {}
                 }
+            }
+            return;
+        }
+        if self.modal == Modal::Mcp {
+            if let Some(input) = self
+                .mcp_panel
+                .form
+                .as_mut()
+                .and_then(McpForm::focused_input)
+            {
+                input.insert_text(&text.replace(['\r', '\n'], ""));
+            }
+            return;
+        }
+        if self.modal == Modal::Permissions {
+            if let Some(form) = &mut self.permission_panel.form
+                && form.focus_pattern
+            {
+                form.pattern.insert_text(&text.replace(['\r', '\n'], ""));
             }
             return;
         }
@@ -3940,6 +4395,7 @@ impl App {
             | Modal::DisconnectConfirm => {}
             Modal::UserMessage => self.activate_user_menu_entry(index),
             Modal::RevertConfirm => {}
+            Modal::Mcp | Modal::Permissions => {}
             Modal::None => {}
         }
     }
@@ -4472,6 +4928,20 @@ impl App {
                     self.status = "No providers are available in the runtime snapshot.".into();
                 } else {
                     self.status = "Search providers, then press Down or Tab to choose one.".into();
+                }
+            }
+            SlashCommand::Mcp => {
+                self.modal = Modal::Mcp;
+                self.mcp_panel.form = None;
+                self.poll_mcp();
+            }
+            SlashCommand::Permissions => {
+                if self.selected.is_none() {
+                    self.status = "select a session before editing permissions".into();
+                } else {
+                    self.modal = Modal::Permissions;
+                    self.permission_panel.begin_load();
+                    self.load_permissions();
                 }
             }
             SlashCommand::Sessions => {
@@ -5119,6 +5589,22 @@ impl App {
             }
             Modal::RevertConfirm => {
                 self.render_revert_confirm(frame, centered(frame.area(), 64, 30));
+            }
+            Modal::Mcp => {
+                super::management::render_mcp(
+                    frame,
+                    centered(frame.area(), 88, 82),
+                    &mut self.mcp_panel,
+                    &self.theme,
+                );
+            }
+            Modal::Permissions => {
+                super::management::render_permissions(
+                    frame,
+                    centered(frame.area(), 82, 76),
+                    &mut self.permission_panel,
+                    &self.theme,
+                );
             }
             Modal::None => {}
         }
@@ -6079,6 +6565,7 @@ async fn event_loop(
 ) -> anyhow::Result<()> {
     let mut events = EventStream::new();
     let mut replay_watchdog = tokio::time::interval(std::time::Duration::from_millis(250));
+    let mut mcp_poll = tokio::time::interval(std::time::Duration::from_secs(1));
     let mut frame_tick = tokio::time::interval(RenderScheduler::FRAME_INTERVAL);
     let mut render = RenderScheduler::default();
     loop {
@@ -6138,6 +6625,9 @@ async fn event_loop(
             _ = replay_watchdog.tick() => {
                 app.recover_timed_out_replays();
                 render.mark_stream();
+            },
+            _ = mcp_poll.tick() => {
+                app.poll_mcp();
             },
             _ = frame_tick.tick() => {
                 // The frame cadence drives only the streaming "thinking…"

@@ -33,6 +33,22 @@ eager server's initial connection and `tools/list` attempt to finish, so its too
 context is not built from a partial startup snapshot. Each wait remains bounded
 by that server's `timeout_ms`; one server's failure does not block the others.
 
+## TUI management
+
+Run `/mcp` to open the live MCP panel. The list reports `connected` with its
+tool count, `connecting`, `failed` with the connection error,
+`pending_approval`, `disabled`, and `lazy-not-connected`. The panel polls the
+daemon while it is open. Select a pending project server to inspect the complete
+command, arguments, environment, and working directory, or URL and headers;
+press `a` to approve or `x` to reject it.
+
+The panel can reconnect a failed server, toggle enablement, and add, edit, or
+remove definitions. Add/edit forms accept either a command, JSON string array
+of arguments, JSON string object of environment variables, and optional working
+directory, or a URL plus a JSON string object of headers. Choose
+`runtime only`, `user config.toml`, or `project config.toml` before submitting.
+Edits do not rename a server; remove the old name and add the new one instead.
+
 Stdio servers negotiate MCP 2025-11-25 when needed. Servers that implement the
 2026-07-28 discovery lifecycle use that version. Remote servers use Streamable
 HTTP, including SSE responses on that endpoint; the retired two-endpoint legacy
@@ -71,6 +87,11 @@ before assembling their tool context.
 
 Connection failures are isolated per server. A failed server publishes no tools
 and does not prevent other servers from connecting.
+
+Definitions created or changed through the TUI are runtime-layer entries and
+are trusted by construction. They live only for the current daemon unless
+explicitly written to a file. A runtime entry continues to win after write-back;
+on restart the persisted file entry follows normal user/project trust rules.
 
 ## Tool names and permissions
 

@@ -110,3 +110,28 @@ Each session starts in `auto_approve` unless changed:
 Hard denies, the doom-loop guard, and existing tree grants are evaluated before
 the mode shortcut. Changing a mode does not alter an already pending approval
 and does not cascade to delegated sessions.
+
+## Session permission overlays
+
+Run `/permissions` to edit the selected session's permission overlay. Each
+action exposes its effective `allow`, `ask`, or `deny` effect and its individual
+resource patterns. Source labels distinguish `session_overlay`,
+`agent_document`, and `default`. Left/right changes an effect, `n` adds a
+validated wildcard pattern, and `d` removes a selected session-overlay rule.
+The editor does not accept freeform YAML.
+
+An overlay rule is evaluated before matching rules from the frozen agent
+snapshot. If no overlay rule matches, evaluation falls back to the agent
+document and then the normal default (`ask`; MCP remains hidden when neither
+layer configures it). Changes affect subsequent visibility and permission
+evaluations only. They do not rewrite an active run's frozen agent/model
+identity or retroactively cancel an operation already executing. A pending
+tree-approval response is rejected as changed if the session overlay changed
+after that approval was requested, so it cannot commit a stale durable grant.
+
+Every change appends a complete `session_permission_overlay_set` event to the
+session log. Overlay state therefore survives daemon restart and follows normal
+revert and fork branch semantics. Tightening a rule durably invalidates existing
+tree grants for that action under the session root before the overlay event is
+committed. Invalidation is action-wide because tree-grant records retain opaque
+prepared identities rather than normalized resource labels.

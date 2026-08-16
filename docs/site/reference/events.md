@@ -1,7 +1,7 @@
 # Event Reference
 
-Session persistence and subscriptions write event schema 17 and reopen schemas
-15-17. Every stored event
+Session persistence and subscriptions write event schema 18 and reopen schemas
+15-18. Every stored event
 contains `event_schema_version`, `session_id`, required nullable `run_id`, a
 positive physical `seq`, `timestamp`, and a tagged `payload`. Events requiring a
 run ID reject a null envelope value.
@@ -10,7 +10,7 @@ run ID reject a null envelope value.
 
 | Category | Event payload types |
 |---|---|
-| Session | `session_created`, `session_reverted`, `session_title_committed`, `delegated_context_seeded` |
+| Session | `session_created`, `session_reverted`, `session_permission_overlay_set`, `session_title_committed`, `delegated_context_seeded` |
 | User input | `user_input_admitted`, `user_input_submitted`, `user_input_recalled`, `user_input_applied` |
 | Run | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_interrupted` |
 | Model | `model_attempt_started`, `text_delta`, `reasoning_delta`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_fallback` |
@@ -36,6 +36,12 @@ after restart. `delegate_finished_v2` adds the delegation `invocation_id` to the
 same completion payload so repeated resumes of one child each receive exactly
 one teaser. Current engines emit the V2 completion form.
 
+Schema 18 adds the runless `session_permission_overlay_set` event. Its `overlay`
+contains the complete, validated set of unique `(action, resource)` rules for
+the session. The latest visible event wins. Because it is an ordinary branch
+event, restart replay, revert, and fork recover the same overlay without a
+sidecar file.
+
 `user_input_admitted` normally belongs to an active run. A steer accepted for a
 queued delegated child is runless and requires that the session have no active
 run. It is persisted immediately and enters the next run's pending-input FIFO,
@@ -56,7 +62,7 @@ continues to recall the newest pending input.
 starts `events.subscription` notifications. A notification is tagged as either:
 
 ```json
-{ "type": "event", "event": { "event_schema_version": 17 } }
+{ "type": "event", "event": { "event_schema_version": 18 } }
 ```
 
 or a gap indicating that the subscriber must rebuild its disposable projection:

@@ -26,16 +26,17 @@ use cookie_agent_models::{
 };
 use cookie_agent_protocol::{
     AgentId, ApprovalBoundary, ApprovalCapability, ApprovalDecisionSource, ApprovalFinalOutcome,
-    ApprovalInternalDecisionKind, ApprovalReasonCode, ApprovalResourceSource,
-    ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision, CatalogRevision, ClientConnectId,
-    ClientRenameId, ClientRequestId, ClientResponseId, ClientRunId, EventPayload,
-    InternalAgentKind, InvocationId, ModelSelection, PermissionAction, PermissionMode,
-    PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
-    PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity,
-    ProviderConnectParams, ProviderCredentialValues, ProviderDisconnectParams, ProviderId,
-    ProviderModelId, RunSelection, RunStartParams, RuntimeChangeReason, SessionId, SessionStatus,
-    SessionTitle, SessionTitleChange, SetupFieldId, Sha256Digest, ToolCallId,
-    ToolTerminationOutcome,
+    ApprovalId, ApprovalInternalDecisionKind, ApprovalReasonCode, ApprovalResourceSource,
+    ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision,
+    CatalogRevision, ClientConnectId, ClientRenameId, ClientRequestId, ClientResponseId,
+    ClientRunId, EventPayload, InternalAgentKind, InvocationId, ModelSelection, PermissionAction,
+    PermissionEffect, PermissionMode, PermissionRuleSource, PreparedApprovalResource,
+    PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
+    PreparedResourceDigest, PreparedResourceIdentity, ProviderConnectParams,
+    ProviderCredentialValues, ProviderDisconnectParams, ProviderId, ProviderModelId, RunSelection,
+    RunStartParams, RuntimeChangeReason, SessionId, SessionStatus, SessionTitle,
+    SessionTitleChange, SetupFieldId, Sha256Digest, ToolCallId, ToolTerminationOutcome,
+    TreeApprovalGrant, TreeApprovalGrantId, WildcardPattern,
 };
 use jiff::Timestamp;
 use tempfile::TempDir;
@@ -67,6 +68,229 @@ fn test_turn_context() -> Arc<TurnAgentContext> {
             media: BTreeMap::new(),
         },
     })
+}
+
+#[tokio::test]
+async fn session_permission_overlay_is_durable_and_evaluated_after_restart() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture.engine.create_session(selection).expect("session");
+    fixture
+        .engine
+        .set_session_permission(
+            session.session_id,
+            PermissionAction::Bash,
+            WildcardPattern::new("*").expect("wildcard"),
+            PermissionEffect::Deny,
+        )
+        .await
+        .expect("set overlay");
+    fixture.engine.shutdown().await;
+
+    let reopened = reopen_engine(&fixture);
+    let projection = reopened
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("reloaded session");
+    assert_eq!(projection.permission_overlay.rules.len(), 1);
+    let view = reopened
+        .get_session_permissions(session.session_id)
+        .expect("effective permissions");
+    let bash = view
+        .permissions
+        .iter()
+        .find(|permission| permission.action == PermissionAction::Bash)
+        .expect("bash permission");
+    assert_eq!(bash.effect, PermissionEffect::Deny);
+    assert_eq!(bash.source, PermissionRuleSource::SessionOverlay);
+
+    let resource = PreparedApprovalResource {
+        capability: PermissionAction::Bash,
+        canonical: PreparedResourceIdentity::new("command:git-status").expect("identity"),
+        binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"git status"),
+        binding_lifetime: PreparedBindingLifetime::RestartStable,
+        boundary: ApprovalBoundary::CommandPrefix {
+            prefix: "git status".into(),
+        },
+        source: ApprovalResourceSource::PrimaryOperation,
+    };
+    let operation = PreparedOperationIdentity::new(
+        Sha256Digest::of_bytes(b"args"),
+        vec![ApprovalCapability {
+            action: PermissionAction::Bash,
+            operation: PreparedCapabilityOperation::new("bash:execute").expect("operation"),
+        }],
+        vec![resource],
+        Sha256Digest::of_bytes(b"context"),
+    )
+    .expect("prepared operation");
+    let decision = crate::permissions::PermissionPipeline::default().decide_operation_with_overlay(
+        &projection.creation_agent,
+        Some(&projection.permission_overlay),
+        &operation,
+        &[Some("git status".into())],
+        reopened.inner.store.cwd(),
+    );
+    assert_eq!(decision.effect, PermissionEffect::Deny);
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn tightening_overlay_invalidates_tree_grants_durably() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture.engine.create_session(selection).expect("session");
+    let resource = PreparedApprovalResource {
+        capability: PermissionAction::Bash,
+        canonical: PreparedResourceIdentity::new("command:git-status").expect("identity"),
+        binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"git status"),
+        binding_lifetime: PreparedBindingLifetime::RestartStable,
+        boundary: ApprovalBoundary::CommandPrefix {
+            prefix: "git status".into(),
+        },
+        source: ApprovalResourceSource::PrimaryOperation,
+    };
+    let capabilities = vec![ApprovalCapability {
+        action: PermissionAction::Bash,
+        operation: PreparedCapabilityOperation::new("bash:execute").expect("operation"),
+    }];
+    let operation = PreparedOperationIdentity::new(
+        Sha256Digest::of_bytes(b"args"),
+        capabilities.clone(),
+        vec![resource.clone()],
+        Sha256Digest::of_bytes(b"context"),
+    )
+    .expect("prepared operation");
+    let grant_id = TreeApprovalGrantId::new_v7();
+    fixture.engine.inner.approvals.grant(TreeApprovalGrant {
+        grant_id,
+        root_session_id: session.session_id,
+        approval_id: ApprovalId::new_v7(),
+        operation_fingerprint: cookie_agent_protocol::OperationFingerprint::from_prepared_operation(
+            &operation,
+        ),
+        capabilities,
+        resources: vec![resource],
+        created_at: Timestamp::now(),
+    });
+    fixture
+        .engine
+        .set_session_permission(
+            session.session_id,
+            PermissionAction::Bash,
+            WildcardPattern::new("*").expect("wildcard"),
+            PermissionEffect::Deny,
+        )
+        .await
+        .expect("tighten overlay");
+    assert!(
+        fixture
+            .engine
+            .inner
+            .approvals
+            .for_root(session.session_id)
+            .is_empty()
+    );
+    assert!(
+        fixture
+            .engine
+            .inner
+            .grant_journal
+            .invalidated_ids()
+            .contains(&grant_id)
+    );
+    fixture.engine.shutdown().await;
+    let reopened = reopen_engine(&fixture);
+    assert!(
+        reopened
+            .inner
+            .grant_journal
+            .invalidated_ids()
+            .contains(&grant_id)
+    );
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn clearing_allow_overlay_to_default_ask_invalidates_tree_grants() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture.engine.create_session(selection).expect("session");
+    let wildcard = WildcardPattern::new("*").expect("wildcard");
+    fixture
+        .engine
+        .set_session_permission(
+            session.session_id,
+            PermissionAction::Bash,
+            wildcard.clone(),
+            PermissionEffect::Allow,
+        )
+        .await
+        .expect("allow overlay");
+    let resource = PreparedApprovalResource {
+        capability: PermissionAction::Bash,
+        canonical: PreparedResourceIdentity::new("command:git-status").expect("identity"),
+        binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"git status"),
+        binding_lifetime: PreparedBindingLifetime::RestartStable,
+        boundary: ApprovalBoundary::CommandPrefix {
+            prefix: "git status".into(),
+        },
+        source: ApprovalResourceSource::PrimaryOperation,
+    };
+    let operation = PreparedOperationIdentity::new(
+        Sha256Digest::of_bytes(b"args"),
+        vec![ApprovalCapability {
+            action: PermissionAction::Bash,
+            operation: PreparedCapabilityOperation::new("bash:execute").expect("operation"),
+        }],
+        vec![resource.clone()],
+        Sha256Digest::of_bytes(b"context"),
+    )
+    .expect("prepared operation");
+    let grant_id = TreeApprovalGrantId::new_v7();
+    fixture.engine.inner.approvals.grant(TreeApprovalGrant {
+        grant_id,
+        root_session_id: session.session_id,
+        approval_id: ApprovalId::new_v7(),
+        operation_fingerprint: cookie_agent_protocol::OperationFingerprint::from_prepared_operation(
+            &operation,
+        ),
+        capabilities: operation.capabilities().to_vec(),
+        resources: vec![resource],
+        created_at: Timestamp::now(),
+    });
+
+    fixture
+        .engine
+        .clear_session_permission(session.session_id, PermissionAction::Bash, &wildcard)
+        .await
+        .expect("clear allow overlay");
+
+    assert!(
+        fixture
+            .engine
+            .inner
+            .approvals
+            .for_root(session.session_id)
+            .is_empty()
+    );
+    assert!(
+        fixture
+            .engine
+            .inner
+            .grant_journal
+            .invalidated_ids()
+            .contains(&grant_id)
+    );
+    let bash = fixture
+        .engine
+        .get_session_permissions(session.session_id)
+        .expect("permission view")
+        .permissions
+        .into_iter()
+        .find(|permission| permission.action == PermissionAction::Bash)
+        .expect("bash permission");
+    assert_eq!(bash.effect, PermissionEffect::Ask);
+    assert_eq!(bash.source, PermissionRuleSource::Default);
+    fixture.engine.shutdown().await;
 }
 
 #[derive(Clone)]
@@ -550,6 +774,9 @@ fn fixture() -> Fixture {
         },
         agents: BTreeMap::new(),
         mcp_servers: BTreeMap::new(),
+        user_mcp_servers: BTreeMap::new(),
+        workspace_mcp_servers: BTreeMap::new(),
+        config_paths: cookie_agent_config::ConfigLayerPaths::default(),
     };
     let engine = Engine::open(EngineOptions {
         data_dir: directory.path().join("data"),
@@ -4617,6 +4844,86 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
 }
 
 #[tokio::test]
+async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
+    let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
+    let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::new(AtomicBool::new(false)),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("approval session");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("overlay-epoch").expect("run ID"),
+            selection,
+            input: "request the write tool".into(),
+        })
+        .await
+        .expect("run");
+    let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+    fixture
+        .engine
+        .set_session_permission(
+            session.session_id,
+            PermissionAction::Write,
+            WildcardPattern::new("*").expect("wildcard"),
+            PermissionEffect::Deny,
+        )
+        .await
+        .expect("tighten overlay");
+    let request_revision = serde_json::to_value(&approval.request)
+        .expect("approval request JSON")
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .expect("approval request revision");
+
+    let error = fixture
+        .engine
+        .approval_respond(ApprovalRespondParams {
+            session_id: session.session_id,
+            approval_id: approval.request.approval_id(),
+            request_revision,
+            operation_fingerprint: approval.request.operation_fingerprint().clone(),
+            client_response_id: ClientResponseId::new("overlay-epoch-tree").expect("response ID"),
+            decision: ApprovalUserDecision::ApproveTree,
+            feedback: None,
+        })
+        .await
+        .expect_err("changed overlay must reject tree grant");
+
+    assert!(matches!(
+        error,
+        EngineError::ApprovalResponse(failure)
+            if failure.code == ApprovalRespondErrorCode::OperationChanged
+    ));
+    assert!(
+        fixture
+            .engine
+            .inner
+            .approvals
+            .for_root(session.session_id)
+            .is_empty()
+    );
+    assert!(
+        !fixture
+            .engine
+            .inner
+            .pending_approvals
+            .lock()
+            .expect("pending approvals")
+            .contains_key(&(session.session_id, approval.request.approval_id()))
+    );
+    captured.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order() {
     let bodies = vec![
         "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"write-call\",\"type\":\"function\",\"function\":{\"name\":\"write\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":4000,\"completion_tokens\":1,\"total_tokens\":4001}}\n\n".to_owned(),
@@ -5725,7 +6032,7 @@ async fn immediate_first_run_waits_for_complete_eager_mcp_listing() {
         None,
         false,
         None,
-        Some(delayed_mcp_server(McpServerSource::User)),
+        Some(delayed_mcp_server(McpServerSource::UserFile)),
     );
     let session = fixture
         .engine
@@ -5758,7 +6065,7 @@ async fn immediate_run_after_project_approval_waits_for_mcp_listing() {
         None,
         false,
         None,
-        Some(delayed_mcp_server(McpServerSource::Workspace)),
+        Some(delayed_mcp_server(McpServerSource::WorkspaceFile)),
     );
     let approval = fixture.engine.pending_mcp_approvals().remove(0);
     fixture

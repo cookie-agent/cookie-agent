@@ -121,6 +121,59 @@ pub struct PermissionRule {
     pub effect: PermissionEffect,
 }
 
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPermissionOverlay {
+    #[schemars(length(max = 256))]
+    pub rules: Vec<PermissionRule>,
+}
+
+impl SessionPermissionOverlay {
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self { rules: Vec::new() }
+    }
+
+    pub fn validate(&self) -> Result<(), AgentSchemaError> {
+        if self.rules.len() > 256 {
+            return Err(AgentSchemaError::InvalidListBounds);
+        }
+        let mut keys = BTreeSet::new();
+        if !self
+            .rules
+            .iter()
+            .all(|rule| keys.insert((rule.action, rule.resource.as_str().to_owned())))
+        {
+            return Err(AgentSchemaError::DuplicatePermissionRule);
+        }
+        Ok(())
+    }
+}
+
+impl Default for SessionPermissionOverlay {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionPermissionOverlay {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            rules: Vec<PermissionRule>,
+        }
+        let value = Self {
+            rules: Wire::deserialize(deserializer)?.rules,
+        };
+        value.validate().map_err(serde::de::Error::custom)?;
+        Ok(value)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentDocumentSource {
@@ -511,6 +564,7 @@ pub enum AgentSchemaError {
     InvalidDescription,
     InvalidPrompt,
     InvalidListBounds,
+    DuplicatePermissionRule,
     DuplicateFallbackModel,
     InvalidModelBinding,
     InvalidSuffixStart,
@@ -520,7 +574,7 @@ pub enum AgentSchemaError {
 }
 impl fmt::Display for AgentSchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self{Self::InvalidDelegationTargets=>"delegation targets must be a nonempty, strictly sorted unique list of at most 256 IDs",Self::InvalidDescription=>"agent description must be nonblank, control-free, and 1..=512 bytes",Self::InvalidPrompt=>"composed prompt must be nonblank and at most 128 KiB",Self::InvalidListBounds=>"agent list exceeds bounds or frozen fallback is empty",Self::DuplicateFallbackModel=>"fallback chains may contain each model key at most once",Self::InvalidModelBinding=>"agent snapshot contains an invalid frozen model binding",Self::InvalidSuffixStart=>"selected_suffix_start must index the frozen fallback chain",Self::SelectionMismatch=>"run selection does not match the snapshot agent and selected fallback start",Self::SelectedSuffixMismatch=>"selected suffix does not exactly match the frozen fallback order and selected head",Self::InvalidRootRunnable=>"runnable_as_root contradicts enabled mode or fallback state"})
+        f.write_str(match self{Self::InvalidDelegationTargets=>"delegation targets must be a nonempty, strictly sorted unique list of at most 256 IDs",Self::InvalidDescription=>"agent description must be nonblank, control-free, and 1..=512 bytes",Self::InvalidPrompt=>"composed prompt must be nonblank and at most 128 KiB",Self::InvalidListBounds=>"agent list exceeds bounds or frozen fallback is empty",Self::DuplicatePermissionRule=>"session permission overlay rules must be unique by action and resource",Self::DuplicateFallbackModel=>"fallback chains may contain each model key at most once",Self::InvalidModelBinding=>"agent snapshot contains an invalid frozen model binding",Self::InvalidSuffixStart=>"selected_suffix_start must index the frozen fallback chain",Self::SelectionMismatch=>"run selection does not match the snapshot agent and selected fallback start",Self::SelectedSuffixMismatch=>"selected suffix does not exactly match the frozen fallback order and selected head",Self::InvalidRootRunnable=>"runnable_as_root contradicts enabled mode or fallback state"})
     }
 }
 impl std::error::Error for AgentSchemaError {}

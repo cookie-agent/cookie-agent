@@ -4,7 +4,8 @@ use cookie_agent_protocol::{
 
 use super::{
     Engine, EngineError, PreparedApprovalInvalidation, SessionCommand,
-    approval_projection::approval_records, helpers::root_id,
+    approval_projection::{approval_records, permission_overlay_epoch},
+    helpers::root_id,
 };
 use crate::tool_api::ToolError;
 
@@ -13,14 +14,15 @@ impl Engine {
         &self,
         params: ApprovalRespondParams,
     ) -> Result<ApprovalRespondResult, EngineError> {
-        let executor = self
+        let _permission_guard = self.inner.permission_overlay_mutation.lock().await;
+        let pending = self
             .inner
             .pending_approvals
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&(params.session_id, params.approval_id))
-            .map(|pending| pending.executor.clone());
-        let Some(executor) = executor else {
+            .map(|pending| (pending.executor.clone(), pending.permission_overlay_epoch));
+        let Some((executor, pending_epoch)) = pending else {
             return self
                 .request(params.session_id, |reply| SessionCommand::ApprovalRespond {
                     params,
@@ -30,13 +32,19 @@ impl Engine {
         };
 
         let guard = executor.lock_owned().await;
-        let invalidation = match guard.as_ref() {
+        let mut invalidation = match guard.as_ref() {
             Some(executor) => executor.revalidate().await.err().map(|error| match error {
                 ToolError::OperationChanged(_) => PreparedApprovalInvalidation::OperationChanged,
                 _ => PreparedApprovalInvalidation::PreparedCapabilityLost,
             }),
             None => Some(PreparedApprovalInvalidation::PreparedCapabilityLost),
         };
+        if invalidation.is_none()
+            && pending_epoch
+                != permission_overlay_epoch(&self.inner.store.get(params.session_id)?.log.events())
+        {
+            invalidation = Some(PreparedApprovalInvalidation::OperationChanged);
+        }
         if let Some(invalidation) = invalidation {
             return self
                 .request(params.session_id, |reply| {

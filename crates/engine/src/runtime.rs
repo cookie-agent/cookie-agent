@@ -149,6 +149,10 @@ pub enum EngineError {
     RuntimeCompileFailed,
     #[error("invalid runtime agent `{0}`")]
     InvalidRuntimeAgent(AgentId),
+    #[error("MCP configuration error: {0}")]
+    Mcp(String),
+    #[error("session permission error: {0}")]
+    Permission(String),
     #[error(transparent)]
     ModelManager(#[from] cookie_agent_models::ModelManagerError),
     #[error(transparent)]
@@ -279,6 +283,7 @@ pub(crate) struct ApprovalOutcome {
 pub(crate) struct PendingApproval {
     pub(crate) sender: oneshot::Sender<ApprovalOutcome>,
     pub(crate) executor: PreparedExecutorCell,
+    pub(crate) permission_overlay_epoch: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -693,11 +698,12 @@ const MAX_COMPACTION_DEFERRED_COMMANDS: usize = 3;
 
 pub(crate) struct Inner {
     config: LoadedConfiguration,
+    pub(crate) config_store: Mutex<crate::config_store::ConfigStore>,
     pub(crate) artifacts: Arc<ArtifactStore>,
     mutation_locks: Mutex<HashMap<PreparedSerializationKey, Arc<tokio::sync::Mutex<()>>>>,
     pub(crate) store: Arc<SessionStore>,
     pub(crate) journal: Arc<DelegationJournal>,
-    grant_journal: Arc<GrantInvalidationJournal>,
+    pub(crate) grant_journal: Arc<GrantInvalidationJournal>,
     pub(crate) model_manager: Arc<ModelManager>,
     published_runtime: ArcSwap<PublishedRuntime>,
     runtime_mutation: Mutex<()>,
@@ -705,8 +711,9 @@ pub(crate) struct Inner {
     runtime_revision_index: Mutex<RuntimeRevisionIndex>,
     manifest_store: ModelSnapshotManifestStore,
     tools: Mutex<Vec<Arc<dyn ToolProvider>>>,
-    mcp: Arc<crate::McpRegistry>,
-    approvals: ApprovalStore,
+    pub(crate) mcp: Arc<crate::McpRegistry>,
+    pub(crate) mcp_mutation: tokio::sync::Mutex<()>,
+    pub(crate) approvals: ApprovalStore,
     permissions: PermissionPipeline,
     active: Mutex<HashMap<RunId, Arc<ActiveRun>>>,
     inflight_delegations: Mutex<HashMap<InvocationId, HashMap<u64, InflightDelegation>>>,
@@ -720,6 +727,7 @@ pub(crate) struct Inner {
     finalized_output_hubs: Mutex<VecDeque<ToolCallId>>,
     pub(crate) pending_approvals: Mutex<HashMap<(SessionId, ApprovalId), PendingApproval>>,
     permission_modes: Mutex<HashMap<SessionId, PermissionMode>>,
+    pub(crate) permission_overlay_mutation: tokio::sync::Mutex<()>,
     compaction_in_progress: Mutex<HashSet<SessionId>>,
     compaction_deferred: Mutex<HashMap<SessionId, VecDeque<SessionCommand>>>,
     context_token_estimators: Mutex<HashMap<SessionId, ContextTokenEstimator>>,
@@ -765,6 +773,7 @@ pub struct Engine {
 
 impl Engine {
     pub fn open(options: EngineOptions) -> Result<Self, EngineError> {
+        let config_store = crate::config_store::ConfigStore::new(&options.config);
         let current_models = options.model_manager.current();
         let authored_agents = options.config.agent_registry();
         let agents = Arc::new(AgentRegistry::resolve(&authored_agents, &current_models)?);
@@ -808,6 +817,7 @@ impl Engine {
         let engine = Self {
             inner: Arc::new(Inner {
                 config: options.config,
+                config_store: Mutex::new(config_store),
                 artifacts,
                 mutation_locks: Mutex::new(HashMap::new()),
                 store,
@@ -821,6 +831,7 @@ impl Engine {
                 manifest_store,
                 tools: Mutex::new(tools),
                 mcp,
+                mcp_mutation: tokio::sync::Mutex::new(()),
                 approvals: ApprovalStore::default(),
                 permissions: PermissionPipeline::default(),
                 active: Mutex::new(HashMap::new()),
@@ -835,6 +846,7 @@ impl Engine {
                 finalized_output_hubs: Mutex::new(VecDeque::new()),
                 pending_approvals: Mutex::new(HashMap::new()),
                 permission_modes: Mutex::new(HashMap::new()),
+                permission_overlay_mutation: tokio::sync::Mutex::new(()),
                 compaction_in_progress: Mutex::new(HashSet::new()),
                 compaction_deferred: Mutex::new(HashMap::new()),
                 context_token_estimators: Mutex::new(HashMap::new()),

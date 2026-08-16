@@ -1,6 +1,6 @@
 {
   "delegation_journal_schema_version": 14,
-  "event_schema_version": 17,
+  "event_schema_version": 18,
   "protocol_version": 9,
   "schemas": [
     "ClientHello.schema.json",
@@ -28,6 +28,11 @@
     "SessionResumeResult.schema.json",
     "SessionSetPermissionModeParams.schema.json",
     "SessionSetPermissionModeResult.schema.json",
+    "SessionPermissionGetParams.schema.json",
+    "SessionPermissionGetResult.schema.json",
+    "SessionPermissionSetParams.schema.json",
+    "SessionPermissionClearParams.schema.json",
+    "SessionPermissionMutationResult.schema.json",
     "SessionCompactParams.schema.json",
     "SessionCompactResult.schema.json",
     "SessionRevertParams.schema.json",
@@ -59,6 +64,14 @@
     "McpApprovalListResult.schema.json",
     "McpApprovalRespondParams.schema.json",
     "McpApprovalRespondResult.schema.json",
+    "McpServerListParams.schema.json",
+    "McpServerListResult.schema.json",
+    "McpServerAddParams.schema.json",
+    "McpServerEditParams.schema.json",
+    "McpServerNameParams.schema.json",
+    "McpServerSetEnabledParams.schema.json",
+    "McpServerPersistParams.schema.json",
+    "McpServerMutationResult.schema.json",
     "RuntimeSnapshotGetParams.schema.json",
     "RuntimeSnapshotResult.schema.json",
     "RuntimeChangedNotification.schema.json",
@@ -70,6 +83,6 @@
     "ModelSnapshotManifestV1.schema.json",
     "StoredDelegationJournalRecord.schema.json"
   ],
-  "session_jsonl_schema_version": 17,
+  "session_jsonl_schema_version": 18,
   "session_meta_schema_version": 9
 }

@@ -4,6 +4,7 @@ mod agent_document;
 mod agents;
 mod error;
 mod loader;
+mod mcp_store;
 mod runtime;
 mod secure_fs;
 mod toml_values;
@@ -17,8 +18,9 @@ pub use agents::{
     PermissionEffect, PermissionRule, PermissionValue,
 };
 pub use error::ConfigError;
-pub use loader::{LoadedConfiguration, load, load_from_roots};
+pub use loader::{ConfigLayerPaths, LoadedConfiguration, load, load_from_roots};
 pub use loader::{LoadedMcpServer, McpServerSource};
+pub use mcp_store::write_mcp_server;
 pub use runtime::{
     ApprovalConfig, ContextCompactionConfig, ContextCompactionTrigger, DelegationConfig, McpConfig,
     McpServerConfig, RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,

@@ -1,16 +1,19 @@
 //! Permission evaluation over immutable prepared-operation manifests.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Mutex,
 };
 
 use cookie_agent_config::simple_wildcard_match;
 use cookie_agent_protocol::{
-    AgentSnapshot, ApprovalEvaluation, DecisionTrace, MatchedPermissionRule, OperationFingerprint,
-    PermissionAction, PermissionEffect, PreparedOperationIdentity, SafeCode, SessionId,
-    TreeApprovalGrant, TreeApprovalGrantId,
+    AgentSnapshot, ApprovalEvaluation, DecisionTrace, EffectivePermissionAction,
+    EffectivePermissionRule, EventPayload, MatchedPermissionRule, OperationFingerprint,
+    PermissionAction, PermissionEffect, PermissionRule, PermissionRuleSource,
+    PreparedOperationIdentity, SafeCode, SessionId, SessionOrigin, SessionPermissionGetResult,
+    SessionPermissionMutationResult, SessionPermissionOverlay, TreeApprovalGrant,
+    TreeApprovalGrantId, WildcardPattern,
 };
 use thiserror::Error;
 
@@ -134,6 +137,18 @@ impl PermissionPipeline {
         policy_labels: &[Option<String>],
         workspace: &Path,
     ) -> PermissionDecision {
+        self.decide_operation_with_overlay(policy, None, operation, policy_labels, workspace)
+    }
+
+    #[must_use]
+    pub fn decide_operation_with_overlay(
+        &self,
+        policy: &AgentSnapshot,
+        overlay: Option<&SessionPermissionOverlay>,
+        operation: &PreparedOperationIdentity,
+        policy_labels: &[Option<String>],
+        workspace: &Path,
+    ) -> PermissionDecision {
         assert!(!operation.resources().is_empty());
         assert_eq!(operation.resources().len(), policy_labels.len());
         let evaluations = operation
@@ -143,10 +158,16 @@ impl PermissionPipeline {
             .map(|(resource, normalized)| {
                 let (candidates, effect, reason) = match normalized {
                     Some(normalized) => {
-                        let candidates =
-                            matching_rules(policy, resource.capability, normalized, workspace);
-                        let (effect, reason) = effective_permission(
+                        let candidates = matching_rules(
                             policy,
+                            overlay,
+                            resource.capability,
+                            normalized,
+                            workspace,
+                        );
+                        let (effect, reason) = effective_permission_with_overlay(
+                            policy,
+                            overlay,
                             resource.capability,
                             normalized,
                             workspace,
@@ -154,9 +175,12 @@ impl PermissionPipeline {
                         (candidates, effect, reason)
                     }
                     None => {
-                        let candidates = matching_loose_rules(policy, resource.capability);
-                        let (effect, reason) =
-                            effective_loose_permission(policy, resource.capability);
+                        let candidates = matching_loose_rules(policy, overlay, resource.capability);
+                        let (effect, reason) = effective_loose_permission_with_overlay(
+                            policy,
+                            overlay,
+                            resource.capability,
+                        );
                         (candidates, effect, reason)
                     }
                 };
@@ -196,13 +220,38 @@ impl PermissionPipeline {
 
     #[must_use]
     pub fn tool_visible(policy: &AgentSnapshot, permission_name: &str) -> bool {
+        Self::tool_visible_with_overlay(policy, None, permission_name)
+    }
+
+    #[must_use]
+    pub fn tool_visible_with_overlay(
+        policy: &AgentSnapshot,
+        overlay: Option<&SessionPermissionOverlay>,
+        permission_name: &str,
+    ) -> bool {
         let Ok(action) = Self::action_for_permission_name(permission_name) else {
             return true;
         };
+        let overlay_rules = overlay
+            .into_iter()
+            .flat_map(|overlay| overlay.rules.iter())
+            .filter(|rule| rule.action == action)
+            .collect::<Vec<_>>();
         if action == PermissionAction::Mcp
+            && overlay_rules.is_empty()
             && !policy.permissions.iter().any(|rule| rule.action == action)
         {
             return false;
+        }
+        let overlay_wildcard = overlay_rules
+            .iter()
+            .rev()
+            .find(|rule| rule.resource.as_str() == "*");
+        if let Some(deny) = overlay_wildcard {
+            return deny.effect != PermissionEffect::Deny
+                || overlay_rules.iter().any(|rule| {
+                    rule.resource.as_str() != "*" && rule.effect != PermissionEffect::Deny
+                });
         }
         let Some(deny) = policy
             .permissions
@@ -241,6 +290,31 @@ pub(crate) fn effective_loose_permission(
                 (
                     rule.effect,
                     "bare or `*` permission rule applies to the permission-name-only check".into(),
+                )
+            },
+        )
+}
+
+pub(crate) fn effective_loose_permission_with_overlay(
+    policy: &AgentSnapshot,
+    overlay: Option<&SessionPermissionOverlay>,
+    action: PermissionAction,
+) -> (PermissionEffect, String) {
+    overlay
+        .and_then(|overlay| {
+            overlay
+                .rules
+                .iter()
+                .enumerate()
+                .filter(|(_, rule)| rule.action == action && rule.resource.as_str() == "*")
+                .max_by_key(|(index, _)| *index)
+        })
+        .map_or_else(
+            || effective_loose_permission(policy, action),
+            |(_, rule)| {
+                (
+                    rule.effect,
+                    "session overlay wildcard rule takes precedence over the agent document".into(),
                 )
             },
         )
@@ -309,6 +383,52 @@ pub(crate) fn effective_permission(
                 (rule.effect, reason)
             },
         )
+}
+
+pub(crate) fn effective_permission_with_overlay(
+    policy: &AgentSnapshot,
+    overlay: Option<&SessionPermissionOverlay>,
+    action: PermissionAction,
+    resource: &str,
+    workspace: &Path,
+) -> (PermissionEffect, String) {
+    let protected_env = action == PermissionAction::Read && protected_env_resource(resource);
+    let absolute_resource = absolute_resource(workspace, resource);
+    let winner = overlay.and_then(|overlay| {
+        overlay
+            .rules
+            .iter()
+            .enumerate()
+            .filter(|(_, rule)| {
+                rule.action == action
+                    && permission_pattern_matches(
+                        rule.resource.as_str(),
+                        resource,
+                        &absolute_resource,
+                        workspace,
+                    )
+                    && !(protected_env
+                        && rule.effect == PermissionEffect::Allow
+                        && !permission_pattern_is_exact(
+                            rule.resource.as_str(),
+                            resource,
+                            &absolute_resource,
+                            workspace,
+                        ))
+            })
+            .max_by_key(|(index, rule)| specificity(rule.resource.as_str(), *index))
+    });
+    winner.map_or_else(
+        || effective_permission(policy, action, resource, workspace),
+        |(_, rule)| {
+            let reason = if protected_env && rule.effect == PermissionEffect::Allow {
+                "exact session overlay rule overrides the built-in .env default"
+            } else {
+                "session overlay matching rule takes precedence over the agent document"
+            };
+            (rule.effect, reason.into())
+        },
+    )
 }
 
 fn permission_pattern_is_exact(
@@ -399,6 +519,7 @@ fn protected_env_resource(resource: &str) -> bool {
 
 fn matching_rules(
     policy: &AgentSnapshot,
+    overlay: Option<&SessionPermissionOverlay>,
     action: PermissionAction,
     resource: &str,
     workspace: &Path,
@@ -422,11 +543,32 @@ fn matching_rules(
             resource: rule.resource.clone(),
             effect: rule.effect,
         })
+        .chain(
+            overlay
+                .into_iter()
+                .flat_map(|overlay| overlay.rules.iter())
+                .filter(|rule| {
+                    rule.action == action
+                        && permission_pattern_matches(
+                            rule.resource.as_str(),
+                            resource,
+                            &absolute_resource,
+                            workspace,
+                        )
+                })
+                .map(|rule| MatchedPermissionRule {
+                    source_layer: SafeCode::new("session_overlay").expect("static safe code"),
+                    action: rule.action,
+                    resource: rule.resource.clone(),
+                    effect: rule.effect,
+                }),
+        )
         .collect()
 }
 
 fn matching_loose_rules(
     policy: &AgentSnapshot,
+    overlay: Option<&SessionPermissionOverlay>,
     action: PermissionAction,
 ) -> Vec<MatchedPermissionRule> {
     policy
@@ -439,7 +581,287 @@ fn matching_loose_rules(
             resource: rule.resource.clone(),
             effect: rule.effect,
         })
+        .chain(
+            overlay
+                .into_iter()
+                .flat_map(|overlay| overlay.rules.iter())
+                .filter(|rule| rule.action == action && rule.resource.as_str() == "*")
+                .map(|rule| MatchedPermissionRule {
+                    source_layer: SafeCode::new("session_overlay").expect("static safe code"),
+                    action: rule.action,
+                    resource: rule.resource.clone(),
+                    effect: rule.effect,
+                }),
+        )
         .collect()
+}
+
+impl crate::Engine {
+    pub fn get_session_permissions(
+        &self,
+        session_id: SessionId,
+    ) -> Result<SessionPermissionGetResult, crate::EngineError> {
+        let session = self.inner.store.get(session_id)?;
+        let policy = governing_agent(&session);
+        Ok(SessionPermissionGetResult {
+            permissions: effective_permission_view(&policy, &session.permission_overlay),
+        })
+    }
+
+    pub async fn set_session_permission(
+        &self,
+        session_id: SessionId,
+        action: PermissionAction,
+        resource: WildcardPattern,
+        effect: PermissionEffect,
+    ) -> Result<SessionPermissionMutationResult, crate::EngineError> {
+        let _mutation = self.inner.permission_overlay_mutation.lock().await;
+        let session = self.inner.store.get(session_id)?;
+        let policy = governing_agent(&session);
+        let mut overlay = session.permission_overlay.clone();
+        let old_effect = rule_effect(
+            &policy,
+            &overlay,
+            action,
+            resource.as_str(),
+            self.inner.store.cwd(),
+        );
+        overlay
+            .rules
+            .retain(|rule| rule.action != action || rule.resource != resource);
+        overlay.rules.push(PermissionRule {
+            action,
+            resource: resource.clone(),
+            effect,
+        });
+        overlay
+            .validate()
+            .map_err(|error| crate::EngineError::Permission(error.to_string()))?;
+        let new_effect = rule_effect(
+            &policy,
+            &overlay,
+            action,
+            resource.as_str(),
+            self.inner.store.cwd(),
+        );
+        if effect_rank(new_effect) > effect_rank(old_effect) {
+            self.invalidate_action_grants(session_id, &session.meta.origin, action)?;
+        }
+        self.append(
+            session_id,
+            None,
+            EventPayload::SessionPermissionOverlaySet { overlay },
+        )
+        .await?;
+        let result = self.get_session_permissions(session_id)?;
+        Ok(SessionPermissionMutationResult {
+            permissions: result.permissions,
+        })
+    }
+
+    pub async fn clear_session_permission(
+        &self,
+        session_id: SessionId,
+        action: PermissionAction,
+        resource: &WildcardPattern,
+    ) -> Result<SessionPermissionMutationResult, crate::EngineError> {
+        let _mutation = self.inner.permission_overlay_mutation.lock().await;
+        let session = self.inner.store.get(session_id)?;
+        let policy = governing_agent(&session);
+        let mut overlay = session.permission_overlay;
+        let old_effect = rule_effect(
+            &policy,
+            &overlay,
+            action,
+            resource.as_str(),
+            self.inner.store.cwd(),
+        );
+        let prior_len = overlay.rules.len();
+        overlay
+            .rules
+            .retain(|rule| rule.action != action || &rule.resource != resource);
+        if overlay.rules.len() != prior_len {
+            let new_effect = rule_effect(
+                &policy,
+                &overlay,
+                action,
+                resource.as_str(),
+                self.inner.store.cwd(),
+            );
+            if effect_rank(new_effect) > effect_rank(old_effect) {
+                self.invalidate_action_grants(session_id, &session.meta.origin, action)?;
+            }
+            self.append(
+                session_id,
+                None,
+                EventPayload::SessionPermissionOverlaySet { overlay },
+            )
+            .await?;
+        }
+        let result = self.get_session_permissions(session_id)?;
+        Ok(SessionPermissionMutationResult {
+            permissions: result.permissions,
+        })
+    }
+
+    fn invalidate_action_grants(
+        &self,
+        session_id: SessionId,
+        origin: &SessionOrigin,
+        action: PermissionAction,
+    ) -> Result<(), crate::EngineError> {
+        let root = match origin {
+            SessionOrigin::Root => session_id,
+            SessionOrigin::Delegated {
+                root_session_id, ..
+            } => *root_session_id,
+        };
+        let grants = self
+            .inner
+            .approvals
+            .for_root(root)
+            .into_iter()
+            .filter(|grant| {
+                grant
+                    .resources
+                    .iter()
+                    .any(|resource| resource.capability == action)
+            })
+            .collect::<Vec<_>>();
+        let ids = grants
+            .iter()
+            .map(|grant| grant.grant_id)
+            .collect::<HashSet<_>>();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let digests = grants
+            .iter()
+            .flat_map(|grant| grant.resources.iter())
+            .filter(|resource| resource.capability == action)
+            .map(|resource| resource.binding_digest.digest().clone())
+            .collect();
+        self.inner
+            .grant_journal
+            .invalidate(root, ids.iter().copied().collect(), digests)?;
+        self.inner.approvals.invalidate_grants(&ids);
+        Ok(())
+    }
+}
+
+fn governing_agent(session: &crate::session::SessionProjection) -> AgentSnapshot {
+    let latest_run = session
+        .log
+        .events()
+        .into_iter()
+        .rev()
+        .find_map(|event| match event.payload {
+            EventPayload::RunStarted { agent, .. } => Some(*agent),
+            _ => None,
+        });
+    select_governing_agent(&session.creation_agent, latest_run.as_ref())
+}
+
+fn select_governing_agent(
+    creation_agent: &AgentSnapshot,
+    latest_run_agent: Option<&AgentSnapshot>,
+) -> AgentSnapshot {
+    latest_run_agent.unwrap_or(creation_agent).clone()
+}
+
+fn effect_rank(effect: PermissionEffect) -> u8 {
+    match effect {
+        PermissionEffect::Allow => 0,
+        PermissionEffect::Ask => 1,
+        PermissionEffect::Deny => 2,
+    }
+}
+
+fn rule_effect(
+    policy: &AgentSnapshot,
+    overlay: &SessionPermissionOverlay,
+    action: PermissionAction,
+    resource: &str,
+    workspace: &Path,
+) -> PermissionEffect {
+    if resource == "*" {
+        effective_loose_permission_with_overlay(policy, Some(overlay), action).0
+    } else {
+        effective_permission_with_overlay(policy, Some(overlay), action, resource, workspace).0
+    }
+}
+
+fn effective_permission_view(
+    policy: &AgentSnapshot,
+    overlay: &SessionPermissionOverlay,
+) -> Vec<EffectivePermissionAction> {
+    [
+        PermissionAction::Read,
+        PermissionAction::Write,
+        PermissionAction::Bash,
+        PermissionAction::Delegate,
+        PermissionAction::Mcp,
+    ]
+    .into_iter()
+    .map(|action| {
+        let overlay_wildcard = overlay
+            .rules
+            .iter()
+            .rev()
+            .find(|rule| rule.action == action && rule.resource.as_str() == "*");
+        let agent_wildcard = policy
+            .permissions
+            .iter()
+            .rev()
+            .find(|rule| rule.action == action && rule.resource.as_str() == "*");
+        let (effect, source) = overlay_wildcard.map_or_else(
+            || {
+                agent_wildcard.map_or(
+                    (PermissionEffect::Ask, PermissionRuleSource::Default),
+                    |rule| (rule.effect, PermissionRuleSource::AgentDocument),
+                )
+            },
+            |rule| (rule.effect, PermissionRuleSource::SessionOverlay),
+        );
+        let mut patterns = BTreeMap::new();
+        if overlay_wildcard.is_none() {
+            for rule in policy
+                .permissions
+                .iter()
+                .filter(|rule| rule.action == action && rule.resource.as_str() != "*")
+            {
+                patterns.insert(
+                    rule.resource.as_str().to_owned(),
+                    EffectivePermissionRule {
+                        resource: rule.resource.clone(),
+                        effect: rule.effect,
+                        source: PermissionRuleSource::AgentDocument,
+                    },
+                );
+            }
+        }
+        for rule in overlay
+            .rules
+            .iter()
+            .filter(|rule| rule.action == action && rule.resource.as_str() != "*")
+        {
+            patterns.insert(
+                rule.resource.as_str().to_owned(),
+                EffectivePermissionRule {
+                    resource: rule.resource.clone(),
+                    effect: rule.effect,
+                    source: PermissionRuleSource::SessionOverlay,
+                },
+            );
+        }
+        EffectivePermissionAction {
+            action,
+            effect,
+            source,
+            patterns: patterns.into_values().collect(),
+        }
+    })
+    .collect()
 }
 
 #[cfg(test)]
@@ -449,10 +871,11 @@ mod tests {
         ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, PermissionAction,
         PermissionEffect, PermissionRule, PreparedApprovalResource, PreparedBindingLifetime,
         PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
-        PreparedResourceIdentity, SafeCode, Sha256Digest, WildcardPattern,
+        PreparedResourceIdentity, SafeCode, SessionPermissionOverlay, Sha256Digest,
+        WildcardPattern,
     };
 
-    use super::PermissionPipeline;
+    use super::{PermissionPipeline, select_governing_agent};
 
     fn policy(rules: Vec<PermissionRule>) -> AgentSnapshot {
         AgentSnapshot {
@@ -469,6 +892,31 @@ mod tests {
             fallback_chain: Vec::new(),
             selected_suffix_start: 0,
         }
+    }
+
+    #[test]
+    fn later_run_agent_governs_permission_mutation_classification() {
+        let creation = policy(vec![rule(
+            "creation",
+            PermissionAction::Read,
+            "*",
+            PermissionEffect::Allow,
+        )]);
+        let later = policy(vec![rule(
+            "later",
+            PermissionAction::Read,
+            "*",
+            PermissionEffect::Deny,
+        )]);
+
+        assert_eq!(
+            select_governing_agent(&creation, Some(&later)).permissions,
+            later.permissions
+        );
+        assert_eq!(
+            select_governing_agent(&creation, None).permissions,
+            creation.permissions
+        );
     }
 
     fn rule(
@@ -747,6 +1195,46 @@ mod tests {
             ]),
             "mcp"
         ));
+    }
+
+    #[test]
+    fn session_overlay_precedes_more_specific_agent_rules() {
+        let policy = policy(vec![rule(
+            "agent-specific",
+            PermissionAction::Bash,
+            "git status",
+            PermissionEffect::Allow,
+        )]);
+        let overlay = SessionPermissionOverlay {
+            rules: vec![rule(
+                "overlay-wildcard",
+                PermissionAction::Bash,
+                "*",
+                PermissionEffect::Deny,
+            )],
+        };
+        let decision = PermissionPipeline::default().decide_operation_with_overlay(
+            &policy,
+            Some(&overlay),
+            &operation(vec![resource(
+                PermissionAction::Bash,
+                "git status",
+                b"git status",
+            )]),
+            &[Some("git status".into())],
+            std::path::Path::new("/workspace"),
+        );
+        assert_eq!(decision.effect, PermissionEffect::Deny);
+        assert_eq!(
+            decision.evaluations[0]
+                .trace
+                .candidates
+                .last()
+                .expect("overlay candidate")
+                .source_layer
+                .as_str(),
+            "session_overlay"
+        );
     }
 
     #[test]

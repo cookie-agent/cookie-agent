@@ -1810,7 +1810,8 @@ fn reduce_event(
         }
         EventPayload::DelegatedContextSeeded { .. }
         | EventPayload::ToolStdinSubmitted { .. }
-        | EventPayload::ToolCallLinked { .. } => {}
+        | EventPayload::ToolCallLinked { .. }
+        | EventPayload::SessionPermissionOverlaySet { .. } => {}
     }
 }
 

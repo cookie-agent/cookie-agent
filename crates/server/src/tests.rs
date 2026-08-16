@@ -19,8 +19,9 @@ use cookie_agent_models::{
 };
 use cookie_agent_protocol::{
     AuthFieldName, AuthMethodId, CatalogRevision, McpApprovalDecision, McpApprovalRespondParams,
-    ProviderId, ProviderSetupRecipeId, RUNTIME_CHANGED_METHOD, RecipeCompilerVersion,
-    SessionListParams,
+    McpConfigSource, McpServerAddParams, McpServerDefinition, McpServerEditParams,
+    McpServerNameParams, ProviderId, ProviderSetupRecipeId, RUNTIME_CHANGED_METHOD,
+    RecipeCompilerVersion, SessionListParams,
 };
 use jiff::Timestamp;
 use serde_json::{Value, json};
@@ -78,6 +79,16 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
         )
         .expect("empty model manager"),
     );
+    let user_mcp_servers = mcp_servers
+        .iter()
+        .filter(|(_, server)| server.source == McpServerSource::UserFile)
+        .map(|(name, server)| (name.clone(), server.config.clone()))
+        .collect();
+    let workspace_mcp_servers = mcp_servers
+        .iter()
+        .filter(|(_, server)| server.source == McpServerSource::WorkspaceFile)
+        .map(|(name, server)| (name.clone(), server.config.clone()))
+        .collect();
     let config = LoadedConfiguration {
         runtime: RuntimeConfig {
             server: ServerConfig::default(),
@@ -90,6 +101,9 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
         },
         agents: BTreeMap::new(),
         mcp_servers,
+        user_mcp_servers,
+        workspace_mcp_servers,
+        config_paths: cookie_agent_config::ConfigLayerPaths::default(),
     };
     let engine = Engine::open(EngineOptions {
         data_dir: directory.path().join("data"),
@@ -124,20 +138,62 @@ async fn mcp_project_approval_is_reachable_through_protocol() {
         (
             "approved".into(),
             LoadedMcpServer {
-                source: McpServerSource::Workspace,
+                source: McpServerSource::WorkspaceFile,
                 config: config(true),
             },
         ),
         (
             "rejected".into(),
             LoadedMcpServer {
-                source: McpServerSource::Workspace,
+                source: McpServerSource::WorkspaceFile,
                 config: config(true),
             },
         ),
     ]));
     let client = Client::connect_in_process(Arc::clone(&harness.server));
     client.handshake().await.expect("handshake");
+    let runtime_definition = McpServerDefinition {
+        command: Some("runtime-server".into()),
+        args: vec!["--stdio".into()],
+        env: BTreeMap::new(),
+        cwd: None,
+        url: None,
+        headers: BTreeMap::new(),
+        enabled: true,
+        lazy: true,
+        timeout_ms: Some(1000),
+    };
+    client
+        .add_mcp_server(McpServerAddParams {
+            name: "runtime".into(),
+            definition: runtime_definition.clone(),
+        })
+        .await
+        .expect("add runtime MCP server");
+    let runtime = client
+        .list_mcp_servers()
+        .await
+        .expect("list MCP servers")
+        .servers
+        .into_iter()
+        .find(|server| server.name == "runtime")
+        .expect("runtime server");
+    assert_eq!(runtime.source, McpConfigSource::Runtime);
+    let mut edited = runtime_definition;
+    edited.args.push("--edited".into());
+    client
+        .edit_mcp_server(McpServerEditParams {
+            name: "runtime".into(),
+            definition: edited,
+        })
+        .await
+        .expect("edit runtime MCP server");
+    client
+        .remove_mcp_server(McpServerNameParams {
+            name: "runtime".into(),
+        })
+        .await
+        .expect("remove runtime MCP server");
     let pending = client
         .list_mcp_approvals()
         .await
@@ -296,6 +352,9 @@ fn harness_with_catalog(
         },
         agents: BTreeMap::new(),
         mcp_servers: BTreeMap::new(),
+        user_mcp_servers: BTreeMap::new(),
+        workspace_mcp_servers: BTreeMap::new(),
+        config_paths: cookie_agent_config::ConfigLayerPaths::default(),
     };
     let engine = Engine::open(EngineOptions {
         data_dir: directory.path().join("data"),

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use cookie_agent_identity::ProviderId;
 use cookie_agent_models::ProviderDefinition;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ConfigError;
 use crate::toml_values::{SensitiveProviderValues, zeroize_toml_value};
@@ -18,7 +18,7 @@ pub struct McpConfig {
     pub servers: BTreeMap<String, McpServerConfig>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     pub command: Option<String>,
@@ -38,7 +38,7 @@ pub struct McpServerConfig {
 }
 
 impl McpServerConfig {
-    pub(crate) fn validate(&self, name: &str) -> Result<(), ConfigError> {
+    pub fn validate(&self, name: &str) -> Result<(), ConfigError> {
         let invalid_name =
             name.is_empty() || name.len() > 128 || name.chars().any(char::is_control);
         let transport_count = usize::from(self.command.is_some()) + usize::from(self.url.is_some());

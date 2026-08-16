@@ -8,7 +8,7 @@ outside those ranges and unversioned formats are rejected.
 | Runtime configuration | 10 | 10 |
 | Agent document | 5 | 5 |
 | Protocol | 9 | 9 |
-| Events and session JSONL | 17 | 15-17 |
+| Events and session JSONL | 18 | 15-18 |
 | Session metadata | 9 | 9 |
 | Delegation journal | 14 | 11-14[^journal-12] |
 | Runtime snapshot | 4 | 4 |

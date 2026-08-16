@@ -141,13 +141,13 @@ fn runtime() -> RuntimeSnapshotV1 {
 #[test]
 fn wire_versions_accept_only_documented_event_and_delegation_history() {
     assert_eq!(PROTOCOL_VERSION, 9);
-    assert_eq!(EVENT_SCHEMA_VERSION, 17);
+    assert_eq!(EVENT_SCHEMA_VERSION, 18);
     assert_eq!(SESSION_META_SCHEMA_VERSION, 9);
     assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 14);
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 4);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(8)).is_err());
     assert!(serde_json::from_value::<AgentSchemaVersion>(json!(4)).is_err());
-    for version in [15, 16, 17] {
+    for version in [15, 16, 17, 18] {
         assert_eq!(
             serde_json::from_value::<EventSchemaVersion>(json!(version))
                 .unwrap()
@@ -156,7 +156,7 @@ fn wire_versions_accept_only_documented_event_and_delegation_history() {
         );
     }
     assert!(serde_json::from_value::<EventSchemaVersion>(json!(14)).is_err());
-    assert!(serde_json::from_value::<EventSchemaVersion>(json!(18)).is_err());
+    assert!(serde_json::from_value::<EventSchemaVersion>(json!(19)).is_err());
     assert_eq!(
         serde_json::from_value::<DelegationJournalSchemaVersion>(json!(11))
             .unwrap()

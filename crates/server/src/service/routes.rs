@@ -4,17 +4,21 @@ use cookie_agent_protocol::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondErrorCode, ApprovalRespondParams,
     ApprovalRespondResult, EventsSubscribeParams, EventsSubscribeResult, McpApprovalDecision,
     McpApprovalListParams, McpApprovalListResult, McpApprovalRespondParams,
-    McpApprovalRespondResult, McpPendingApproval, ProviderConnectParams, ProviderConnectResult,
-    ProviderDisconnectParams, ProviderDisconnectResult, RunCancelParams, RunCancelResult,
-    RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerParams,
-    RunSteerResult, RunToolStdinParams, RunToolStdinResult, RuntimeSnapshotGetParams,
-    RuntimeSnapshotResult, ServerContext, ServerFault, ServerProtocol, SessionChildrenParams,
-    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
-    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
-    SessionListParams, SessionListResult, SessionRenameErrorCode, SessionRenameParams,
-    SessionRenameResult, SessionResumeParams, SessionResumeResult, SessionRevertParams,
-    SessionRevertResult, SessionSetPermissionModeParams, SessionSetPermissionModeResult,
-    SessionTreeParams, SessionTreeResult,
+    McpApprovalRespondResult, McpPendingApproval, McpServerAddParams, McpServerEditParams,
+    McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
+    McpServerPersistParams, McpServerSetEnabledParams, ProviderConnectParams,
+    ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, RunCancelParams,
+    RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult,
+    RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
+    RuntimeSnapshotGetParams, RuntimeSnapshotResult, ServerContext, ServerFault, ServerProtocol,
+    SessionChildrenParams, SessionChildrenResult, SessionCompactParams, SessionCompactResult,
+    SessionCreateParams, SessionCreateResult, SessionForkParams, SessionForkResult,
+    SessionGetParams, SessionGetResult, SessionListParams, SessionListResult,
+    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
+    SessionPermissionMutationResult, SessionPermissionSetParams, SessionRenameErrorCode,
+    SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
+    SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
+    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult,
 };
 
 use super::Server;
@@ -96,6 +100,40 @@ impl ServerProtocol for Server {
             .set_permission_mode(params.session_id, params.mode)
             .map_err(protocol_fault)?;
         Ok(SessionSetPermissionModeResult {})
+    }
+
+    async fn get_session_permissions(
+        &self,
+        params: SessionPermissionGetParams,
+    ) -> Result<SessionPermissionGetResult> {
+        self.engine
+            .get_session_permissions(params.session_id)
+            .map_err(protocol_fault)
+    }
+
+    async fn set_session_permission(
+        &self,
+        params: SessionPermissionSetParams,
+    ) -> Result<SessionPermissionMutationResult> {
+        self.engine
+            .set_session_permission(
+                params.session_id,
+                params.action,
+                params.resource,
+                params.effect,
+            )
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn clear_session_permission(
+        &self,
+        params: SessionPermissionClearParams,
+    ) -> Result<SessionPermissionMutationResult> {
+        self.engine
+            .clear_session_permission(params.session_id, params.action, &params.resource)
+            .await
+            .map_err(protocol_fault)
     }
 
     async fn compact_session(&self, params: SessionCompactParams) -> Result<SessionCompactResult> {
@@ -220,6 +258,75 @@ impl ServerProtocol for Server {
             server: params.server,
             decision: params.decision,
         })
+    }
+
+    async fn list_mcp_servers(&self, _: McpServerListParams) -> Result<McpServerListResult> {
+        Ok(McpServerListResult {
+            servers: self.engine.list_mcp_servers(),
+        })
+    }
+
+    async fn add_mcp_server(&self, params: McpServerAddParams) -> Result<McpServerMutationResult> {
+        self.engine
+            .add_mcp_server(params.name, params.definition)
+            .await
+            .map(|server| McpServerMutationResult { server })
+            .map_err(protocol_fault)
+    }
+
+    async fn edit_mcp_server(
+        &self,
+        params: McpServerEditParams,
+    ) -> Result<McpServerMutationResult> {
+        self.engine
+            .edit_mcp_server(params.name, params.definition)
+            .await
+            .map(|server| McpServerMutationResult { server })
+            .map_err(protocol_fault)
+    }
+
+    async fn remove_mcp_server(
+        &self,
+        params: McpServerNameParams,
+    ) -> Result<McpServerMutationResult> {
+        self.engine
+            .remove_mcp_server(params.name)
+            .await
+            .map(|server| McpServerMutationResult { server })
+            .map_err(protocol_fault)
+    }
+
+    async fn set_mcp_server_enabled(
+        &self,
+        params: McpServerSetEnabledParams,
+    ) -> Result<McpServerMutationResult> {
+        self.engine
+            .set_mcp_server_enabled(params.name, params.enabled)
+            .await
+            .map(|server| McpServerMutationResult { server })
+            .map_err(protocol_fault)
+    }
+
+    async fn reconnect_mcp_server(
+        &self,
+        params: McpServerNameParams,
+    ) -> Result<McpServerMutationResult> {
+        self.engine
+            .reconnect_mcp_server(params.name)
+            .await
+            .map(|server| McpServerMutationResult { server })
+            .map_err(protocol_fault)
+    }
+
+    async fn persist_mcp_server(
+        &self,
+        params: McpServerPersistParams,
+    ) -> Result<McpServerMutationResult> {
+        self.engine
+            .persist_mcp_server(params.name, params.target)
+            .await
+            .map(|server| McpServerMutationResult { server })
+            .map_err(protocol_fault)
     }
 
     async fn runtime_snapshot(&self, _: RuntimeSnapshotGetParams) -> Result<RuntimeSnapshotResult> {

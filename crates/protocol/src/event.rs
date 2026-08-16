@@ -1412,6 +1412,9 @@ pub enum EventPayload {
         #[schemars(range(min = 1))]
         through_seq: u64,
     },
+    SessionPermissionOverlaySet {
+        overlay: SessionPermissionOverlay,
+    },
     RunStarted {
         client_run_id: ClientRunId,
         selection: RunSelection,
@@ -1677,6 +1680,7 @@ impl EventPayload {
             self,
             Self::SessionCreated { .. }
                 | Self::SessionReverted { .. }
+                | Self::SessionPermissionOverlaySet { .. }
                 | Self::SessionTitleCommitted { .. }
                 | Self::UserInputAdmitted { .. }
                 | Self::UserInputRecalled { .. }
@@ -1700,6 +1704,9 @@ impl EventPayload {
                     return Err(EventSchemaError::InvalidRevertSequence);
                 }
             }
+            Self::SessionPermissionOverlaySet { overlay } => overlay
+                .validate()
+                .map_err(|_| EventSchemaError::InvalidSessionPermissionOverlay)?,
             Self::RunStarted {
                 selection,
                 agent,
@@ -2049,6 +2056,7 @@ pub enum EventSchemaError {
     InvalidModelTurnCommit,
     InvalidFallback,
     InvalidRevertSequence,
+    InvalidSessionPermissionOverlay,
     ZeroEventSequence,
     InvalidSessionCreatedEnvelope,
     MissingRunId,
@@ -2102,6 +2110,7 @@ impl fmt::Display for EventSchemaError {
                 "fallback must advance to a distinct later model after at least one attempt"
             }
             Self::InvalidRevertSequence => "session revert sequence must be positive",
+            Self::InvalidSessionPermissionOverlay => "session permission overlay is invalid",
             Self::ZeroEventSequence => "event sequence must be positive",
             Self::InvalidSessionCreatedEnvelope => {
                 "SessionCreated must be sequence 1 with no run_id"

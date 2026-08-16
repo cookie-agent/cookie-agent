@@ -10,7 +10,9 @@ use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
     ClientHello, ClientRenameId, ErrorResponse, EventsSubscribeParams, EventsSubscribeResult,
     JsonRpcError, JsonRpcId, JsonRpcVersion, McpApprovalListParams, McpApprovalListResult,
-    McpApprovalRespondParams, McpApprovalRespondResult, MessageFrame, Notification,
+    McpApprovalRespondParams, McpApprovalRespondResult, McpServerAddParams, McpServerEditParams,
+    McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
+    McpServerPersistParams, McpServerSetEnabledParams, MessageFrame, Notification,
     ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
     ProviderDisconnectResult, Request, Response, RunCancelParams, RunCancelResult,
     RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerParams,
@@ -18,11 +20,12 @@ use crate::{
     RuntimeSnapshotResult, ServerHello, SessionChildrenParams, SessionChildrenResult,
     SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
     SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionId,
-    SessionListParams, SessionListResult, SessionRenameChange, SessionRenameError,
-    SessionRenameErrorCode, SessionRenameParams, SessionRenameResult, SessionResumeParams,
-    SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
-    SessionSetPermissionModeResult, SessionTitle, SessionTreeParams, SessionTreeResult,
-    SuccessResponse, Transport, TransportError,
+    SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
+    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionSetParams,
+    SessionRenameChange, SessionRenameError, SessionRenameErrorCode, SessionRenameParams,
+    SessionRenameResult, SessionResumeParams, SessionResumeResult, SessionRevertParams,
+    SessionRevertResult, SessionSetPermissionModeParams, SessionSetPermissionModeResult,
+    SessionTitle, SessionTreeParams, SessionTreeResult, SuccessResponse, Transport, TransportError,
 };
 
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
@@ -92,6 +95,18 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: SessionSetPermissionModeParams,
     ) -> Result<SessionSetPermissionModeResult, ServerFault>;
+    async fn get_session_permissions(
+        &self,
+        params: SessionPermissionGetParams,
+    ) -> Result<SessionPermissionGetResult, ServerFault>;
+    async fn set_session_permission(
+        &self,
+        params: SessionPermissionSetParams,
+    ) -> Result<SessionPermissionMutationResult, ServerFault>;
+    async fn clear_session_permission(
+        &self,
+        params: SessionPermissionClearParams,
+    ) -> Result<SessionPermissionMutationResult, ServerFault>;
     async fn compact_session(
         &self,
         params: SessionCompactParams,
@@ -136,6 +151,34 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: McpApprovalRespondParams,
     ) -> Result<McpApprovalRespondResult, ServerFault>;
+    async fn list_mcp_servers(
+        &self,
+        params: McpServerListParams,
+    ) -> Result<McpServerListResult, ServerFault>;
+    async fn add_mcp_server(
+        &self,
+        params: McpServerAddParams,
+    ) -> Result<McpServerMutationResult, ServerFault>;
+    async fn edit_mcp_server(
+        &self,
+        params: McpServerEditParams,
+    ) -> Result<McpServerMutationResult, ServerFault>;
+    async fn remove_mcp_server(
+        &self,
+        params: McpServerNameParams,
+    ) -> Result<McpServerMutationResult, ServerFault>;
+    async fn set_mcp_server_enabled(
+        &self,
+        params: McpServerSetEnabledParams,
+    ) -> Result<McpServerMutationResult, ServerFault>;
+    async fn reconnect_mcp_server(
+        &self,
+        params: McpServerNameParams,
+    ) -> Result<McpServerMutationResult, ServerFault>;
+    async fn persist_mcp_server(
+        &self,
+        params: McpServerPersistParams,
+    ) -> Result<McpServerMutationResult, ServerFault>;
     async fn runtime_snapshot(
         &self,
         params: RuntimeSnapshotGetParams,
@@ -290,6 +333,11 @@ async fn dispatch<S: ServerProtocol>(
         "session.resume" => value(server.resume_session(decode(params)?).await?),
         "session.rename" => value(server.rename_session(decode_rename(params)?).await?),
         "session.set_permission_mode" => value(server.set_permission_mode(decode(params)?).await?),
+        "session.permission.get" => value(server.get_session_permissions(decode(params)?).await?),
+        "session.permission.set" => value(server.set_session_permission(decode(params)?).await?),
+        "session.permission.clear" => {
+            value(server.clear_session_permission(decode(params)?).await?)
+        }
         "session.compact" => value(server.compact_session(decode(params)?).await?),
         "session.revert" => value(server.revert_session(decode(params)?).await?),
         "session.fork" => value(server.fork_session(decode(params)?).await?),
@@ -303,6 +351,13 @@ async fn dispatch<S: ServerProtocol>(
         "approval.list" => value(server.list_approvals(decode(params)?).await?),
         "mcp.approval.list" => value(server.list_mcp_approvals(decode_default(params)?).await?),
         "mcp.approval.respond" => value(server.respond_mcp_approval(decode(params)?).await?),
+        "mcp.server.list" => value(server.list_mcp_servers(decode_default(params)?).await?),
+        "mcp.server.add" => value(server.add_mcp_server(decode(params)?).await?),
+        "mcp.server.edit" => value(server.edit_mcp_server(decode(params)?).await?),
+        "mcp.server.remove" => value(server.remove_mcp_server(decode(params)?).await?),
+        "mcp.server.set_enabled" => value(server.set_mcp_server_enabled(decode(params)?).await?),
+        "mcp.server.reconnect" => value(server.reconnect_mcp_server(decode(params)?).await?),
+        "mcp.server.persist" => value(server.persist_mcp_server(decode(params)?).await?),
         crate::RUNTIME_SNAPSHOT_GET_METHOD if has_request_id => {
             value(server.runtime_snapshot(decode_default(params)?).await?)
         }

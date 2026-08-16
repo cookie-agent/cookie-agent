@@ -15,8 +15,9 @@ use std::{
 
 use cookie_agent_protocol::{
     AgentSnapshot, ChildSummary, ClientRenameId, ClientRunId, EventPayload, RunId, RunSelection,
-    SessionId, SessionMeta, SessionMetaSchemaVersion, SessionOrigin, SessionRenameRecord,
-    SessionStatus, SessionTitle, SessionTitleChange, SessionTree, ToolCallId, Usage,
+    SessionId, SessionMeta, SessionMetaSchemaVersion, SessionOrigin, SessionPermissionOverlay,
+    SessionRenameRecord, SessionStatus, SessionTitle, SessionTitleChange, SessionTree, ToolCallId,
+    Usage,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -73,6 +74,7 @@ pub struct SessionProjection {
     pub usage: Option<Usage>,
     pub runs: HashMap<RunId, RunProjection>,
     pub rename_records: HashMap<cookie_agent_protocol::ClientRenameId, SessionRenameRecord>,
+    pub permission_overlay: SessionPermissionOverlay,
     pub log: Arc<EventLog>,
 }
 
@@ -229,6 +231,7 @@ impl SessionStore {
                 EventPayload::UserInputAdmitted { .. }
                     | EventPayload::UserInputSubmitted { .. }
                     | EventPayload::DelegatedContextSeeded { .. }
+                    | EventPayload::SessionPermissionOverlaySet { .. }
             );
         let envelope = current.log.append(run, event)?;
         let rebuilt = projection(current.log.clone())?;
@@ -512,10 +515,14 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
     let mut status = SessionStatus::Idle;
     let mut usage = None;
     let mut rename_records = HashMap::new();
+    let mut permission_overlay = SessionPermissionOverlay::default();
     let mut automatic_title = None;
     let mut delegated_title = None;
     let mut user_title: Option<Option<cookie_agent_protocol::SessionTitle>> = None;
     for envelope in &events {
+        if let EventPayload::SessionPermissionOverlaySet { overlay } = &envelope.payload {
+            permission_overlay = overlay.clone();
+        }
         if let EventPayload::SessionTitleCommitted { change, .. } = &envelope.payload {
             match change {
                 SessionTitleChange::UserSet { title, .. } => {
@@ -660,6 +667,7 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
         usage,
         runs,
         rename_records,
+        permission_overlay,
         log,
     })
 }

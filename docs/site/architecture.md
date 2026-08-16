@@ -4,7 +4,7 @@ cookie agent is a subagent-first coding harness built as a Rust workspace of nin
 crates. A local daemon owns provider connections, sessions, model execution,
 permissions, and persistence; a terminal UI communicates with it over a versioned
 JSON-RPC WebSocket protocol. Writers emit only the current schema for each
-durable surface. Event logs reopen schemas 15-17 and delegation journals reopen
+durable surface. Event logs reopen schemas 15-18 and delegation journals reopen
 schemas 11-14; other surfaces remain current-only.
 
 ## Process model

@@ -210,6 +210,9 @@ mod tests {
             },
             agents: BTreeMap::from([(agent_id.clone(), test_agent_document(&agent_id))]),
             mcp_servers: BTreeMap::new(),
+            user_mcp_servers: BTreeMap::new(),
+            workspace_mcp_servers: BTreeMap::new(),
+            config_paths: cookie_agent_config::ConfigLayerPaths::default(),
         };
         let engine = Engine::open(EngineOptions {
             data_dir: directory.path().join("data"),

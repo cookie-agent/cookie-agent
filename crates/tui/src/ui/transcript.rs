@@ -2001,6 +2001,9 @@ mod tests {
             },
             agents: BTreeMap::new(),
             mcp_servers: BTreeMap::new(),
+            user_mcp_servers: BTreeMap::new(),
+            workspace_mcp_servers: BTreeMap::new(),
+            config_paths: cookie_agent_config::ConfigLayerPaths::default(),
         };
         let engine = Engine::open(EngineOptions {
             data_dir: directory.path().join("data"),
