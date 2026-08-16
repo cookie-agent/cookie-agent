@@ -19,7 +19,6 @@ Configuration is loaded from the exact working directory; there is no upward
 search. Create `.cookie-agent/config.toml`:
 
 ```toml
-schema_version = 10
 
 [providers]
 ```
@@ -45,7 +44,6 @@ For environment-backed authored configuration instead, use a managed provider
 entry:
 
 ```toml
-schema_version = 10
 
 [providers.openai]
 source = "models_dev"

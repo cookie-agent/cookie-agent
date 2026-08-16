@@ -1,4 +1,4 @@
-//! Strict, independent TUI configuration (`tui.toml`, schema version 1).
+//! Strict, independent TUI configuration (`tui.toml`).
 //!
 //! Resolution order: `$XDG_CONFIG_HOME/cookie_agent/tui.toml` when XDG is set,
 //! otherwise `~/.config/cookie_agent/tui.toml`. There is no workspace layer,
@@ -50,7 +50,7 @@ impl std::fmt::Display for TuiConfigError {
             }
             Self::Malformed { path, message } => write!(
                 f,
-                "invalid TUI config {}: {message} (schema version 1; see docs/tui.toml.example)",
+                "invalid TUI config {}: {message} (see docs/tui.toml.example)",
                 path.display()
             ),
         }

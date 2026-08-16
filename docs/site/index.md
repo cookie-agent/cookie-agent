@@ -17,7 +17,7 @@ You need Rust 1.88 or newer and Python 3 for the documentation tooling.
 git clone https://github.com/cookie-agent/cookie-agent.git
 cd cookie-agent
 mkdir -p .cookie-agent
-printf 'schema_version = 10\n[providers]\n' > .cookie-agent/config.toml
+printf '[providers]\n' > .cookie-agent/config.toml
 cargo run --locked -p cookie_agent -- daemon
 ```
 

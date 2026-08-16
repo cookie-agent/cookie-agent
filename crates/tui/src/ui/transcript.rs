@@ -1900,8 +1900,8 @@ mod tests {
 
     use super::*;
     use cookie_agent_config::{
-        ApprovalConfig, ConfigSchemaVersion, ContextCompactionConfig, LoadedConfiguration,
-        RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
+        ApprovalConfig, ContextCompactionConfig, LoadedConfiguration, RuntimeConfig, ServerConfig,
+        SessionTitleConfig, ToolOutputConfig,
     };
     use cookie_agent_engine::{Engine, EngineOptions};
     use cookie_agent_models::{
@@ -1991,7 +1991,6 @@ mod tests {
         );
         let config = LoadedConfiguration {
             runtime: RuntimeConfig {
-                schema_version: ConfigSchemaVersion,
                 server: ServerConfig::default(),
                 tool_output: ToolOutputConfig::default(),
                 approval: ApprovalConfig::default(),

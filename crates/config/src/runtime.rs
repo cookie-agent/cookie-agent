@@ -2,13 +2,12 @@ use std::collections::BTreeMap;
 
 use cookie_agent_identity::ProviderId;
 use cookie_agent_models::ProviderDefinition;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::ConfigError;
 use crate::toml_values::{SensitiveProviderValues, zeroize_toml_value};
 use zeroize::Zeroize;
 
-const CONFIG_SCHEMA: u32 = 10;
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 7419;
 
@@ -69,38 +68,9 @@ impl McpServerConfig {
     }
 }
 
-/// Exact schema-10 marker.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ConfigSchemaVersion;
-
-impl Serialize for ConfigSchemaVersion {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_u32(CONFIG_SCHEMA)
-    }
-}
-impl<'de> Deserialize<'de> for ConfigSchemaVersion {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = u32::deserialize(deserializer)?;
-        if value == CONFIG_SCHEMA {
-            Ok(Self)
-        } else {
-            Err(serde::de::Error::custom(
-                "schema_version must be exactly 10",
-            ))
-        }
-    }
-}
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
-    pub schema_version: ConfigSchemaVersion,
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
@@ -120,7 +90,6 @@ pub struct RuntimeConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawRuntimeLayer {
-    pub(crate) schema_version: ConfigSchemaVersion,
     pub(crate) server: Option<ServerConfig>,
     pub(crate) tool_output: Option<ToolOutputConfig>,
     pub(crate) approval: Option<ApprovalConfig>,
@@ -327,7 +296,6 @@ const fn yes() -> bool {
 }
 
 pub(crate) fn apply_settings(runtime: &mut RuntimeConfig, layer: &RawRuntimeLayer) {
-    runtime.schema_version = layer.schema_version;
     if let Some(value) = &layer.server {
         runtime.server = value.clone();
     }

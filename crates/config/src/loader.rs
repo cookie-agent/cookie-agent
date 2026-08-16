@@ -11,8 +11,8 @@ use serde::Deserialize as _;
 
 use crate::{
     AgentDocument, AgentDocumentSource, AgentRegistry, ApprovalConfig, ConfigError,
-    ConfigSchemaVersion, ContextCompactionConfig, DelegationConfig, RuntimeConfig, ServerConfig,
-    SessionTitleConfig, ToolOutputConfig,
+    ContextCompactionConfig, DelegationConfig, RuntimeConfig, ServerConfig, SessionTitleConfig,
+    ToolOutputConfig,
     agent_document::parse_agent,
     runtime::{RawRuntimeLayer, apply_settings, validate_runtime},
     secure_fs::{
@@ -75,7 +75,6 @@ pub fn load_from_roots(
         .transpose()?
         .flatten();
     let mut runtime = RuntimeConfig {
-        schema_version: ConfigSchemaVersion,
         server: ServerConfig::default(),
         tool_output: ToolOutputConfig::default(),
         approval: ApprovalConfig::default(),
@@ -86,7 +85,6 @@ pub fn load_from_roots(
     };
     let mut agents = BTreeMap::new();
     let mut mcp_servers = BTreeMap::new();
-    let mut provider_values = SensitiveProviderValues::new();
     for root in [user.as_ref(), workspace.as_ref()].into_iter().flatten() {
         if let Some(mut layer) = root.load_runtime()? {
             apply_settings(&mut runtime, &layer);
@@ -102,23 +100,25 @@ pub fn load_from_roots(
                     mcp_servers.insert(name, LoadedMcpServer { source, config });
                 }
             }
-            for (id, value) in std::mem::take(&mut layer.providers) {
-                provider_values.insert(id, value);
+            for (id, mut value) in std::mem::take(&mut layer.providers) {
+                interpolate_provider_values(
+                    value.value_mut(),
+                    &mut vec!["providers".to_owned(), id.as_str().to_owned()],
+                )?;
+                let json = SensitiveJsonValue::from_toml(value.take());
+                let provider = ProviderDefinition::deserialize(json.value()).map_err(|error| {
+                    config_decode_error(
+                        &root.path.join("config.toml"),
+                        None,
+                        &format!("provider `{id}`: {error}"),
+                    )
+                })?;
+                runtime.providers.insert(id, provider);
             }
         }
         for (id, document) in root.load_agents()? {
             agents.insert(id, document);
         }
-    }
-    for (id, mut value) in provider_values {
-        interpolate_provider_values(
-            value.value_mut(),
-            &mut vec!["providers".to_owned(), id.as_str().to_owned()],
-        )?;
-        let json = SensitiveJsonValue::from_toml(value.take());
-        let provider = ProviderDefinition::deserialize(json.value())
-            .map_err(|_| ConfigError::Toml("configuration TOML is invalid".to_owned()))?;
-        runtime.providers.insert(id, provider);
     }
     AgentRegistry::validate_ref(&agents)?;
     validate_runtime(&runtime)?;
@@ -137,13 +137,24 @@ impl LayerRoot {
         let Some(bytes) = read_optional_file(&self.path, "config.toml", MAX_CONFIG_BYTES)? else {
             return Ok(None);
         };
-        let text = std::str::from_utf8(&bytes).map_err(|_| ConfigError::Utf8("config.toml"))?;
-        let value = text
-            .parse::<toml::Value>()
-            .map_err(|error| ConfigError::Toml(safe_toml_error(&error)))?;
+        let path = self.path.join("config.toml");
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| ConfigError::Toml(format!("{}: content is not UTF-8", path.display())))?;
+        let value = text.parse::<toml::Value>().map_err(|error| {
+            ConfigError::Toml(format!(
+                "{}: {}",
+                path.display(),
+                safe_toml_error(text, &error)
+            ))
+        })?;
         let mut value = SensitiveTomlValue::new(value);
-        validate_toml_value(value.value())?;
-        let layer = decode_runtime_layer(value.value_mut())?;
+        validate_toml_value(value.value()).map_err(|_| {
+            ConfigError::Toml(format!(
+                "{}: TOML resource limit or unsupported datetime exceeded",
+                path.display()
+            ))
+        })?;
+        let layer = decode_runtime_layer(value.value_mut(), text, &path)?;
         Ok(Some(layer))
     }
 
@@ -170,7 +181,7 @@ impl LayerRoot {
             let stem = name.strip_suffix(".md").expect("suffix checked");
             let id = AgentId::new(stem).map_err(|_| ConfigError::AgentFilename(name.clone()))?;
             let bytes = read_required_file(&directory, &name, MAX_AGENT_BYTES)?;
-            let document = parse_agent(id.clone(), &bytes, self.source)?;
+            let document = parse_agent(id.clone(), &bytes, self.source, &directory.join(&name))?;
             if documents.insert(id.clone(), document).is_some() {
                 return Err(ConfigError::DuplicateAgent(id));
             }
@@ -179,9 +190,12 @@ impl LayerRoot {
     }
 }
 
-fn decode_runtime_layer(value: &mut toml::Value) -> Result<RawRuntimeLayer, ConfigError> {
+fn decode_runtime_layer(
+    value: &mut toml::Value,
+    text: &str,
+    path: &Path,
+) -> Result<RawRuntimeLayer, ConfigError> {
     const ALLOWED: &[&str] = &[
-        "schema_version",
         "server",
         "tool_output",
         "approval",
@@ -191,13 +205,21 @@ fn decode_runtime_layer(value: &mut toml::Value) -> Result<RawRuntimeLayer, Conf
         "mcp",
         "providers",
     ];
-    let table = value
-        .as_table_mut()
-        .ok_or_else(|| ConfigError::Toml("configuration TOML is invalid".to_owned()))?;
-    if table.keys().any(|key| !ALLOWED.contains(&key.as_str())) {
-        return Err(ConfigError::Toml(
-            "configuration TOML is invalid".to_owned(),
-        ));
+    let table = value.as_table_mut().ok_or_else(|| {
+        ConfigError::Toml(format!("{}: top level must be a table", path.display()))
+    })?;
+    if table.contains_key("schema_version") {
+        return Err(ConfigError::ConfigSchemaRemoved {
+            path: path.to_owned(),
+            line: key_line(text, "schema_version").unwrap_or(1),
+        });
+    }
+    if let Some(key) = table.keys().find(|key| !ALLOWED.contains(&key.as_str())) {
+        return Err(ConfigError::Toml(format!(
+            "{} line {}: unknown top-level field `{key}`; remove it",
+            path.display(),
+            key_line(text, key).unwrap_or(1)
+        )));
     }
     if table
         .get("context_compaction")
@@ -206,10 +228,10 @@ fn decode_runtime_layer(value: &mut toml::Value) -> Result<RawRuntimeLayer, Conf
             context.contains_key("trigger") && context.contains_key("buffer_tokens")
         })
     {
-        return Err(ConfigError::Toml(
-            "context_compaction.trigger and context_compaction.buffer_tokens cannot both be set"
-                .to_owned(),
-        ));
+        return Err(ConfigError::Toml(format!(
+            "{}: context_compaction.trigger and context_compaction.buffer_tokens cannot both be set",
+            path.display()
+        )));
     }
     let providers = match table.remove("providers") {
         None => SensitiveProviderValues::new(),
@@ -217,24 +239,69 @@ fn decode_runtime_layer(value: &mut toml::Value) -> Result<RawRuntimeLayer, Conf
             .into_iter()
             .map(|(id, value)| {
                 let value = SensitiveTomlValue::new(value);
-                ProviderId::new(id)
-                    .map(|id| (id, value))
-                    .map_err(|_| ConfigError::Toml("configuration TOML is invalid".to_owned()))
+                ProviderId::new(id).map(|id| (id, value)).map_err(|_| {
+                    ConfigError::Toml(format!("{}: invalid provider ID", path.display()))
+                })
             })
             .collect::<Result<_, _>>()?,
         Some(mut other) => {
             zeroize_toml_value(&mut other);
-            return Err(ConfigError::Toml(
-                "configuration TOML is invalid".to_owned(),
-            ));
+            return Err(ConfigError::Toml(format!(
+                "{}: `providers` must be a table",
+                path.display()
+            )));
         }
     };
     let owned = std::mem::replace(value, toml::Value::Table(Default::default()));
     let json = SensitiveJsonValue::from_toml(owned);
     let mut layer = RawRuntimeLayer::deserialize(json.value())
-        .map_err(|_| ConfigError::Toml("configuration TOML is invalid".to_owned()))?;
+        .map_err(|error| config_decode_error(path, Some(text), &error.to_string()))?;
     layer.providers = providers;
     Ok(layer)
+}
+
+fn config_decode_error(path: &Path, text: Option<&str>, message: &str) -> ConfigError {
+    let field = extract_serde_field(message, "unknown field")
+        .map(|field| (field, "unknown field"))
+        .or_else(|| {
+            extract_serde_field(message, "missing field").map(|field| (field, "missing field"))
+        });
+    let detail = field.as_ref().map_or_else(
+        || "malformed configuration content".to_owned(),
+        |(field, kind)| {
+            let line = text.and_then(|text| key_line(text, field));
+            let advice = if *kind == "unknown field" {
+                "remove it"
+            } else {
+                "add it"
+            };
+            match line {
+                Some(line) => format!("line {line}: {kind} `{field}`; {advice}"),
+                None => format!("{kind} `{field}`; {advice}"),
+            }
+        },
+    );
+    ConfigError::Toml(format!("{}: {detail}", path.display()))
+}
+
+fn extract_serde_field(message: &str, marker: &str) -> Option<String> {
+    let rest = message.split_once(marker)?.1.trim_start();
+    let quote = rest.chars().next()?;
+    if !matches!(quote, '`' | '\'' | '"') {
+        return None;
+    }
+    rest[quote.len_utf8()..]
+        .split_once(quote)
+        .map(|(field, _)| field.to_owned())
+}
+
+fn key_line(text: &str, key: &str) -> Option<usize> {
+    text.lines()
+        .position(|line| {
+            line.split_once('=')
+                .is_some_and(|(candidate, _)| candidate.trim().trim_matches('"') == key)
+        })
+        .map(|index| index + 1)
 }
 
 fn user_root() -> Option<PathBuf> {

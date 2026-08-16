@@ -7,31 +7,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AgentDocument, ConfigError};
 
-const AGENT_SCHEMA: u32 = 5;
 const MAX_LIST: usize = 256;
 pub const BUILT_IN_DEFAULT_AGENT_ID: &str = "default";
 pub const BUILT_IN_APPROVAL_AGENT_ID: &str = "approval";
 pub const BUILT_IN_COMPACTION_AGENT_ID: &str = "compaction";
 pub const BUILT_IN_TITLE_AGENT_ID: &str = "title";
 pub const PARENT_MODEL_EXPRESSION: &str = "${parent_model}";
-
-/// Exact schema-5 agent marker.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-pub struct AgentSchemaVersion;
-
-impl<'de> Deserialize<'de> for AgentSchemaVersion {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = u32::deserialize(deserializer)?;
-        if value == AGENT_SCHEMA {
-            Ok(Self)
-        } else {
-            Err(serde::de::Error::custom("agent schema must be exactly 5"))
-        }
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
@@ -188,7 +169,6 @@ impl Default for AgentLimits {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentFrontmatter {
-    pub schema: AgentSchemaVersion,
     pub description: String,
     pub mode: AgentMode,
     pub enabled: bool,

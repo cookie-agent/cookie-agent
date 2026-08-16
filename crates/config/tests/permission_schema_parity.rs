@@ -71,12 +71,12 @@ fn old_rule_list_and_delegation_field_are_rejected() {
     fs::create_dir_all(root.join("agents")).unwrap();
     fs::write(
         root.join("agents/worker.md"),
-        "---\nschema: 5\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  - { id: old, action: read, resource: \"*\", effect: allow }\ndelegation: { agents: [worker], max_depth: 1 }\n---\nWorker.\n",
+        "---\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  - { id: old, action: read, resource: \"*\", effect: allow }\ndelegation: { agents: [worker], max_depth: 1 }\n---\nWorker.\n",
     )
     .unwrap();
     assert!(matches!(
         load_from_roots(None, Some(&root)),
-        Err(ConfigError::AgentFrontmatter(_))
+        Err(ConfigError::AgentDocument { .. })
     ));
 }
 
@@ -87,7 +87,7 @@ fn removed_tools_field_names_permission_driven_replacement() {
     fs::create_dir_all(root.join("agents")).unwrap();
     fs::write(
         root.join("agents/worker.md"),
-        "---\nschema: 4\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: [read]\npermissions: {}\n---\nWorker.\n",
+        "---\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\ntools: [read]\npermissions: {}\n---\nWorker.\n",
     )
     .unwrap();
     let error = load_from_roots(None, Some(&root)).unwrap_err();
@@ -100,7 +100,7 @@ fn removed_tools_field_names_permission_driven_replacement() {
 #[test]
 fn permissions_field_defaults_to_empty() {
     let frontmatter: AgentFrontmatter = serde_yaml::from_str(
-        "schema: 5\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\n",
+        "description: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\n",
     )
     .unwrap();
     assert!(frontmatter.permissions.is_empty());
@@ -109,7 +109,7 @@ fn permissions_field_defaults_to_empty() {
 #[test]
 fn frontmatter_uses_action_keyed_ordered_permissions() {
     let frontmatter: AgentFrontmatter = serde_yaml::from_str(
-        "schema: 5\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  read:\n    \"*\": ask\n    \"file?.rs\": allow\n  bash: deny\n",
+        "description: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  read:\n    \"*\": ask\n    \"file?.rs\": allow\n  bash: deny\n",
     )
     .unwrap();
     let read = frontmatter
@@ -130,10 +130,10 @@ fn frontmatter_uses_action_keyed_ordered_permissions() {
 
 #[test]
 fn duplicate_action_and_resource_keys_are_rejected() {
-    let duplicate_action = "schema: 5\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  read: allow\n  read: deny\n";
+    let duplicate_action = "description: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  read: allow\n  read: deny\n";
     assert!(serde_yaml::from_str::<AgentFrontmatter>(duplicate_action).is_err());
 
-    let duplicate_resource = "schema: 5\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  read:\n    \"*\": allow\n    \"*\": deny\n";
+    let duplicate_resource = "description: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  read:\n    \"*\": allow\n    \"*\": deny\n";
     assert!(serde_yaml::from_str::<AgentFrontmatter>(duplicate_resource).is_err());
 }
 
@@ -142,7 +142,7 @@ fn grep_and_glob_permission_keys_are_rejected() {
     for action in ["grep", "glob"] {
         assert!(
             serde_yaml::from_str::<AgentFrontmatter>(&format!(
-                "schema: 5\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  {action}: deny\n"
+                "description: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  {action}: deny\n"
             ))
             .is_err(),
             "{action} permission key must be unknown"
@@ -151,13 +151,24 @@ fn grep_and_glob_permission_keys_are_rejected() {
 }
 
 #[test]
-fn old_agent_schema_four_is_rejected() {
-    assert!(
-        serde_yaml::from_str::<AgentFrontmatter>(
-            "schema: 4\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions: {}\n"
-        )
-        .is_err()
-    );
+fn leftover_agent_schema_is_rejected_with_removal_guidance() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join(".cookie-agent");
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::write(
+        root.join("agents/worker.md"),
+        "---\nschema: 5\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions: {}\n---\nWorker.\n",
+    )
+    .unwrap();
+
+    let error = load_from_roots(None, Some(&root)).unwrap_err();
+    assert!(matches!(
+        error,
+        ConfigError::AgentSchemaRemoved { line: 2, .. }
+    ));
+    let message = error.to_string();
+    assert!(message.contains("agents/worker.md"), "{message}");
+    assert!(message.contains("remove the schema field"), "{message}");
 }
 
 #[test]
@@ -294,11 +305,11 @@ fn workspace_dir_expression_is_action_scoped_and_unknown_expressions_are_rejecte
         let temp = TempDir::new().unwrap();
         let root = temp.path().join(".cookie-agent");
         fs::create_dir_all(root.join("agents")).unwrap();
-        fs::write(root.join("config.toml"), "schema_version = 10\n").unwrap();
+        fs::write(root.join("config.toml"), "").unwrap();
         fs::write(
             root.join("agents/worker.md"),
             format!(
-                "---\nschema: 5\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  {action}:\n    \"${{workspace_dir}}/*\": allow\n---\nWorker.\n"
+                "---\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  {action}:\n    \"${{workspace_dir}}/*\": allow\n---\nWorker.\n"
             ),
         )
         .unwrap();
@@ -312,11 +323,11 @@ fn workspace_dir_expression_is_action_scoped_and_unknown_expressions_are_rejecte
         let temp = TempDir::new().unwrap();
         let root = temp.path().join(".cookie-agent");
         fs::create_dir_all(root.join("agents")).unwrap();
-        fs::write(root.join("config.toml"), "schema_version = 10\n").unwrap();
+        fs::write(root.join("config.toml"), "").unwrap();
         fs::write(
             root.join("agents/worker.md"),
             format!(
-                "---\nschema: 5\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  read:\n    \"{resource}\": allow\n---\nWorker.\n"
+                "---\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  read:\n    \"{resource}\": allow\n---\nWorker.\n"
             ),
         )
         .unwrap();
@@ -330,12 +341,12 @@ fn workspace_dir_expression_is_action_scoped_and_unknown_expressions_are_rejecte
 #[test]
 fn workspace_dir_expression_is_portable_for_filesystem_permissions() {
     let temp = TempDir::new().unwrap();
-    let document = "---\nschema: 5\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  read:\n    \"${workspace_dir}/src/*\": allow\n  write:\n    \"${workspace_dir}/src/*\": allow\n---\nWorker.\n";
+    let document = "---\ndescription: Worker\nmode: subagent\nenabled: true\nmodel_fallback: []\npermissions:\n  read:\n    \"${workspace_dir}/src/*\": allow\n  write:\n    \"${workspace_dir}/src/*\": allow\n---\nWorker.\n";
     let mut fingerprints = Vec::new();
     for name in ["workspace-a", "workspace-b"] {
         let root = temp.path().join(name).join(".cookie-agent");
         fs::create_dir_all(root.join("agents")).unwrap();
-        fs::write(root.join("config.toml"), "schema_version = 10\n").unwrap();
+        fs::write(root.join("config.toml"), "").unwrap();
         fs::write(root.join("agents/worker.md"), document).unwrap();
         let loaded = load_from_roots(None, Some(&root)).unwrap();
         let worker = loaded.agents.values().next().unwrap();

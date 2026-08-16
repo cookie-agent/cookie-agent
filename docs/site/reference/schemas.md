@@ -18,9 +18,9 @@ outside those ranges and unversioned formats are rejected.
 | Project model-snapshot manifest | 1 | 1 |
 
 Agent snapshots embedded in accepted event and delegation-journal versions also
-read the exact schema-4 snapshot shape written before agent document schema 5.
-The legacy `tools` list is discarded during upconversion; subsequent writes use
-schema 5 and permission-driven visibility. Unknown snapshot fields remain
+read the exact schema-4 snapshot shape. The legacy `tools` list is discarded
+during upconversion; subsequent snapshot writes use schema 5 and
+permission-driven visibility. Unknown snapshot fields remain
 rejected.
 
 [^journal-12]: Unambiguous schema-12 records reopen. The unshipped schema-12

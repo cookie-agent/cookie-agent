@@ -1,4 +1,4 @@
-# Cookie Agent TUI configuration (schema version 1)
+# Cookie Agent TUI configuration
 #
 # Location: $XDG_CONFIG_HOME/cookie_agent/tui.toml
 # Fallback: ~/.config/cookie_agent/tui.toml

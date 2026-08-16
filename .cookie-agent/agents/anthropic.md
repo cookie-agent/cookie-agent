@@ -1,5 +1,4 @@
 ---
-schema: 5
 description: Primary agent pinned to the Anthropic-wire model and high variant
 mode: primary
 enabled: true

@@ -21,9 +21,9 @@ mod tests {
 
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use cookie_agent_config::{
-        AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentMode, AgentSchemaVersion,
-        ApprovalConfig, ConfigSchemaVersion, ContextCompactionConfig, LoadedConfiguration,
-        RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
+        AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentMode, ApprovalConfig,
+        ContextCompactionConfig, LoadedConfiguration, RuntimeConfig, ServerConfig,
+        SessionTitleConfig, ToolOutputConfig,
     };
     use cookie_agent_engine::{Engine, EngineOptions};
     use cookie_agent_models::{ModelManager, ProviderDefinition};
@@ -135,7 +135,6 @@ mod tests {
         AgentDocument {
             id: id.clone(),
             frontmatter: AgentFrontmatter {
-                schema: AgentSchemaVersion,
                 description: "Test primary agent".into(),
                 mode: AgentMode::Primary,
                 enabled: true,
@@ -201,7 +200,6 @@ mod tests {
         let agent_id = AgentId::new("primary").expect("agent id");
         let config = LoadedConfiguration {
             runtime: RuntimeConfig {
-                schema_version: ConfigSchemaVersion,
                 server: ServerConfig::default(),
                 tool_output: ToolOutputConfig::default(),
                 approval: ApprovalConfig::default(),

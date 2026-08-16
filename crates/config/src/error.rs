@@ -1,4 +1,4 @@
-use std::{fmt, io};
+use std::{fmt, io, path::PathBuf};
 
 use cookie_agent_identity::{AgentId, ModelKey, ProviderId};
 use thiserror::Error;
@@ -13,8 +13,6 @@ pub enum ConfigError {
     NotFound,
     #[error("{0} exceeds its byte limit")]
     TooLarge(String),
-    #[error("{0} is not UTF-8")]
-    Utf8(&'static str),
     #[error("invalid TOML: {0}")]
     Toml(String),
     #[error("TOML resource limit or unsupported datetime exceeded")]
@@ -41,8 +39,16 @@ pub enum ConfigError {
     DuplicateAgent(AgentId),
     #[error("agent ID `{0}` is reserved for a built-in agent")]
     ReservedAgentId(AgentId),
-    #[error("invalid frontmatter for agent `{0}`")]
-    AgentFrontmatter(AgentId),
+    #[error("invalid agent document `{path}`: {message}")]
+    AgentDocument { path: PathBuf, message: String },
+    #[error(
+        "agent document `{path}` line {line} contains the removed `schema` field; remove the schema field"
+    )]
+    AgentSchemaRemoved { path: PathBuf, line: usize },
+    #[error(
+        "configuration file `{path}` line {line} contains the removed `schema_version` field; remove the schema_version field"
+    )]
+    ConfigSchemaRemoved { path: PathBuf, line: usize },
     #[error(
         "agent `{0}` uses the removed `tools` field; use `permissions` entries to control tool visibility"
     )]

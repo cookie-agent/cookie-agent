@@ -1,9 +1,8 @@
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt as _, sync::Arc};
 
 use cookie_agent_config::{
-    ApprovalConfig, ConfigSchemaVersion, ContextCompactionConfig, LoadedConfiguration,
-    LoadedMcpServer, McpServerConfig, McpServerSource, RuntimeConfig, ServerConfig,
-    SessionTitleConfig, ToolOutputConfig,
+    ApprovalConfig, ContextCompactionConfig, LoadedConfiguration, LoadedMcpServer, McpServerConfig,
+    McpServerSource, RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
 };
 use cookie_agent_engine::{Engine, EngineOptions};
 use cookie_agent_models::{
@@ -81,7 +80,6 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
     );
     let config = LoadedConfiguration {
         runtime: RuntimeConfig {
-            schema_version: ConfigSchemaVersion,
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
             approval: ApprovalConfig::default(),
@@ -288,7 +286,6 @@ fn harness_with_catalog(
         Arc::new(ModelManager::new(BTreeMap::new(), catalog, store).expect("model manager"));
     let config = LoadedConfiguration {
         runtime: RuntimeConfig {
-            schema_version: ConfigSchemaVersion,
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
             approval: ApprovalConfig::default(),

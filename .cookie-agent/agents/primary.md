@@ -1,5 +1,4 @@
 ---
-schema: 5
 description: General implementation agent with model fallback and worker delegation
 mode: primary
 enabled: true

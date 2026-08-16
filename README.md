@@ -17,12 +17,10 @@ and runtime behavior are in
 the implemented npm-family/provider/auth baseline is described in
 [docs/provider-conformance.md](docs/provider-conformance.md).
 
-## Current-only versions
+## Versioned protocol and stores
 
 | Surface | Version |
 |---|---:|
-| Runtime configuration | 10 |
-| Agent document | 5 |
 | Protocol | 9 |
 | Events and session JSONL | 14 |
 | Session metadata | 9 |
@@ -33,8 +31,8 @@ the implemented npm-family/provider/auth baseline is described in
 | Family recipe registry | 1 |
 | Project model-snapshot manifest | 1 |
 
-Earlier project formats are rejected. There are no migrations or compatibility
-readers.
+User-authored configuration and agent documents are unversioned and parsed
+strictly. Unknown or leftover schema fields are hard errors with no migrations.
 
 ## Dynamic catalog
 
@@ -52,7 +50,7 @@ single-link files handled no-follow and atomically. The metadata records stale/
 fallback state, safe last error, ETag, timestamps, revision, and quarantine
 counts.
 
-## Configuration schema 10
+## Configuration
 
 There is one top-level `providers` map; nonempty entries use
 `[providers.<id>]`:
@@ -68,7 +66,7 @@ not merge. Managed models are automatic: every family-supported,
 non-deprecated text-output model is included unless disabled by a sparse
 override.
 
-Agent Markdown documents use exact schema 5. Their `mode` is `primary`,
+Agent Markdown documents use strict YAML frontmatter. Their `mode` is `primary`,
 `subagent`, `all`, or `internal`. Internal agents are engine-only: they cannot be
 selected as roots or delegation targets and do not appear in TUI agent pickers.
 The runtime supplies built-in `approval`, `compaction`, and `title` internal
@@ -113,7 +111,6 @@ same-definition authored auth remains invalid and cannot fall through to store.
 bootstrap configuration:
 
 ```toml
-schema_version = 10
 
 [delegation]
 max_depth = 3
@@ -174,7 +171,6 @@ engine supplies reserved built-in coding agent `default`.
 The following is a separate nonempty example:
 
 ```toml
-schema_version = 10
 
 [providers.openai]
 source = "models_dev"

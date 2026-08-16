@@ -1,5 +1,4 @@
 ---
-schema: 5
 description: Focused read-oriented worker agent
 mode: subagent
 enabled: true

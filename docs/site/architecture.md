@@ -47,7 +47,7 @@ identity
 | `identity` | Strict shared identities: agent IDs, provider IDs, model keys, variants, wildcard patterns, revisions. The bottom of the stack with no `cookie_agent_*` dependencies. |
 | `protocol` | Current-only wire contracts **and the protocol session layer**: RPC roots, events, session metadata, agent snapshots, JSON Schema and TypeScript bindings, the frame-level `Transport` trait, the `ClientProtocol`/`ServerProtocol` traits, the shared `Client`, `ServerContext`, protocol-owned `serve`, and shared setup-value parsing. Re-exports `identity` and hosts the unified wire types. |
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
-| `config` | Strict schema-10 runtime configuration and schema-5 Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports `AgentMode`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |
+| `config` | Strict runtime configuration and Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports `AgentMode`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |
 | `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence. |
 | `tools` | Built-in `read`, `write`, `edit`, and `bash` tools plus the `delegate_subagent`, `get_subagent_result`, and `cancel_subagent` provider. |
 | `server` | The `ServerProtocol` implementation over `Engine`, concrete transports (WebSocket + `InProcessStream`), a thin connection wrapper, and the public `load_auth_token` / `validate_websocket_url` APIs. |
@@ -142,8 +142,9 @@ The `config` crate reads two optional authored layers:
 
 There is no upward workspace search. A workspace setting replaces the
 corresponding user setting; a same-ID workspace provider or agent replaces the
-complete user definition. Unknown keys, wrong schema versions, and malformed
-values are rejected. The TUI additionally reads an independent
+complete user definition. Unknown keys, leftover schema/version fields, wrong
+types, and malformed values are rejected without migration or silent ignores.
+The TUI additionally reads an independent
 `~/.config/cookie_agent/tui.toml` (or `$XDG_CONFIG_HOME/cookie_agent/tui.toml`).
 
 See [Configuration](guide/configuration.md) and the

@@ -10,9 +10,9 @@ use std::{
 
 use async_trait::async_trait;
 use cookie_agent_config::{
-    ApprovalConfig, ConfigSchemaVersion, ContextCompactionConfig, LoadedConfiguration,
-    LoadedMcpServer, McpServerConfig, McpServerSource, RuntimeConfig, ServerConfig,
-    SessionTitleConfig, ToolOutputConfig, load_from_roots,
+    ApprovalConfig, ContextCompactionConfig, LoadedConfiguration, LoadedMcpServer, McpServerConfig,
+    McpServerSource, RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
+    load_from_roots,
 };
 use cookie_agent_models::{
     ModelManager,
@@ -540,7 +540,6 @@ fn fixture() -> Fixture {
     );
     let config = LoadedConfiguration {
         runtime: RuntimeConfig {
-            schema_version: ConfigSchemaVersion,
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
             approval: ApprovalConfig::default(),
@@ -659,7 +658,7 @@ fn empty_provider_workspace(path: &std::path::Path) -> LoadedConfiguration {
     let project = path.join(".cookie-agent");
     fs::create_dir(&project).expect("project");
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
-    fs::write(project.join("config.toml"), "schema_version = 10\n").expect("empty provider config");
+    fs::write(project.join("config.toml"), "").expect("empty provider config");
     fs::set_permissions(
         project.join("config.toml"),
         fs::Permissions::from_mode(0o600),
@@ -670,7 +669,7 @@ fn empty_provider_workspace(path: &std::path::Path) -> LoadedConfiguration {
     fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
     fs::write(
         agents.join("primary.md"),
-        "---\nschema: 5\ndescription: Bedrock test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0\", variant: base }]\npermissions: {}\n---\nUse Bedrock.\n",
+        "---\ndescription: Bedrock test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0\", variant: base }]\npermissions: {}\n---\nUse Bedrock.\n",
     )
     .expect("agent");
     fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
@@ -717,8 +716,7 @@ fn managed_openai_compaction_fixture(endpoint: &str) -> (Fixture, RunSelection) 
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
     fs::write(
         project.join("config.toml"),
-        r#"schema_version = 10
-
+        r#"
 [providers.openai]
 source = "models_dev"
 api_key = "test-secret"
@@ -739,7 +737,7 @@ compaction = "openai-responses-compact"
     fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
     fs::write(
         agents.join("primary.md"),
-        "---\nschema: 5\ndescription: Native compaction test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"openai/gpt-test\", variant: base }]\npermissions: {}\n---\nTest native compaction.\n",
+        "---\ndescription: Native compaction test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"openai/gpt-test\", variant: base }]\npermissions: {}\n---\nTest native compaction.\n",
     )
     .expect("agent");
     fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
@@ -1162,21 +1160,21 @@ async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly(
 fn custom_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\nschema: 5\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest prompt.\n",
+        "---\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest prompt.\n",
     )
 }
 
 fn approval_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\nschema: 5\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
+        "---\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
     )
 }
 
 fn denied_approval_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint_and_primary_agent(
         endpoint,
-        "---\nschema: 5\ndescription: Denied approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: deny\n---\nTest denied approval flow.\n",
+        "---\ndescription: Denied approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: deny\n---\nTest denied approval flow.\n",
     )
 }
 
@@ -1220,8 +1218,7 @@ fn custom_fixture_with_endpoint_primary_internal_and_concurrency(
     let project = directory.path().join(".cookie-agent");
     fs::create_dir(&project).expect("project directory");
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
-    let config_text = r#"schema_version = 10
-
+    let config_text = r#"
 [delegation]
 max_depth = 1
 
@@ -1271,7 +1268,7 @@ media = {}
         .expect("private agent");
     fs::write(
         agents.join("worker.md"),
-        "---\nschema: 5\ndescription: Worker test agent\nmode: subagent\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nWorker prompt.\n",
+        "---\ndescription: Worker test agent\nmode: subagent\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nWorker prompt.\n",
     )
     .expect("worker agent");
     fs::set_permissions(agents.join("worker.md"), fs::Permissions::from_mode(0o600))
@@ -1456,7 +1453,7 @@ fn completed_read_events(
 async fn rehydration_skips_reads_denied_by_the_frozen_permission_pipeline() {
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         "http://127.0.0.1:9/v1",
-        "---\nschema: 5\ndescription: Rehydration deny test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: deny\n---\nTest denied rehydration.\n",
+        "---\ndescription: Rehydration deny test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: deny\n---\nTest denied rehydration.\n",
     );
     let executed = Arc::new(AtomicBool::new(false));
     fixture
@@ -1488,7 +1485,7 @@ async fn rehydration_skips_reads_denied_by_the_frozen_permission_pipeline() {
 async fn rehydration_skips_a_symlink_swapped_after_capability_preparation() {
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         "http://127.0.0.1:9/v1",
-        "---\nschema: 5\ndescription: Rehydration swap test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nTest swapped rehydration.\n",
+        "---\ndescription: Rehydration swap test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nTest swapped rehydration.\n",
     );
     fs::write(fixture._directory.path().join("allowed.txt"), "allowed").expect("allowed file");
     fs::write(fixture._directory.path().join("denied.txt"), "denied").expect("denied file");
@@ -1661,10 +1658,10 @@ fn manual_compaction_resolves_parent_model_from_nonzero_active_fallback() {
 fn workspace_internal_agent_replaces_builtin_document_and_limits() {
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         "http://127.0.0.1:9/v1",
-        "---\nschema: 5\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nPrimary.\n",
+        "---\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nPrimary.\n",
         Some((
             "approval.md",
-            "---\nschema: 5\ndescription: Workspace approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1234, max_input_tokens: 2345, max_output_tokens: 345 }\npermissions: {}\n---\nWorkspace approval prompt.\n",
+            "---\ndescription: Workspace approval\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1234, max_input_tokens: 2345, max_output_tokens: 345 }\npermissions: {}\n---\nWorkspace approval prompt.\n",
         )),
         None,
         false,
@@ -1699,8 +1696,7 @@ fn synthetic_default_fixture(authored_agent: Option<&str>) -> Fixture {
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
     fs::write(
         project.join("config.toml"),
-        r#"schema_version = 10
-
+        r#"
 [providers."custom.test"]
 source = "custom"
 endpoint = "http://127.0.0.1:9/v1"
@@ -3310,10 +3306,10 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
         .await;
         let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
             &endpoint,
-            "---\nschema: 5\ndescription: Raw-first compaction test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest raw-first compaction.\n",
+            "---\ndescription: Raw-first compaction test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest raw-first compaction.\n",
             Some((
                 "compaction.md",
-                "---\nschema: 5\ndescription: Test compaction\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_input_tokens: 16384, max_output_tokens: 256 }\npermissions: {}\n---\nSummarize faithfully.\n",
+                "---\ndescription: Test compaction\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_input_tokens: 16384, max_output_tokens: 256 }\npermissions: {}\n---\nSummarize faithfully.\n",
             )),
             None,
             false,
@@ -3634,7 +3630,7 @@ fn runtime_snapshot_model_descriptor_preserves_compiled_variant_order() {
 #[test]
 fn synthetic_default_replaces_no_authored_agent_and_unrunnable_authored_agents_only() {
     let unrunnable = synthetic_default_fixture(Some(
-        "---\nschema: 5\ndescription: Unrunnable primary\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/missing\", variant: base }]\npermissions: {}\n---\nUnrunnable prompt.\n",
+        "---\ndescription: Unrunnable primary\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/missing\", variant: base }]\npermissions: {}\n---\nUnrunnable prompt.\n",
     ));
     let snapshot = unrunnable
         .engine
@@ -4632,7 +4628,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         scripted_server_with_delayed_response(bodies, 2).await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\nschema: 5\ndescription: Steering compaction test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest steering compaction.\n",
+        "---\ndescription: Steering compaction test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest steering compaction.\n",
         None,
         Some(500),
         false,
@@ -4824,7 +4820,7 @@ async fn cancel_during_start_prediction_aborts_compaction_without_appending_inpu
         scripted_server_with_delayed_response(bodies, 1).await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\nschema: 5\ndescription: Start cancellation test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest start cancellation.\n",
+        "---\ndescription: Start cancellation test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest start cancellation.\n",
         None,
         Some(500),
         false,
@@ -4954,7 +4950,7 @@ async fn steer_during_start_prediction_survives_initial_submission_and_reaches_m
         scripted_server_with_delayed_response(bodies, 1).await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\nschema: 5\ndescription: Start steering race test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest start steering.\n",
+        "---\ndescription: Start steering race test\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest start steering.\n",
         None,
         Some(500),
         false,
@@ -5070,10 +5066,10 @@ async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix()
     let (endpoint, captured) = scripted_two_approved_writes_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\nschema: 5\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
+        "---\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
         Some((
             "approval.md",
-            "---\nschema: 5\ndescription: Persistent approval evaluator\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_input_tokens: 4096, max_output_tokens: 128 }\npermissions: {}\n---\nEvaluate approval requests conservatively.\n",
+            "---\ndescription: Persistent approval evaluator\nmode: internal\nenabled: true\nmodel_fallback: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_input_tokens: 4096, max_output_tokens: 128 }\npermissions: {}\n---\nEvaluate approval requests conservatively.\n",
         )),
         None,
         false,
@@ -5724,7 +5720,7 @@ async fn immediate_first_run_waits_for_complete_eager_mcp_listing() {
     let (endpoint, captured) = scripted_model_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
         &endpoint,
-        "---\nschema: 5\ndescription: MCP readiness agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  mcp: allow\n---\nUse MCP.\n",
+        "---\ndescription: MCP readiness agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  mcp: allow\n---\nUse MCP.\n",
         None,
         None,
         false,
@@ -5757,7 +5753,7 @@ async fn immediate_run_after_project_approval_waits_for_mcp_listing() {
     let (endpoint, captured) = scripted_model_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
         &endpoint,
-        "---\nschema: 5\ndescription: Approved MCP readiness agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  mcp: allow\n---\nUse approved MCP.\n",
+        "---\ndescription: Approved MCP readiness agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  mcp: allow\n---\nUse approved MCP.\n",
         None,
         None,
         false,
@@ -6122,7 +6118,7 @@ async fn registered_external_tool_must_declare_resource_and_cannot_bypass_deny()
     let (endpoint, captured) = scripted_zero_resource_tool_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\nschema: 5\ndescription: Resource-bound test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: deny\n---\nReject denied tools.\n",
+        "---\ndescription: Resource-bound test agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: deny\n---\nReject denied tools.\n",
     );
     let executed = Arc::new(AtomicBool::new(false));
     fixture
@@ -6284,7 +6280,7 @@ async fn delegated_child_uses_description_title_without_title_agent() {
         scripted_server_with_delayed_response(bodies, usize::MAX).await;
     let (mut fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\nschema: 5\ndescription: Titled delegation parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest delegated titles.\n",
+        "---\ndescription: Titled delegation parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest delegated titles.\n",
         None,
         None,
         true,
@@ -6897,7 +6893,7 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
     let (endpoint, resume_id, queued, release, server) = scripted_queued_resume_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
         &endpoint,
-        "---\nschema: 5\ndescription: Queued resume parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest queued resume.\n",
+        "---\ndescription: Queued resume parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest queued resume.\n",
         None,
         None,
         false,
@@ -7076,7 +7072,7 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
     let (endpoint, resume_id, queued, _release, server) = scripted_queued_resume_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
         &endpoint,
-        "---\nschema: 5\ndescription: Cancel queued resume parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest queued resume cancellation.\n",
+        "---\ndescription: Cancel queued resume parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest queued resume cancellation.\n",
         None,
         None,
         false,
@@ -7228,7 +7224,7 @@ async fn inherited_context_is_text_only_journaled_and_deterministic_after_restar
     let (endpoint, responses, server) = scripted_channel_server(5).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\nschema: 5\ndescription: Context delegation parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n  delegate:\n    worker: allow\n---\nTest inherited context.\n",
+        "---\ndescription: Context delegation parent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n  delegate:\n    worker: allow\n---\nTest inherited context.\n",
     );
     fixture
         .engine
@@ -7377,7 +7373,7 @@ async fn background_delegate_permission_approval_gates_child_admission() {
     let (endpoint, captured) = scripted_background_delegation_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\nschema: 5\ndescription: Approval-gated delegation agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: ask\n---\nTest approval-gated delegation.\n",
+        "---\ndescription: Approval-gated delegation agent\nmode: primary\nenabled: true\nmodel_fallback: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: ask\n---\nTest approval-gated delegation.\n",
     );
     fixture
         .engine

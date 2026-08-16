@@ -1,4 +1,4 @@
-//! Strict schema-10 provider authoring data transfer objects.
+//! Strict provider authoring data transfer objects.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -68,7 +68,7 @@ impl Drop for SecretString {
     }
 }
 
-/// Absolute, query-free endpoint URL accepted by schema 10.
+/// Absolute, query-free endpoint URL accepted in provider configuration.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct EndpointUrl(String);

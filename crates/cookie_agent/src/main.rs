@@ -228,8 +228,8 @@ async fn compose_with<T: CatalogTransport + 'static>(
     >,
     open_data_dir: impl FnOnce() -> anyhow::Result<PathBuf>,
 ) -> anyhow::Result<Runtime> {
-    let configuration = cookie_agent_config::load(workspace)
-        .context("load schema-10 workspace configuration and agents")?;
+    let configuration =
+        cookie_agent_config::load(workspace).context("load workspace configuration and agents")?;
     if configuration.runtime.server.host != "127.0.0.1" {
         anyhow::bail!("server.host must be exactly 127.0.0.1");
     }
@@ -977,12 +977,12 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    fn write_empty_config(workspace: &Path, schema: u32) {
+    fn write_empty_config(workspace: &Path) {
         use std::os::unix::fs::PermissionsExt as _;
         private_directory(workspace);
         private_directory(&workspace.join(".cookie-agent"));
         let config = workspace.join(".cookie-agent/config.toml");
-        std::fs::write(&config, format!("schema_version = {schema}\n[providers]\n")).unwrap();
+        std::fs::write(&config, "[providers]\n").unwrap();
         std::fs::set_permissions(config, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
 
@@ -991,7 +991,7 @@ mod tests {
         private_directory(workspace);
         private_directory(&workspace.join(".cookie-agent"));
         let config = workspace.join(".cookie-agent/config.toml");
-        std::fs::write(&config, "schema_version = 10\n").unwrap();
+        std::fs::write(&config, "").unwrap();
         std::fs::set_permissions(config, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
 
@@ -1214,7 +1214,7 @@ mod tests {
         let cache_anchor = temporary.path().join("cache-anchor");
         let provider_store = temporary.path().join("provider-store");
         let data = temporary.path().join("data");
-        write_empty_config(&workspace, 10);
+        write_empty_config(&workspace);
         private_directory(&cache_anchor);
         let fetches = Arc::new(AtomicUsize::new(0));
         let mut runtime = compose_with(
@@ -1241,11 +1241,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_schema_fails_before_catalog_or_provider_store_open() {
+    async fn leftover_schema_field_fails_before_catalog_or_provider_store_open() {
         let temporary = tempfile::tempdir().unwrap();
         private_directory(temporary.path());
         let workspace = temporary.path().join("workspace");
-        write_empty_config(&workspace, 9);
+        write_empty_config(&workspace);
+        std::fs::write(
+            workspace.join(".cookie-agent/config.toml"),
+            "schema_version = 10\n",
+        )
+        .unwrap();
         let fetches = Arc::new(AtomicUsize::new(0));
         let catalog_opens = Arc::new(AtomicUsize::new(0));
         let provider_opens = Arc::new(AtomicUsize::new(0));
@@ -1458,7 +1463,7 @@ mod tests {
         private_directory(temporary.path());
         let workspace = temporary.path().join("workspace");
         let cache_anchor = temporary.path().join("cache-anchor");
-        write_empty_config(&workspace, 10);
+        write_empty_config(&workspace);
         private_directory(&cache_anchor);
         let mut runtime = compose_with(
             &workspace,
@@ -1529,7 +1534,7 @@ mod tests {
         private_directory(temporary.path());
         let workspace = temporary.path().join("workspace");
         let cache_anchor = temporary.path().join("cache-anchor");
-        write_empty_config(&workspace, 10);
+        write_empty_config(&workspace);
         private_directory(&cache_anchor);
         let mut runtime = compose_with(
             &workspace,
@@ -1673,7 +1678,7 @@ mod tests {
         private_directory(temporary.path());
         let workspace = temporary.path().join("workspace");
         let cache_anchor = temporary.path().join("cache-anchor");
-        write_empty_config(&workspace, 10);
+        write_empty_config(&workspace);
         private_directory(&cache_anchor);
         let fetches = Arc::new(AtomicUsize::new(0));
         let steps = Arc::new(Mutex::new(VecDeque::from([

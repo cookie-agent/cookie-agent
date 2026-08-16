@@ -7,11 +7,14 @@ four built-in agents that are part of the harness itself.
 
 ## Agent document structure
 
-Each file has schema-5 YAML frontmatter and a nonempty Markdown body:
+Each file has strict YAML frontmatter and a nonempty Markdown body:
+
+Agent documents do not declare a schema or version. A leftover `schema` field is
+a hard error directing the author to remove it; every other unknown field,
+wrong type, or malformed YAML construct is also rejected.
 
 ```markdown
 ---
-schema: 5
 description: Reviews changes for correctness
 mode: subagent
 enabled: true
@@ -36,7 +39,6 @@ Review the requested change and report concrete findings.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `schema` | integer | *(required)* | Must be exactly `5`. |
 | `description` | string | *(required)* | 1–512 characters, no control characters. Shown in the TUI and snapshots. |
 | `mode` | string | *(required)* | `primary`, `subagent`, `all`, or `internal`. |
 | `enabled` | boolean | *(required)* | Disabled agents are never runnable as roots, delegation targets, or internal backends. |
@@ -55,7 +57,7 @@ map naming at least one eligible target, and MCP tools require a non-fully-denie
 `"*": deny` also hides them unless it contains a more specific `allow` or `ask`
 exception.
 
-Schema 5 removes the former `tools` field. Documents that still declare it fail
+The former `tools` field is removed. Documents that still declare it fail
 with an error naming `tools` and directing the author to `permissions`; remove
 the field and express tool visibility and call policy in the permission map.
 
@@ -155,8 +157,8 @@ The title agent runs only for root sessions that still need an automatic title.
 Delegated sessions already have the `delegate_subagent` description as their
 title, so they never invoke the title agent.
 
-The built-in documents are replaced by authored schema-5 documents with the same
-ID, `mode: internal`, and an explicit `model_fallback`. `${parent_model}` is
+The built-in documents are replaced by authored documents with the same ID,
+`mode: internal`, and an explicit `model_fallback`. `${parent_model}` is
 allowed only in internal agents. When an internal agent document is disabled, or
 its fallback chain yields no available model, the internal call fails safely
 (approval degrades to asking, compaction is skipped, and title falls back to an
@@ -167,7 +169,6 @@ keeps its own selection:
 
 ```markdown
 ---
-schema: 5
 description: Context compaction on a fast model
 mode: internal
 enabled: true

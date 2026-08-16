@@ -58,7 +58,7 @@ fn run_cookie(arguments: &[&str], extra_environment: &[(&str, &str)]) -> Output 
 }
 
 #[test]
-fn checked_schema7_fixture_rejects_ambient_config_overrides_before_cli_secret_input() {
+fn checked_fixture_rejects_ambient_config_overrides_before_cli_secret_input() {
     let output = run_cookie(
         &["connect"],
         &[
@@ -74,10 +74,7 @@ fn checked_schema7_fixture_rejects_ambient_config_overrides_before_cli_secret_in
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(report.contains("interactive TTY"), "{report}");
-    assert!(
-        !report.contains("load schema-9 workspace configuration"),
-        "{report}"
-    );
+    assert!(!report.contains("load workspace configuration"), "{report}");
     for secret in [
         "expected-process-credential",
         "ignored-theme",

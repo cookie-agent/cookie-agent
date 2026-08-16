@@ -1,8 +1,7 @@
-# Bootstrap documentation fixture for configuration schema 10.
+# Bootstrap documentation fixture for strict configuration parsing.
 # The providers map may be absent or empty. With an empty per-user provider store
 # and no effective custom provider, startup opens the zero-model TUI and keeps
 # /connect available. Existing global stored connections still apply.
-schema_version = 10
 
 [delegation]
 max_depth = 3

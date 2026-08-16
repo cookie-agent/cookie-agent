@@ -3,6 +3,7 @@ use cookie_agent_models::Sha256Digest;
 pub use cookie_agent_protocol::AgentDocumentSource;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
+use std::path::Path;
 
 use crate::{AgentFrontmatter, ConfigError};
 
@@ -24,33 +25,42 @@ pub(crate) fn parse_agent(
     id: AgentId,
     bytes: &[u8],
     source: AgentDocumentSource,
+    path: &Path,
 ) -> Result<AgentDocument, ConfigError> {
     let text = std::str::from_utf8(bytes)
-        .map_err(|_| ConfigError::Utf8("agent document"))?
+        .map_err(|_| invalid_document(path, "content is not UTF-8"))?
         .replace("\r\n", "\n")
         .replace('\r', "\n");
     if text.contains("${env:") {
-        return Err(ConfigError::AgentFrontmatter(id));
+        return Err(invalid_document(
+            path,
+            "environment interpolation is not allowed",
+        ));
     }
     let rest = text
         .strip_prefix("---\n")
-        .ok_or_else(|| ConfigError::AgentFrontmatter(id.clone()))?;
+        .ok_or_else(|| invalid_document(path, "frontmatter must start with `---`"))?;
     let closing = rest
         .find("\n---\n")
-        .ok_or_else(|| ConfigError::AgentFrontmatter(id.clone()))?;
+        .ok_or_else(|| invalid_document(path, "frontmatter must end with `---`"))?;
     let yaml = &rest[..closing];
     let raw_body = &rest[closing + "\n---\n".len()..];
     if yaml.len() > MAX_FRONTMATTER_BYTES || raw_body.len() > MAX_BODY_BYTES || forbidden_yaml(yaml)
     {
-        return Err(ConfigError::AgentFrontmatter(id));
+        return Err(invalid_document(
+            path,
+            "frontmatter is too large or uses unsupported YAML features",
+        ));
     }
     let yaml_value: serde_yaml::Value =
-        serde_yaml::from_str(yaml).map_err(|_| ConfigError::AgentFrontmatter(id.clone()))?;
-    validate_yaml_limits(&yaml_value, 0)?;
+        serde_yaml::from_str(yaml).map_err(|error| yaml_error(path, &error))?;
+    validate_yaml_limits(&yaml_value, 0)
+        .map_err(|_| invalid_document(path, "YAML resource limit exceeded"))?;
+    reject_schema_field(&yaml_value, yaml, path)?;
     reject_removed_tools_field(&yaml_value, &id)?;
     validate_permission_expressions(&yaml_value, &id)?;
-    let frontmatter: AgentFrontmatter = serde_yaml::from_value(yaml_value)
-        .map_err(|_| ConfigError::AgentFrontmatter(id.clone()))?;
+    let frontmatter: AgentFrontmatter =
+        serde_yaml::from_str(yaml).map_err(|error| yaml_error(path, &error))?;
     let body = format!("{}\n", raw_body.trim_end_matches('\n'));
     if !body.chars().any(|character| !character.is_whitespace()) {
         return Err(ConfigError::EmptyPrompt(id));
@@ -68,6 +78,68 @@ pub(crate) fn parse_agent(
         document_fingerprint,
         prompt_fingerprint,
     })
+}
+
+fn reject_schema_field(
+    value: &serde_yaml::Value,
+    yaml: &str,
+    path: &Path,
+) -> Result<(), ConfigError> {
+    let schema = serde_yaml::Value::String("schema".to_owned());
+    if value
+        .as_mapping()
+        .is_some_and(|frontmatter| frontmatter.contains_key(&schema))
+    {
+        let line = yaml
+            .lines()
+            .position(|line| line.trim_start().starts_with("schema:"))
+            .map_or(2, |index| index + 2);
+        return Err(ConfigError::AgentSchemaRemoved {
+            path: path.to_owned(),
+            line,
+        });
+    }
+    Ok(())
+}
+
+fn invalid_document(path: &Path, message: impl Into<String>) -> ConfigError {
+    ConfigError::AgentDocument {
+        path: path.to_owned(),
+        message: message.into(),
+    }
+}
+
+fn yaml_error(path: &Path, error: &serde_yaml::Error) -> ConfigError {
+    let location = error
+        .location()
+        .map(|location| {
+            format!(
+                " at line {}, column {}",
+                location.line() + 1,
+                location.column()
+            )
+        })
+        .unwrap_or_default();
+    let rendered = error.to_string();
+    let message = extract_serde_field(&rendered, "unknown field")
+        .map(|field| format!("unknown field `{field}`{location}; remove it"))
+        .or_else(|| {
+            extract_serde_field(&rendered, "missing field")
+                .map(|field| format!("missing required field `{field}`{location}"))
+        })
+        .unwrap_or_else(|| format!("malformed YAML frontmatter{location}"));
+    invalid_document(path, message)
+}
+
+fn extract_serde_field(message: &str, marker: &str) -> Option<String> {
+    let rest = message.split_once(marker)?.1.trim_start();
+    let quote = rest.chars().next()?;
+    if !matches!(quote, '`' | '\'' | '"') {
+        return None;
+    }
+    rest[quote.len_utf8()..]
+        .split_once(quote)
+        .map(|(field, _)| field.to_owned())
 }
 
 fn reject_removed_tools_field(

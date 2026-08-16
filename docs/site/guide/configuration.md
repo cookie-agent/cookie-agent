@@ -2,11 +2,11 @@
 
 cookie agent reads three independent configuration surfaces:
 
-| Surface | Location | Schema |
-|---|---|---|
-| Runtime, providers, and MCP servers | `~/.config/cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` | 10 |
-| Agents | `~/.config/cookie_agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` | 4 |
-| TUI | `$XDG_CONFIG_HOME/cookie_agent/tui.toml` or `~/.config/cookie_agent/tui.toml` | 1 |
+| Surface | Location |
+|---|---|
+| Runtime, providers, and MCP servers | `~/.config/cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` |
+| Agents | `~/.config/cookie_agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` |
+| TUI | `$XDG_CONFIG_HOME/cookie_agent/tui.toml` or `~/.config/cookie_agent/tui.toml` |
 
 This page covers where configuration lives and how it behaves. For the complete
 key-by-key reference, see [Configuration Reference](../reference/configuration.md).
@@ -24,16 +24,15 @@ There is no upward workspace search: configuration is loaded from the exact
 working directory the daemon started in. The user layer and the workspace layer
 are both optional. Workspace settings replace the corresponding user settings. A
 same-ID workspace provider, MCP server, or agent replaces the complete user definition;
-nested fields never merge. Unknown fields, wrong schema versions, and malformed
-values are rejected.
+nested fields never merge. Every authored file is parsed strictly. Unknown fields,
+leftover schema/version fields, wrong types, and malformed content are hard errors;
+there are no migrations or silently ignored fields.
 
 ## Minimum runtime configuration
 
-`schema_version = 10` is required; every other top-level section is optional.
-An empty provider map is valid.
+Every top-level section is optional. An empty file or provider map is valid.
 
 ```toml
-schema_version = 10
 
 [providers]
 ```
@@ -47,7 +46,6 @@ All runtime sections default to safe values; you only need to write the ones you
 want to change:
 
 ```toml
-schema_version = 10
 
 [server]
 host = "127.0.0.1"
@@ -112,12 +110,11 @@ Prefer interpolation or `/connect` over plaintext credentials, and never commit
 
 ## Agent documents
 
-Agents are Markdown files whose filename is the agent ID. Each file has schema-5
+Agents are Markdown files whose filename is the agent ID. Each file has strict
 YAML frontmatter and a nonempty Markdown body used as the system prompt:
 
 ```markdown
 ---
-schema: 5
 description: Reviews changes for correctness
 mode: subagent
 enabled: true

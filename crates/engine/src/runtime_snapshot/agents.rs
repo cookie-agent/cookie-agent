@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use cookie_agent_config::{
     AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentLimits, AgentMode,
-    AgentModelFallback, AgentModelRef, AgentRegistry as ConfigAgentRegistry, AgentSchemaVersion,
+    AgentModelFallback, AgentModelRef, AgentRegistry as ConfigAgentRegistry,
     BUILT_IN_APPROVAL_AGENT_ID, BUILT_IN_COMPACTION_AGENT_ID, BUILT_IN_DEFAULT_AGENT_ID,
     BUILT_IN_TITLE_AGENT_ID, PermissionAction, PermissionEffect, PermissionValue,
 };
@@ -194,7 +194,6 @@ fn built_in_internal_document(
     let id = IdentityAgentId::new(id).map_err(|_| EngineError::RuntimeCompileFailed)?;
     let body = body.to_owned();
     let frontmatter = AgentFrontmatter {
-        schema: AgentSchemaVersion,
         description: description.to_owned(),
         mode: AgentMode::Internal,
         enabled: true,
@@ -225,7 +224,6 @@ fn built_in_default_document(selection: &ModelSelection) -> Result<AgentDocument
         .map_err(|_| EngineError::RuntimeCompileFailed)?;
     let body = "You are Cookie Agent's built-in default coding agent. Help the user inspect, understand, and modify software safely and precisely.\n".to_owned();
     let frontmatter = AgentFrontmatter {
-        schema: AgentSchemaVersion,
         description: "Built-in default coding agent".to_owned(),
         mode: AgentMode::Primary,
         enabled: true,

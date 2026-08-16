@@ -38,12 +38,14 @@ pub(crate) fn validate_toml_value(value: &toml::Value) -> Result<(), ConfigError
     visit(value, 0)
 }
 
-pub(crate) fn safe_toml_error(error: &toml::de::Error) -> String {
+pub(crate) fn safe_toml_error(text: &str, error: &toml::de::Error) -> String {
     if let Some(span) = error.span() {
-        format!(
-            "configuration TOML is invalid at bytes {}..{}",
-            span.start, span.end
-        )
+        let line = text[..span.start.min(text.len())]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1;
+        format!("malformed TOML at line {line}")
     } else {
         "configuration TOML is invalid".to_owned()
     }

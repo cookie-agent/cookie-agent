@@ -34,7 +34,6 @@ parser is used by `/connect`, `cookie connect`, and the TUI's connect flow.
 Managed providers may also be authored in configuration:
 
 ```toml
-schema_version = 10
 
 [providers.openai]
 source = "models_dev"

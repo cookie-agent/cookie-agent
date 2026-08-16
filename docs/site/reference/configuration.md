@@ -1,16 +1,16 @@
 # Configuration Reference
 
-This page documents every configurable item accepted by the current configuration
-schemas. Everything here is verified against the `config` and `models` crates;
+This page documents every configurable item accepted by the current parsers.
+Everything here is verified against the `config` and `models` crates;
 there are no undocumented aliases, hidden keys, or migration paths.
 
-Two independent configuration surfaces exist:
+Three independent configuration surfaces exist:
 
-| Surface | Location | Schema |
-|---|---|---|
-| Runtime and providers | `~/.config/cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` | 10 |
-| Agents | `~/.config/cookie_agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` | 4 |
-| TUI | `$XDG_CONFIG_HOME/cookie_agent/tui.toml` or `~/.config/cookie_agent/tui.toml` | 1 |
+| Surface | Location |
+|---|---|
+| Runtime and providers | `~/.config/cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` |
+| Agents | `~/.config/cookie_agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` |
+| TUI | `$XDG_CONFIG_HOME/cookie_agent/tui.toml` or `~/.config/cookie_agent/tui.toml` |
 
 ## Layering and strictness
 
@@ -20,8 +20,10 @@ is no upward search. Within a layer, `config.toml` and the `agents/` directory
 are optional. A workspace layer replaces the corresponding user settings and
 providers/agents wholesale by ID; nested fields never merge.
 
-Unknown keys, wrong types, and wrong schema versions are rejected with an
-actionable path or key error. Decoded values that hold secrets are zeroized when
+Every authored file is parsed strictly. Unknown keys, leftover `schema` or
+`schema_version` keys, wrong types, and malformed content are hard errors with an
+actionable path, key, and line where available. No authored-file migrations or
+unknown-field ignores exist. Decoded values that hold secrets are zeroized when
 the load completes.
 
 TOML-level limits (enforced before deserialization):
@@ -32,12 +34,10 @@ TOML-level limits (enforced before deserialization):
 
 ## Top-level keys
 
-Only these keys are allowed at the top of `config.toml`. Everything except
-`schema_version` is optional.
+Only these optional keys are allowed at the top of `config.toml`.
 
 | Key | Type | Default | Purpose |
 |---|---|---|---|
-| `schema_version` | integer | *(required)* | Must be exactly `10` |
 | `server` | table | defaults below | Daemon bind address |
 | `tool_output` | table | defaults below | Tool output truncation limits |
 | `approval` | table | defaults below | Approval expiry |
@@ -50,7 +50,6 @@ Only these keys are allowed at the top of `config.toml`. Everything except
 Minimal valid file:
 
 ```toml
-schema_version = 10
 
 [providers]
 ```
@@ -267,7 +266,7 @@ with a letter or underscore). A missing variable, a non-UTF-8 value, or an
 interpolation used anywhere else is a load error. Interpolation is not available
 in permission patterns, agent documents, or custom static headers.
 
-## Agent documents (schema 5)
+## Agent documents
 
 Agent files are named `<agent-id>.md`; the filename is the agent ID
 (`^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$`, at most 64 characters). Each file has
@@ -279,7 +278,7 @@ and merge keys are rejected, as is any `${env:` text.
 See [Agents](../guide/agents.md) for the full frontmatter reference and reserved
 IDs.
 
-## TUI configuration (`tui.toml`, schema 1)
+## TUI configuration (`tui.toml`)
 
 The TUI config is independent of the runtime config: no workspace layer, no
 environment-variable override, no engine involvement. A missing file uses
