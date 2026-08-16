@@ -3369,8 +3369,9 @@ mod tests {
             });
             let backend = TestBackend::new(80, 24);
             let mut terminal = Terminal::new(backend).expect("terminal");
+            let entries = app.tree_entries();
             terminal
-                .draw(|frame| app.render_tree(frame, layout.agent))
+                .draw(|frame| app.render_tree(frame, layout.agent, &entries))
                 .expect("render");
             let buffer = terminal.backend().buffer().clone();
             let top = buffer[(0, 0)].symbol() == "┌";

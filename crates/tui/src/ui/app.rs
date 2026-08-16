@@ -3643,14 +3643,18 @@ impl App {
 
     fn clamp_tree_view(&mut self) {
         let entries = self.tree_entries();
-        let mut selection = self.tree_cursor_index(&entries).unwrap_or(0);
+        self.clamp_tree_view_with(&entries);
+    }
+
+    fn clamp_tree_view_with(&mut self, entries: &[(SessionId, SessionMeta, usize)]) {
+        let mut selection = self.tree_cursor_index(entries).unwrap_or(0);
         super::pickers::clamp_tree_view(
             &mut selection,
             &mut self.tree_offset,
             entries.len(),
             self.tree_viewport_height,
         );
-        if self.tree_cursor.is_none() || self.tree_cursor_index(&entries).is_none() {
+        if self.tree_cursor.is_none() || self.tree_cursor_index(entries).is_none() {
             self.tree_cursor = entries.first().map(|(session_id, _, _)| *session_id);
         }
     }
@@ -5345,13 +5349,14 @@ impl App {
         )
         .unwrap_or(u16::MAX)
         .clamp(1, super::input::MAX_TEXT_ROWS);
+        let tree_entries = self.tree_entries();
         let layout = super::terminal_layout_with_tree_rows(
             frame.area(),
-            self.tree_entries().len(),
+            tree_entries.len(),
             self.queue_strip_height(),
             input_text_rows,
         );
-        self.render_tree(frame, layout.agent);
+        self.render_tree(frame, layout.agent, &tree_entries);
         self.render_conversation(frame, layout.conversation);
         self.render_queue_strip(frame, layout.queue);
         let title_spans = self.message_title_spans();
@@ -5719,13 +5724,17 @@ impl App {
         self.draw(frame);
     }
 
-    pub(super) fn render_tree(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+    pub(super) fn render_tree(
+        &mut self,
+        frame: &mut ratatui::Frame,
+        area: Rect,
+        entries: &[(SessionId, SessionMeta, usize)],
+    ) {
         // The Agents panel has exactly clamp(visible row count, 1, 8) text
         // rows, with its borders outside that count.
-        let text_rows = self.tree_entries().len().clamp(1, 8) as u16;
+        let text_rows = entries.len().clamp(1, 8) as u16;
         let panel_height = text_rows.saturating_add(2).min(area.height);
         let panel = Rect::new(area.x, area.y, area.width, panel_height);
-        let entries = self.tree_entries();
         let inner = inner_rect(panel);
         self.tree_viewport_height = usize::from(inner.height);
         if self.tree_cursor.is_none() {
@@ -5734,8 +5743,8 @@ impl App {
                 .filter(|selected| entries.iter().any(|(id, _, _)| id == selected))
                 .or_else(|| entries.first().map(|(id, _, _)| *id));
         }
-        self.clamp_tree_view();
-        let cursor_index = self.tree_cursor_index(&entries);
+        self.clamp_tree_view_with(entries);
+        let cursor_index = self.tree_cursor_index(entries);
         self.hit_map.tree = Some(inner);
         self.hit_map.tree_rows = entries
             .iter()
@@ -5876,7 +5885,13 @@ impl App {
     pub(super) fn tree_entries(&self) -> Vec<(SessionId, SessionMeta, usize)> {
         let mut entries = Vec::new();
         if let Some(tree) = &self.tree {
-            flatten_tree(tree, 0, &self.collapsed_sessions, &mut entries);
+            flatten_tree(
+                tree,
+                0,
+                &self.collapsed_sessions,
+                &self.store.sessions,
+                &mut entries,
+            );
         }
         // A session whose event log still holds only `SessionCreated`
         // (`last_event_seq == 1`, so no `UserInputSubmitted` yet) is an

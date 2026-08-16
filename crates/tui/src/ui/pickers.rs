@@ -1,6 +1,6 @@
 //! Session/agent/provider picker presentation, filtering, and tree flattening.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use cookie_agent_protocol::{ProviderDescriptor, SessionId, SessionMeta, SessionTree};
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
-use crate::theme::Theme;
+use crate::{state::SessionState, theme::Theme};
 
 use super::input::{self, InputState, RenderedInput};
 
@@ -323,12 +323,31 @@ pub(crate) fn flatten_tree(
     tree: &SessionTree,
     depth: usize,
     collapsed: &HashSet<SessionId>,
+    states: &HashMap<SessionId, SessionState>,
     entries: &mut Vec<(SessionId, SessionMeta, usize)>,
 ) {
     entries.push((tree.session.session_id, tree.session.clone(), depth));
     if !collapsed.contains(&tree.session.session_id) {
-        for child in &tree.children {
-            flatten_tree(child, depth + 1, collapsed, entries);
+        let mut children = tree.children.iter().collect::<Vec<_>>();
+        children.sort_by(|left, right| {
+            let left_state = states.get(&left.session.session_id);
+            let right_state = states.get(&right.session.session_id);
+            right_state
+                .and_then(|state| state.last_agent_activity)
+                .cmp(&left_state.and_then(|state| state.last_agent_activity))
+                .then_with(|| {
+                    match (
+                        left_state.and_then(|state| state.created_at),
+                        right_state.and_then(|state| state.created_at),
+                    ) {
+                        (Some(left), Some(right)) => left.cmp(&right),
+                        _ => left.session.session_id.cmp(&right.session.session_id),
+                    }
+                })
+                .then_with(|| left.session.session_id.cmp(&right.session.session_id))
+        });
+        for child in children {
+            flatten_tree(child, depth + 1, collapsed, states, entries);
         }
     }
 }
@@ -344,17 +363,22 @@ fn inner_rect(area: Rect) -> Rect {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, HashSet};
+
     use cookie_agent_protocol::{
-        AgentId, ModelSelection, ProviderDescriptor, RunSelection, SessionId, SessionMeta,
-        SessionMetaSchemaVersion, SessionOrigin, SessionStatus,
+        AgentId, AssistantToolCallRef, AttemptId, EventPayload, EventSchemaVersion, ModelCallId,
+        ModelSelection, PersistedToolResult, ProviderDescriptor, RunSelection, SafeDisplayText,
+        SessionId, SessionMeta, SessionMetaSchemaVersion, SessionOrigin, SessionStatus,
+        StoredEvent, ToolCallId, ToolCallTermination, ToolTerminationOutcome,
     };
 
     use ratatui::widgets::ListState;
 
     use super::{
-        SessionSearchRow, clamp_tree_view, cycle_selection, move_selection, provider_matches,
-        session_matches, session_search_rows, short_id,
+        SessionSearchRow, clamp_tree_view, cycle_selection, flatten_tree, move_selection,
+        provider_matches, session_matches, session_search_rows, short_id,
     };
+    use crate::state::{SessionState, StateStore};
 
     fn provider() -> ProviderDescriptor {
         serde_json::from_value(serde_json::json!({
@@ -424,6 +448,58 @@ mod tests {
             last_event_seq: 1,
             last_activity: "2026-08-06T12:00:00Z".parse().expect("timestamp"),
             status: SessionStatus::Idle,
+        }
+    }
+
+    fn session_id(ordinal: u8) -> SessionId {
+        format!("018f0000-0000-7000-8000-{ordinal:012x}")
+            .parse()
+            .expect("session ID")
+    }
+
+    fn tree(
+        session_id: SessionId,
+        children: Vec<cookie_agent_protocol::SessionTree>,
+    ) -> cookie_agent_protocol::SessionTree {
+        cookie_agent_protocol::SessionTree {
+            session: session_meta(session_id),
+            children,
+        }
+    }
+
+    fn state(created_at: &str, activity: Option<&str>) -> SessionState {
+        SessionState {
+            created_at: Some(created_at.parse().expect("creation timestamp")),
+            last_agent_activity: activity.map(|value| value.parse().expect("activity timestamp")),
+            ..SessionState::default()
+        }
+    }
+
+    fn flattened(
+        tree: &cookie_agent_protocol::SessionTree,
+        states: &HashMap<SessionId, SessionState>,
+    ) -> Vec<(SessionId, usize)> {
+        let mut entries = Vec::new();
+        flatten_tree(tree, 0, &HashSet::new(), states, &mut entries);
+        entries
+            .into_iter()
+            .map(|(session_id, _, depth)| (session_id, depth))
+            .collect()
+    }
+
+    fn stored_event(
+        session_id: SessionId,
+        seq: u64,
+        timestamp: &str,
+        payload: EventPayload,
+    ) -> StoredEvent {
+        StoredEvent {
+            event_schema_version: EventSchemaVersion::current(),
+            session_id,
+            run_id: None,
+            seq,
+            timestamp: timestamp.parse().expect("event timestamp"),
+            payload,
         }
     }
 
@@ -563,6 +639,196 @@ mod tests {
         // The bottom border carries the key hints.
         assert!(text.contains("enter: select"), "{text}");
         assert!(text.contains("esc: close"), "{text}");
+    }
+
+    #[test]
+    fn sibling_agents_sort_by_recent_activity_with_root_pinned() {
+        let root = session_id(1);
+        let older = session_id(2);
+        let newer = session_id(3);
+        let tree = tree(root, vec![tree(older, Vec::new()), tree(newer, Vec::new())]);
+        let states = HashMap::from([
+            (root, state("2026-08-06T10:00:00Z", None)),
+            (
+                older,
+                state("2026-08-06T10:01:00Z", Some("2026-08-06T11:00:00Z")),
+            ),
+            (
+                newer,
+                state("2026-08-06T10:02:00Z", Some("2026-08-06T12:00:00Z")),
+            ),
+        ]);
+
+        assert_eq!(
+            flattened(&tree, &states),
+            [(root, 0), (newer, 1), (older, 1)]
+        );
+    }
+
+    #[test]
+    fn grandchildren_sort_only_within_their_parent() {
+        let root = session_id(1);
+        let first_parent = session_id(2);
+        let second_parent = session_id(3);
+        let first_old = session_id(4);
+        let first_new = session_id(5);
+        let second_child = session_id(6);
+        let tree = tree(
+            root,
+            vec![
+                tree(
+                    first_parent,
+                    vec![tree(first_old, Vec::new()), tree(first_new, Vec::new())],
+                ),
+                tree(second_parent, vec![tree(second_child, Vec::new())]),
+            ],
+        );
+        let states = HashMap::from([
+            (first_parent, state("2026-08-06T10:01:00Z", None)),
+            (
+                second_parent,
+                state("2026-08-06T10:02:00Z", Some("2026-08-06T11:00:00Z")),
+            ),
+            (
+                first_old,
+                state("2026-08-06T10:03:00Z", Some("2026-08-06T11:30:00Z")),
+            ),
+            (
+                first_new,
+                state("2026-08-06T10:04:00Z", Some("2026-08-06T12:00:00Z")),
+            ),
+            (
+                second_child,
+                state("2026-08-06T10:05:00Z", Some("2026-08-06T13:00:00Z")),
+            ),
+        ]);
+
+        assert_eq!(
+            flattened(&tree, &states),
+            [
+                (root, 0),
+                (second_parent, 1),
+                (second_child, 2),
+                (first_parent, 1),
+                (first_new, 2),
+                (first_old, 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn activity_ties_fall_back_to_creation_order() {
+        let root = session_id(1);
+        let created_first = session_id(2);
+        let created_second = session_id(3);
+        let tree = tree(
+            root,
+            vec![
+                tree(created_second, Vec::new()),
+                tree(created_first, Vec::new()),
+            ],
+        );
+        let tied = Some("2026-08-06T12:00:00Z");
+        let states = HashMap::from([
+            (created_first, state("2026-08-06T10:01:00Z", tied)),
+            (created_second, state("2026-08-06T10:02:00Z", tied)),
+        ]);
+
+        assert_eq!(
+            flattened(&tree, &states),
+            [(root, 0), (created_first, 1), (created_second, 1)]
+        );
+    }
+
+    #[test]
+    fn admitted_user_message_live_resorts_siblings() {
+        let root = session_id(1);
+        let first = session_id(2);
+        let second = session_id(3);
+        let tree = tree(
+            root,
+            vec![tree(first, Vec::new()), tree(second, Vec::new())],
+        );
+        let mut store = StateStore::default();
+        store
+            .sessions
+            .insert(first, state("2026-08-06T10:01:00Z", None));
+        store
+            .sessions
+            .insert(second, state("2026-08-06T10:02:00Z", None));
+        assert_eq!(flattened(&tree, &store.sessions)[1].0, first);
+
+        assert!(store.apply_event(stored_event(
+            second,
+            1,
+            "2026-08-06T12:00:00Z",
+            EventPayload::UserInputAdmitted {
+                input: "new work".into(),
+            },
+        )));
+
+        assert_eq!(flattened(&tree, &store.sessions)[1].0, second);
+    }
+
+    #[test]
+    fn assistant_and_tool_result_events_do_not_resort_siblings() {
+        let root = session_id(1);
+        let active = session_id(2);
+        let background = session_id(3);
+        let tree = tree(
+            root,
+            vec![tree(active, Vec::new()), tree(background, Vec::new())],
+        );
+        let mut store = StateStore::default();
+        store.sessions.insert(
+            active,
+            state("2026-08-06T10:01:00Z", Some("2026-08-06T11:00:00Z")),
+        );
+        store.sessions.insert(
+            background,
+            state("2026-08-06T10:02:00Z", Some("2026-08-06T10:30:00Z")),
+        );
+        let owner = AssistantToolCallRef {
+            model_turn_seq: 1,
+            content_index: 0,
+            model_call_id: ModelCallId::new("background-call").expect("model call ID"),
+            provider_item_id: None,
+        };
+        assert!(store.apply_event(stored_event(
+            background,
+            1,
+            "2026-08-06T12:00:00Z",
+            EventPayload::TextDelta {
+                attempt_id: AttemptId::new_v7(),
+                text: "background output".into(),
+            },
+        )));
+        assert!(store.apply_event(stored_event(
+            background,
+            2,
+            "2026-08-06T12:01:00Z",
+            EventPayload::ToolCallTerminated {
+                termination: ToolCallTermination {
+                    tool_call_id: ToolCallId::new_v7(),
+                    owner,
+                    outcome: ToolTerminationOutcome::Completed,
+                    result: Some(PersistedToolResult {
+                        title: SafeDisplayText::new("completed").expect("title"),
+                        output: "result".into(),
+                        metadata: serde_json::Value::Null,
+                        truncation: None,
+                        attachments: Vec::new(),
+                    }),
+                    error: None,
+                },
+            },
+        )));
+
+        assert_eq!(flattened(&tree, &store.sessions)[1].0, active);
+        assert_eq!(
+            store.sessions[&background].last_agent_activity,
+            Some("2026-08-06T10:30:00Z".parse().expect("timestamp"))
+        );
     }
 
     #[test]

@@ -338,6 +338,12 @@ pub(crate) struct PendingToolRow {
     call_id: ToolCallId,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct IndexedToolCall {
+    name: SafeCode,
+    arguments: String,
+}
+
 /// Projection-only identity composed exclusively from frozen, secret-safe
 /// protocol values. History indices are deliberately excluded so one logical
 /// compatibility transition warns once without altering durable evidence.
@@ -364,6 +370,10 @@ pub struct SessionState {
     pub version: u64,
     pub generation: u64,
     pub last_seq: u64,
+    /// Creation-event time, used as the deterministic sibling-order fallback.
+    pub(crate) created_at: Option<jiff::Timestamp>,
+    /// Latest user submission or delegate/steer tool start in this session.
+    pub(crate) last_agent_activity: Option<jiff::Timestamp>,
     pub active_run: Option<RunId>,
     pub cwd_identity: Option<cookie_agent_protocol::CwdIdentity>,
     /// Total context occupied at the end of the latest committed turn
@@ -415,7 +425,7 @@ pub struct SessionState {
     pub(crate) pending_tool_rows: Vec<PendingToolRow>,
     /// Durable tool input indexed from committed turn content:
     /// (model_turn_seq, model_call_id) → arguments JSON, for expanded rows.
-    pub(crate) turn_tool_index: HashMap<(u64, String), String>,
+    pub(crate) turn_tool_index: HashMap<(u64, String), IndexedToolCall>,
     /// The assistant item owning each committed model-turn sequence.
     pub(crate) turn_items: HashMap<u64, u64>,
     /// User-visible replay compatibility transitions already projected for a
@@ -1125,6 +1135,7 @@ fn reduce_event(
         }
         EventPayload::UserInputAdmitted { input } => {
             close_open_assistant(state, timestamp);
+            state.last_agent_activity = Some(timestamp);
             state.pending_inputs.push_back(PendingInput {
                 text: input,
                 admission_seq: sequence,
@@ -1133,6 +1144,7 @@ fn reduce_event(
         }
         EventPayload::UserInputSubmitted { input } => {
             close_open_assistant(state, timestamp);
+            state.last_agent_activity = Some(timestamp);
             if run_id.is_some_and(|run_id| !state.initial_input_submitted.insert(run_id)) {
                 // Promotion: only a submission after the run's initial input
                 // graduates a lane entry — the oldest, strictly positionally,
@@ -1411,6 +1423,18 @@ fn reduce_event(
         }
         EventPayload::ToolCallStarted { start } => {
             close_open_assistant(state, timestamp);
+            if state
+                .turn_tool_index
+                .get(&(
+                    start.owner.model_turn_seq,
+                    start.owner.model_call_id.as_str().to_owned(),
+                ))
+                .is_some_and(|tool| {
+                    matches!(tool.name.as_str(), "delegate_subagent" | "steer_subagent")
+                })
+            {
+                state.last_agent_activity = Some(timestamp);
+            }
             let mut identities = format!("model call: {}", start.owner.model_call_id);
             if let Some(provider_item_id) = &start.owner.provider_item_id {
                 identities.push_str(&format!(" · provider item: {provider_item_id}"));
@@ -1807,6 +1831,7 @@ fn reduce_event(
             }
             state.cwd_identity = Some(cwd_identity);
             state.creation_agent = Some(creation_agent);
+            state.created_at = Some(timestamp);
         }
         EventPayload::DelegatedContextSeeded { .. }
         | EventPayload::ToolStdinSubmitted { .. }
@@ -1925,10 +1950,17 @@ fn index_turn_tool_content(
     turn: &PersistedModelTurn,
 ) {
     for part in &turn.content {
-        if let cookie_agent_protocol::PersistedAssistantPart::ToolCall { id, input, .. } = part {
-            state
-                .turn_tool_index
-                .insert((model_turn_seq, id.as_str().to_owned()), input.to_string());
+        if let cookie_agent_protocol::PersistedAssistantPart::ToolCall {
+            id, name, input, ..
+        } = part
+        {
+            state.turn_tool_index.insert(
+                (model_turn_seq, id.as_str().to_owned()),
+                IndexedToolCall {
+                    name: name.clone(),
+                    arguments: input.to_string(),
+                },
+            );
         }
     }
 }
@@ -2586,7 +2618,7 @@ fn find_tool_call_content(
     state
         .turn_tool_index
         .get(&(model_turn_seq, model_call_id.as_str().to_owned()))
-        .cloned()
+        .map(|tool| tool.arguments.clone())
 }
 
 fn render_internal_backend(backend: &cookie_agent_protocol::InternalAgentBackend) -> String {
@@ -3041,5 +3073,95 @@ mod tests {
             &state.transcript[0],
             TranscriptItem::User { text, .. } if text == "kept"
         ));
+    }
+
+    #[test]
+    fn delegate_and_steer_tool_starts_update_agent_activity() {
+        let session_id = SessionId::new_v7();
+        let mut state = SessionState::default();
+        let fingerprint = || {
+            serde_json::from_value(serde_json::json!({
+                "digest": "1".repeat(64)
+            }))
+            .expect("operation fingerprint")
+        };
+        let start = |model_turn_seq, model_call_id: &str| {
+            let model_call_id =
+                cookie_agent_protocol::ModelCallId::new(model_call_id).expect("model call ID");
+            cookie_agent_protocol::ToolCallStart {
+                tool_call_id: ToolCallId::new_v7(),
+                owner: cookie_agent_protocol::AssistantToolCallRef {
+                    model_turn_seq,
+                    content_index: 0,
+                    model_call_id,
+                    provider_item_id: None,
+                },
+                presentation: cookie_agent_protocol::ToolCallPresentation {
+                    title: cookie_agent_protocol::SafeDisplayText::new("activity tool")
+                        .expect("title"),
+                    primary_argument: None,
+                },
+                operation_fingerprint: fingerprint(),
+            }
+        };
+        state.turn_tool_index.insert(
+            (1, "delegate-call".into()),
+            IndexedToolCall {
+                name: SafeCode::new("delegate_subagent").expect("tool name"),
+                arguments: "{}".into(),
+            },
+        );
+        state.turn_tool_index.insert(
+            (2, "steer-call".into()),
+            IndexedToolCall {
+                name: SafeCode::new("steer_subagent").expect("tool name"),
+                arguments: "{}".into(),
+            },
+        );
+        state.turn_tool_index.insert(
+            (3, "read-call".into()),
+            IndexedToolCall {
+                name: SafeCode::new("read").expect("tool name"),
+                arguments: "{}".into(),
+            },
+        );
+
+        let delegated_at = "2026-08-06T11:00:00Z".parse().expect("timestamp");
+        reduce_event(
+            &mut state,
+            session_id,
+            None,
+            1,
+            delegated_at,
+            EventPayload::ToolCallStarted {
+                start: start(1, "delegate-call"),
+            },
+        );
+        assert_eq!(state.last_agent_activity, Some(delegated_at));
+
+        let steered_at = "2026-08-06T12:00:00Z".parse().expect("timestamp");
+        reduce_event(
+            &mut state,
+            session_id,
+            None,
+            2,
+            steered_at,
+            EventPayload::ToolCallStarted {
+                start: start(2, "steer-call"),
+            },
+        );
+        assert_eq!(state.last_agent_activity, Some(steered_at));
+
+        reduce_event(
+            &mut state,
+            session_id,
+            None,
+            3,
+            "2026-08-06T13:00:00Z".parse().expect("timestamp"),
+            EventPayload::ToolCallStarted {
+                start: start(3, "read-call"),
+            },
+        );
+        assert_eq!(state.last_agent_activity, Some(steered_at));
     }
 }
