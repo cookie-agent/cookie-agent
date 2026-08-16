@@ -634,6 +634,29 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Usage and cost
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -957,8 +980,8 @@
 
 
 <h1 id="event-reference">Event Reference<a class="headerlink" href="#event-reference" title="Permanent link">&para;</a></h1>
-<p>Session persistence and subscriptions write event schema 18 and reopen schemas
-15-18. Every stored event
+<p>Session persistence and subscriptions write event schema 20 and reopen schemas
+15-20. Every stored event
 contains <code>event_schema_version</code>, <code>session_id</code>, required nullable <code>run_id</code>, a
 positive physical <code>seq</code>, <code>timestamp</code>, and a tagged <code>payload</code>. Events requiring a
 run ID reject a null envelope value.</p>
@@ -985,7 +1008,7 @@ run ID reject a null envelope value.</p>
 </tr>
 <tr>
 <td>Model</td>
-<td><code>model_attempt_started</code>, <code>text_delta</code>, <code>reasoning_delta</code>, <code>attempt_abandoned</code>, <code>model_replay_evaluated</code>, <code>model_turn_committed</code>, <code>model_fallback</code></td>
+<td><code>model_attempt_started</code>, <code>text_delta</code>, <code>reasoning_delta</code>, <code>attempt_abandoned</code>, <code>model_replay_evaluated</code>, <code>model_turn_committed</code>, <code>model_usage_recorded</code>, <code>model_fallback</code></td>
 </tr>
 <tr>
 <td>Tools</td>
@@ -997,7 +1020,7 @@ run ID reject a null envelope value.</p>
 </tr>
 <tr>
 <td>Internal agents</td>
-<td><code>internal_agent_started</code>, <code>internal_agent_completed</code>, <code>internal_agent_failed</code>, <code>internal_agent_cancelled</code>, <code>internal_agent_interrupted</code>, <code>internal_agent_fallback</code></td>
+<td><code>internal_agent_started</code>, <code>internal_agent_usage_recorded</code>, <code>internal_agent_completed</code>, <code>internal_agent_failed</code>, <code>internal_agent_cancelled</code>, <code>internal_agent_interrupted</code>, <code>internal_agent_fallback</code></td>
 </tr>
 <tr>
 <td>Compaction</td>
@@ -1024,6 +1047,16 @@ contains the complete, validated set of unique <code>(action, resource)</code> r
 the session. The latest visible event wins. Because it is an ordinary branch
 event, restart replay, revert, and fork recover the same overlay without a
 sidecar file.</p>
+<p>Schema 19 adds <code>model_usage_recorded</code>. It follows a committed provider turn and
+contains the positive <code>model_turn_seq</code>, agent ID, resolved model identity, and
+Oven's normalized usage fields: inclusive input/output totals plus optional
+uncached input, cache-read input, cache-write input, text output, and reasoning
+output counts. Event-log validation requires its run, agent, model, and turn to
+match and rejects duplicate records for one turn. Session, agent, and global
+usage projections rebuild from these events after restart, revert, and fork.</p>
+<p>Schema 20 adds <code>internal_agent_usage_recorded</code>. It attributes each completed
+internal model request to its internal run, internal agent ID, kind, and resolved
+model. The same session, agent, and global projections include these records.</p>
 <p><code>user_input_admitted</code> normally belongs to an active run. A steer accepted for a
 queued delegated child is runless and requires that the session have no active
 run. It is persisted immediately and enters the next run's pending-input FIFO,
@@ -1039,7 +1072,7 @@ continues to recall the newest pending input.</p>
 <h2 id="subscriptions">Subscriptions<a class="headerlink" href="#subscriptions" title="Permanent link">&para;</a></h2>
 <p><code>events.subscribe</code> returns all retained events after the optional cursor and
 starts <code>events.subscription</code> notifications. A notification is tagged as either:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;event&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;event_schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">18</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;event&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;event_schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">20</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
 </code></pre></div>
 <p>or a gap indicating that the subscriber must rebuild its disposable projection:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>

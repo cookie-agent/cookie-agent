@@ -556,6 +556,15 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#usage-dashboard" class="md-nav__link">
+    <span class="md-ellipsis">
+      Usage dashboard
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -716,6 +725,29 @@
   
   <span class="md-ellipsis">
     Compaction
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Usage and cost
     
   </span>
   
@@ -991,6 +1023,15 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#usage-dashboard" class="md-nav__link">
+    <span class="md-ellipsis">
+      Usage dashboard
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1036,6 +1077,10 @@ line, while Ctrl-Home and Ctrl-End move to the start or end of the whole draft.<
 <tr>
 <td><code>/sessions</code></td>
 <td>Choose a session</td>
+</tr>
+<tr>
+<td><code>/usage</code></td>
+<td>Show selected-session and global usage</td>
 </tr>
 <tr>
 <td><code>/cancel</code></td>
@@ -1105,6 +1150,13 @@ Down, Home, and End.</p>
 <code>auto-approve -&gt; ask -&gt; yolo</code>; the mode applies only to subsequent approvals in
 the selected session. Hard policy denies and doom-loop rejection still win in
 every mode. See <a href="../permissions/">Permissions</a>.</p>
+<h2 id="usage-dashboard">Usage dashboard<a class="headerlink" href="#usage-dashboard" title="Permanent link">&para;</a></h2>
+<p><code>/usage</code> opens a read-only view with the selected session and project-wide
+rollups. Each section shows request count, input and output tokens, cache reads
+and writes, cache hit percentage, estimated cost when configured, and a
+per-model breakdown. <code>unpriced</code> means the active configuration does not provide
+all rates needed for the observed token categories. Press Esc to close.</p>
+<p>See <a href="../usage/">Usage and cost</a> for recording and pricing semantics.</p>
 
 
 

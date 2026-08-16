@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://cookie-agent.github.io/cookie-agent/dev/reference/configuration/">
       
       
-        <link rel="prev" href="../../guide/compaction/">
+        <link rel="prev" href="../../guide/usage/">
       
       
         <link rel="next" href="../protocol/">
@@ -634,6 +634,29 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Usage and cost
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -812,6 +835,15 @@
   <a href="#delegation" class="md-nav__link">
     <span class="md-ellipsis">
       [delegation]
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pricingmodelsprovidermodel" class="md-nav__link">
+    <span class="md-ellipsis">
+      [pricing.models."&lt;provider/model&gt;"]
     </span>
   </a>
   
@@ -1115,6 +1147,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#pricingmodelsprovidermodel" class="md-nav__link">
+    <span class="md-ellipsis">
+      [pricing.models."&lt;provider/model&gt;"]
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#mcpserversname" class="md-nav__link">
     <span class="md-ellipsis">
       [mcp.servers.&lt;name&gt;]
@@ -1315,6 +1356,12 @@ resumes on restart.</p>
 <td>Delegation depth and concurrency</td>
 </tr>
 <tr>
+<td><code>pricing</code></td>
+<td>table</td>
+<td>empty</td>
+<td>Optional model-rate overrides for cost estimates</td>
+</tr>
+<tr>
 <td><code>providers</code></td>
 <td>table</td>
 <td>empty</td>
@@ -1502,8 +1549,72 @@ truncated or replaced with artifact references.</p>
 <td><code>4</code></td>
 <td>Maximum concurrently running root-level background delegations. Excess calls queue FIFO, up to <code>4 × max_concurrency</code>; a full queue rejects admission. Foreground and nested delegations bypass this queue. A value of <code>0</code> is rejected.</td>
 </tr>
+<tr>
+<td><code>max_resident_subagents</code></td>
+<td>integer</td>
+<td><code>20</code></td>
+<td>Soft trigger for resident delegated sessions. Above this count, the janitor evicts eligible idle children oldest-first until the count reaches the trigger or no eligible child remains. Recently active children may keep residency above the trigger.</td>
+</tr>
+<tr>
+<td><code>idle_eviction_after</code></td>
+<td>duration string</td>
+<td><code>"1h"</code></td>
+<td>Minimum time since a delegated session's last run ended before it can be evicted. Compact <code>ms</code>, <code>s</code>, <code>m</code>, <code>h</code>, and <code>d</code> suffixes are accepted.</td>
+</tr>
 </tbody>
 </table>
+<h2 id="pricingmodelsprovidermodel"><code>[pricing.models."&lt;provider/model&gt;"]</code><a class="headerlink" href="#pricingmodelsprovidermodel" title="Permanent link">&para;</a></h2>
+<p>Pricing overrides are empty by default. Managed models use prices from the
+selected models.dev catalog. Add an entry for a custom model absent from the
+catalog, or to override catalog prices with the provider terms that apply to
+your account. Catalog context tiers are selected independently for each request
+from its reported input-token count. Keys are canonical model identities,
+including the provider ID.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[pricing.models.</span><span class="s2">&quot;custom.example/model-name&quot;</span><span class="k">]</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">input_per_million_usd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;1.25&quot;</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">output_per_million_usd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;5.0&quot;</span>
+</code></pre></div>
+<p>All fields are optional quoted, finite, nonnegative decimal USD rates per
+million tokens. Quoting preserves the authored decimal exactly:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Applies to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>input_per_million_usd</code></td>
+<td>Input tokens not attributed to cache reads or writes</td>
+</tr>
+<tr>
+<td><code>output_per_million_usd</code></td>
+<td>Plain, non-reasoning output tokens</td>
+</tr>
+<tr>
+<td><code>reasoning_per_million_usd</code></td>
+<td>Reasoning output tokens; falls back to the output rate when omitted</td>
+</tr>
+<tr>
+<td><code>cache_read_per_million_usd</code></td>
+<td>Provider-reported cache-read input tokens</td>
+</tr>
+<tr>
+<td><code>cache_write_per_million_usd</code></td>
+<td>Provider-reported cache-write input tokens</td>
+</tr>
+</tbody>
+</table>
+<p>Precedence is config override, then catalog price, then no estimate. A config
+entry replaces the catalog rate set for that model. When a selected rate set
+does not distinguish cache reads or writes, those tokens use its plain input
+rate; reasoning tokens similarly use its output rate when no reasoning rate is
+present. An estimate is returned only when the selected source prices every
+nonzero observed category and the provider reports every split needed by a
+distinct rate. A session, agent, or global total is unpriced if any
+model within it is unpriced. These are estimates from provider-reported token
+counts, not invoices.</p>
 <h2 id="mcpserversname"><code>[mcp.servers.&lt;name&gt;]</code><a class="headerlink" href="#mcpserversname" title="Permanent link">&para;</a></h2>
 <p>MCP server definitions are layered by server name. A workspace definition
 replaces the same user-level server. See the <a href="../../guide/mcp/">MCP guide</a> for
@@ -1585,9 +1696,9 @@ permission and naming behavior.</p>
 value is one of two tagged sources. See the <a href="../../guide/providers/">Providers guide</a>
 for complete examples.</p>
 <h3 id="managed-providers-source-models_dev">Managed providers (<code>source = "models_dev"</code>)<a class="headerlink" href="#managed-providers-source-models_dev" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[providers.openai]</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;${env:OPENAI_API_KEY}&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[providers.openai]</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;${env:OPENAI_API_KEY}&quot;</span>
 </code></pre></div>
 <table>
 <thead>
@@ -1676,13 +1787,13 @@ fails with a migration error naming the adapter-specific replacement.</p>
 <h3 id="custom-providers-source-custom">Custom providers (<code>source = "custom"</code>)<a class="headerlink" href="#custom-providers-source-custom" title="Permanent link">&para;</a></h3>
 <p>Provider IDs under <code>custom.</code> are config-only, never appear in <code>/connect</code>, and
 never use the provider store.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[providers.</span><span class="s2">&quot;custom.example&quot;</span><span class="k">]</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;custom&quot;</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://api.example.invalid/v1&quot;</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">adaptor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai-compatible&quot;</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">setup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;bearer-api-key-v1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">api_key</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:CUSTOM_API_KEY}&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="n">headers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[providers.</span><span class="s2">&quot;custom.example&quot;</span><span class="k">]</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;custom&quot;</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://api.example.invalid/v1&quot;</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">adaptor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai-compatible&quot;</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">setup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;bearer-api-key-v1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">api_key</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:CUSTOM_API_KEY}&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">headers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
 </code></pre></div>
 <table>
 <thead>

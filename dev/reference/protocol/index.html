@@ -634,6 +634,29 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Usage and cost
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1088,6 +1111,21 @@ and the CLI share one implementation of the protocol mechanics.</p>
 <td>Session metadata</td>
 </tr>
 <tr>
+<td><code>session.usage</code></td>
+<td>Session ID</td>
+<td>Token/request rollup, cache hit rate, optional estimated cost, and per-model breakdown</td>
+</tr>
+<tr>
+<td><code>agent.usage</code></td>
+<td>Agent ID</td>
+<td>Rollup across turns attributed to that agent</td>
+</tr>
+<tr>
+<td><code>usage.global</code></td>
+<td>Empty object</td>
+<td>Rollup across all project sessions</td>
+</tr>
+<tr>
 <td><code>session.children</code></td>
 <td>Session ID</td>
 <td>Direct child summaries</td>
@@ -1225,7 +1263,7 @@ the title, and continues with new physical sequences.</p>
 <p>The shared client maps these to <code>ClientDelivery</code> variants (<code>Live</code>, replay
 deliveries, output stream events, <code>RuntimeChanged</code>, <code>RecoveryFailed</code>), so a UI
 consumes one ordered stream and never parses raw JSON-RPC frames.</p>
-<p>See <a href="../events/">Events</a> for schema-14 event payloads.</p>
+<p>See <a href="../events/">Events</a> for schema-20 event payloads.</p>
 
 
 

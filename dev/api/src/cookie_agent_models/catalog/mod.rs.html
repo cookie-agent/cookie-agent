@@ -18,19 +18,20 @@
 <a href=#18 id=18 data-nosnippet>18</a><span class="kw">pub use </span>manager::{CatalogError, CatalogManager};
 <a href=#19 id=19 data-nosnippet>19</a><span class="kw">pub use </span>records::{
 <a href=#20 id=20 data-nosnippet>20</a>    CanonicalModelProvenance, CanonicalModelRecord, CatalogAgeState, CatalogAvailability,
-<a href=#21 id=21 data-nosnippet>21</a>    CatalogInterleaved, CatalogLimits, CatalogModalities, CatalogModelEntry,
-<a href=#22 id=22 data-nosnippet>22</a>    CatalogModelProviderMetadata, CatalogModelRecord, CatalogModelStatus, CatalogProviderEntry,
-<a href=#23 id=23 data-nosnippet>23</a>    CatalogProviderRecord, CatalogQuarantineEntry, CatalogQuarantineReason, CatalogReasoningOption,
-<a href=#24 id=24 data-nosnippet>24</a>    CatalogRuntimeState, CatalogSafeErrorMeta, CatalogSnapshot, CatalogSource,
-<a href=#25 id=25 data-nosnippet>25</a>};
-<a href=#26 id=26 data-nosnippet>26</a><span class="kw">pub use </span>transport::{
-<a href=#27 id=27 data-nosnippet>27</a>    CatalogBodyStream, CatalogRequest, CatalogTransport, CatalogTransportError,
-<a href=#28 id=28 data-nosnippet>28</a>    CatalogTransportFuture, CatalogTransportResponse, HttpCatalogTransport, MODELS_DEV_USER_AGENT,
-<a href=#29 id=29 data-nosnippet>29</a>};
-<a href=#30 id=30 data-nosnippet>30</a>
-<a href=#31 id=31 data-nosnippet>31</a><span class="kw">pub const </span>MODELS_DEV_CATALOG_URL: <span class="kw-2">&amp;</span>str = <span class="string">"https://models.dev/catalog.json"</span>;
-<a href=#32 id=32 data-nosnippet>32</a><span class="kw">pub const </span>CATALOG_MAX_BYTES: usize = <span class="number">16 </span>* <span class="number">1024 </span>* <span class="number">1024</span>;
-<a href=#33 id=33 data-nosnippet>33</a>
-<a href=#34 id=34 data-nosnippet>34</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span>bootstrap::validated_bootstrap;
-<a href=#35 id=35 data-nosnippet>35</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span>parser::{ParsedCatalog, parse_cache_meta, parse_catalog};
+<a href=#21 id=21 data-nosnippet>21</a>    CatalogInterleaved, CatalogLimits, CatalogModalities, CatalogModelCost, CatalogModelCostRates,
+<a href=#22 id=22 data-nosnippet>22</a>    CatalogModelCostTier, CatalogModelEntry, CatalogModelProviderMetadata, CatalogModelRecord,
+<a href=#23 id=23 data-nosnippet>23</a>    CatalogModelStatus, CatalogProviderEntry, CatalogProviderRecord, CatalogQuarantineEntry,
+<a href=#24 id=24 data-nosnippet>24</a>    CatalogQuarantineReason, CatalogReasoningOption, CatalogRuntimeState, CatalogSafeErrorMeta,
+<a href=#25 id=25 data-nosnippet>25</a>    CatalogSnapshot, CatalogSource, PicoUsdPerMillion,
+<a href=#26 id=26 data-nosnippet>26</a>};
+<a href=#27 id=27 data-nosnippet>27</a><span class="kw">pub use </span>transport::{
+<a href=#28 id=28 data-nosnippet>28</a>    CatalogBodyStream, CatalogRequest, CatalogTransport, CatalogTransportError,
+<a href=#29 id=29 data-nosnippet>29</a>    CatalogTransportFuture, CatalogTransportResponse, HttpCatalogTransport, MODELS_DEV_USER_AGENT,
+<a href=#30 id=30 data-nosnippet>30</a>};
+<a href=#31 id=31 data-nosnippet>31</a>
+<a href=#32 id=32 data-nosnippet>32</a><span class="kw">pub const </span>MODELS_DEV_CATALOG_URL: <span class="kw-2">&amp;</span>str = <span class="string">"https://models.dev/catalog.json"</span>;
+<a href=#33 id=33 data-nosnippet>33</a><span class="kw">pub const </span>CATALOG_MAX_BYTES: usize = <span class="number">16 </span>* <span class="number">1024 </span>* <span class="number">1024</span>;
+<a href=#34 id=34 data-nosnippet>34</a>
+<a href=#35 id=35 data-nosnippet>35</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span>bootstrap::validated_bootstrap;
+<a href=#36 id=36 data-nosnippet>36</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span>parser::{ParsedCatalog, parse_cache_meta, parse_catalog};
 </code></pre></div></section></main></body></html>
