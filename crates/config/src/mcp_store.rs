@@ -115,9 +115,7 @@ fn write_mcp_server_observed(
             .ok()
             .map(|metadata| metadata.permissions().mode() & 0o777)
             .unwrap_or(0o600);
-        if let Err(error) =
-            temporary_file.set_permissions(fs::Permissions::from_mode(mode))
-        {
+        if let Err(error) = temporary_file.set_permissions(fs::Permissions::from_mode(mode)) {
             let _ = fs::remove_file(&temporary);
             return Err(ConfigError::Io(error));
         }
