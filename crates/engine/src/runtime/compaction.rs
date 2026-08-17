@@ -1032,7 +1032,7 @@ mod tests {
         )
         .unwrap();
         let events = vec![StoredEvent {
-            event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+            engine_version: None,
             session_id: session,
             run_id: Some(run),
             seq: 11,
@@ -1078,7 +1078,7 @@ mod tests {
         let session = SessionId::new_v7();
         let run = RunId::new_v7();
         let events = vec![StoredEvent {
-            event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+            engine_version: None,
             session_id: session,
             run_id: Some(run),
             seq: 1,
@@ -1182,7 +1182,7 @@ mod tests {
                 provider_item_id: None,
             };
             events.push(StoredEvent {
-                event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+                engine_version: None,
                 session_id: session,
                 run_id: Some(run),
                 seq: events.len() as u64 + 1,
@@ -1212,7 +1212,7 @@ mod tests {
                 },
             });
             events.push(StoredEvent {
-                event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+                engine_version: None,
                 session_id: session,
                 run_id: Some(run),
                 seq: events.len() as u64 + 1,
@@ -1237,7 +1237,7 @@ mod tests {
                 },
             });
             events.push(StoredEvent {
-                event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+                engine_version: None,
                 session_id: session,
                 run_id: Some(run),
                 seq: events.len() as u64 + 1,

@@ -651,11 +651,6 @@ where
         if let Some(event) = prepared.replay.pop_front() {
             match accept_event(&mut state, event) {
                 AcceptedEvent::Duplicate => continue,
-                AcceptedEvent::Recover => {
-                    state.event_recoveries = state.event_recoveries.saturating_add(1);
-                    recover_events(engine, &mut prepared, state.cursor).await?;
-                    continue;
-                }
                 AcceptedEvent::Event(event) => {
                     if let Some(terminal) = process_event(
                         engine,
@@ -723,15 +718,12 @@ where
 
 enum AcceptedEvent {
     Duplicate,
-    Recover,
     Event(Box<StoredEvent>),
 }
 
 fn accept_event(state: &mut DriverState, event: StoredEvent) -> AcceptedEvent {
     if event.seq <= state.cursor {
         AcceptedEvent::Duplicate
-    } else if event.seq != state.cursor + 1 {
-        AcceptedEvent::Recover
     } else {
         state.cursor = event.seq;
         AcceptedEvent::Event(Box::new(event))
@@ -1012,10 +1004,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cursor_suppresses_duplicates_and_requests_gap_recovery() {
+    fn cursor_suppresses_duplicates_and_accepts_persisted_sequence_gaps() {
         let session_id = SessionId::new_v7();
         let event = |seq| StoredEvent {
-            event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+            engine_version: None,
             session_id,
             run_id: None,
             seq,
@@ -1031,14 +1023,14 @@ mod tests {
         ));
         assert!(matches!(
             accept_event(&mut state, event(4)),
-            AcceptedEvent::Recover
-        ));
-        assert_eq!(state.cursor, 2);
-        assert!(matches!(
-            accept_event(&mut state, event(3)),
             AcceptedEvent::Event(_)
         ));
-        assert_eq!(state.cursor, 3);
+        assert_eq!(state.cursor, 4);
+        assert!(matches!(
+            accept_event(&mut state, event(3)),
+            AcceptedEvent::Duplicate
+        ));
+        assert_eq!(state.cursor, 4);
     }
 
     #[test]

@@ -1335,16 +1335,15 @@ mod tests {
 
     use cookie_agent_protocol::{
         AssistantToolCallRef, ContextCheckpoint, ContextCheckpointBoundaries,
-        ContextCheckpointBudgets, ContextCheckpointCommit, EventPayload, EventSchemaVersion,
-        InternalAgentInvocationId, InternalAgentRunId, InternalSummaryCheckpoint, ModelCallId,
-        ModelFinishReason, ModelKey, ModelSelection, NativeContextScope, NativeReplayArtifact,
-        OperationFingerprint, PermissionAction, PersistedAssistantPart, PersistedModelTurn,
-        PersistedToolResult, PreparedApprovalResource, PreparedBindingLifetime,
-        PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
-        PreparedResourceIdentity, ProviderId, ProviderModelId, ReplayDisposition, ResolvedModelRef,
-        RunId, SafeCode, SafeDisplayText, SessionId, Sha256Digest, StoredEvent, SummaryByteLimit,
-        ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination,
-        ToolTerminationOutcome, Usage,
+        ContextCheckpointBudgets, ContextCheckpointCommit, EventPayload, InternalAgentInvocationId,
+        InternalAgentRunId, InternalSummaryCheckpoint, ModelCallId, ModelFinishReason, ModelKey,
+        ModelSelection, NativeContextScope, NativeReplayArtifact, OperationFingerprint,
+        PermissionAction, PersistedAssistantPart, PersistedModelTurn, PersistedToolResult,
+        PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
+        PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, ProviderId,
+        ProviderModelId, ReplayDisposition, ResolvedModelRef, RunId, SafeCode, SafeDisplayText,
+        SessionId, Sha256Digest, StoredEvent, SummaryByteLimit, ToolCallId, ToolCallPresentation,
+        ToolCallStart, ToolCallTermination, ToolTerminationOutcome, Usage,
     };
     use oven_sdk::{
         AdapterId, HistoryTurn, NativeContextScope as OvenNativeContextScope,
@@ -1435,7 +1434,7 @@ mod tests {
 
     fn event(seq: u64, run: RunId, payload: EventPayload) -> StoredEvent {
         StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: None,
             session_id: SessionId(uuid::Uuid::from_u128(1)),
             run_id: Some(run),
             seq,
@@ -2008,7 +2007,7 @@ mod tests {
             ),
         ];
         events.push(StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: None,
             session_id: session,
             run_id: None,
             seq: 5,

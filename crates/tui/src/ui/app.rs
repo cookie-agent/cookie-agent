@@ -6244,11 +6244,16 @@ impl App {
             .as_ref()
             .map(SessionTitle::to_string)
             .unwrap_or_else(|| "untitled".to_owned());
+        let degraded = if session.skipped_events.is_empty() {
+            ""
+        } else {
+            " !"
+        };
         // Primary text is exactly `agent-id:session-title`; hierarchy,
         // cursor, and watch markers live in prefix cells only, and the row
         // shows no session ID.
         format!(
-            "{cursor}{indent}{watched}{status}{agent}:{title}",
+            "{cursor}{indent}{watched}{status}{agent}:{title}{degraded}",
             agent = session.creation_selection.agent,
         )
     }

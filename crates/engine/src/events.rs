@@ -7,18 +7,19 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
-    AssistantToolCallRef, AttemptId, EventPayload, EventSchemaVersion, ModelCallId, OutputDelta,
-    OutputGap, OutputSnapshot, OutputStream, ProviderItemId, RunId, SessionId, StoredEvent,
-    ToolCallId, ToolCallStart,
+    AssistantToolCallRef, AttemptId, EventPayload, ModelCallId, OutputDelta, OutputGap,
+    OutputSnapshot, OutputStream, ProviderItemId, RunId, SessionId, StoredEvent, ToolCallId,
+    ToolCallStart, deserialize_event_payload_best_effort,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
@@ -47,7 +48,18 @@ pub struct EventLog {
     path: PathBuf,
     session_id: SessionId,
     events: Mutex<Vec<StoredEvent>>,
+    diagnostics: Vec<EventLoadDiagnostic>,
+    validation_taint: ValidationTaint,
+    next_seq: AtomicU64,
     persisted: AtomicBool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventLoadDiagnostic {
+    pub seq: u64,
+    pub reason: String,
+    pub engine_version: Option<String>,
+    pub skipped: bool,
 }
 
 impl EventLog {
@@ -60,6 +72,9 @@ impl EventLog {
             path,
             session_id,
             events: Mutex::new(Vec::new()),
+            diagnostics: Vec::new(),
+            validation_taint: ValidationTaint::default(),
+            next_seq: AtomicU64::new(1),
             persisted: AtomicBool::new(true),
         });
         if !matches!(creation, EventPayload::SessionCreated { .. }) {
@@ -78,6 +93,9 @@ impl EventLog {
             path,
             session_id,
             events: Mutex::new(Vec::new()),
+            diagnostics: Vec::new(),
+            validation_taint: ValidationTaint::default(),
+            next_seq: AtomicU64::new(1),
             persisted: AtomicBool::new(false),
         });
         if !matches!(creation, EventPayload::SessionCreated { .. }) {
@@ -88,18 +106,22 @@ impl EventLog {
     }
 
     pub fn open(path: PathBuf, session_id: SessionId) -> Result<Arc<Self>, EventLogError> {
-        let records = load_jsonl::<StoredEvent>(&path)?;
+        let loaded = load_event_jsonl(&path)?;
+        let records = loaded.records;
         if !matches!(
             records.first().map(|record| &record.payload),
             Some(EventPayload::SessionCreated { .. })
         ) {
             return Err(EventLogError::MissingCreation(path));
         }
-        validate_records(&path, session_id, &records)?;
+        validate_records(&path, session_id, &records, &loaded.validation_taint, None)?;
         Ok(Arc::new(Self {
             path,
             session_id,
             events: Mutex::new(records),
+            diagnostics: loaded.diagnostics,
+            validation_taint: loaded.validation_taint,
+            next_seq: AtomicU64::new(loaded.next_seq),
             persisted: AtomicBool::new(true),
         }))
     }
@@ -122,10 +144,10 @@ impl EventLog {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let event = StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
             session_id: self.session_id,
             run_id,
-            seq: events.last().map_or(1, |event| event.seq + 1),
+            seq: self.next_seq.load(Ordering::Acquire),
             timestamp: Timestamp::now(),
             payload,
         };
@@ -135,11 +157,18 @@ impl EventLog {
         })?;
         let mut candidate = events.clone();
         candidate.push(event.clone());
-        validate_records(&self.path, self.session_id, &candidate)?;
+        validate_records(
+            &self.path,
+            self.session_id,
+            &candidate,
+            &self.validation_taint,
+            Some(event.seq),
+        )?;
         if self.persisted.load(Ordering::Acquire) {
             append_jsonl(&self.path, &event)?;
         }
         events.push(event.clone());
+        self.next_seq.store(event.seq + 1, Ordering::Release);
         Ok(event)
     }
 
@@ -168,6 +197,16 @@ impl EventLog {
     }
 
     #[must_use]
+    pub fn diagnostics(&self) -> &[EventLoadDiagnostic] {
+        &self.diagnostics
+    }
+
+    #[must_use]
+    pub fn physical_tip_seq(&self) -> u64 {
+        self.next_seq.load(Ordering::Acquire).saturating_sub(1)
+    }
+
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -184,6 +223,7 @@ impl EventLog {
 
 #[derive(Debug)]
 struct RunAttribution {
+    start_seq: u64,
     agent_id: cookie_agent_protocol::AgentId,
     prompt_fingerprint: cookie_agent_protocol::Sha256Digest,
     selected_suffix: Vec<cookie_agent_protocol::ResolvedModelRef>,
@@ -191,6 +231,7 @@ struct RunAttribution {
     next_attempt_ordinal: u32,
     attempts_on_active: u32,
     active_attempt: Option<AttemptId>,
+    ordering_tainted: bool,
 }
 
 #[derive(Debug)]
@@ -202,18 +243,494 @@ struct AttemptAttribution {
 
 #[derive(Debug)]
 struct InternalRunAttribution {
+    start_seq: u64,
     invocation_id: cookie_agent_protocol::InternalAgentInvocationId,
     kind: cookie_agent_protocol::InternalAgentKind,
     run_id: RunId,
     active_model: Option<cookie_agent_protocol::ResolvedModelRef>,
     usage_recorded_in_phase: bool,
+    model_phase_taint_seen: u64,
+    usage_phase_taint_seen: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ValidationTaint {
+    broad: Vec<(u64, u64)>,
+    runs: HashMap<RunId, u64>,
+    attempts: HashMap<AttemptId, u64>,
+    attempt_runs: HashMap<RunId, u64>,
+    turns: HashMap<u64, u64>,
+    tools: HashMap<ToolCallId, u64>,
+    approvals: HashMap<cookie_agent_protocol::ApprovalId, u64>,
+    internal_runs: HashMap<cookie_agent_protocol::InternalAgentRunId, u64>,
+    internal_model_phases: HashMap<cookie_agent_protocol::InternalAgentRunId, Vec<u64>>,
+    internal_usage_phases: HashMap<cookie_agent_protocol::InternalAgentRunId, Vec<u64>>,
+    tool_terminals: HashMap<ToolCallId, u64>,
+    admissions: HashMap<u64, u64>,
+    run_ordering: HashMap<RunId, u64>,
+    turn_ordering: Option<u64>,
+    active_run_ordering: Option<u64>,
+}
+
+const MAX_INTERNAL_PHASE_TAINTS_PER_RUN: usize = 64;
+const INTERNAL_PHASE_TAINT_LIMIT_MESSAGE: &str =
+    "internal-agent phase taint history exceeds the 64-transition per-run limit";
+
+impl ValidationTaint {
+    fn broad_before(&self, seq: u64) -> bool {
+        self.broad.iter().any(|(start, _)| *start < seq)
+    }
+
+    fn keyed_before<K: Eq + std::hash::Hash>(
+        &self,
+        taints: &HashMap<K, u64>,
+        key: &K,
+        seq: u64,
+    ) -> bool {
+        self.broad_before(seq) || taints.get(key).is_some_and(|tainted| *tainted < seq)
+    }
+
+    fn run_before(&self, run_id: RunId, seq: u64) -> bool {
+        self.keyed_before(&self.runs, &run_id, seq)
+    }
+
+    fn attempt_before(&self, attempt_id: AttemptId, seq: u64) -> bool {
+        self.keyed_before(&self.attempts, &attempt_id, seq)
+    }
+
+    fn turn_before(&self, model_turn_seq: u64, seq: u64) -> bool {
+        self.keyed_before(&self.turns, &model_turn_seq, seq)
+    }
+
+    fn tool_before(&self, tool_call_id: ToolCallId, seq: u64) -> bool {
+        self.keyed_before(&self.tools, &tool_call_id, seq)
+    }
+
+    fn approval_before(&self, approval_id: cookie_agent_protocol::ApprovalId, seq: u64) -> bool {
+        self.keyed_before(&self.approvals, &approval_id, seq)
+    }
+
+    fn internal_run_before(
+        &self,
+        internal_run_id: cookie_agent_protocol::InternalAgentRunId,
+        seq: u64,
+    ) -> bool {
+        self.keyed_before(&self.internal_runs, &internal_run_id, seq)
+    }
+
+    fn latest_broad_before(&self, seq: u64) -> Option<u64> {
+        self.broad
+            .iter()
+            .filter(|(start, _)| *start < seq)
+            .map(|(_, end)| *end)
+            .max()
+    }
+
+    fn internal_model_phase_taint_before(
+        &self,
+        internal_run_id: cookie_agent_protocol::InternalAgentRunId,
+        seq: u64,
+    ) -> Option<u64> {
+        self.latest_broad_before(seq).max(
+            self.internal_model_phases
+                .get(&internal_run_id)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|tainted| *tainted < seq)
+                .max(),
+        )
+    }
+
+    fn internal_usage_phase_taint_before(
+        &self,
+        internal_run_id: cookie_agent_protocol::InternalAgentRunId,
+        seq: u64,
+    ) -> Option<u64> {
+        self.latest_broad_before(seq).max(
+            self.internal_usage_phases
+                .get(&internal_run_id)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|tainted| *tainted < seq)
+                .max(),
+        )
+    }
+
+    fn tool_terminal_before(&self, tool_call_id: ToolCallId, seq: u64) -> bool {
+        self.keyed_before(&self.tool_terminals, &tool_call_id, seq)
+    }
+
+    fn admission_before(&self, admission_seq: u64, seq: u64) -> bool {
+        self.keyed_before(&self.admissions, &admission_seq, seq)
+    }
+
+    fn run_ordering_between(&self, run_id: RunId, start_seq: u64, seq: u64) -> bool {
+        self.broad
+            .iter()
+            .any(|(start, end)| *start < seq && *end > start_seq)
+            || self
+                .run_ordering
+                .get(&run_id)
+                .is_some_and(|tainted| *tainted > start_seq && *tainted < seq)
+            || self
+                .attempt_runs
+                .get(&run_id)
+                .is_some_and(|tainted| *tainted > start_seq && *tainted < seq)
+    }
+
+    fn turn_ordering_before(&self, seq: u64) -> bool {
+        self.broad_before(seq) || self.turn_ordering.is_some_and(|tainted| tainted < seq)
+    }
+
+    fn active_run_ordering_before(&self, seq: u64) -> bool {
+        self.broad_before(seq)
+            || self
+                .active_run_ordering
+                .is_some_and(|tainted| tainted < seq)
+    }
+
+    fn mark_broad(&mut self, start: u64, end: u64) {
+        self.broad.push((start, end));
+    }
+
+    fn mark_record(
+        &mut self,
+        seq: u64,
+        run_id: Option<RunId>,
+        payload: &Value,
+    ) -> Result<(), &'static str> {
+        match payload.get("type").and_then(Value::as_str) {
+            Some("run_started") => {
+                if let Some(run_id) = run_id {
+                    self.runs.entry(run_id).or_insert(seq);
+                    self.run_ordering.entry(run_id).or_insert(seq);
+                }
+                self.active_run_ordering.get_or_insert(seq);
+            }
+            Some("model_attempt_started") => {
+                if let Some(attempt_id) = json_field(payload, "attempt_id") {
+                    self.attempts.entry(attempt_id).or_insert(seq);
+                }
+                if let Some(run_id) = run_id {
+                    self.attempt_runs.entry(run_id).or_insert(seq);
+                    self.run_ordering.entry(run_id).or_insert(seq);
+                }
+            }
+            Some("attempt_abandoned") | Some("model_fallback") => {
+                if let Some(run_id) = run_id {
+                    self.run_ordering.entry(run_id).or_insert(seq);
+                }
+            }
+            Some("model_turn_committed") => {
+                if let Some(model_turn_seq) = payload.get("model_turn_seq").and_then(Value::as_u64)
+                {
+                    self.turns.entry(model_turn_seq).or_insert(seq);
+                }
+                self.turn_ordering.get_or_insert(seq);
+                if let Some(run_id) = run_id {
+                    self.run_ordering.entry(run_id).or_insert(seq);
+                }
+            }
+            Some("tool_call_started") => {
+                if let Some(tool_call_id) = json_field(payload, "tool_call_id") {
+                    self.tools.entry(tool_call_id).or_insert(seq);
+                }
+            }
+            Some("tool_call_terminated") => {
+                if let Some(tool_call_id) = json_field(payload, "tool_call_id") {
+                    self.tool_terminals.entry(tool_call_id).or_insert(seq);
+                }
+            }
+            Some("approval_requested") => {
+                if let Some(approval_id) = payload
+                    .get("request")
+                    .and_then(|request| json_field(request, "approval_id"))
+                {
+                    self.approvals.entry(approval_id).or_insert(seq);
+                }
+            }
+            Some("internal_agent_started") => {
+                if let Some(internal_run_id) = json_field(payload, "internal_run_id") {
+                    self.internal_runs.entry(internal_run_id).or_insert(seq);
+                }
+            }
+            Some("internal_agent_fallback") => {
+                if let Some(internal_run_id) = json_field(payload, "internal_run_id") {
+                    self.mark_internal_fallback(internal_run_id, seq)?;
+                }
+            }
+            Some("internal_agent_usage_recorded") => {
+                if let Some(internal_run_id) = json_field(payload, "internal_run_id") {
+                    self.mark_internal_usage(internal_run_id, seq)?;
+                }
+            }
+            Some("user_input_admitted") => {
+                self.admissions.entry(seq).or_insert(seq);
+            }
+            Some("run_completed" | "run_failed" | "run_cancelled" | "run_interrupted") => {
+                self.active_run_ordering.get_or_insert(seq);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn mark_event(&mut self, event: &StoredEvent) -> Result<(), &'static str> {
+        let seq = event.seq;
+        match &event.payload {
+            EventPayload::RunStarted { .. } => {
+                if let Some(run_id) = event.run_id {
+                    self.runs.entry(run_id).or_insert(seq);
+                    self.run_ordering.entry(run_id).or_insert(seq);
+                }
+                self.active_run_ordering.get_or_insert(seq);
+            }
+            EventPayload::ModelAttemptStarted { attempt_id, .. } => {
+                self.attempts.entry(*attempt_id).or_insert(seq);
+                if let Some(run_id) = event.run_id {
+                    self.attempt_runs.entry(run_id).or_insert(seq);
+                    self.run_ordering.entry(run_id).or_insert(seq);
+                }
+            }
+            EventPayload::AttemptAbandoned { .. } | EventPayload::ModelFallback { .. } => {
+                if let Some(run_id) = event.run_id {
+                    self.run_ordering.entry(run_id).or_insert(seq);
+                }
+            }
+            EventPayload::ModelTurnCommitted { model_turn_seq, .. } => {
+                self.turns.entry(*model_turn_seq).or_insert(seq);
+                self.turn_ordering.get_or_insert(seq);
+                if let Some(run_id) = event.run_id {
+                    self.run_ordering.entry(run_id).or_insert(seq);
+                }
+            }
+            EventPayload::ToolCallStarted { start } => {
+                self.tools.entry(start.tool_call_id).or_insert(seq);
+            }
+            EventPayload::ToolCallTerminated { termination } => {
+                self.tool_terminals
+                    .entry(termination.tool_call_id)
+                    .or_insert(seq);
+            }
+            EventPayload::ApprovalRequested { request } => {
+                self.approvals.entry(request.approval_id()).or_insert(seq);
+            }
+            EventPayload::InternalAgentStarted {
+                internal_run_id, ..
+            } => {
+                self.internal_runs.entry(*internal_run_id).or_insert(seq);
+            }
+            EventPayload::InternalAgentFallback {
+                internal_run_id, ..
+            } => {
+                self.mark_internal_fallback(*internal_run_id, seq)?;
+            }
+            EventPayload::InternalAgentUsageRecorded {
+                internal_run_id, ..
+            } => {
+                self.mark_internal_usage(*internal_run_id, seq)?;
+            }
+            EventPayload::UserInputAdmitted { .. } => {
+                self.admissions.entry(seq).or_insert(seq);
+            }
+            EventPayload::RunCompleted { .. }
+            | EventPayload::RunFailed { .. }
+            | EventPayload::RunCancelled { .. }
+            | EventPayload::RunInterrupted { .. } => {
+                self.active_run_ordering.get_or_insert(seq);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn mark_internal_fallback(
+        &mut self,
+        internal_run_id: cookie_agent_protocol::InternalAgentRunId,
+        seq: u64,
+    ) -> Result<(), &'static str> {
+        let model_len = self
+            .internal_model_phases
+            .get(&internal_run_id)
+            .map_or(0, Vec::len);
+        let usage_len = self
+            .internal_usage_phases
+            .get(&internal_run_id)
+            .map_or(0, Vec::len);
+        if model_len >= MAX_INTERNAL_PHASE_TAINTS_PER_RUN
+            || usage_len >= MAX_INTERNAL_PHASE_TAINTS_PER_RUN
+        {
+            return Err(INTERNAL_PHASE_TAINT_LIMIT_MESSAGE);
+        }
+        self.internal_model_phases
+            .entry(internal_run_id)
+            .or_default()
+            .push(seq);
+        self.internal_usage_phases
+            .entry(internal_run_id)
+            .or_default()
+            .push(seq);
+        Ok(())
+    }
+
+    fn mark_internal_usage(
+        &mut self,
+        internal_run_id: cookie_agent_protocol::InternalAgentRunId,
+        seq: u64,
+    ) -> Result<(), &'static str> {
+        let usage = self
+            .internal_usage_phases
+            .entry(internal_run_id)
+            .or_default();
+        if usage.len() >= MAX_INTERNAL_PHASE_TAINTS_PER_RUN {
+            return Err(INTERNAL_PHASE_TAINT_LIMIT_MESSAGE);
+        }
+        usage.push(seq);
+        Ok(())
+    }
+}
+
+fn json_field<T: for<'de> Deserialize<'de>>(value: &Value, field: &str) -> Option<T> {
+    serde_json::from_value(value.get(field)?.clone()).ok()
+}
+
+fn validate_observed_duplicates(path: &Path, records: &[StoredEvent]) -> Result<(), EventLogError> {
+    let mut runs = HashSet::new();
+    let mut attempts = HashSet::new();
+    let mut turns = HashSet::new();
+    let mut usage_turns = HashSet::new();
+    let mut internal_runs = HashSet::new();
+    let mut tool_starts = HashSet::new();
+    let mut tool_terminations = HashSet::new();
+    let mut approvals = HashSet::new();
+    let mut model_calls = HashSet::new();
+    let mut provider_items = HashSet::new();
+    for record in records {
+        match &record.payload {
+            EventPayload::RunStarted { .. } => {
+                let Some(run_id) = record.run_id else {
+                    return corrupt(path, "RunStarted is missing run_id");
+                };
+                if !runs.insert(run_id) {
+                    return corrupt(path, "run_id has more than one RunStarted event");
+                }
+            }
+            EventPayload::ModelAttemptStarted { attempt_id, .. } => {
+                if !attempts.insert(*attempt_id) {
+                    return corrupt(path, "attempt_id has more than one ModelAttemptStarted");
+                }
+            }
+            EventPayload::ModelTurnCommitted {
+                model_turn_seq,
+                turn,
+                ..
+            } => {
+                if !turns.insert(*model_turn_seq) {
+                    return corrupt(path, "model turn sequence is duplicated");
+                }
+                if let Some(run_id) = record.run_id {
+                    for part in &turn.content {
+                        if let cookie_agent_protocol::PersistedAssistantPart::ToolCall {
+                            id,
+                            provider_item_id,
+                            ..
+                        } = part
+                        {
+                            if !model_calls.insert((run_id, id.clone())) {
+                                return corrupt(path, "model call id is reused within a run");
+                            }
+                            if let Some(provider_item_id) = provider_item_id
+                                && !provider_items.insert((run_id, provider_item_id.clone()))
+                            {
+                                return corrupt(path, "provider item id is reused within a run");
+                            }
+                        }
+                    }
+                }
+            }
+            EventPayload::ModelUsageRecorded { model_turn_seq, .. } => {
+                if !usage_turns.insert(*model_turn_seq) {
+                    return corrupt(path, "usage ownership does not match its model turn");
+                }
+            }
+            EventPayload::InternalAgentStarted {
+                internal_run_id, ..
+            } => {
+                if !internal_runs.insert(*internal_run_id) {
+                    return corrupt(path, "internal_run_id has more than one start");
+                }
+            }
+            EventPayload::ToolCallStarted { start } => {
+                if !tool_starts.insert(start.tool_call_id) {
+                    return corrupt(path, "tool_call_id has more than one start");
+                }
+            }
+            EventPayload::ToolCallTerminated { termination } => {
+                if !tool_terminations.insert(termination.tool_call_id) {
+                    return corrupt(path, "tool call has more than one terminal event");
+                }
+            }
+            EventPayload::ApprovalRequested { request }
+                if !approvals.insert(request.approval_id()) =>
+            {
+                return corrupt(
+                    path,
+                    "approval_id has more than one ApprovalRequested event",
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_record_local(path: &Path, record: &StoredEvent) -> Result<(), EventLogError> {
+    match &record.payload {
+        EventPayload::SessionReverted { through_seq } => {
+            if record.run_id.is_some() || *through_seq == 0 || *through_seq >= record.seq {
+                return corrupt(
+                    path,
+                    "SessionReverted target is not an existing prior event",
+                );
+            }
+        }
+        EventPayload::SessionPermissionOverlaySet { .. } if record.run_id.is_some() => {
+            return corrupt(path, "SessionPermissionOverlaySet must not have run_id");
+        }
+        EventPayload::DelegateChildTerminated { .. } if record.run_id.is_some() => {
+            return corrupt(path, "DelegateChildTerminated must not have run_id");
+        }
+        EventPayload::DelegatedContextSeeded { .. } if record.run_id.is_some() => {
+            return corrupt(path, "DelegatedContextSeeded must be runless");
+        }
+        EventPayload::SessionTitleCommitted { change, .. } => {
+            let runless = matches!(
+                change,
+                cookie_agent_protocol::SessionTitleChange::UserSet { .. }
+                    | cookie_agent_protocol::SessionTitleChange::UserClear { .. }
+                    | cookie_agent_protocol::SessionTitleChange::UserReset { .. }
+                    | cookie_agent_protocol::SessionTitleChange::DelegatedSet { .. }
+            );
+            if runless != record.run_id.is_none() {
+                return corrupt(path, "SessionTitleCommitted has inconsistent run ownership");
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn validate_records(
     path: &Path,
     session_id: SessionId,
     records: &[StoredEvent],
+    initial_taint: &ValidationTaint,
+    strict_from_seq: Option<u64>,
 ) -> Result<(), EventLogError> {
+    validate_observed_duplicates(path, records)?;
+    let mut taint = initial_taint.clone();
     let mut runs = HashMap::<RunId, RunAttribution>::new();
     let mut approval_owners = HashMap::new();
     let mut attempts = HashMap::<AttemptId, AttemptAttribution>::new();
@@ -231,13 +748,13 @@ fn validate_records(
     let mut previous_timestamp = None;
     let mut active_run = None;
     for (index, record) in records.iter().enumerate() {
-        let expected_seq = index as u64 + 1;
-        if record.seq != expected_seq {
+        if index > 0 && record.seq <= records[index - 1].seq {
             return corrupt(
                 path,
                 format!(
-                    "event sequence {} is not contiguous; expected {expected_seq}",
-                    record.seq
+                    "event sequence {} is not strictly greater than {}",
+                    record.seq,
+                    records[index - 1].seq
                 ),
             );
         }
@@ -262,6 +779,122 @@ fn validate_records(
         }
         if matches!(record.payload, EventPayload::SessionCreated { .. }) {
             return corrupt(path, "SessionCreated appeared after sequence 1");
+        }
+        validate_record_local(path, record)?;
+        let strict = strict_from_seq.is_some_and(|from| record.seq >= from);
+        let missing_admission = |user_input_seq: u64, run_id: RunId, input: &str| {
+            !records[..index].iter().any(|prior| {
+                prior.seq == user_input_seq
+                    && prior.run_id == Some(run_id)
+                    && matches!(
+                        &prior.payload,
+                        EventPayload::UserInputAdmitted { input: admitted } if admitted == input
+                    )
+            })
+        };
+        let tainted_prerequisite = if strict {
+            false
+        } else {
+            match &record.payload {
+                EventPayload::SkillLoaded { .. } | EventPayload::SkillInvocationNoted { .. }
+                    if record.run_id.is_some() =>
+                {
+                    record.run_id.is_some_and(|run_id| {
+                        !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                    })
+                }
+                EventPayload::SessionTitleCommitted { .. } if record.run_id.is_some() => {
+                    record.run_id.is_some_and(|run_id| {
+                        !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                    })
+                }
+                EventPayload::UserInputRecalledV2 {
+                    user_input_seq,
+                    input,
+                } => record.run_id.is_some_and(|run_id| {
+                    missing_admission(*user_input_seq, run_id, input)
+                        && taint.admission_before(*user_input_seq, record.seq)
+                }),
+                EventPayload::ModelAttemptStarted { .. }
+                | EventPayload::InternalAgentStarted { .. }
+                | EventPayload::ModelFallback { .. }
+                | EventPayload::ApprovalRequested { .. } => record.run_id.is_some_and(|run_id| {
+                    !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                }),
+                EventPayload::TextDelta { attempt_id, .. }
+                | EventPayload::ReasoningDelta { attempt_id, .. }
+                | EventPayload::AttemptAbandoned { attempt_id }
+                | EventPayload::ModelReplayEvaluated { attempt_id, .. }
+                | EventPayload::ModelTurnCommitted { attempt_id, .. } => {
+                    (!attempts.contains_key(attempt_id)
+                        && taint.attempt_before(*attempt_id, record.seq))
+                        || record.run_id.is_some_and(|run_id| {
+                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                        })
+                }
+                EventPayload::ModelUsageRecorded { model_turn_seq, .. } => {
+                    (!turns.contains_key(model_turn_seq)
+                        && taint.turn_before(*model_turn_seq, record.seq))
+                        || record.run_id.is_some_and(|run_id| {
+                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                        })
+                }
+                EventPayload::InternalAgentFallback {
+                    internal_run_id, ..
+                }
+                | EventPayload::InternalAgentUsageRecorded {
+                    internal_run_id, ..
+                } => {
+                    (!internal_runs.contains_key(internal_run_id)
+                        && taint.internal_run_before(*internal_run_id, record.seq))
+                        || record.run_id.is_some_and(|run_id| {
+                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                        })
+                }
+                EventPayload::ToolCallStarted { start } => {
+                    (!turns.contains_key(&start.owner.model_turn_seq)
+                        && taint.turn_before(start.owner.model_turn_seq, record.seq))
+                        || record.run_id.is_some_and(|run_id| {
+                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                        })
+                }
+                EventPayload::ToolCallTerminated { termination } => {
+                    !tool_starts.contains_key(&termination.tool_call_id)
+                        && taint.tool_before(termination.tool_call_id, record.seq)
+                }
+                EventPayload::ToolOutputElided { tool_call_id, .. }
+                | EventPayload::ToolCallProgress { tool_call_id, .. }
+                | EventPayload::ToolStdinSubmitted { tool_call_id, .. }
+                | EventPayload::ToolCallLinked { tool_call_id, .. } => {
+                    !tool_starts.contains_key(tool_call_id)
+                        && taint.tool_before(*tool_call_id, record.seq)
+                }
+                EventPayload::ApprovalEvaluated { approval_id, .. }
+                | EventPayload::ApprovalEscalated { approval_id, .. }
+                | EventPayload::ApprovalUserDecisionRecorded { approval_id, .. }
+                | EventPayload::ApprovalFinalized { approval_id, .. }
+                | EventPayload::ApprovalCancelled { approval_id, .. }
+                | EventPayload::ApprovalDoomLoopDetected { approval_id, .. } => {
+                    !approval_owners.contains_key(approval_id)
+                        && taint.approval_before(*approval_id, record.seq)
+                }
+                EventPayload::TreeApprovalGrantCommitted { grant } => {
+                    !approval_owners.contains_key(&grant.approval_id)
+                        && taint.approval_before(grant.approval_id, record.seq)
+                }
+                _ => record.run_id.is_some_and(|run_id| {
+                    !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                }),
+            }
+        };
+        if tainted_prerequisite {
+            taint
+                .mark_event(record)
+                .map_err(|message| EventLogError::Corrupt {
+                    path: path.to_owned(),
+                    message: message.into(),
+                })?;
+            continue;
         }
         match &record.payload {
             EventPayload::SessionReverted { through_seq } => {
@@ -290,8 +923,11 @@ fn validate_records(
             EventPayload::UserInputAdmitted { .. } | EventPayload::UserInputRecalled { .. }
                 if record.run_id.is_none() =>
             {
-                if active_run.is_some() {
+                if active_run.is_some() && !taint.active_run_ordering_before(record.seq) {
                     return corrupt(path, "runless UserInputAdmitted requires no active run");
+                }
+                if taint.active_run_ordering_before(record.seq) {
+                    active_run = None;
                 }
             }
             EventPayload::UserInputRecalledV2 {
@@ -330,6 +966,7 @@ fn validate_records(
                     return corrupt(path, "RunStarted is missing run_id");
                 };
                 let attribution = RunAttribution {
+                    start_seq: record.seq,
                     agent_id: agent.agent.clone(),
                     prompt_fingerprint: agent.prompt_fingerprint.clone(),
                     selected_suffix: selected_suffix
@@ -340,6 +977,7 @@ fn validate_records(
                     next_attempt_ordinal: 1,
                     attempts_on_active: 0,
                     active_attempt: None,
+                    ordering_tainted: false,
                 };
                 if runs.insert(run_id, attribution).is_some() {
                     return corrupt(path, "run_id has more than one RunStarted event");
@@ -376,19 +1014,27 @@ fn validate_records(
                     return corrupt(path, "attempt_id has more than one ModelAttemptStarted");
                 }
                 let run = runs.get_mut(&run_id).expect("started run is indexed");
-                if run.active_attempt.is_some() {
+                run.ordering_tainted |=
+                    taint.run_ordering_between(run_id, run.start_seq, record.seq);
+                if strict && run.ordering_tainted {
+                    return corrupt(
+                        path,
+                        "cannot strictly append an attempt after missing run-order prerequisites",
+                    );
+                }
+                if !run.ordering_tainted && run.active_attempt.is_some() {
                     return corrupt(
                         path,
                         "ModelAttemptStarted appeared before the prior attempt ended",
                     );
                 }
-                if *attempt_ordinal != run.next_attempt_ordinal {
+                if !run.ordering_tainted && *attempt_ordinal != run.next_attempt_ordinal {
                     return corrupt(path, "attempt_ordinal is not contiguous within its run");
                 }
                 let Ok(fallback_index) = usize::try_from(*fallback_index) else {
                     return corrupt(path, "fallback_index does not index the frozen suffix");
                 };
-                if fallback_index != run.active_fallback_index {
+                if !run.ordering_tainted && fallback_index != run.active_fallback_index {
                     return corrupt(
                         path,
                         "attempt fallback_index is not the active frozen suffix entry",
@@ -406,14 +1052,15 @@ fn validate_records(
                 if prompt_fingerprint != &run.prompt_fingerprint {
                     return corrupt(path, "attempt prompt fingerprint does not match RunStarted");
                 }
-                if *retry_ordinal != run.attempts_on_active {
+                if !run.ordering_tainted && *retry_ordinal != run.attempts_on_active {
                     return corrupt(
                         path,
                         "retry_ordinal is not contiguous for the active fallback entry",
                     );
                 }
-                run.next_attempt_ordinal += 1;
-                run.attempts_on_active += 1;
+                run.next_attempt_ordinal = attempt_ordinal.saturating_add(1);
+                run.active_fallback_index = fallback_index;
+                run.attempts_on_active = retry_ordinal.saturating_add(1);
                 run.active_attempt = Some(*attempt_id);
                 attempts.insert(
                     *attempt_id,
@@ -430,6 +1077,15 @@ fn validate_records(
             }
             EventPayload::AttemptAbandoned { attempt_id } => {
                 let run_id = validate_attempt_owner(path, &attempts, *attempt_id, record.run_id)?;
+                let run = runs.get_mut(&run_id).expect("started run is indexed");
+                run.ordering_tainted |=
+                    taint.run_ordering_between(run_id, run.start_seq, record.seq);
+                if strict && run.ordering_tainted {
+                    return corrupt(
+                        path,
+                        "cannot strictly append an attempt terminal after missing prerequisites",
+                    );
+                }
                 finish_attempt(path, &mut runs, &mut attempts, run_id, *attempt_id, false)?;
             }
             EventPayload::ModelReplayEvaluated {
@@ -459,11 +1115,21 @@ fn validate_records(
                     record.run_id,
                     resolved_model,
                 )?;
+                let run = runs.get_mut(&run_id).expect("started run is indexed");
+                run.ordering_tainted |=
+                    taint.run_ordering_between(run_id, run.start_seq, record.seq);
+                if strict && run.ordering_tainted {
+                    return corrupt(
+                        path,
+                        "cannot strictly append a model turn after missing prerequisites",
+                    );
+                }
                 finish_attempt(path, &mut runs, &mut attempts, run_id, *attempt_id, true)?;
-                if *model_turn_seq != next_model_turn_seq {
+                let turn_ordering_tainted = taint.turn_ordering_before(record.seq);
+                if *model_turn_seq != next_model_turn_seq && (strict || !turn_ordering_tainted) {
                     return corrupt(path, "model_turn_seq is not contiguous");
                 }
-                next_model_turn_seq += 1;
+                next_model_turn_seq = model_turn_seq.saturating_add(1);
                 for (content_index, part) in turn.content.iter().enumerate() {
                     if let cookie_agent_protocol::PersistedAssistantPart::ToolCall {
                         id,
@@ -536,11 +1202,14 @@ fn validate_records(
                     .insert(
                         *internal_run_id,
                         InternalRunAttribution {
+                            start_seq: record.seq,
                             invocation_id: *invocation_id,
                             kind: *kind,
                             run_id,
                             active_model,
                             usage_recorded_in_phase: false,
+                            model_phase_taint_seen: 0,
+                            usage_phase_taint_seen: 0,
                         },
                     )
                     .is_some()
@@ -566,10 +1235,21 @@ fn validate_records(
                     }
                     cookie_agent_protocol::InternalAgentBackend::Builtin { .. } => None,
                 };
+                let model_phase_taint = taint
+                    .internal_model_phase_taint_before(*internal_run_id, record.seq)
+                    .filter(|tainted| {
+                        *tainted > internal.start_seq && *tainted > internal.model_phase_taint_seen
+                    });
+                if strict && model_phase_taint.is_some() {
+                    return corrupt(
+                        path,
+                        "cannot strictly append internal fallback after a missing phase transition",
+                    );
+                }
                 if internal.invocation_id != *invocation_id
                     || internal.kind != *kind
                     || internal.run_id != run_id
-                    || internal.active_model.as_ref() != from_model
+                    || (model_phase_taint.is_none() && internal.active_model.as_ref() != from_model)
                 {
                     return corrupt(path, "internal fallback ownership does not match its run");
                 }
@@ -580,6 +1260,15 @@ fn validate_records(
                     cookie_agent_protocol::InternalAgentBackend::Builtin { .. } => None,
                 };
                 internal.usage_recorded_in_phase = false;
+                if let Some(tainted) = model_phase_taint {
+                    internal.model_phase_taint_seen = tainted;
+                }
+                if let Some(tainted) = taint
+                    .internal_usage_phase_taint_before(*internal_run_id, record.seq)
+                    .filter(|tainted| *tainted > internal.start_seq)
+                {
+                    internal.usage_phase_taint_seen = tainted;
+                }
             }
             EventPayload::InternalAgentUsageRecorded {
                 internal_run_id,
@@ -604,15 +1293,39 @@ fn validate_records(
                     }
                 })
                 .expect("built-in internal agent IDs are valid");
+                let model_phase_taint = taint
+                    .internal_model_phase_taint_before(*internal_run_id, record.seq)
+                    .filter(|tainted| {
+                        *tainted > internal.start_seq && *tainted > internal.model_phase_taint_seen
+                    });
+                let usage_phase_taint = taint
+                    .internal_usage_phase_taint_before(*internal_run_id, record.seq)
+                    .filter(|tainted| {
+                        *tainted > internal.start_seq && *tainted > internal.usage_phase_taint_seen
+                    });
+                if strict && (model_phase_taint.is_some() || usage_phase_taint.is_some()) {
+                    return corrupt(
+                        path,
+                        "cannot strictly append internal usage after a missing phase transition",
+                    );
+                }
                 if internal.kind != *kind
                     || internal.run_id != run_id
-                    || internal.active_model.as_ref() != Some(resolved_model)
+                    || (model_phase_taint.is_none()
+                        && internal.active_model.as_ref() != Some(resolved_model))
                     || *agent_id != expected_agent
-                    || internal.usage_recorded_in_phase
+                    || (usage_phase_taint.is_none() && internal.usage_recorded_in_phase)
                 {
                     return corrupt(path, "internal usage ownership does not match its run");
                 }
+                internal.active_model = Some(resolved_model.clone());
                 internal.usage_recorded_in_phase = true;
+                if let Some(tainted) = model_phase_taint {
+                    internal.model_phase_taint_seen = tainted;
+                }
+                if let Some(tainted) = usage_phase_taint {
+                    internal.usage_phase_taint_seen = tainted;
+                }
             }
             EventPayload::ModelFallback {
                 from,
@@ -624,7 +1337,15 @@ fn validate_records(
             } => {
                 let run_id = require_started_run(path, &runs, record.run_id)?;
                 let run = runs.get_mut(&run_id).expect("started run is indexed");
-                if run.active_attempt.is_some() {
+                run.ordering_tainted |=
+                    taint.run_ordering_between(run_id, run.start_seq, record.seq);
+                if strict && run.ordering_tainted {
+                    return corrupt(
+                        path,
+                        "cannot strictly append fallback after missing run-order prerequisites",
+                    );
+                }
+                if !run.ordering_tainted && run.active_attempt.is_some() {
                     return corrupt(
                         path,
                         "ModelFallback appeared before the active attempt ended",
@@ -639,7 +1360,9 @@ fn validate_records(
                 let Some(adjacent_index) = from_index.checked_add(1) else {
                     return corrupt(path, "ModelFallback source index cannot advance");
                 };
-                if from_index != run.active_fallback_index || to_index != adjacent_index {
+                if (!run.ordering_tainted && from_index != run.active_fallback_index)
+                    || to_index != adjacent_index
+                {
                     return corrupt(
                         path,
                         "ModelFallback transition is not adjacent from the active entry",
@@ -663,7 +1386,9 @@ fn validate_records(
                         "ModelFallback models do not match the frozen suffix transition",
                     );
                 }
-                if run.attempts_on_active == 0 || *attempts_on_from != run.attempts_on_active {
+                if *attempts_on_from == 0
+                    || (!run.ordering_tainted && *attempts_on_from != run.attempts_on_active)
+                {
                     return corrupt(
                         path,
                         "ModelFallback attempt count does not match started attempts",
@@ -696,6 +1421,12 @@ fn validate_records(
                 if record.run_id != Some(*run_id) || !termination.matches_start(start) {
                     return corrupt(path, "tool termination ownership does not match its start");
                 }
+                if strict && taint.tool_terminal_before(termination.tool_call_id, record.seq) {
+                    return corrupt(
+                        path,
+                        "cannot strictly append tool termination after a missing terminal transition",
+                    );
+                }
                 if !terminated_tools.insert(termination.tool_call_id) {
                     return corrupt(path, "tool call has more than one terminal event");
                 }
@@ -704,8 +1435,10 @@ fn validate_records(
                 let Some((run_id, _)) = tool_starts.get(tool_call_id) else {
                     return corrupt(path, "tool elision appeared before its start");
                 };
+                let terminal_tainted = taint.tool_terminal_before(*tool_call_id, record.seq);
                 if record.run_id != Some(*run_id)
-                    || !terminated_tools.contains(tool_call_id)
+                    || (!terminated_tools.contains(tool_call_id) && !terminal_tainted)
+                    || (strict && terminal_tainted)
                     || !elided_tools.insert(*tool_call_id)
                 {
                     return corrupt(path, "tool elision ownership or ordering is invalid");
@@ -717,7 +1450,11 @@ fn validate_records(
                 let Some((run_id, _)) = tool_starts.get(tool_call_id) else {
                     return corrupt(path, "tool lifecycle event appeared before its start");
                 };
-                if record.run_id != Some(*run_id) || terminated_tools.contains(tool_call_id) {
+                let terminal_tainted = taint.tool_terminal_before(*tool_call_id, record.seq);
+                if record.run_id != Some(*run_id)
+                    || terminated_tools.contains(tool_call_id)
+                    || (strict && terminal_tainted)
+                {
                     return corrupt(
                         path,
                         "tool lifecycle event has invalid ownership or ordering",
@@ -768,6 +1505,243 @@ fn validate_records(
         }
     }
     Ok(())
+}
+
+struct LoadedEvents {
+    records: Vec<StoredEvent>,
+    diagnostics: Vec<EventLoadDiagnostic>,
+    validation_taint: ValidationTaint,
+    next_seq: u64,
+}
+
+fn load_event_jsonl(path: &Path) -> Result<LoadedEvents, EventLogError> {
+    let bytes = read_complete_jsonl(path)?;
+    let mut records = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut validation_taint = ValidationTaint::default();
+    let mut last_observed_seq = 0_u64;
+    for (index, line) in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .enumerate()
+    {
+        let line_number = index as u64 + 1;
+        let mut value = match serde_json::from_slice::<serde_json::Value>(line) {
+            Ok(value) => value,
+            Err(error) => {
+                if index == 0 {
+                    return corrupt_value(
+                        path,
+                        format!("SessionCreated line is unreadable: {error}"),
+                    );
+                }
+                diagnostics.push(EventLoadDiagnostic {
+                    seq: line_number,
+                    reason: format!("corrupt JSON line: {error}"),
+                    engine_version: None,
+                    skipped: true,
+                });
+                validation_taint.mark_broad(line_number, line_number);
+                continue;
+            }
+        };
+        let Some(object) = value.as_object_mut() else {
+            if index == 0 {
+                return corrupt_value(path, "SessionCreated line is not a JSON object");
+            }
+            diagnostics.push(EventLoadDiagnostic {
+                seq: line_number,
+                reason: "event envelope is not a JSON object".into(),
+                engine_version: None,
+                skipped: true,
+            });
+            validation_taint.mark_broad(line_number, line_number);
+            continue;
+        };
+        let seq = object
+            .get("seq")
+            .and_then(Value::as_u64)
+            .unwrap_or(line_number);
+        let engine_version = object
+            .get("engine_version")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let envelope_run_id = object
+            .get("run_id")
+            .and_then(|value| serde_json::from_value(value.clone()).ok());
+        if object.get("seq").and_then(Value::as_u64).is_some() {
+            if seq <= last_observed_seq {
+                return corrupt_value(path, "event sequences are not strictly increasing");
+            }
+            if last_observed_seq > 0 && seq > last_observed_seq + 1 {
+                let start = last_observed_seq + 1;
+                let end = seq - 1;
+                diagnostics.push(EventLoadDiagnostic {
+                    seq: start,
+                    reason: if start == end {
+                        "event sequence is absent from the physical log".into()
+                    } else {
+                        format!("event sequences {start}..={end} are absent from the physical log")
+                    },
+                    engine_version: None,
+                    skipped: true,
+                });
+                validation_taint.mark_broad(start, end);
+            }
+            last_observed_seq = seq;
+        }
+        let unknown = object
+            .keys()
+            .filter(|key| {
+                !matches!(
+                    key.as_str(),
+                    "engine_version"
+                        | "event_schema_version"
+                        | "session_id"
+                        | "run_id"
+                        | "seq"
+                        | "timestamp"
+                        | "payload"
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !unknown.is_empty() {
+            if index == 0 {
+                return corrupt_value(
+                    path,
+                    format!(
+                        "SessionCreated envelope has unknown fields: {}",
+                        unknown.join(", ")
+                    ),
+                );
+            }
+            diagnostics.push(EventLoadDiagnostic {
+                seq,
+                reason: format!("unknown envelope fields: {}", unknown.join(", ")),
+                engine_version,
+                skipped: true,
+            });
+            if let Some(payload) = object.get("payload") {
+                validation_taint
+                    .mark_record(seq, envelope_run_id, payload)
+                    .map_err(|message| EventLogError::Corrupt {
+                        path: path.to_owned(),
+                        message: message.into(),
+                    })?;
+            } else {
+                validation_taint.mark_broad(seq, seq);
+            }
+            continue;
+        }
+        let mut degraded = Vec::new();
+        if object
+            .get("engine_version")
+            .is_some_and(|version| !version.is_null() && !version.is_string())
+        {
+            object.remove("engine_version");
+            degraded.push("engine_version".to_owned());
+        }
+        let Some(payload_value) = object.get("payload").cloned() else {
+            if index == 0 {
+                return corrupt_value(path, "SessionCreated payload is absent");
+            }
+            diagnostics.push(EventLoadDiagnostic {
+                seq,
+                reason: "required payload is absent".into(),
+                engine_version,
+                skipped: true,
+            });
+            validation_taint.mark_broad(seq, seq);
+            continue;
+        };
+        match deserialize_event_payload_best_effort(payload_value.clone()) {
+            Ok(read) => {
+                degraded.extend(
+                    read.degraded_fields
+                        .into_iter()
+                        .map(|field| format!("payload.{field}")),
+                );
+                object.insert(
+                    "payload".into(),
+                    serde_json::to_value(read.payload).expect("event payload serializes"),
+                );
+            }
+            Err(reason) => {
+                if index == 0 {
+                    return corrupt_value(
+                        path,
+                        format!("SessionCreated is unsupported or corrupt: {reason}"),
+                    );
+                }
+                diagnostics.push(EventLoadDiagnostic {
+                    seq,
+                    reason,
+                    engine_version,
+                    skipped: true,
+                });
+                validation_taint
+                    .mark_record(seq, envelope_run_id, &payload_value)
+                    .map_err(|message| EventLogError::Corrupt {
+                        path: path.to_owned(),
+                        message: message.into(),
+                    })?;
+                continue;
+            }
+        }
+        let final_payload = object.get("payload").cloned();
+        match serde_json::from_value::<StoredEvent>(value) {
+            Ok(event) => {
+                if !degraded.is_empty() {
+                    diagnostics.push(EventLoadDiagnostic {
+                        seq,
+                        reason: format!("degraded optional fields: {}", degraded.join(", ")),
+                        engine_version: event.engine_version.clone(),
+                        skipped: false,
+                    });
+                }
+                records.push(event);
+            }
+            Err(error) => {
+                if index == 0 {
+                    return corrupt_value(
+                        path,
+                        format!("SessionCreated is unsupported or corrupt: {error}"),
+                    );
+                }
+                diagnostics.push(EventLoadDiagnostic {
+                    seq,
+                    reason: error.to_string(),
+                    engine_version,
+                    skipped: true,
+                });
+                if let Some(payload) = final_payload.as_ref() {
+                    validation_taint
+                        .mark_record(seq, envelope_run_id, payload)
+                        .map_err(|message| EventLogError::Corrupt {
+                            path: path.to_owned(),
+                            message: message.into(),
+                        })?;
+                } else {
+                    validation_taint.mark_broad(seq, seq);
+                }
+            }
+        }
+    }
+    let observed_tip = last_observed_seq.max(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.skipped)
+            .map(|diagnostic| diagnostic.seq)
+            .max()
+            .unwrap_or(0),
+    );
+    Ok(LoadedEvents {
+        records,
+        diagnostics,
+        validation_taint,
+        next_seq: observed_tip.saturating_add(1).max(1),
+    })
 }
 
 fn require_started_run(
@@ -835,7 +1809,7 @@ fn finish_attempt(
         .expect("validated attempt is indexed");
     attempt.finished = true;
     let run = runs.get_mut(&run_id).expect("started run is indexed");
-    if run.active_attempt != Some(attempt_id) {
+    if !run.ordering_tainted && run.active_attempt != Some(attempt_id) {
         return corrupt(
             path,
             "attempt terminal event is inconsistent with the active attempt",
@@ -927,6 +1901,20 @@ pub fn load_jsonl<T>(path: &Path) -> Result<Vec<T>, EventLogError>
 where
     T: for<'de> Deserialize<'de>,
 {
+    let bytes = read_complete_jsonl(path)?;
+    bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            serde_json::from_slice(line).map_err(|source| EventLogError::Json {
+                path: path.to_owned(),
+                source,
+            })
+        })
+        .collect()
+}
+
+fn read_complete_jsonl(path: &Path) -> Result<Vec<u8>, EventLogError> {
     let mut bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -957,16 +1945,7 @@ where
                 source,
             })?;
     }
-    bytes
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            serde_json::from_slice(line).map_err(|source| EventLogError::Json {
-                path: path.to_owned(),
-                source,
-            })
-        })
-        .collect()
+    Ok(bytes)
 }
 
 pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<(), EventLogError> {
@@ -1199,15 +2178,19 @@ const fn stream_index(stream: OutputStream) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::BTreeMap, fs, path::Path};
 
     use cookie_agent_protocol::{
-        AgentMode, AgentRevision, ApprovalReasonCode, ApprovalTrigger, AttemptId, CatalogRevision,
-        ClientRunId, CwdIdentity, EventPayload, EventSchemaVersion, FrozenModelBinding,
-        ModelErrorKind, ModelErrorStage, ModelErrorSummary, ModelKey, ModelRevision, OutputStream,
-        PermissionAction, PermissionEffect, ProviderStateRevision, RecipeRegistryRevision, RunId,
-        RunSelection, RuntimeRevision, SafeErrorMessage, SessionId, SessionOrigin, Sha256Digest,
-        StoredEvent, ToolCallId, VariantId,
+        AgentId, AgentMode, AgentRevision, ApprovalReasonCode, ApprovalTrigger, ArtifactReference,
+        AssistantToolCallRef, AttemptId, CatalogRevision, ClientRunId, CwdIdentity, EventPayload,
+        FrozenModelBinding, InternalAgentBackend, InternalAgentFailure, InternalAgentInvocationId,
+        InternalAgentKind, InternalAgentRunId, ModelCallId, ModelErrorKind, ModelErrorStage,
+        ModelErrorSummary, ModelFinishReason, ModelKey, ModelRevision, OutputStream,
+        PermissionAction, PermissionEffect, PersistedAssistantPart, PersistedModelTurn,
+        ProviderStateRevision, RecipeRegistryRevision, RunId, RunSelection, RuntimeRevision,
+        SafeCode, SafeDisplayText, SafeErrorMessage, SafeInternalAgentCall, SafeToolError,
+        SessionId, SessionOrigin, Sha256Digest, StoredEvent, ToolCallId, ToolCallPresentation,
+        ToolCallStart, ToolCallTermination, ToolTerminationOutcome, Usage, VariantId,
     };
     use serde_json::Value;
     use tempfile::tempdir;
@@ -1248,7 +2231,7 @@ mod tests {
         let session_id = SessionId(Uuid::from_u128(99));
         let agent = agent_snapshot("test", AgentMode::Primary);
         StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: None,
             session_id,
             run_id: None,
             seq: 1,
@@ -1276,7 +2259,7 @@ mod tests {
         payload: EventPayload,
     ) -> StoredEvent {
         StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: None,
             session_id,
             run_id,
             seq,
@@ -1301,6 +2284,36 @@ mod tests {
             request_id: None,
             retry_after_ms: Some(100),
         }
+    }
+
+    fn orphan_termination(tool_call_id: ToolCallId) -> EventPayload {
+        EventPayload::ToolCallTerminated {
+            termination: ToolCallTermination {
+                tool_call_id,
+                owner: AssistantToolCallRef {
+                    model_turn_seq: 999,
+                    content_index: 0,
+                    model_call_id: ModelCallId::new("orphan").expect("model call id"),
+                    provider_item_id: None,
+                },
+                outcome: ToolTerminationOutcome::Failed,
+                result: None,
+                error: Some(SafeToolError {
+                    code: SafeCode::new("orphan").expect("safe code"),
+                    message: SafeErrorMessage::new("orphan termination").expect("safe error"),
+                }),
+            },
+        }
+    }
+
+    fn write_event_values(path: &Path, values: &[Value]) {
+        let contents = values
+            .iter()
+            .map(|value| serde_json::to_string(value).expect("event value"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(path, contents).expect("write event values");
     }
 
     fn push_run_event(
@@ -1481,7 +2494,7 @@ mod tests {
     }
 
     #[test]
-    fn stored_event_rejects_unknown_fields_and_non_v7_records() {
+    fn stored_event_rejects_unknown_envelope_fields_and_ignores_legacy_version() {
         let mut value = serde_json::to_value(stored_event()).expect("serialize record");
         value
             .as_object_mut()
@@ -1491,7 +2504,7 @@ mod tests {
 
         let mut value = serde_json::to_value(stored_event()).expect("serialize record");
         value["event_schema_version"] = Value::from(3);
-        assert!(serde_json::from_value::<StoredEvent>(value).is_err());
+        assert!(serde_json::from_value::<StoredEvent>(value).is_ok());
     }
 
     #[test]
@@ -1534,6 +2547,652 @@ mod tests {
             bytes.push(b'\n');
             fs::write(&path, bytes).expect("write event log");
             assert!(EventLog::open(path, expected).is_err());
+        }
+    }
+
+    #[test]
+    fn event_log_best_effort_reader_applies_all_three_tiers() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        let creation = stored_event();
+        let session = creation.session_id;
+        let mut values = vec![serde_json::to_value(&creation).expect("creation")];
+
+        let mut optional = serde_json::to_value(event(
+            session,
+            None,
+            2,
+            EventPayload::DelegateChildTerminated {
+                status: cookie_agent_protocol::SessionStatus::Failed,
+                reason: None,
+            },
+        ))
+        .expect("optional event");
+        optional["payload"]["reason"] = serde_json::json!(42);
+        values.push(optional);
+
+        let mut unknown_tag = serde_json::to_value(event(
+            session,
+            None,
+            3,
+            EventPayload::UserInputAdmitted {
+                input: "future".into(),
+            },
+        ))
+        .expect("unknown event");
+        unknown_tag["payload"]["type"] = serde_json::json!("future_event");
+        values.push(unknown_tag);
+
+        let mut broken_required = serde_json::to_value(event(
+            session,
+            Some(RunId(Uuid::from_u128(400))),
+            4,
+            EventPayload::RunFailed {
+                error: SafeErrorMessage::new("failed").expect("safe error"),
+            },
+        ))
+        .expect("broken event");
+        broken_required["payload"]["error"] = serde_json::json!(42);
+        values.push(broken_required);
+
+        let mut future_field = serde_json::to_value(event(
+            session,
+            None,
+            5,
+            EventPayload::UserInputAdmitted {
+                input: "accepted".into(),
+            },
+        ))
+        .expect("future field event");
+        future_field["payload"]["future_optional"] = serde_json::json!(true);
+        values.push(future_field);
+
+        let mut unknown_envelope = serde_json::to_value(event(
+            session,
+            None,
+            6,
+            EventPayload::UserInputAdmitted {
+                input: "skip envelope".into(),
+            },
+        ))
+        .expect("unknown envelope");
+        unknown_envelope["future_envelope"] = serde_json::json!(true);
+        values.push(unknown_envelope);
+
+        let contents = values
+            .into_iter()
+            .map(|value| serde_json::to_string(&value).expect("event line"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(&path, contents).expect("write events");
+
+        let log = EventLog::open(path, session).expect("best-effort open");
+        assert_eq!(
+            log.all_events()
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 5],
+            "diagnostics: {:?}",
+            log.diagnostics()
+        );
+        assert!(log.diagnostics().iter().any(|diagnostic| {
+            !diagnostic.skipped
+                && diagnostic.seq == 2
+                && diagnostic.reason.contains("payload.reason")
+        }));
+        assert_eq!(
+            log.diagnostics()
+                .iter()
+                .filter(|diagnostic| diagnostic.skipped)
+                .map(|diagnostic| diagnostic.seq)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 6]
+        );
+        let events = log.events();
+        let EventPayload::SessionCreated { creation_agent, .. } = &events[0].payload else {
+            panic!("creation event")
+        };
+        let artifacts =
+            crate::ArtifactStore::open(directory.path().join("artifacts")).expect("artifact store");
+        crate::model_history::assemble_full_history(
+            &events,
+            &artifacts,
+            &creation_agent.fallback_chain[0],
+            "system",
+        )
+        .expect("model history tolerates skipped records");
+        let appended = log
+            .append(
+                None,
+                EventPayload::UserInputAdmitted {
+                    input: "after skipped tail".into(),
+                },
+            )
+            .expect("append after skipped tail");
+        assert_eq!(appended.seq, 7);
+        assert_eq!(
+            appended.engine_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[test]
+    fn unrelated_skipped_event_does_not_permit_forged_usage_or_orphan_tool_termination() {
+        let records = attribution_records();
+        let session = records[0].session_id;
+        let run = records[1].run_id.expect("run id");
+        let next_seq = records.last().expect("records").seq + 1;
+        let mut unknown = serde_json::to_value(event(
+            session,
+            Some(run),
+            next_seq,
+            EventPayload::UserInputApplied { user_input_seq: 1 },
+        ))
+        .expect("unknown event envelope");
+        unknown["payload"]["type"] = serde_json::json!("future_unrelated_event");
+
+        let forged_usage = event(
+            session,
+            Some(run),
+            next_seq + 1,
+            EventPayload::ModelUsageRecorded {
+                model_turn_seq: 999,
+                agent_id: cookie_agent_protocol::AgentId::new("test").expect("agent id"),
+                resolved_model: wire_resolved(&fallback_binding("fallback-zero")),
+                usage: Usage::default(),
+            },
+        );
+        let directory = tempdir().expect("temporary directory");
+        let usage_path = directory.path().join("forged-usage.jsonl");
+        let mut lines = records
+            .iter()
+            .map(|record| serde_json::to_string(record).expect("record"))
+            .collect::<Vec<_>>();
+        lines.push(serde_json::to_string(&unknown).expect("unknown"));
+        lines.push(serde_json::to_string(&forged_usage).expect("usage"));
+        fs::write(&usage_path, lines.join("\n") + "\n").expect("write usage log");
+        assert!(EventLog::open(usage_path, session).is_err());
+
+        let orphan_path = directory.path().join("orphan-tool.jsonl");
+        lines.pop();
+        lines.push(
+            serde_json::to_string(&event(
+                session,
+                Some(run),
+                next_seq + 1,
+                orphan_termination(ToolCallId(Uuid::from_u128(700))),
+            ))
+            .expect("termination"),
+        );
+        fs::write(&orphan_path, lines.join("\n") + "\n").expect("write orphan log");
+        assert!(EventLog::open(orphan_path, session).is_err());
+    }
+
+    #[test]
+    fn append_after_skipped_tool_start_still_requires_an_observed_start() {
+        let creation = stored_event();
+        let session = creation.session_id;
+        let run = RunId(Uuid::from_u128(701));
+        let tool_call_id = ToolCallId(Uuid::from_u128(702));
+        let skipped_start = serde_json::json!({
+            "session_id": session,
+            "run_id": run,
+            "seq": 2,
+            "timestamp": "1970-01-01T00:00:02Z",
+            "payload": {
+                "type": "tool_call_started",
+                "tool_call_id": tool_call_id,
+                "owner": 42,
+                "presentation": 42,
+                "operation_fingerprint": 42
+            }
+        });
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("skipped-start.jsonl");
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&creation).expect("creation"),
+                serde_json::to_string(&skipped_start).expect("skipped start")
+            ),
+        )
+        .expect("write skipped start log");
+        let log = EventLog::open(path, session).expect("open skipped start log");
+        assert!(
+            log.append(Some(run), orphan_termination(tool_call_id))
+                .is_err()
+        );
+        assert_eq!(log.all_events().len(), 1);
+    }
+
+    #[test]
+    fn large_sequence_gap_uses_one_bounded_diagnostic() {
+        let creation = stored_event();
+        let session = creation.session_id;
+        let distant_seq = 1_000_000_000;
+        let distant = event(
+            session,
+            None,
+            distant_seq,
+            EventPayload::DelegateChildTerminated {
+                status: cookie_agent_protocol::SessionStatus::Failed,
+                reason: None,
+            },
+        );
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("large-gap.jsonl");
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&creation).expect("creation"),
+                serde_json::to_string(&distant).expect("distant event")
+            ),
+        )
+        .expect("write large gap log");
+        let log = EventLog::open(path, session).expect("open large gap");
+        assert_eq!(log.diagnostics().len(), 1);
+        assert_eq!(log.diagnostics()[0].seq, 2);
+        assert!(log.diagnostics()[0].reason.contains("2..=999999999"));
+        assert_eq!(log.physical_tip_seq(), distant_seq);
+    }
+
+    #[test]
+    fn repeated_skipped_internal_fallbacks_refresh_phase_taint_and_no_skip_stays_strict() {
+        let base = attribution_records();
+        let session = base[0].session_id;
+        let run = base[1].run_id.expect("run id");
+        let invocation_id = InternalAgentInvocationId(Uuid::from_u128(800));
+        let internal_run_id = InternalAgentRunId(Uuid::from_u128(801));
+        let kind = InternalAgentKind::Approval;
+        let from_model = wire_resolved(&fallback_binding("fallback-zero"));
+        let to_model = wire_resolved(&fallback_binding("fallback-one"));
+        let final_model = wire_resolved(&fallback_binding("fallback-two"));
+        let started = event(
+            session,
+            Some(run),
+            3,
+            EventPayload::InternalAgentStarted {
+                invocation_id,
+                internal_run_id,
+                kind,
+                backend: InternalAgentBackend::Model {
+                    resolved_model: from_model.clone(),
+                },
+                call: SafeInternalAgentCall {
+                    name: SafeCode::new("internal").expect("safe code"),
+                    input_summary: SafeDisplayText::new("input").expect("safe display"),
+                    input_digest: Sha256Digest::of_bytes(b"input"),
+                },
+            },
+        );
+        let fallback = event(
+            session,
+            Some(run),
+            4,
+            EventPayload::InternalAgentFallback {
+                invocation_id,
+                internal_run_id,
+                kind,
+                from: InternalAgentBackend::Model {
+                    resolved_model: from_model,
+                },
+                to: InternalAgentBackend::Model {
+                    resolved_model: to_model.clone(),
+                },
+                failure: InternalAgentFailure {
+                    code: SafeCode::new("fallback").expect("safe code"),
+                    message: SafeErrorMessage::new("fallback").expect("safe error"),
+                    retryable: true,
+                    model_error: None,
+                },
+                attempts: 1,
+            },
+        );
+        let usage = |resolved_model| EventPayload::InternalAgentUsageRecorded {
+            internal_run_id,
+            kind,
+            agent_id: AgentId::new(cookie_agent_config::BUILT_IN_APPROVAL_AGENT_ID)
+                .expect("agent id"),
+            resolved_model,
+            usage: Usage::default(),
+        };
+        let second_fallback = event(
+            session,
+            Some(run),
+            6,
+            EventPayload::InternalAgentFallback {
+                invocation_id,
+                internal_run_id,
+                kind,
+                from: InternalAgentBackend::Model {
+                    resolved_model: to_model.clone(),
+                },
+                to: InternalAgentBackend::Model {
+                    resolved_model: final_model.clone(),
+                },
+                failure: InternalAgentFailure {
+                    code: SafeCode::new("fallback").expect("safe code"),
+                    message: SafeErrorMessage::new("second fallback").expect("safe error"),
+                    retryable: true,
+                    model_error: None,
+                },
+                attempts: 2,
+            },
+        );
+        let mut malformed_fallback = serde_json::to_value(&fallback).expect("fallback");
+        malformed_fallback["payload"]["attempts"] = serde_json::json!(0);
+        let mut second_malformed_fallback =
+            serde_json::to_value(second_fallback).expect("second fallback");
+        second_malformed_fallback["payload"]["attempts"] = serde_json::json!(0);
+        let accepted = [
+            serde_json::to_value(&base[0]).expect("creation"),
+            serde_json::to_value(&base[1]).expect("run"),
+            serde_json::to_value(&started).expect("internal start"),
+            malformed_fallback,
+            serde_json::to_value(event(session, Some(run), 5, usage(to_model.clone())))
+                .expect("first re-anchor"),
+            second_malformed_fallback,
+            serde_json::to_value(event(session, Some(run), 7, usage(final_model)))
+                .expect("second dependent usage"),
+        ];
+        let directory = tempdir().expect("temporary directory");
+        let accepted_path = directory.path().join("internal-phase-tainted.jsonl");
+        write_event_values(&accepted_path, &accepted);
+        let log = EventLog::open(accepted_path, session).expect("phase-tainted usage loads");
+        assert_eq!(
+            log.all_events()
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 5, 7]
+        );
+
+        let forged = [
+            serde_json::to_value(&base[0]).expect("creation"),
+            serde_json::to_value(&base[1]).expect("run"),
+            serde_json::to_value(&started).expect("internal start"),
+            serde_json::to_value(event(session, Some(run), 4, usage(to_model)))
+                .expect("forged usage"),
+        ];
+        let forged_path = directory.path().join("internal-phase-forged.jsonl");
+        write_event_values(&forged_path, &forged);
+        assert!(EventLog::open(forged_path, session).is_err());
+    }
+
+    #[test]
+    fn internal_phase_taint_history_rejects_the_sixty_fifth_transition() {
+        let base = attribution_records();
+        let session = base[0].session_id;
+        let run = base[1].run_id.expect("run id");
+        let invocation_id = InternalAgentInvocationId(Uuid::from_u128(805));
+        let internal_run_id = InternalAgentRunId(Uuid::from_u128(806));
+        let kind = InternalAgentKind::Approval;
+        let from_model = wire_resolved(&fallback_binding("fallback-zero"));
+        let to_model = wire_resolved(&fallback_binding("fallback-one"));
+        let started = event(
+            session,
+            Some(run),
+            3,
+            EventPayload::InternalAgentStarted {
+                invocation_id,
+                internal_run_id,
+                kind,
+                backend: InternalAgentBackend::Model {
+                    resolved_model: from_model.clone(),
+                },
+                call: SafeInternalAgentCall {
+                    name: SafeCode::new("internal").expect("safe code"),
+                    input_summary: SafeDisplayText::new("input").expect("safe display"),
+                    input_digest: Sha256Digest::of_bytes(b"input"),
+                },
+            },
+        );
+        let mut values = vec![
+            serde_json::to_value(&base[0]).expect("creation"),
+            serde_json::to_value(&base[1]).expect("run"),
+            serde_json::to_value(started).expect("internal start"),
+        ];
+        for offset in 0..=64_u64 {
+            let mut fallback = serde_json::to_value(event(
+                session,
+                Some(run),
+                4 + offset,
+                EventPayload::InternalAgentFallback {
+                    invocation_id,
+                    internal_run_id,
+                    kind,
+                    from: InternalAgentBackend::Model {
+                        resolved_model: from_model.clone(),
+                    },
+                    to: InternalAgentBackend::Model {
+                        resolved_model: to_model.clone(),
+                    },
+                    failure: InternalAgentFailure {
+                        code: SafeCode::new("fallback").expect("safe code"),
+                        message: SafeErrorMessage::new("fallback").expect("safe error"),
+                        retryable: true,
+                        model_error: None,
+                    },
+                    attempts: 1,
+                },
+            ))
+            .expect("fallback");
+            fallback["payload"]["attempts"] = serde_json::json!(0);
+            values.push(fallback);
+        }
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("internal-phase-limit.jsonl");
+        write_event_values(&path, &values);
+        let error = EventLog::open(path, session)
+            .expect_err("sixty-fifth phase taint must be rejected")
+            .to_string();
+        assert!(error.contains("64-transition per-run limit"));
+    }
+
+    #[test]
+    fn skipped_tool_termination_taints_terminal_state_but_no_skip_rejects_elision() {
+        let base = attribution_records();
+        let session = base[0].session_id;
+        let run = base[1].run_id.expect("run id");
+        let binding = fallback_binding("fallback-zero");
+        let resolved_model = wire_resolved(&binding);
+        let attempt_id = AttemptId(Uuid::from_u128(810));
+        let tool_call_id = ToolCallId(Uuid::from_u128(811));
+        let owner = AssistantToolCallRef {
+            model_turn_seq: 1,
+            content_index: 0,
+            model_call_id: ModelCallId::new("observed-tool").expect("model call id"),
+            provider_item_id: None,
+        };
+        let attempt = event(
+            session,
+            Some(run),
+            3,
+            EventPayload::ModelAttemptStarted {
+                attempt_id,
+                attempt_ordinal: 1,
+                fallback_index: 0,
+                retry_ordinal: 0,
+                resolved_model: resolved_model.clone(),
+                prompt_fingerprint: match &base[1].payload {
+                    EventPayload::RunStarted { agent, .. } => agent.prompt_fingerprint.clone(),
+                    _ => unreachable!(),
+                },
+            },
+        );
+        let turn = event(
+            session,
+            Some(run),
+            4,
+            EventPayload::ModelTurnCommitted {
+                attempt_id,
+                model_turn_seq: 1,
+                resolved_model,
+                input_through_seq: 1,
+                turn: PersistedModelTurn {
+                    content: vec![PersistedAssistantPart::ToolCall {
+                        id: owner.model_call_id.clone(),
+                        provider_item_id: None,
+                        name: SafeCode::new("read").expect("tool name"),
+                        input: serde_json::json!({}),
+                        raw_input: None,
+                        metadata: None,
+                    }],
+                    provider_options: BTreeMap::new(),
+                    finish_reason: ModelFinishReason::ToolCalls,
+                    usage: Usage::default(),
+                    response_metadata: BTreeMap::new(),
+                    provider_metadata: BTreeMap::new(),
+                    native_replay: None,
+                },
+                warnings: Vec::new(),
+            },
+        );
+        let start = event(
+            session,
+            Some(run),
+            5,
+            EventPayload::ToolCallStarted {
+                start: ToolCallStart {
+                    tool_call_id,
+                    owner: owner.clone(),
+                    presentation: ToolCallPresentation {
+                        title: SafeDisplayText::new("Read").expect("title"),
+                        primary_argument: None,
+                    },
+                    operation_fingerprint: serde_json::from_value(serde_json::json!({
+                        "digest": Sha256Digest::of_bytes(b"operation")
+                    }))
+                    .expect("operation fingerprint"),
+                },
+            },
+        );
+        let termination = event(
+            session,
+            Some(run),
+            6,
+            EventPayload::ToolCallTerminated {
+                termination: ToolCallTermination {
+                    tool_call_id,
+                    owner: owner.clone(),
+                    outcome: ToolTerminationOutcome::Failed,
+                    result: None,
+                    error: Some(SafeToolError {
+                        code: SafeCode::new("failed").expect("safe code"),
+                        message: SafeErrorMessage::new("failed").expect("safe error"),
+                    }),
+                },
+            },
+        );
+        let mut malformed_termination = serde_json::to_value(termination).expect("termination");
+        malformed_termination["payload"]["error"] = serde_json::json!(42);
+        let elision = EventPayload::ToolOutputElided {
+            tool_call_id,
+            original_bytes: 10,
+            retained: ArtifactReference {
+                uri: "artifact://retained".into(),
+            },
+        };
+        let accepted = [
+            serde_json::to_value(&base[0]).expect("creation"),
+            serde_json::to_value(&base[1]).expect("run"),
+            serde_json::to_value(&attempt).expect("attempt"),
+            serde_json::to_value(&turn).expect("turn"),
+            serde_json::to_value(&start).expect("start"),
+            malformed_termination,
+            serde_json::to_value(event(session, Some(run), 7, elision.clone())).expect("elision"),
+        ];
+        let directory = tempdir().expect("temporary directory");
+        let accepted_path = directory.path().join("tool-terminal-tainted.jsonl");
+        write_event_values(&accepted_path, &accepted);
+        let log = EventLog::open(accepted_path, session).expect("terminal-tainted elision loads");
+        assert_eq!(log.all_events().last().expect("elision").seq, 7);
+
+        let forged = [
+            serde_json::to_value(&base[0]).expect("creation"),
+            serde_json::to_value(&base[1]).expect("run"),
+            serde_json::to_value(attempt).expect("attempt"),
+            serde_json::to_value(turn).expect("turn"),
+            serde_json::to_value(start).expect("start"),
+            serde_json::to_value(event(session, Some(run), 6, elision)).expect("forged elision"),
+        ];
+        let forged_path = directory.path().join("tool-terminal-forged.jsonl");
+        write_event_values(&forged_path, &forged);
+        assert!(EventLog::open(forged_path, session).is_err());
+    }
+
+    #[test]
+    fn unreadable_session_created_fails_with_a_clear_diagnostic() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        fs::write(&path, b"{not-json}\n").expect("write corrupt creation");
+        let error = EventLog::open(path, SessionId(Uuid::from_u128(99)))
+            .expect_err("corrupt creation must fail")
+            .to_string();
+        assert!(error.contains("SessionCreated line is unreadable"));
+    }
+
+    #[test]
+    fn gaps_are_diagnosed_and_projection_remains_coherent() {
+        let records = attribution_records();
+        let session = records[0].session_id;
+        let removed = records
+            .iter()
+            .filter(|event| event.seq % 3 == 0)
+            .map(|event| event.seq)
+            .collect::<Vec<_>>();
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        let bytes = records
+            .iter()
+            .filter(|event| event.seq % 3 != 0)
+            .flat_map(|event| {
+                let mut line = serde_json::to_vec(event).expect("serialize event");
+                line.push(b'\n');
+                line
+            })
+            .collect::<Vec<_>>();
+        fs::write(&path, bytes).expect("write gapped log");
+
+        let log = EventLog::open(path, session).expect("open gapped log");
+        assert_eq!(
+            log.diagnostics()
+                .iter()
+                .filter(|diagnostic| diagnostic.skipped)
+                .map(|diagnostic| diagnostic.seq)
+                .collect::<Vec<_>>(),
+            removed
+        );
+        let projected = crate::session::projection(log).expect("project gapped log");
+        assert_eq!(projected.meta.session_id, session);
+        assert_eq!(projected.meta.skipped_events.len(), removed.len());
+    }
+
+    #[test]
+    fn historical_era_fixtures_open_with_stable_projection_invariants() {
+        let session = SessionId(Uuid::from_u128(99));
+        for schema in [15, 17, 18, 20, 21] {
+            let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(format!("events-schema-{schema}.jsonl"));
+            let directory = tempdir().expect("temporary directory");
+            let path = directory.path().join("events.jsonl");
+            fs::copy(source, &path).expect("copy era fixture");
+            let log = EventLog::open(path, session).expect("open era fixture");
+            assert!(log.diagnostics().is_empty(), "schema {schema}");
+            let projected = crate::session::projection(log).expect("project era fixture");
+            assert_eq!(projected.meta.session_id, session);
+            assert_eq!(projected.meta.origin, SessionOrigin::Root);
+            assert_eq!(
+                projected.meta.status,
+                cookie_agent_protocol::SessionStatus::Idle
+            );
+            assert_eq!(projected.meta.last_event_seq, 1);
+            assert_eq!(projected.creation_agent.schema.value(), 6);
         }
     }
 

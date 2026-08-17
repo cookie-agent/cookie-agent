@@ -15,11 +15,10 @@ use std::{
 
 use cookie_agent_protocol::{
     AgentId, AgentSnapshot, ChildSummary, ClientRenameId, ClientRunId, EventPayload, RunId,
-    RunSelection, SessionId, SessionMeta, SessionMetaSchemaVersion, SessionOrigin,
-    SessionPermissionOverlay, SessionRenameRecord, SessionStatus, SessionTitle, SessionTitleChange,
-    SessionTree, ToolCallId, Usage, UsageRollup,
+    RunSelection, SessionId, SessionMeta, SessionOrigin, SessionPermissionOverlay,
+    SessionRenameRecord, SessionStatus, SessionTitle, SessionTitleChange, SessionTree, ToolCallId,
+    Usage, UsageRollup,
 };
-use serde::Deserialize;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -108,11 +107,6 @@ struct EvictionTransitionHook {
     release: Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
-#[derive(Deserialize)]
-struct PersistedSessionMetaVersion {
-    meta_schema_version: SessionMetaSchemaVersion,
-}
-
 #[derive(Debug)]
 pub struct SessionStore {
     project_dir: PathBuf,
@@ -172,7 +166,6 @@ impl SessionStore {
             let Ok(id) = entry.file_name().to_string_lossy().parse::<SessionId>() else {
                 continue;
             };
-            read_cache_version(&entry.path().join("meta.json"))?;
             let log = EventLog::open(entry.path().join("events.jsonl"), id)?;
             let projection = projection(log)?;
             store
@@ -216,7 +209,6 @@ impl SessionStore {
         }
         let final_dir = self.sessions_dir.join(session_id.to_string());
         if final_dir.exists() {
-            read_cache_version(&final_dir.join("meta.json"))?;
             let log = EventLog::open(final_dir.join("events.jsonl"), session_id)?;
             let existing = projection(log.clone())?;
             let mut residency = self
@@ -274,7 +266,6 @@ impl SessionStore {
         if !session_dir.is_dir() {
             return Err(SessionError::Missing(id));
         }
-        read_cache_version(&session_dir.join("meta.json"))?;
         let log = EventLog::open(session_dir.join("events.jsonl"), id)?;
         let reopened = projection(log)?;
         let mut residency = self
@@ -657,7 +648,7 @@ impl SessionStore {
     }
 }
 
-fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
+pub(crate) fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
     let events = log.events();
     let physical_tip = log
         .all_events()
@@ -709,7 +700,6 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
         _ => unreachable!(),
     };
     let mut meta = SessionMeta {
-        meta_schema_version: cookie_agent_protocol::SessionMetaSchemaVersion::current(),
         session_id: events[0].session_id,
         origin,
         cwd_identity,
@@ -723,9 +713,18 @@ fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
         manifest_revision,
         title: None,
         title_updated_seq: 0,
-        last_event_seq: physical_tip.seq,
+        last_event_seq: log.physical_tip_seq(),
         last_activity: physical_tip.timestamp,
         status: SessionStatus::Idle,
+        skipped_events: log
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.skipped)
+            .map(|diagnostic| cookie_agent_protocol::SkippedEvent {
+                seq: diagnostic.seq,
+                reason: diagnostic.reason.clone(),
+            })
+            .collect(),
     };
     let mut runs = HashMap::<RunId, RunProjection>::new();
     let mut status = SessionStatus::Idle;
@@ -1002,20 +1001,6 @@ fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
             path: path.to_owned(),
             source,
         })
-}
-
-fn read_cache_version(path: &Path) -> Result<(), SessionError> {
-    let bytes = fs::read(path).map_err(|source| SessionError::Io {
-        path: path.to_owned(),
-        source,
-    })?;
-    let version: PersistedSessionMetaVersion =
-        serde_json::from_slice(&bytes).map_err(|source| SessionError::Json {
-            path: path.to_owned(),
-            source,
-        })?;
-    let _ = version.meta_schema_version;
-    Ok(())
 }
 
 fn write_project_cwd(project_dir: &Path, cwd: &Path) -> Result<(), SessionError> {

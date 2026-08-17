@@ -1329,7 +1329,7 @@ async fn session_metadata_tracks_log_tail_for_create_get_list_tree_and_append() 
 }
 
 #[tokio::test]
-async fn session_metadata_cache_version_eight_is_rejected() {
+async fn unreadable_session_metadata_cache_is_rebuilt_from_events() {
     let (fixture, selection) = custom_fixture();
     let session = fixture
         .engine
@@ -1361,23 +1361,24 @@ async fn session_metadata_cache_version_eight_is_rejected() {
         .store
         .session_dir(session.session_id)
         .join("meta.json");
-    let mut persisted: serde_json::Value =
-        serde_json::from_slice(&fs::read(&path).expect("read metadata cache"))
-            .expect("parse metadata cache");
-    assert!(persisted.get("last_activity").is_none());
-    persisted["meta_schema_version"] = serde_json::json!(8);
-    fs::write(
-        &path,
-        serde_json::to_vec_pretty(&persisted).expect("encode old metadata cache"),
-    )
-    .expect("write old metadata cache");
+    let expected = fixture
+        .engine
+        .get_session(session.session_id)
+        .expect("projected metadata");
+    fs::write(&path, b"not a metadata cache").expect("write unreadable metadata cache");
 
-    let error = crate::session::SessionStore::open(
+    let reopened = crate::session::SessionStore::open(
         &fixture._directory.path().join("data"),
         fixture._directory.path(),
     )
-    .expect_err("schema 8 metadata cache must be rejected");
-    assert!(error.to_string().contains("expected 9"));
+    .expect("unreadable cache is rebuildable");
+    let rebuilt = reopened
+        .get(session.session_id)
+        .expect("rebuilt session metadata")
+        .metadata();
+    assert_eq!(rebuilt.session_id, expected.session_id);
+    assert_eq!(rebuilt.last_event_seq, expected.last_event_seq);
+    assert_eq!(rebuilt.status, expected.status);
 }
 
 #[test]
@@ -1816,7 +1817,7 @@ fn completed_read_events(
         provider_item_id: None,
     };
     let envelope = |seq, payload| cookie_agent_protocol::StoredEvent {
-        event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+        engine_version: None,
         session_id: session,
         run_id: Some(run),
         seq,
@@ -2146,7 +2147,7 @@ fn manual_compaction_resolves_parent_model_from_nonzero_active_fallback() {
     owner.selected_suffix.push(fallback.clone());
     let run = cookie_agent_protocol::RunId::new_v7();
     let events = vec![cookie_agent_protocol::StoredEvent {
-        event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+        engine_version: None,
         session_id: SessionId::new_v7(),
         run_id: Some(run),
         seq: 1,
@@ -5071,6 +5072,10 @@ fn accepted_event_logs_reopen_schema_four_agent_snapshots() {
             .iter()
             .map(|event| {
                 let mut value = serde_json::to_value(event).expect("serialize legacy event");
+                value
+                    .as_object_mut()
+                    .expect("event envelope")
+                    .remove("engine_version");
                 value["event_schema_version"] = serde_json::json!(version);
                 if value["payload"]["type"] == "session_created" {
                     value["payload"]["creation_agent"]["schema"] = serde_json::json!(4);
@@ -5092,7 +5097,7 @@ fn accepted_event_logs_reopen_schema_four_agent_snapshots() {
             reopened
                 .events()
                 .iter()
-                .all(|event| event.event_schema_version.value() == version)
+                .all(|event| event.engine_version.is_none())
         );
         let EventPayload::SessionCreated { creation_agent, .. } = &reopened.events()[0].payload
         else {
@@ -5108,7 +5113,7 @@ fn accepted_event_logs_reopen_schema_four_agent_snapshots() {
     }
     let mut unsupported = serde_json::to_value(&events[0]).expect("serialize unsupported event");
     unsupported["event_schema_version"] = serde_json::json!(14);
-    assert!(serde_json::from_value::<cookie_agent_protocol::StoredEvent>(unsupported).is_err());
+    assert!(serde_json::from_value::<cookie_agent_protocol::StoredEvent>(unsupported).is_ok());
 }
 
 #[test]
@@ -6980,10 +6985,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
     assert_eq!(fork_physical.len(), source_prefix.len() + 2);
     for (source_event, fork_event) in source_prefix.iter().zip(&fork_physical) {
         assert_eq!(fork_event.session_id, fork.session_id);
-        assert_eq!(
-            fork_event.event_schema_version,
-            source_event.event_schema_version
-        );
+        assert_eq!(fork_event.engine_version, source_event.engine_version);
         assert_eq!(fork_event.run_id, source_event.run_id);
         assert_eq!(fork_event.seq, source_event.seq);
         assert_eq!(fork_event.timestamp, source_event.timestamp);
@@ -7068,7 +7070,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .collect::<Vec<_>>();
     assert_eq!(first_fork_prefix.len(), reverted_fork_prefix.len());
     for (first, second) in first_fork_prefix.iter().zip(&reverted_fork_prefix) {
-        assert_eq!(first.event_schema_version, second.event_schema_version);
+        assert_eq!(first.engine_version, second.engine_version);
         assert_eq!(first.run_id, second.run_id);
         assert_eq!(first.seq, second.seq);
         assert_eq!(first.timestamp, second.timestamp);

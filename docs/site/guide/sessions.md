@@ -6,6 +6,14 @@ A new empty session exists only in memory. Its directory, metadata cache, and
 event JSONL are created atomically when the first user message is submitted.
 Closing an empty session leaves no persisted session.
 
+Persisted sessions use an append-only, versionless JSONL history. New events are
+stamped with the writing engine version for diagnostics, but opening a session
+does not require an exact version match. The engine loads known records
+best-effort, reports skipped unsupported or corrupt records in session metadata,
+and tolerates the resulting sequence gaps. The derived `meta.json` file is only a
+cache: missing, stale, mismatched, or unreadable cache content is rebuilt from
+the event history.
+
 Use `/new` to create a fresh root session and `/sessions` to search and switch
 between sessions. Delegated sessions form a tree beneath the root that created
 them. Accepted runs retain their frozen model binding even if catalog,

@@ -1,45 +1,1543 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "StoredEvent",
-  "type": "object",
-  "properties": {
-    "engine_version": {
-      "type": [
-        "string",
-        "null"
+  "title": "EventPayload",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "agent_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "catalog_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "creation_agent": {
+          "$ref": "#/$defs/AgentSnapshot"
+        },
+        "creation_selection": {
+          "$ref": "#/$defs/RunSelection"
+        },
+        "cwd_identity": {
+          "description": "Opaque canonical workspace identity.",
+          "type": "string",
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "manifest_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "model_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "origin": {
+          "$ref": "#/$defs/SessionOrigin"
+        },
+        "provider_state_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "recipe_registry_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "runtime_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "type": {
+          "type": "string",
+          "const": "session_created"
+        }
+      },
+      "required": [
+        "type",
+        "origin",
+        "cwd_identity",
+        "creation_selection",
+        "creation_agent",
+        "runtime_revision",
+        "catalog_revision",
+        "provider_state_revision",
+        "model_revision",
+        "agent_revision",
+        "recipe_registry_revision",
+        "manifest_revision"
       ]
     },
-    "payload": {
-      "$ref": "#/$defs/EventPayload"
+    {
+      "type": "object",
+      "properties": {
+        "through_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "session_reverted"
+        }
+      },
+      "required": [
+        "type",
+        "through_seq"
+      ]
     },
-    "run_id": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "format": "uuid"
+    {
+      "type": "object",
+      "properties": {
+        "overlay": {
+          "$ref": "#/$defs/SessionPermissionOverlay"
+        },
+        "type": {
+          "type": "string",
+          "const": "session_permission_overlay_set"
+        }
+      },
+      "required": [
+        "type",
+        "overlay"
+      ]
     },
-    "seq": {
-      "type": "integer",
-      "format": "uint64",
-      "minimum": 1
+    {
+      "type": "object",
+      "properties": {
+        "args": {
+          "type": "string"
+        },
+        "base_dir": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "rendered_body": {
+          "type": "string"
+        },
+        "source_path": {
+          "type": "string"
+        },
+        "supporting_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10
+        },
+        "type": {
+          "type": "string",
+          "const": "skill_loaded"
+        }
+      },
+      "required": [
+        "type",
+        "name",
+        "rendered_body",
+        "source_path",
+        "args",
+        "base_dir",
+        "supporting_files"
+      ]
     },
-    "session_id": {
-      "type": "string",
-      "format": "uuid"
+    {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "skill_invocation_noted"
+        }
+      },
+      "required": [
+        "type",
+        "name"
+      ]
     },
-    "timestamp": {
-      "type": "string",
-      "format": "date-time"
+    {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentSnapshot"
+        },
+        "agent_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "catalog_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "client_run_id": {
+          "description": "Bounded run idempotency key.",
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "input_through_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "manifest_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "model_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "provider_state_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "recipe_registry_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "runtime_revision": {
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "selected_suffix": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FrozenModelBinding"
+          },
+          "maxItems": 256,
+          "minItems": 1
+        },
+        "selection": {
+          "$ref": "#/$defs/RunSelection"
+        },
+        "type": {
+          "type": "string",
+          "const": "run_started"
+        }
+      },
+      "required": [
+        "type",
+        "client_run_id",
+        "selection",
+        "agent",
+        "runtime_revision",
+        "catalog_revision",
+        "provider_state_revision",
+        "model_revision",
+        "agent_revision",
+        "recipe_registry_revision",
+        "manifest_revision",
+        "selected_suffix",
+        "input_through_seq"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "user_input_admitted"
+        }
+      },
+      "required": [
+        "type",
+        "input"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "user_input_submitted"
+        }
+      },
+      "required": [
+        "type",
+        "input"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "user_input_recalled"
+        }
+      },
+      "required": [
+        "type",
+        "input"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "user_input_recalled_v2"
+        },
+        "user_input_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "user_input_seq",
+        "input"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "user_input_applied"
+        },
+        "user_input_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "user_input_seq"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "invocation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "turns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DelegatedContextTurn"
+          },
+          "maxItems": 65536
+        },
+        "type": {
+          "type": "string",
+          "const": "delegated_context_seeded"
+        }
+      },
+      "required": [
+        "type",
+        "invocation_id",
+        "turns"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "final_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "const": "run_completed"
+        }
+      },
+      "required": [
+        "type",
+        "final_text"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "error": {
+          "description": "Control-free bounded safe error text.",
+          "type": "string",
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "type": {
+          "type": "string",
+          "const": "run_failed"
+        }
+      },
+      "required": [
+        "type",
+        "error"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "description": "Control-free bounded safe error text.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "type": {
+          "type": "string",
+          "const": "run_cancelled"
+        }
+      },
+      "required": [
+        "type",
+        "reason"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "description": "Control-free bounded safe error text.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "type": {
+          "type": "string",
+          "const": "run_interrupted"
+        }
+      },
+      "required": [
+        "type",
+        "reason"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "attempt_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "attempt_ordinal": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1
+        },
+        "fallback_index": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "prompt_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "resolved_model": {
+          "$ref": "#/$defs/ResolvedModelRef"
+        },
+        "retry_ordinal": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "model_attempt_started"
+        }
+      },
+      "required": [
+        "type",
+        "attempt_id",
+        "attempt_ordinal",
+        "fallback_index",
+        "retry_ordinal",
+        "resolved_model",
+        "prompt_fingerprint"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "attempt_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "text_delta"
+        }
+      },
+      "required": [
+        "type",
+        "attempt_id",
+        "text"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "attempt_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "reasoning_delta"
+        }
+      },
+      "required": [
+        "type",
+        "attempt_id",
+        "text"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "attempt_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "type": "string",
+          "const": "attempt_abandoned"
+        }
+      },
+      "required": [
+        "type",
+        "attempt_id"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "attempt_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "ordered_decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReplayDecision"
+          },
+          "maxItems": 4096
+        },
+        "resolved_model": {
+          "$ref": "#/$defs/ResolvedModelRef"
+        },
+        "type": {
+          "type": "string",
+          "const": "model_replay_evaluated"
+        }
+      },
+      "required": [
+        "type",
+        "attempt_id",
+        "resolved_model",
+        "ordered_decisions"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "attempt_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "input_through_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "model_turn_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "resolved_model": {
+          "$ref": "#/$defs/ResolvedModelRef"
+        },
+        "turn": {
+          "$ref": "#/$defs/PersistedModelTurn"
+        },
+        "type": {
+          "type": "string",
+          "const": "model_turn_committed"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "description": "Control-free bounded safe error text.",
+            "type": "string",
+            "maxLength": 4096,
+            "minLength": 1,
+            "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+          },
+          "maxItems": 256
+        }
+      },
+      "required": [
+        "type",
+        "attempt_id",
+        "model_turn_seq",
+        "resolved_model",
+        "input_through_seq",
+        "turn",
+        "warnings"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+        },
+        "model_turn_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "resolved_model": {
+          "$ref": "#/$defs/ResolvedModelRef"
+        },
+        "type": {
+          "type": "string",
+          "const": "model_usage_recorded"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        }
+      },
+      "required": [
+        "type",
+        "model_turn_seq",
+        "agent_id",
+        "resolved_model",
+        "usage"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "attempts_on_from": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1
+        },
+        "error": {
+          "$ref": "#/$defs/ModelErrorSummary"
+        },
+        "from": {
+          "$ref": "#/$defs/ResolvedModelRef"
+        },
+        "from_fallback_index": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "to": {
+          "$ref": "#/$defs/ResolvedModelRef"
+        },
+        "to_fallback_index": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "model_fallback"
+        }
+      },
+      "required": [
+        "type",
+        "from",
+        "to",
+        "from_fallback_index",
+        "to_fallback_index",
+        "attempts_on_from",
+        "error"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "operation_fingerprint": {
+          "$ref": "#/$defs/OperationFingerprint"
+        },
+        "owner": {
+          "$ref": "#/$defs/AssistantToolCallRef"
+        },
+        "presentation": {
+          "$ref": "#/$defs/ToolCallPresentation"
+        },
+        "tool_call_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "type": "string",
+          "const": "tool_call_started"
+        }
+      },
+      "required": [
+        "type",
+        "tool_call_id",
+        "owner",
+        "presentation",
+        "operation_fingerprint"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "message": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "tool_call_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "type": "string",
+          "const": "tool_call_progress"
+        }
+      },
+      "required": [
+        "type",
+        "tool_call_id",
+        "message"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SafeToolError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/ToolTerminationOutcome"
+        },
+        "owner": {
+          "$ref": "#/$defs/AssistantToolCallRef"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PersistedToolResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool_call_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "type": "string",
+          "const": "tool_call_terminated"
+        }
+      },
+      "required": [
+        "type",
+        "tool_call_id",
+        "owner",
+        "outcome",
+        "result",
+        "error"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "original_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "retained": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "tool_call_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "type": "string",
+          "const": "tool_output_elided"
+        }
+      },
+      "required": [
+        "type",
+        "tool_call_id",
+        "original_bytes",
+        "retained"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "byte_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "tool_call_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "type": "string",
+          "const": "tool_stdin_submitted"
+        }
+      },
+      "required": [
+        "type",
+        "tool_call_id",
+        "byte_count"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "child_session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "tool_call_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "type": "string",
+          "const": "tool_call_linked"
+        }
+      },
+      "required": [
+        "type",
+        "tool_call_id",
+        "child_session_id"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "position": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "type": "string",
+          "const": "delegate_queued"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "position"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "preview": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        },
+        "total_lines": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "delegate_finished"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "status",
+        "preview",
+        "total_lines"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "invocation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "preview": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        },
+        "total_lines": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "delegate_finished_v2"
+        }
+      },
+      "required": [
+        "type",
+        "invocation_id",
+        "session_id",
+        "status",
+        "preview",
+        "total_lines"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "description": "Control-free bounded safe error text.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        },
+        "type": {
+          "type": "string",
+          "const": "delegate_child_terminated"
+        }
+      },
+      "required": [
+        "type",
+        "status",
+        "reason"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/ApprovalRequest"
+        },
+        "type": {
+          "type": "string",
+          "const": "approval_requested"
+        }
+      },
+      "required": [
+        "type",
+        "request"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "decision": {
+          "$ref": "#/$defs/ApprovalInternalDecision"
+        },
+        "type": {
+          "type": "string",
+          "const": "approval_evaluated"
+        }
+      },
+      "required": [
+        "type",
+        "approval_id",
+        "decision"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/ApprovalReasonCode"
+        },
+        "type": {
+          "type": "string",
+          "const": "approval_escalated"
+        }
+      },
+      "required": [
+        "type",
+        "approval_id",
+        "reason_code"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "client_response_id": {
+          "description": "Bounded approval response idempotency key.",
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "decision": {
+          "$ref": "#/$defs/ApprovalUserDecision"
+        },
+        "feedback": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalFeedback"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "const": "approval_user_decision_recorded"
+        }
+      },
+      "required": [
+        "type",
+        "approval_id",
+        "client_response_id",
+        "decision",
+        "feedback"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "decision": {
+          "$ref": "#/$defs/ApprovalFinalDecision"
+        },
+        "type": {
+          "type": "string",
+          "const": "approval_finalized"
+        }
+      },
+      "required": [
+        "type",
+        "approval_id",
+        "decision"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/ApprovalReasonCode"
+        },
+        "type": {
+          "type": "string",
+          "const": "approval_cancelled"
+        }
+      },
+      "required": [
+        "type",
+        "approval_id",
+        "reason_code"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "operation_fingerprint": {
+          "$ref": "#/$defs/OperationFingerprint"
+        },
+        "repetitions": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 4
+        },
+        "type": {
+          "type": "string",
+          "const": "approval_doom_loop_detected"
+        }
+      },
+      "required": [
+        "type",
+        "approval_id",
+        "operation_fingerprint",
+        "repetitions"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "grant": {
+          "$ref": "#/$defs/TreeApprovalGrant"
+        },
+        "type": {
+          "type": "string",
+          "const": "tree_approval_grant_committed"
+        }
+      },
+      "required": [
+        "type",
+        "grant"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/InternalAgentBackend"
+        },
+        "call": {
+          "$ref": "#/$defs/SafeInternalAgentCall"
+        },
+        "internal_run_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "invocation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/InternalAgentKind"
+        },
+        "type": {
+          "type": "string",
+          "const": "internal_agent_started"
+        }
+      },
+      "required": [
+        "type",
+        "invocation_id",
+        "internal_run_id",
+        "kind",
+        "backend",
+        "call"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "internal_run_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "invocation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/InternalAgentKind"
+        },
+        "result": {
+          "$ref": "#/$defs/SafeInternalAgentResult"
+        },
+        "type": {
+          "type": "string",
+          "const": "internal_agent_completed"
+        }
+      },
+      "required": [
+        "type",
+        "invocation_id",
+        "internal_run_id",
+        "kind",
+        "result"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+        },
+        "internal_run_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/InternalAgentKind"
+        },
+        "resolved_model": {
+          "$ref": "#/$defs/ResolvedModelRef"
+        },
+        "type": {
+          "type": "string",
+          "const": "internal_agent_usage_recorded"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        }
+      },
+      "required": [
+        "type",
+        "internal_run_id",
+        "kind",
+        "agent_id",
+        "resolved_model",
+        "usage"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "failure": {
+          "$ref": "#/$defs/InternalAgentFailure"
+        },
+        "internal_run_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "invocation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/InternalAgentKind"
+        },
+        "type": {
+          "type": "string",
+          "const": "internal_agent_failed"
+        }
+      },
+      "required": [
+        "type",
+        "invocation_id",
+        "internal_run_id",
+        "kind",
+        "failure"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "internal_run_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "invocation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/InternalAgentKind"
+        },
+        "reason": {
+          "description": "Control-free bounded safe error text.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "type": {
+          "type": "string",
+          "const": "internal_agent_cancelled"
+        }
+      },
+      "required": [
+        "type",
+        "invocation_id",
+        "internal_run_id",
+        "kind",
+        "reason"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "internal_run_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "invocation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/InternalAgentKind"
+        },
+        "reason": {
+          "description": "Control-free bounded safe error text.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "type": {
+          "type": "string",
+          "const": "internal_agent_interrupted"
+        }
+      },
+      "required": [
+        "type",
+        "invocation_id",
+        "internal_run_id",
+        "kind",
+        "reason"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1
+        },
+        "failure": {
+          "$ref": "#/$defs/InternalAgentFailure"
+        },
+        "from": {
+          "$ref": "#/$defs/InternalAgentBackend"
+        },
+        "internal_run_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "invocation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/InternalAgentKind"
+        },
+        "to": {
+          "$ref": "#/$defs/InternalAgentBackend"
+        },
+        "type": {
+          "type": "string",
+          "const": "internal_agent_fallback"
+        }
+      },
+      "required": [
+        "type",
+        "invocation_id",
+        "internal_run_id",
+        "kind",
+        "from",
+        "to",
+        "failure",
+        "attempts"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "boundaries": {
+          "$ref": "#/$defs/ContextCheckpointBoundaries"
+        },
+        "budgets": {
+          "$ref": "#/$defs/ContextCheckpointBudgets"
+        },
+        "checkpoint": {
+          "$ref": "#/$defs/ContextCheckpoint"
+        },
+        "type": {
+          "type": "string",
+          "const": "context_checkpoint_committed"
+        }
+      },
+      "required": [
+        "type",
+        "checkpoint",
+        "boundaries",
+        "budgets"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextRehydratedFile"
+          },
+          "maxItems": 5
+        },
+        "type": {
+          "type": "string",
+          "const": "context_rehydrated"
+        }
+      },
+      "required": [
+        "type",
+        "files"
+      ]
+    },
+    {
+      "description": "Legacy durable event retained for old logs; the engine no longer emits it.",
+      "type": "object",
+      "properties": {
+        "observed_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "trigger_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "context_compaction_auto_disabled"
+        }
+      },
+      "required": [
+        "type",
+        "observed_tokens",
+        "trigger_tokens"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "change": {
+          "$ref": "#/$defs/SessionTitleChange"
+        },
+        "input_through_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "session_title_committed"
+        }
+      },
+      "required": [
+        "type",
+        "change",
+        "input_through_seq"
+      ]
     }
-  },
-  "additionalProperties": false,
-  "required": [
-    "session_id",
-    "run_id",
-    "seq",
-    "timestamp",
-    "payload"
   ],
   "$defs": {
     "AdaptorId": {
@@ -828,1546 +2326,6 @@
       "required": [
         "role",
         "text"
-      ]
-    },
-    "EventPayload": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "agent_revision": {
-              "type": "string",
-              "maxLength": 71,
-              "minLength": 71,
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "catalog_revision": {
-              "type": "string",
-              "maxLength": 71,
-              "minLength": 71,
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "creation_agent": {
-              "$ref": "#/$defs/AgentSnapshot"
-            },
-            "creation_selection": {
-              "$ref": "#/$defs/RunSelection"
-            },
-            "cwd_identity": {
-              "description": "Opaque canonical workspace identity.",
-              "type": "string",
-              "maxLength": 4096,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
-            },
-            "manifest_revision": {
-              "type": "string",
-              "maxLength": 71,
-              "minLength": 71,
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "model_revision": {
-              "type": "string",
-              "maxLength": 71,
-              "minLength": 71,
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "origin": {
-              "$ref": "#/$defs/SessionOrigin"
-            },
-            "provider_state_revision": {
-              "type": "string",
-              "maxLength": 71,
-              "minLength": 71,
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "recipe_registry_revision": {
-              "type": "string",
-              "maxLength": 71,
-              "minLength": 71,
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "runtime_revision": {
-              "type": "string",
-              "maxLength": 71,
-              "minLength": 71,
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "type": {
-              "type": "string",
-              "const": "session_created"
-            }
-          },
-          "required": [
-            "type",
-            "origin",
-            "cwd_identity",
-            "creation_selection",
-            "creation_agent",
-            "runtime_revision",
-            "catalog_revision",
-            "provider_state_revision",
-            "model_revision",
-            "agent_revision",
-            "recipe_registry_revision",
-            "manifest_revision"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "through_seq": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 1
-            },
-            "type": {
-              "type": "string",
-              "const": "session_reverted"
-            }
-          },
-          "required": [
-            "type",
-            "through_seq"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "overlay": {
-              "$ref": "#/$defs/SessionPermissionOverlay"
-            },
-            "type": {
-              "type": "string",
-              "const": "session_permission_overlay_set"
-            }
-          },
-          "required": [
-            "type",
-            "overlay"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "args": {
-              "type": "string"
-            },
-            "base_dir": {
-              "type": "string"
-            },
-            "name": {
-              "type": "string"
-            },
-            "rendered_body": {
-              "type": "string"
-            },
-            "source_path": {
-              "type": "string"
-            },
-            "supporting_files": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "maxItems": 10
-            },
-            "type": {
-              "type": "string",
-              "const": "skill_loaded"
-            }
-          },
-          "required": [
-            "type",
-            "name",
-            "rendered_body",
-            "source_path",
-            "args",
-            "base_dir",
-            "supporting_files"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "name": {
-              "type": "string"
-            },
-            "type": {
-              "type": "string",
-              "const": "skill_invocation_noted"
-            }
-          },
-          "required": [
-            "type",
-            "name"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "agent": {
-              "$ref": "#/$defs/AgentSnapshot"
-            },
-            "agent_revision": {
-              "type": "string",
-              "maxLength": 71,
-              "minLength": 71,
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "catalog_revision": {
-              "type": "string",
-              "maxLength": 71,
-              "minLength": 71,
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "client_run_id": {
-              "description": "Bounded run idempotency key.",
-              "type": "string",
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
-            },
-            "input_through_seq": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "manifest_revision": {
-              "type": "string",
-              "maxLength": 71,
-              "minLength": 71,
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "model_revision": {
-              "type": "string",
-              "maxLength": 71,
-              "minLength": 71,
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "provider_state_revision": {
-              "type": "string",
-              "maxLength": 71,
-              "minLength": 71,
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "recipe_registry_revision": {
-              "type": "string",
-              "maxLength": 71,
-              "minLength": 71,
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "runtime_revision": {
-              "type": "string",
-              "maxLength": 71,
-              "minLength": 71,
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "selected_suffix": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/FrozenModelBinding"
-              },
-              "maxItems": 256,
-              "minItems": 1
-            },
-            "selection": {
-              "$ref": "#/$defs/RunSelection"
-            },
-            "type": {
-              "type": "string",
-              "const": "run_started"
-            }
-          },
-          "required": [
-            "type",
-            "client_run_id",
-            "selection",
-            "agent",
-            "runtime_revision",
-            "catalog_revision",
-            "provider_state_revision",
-            "model_revision",
-            "agent_revision",
-            "recipe_registry_revision",
-            "manifest_revision",
-            "selected_suffix",
-            "input_through_seq"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "input": {
-              "type": "string"
-            },
-            "type": {
-              "type": "string",
-              "const": "user_input_admitted"
-            }
-          },
-          "required": [
-            "type",
-            "input"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "input": {
-              "type": "string"
-            },
-            "type": {
-              "type": "string",
-              "const": "user_input_submitted"
-            }
-          },
-          "required": [
-            "type",
-            "input"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "input": {
-              "type": "string"
-            },
-            "type": {
-              "type": "string",
-              "const": "user_input_recalled"
-            }
-          },
-          "required": [
-            "type",
-            "input"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "input": {
-              "type": "string"
-            },
-            "type": {
-              "type": "string",
-              "const": "user_input_recalled_v2"
-            },
-            "user_input_seq": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            }
-          },
-          "required": [
-            "type",
-            "user_input_seq",
-            "input"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "type": {
-              "type": "string",
-              "const": "user_input_applied"
-            },
-            "user_input_seq": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            }
-          },
-          "required": [
-            "type",
-            "user_input_seq"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "invocation_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "turns": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/DelegatedContextTurn"
-              },
-              "maxItems": 65536
-            },
-            "type": {
-              "type": "string",
-              "const": "delegated_context_seeded"
-            }
-          },
-          "required": [
-            "type",
-            "invocation_id",
-            "turns"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "final_text": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "type": "string",
-              "const": "run_completed"
-            }
-          },
-          "required": [
-            "type",
-            "final_text"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "error": {
-              "description": "Control-free bounded safe error text.",
-              "type": "string",
-              "maxLength": 4096,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
-            },
-            "type": {
-              "type": "string",
-              "const": "run_failed"
-            }
-          },
-          "required": [
-            "type",
-            "error"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "reason": {
-              "description": "Control-free bounded safe error text.",
-              "type": [
-                "string",
-                "null"
-              ],
-              "maxLength": 4096,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
-            },
-            "type": {
-              "type": "string",
-              "const": "run_cancelled"
-            }
-          },
-          "required": [
-            "type",
-            "reason"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "reason": {
-              "description": "Control-free bounded safe error text.",
-              "type": [
-                "string",
-                "null"
-              ],
-              "maxLength": 4096,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
-            },
-            "type": {
-              "type": "string",
-              "const": "run_interrupted"
-            }
-          },
-          "required": [
-            "type",
-            "reason"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "attempt_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "attempt_ordinal": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 1
-            },
-            "fallback_index": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "prompt_fingerprint": {
-              "type": "string",
-              "maxLength": 64,
-              "minLength": 64,
-              "pattern": "^[0-9a-f]{64}$"
-            },
-            "resolved_model": {
-              "$ref": "#/$defs/ResolvedModelRef"
-            },
-            "retry_ordinal": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "type": {
-              "type": "string",
-              "const": "model_attempt_started"
-            }
-          },
-          "required": [
-            "type",
-            "attempt_id",
-            "attempt_ordinal",
-            "fallback_index",
-            "retry_ordinal",
-            "resolved_model",
-            "prompt_fingerprint"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "attempt_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "text": {
-              "type": "string"
-            },
-            "type": {
-              "type": "string",
-              "const": "text_delta"
-            }
-          },
-          "required": [
-            "type",
-            "attempt_id",
-            "text"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "attempt_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "text": {
-              "type": "string"
-            },
-            "type": {
-              "type": "string",
-              "const": "reasoning_delta"
-            }
-          },
-          "required": [
-            "type",
-            "attempt_id",
-            "text"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "attempt_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": {
-              "type": "string",
-              "const": "attempt_abandoned"
-            }
-          },
-          "required": [
-            "type",
-            "attempt_id"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "attempt_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "ordered_decisions": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/ReplayDecision"
-              },
-              "maxItems": 4096
-            },
-            "resolved_model": {
-              "$ref": "#/$defs/ResolvedModelRef"
-            },
-            "type": {
-              "type": "string",
-              "const": "model_replay_evaluated"
-            }
-          },
-          "required": [
-            "type",
-            "attempt_id",
-            "resolved_model",
-            "ordered_decisions"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "attempt_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "input_through_seq": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "model_turn_seq": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 1
-            },
-            "resolved_model": {
-              "$ref": "#/$defs/ResolvedModelRef"
-            },
-            "turn": {
-              "$ref": "#/$defs/PersistedModelTurn"
-            },
-            "type": {
-              "type": "string",
-              "const": "model_turn_committed"
-            },
-            "warnings": {
-              "type": "array",
-              "items": {
-                "description": "Control-free bounded safe error text.",
-                "type": "string",
-                "maxLength": 4096,
-                "minLength": 1,
-                "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
-              },
-              "maxItems": 256
-            }
-          },
-          "required": [
-            "type",
-            "attempt_id",
-            "model_turn_seq",
-            "resolved_model",
-            "input_through_seq",
-            "turn",
-            "warnings"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "agent_id": {
-              "type": "string",
-              "maxLength": 64,
-              "minLength": 1,
-              "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
-            },
-            "model_turn_seq": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 1
-            },
-            "resolved_model": {
-              "$ref": "#/$defs/ResolvedModelRef"
-            },
-            "type": {
-              "type": "string",
-              "const": "model_usage_recorded"
-            },
-            "usage": {
-              "$ref": "#/$defs/Usage"
-            }
-          },
-          "required": [
-            "type",
-            "model_turn_seq",
-            "agent_id",
-            "resolved_model",
-            "usage"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "attempts_on_from": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 1
-            },
-            "error": {
-              "$ref": "#/$defs/ModelErrorSummary"
-            },
-            "from": {
-              "$ref": "#/$defs/ResolvedModelRef"
-            },
-            "from_fallback_index": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "to": {
-              "$ref": "#/$defs/ResolvedModelRef"
-            },
-            "to_fallback_index": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "type": {
-              "type": "string",
-              "const": "model_fallback"
-            }
-          },
-          "required": [
-            "type",
-            "from",
-            "to",
-            "from_fallback_index",
-            "to_fallback_index",
-            "attempts_on_from",
-            "error"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "operation_fingerprint": {
-              "$ref": "#/$defs/OperationFingerprint"
-            },
-            "owner": {
-              "$ref": "#/$defs/AssistantToolCallRef"
-            },
-            "presentation": {
-              "$ref": "#/$defs/ToolCallPresentation"
-            },
-            "tool_call_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": {
-              "type": "string",
-              "const": "tool_call_started"
-            }
-          },
-          "required": [
-            "type",
-            "tool_call_id",
-            "owner",
-            "presentation",
-            "operation_fingerprint"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "message": {
-              "description": "Control-free bounded presentation text.",
-              "type": "string",
-              "maxLength": 1024,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
-            },
-            "tool_call_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": {
-              "type": "string",
-              "const": "tool_call_progress"
-            }
-          },
-          "required": [
-            "type",
-            "tool_call_id",
-            "message"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "error": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/SafeToolError"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "outcome": {
-              "$ref": "#/$defs/ToolTerminationOutcome"
-            },
-            "owner": {
-              "$ref": "#/$defs/AssistantToolCallRef"
-            },
-            "result": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/PersistedToolResult"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "tool_call_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": {
-              "type": "string",
-              "const": "tool_call_terminated"
-            }
-          },
-          "required": [
-            "type",
-            "tool_call_id",
-            "owner",
-            "outcome",
-            "result",
-            "error"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "original_bytes": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "retained": {
-              "$ref": "#/$defs/ArtifactReference"
-            },
-            "tool_call_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": {
-              "type": "string",
-              "const": "tool_output_elided"
-            }
-          },
-          "required": [
-            "type",
-            "tool_call_id",
-            "original_bytes",
-            "retained"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "byte_count": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "tool_call_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": {
-              "type": "string",
-              "const": "tool_stdin_submitted"
-            }
-          },
-          "required": [
-            "type",
-            "tool_call_id",
-            "byte_count"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "child_session_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "tool_call_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": {
-              "type": "string",
-              "const": "tool_call_linked"
-            }
-          },
-          "required": [
-            "type",
-            "tool_call_id",
-            "child_session_id"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "position": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "uint32",
-              "minimum": 0
-            },
-            "session_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": {
-              "type": "string",
-              "const": "delegate_queued"
-            }
-          },
-          "required": [
-            "type",
-            "session_id",
-            "position"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "preview": {
-              "type": "string",
-              "maxLength": 2048
-            },
-            "session_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "status": {
-              "$ref": "#/$defs/SessionStatus"
-            },
-            "total_lines": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "type": {
-              "type": "string",
-              "const": "delegate_finished"
-            }
-          },
-          "required": [
-            "type",
-            "session_id",
-            "status",
-            "preview",
-            "total_lines"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "invocation_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "preview": {
-              "type": "string",
-              "maxLength": 2048
-            },
-            "session_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "status": {
-              "$ref": "#/$defs/SessionStatus"
-            },
-            "total_lines": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "type": {
-              "type": "string",
-              "const": "delegate_finished_v2"
-            }
-          },
-          "required": [
-            "type",
-            "invocation_id",
-            "session_id",
-            "status",
-            "preview",
-            "total_lines"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "reason": {
-              "description": "Control-free bounded safe error text.",
-              "type": [
-                "string",
-                "null"
-              ],
-              "maxLength": 4096,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
-            },
-            "status": {
-              "$ref": "#/$defs/SessionStatus"
-            },
-            "type": {
-              "type": "string",
-              "const": "delegate_child_terminated"
-            }
-          },
-          "required": [
-            "type",
-            "status",
-            "reason"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "request": {
-              "$ref": "#/$defs/ApprovalRequest"
-            },
-            "type": {
-              "type": "string",
-              "const": "approval_requested"
-            }
-          },
-          "required": [
-            "type",
-            "request"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "approval_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "decision": {
-              "$ref": "#/$defs/ApprovalInternalDecision"
-            },
-            "type": {
-              "type": "string",
-              "const": "approval_evaluated"
-            }
-          },
-          "required": [
-            "type",
-            "approval_id",
-            "decision"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "approval_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "reason_code": {
-              "$ref": "#/$defs/ApprovalReasonCode"
-            },
-            "type": {
-              "type": "string",
-              "const": "approval_escalated"
-            }
-          },
-          "required": [
-            "type",
-            "approval_id",
-            "reason_code"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "approval_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "client_response_id": {
-              "description": "Bounded approval response idempotency key.",
-              "type": "string",
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
-            },
-            "decision": {
-              "$ref": "#/$defs/ApprovalUserDecision"
-            },
-            "feedback": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ApprovalFeedback"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "type": {
-              "type": "string",
-              "const": "approval_user_decision_recorded"
-            }
-          },
-          "required": [
-            "type",
-            "approval_id",
-            "client_response_id",
-            "decision",
-            "feedback"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "approval_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "decision": {
-              "$ref": "#/$defs/ApprovalFinalDecision"
-            },
-            "type": {
-              "type": "string",
-              "const": "approval_finalized"
-            }
-          },
-          "required": [
-            "type",
-            "approval_id",
-            "decision"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "approval_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "reason_code": {
-              "$ref": "#/$defs/ApprovalReasonCode"
-            },
-            "type": {
-              "type": "string",
-              "const": "approval_cancelled"
-            }
-          },
-          "required": [
-            "type",
-            "approval_id",
-            "reason_code"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "approval_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "operation_fingerprint": {
-              "$ref": "#/$defs/OperationFingerprint"
-            },
-            "repetitions": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 4
-            },
-            "type": {
-              "type": "string",
-              "const": "approval_doom_loop_detected"
-            }
-          },
-          "required": [
-            "type",
-            "approval_id",
-            "operation_fingerprint",
-            "repetitions"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "grant": {
-              "$ref": "#/$defs/TreeApprovalGrant"
-            },
-            "type": {
-              "type": "string",
-              "const": "tree_approval_grant_committed"
-            }
-          },
-          "required": [
-            "type",
-            "grant"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "backend": {
-              "$ref": "#/$defs/InternalAgentBackend"
-            },
-            "call": {
-              "$ref": "#/$defs/SafeInternalAgentCall"
-            },
-            "internal_run_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "invocation_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "kind": {
-              "$ref": "#/$defs/InternalAgentKind"
-            },
-            "type": {
-              "type": "string",
-              "const": "internal_agent_started"
-            }
-          },
-          "required": [
-            "type",
-            "invocation_id",
-            "internal_run_id",
-            "kind",
-            "backend",
-            "call"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "internal_run_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "invocation_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "kind": {
-              "$ref": "#/$defs/InternalAgentKind"
-            },
-            "result": {
-              "$ref": "#/$defs/SafeInternalAgentResult"
-            },
-            "type": {
-              "type": "string",
-              "const": "internal_agent_completed"
-            }
-          },
-          "required": [
-            "type",
-            "invocation_id",
-            "internal_run_id",
-            "kind",
-            "result"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "agent_id": {
-              "type": "string",
-              "maxLength": 64,
-              "minLength": 1,
-              "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
-            },
-            "internal_run_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "kind": {
-              "$ref": "#/$defs/InternalAgentKind"
-            },
-            "resolved_model": {
-              "$ref": "#/$defs/ResolvedModelRef"
-            },
-            "type": {
-              "type": "string",
-              "const": "internal_agent_usage_recorded"
-            },
-            "usage": {
-              "$ref": "#/$defs/Usage"
-            }
-          },
-          "required": [
-            "type",
-            "internal_run_id",
-            "kind",
-            "agent_id",
-            "resolved_model",
-            "usage"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "failure": {
-              "$ref": "#/$defs/InternalAgentFailure"
-            },
-            "internal_run_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "invocation_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "kind": {
-              "$ref": "#/$defs/InternalAgentKind"
-            },
-            "type": {
-              "type": "string",
-              "const": "internal_agent_failed"
-            }
-          },
-          "required": [
-            "type",
-            "invocation_id",
-            "internal_run_id",
-            "kind",
-            "failure"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "internal_run_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "invocation_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "kind": {
-              "$ref": "#/$defs/InternalAgentKind"
-            },
-            "reason": {
-              "description": "Control-free bounded safe error text.",
-              "type": [
-                "string",
-                "null"
-              ],
-              "maxLength": 4096,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
-            },
-            "type": {
-              "type": "string",
-              "const": "internal_agent_cancelled"
-            }
-          },
-          "required": [
-            "type",
-            "invocation_id",
-            "internal_run_id",
-            "kind",
-            "reason"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "internal_run_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "invocation_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "kind": {
-              "$ref": "#/$defs/InternalAgentKind"
-            },
-            "reason": {
-              "description": "Control-free bounded safe error text.",
-              "type": [
-                "string",
-                "null"
-              ],
-              "maxLength": 4096,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
-            },
-            "type": {
-              "type": "string",
-              "const": "internal_agent_interrupted"
-            }
-          },
-          "required": [
-            "type",
-            "invocation_id",
-            "internal_run_id",
-            "kind",
-            "reason"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "attempts": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 1
-            },
-            "failure": {
-              "$ref": "#/$defs/InternalAgentFailure"
-            },
-            "from": {
-              "$ref": "#/$defs/InternalAgentBackend"
-            },
-            "internal_run_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "invocation_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "kind": {
-              "$ref": "#/$defs/InternalAgentKind"
-            },
-            "to": {
-              "$ref": "#/$defs/InternalAgentBackend"
-            },
-            "type": {
-              "type": "string",
-              "const": "internal_agent_fallback"
-            }
-          },
-          "required": [
-            "type",
-            "invocation_id",
-            "internal_run_id",
-            "kind",
-            "from",
-            "to",
-            "failure",
-            "attempts"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "boundaries": {
-              "$ref": "#/$defs/ContextCheckpointBoundaries"
-            },
-            "budgets": {
-              "$ref": "#/$defs/ContextCheckpointBudgets"
-            },
-            "checkpoint": {
-              "$ref": "#/$defs/ContextCheckpoint"
-            },
-            "type": {
-              "type": "string",
-              "const": "context_checkpoint_committed"
-            }
-          },
-          "required": [
-            "type",
-            "checkpoint",
-            "boundaries",
-            "budgets"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "files": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/ContextRehydratedFile"
-              },
-              "maxItems": 5
-            },
-            "type": {
-              "type": "string",
-              "const": "context_rehydrated"
-            }
-          },
-          "required": [
-            "type",
-            "files"
-          ]
-        },
-        {
-          "description": "Legacy durable event retained for old logs; the engine no longer emits it.",
-          "type": "object",
-          "properties": {
-            "observed_tokens": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 1
-            },
-            "trigger_tokens": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 1
-            },
-            "type": {
-              "type": "string",
-              "const": "context_compaction_auto_disabled"
-            }
-          },
-          "required": [
-            "type",
-            "observed_tokens",
-            "trigger_tokens"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "change": {
-              "$ref": "#/$defs/SessionTitleChange"
-            },
-            "input_through_seq": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "type": {
-              "type": "string",
-              "const": "session_title_committed"
-            }
-          },
-          "required": [
-            "type",
-            "change",
-            "input_through_seq"
-          ]
-        }
       ]
     },
     "FrozenCredentialBinding": {

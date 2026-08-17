@@ -1,6 +1,5 @@
 {
   "delegation_journal_schema_version": 15,
-  "event_schema_version": 21,
   "protocol_version": 9,
   "schemas": [
     "ClientHello.schema.json",
@@ -10,6 +9,7 @@
     "Notification.schema.json",
     "SessionMeta.schema.json",
     "StoredEvent.schema.json",
+    "EventPayload.schema.json",
     "EventSubscriptionMessage.schema.json",
     "OutputDelta.schema.json",
     "OutputGap.schema.json",
@@ -93,7 +93,5 @@
     "ProviderDisconnectError.schema.json",
     "ModelSnapshotManifestV1.schema.json",
     "StoredDelegationJournalRecord.schema.json"
-  ],
-  "session_jsonl_schema_version": 21,
-  "session_meta_schema_version": 9
+  ]
 }

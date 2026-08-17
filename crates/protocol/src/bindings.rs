@@ -54,6 +54,7 @@ macro_rules! protocol_roots {
             Notification,
             SessionMeta,
             StoredEvent,
+            EventPayload,
             EventSubscriptionMessage,
             OutputDelta,
             OutputGap,
@@ -169,9 +170,6 @@ pub fn export_json_schema_set(output: &Path) -> Result<(), BindingExportError> {
         output.join("manifest.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
             "protocol_version": PROTOCOL_VERSION,
-            "event_schema_version": EVENT_SCHEMA_VERSION,
-            "session_jsonl_schema_version": EVENT_SCHEMA_VERSION,
-            "session_meta_schema_version": SESSION_META_SCHEMA_VERSION,
             "delegation_journal_schema_version": DELEGATION_JOURNAL_SCHEMA_VERSION,
             "schemas": filenames,
         }))?,

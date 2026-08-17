@@ -599,9 +599,6 @@ impl StateStore {
                     if event.seq <= replay.scratch.last_seq {
                         return true;
                     }
-                    if event.seq != replay.scratch.last_seq + 1 {
-                        return false;
-                    }
                     replay.physical_events.push(event.clone());
                     if matches!(event.payload, EventPayload::SessionReverted { .. }) {
                         replay.scratch =
@@ -791,9 +788,6 @@ impl StateStore {
         }
         if event.seq <= state.last_seq {
             return true;
-        }
-        if event.seq != state.last_seq + 1 {
-            return false;
         }
         self.physical_events
             .entry(event.session_id)
@@ -3043,11 +3037,11 @@ mod tests {
     }
 
     #[test]
-    fn session_revert_rebuilds_transcript_but_keeps_physical_cursor() {
+    fn session_revert_rebuilds_transcript_across_a_persisted_sequence_gap() {
         let session_id = SessionId::new_v7();
         let run_id = RunId::new_v7();
         let event = |seq, payload| StoredEvent {
-            event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+            engine_version: None,
             session_id,
             run_id: Some(run_id),
             seq,
@@ -3062,16 +3056,16 @@ mod tests {
             },
         )));
         assert!(store.apply_event(event(
-            2,
+            3,
             EventPayload::UserInputSubmitted {
                 input: "removed".into(),
             },
         )));
-        let mut reverted = event(3, EventPayload::SessionReverted { through_seq: 1 });
+        let mut reverted = event(4, EventPayload::SessionReverted { through_seq: 1 });
         reverted.run_id = None;
         assert!(store.apply_event(reverted));
         let state = store.sessions.get(&session_id).expect("session state");
-        assert_eq!(state.last_seq, 3);
+        assert_eq!(state.last_seq, 4);
         assert_eq!(state.transcript.len(), 1);
         assert!(matches!(
             &state.transcript[0],

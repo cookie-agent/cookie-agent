@@ -143,7 +143,6 @@ fn runtime() -> RuntimeSnapshotV1 {
 fn wire_versions_accept_only_documented_event_and_delegation_history() {
     assert_eq!(PROTOCOL_VERSION, 9);
     assert_eq!(EVENT_SCHEMA_VERSION, 21);
-    assert_eq!(SESSION_META_SCHEMA_VERSION, 9);
     assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 15);
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 4);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(8)).is_err());
@@ -277,7 +276,7 @@ fn pending_input_events_and_recall_rpc_round_trip() {
         );
     }
     let runless_admission = StoredEvent {
-        event_schema_version: EventSchemaVersion::current(),
+        engine_version: None,
         session_id: SessionId::new_v7(),
         run_id: None,
         seq: 1,
@@ -312,10 +311,35 @@ fn pending_input_events_and_recall_rpc_round_trip() {
 }
 
 #[test]
+fn event_payload_best_effort_defaults_only_optional_fields() {
+    let missing = deserialize_event_payload_best_effort(json!({"type":"run_cancelled"}))
+        .expect("missing optional field defaults");
+    assert_eq!(missing.degraded_fields, ["reason"]);
+    assert_eq!(missing.payload, EventPayload::RunCancelled { reason: None });
+
+    let mismatched = deserialize_event_payload_best_effort(json!({
+        "type":"run_interrupted",
+        "reason": 42
+    }))
+    .expect("mismatched optional field defaults");
+    assert_eq!(mismatched.degraded_fields, ["reason"]);
+    assert_eq!(
+        mismatched.payload,
+        EventPayload::RunInterrupted { reason: None }
+    );
+
+    assert!(deserialize_event_payload_best_effort(json!({"type":"future_event"})).is_err());
+    assert!(deserialize_event_payload_best_effort(json!({"type":"run_failed"})).is_err());
+    assert!(
+        deserialize_event_payload_best_effort(json!({"type":"run_failed","error":42})).is_err()
+    );
+}
+
+#[test]
 fn session_revert_reduces_visible_branch_and_rpc_types_round_trip() {
     let session_id = SessionId::new_v7();
     let event = |seq, payload| StoredEvent {
-        event_schema_version: EventSchemaVersion::current(),
+        engine_version: None,
         session_id,
         run_id: None,
         seq,
@@ -361,7 +385,7 @@ fn session_revert_reduces_visible_branch_and_rpc_types_round_trip() {
         vec![1, 5]
     );
     let invalid = StoredEvent {
-        event_schema_version: EventSchemaVersion::current(),
+        engine_version: None,
         session_id,
         run_id: None,
         seq: 6,
@@ -610,7 +634,6 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
     let runtime = runtime();
     let last_activity = "2026-08-06T12:34:56Z".parse().expect("timestamp");
     let meta = SessionMeta {
-        meta_schema_version: SessionMetaSchemaVersion::current(),
         session_id: SessionId::new_v7(),
         origin: SessionOrigin::Root,
         cwd_identity: CwdIdentity::new("test-workspace").expect("cwd identity"),
@@ -633,6 +656,7 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
         last_event_seq: 1,
         last_activity,
         status: SessionStatus::Idle,
+        skipped_events: Vec::new(),
     };
 
     let encoded = serde_json::to_value(&meta).expect("serialize session metadata");

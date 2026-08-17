@@ -2,8 +2,10 @@ use std::{borrow::Cow, collections::BTreeMap, fmt};
 
 use jiff::Timestamp;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_path_to_error::Segment;
 use ts_rs::TS;
 
 use crate::*;
@@ -90,9 +92,7 @@ pub enum SessionStatus {
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
-#[serde(deny_unknown_fields)]
 pub struct SessionMeta {
-    pub meta_schema_version: SessionMetaSchemaVersion,
     pub session_id: SessionId,
     pub origin: SessionOrigin,
     pub cwd_identity: CwdIdentity,
@@ -119,6 +119,13 @@ pub struct SessionMeta {
     pub last_event_seq: u64,
     pub last_activity: Timestamp,
     pub status: SessionStatus,
+    pub skipped_events: Vec<SkippedEvent>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+pub struct SkippedEvent {
+    pub seq: u64,
+    pub reason: String,
 }
 impl SessionMeta {
     pub fn validate(&self) -> Result<(), EventSchemaError> {
@@ -134,9 +141,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
-            meta_schema_version: SessionMetaSchemaVersion,
             session_id: SessionId,
             origin: SessionOrigin,
             cwd_identity: CwdIdentity,
@@ -154,10 +159,11 @@ impl<'de> Deserialize<'de> for SessionMeta {
             last_event_seq: u64,
             last_activity: Timestamp,
             status: SessionStatus,
+            #[serde(default)]
+            skipped_events: Vec<SkippedEvent>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
-            meta_schema_version: w.meta_schema_version,
             session_id: w.session_id,
             origin: w.origin,
             cwd_identity: w.cwd_identity,
@@ -174,6 +180,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             last_event_seq: w.last_event_seq,
             last_activity: w.last_activity,
             status: w.status,
+            skipped_events: w.skipped_events,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -1385,7 +1392,7 @@ impl<'de> Deserialize<'de> for ContextCheckpointCommit {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
 pub enum EventPayload {
     SessionCreated {
@@ -1965,7 +1972,9 @@ impl EventPayload {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct StoredEvent {
-    pub event_schema_version: EventSchemaVersion,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub engine_version: Option<String>,
     pub session_id: SessionId,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<RunId>", required)]
@@ -2018,25 +2027,262 @@ impl<'de> Deserialize<'de> for StoredEvent {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Wire {
-            event_schema_version: EventSchemaVersion,
+            #[serde(default)]
+            engine_version: Option<String>,
+            #[serde(default)]
+            event_schema_version: Option<Value>,
             session_id: SessionId,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             run_id: Option<RunId>,
             seq: u64,
             timestamp: Timestamp,
-            payload: EventPayload,
+            payload: Value,
         }
         let w = Wire::deserialize(d)?;
+        let _ = w.event_schema_version;
         let value = Self {
-            event_schema_version: w.event_schema_version,
+            engine_version: w.engine_version,
             session_id: w.session_id,
             run_id: w.run_id,
             seq: w.seq,
             timestamp: w.timestamp,
-            payload: w.payload,
+            payload: deserialize_event_payload_best_effort(w.payload)
+                .map_err(serde::de::Error::custom)?
+                .payload,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
+    }
+}
+
+const MAX_DEGRADED_FIELDS: usize = 8;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventPayloadRead {
+    pub payload: EventPayload,
+    pub degraded_fields: Vec<String>,
+}
+
+/// Decodes an event payload, replacing only leaves which Serde identifies as
+/// nullable fields. Required-field and unknown-variant failures remain errors.
+pub fn deserialize_event_payload_best_effort(mut value: Value) -> Result<EventPayloadRead, String> {
+    let mut degraded_fields = Vec::new();
+    let mut previous_path = None;
+    for _ in 0..=MAX_DEGRADED_FIELDS {
+        match serde_path_to_error::deserialize::<_, EventPayload>(value.clone().into_deserializer())
+        {
+            Ok(payload) => {
+                return Ok(EventPayloadRead {
+                    payload,
+                    degraded_fields,
+                });
+            }
+            Err(error) => {
+                let path = error.path().to_string();
+                if path != "." && previous_path.as_deref() == Some(path.as_str()) {
+                    return Err(error.to_string());
+                }
+                let degraded = if path == "." {
+                    replace_degradable_leaf(&mut value, &error.to_string())
+                } else if replace_path_with_null(&mut value, error.path()) {
+                    Some(path.clone())
+                } else {
+                    None
+                };
+                let Some(degraded) = degraded else {
+                    return Err(error.to_string());
+                };
+                previous_path = Some(path.clone());
+                degraded_fields.push(degraded);
+            }
+        }
+    }
+    Err(format!(
+        "event payload exceeds the {MAX_DEGRADED_FIELDS}-field degradation limit"
+    ))
+}
+
+#[derive(Clone)]
+enum ValuePathSegment {
+    Key(String),
+    Index(usize),
+}
+
+fn replace_degradable_leaf(value: &mut Value, original_error: &str) -> Option<String> {
+    let mut paths = Vec::new();
+    collect_leaf_paths(value, &mut Vec::new(), &mut paths);
+    for path in paths {
+        let mut candidate = value.clone();
+        if !set_value_path(&mut candidate, &path, Value::Null) {
+            continue;
+        }
+        match serde_path_to_error::deserialize::<_, EventPayload>(
+            candidate.clone().into_deserializer(),
+        ) {
+            Ok(_) => {
+                *value = candidate;
+                return Some(display_value_path(&path));
+            }
+            Err(error)
+                if error.to_string() != original_error
+                    && !error.inner().to_string().contains("invalid type: null") =>
+            {
+                *value = candidate;
+                return Some(display_value_path(&path));
+            }
+            Err(_) => {}
+        }
+    }
+    let missing = original_error
+        .split("missing field `")
+        .nth(1)
+        .and_then(|suffix| suffix.split('`').next())?;
+    let mut object_paths = Vec::new();
+    collect_object_paths(value, &mut Vec::new(), &mut object_paths);
+    for mut path in object_paths {
+        path.push(ValuePathSegment::Key(missing.to_owned()));
+        let mut candidate = value.clone();
+        if !set_value_path(&mut candidate, &path, Value::Null) {
+            continue;
+        }
+        if serde_json::from_value::<EventPayload>(candidate.clone()).is_ok() {
+            *value = candidate;
+            return Some(display_value_path(&path));
+        }
+    }
+    None
+}
+
+fn collect_leaf_paths(
+    value: &Value,
+    current: &mut Vec<ValuePathSegment>,
+    paths: &mut Vec<Vec<ValuePathSegment>>,
+) {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                if key == "type" || child.is_null() {
+                    continue;
+                }
+                current.push(ValuePathSegment::Key(key.clone()));
+                collect_leaf_paths(child, current, paths);
+                current.pop();
+            }
+        }
+        Value::Array(array) => {
+            for (index, child) in array.iter().enumerate() {
+                current.push(ValuePathSegment::Index(index));
+                collect_leaf_paths(child, current, paths);
+                current.pop();
+            }
+        }
+        _ => paths.push(current.clone()),
+    }
+}
+
+fn collect_object_paths(
+    value: &Value,
+    current: &mut Vec<ValuePathSegment>,
+    paths: &mut Vec<Vec<ValuePathSegment>>,
+) {
+    match value {
+        Value::Object(object) => {
+            paths.push(current.clone());
+            for (key, child) in object {
+                current.push(ValuePathSegment::Key(key.clone()));
+                collect_object_paths(child, current, paths);
+                current.pop();
+            }
+        }
+        Value::Array(array) => {
+            for (index, child) in array.iter().enumerate() {
+                current.push(ValuePathSegment::Index(index));
+                collect_object_paths(child, current, paths);
+                current.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn set_value_path(value: &mut Value, path: &[ValuePathSegment], replacement: Value) -> bool {
+    let Some((leaf, parents)) = path.split_last() else {
+        return false;
+    };
+    let mut current = value;
+    for segment in parents {
+        let Some(next) = (match segment {
+            ValuePathSegment::Key(key) => current.get_mut(key),
+            ValuePathSegment::Index(index) => current.get_mut(*index),
+        }) else {
+            return false;
+        };
+        current = next;
+    }
+    match leaf {
+        ValuePathSegment::Key(key) => current
+            .as_object_mut()
+            .map(|object| object.insert(key.clone(), replacement))
+            .is_some(),
+        ValuePathSegment::Index(index) => current
+            .as_array_mut()
+            .and_then(|array| array.get_mut(*index))
+            .map(|value| *value = replacement)
+            .is_some(),
+    }
+}
+
+fn display_value_path(path: &[ValuePathSegment]) -> String {
+    let mut result = String::new();
+    for segment in path {
+        match segment {
+            ValuePathSegment::Key(key) => {
+                if !result.is_empty() {
+                    result.push('.');
+                }
+                result.push_str(key);
+            }
+            ValuePathSegment::Index(index) => result.push_str(&format!("[{index}]")),
+        }
+    }
+    result
+}
+
+fn replace_path_with_null(value: &mut Value, path: &serde_path_to_error::Path) -> bool {
+    let segments = path
+        .iter()
+        .filter(|segment| !matches!(segment, Segment::Enum { .. }))
+        .collect::<Vec<_>>();
+    let Some((leaf, parents)) = segments.split_last() else {
+        return false;
+    };
+    let mut current = value;
+    for segment in parents {
+        let next = match segment {
+            Segment::Map { key } => current.get_mut(key),
+            Segment::Seq { index } => current.get_mut(*index),
+            Segment::Enum { .. } | Segment::Unknown => None,
+        };
+        let Some(next) = next else {
+            return false;
+        };
+        current = next;
+    }
+    match leaf {
+        Segment::Map { key } => {
+            let Some(object) = current.as_object_mut() else {
+                return false;
+            };
+            object.remove(key);
+            object.insert(key.clone(), Value::Null);
+            true
+        }
+        Segment::Seq { index } => current
+            .as_array_mut()
+            .and_then(|array| array.get_mut(*index))
+            .map(|leaf| *leaf = Value::Null)
+            .is_some(),
+        Segment::Enum { .. } | Segment::Unknown => false,
     }
 }
 

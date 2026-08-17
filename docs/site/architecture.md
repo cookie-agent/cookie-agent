@@ -223,7 +223,7 @@ canonical working directory:
   catalog/                         # validated models.dev cache
   projects/<16-hex-cwd-hash>/
     cwd                            # canonical project path
-    sessions/<session-id>/         # events.jsonl + meta.json cache
+    sessions/<session-id>/         # versionless events.jsonl + rebuildable meta.json cache
     artifacts/                     # content-addressed tool output
     delegations.jsonl              # delegation journal (writes 15; reads 11-15)
     grant-invalidations.jsonl      # tree-grant invalidation journal

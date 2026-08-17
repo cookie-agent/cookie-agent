@@ -152,10 +152,15 @@ pub(crate) fn session_search_rows(
             .title
             .as_ref()
             .map_or_else(|| "untitled".to_owned(), ToString::to_string);
+        let degraded = if session.skipped_events.is_empty() {
+            ""
+        } else {
+            " !"
+        };
         rows.push(SessionSearchRow::Session {
             session_id: session.session_id,
             label: format!(
-                "{title}  ({} · {})",
+                "{title}{degraded}  ({} · {})",
                 session.creation_selection.agent,
                 short_id(session.session_id)
             ),
@@ -366,10 +371,10 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use cookie_agent_protocol::{
-        AgentId, AssistantToolCallRef, AttemptId, EventPayload, EventSchemaVersion, ModelCallId,
-        ModelSelection, PersistedToolResult, ProviderDescriptor, RunSelection, SafeDisplayText,
-        SessionId, SessionMeta, SessionMetaSchemaVersion, SessionOrigin, SessionStatus,
-        StoredEvent, ToolCallId, ToolCallTermination, ToolTerminationOutcome,
+        AgentId, AssistantToolCallRef, AttemptId, EventPayload, ModelCallId, ModelSelection,
+        PersistedToolResult, ProviderDescriptor, RunSelection, SafeDisplayText, SessionId,
+        SessionMeta, SessionOrigin, SessionStatus, StoredEvent, ToolCallId, ToolCallTermination,
+        ToolTerminationOutcome,
     };
 
     use ratatui::widgets::ListState;
@@ -424,7 +429,6 @@ mod tests {
 
     fn session_meta(session_id: SessionId) -> SessionMeta {
         SessionMeta {
-            meta_schema_version: SessionMetaSchemaVersion::current(),
             session_id,
             origin: SessionOrigin::Root,
             cwd_identity: cookie_agent_protocol::CwdIdentity::new("/workspace")
@@ -448,6 +452,7 @@ mod tests {
             last_event_seq: 1,
             last_activity: "2026-08-06T12:00:00Z".parse().expect("timestamp"),
             status: SessionStatus::Idle,
+            skipped_events: Vec::new(),
         }
     }
 
@@ -494,7 +499,7 @@ mod tests {
         payload: EventPayload,
     ) -> StoredEvent {
         StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: None,
             session_id,
             run_id: None,
             seq,

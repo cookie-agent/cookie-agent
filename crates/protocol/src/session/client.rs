@@ -2159,7 +2159,7 @@ mod tests {
 
     fn event(session_id: SessionId, seq: u64) -> StoredEvent {
         StoredEvent {
-            event_schema_version: crate::EventSchemaVersion::current(),
+            engine_version: None,
             session_id,
             run_id: Some(crate::RunId::new_v7()),
             seq,
@@ -2775,7 +2775,7 @@ mod tests {
         let (recovery, _recovery_receiver) = recovery();
         let mut tools = HashMap::new();
         let started = StoredEvent {
-            event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+            engine_version: None,
             session_id,
             run_id: Some(cookie_agent_protocol::RunId::new_v7()),
             seq: 1,

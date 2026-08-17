@@ -42,15 +42,15 @@ and the CLI share one implementation of the protocol mechanics.
 | `runtime.snapshot.get` | Empty object | One coherent runtime snapshot |
 | `provider.connect` | Provider, expected catalog revision, setup/auth values, client ID | Durable connection, effective auth, snapshot, replay state |
 | `provider.disconnect` | Provider, expected revisions/generation, client ID | Disconnect receipt, effective auth, snapshot, replay state |
-| `session.create` | Run selection | Session metadata |
-| `session.list` | Optional cwd identity | Session metadata list |
-| `session.get` | Session ID | Session metadata |
+| `session.create` | Run selection | Session metadata with skipped-event diagnostics |
+| `session.list` | Optional cwd identity | Session metadata list with skipped-event diagnostics |
+| `session.get` | Session ID | Session metadata with skipped-event diagnostics |
 | `session.usage` | Session ID | Token/request rollup, cache hit rate, optional estimated cost, and per-model breakdown |
 | `agent.usage` | Agent ID | Rollup across turns attributed to that agent |
 | `usage.global` | Empty object | Rollup across all project sessions |
 | `session.children` | Session ID | Direct child summaries |
 | `session.tree` | Session ID | Recursive session tree |
-| `session.resume` | Session ID | Resumed session metadata |
+| `session.resume` | Session ID | Resumed session metadata with skipped-event diagnostics |
 | `session.rename` | Session ID, client rename ID, set/clear/reset change | Session metadata and client ID |
 | `session.set_permission_mode` | Session ID, `auto_approve`/`ask`/`yolo` | Empty object |
 | `skills.list` | Session ID | Discovered skills with source, precedence, visibility, and permission effect |
@@ -111,4 +111,10 @@ The shared client maps these to `ClientDelivery` variants (`Live`, replay
 deliveries, output stream events, `RuntimeChanged`, `RecoveryFailed`), so a UI
 consumes one ordered stream and never parses raw JSON-RPC frames.
 
-See [Events](events.md) for schema-21 event payloads.
+Session metadata includes additive `skipped_events` entries with the physical
+sequence (or source line number when no sequence was readable) and a safe reason.
+An empty array means the event log loaded without skipped records. Optional-field
+degradations remain available to the engine as load diagnostics but are not
+reported as skipped events.
+
+See [Events](events.md) for event payloads and durability semantics.

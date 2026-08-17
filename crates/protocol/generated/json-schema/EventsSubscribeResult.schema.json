@@ -871,7 +871,6 @@
               "const": "session_created"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "origin",
@@ -900,7 +899,6 @@
               "const": "session_reverted"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "through_seq"
@@ -917,7 +915,6 @@
               "const": "session_permission_overlay_set"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "overlay"
@@ -953,7 +950,6 @@
               "const": "skill_loaded"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "name",
@@ -975,7 +971,6 @@
               "const": "skill_invocation_noted"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "name"
@@ -1057,7 +1052,6 @@
               "const": "run_started"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "client_run_id",
@@ -1085,7 +1079,6 @@
               "const": "user_input_admitted"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "input"
@@ -1102,7 +1095,6 @@
               "const": "user_input_submitted"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "input"
@@ -1119,7 +1111,6 @@
               "const": "user_input_recalled"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "input"
@@ -1141,7 +1132,6 @@
               "minimum": 0
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "user_input_seq",
@@ -1161,7 +1151,6 @@
               "minimum": 0
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "user_input_seq"
@@ -1186,7 +1175,6 @@
               "const": "delegated_context_seeded"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "invocation_id",
@@ -1207,7 +1195,6 @@
               "const": "run_completed"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "final_text"
@@ -1228,7 +1215,6 @@
               "const": "run_failed"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "error"
@@ -1252,7 +1238,6 @@
               "const": "run_cancelled"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "reason"
@@ -1276,7 +1261,6 @@
               "const": "run_interrupted"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "reason"
@@ -1318,7 +1302,6 @@
               "const": "model_attempt_started"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "attempt_id",
@@ -1344,7 +1327,6 @@
               "const": "text_delta"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "attempt_id",
@@ -1366,7 +1348,6 @@
               "const": "reasoning_delta"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "attempt_id",
@@ -1385,7 +1366,6 @@
               "const": "attempt_abandoned"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "attempt_id"
@@ -1413,7 +1393,6 @@
               "const": "model_replay_evaluated"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "attempt_id",
@@ -1460,7 +1439,6 @@
               "maxItems": 256
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "attempt_id",
@@ -1496,7 +1474,6 @@
               "$ref": "#/$defs/Usage"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "model_turn_seq",
@@ -1537,7 +1514,6 @@
               "const": "model_fallback"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "from",
@@ -1569,7 +1545,6 @@
               "const": "tool_call_started"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "tool_call_id",
@@ -1597,7 +1572,6 @@
               "const": "tool_call_progress"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "tool_call_id",
@@ -1642,7 +1616,6 @@
               "const": "tool_call_terminated"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "tool_call_id",
@@ -1672,7 +1645,6 @@
               "const": "tool_output_elided"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "tool_call_id",
@@ -1697,7 +1669,6 @@
               "const": "tool_stdin_submitted"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "tool_call_id",
@@ -1720,7 +1691,6 @@
               "const": "tool_call_linked"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "tool_call_id",
@@ -1747,7 +1717,6 @@
               "const": "delegate_queued"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "session_id",
@@ -1778,7 +1747,6 @@
               "const": "delegate_finished"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "session_id",
@@ -1815,7 +1783,6 @@
               "const": "delegate_finished_v2"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "invocation_id",
@@ -1846,7 +1813,6 @@
               "const": "delegate_child_terminated"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "status",
@@ -1864,7 +1830,6 @@
               "const": "approval_requested"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "request"
@@ -1885,7 +1850,6 @@
               "const": "approval_evaluated"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "approval_id",
@@ -1907,7 +1871,6 @@
               "const": "approval_escalated"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "approval_id",
@@ -1946,7 +1909,6 @@
               "const": "approval_user_decision_recorded"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "approval_id",
@@ -1970,7 +1932,6 @@
               "const": "approval_finalized"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "approval_id",
@@ -1992,7 +1953,6 @@
               "const": "approval_cancelled"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "approval_id",
@@ -2019,7 +1979,6 @@
               "const": "approval_doom_loop_detected"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "approval_id",
@@ -2038,7 +1997,6 @@
               "const": "tree_approval_grant_committed"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "grant"
@@ -2069,7 +2027,6 @@
               "const": "internal_agent_started"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "invocation_id",
@@ -2101,7 +2058,6 @@
               "const": "internal_agent_completed"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "invocation_id",
@@ -2137,7 +2093,6 @@
               "$ref": "#/$defs/Usage"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "internal_run_id",
@@ -2169,7 +2124,6 @@
               "const": "internal_agent_failed"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "invocation_id",
@@ -2207,7 +2161,6 @@
               "const": "internal_agent_cancelled"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "invocation_id",
@@ -2245,7 +2198,6 @@
               "const": "internal_agent_interrupted"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "invocation_id",
@@ -2287,7 +2239,6 @@
               "const": "internal_agent_fallback"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "invocation_id",
@@ -2316,7 +2267,6 @@
               "const": "context_checkpoint_committed"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "checkpoint",
@@ -2339,7 +2289,6 @@
               "const": "context_rehydrated"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "files"
@@ -2364,7 +2313,6 @@
               "const": "context_compaction_auto_disabled"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "observed_tokens",
@@ -2387,7 +2335,6 @@
               "const": "session_title_committed"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "change",
@@ -5115,16 +5062,10 @@
     "StoredEvent": {
       "type": "object",
       "properties": {
-        "event_schema_version": {
-          "type": "integer",
-          "enum": [
-            15,
-            16,
-            17,
-            18,
-            19,
-            20,
-            21
+        "engine_version": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "payload": {
@@ -5153,7 +5094,6 @@
       },
       "additionalProperties": false,
       "required": [
-        "event_schema_version",
         "session_id",
         "run_id",
         "seq",

@@ -37,12 +37,12 @@ mod tests {
     use cookie_agent_protocol::{
         AgentId, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
         ApprovalId, ApprovalRequest, ApprovalResourceSource, ApprovalTrigger, DecisionTrace,
-        EventPayload, EventSchemaVersion, EventSubscriptionMessage, MatchedPermissionRule,
-        ModelKey, ModelSelection, OutputDelta, OutputSnapshot, OutputSnapshotEnvelope,
-        OutputStream, PermissionAction, PermissionEffect, PreparedApprovalResource,
-        PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
-        PreparedResourceDigest, PreparedResourceIdentity, ProviderId, RunSelection, SafeCode,
-        SessionCreateParams, SessionId, Sha256Digest, StoredEvent, ToolCallId,
+        EventPayload, EventSubscriptionMessage, MatchedPermissionRule, ModelKey, ModelSelection,
+        OutputDelta, OutputSnapshot, OutputSnapshotEnvelope, OutputStream, PermissionAction,
+        PermissionEffect, PreparedApprovalResource, PreparedBindingLifetime,
+        PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
+        PreparedResourceIdentity, ProviderId, RunSelection, SafeCode, SessionCreateParams,
+        SessionId, Sha256Digest, StoredEvent, ToolCallId,
     };
     use cookie_agent_server::Server;
     use jiff::Timestamp;
@@ -320,7 +320,7 @@ mod tests {
         text: &str,
     ) -> StoredEvent {
         StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: None,
             session_id,
             run_id: Some(run_id),
             seq,
@@ -381,7 +381,7 @@ mod tests {
         let run_id = cookie_agent_protocol::RunId::new_v7();
         let mut store = StateStore::default();
         store.apply_event(StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: None,
             session_id: session,
             run_id: Some(run_id),
             seq: 1,
@@ -391,7 +391,7 @@ mod tests {
             },
         });
         store.apply_event(StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: None,
             session_id: session,
             run_id: Some(run_id),
             seq: 2,
@@ -422,7 +422,7 @@ mod tests {
         let request = approval_request();
         let approval_id = request.approval_id();
         app.store.apply_event(StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: None,
             session_id: session.session_id,
             run_id: Some(cookie_agent_protocol::RunId::new_v7()),
             seq: 2,
@@ -430,7 +430,7 @@ mod tests {
             payload: EventPayload::ApprovalRequested { request },
         });
         app.store.apply_event(StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: None,
             session_id: session.session_id,
             run_id: Some(cookie_agent_protocol::RunId::new_v7()),
             seq: 3,

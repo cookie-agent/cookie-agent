@@ -94,10 +94,6 @@
           "minLength": 71,
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
-        "meta_schema_version": {
-          "type": "integer",
-          "const": 9
-        },
         "model_revision": {
           "type": "string",
           "maxLength": 71,
@@ -129,6 +125,12 @@
           "type": "string",
           "format": "uuid"
         },
+        "skipped_events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SkippedEvent"
+          }
+        },
         "status": {
           "$ref": "#/$defs/SessionStatus"
         },
@@ -147,9 +149,7 @@
           "minimum": 0
         }
       },
-      "additionalProperties": false,
       "required": [
-        "meta_schema_version",
         "session_id",
         "origin",
         "cwd_identity",
@@ -165,7 +165,8 @@
         "title_updated_seq",
         "last_event_seq",
         "last_activity",
-        "status"
+        "status",
+        "skipped_events"
       ]
     },
     "SessionOrigin": {
@@ -257,6 +258,23 @@
       "required": [
         "session",
         "children"
+      ]
+    },
+    "SkippedEvent": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "seq",
+        "reason"
       ]
     }
   }

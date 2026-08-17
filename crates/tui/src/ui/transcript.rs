@@ -1920,14 +1920,13 @@ mod tests {
         AgentId, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
         ApprovalId, ApprovalRecord, ApprovalRequest, ApprovalResourceSource, ApprovalStatus,
         ApprovalTrigger, ApprovalUserDecision, AssistantToolCallRef, AttemptId, DecisionTrace,
-        EventPayload, EventSchemaVersion, EventSubscriptionMessage, ModelCallId, ModelKey,
-        ModelSelection, OperationFingerprint, OutputDelta, OutputStream, PermissionAction,
-        PermissionEffect, PreparedApprovalResource, PreparedBindingLifetime,
-        PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
-        PreparedResourceIdentity, ProviderId, RunId, RunSelection, SafeCode, SafeDisplayText,
-        SafeErrorMessage, SessionId, SessionMeta, SessionMetaSchemaVersion, SessionOrigin,
-        SessionStatus, SessionTitle, SessionTree, Sha256Digest, StoredEvent, ToolCallId,
-        ToolCallStart, Usage,
+        EventPayload, EventSubscriptionMessage, ModelCallId, ModelKey, ModelSelection,
+        OperationFingerprint, OutputDelta, OutputStream, PermissionAction, PermissionEffect,
+        PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
+        PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, ProviderId,
+        RunId, RunSelection, SafeCode, SafeDisplayText, SafeErrorMessage, SessionId, SessionMeta,
+        SessionOrigin, SessionStatus, SessionTitle, SessionTree, Sha256Digest, StoredEvent,
+        ToolCallId, ToolCallStart, Usage,
     };
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -2288,7 +2287,7 @@ mod tests {
 
     fn event(session_id: SessionId, seq: u64, run: RunId, payload: EventPayload) -> StoredEvent {
         StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: None,
             session_id,
             run_id: Some(run),
             seq,
@@ -2299,7 +2298,7 @@ mod tests {
 
     fn runless_event(session_id: SessionId, seq: u64, payload: EventPayload) -> StoredEvent {
         StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: None,
             session_id,
             run_id: None,
             seq,
@@ -2359,7 +2358,7 @@ mod tests {
         suffix_start: u32,
     ) -> StoredEvent {
         StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: None,
             session_id,
             run_id: None,
             seq,
@@ -2678,7 +2677,6 @@ mod tests {
 
     fn session_meta(id: SessionId) -> SessionMeta {
         SessionMeta {
-            meta_schema_version: SessionMetaSchemaVersion::current(),
             session_id: id,
             origin: SessionOrigin::Root,
             cwd_identity: cookie_agent_protocol::CwdIdentity::new("/workspace").expect("cwd"),
@@ -2704,6 +2702,7 @@ mod tests {
             last_event_seq: 2,
             last_activity: "2026-08-06T12:00:00Z".parse().expect("timestamp"),
             status: SessionStatus::Idle,
+            skipped_events: Vec::new(),
         }
     }
 
@@ -7636,7 +7635,7 @@ mod tests {
         app.selected = Some(session);
 
         let permission_event = StoredEvent {
-            event_schema_version: EventSchemaVersion::current(),
+            engine_version: None,
             session_id: session,
             run_id: None,
             seq: 2,

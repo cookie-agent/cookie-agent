@@ -1327,7 +1327,7 @@ mod tests {
 
     fn event(run: RunId, seq: u64, payload: Event) -> StoredEvent {
         StoredEvent {
-            event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+            engine_version: None,
             session_id: SessionId::new_v7(),
             run_id: Some(run),
             seq,
