@@ -1117,7 +1117,11 @@ string of bare <code>Tool</code> names or <code>Tool(pattern)</code> entries. Pa
 spaces and parentheses; a bare tool means <code>*</code>. Tool names are case-insensitive,
 and <code>Edit</code> maps to the <code>write</code> permission just like the builtin edit tool.
 Accepted names are <code>Read</code>, <code>Write</code>, <code>Edit</code>, <code>Bash</code>, <code>Delegate</code>, <code>Skill</code>, and
-<code>Mcp</code>. The older Cookie Agent <code>action:pattern</code> list form is not accepted.</p>
+<code>Mcp</code>, and <code>Plugin</code>. The older Cookie Agent <code>action:pattern</code> list form is not
+accepted.</p>
+<p><code>Plugin</code> grants the complete plugin permission group. <code>Plugin(name:*)</code> grants
+both <code>name</code> and <code>name *</code>, where <code>name</code> is a plugin-declared permission prefix;
+this is the same prefix expansion used by <code>Mcp(name:*)</code>.</p>
 <p>Claude's <code>prefix:*</code> convention is translated to Cookie Agent's full-resource
 glob semantics. For example, <code>Bash(git:*)</code> creates grants for both <code>git</code> and
 <code>git *</code>, matching <code>git</code>, <code>git status</code>, and longer git commands. Other inner

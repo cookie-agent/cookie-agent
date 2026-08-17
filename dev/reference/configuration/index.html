@@ -1362,7 +1362,7 @@ there are no undocumented aliases, hidden keys, or migration paths.</p>
 </thead>
 <tbody>
 <tr>
-<td>Runtime and providers</td>
+<td>Runtime, providers, MCP servers, and plugins</td>
 <td><code>~/.config/cookie_agent/config.toml</code> and <code>&lt;cwd&gt;/.cookie-agent/config.toml</code></td>
 </tr>
 <tr>
@@ -1384,7 +1384,8 @@ there are no undocumented aliases, hidden keys, or migration paths.</p>
 optional. Configuration is loaded from the exact working directory only; there
 is no upward search. Within a layer, <code>config.toml</code> and the <code>agents/</code> directory
 are optional. A workspace layer replaces the corresponding user settings and
-providers/agents wholesale by ID; nested fields never merge.</p>
+providers, MCP servers, plugins, and agents wholesale by ID; nested fields
+never merge.</p>
 <p>Every authored file is parsed strictly. Unknown keys, leftover <code>schema</code> or
 <code>schema_version</code> keys, wrong types, and malformed content are hard errors with an
 actionable path, key, and line where available. No authored-file migrations or
@@ -1871,8 +1872,11 @@ permission and naming behavior.</p>
 </tbody>
 </table>
 <h2 id="pluginsname"><code>[plugins.&lt;name&gt;]</code><a class="headerlink" href="#pluginsname" title="Permanent link">&para;</a></h2>
-<p>Plugin definitions are layered by plugin name. A workspace definition replaces the same
-user-level plugin. See the <a href="../../guide/plugins/">Plugins guide</a> for protocol, permission, and tool
+<p>Plugin definitions are layered by plugin name. A workspace definition replaces
+the complete same-name user definition without merging nested fields. The
+replacement keeps that user's position in authored order, which is also the
+interception order; workspace-only plugins append in workspace-authored order.
+See the <a href="../../guide/plugins/">Plugins guide</a> for protocol, permission, and tool
 precedence behavior.</p>
 <table>
 <thead>
@@ -1940,14 +1944,33 @@ precedence behavior.</p>
 </tr>
 </tbody>
 </table>
+<p>Plugin entries reject unknown fields. <code>command</code> must be present and nonempty,
+<code>cwd</code> must be nonempty when set, and every timeout must be greater than zero.
+These rules apply even when <code>enabled = false</code>; disabling an entry prevents
+startup but does not bypass configuration validation.</p>
+<p>The child receives only the variables in <code>env</code>. It does not inherit the
+engine's environment, including <code>PATH</code>; use an absolute <code>command</code> and configure
+<code>PATH</code> explicitly when the executable or its children need it.</p>
+<p>Complete example:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[plugins.issue_tracker]</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">command</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"/opt/cookie-plugins/issue-tracker"</span><span class="w"> </span><span class="c1"># Required executable path.</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">args</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"--stdio"</span><span class="p">]</span><span class="w">                            </span><span class="c1"># Optional arguments.</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">env</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">PATH</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"/usr/bin:/bin"</span><span class="p">,</span><span class="w"> </span><span class="n">MODE</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"local"</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="c1"># Complete child environment.</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">cwd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"/workspace"</span><span class="w">                           </span><span class="c1"># Optional child working directory.</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="w">                                </span><span class="c1"># Start when the engine opens.</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">interception_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2000</span><span class="w">                </span><span class="c1"># Per interception hook.</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="n">startup_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">10000</span><span class="w">                    </span><span class="c1"># Initialization handshake.</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="n">shutdown_grace_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3000</span><span class="w">                      </span><span class="c1"># Grace before termination.</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="n">tool_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">30000</span><span class="w">                       </span><span class="c1"># Per plugin tool call.</span>
+</code></pre></div>
 <h2 id="providers"><code>[providers]</code><a class="headerlink" href="#providers" title="Permanent link">&para;</a></h2>
 <p>Provider definitions are keyed by provider ID under <code>[providers.&lt;id&gt;]</code>. Each
 value is one of two tagged sources. See the <a href="../../guide/providers/">Providers guide</a>
 for complete examples.</p>
 <h3 id="managed-providers-source-models_dev">Managed providers (<code>source = "models_dev"</code>)<a class="headerlink" href="#managed-providers-source-models_dev" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[providers.openai]</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"models_dev"</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"${env:OPENAI_API_KEY}"</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[providers.openai]</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"models_dev"</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"${env:OPENAI_API_KEY}"</span>
 </code></pre></div>
 <table>
 <thead>
@@ -2036,13 +2059,13 @@ fails with a migration error naming the adapter-specific replacement.</p>
 <h3 id="custom-providers-source-custom">Custom providers (<code>source = "custom"</code>)<a class="headerlink" href="#custom-providers-source-custom" title="Permanent link">&para;</a></h3>
 <p>Provider IDs under <code>custom.</code> are config-only, never appear in <code>/connect</code>, and
 never use the provider store.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[providers.</span><span class="s2">"custom.example"</span><span class="k">]</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"custom"</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"https://api.example.invalid/v1"</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">adaptor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"openai-compatible"</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">setup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"bearer-api-key-v1"</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">api_key</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"${env:CUSTOM_API_KEY}"</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="n">headers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">[providers.</span><span class="s2">"custom.example"</span><span class="k">]</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"custom"</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"https://api.example.invalid/v1"</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">adaptor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"openai-compatible"</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">setup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="n">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"bearer-api-key-v1"</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">api_key</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"${env:CUSTOM_API_KEY}"</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="n">headers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
 </code></pre></div>
 <table>
 <thead>

@@ -627,9 +627,9 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
+  <a href="#configuring-a-plugin" class="md-nav__link">
     <span class="md-ellipsis">
-      Configuration
+      Configuring a plugin
     </span>
   </a>
   
@@ -1066,9 +1066,9 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
+  <a href="#configuring-a-plugin" class="md-nav__link">
     <span class="md-ellipsis">
-      Configuration
+      Configuring a plugin
     </span>
   </a>
   
@@ -1161,7 +1161,7 @@
 process. Each enabled plugin starts eagerly when <code>Engine::open</code> runs and communicates over
 newline-delimited JSON-RPC 2.0 on standard input and standard output. Plugin logs go to the
 engine's standard error stream.</p>
-<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<h2 id="configuring-a-plugin">Configuring a plugin<a class="headerlink" href="#configuring-a-plugin" title="Permanent link">&para;</a></h2>
 <p>Configure each plugin under <code>[plugins.&lt;name&gt;]</code> in user or workspace <code>config.toml</code>. A workspace
 entry replaces a user entry with the same name.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[plugins.example]</span>
@@ -1180,6 +1180,15 @@ entry replaces a user entry with the same name.</p>
 disabled entry is not started but is still validated. Plugin processes receive only the
 variables in <code>env</code>; the engine clears its inherited environment, including <code>PATH</code>, before adding
 those configured values. Configure <code>PATH</code> explicitly when the plugin itself needs it.</p>
+<p>During <code>plugin/initialize</code>, this executable must declare every capability it uses. A tool-only
+plugin sets <code>tools: true</code>, leaves subscription and publishing flags false, and returns an empty
+<code>intercept</code> array plus its tool declarations. The agent document must then enable each declared
+permission and resource, for example:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">permissions</span><span class="p">:</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">plugin</span><span class="p">:</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="s">"issue_read</span><span class="nv"> </span><span class="s">*"</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">allow</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="s">"issue_delete</span><span class="nv"> </span><span class="s">*"</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ask</span>
+</code></pre></div>
 <h2 id="protocol">Protocol<a class="headerlink" href="#protocol" title="Permanent link">&para;</a></h2>
 <p>The extension protocol version is the semantic-version string <code>0.0.3</code>. Before version 1.0,
 cookie agent requires an exact version match: additive method or schema changes bump the patch
@@ -1276,26 +1285,23 @@ tool call. <code>is_error</code> remains structured tool-result metadata, parall
 <p>Plugin tools use the fail-closed permission pipeline. They are hidden until the agent policy or a
 session overlay has an <code>allow</code> or <code>ask</code> rule for the <code>plugin</code> action and declared permission. The
 permission resource is the declared permission name followed by the primary resource when one is
-present. For example:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">permissions</span><span class="p">:</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">plugin</span><span class="p">:</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="s">"issue_read</span><span class="nv"> </span><span class="s">*"</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">allow</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="s">"issue_delete</span><span class="nv"> </span><span class="s">*"</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ask</span>
-</code></pre></div>
-<p>Skill <code>allowed-tools</code> entries <code>Plugin</code> and <code>Plugin(name:*)</code> govern plugin tools in the same way as
-the existing MCP group. A pinned call to a connected but disallowed plugin tool reports that the
-tool is not enabled instead of treating it as undiscovered.</p>
+present. The <code>issue_read *</code> rule above allows that declared permission for any primary resource.</p>
+<p><a href="../skills/#invocation-and-permissions">Skill <code>allowed-tools</code></a> entries <code>Plugin</code> and
+<code>Plugin(name:*)</code> govern plugin tools in the same way as the existing MCP group. A pinned call to a
+connected but disallowed plugin tool reports that the tool is not enabled instead of treating it
+as undiscovered.</p>
 <h2 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h2>
 <p>Plugin state progresses through <code>disconnected</code>, <code>connecting</code>, and <code>connected</code>, or to <code>failed</code>
 with a diagnostic reason. Spawn failures, handshake timeouts, malformed responses, version or
 name mismatches, declaration errors, name collisions, unexpected EOF, and process exits affect
 only that plugin; the engine and other plugins continue running.</p>
-<p>Discovered tool names are claimed in the same global namespace as built-in and MCP tools. A plugin
-that collides with either category fails. When plugins collide with each other, the last plugin to
-finish registration wins that tool; the earlier plugin remains connected for its other tools and
-publishes a status diagnostic. The winner's permission declaration applies. Claims and listings
-are removed immediately when the owning process exits or standard output closes, and prepared
-calls fail revalidation after removal. Crashed plugins stay failed until engine restart.</p>
+<p>Discovered tool names share one namespace with built-in and MCP tools. Built-in names are reserved,
+and MCP claims take precedence over plugin claims; a plugin collision fails, and a later lazy MCP
+claim preempts the plugin. When plugins collide with each other, the last plugin to finish
+registration wins that tool; the earlier plugin remains connected for its other tools and publishes
+a status diagnostic. The winner's permission declaration applies. Claims and listings are removed
+immediately when the owning process exits or standard output closes, and prepared calls fail
+revalidation after removal. Crashed plugins stay failed until engine restart.</p>
 <p>Each call is bounded by <code>tool_timeout_ms</code>, which defaults to 30000. During shutdown, the engine
 sends <code>plugin/shutdown</code>, closes plugin standard input, waits for <code>shutdown_grace_ms</code>, and then
 terminates the process if needed. Shutdown remains bounded when initialization is still pending.</p>
