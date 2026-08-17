@@ -712,6 +712,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cookie_agent_plugin_sdk"
+version = "0.1.0"
+dependencies = [
+ "cookie_agent_protocol",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
 name = "cookie_agent_protocol"
 version = "0.1.0"
 dependencies = [

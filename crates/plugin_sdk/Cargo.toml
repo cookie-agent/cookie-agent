@@ -1,0 +1,21 @@
+[package]
+name = "cookie_agent_plugin_sdk"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
+jsonschema = { version = "0.49.9", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

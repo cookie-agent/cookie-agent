@@ -41,6 +41,71 @@ permissions:
     "issue_delete *": ask
 ```
 
+## Rust SDK
+
+Rust plugins can use the official `cookie_agent_plugin_sdk` workspace crate. Until the SDK is
+published separately, add it as a path dependency together with `serde_json` and Tokio:
+
+```toml
+[dependencies]
+cookie_agent_plugin_sdk = { path = "../cookie-agent/crates/plugin_sdk" }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt"] }
+```
+
+Register handlers with `PluginServer`; the SDK validates tool parameter schemas and handles the
+initialize, ping, shutdown, framing, and JSON-RPC messages:
+
+```rust
+use cookie_agent_plugin_sdk::{PluginServer, ToolDecl, ToolOutput};
+use serde_json::json;
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), cookie_agent_plugin_sdk::PluginError> {
+    PluginServer::builder("echo", "0.1.0")
+        .tool(
+            ToolDecl {
+                name: "echo".into(),
+                description: "Echo text back to the model".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": { "text": { "type": "string" } },
+                    "required": ["text"]
+                }),
+                permission_name: "echo".into(),
+                primary_resource_param: None,
+            },
+            |_ctx, request| async move {
+                let text = request.arguments["text"].as_str().unwrap_or_default();
+                Ok(ToolOutput::success(text))
+            },
+        )
+        .run_stdio()
+        .await
+}
+```
+
+Event and bus handlers are registered with `on_event` and `on_bus_event`. A handler can publish
+once from its automatically tracked context grant with
+`ctx.emit_bus(event.session_id, "name", payload)` or
+`ctx.emit_session(event.session_id, "name", payload)`. Bus and durable session publishing are off
+by default and are enabled explicitly with `enable_bus_publishing` and
+`enable_session_publishing`, respectively. These set process-lifetime protocol capabilities. When
+both are enabled, every emitted event is offered to both routes; `emit_bus` and `emit_session`
+return the selected route's status. Each handler context is scoped to its triggering token, so
+concurrent callbacks for one session cannot consume each other's grants. Notification grants expire
+four seconds after the SDK reader decodes the frame, so inbound queue delay consumes the local
+window. The one-second safety margin assumes the engine-to-SDK delivery interval is under one
+second; the engine remains authoritative, and a timing rejection is surfaced as
+`ExtensionEmitStatus::Rejected`.
+
+Interception handlers use the canonical `tool_before_call`, `tool_after_result`,
+`agent_before_start`, and `session_before_compact` builder methods with helpers such as `allow`,
+`block`, `modify`, `replace`, and `addendum`. Tool, subscription, explicitly enabled publishing,
+and interception capabilities are derived by the SDK; plugin authors do not construct capability
+flags or set the extension protocol version. See [Protocol](#protocol) for delivery, grant, quota,
+and hook-chaining details.
+
 ## Protocol
 
 The extension protocol version is the semantic-version string `0.0.3`. Before version 1.0,
