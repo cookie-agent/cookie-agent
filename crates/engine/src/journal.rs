@@ -958,21 +958,31 @@ fn apply_started(
 }
 
 fn valid_request(request: &DelegateRequestPayload) -> bool {
-    !request.description.is_empty()
-        && !request.prompt.is_empty()
-        && !(request.resume_session_id.is_some() && request.inherit_context)
-        && (request.inherit_context || request.seeded_context.is_empty())
-        && request.seeded_context.len() <= 65_536
-        && request
-            .seeded_context
-            .iter()
-            .all(|turn| !turn.text.is_empty())
-        && request
-            .seeded_context
-            .iter()
-            .map(|turn| turn.text.len())
-            .sum::<usize>()
-            <= 65_536
+    if request.description.is_empty() || request.prompt.is_empty() {
+        return false;
+    }
+    if request.resume_session_id.is_some() && request.inherit_context {
+        return false;
+    }
+    if !request.inherit_context && !request.seeded_context.is_empty() {
+        return false;
+    }
+    if request.seeded_context.len() > 65_536 {
+        return false;
+    }
+    if request
+        .seeded_context
+        .iter()
+        .any(|turn| turn.text.is_empty())
+    {
+        return false;
+    }
+    request
+        .seeded_context
+        .iter()
+        .map(|turn| turn.text.len())
+        .sum::<usize>()
+        <= 65_536
 }
 
 #[cfg(test)]
