@@ -1189,13 +1189,13 @@ removes that document cap.
 <code>timeout_ms</code> applies only to internal agents. For other modes, a nonzero value is
 a hard error. Internal agents use the 30-second invocation timeout when
 <code>timeout_ms</code> is zero or omitted.</p>
-<p>Tool visibility is derived only from <code>permissions</code>. With no <code>permissions</code> field,
-the <code>read</code>, <code>write</code>, <code>edit</code>, and <code>bash</code> tools are visible and unmatched calls ask
-by default. <code>edit</code> uses the <code>write</code> action. Delegation tools require a <code>delegate</code>
-map naming at least one eligible target, and MCP tools require a non-fully-denied
-<code>mcp</code> entry. A bare action deny hides that action's tools. A mapped action with
-<code>"*": deny</code> also hides them unless it contains a more specific <code>allow</code> or <code>ask</code>
-exception.</p>
+<p>Tool visibility is derived only from <code>permissions</code>, and user agents must opt in
+to each action they need. With no <code>permissions</code> field, no tools are visible. An
+action becomes visible when it has at least one effective <code>allow</code> or <code>ask</code> rule;
+<code>edit</code> uses the <code>write</code> action. Delegation tools additionally require a
+<code>delegate</code> map naming at least one eligible target. A bare action deny hides
+that action's tools. A mapped action with <code>"*": deny</code> also hides them unless it
+contains a more specific <code>allow</code> or <code>ask</code> exception.</p>
 <p>The former <code>tools</code> field is removed. Documents that still declare it fail
 with an error naming <code>tools</code> and directing the author to <code>permissions</code>; remove
 the field and express tool visibility and call policy in the permission map.</p>
@@ -1284,7 +1284,10 @@ the built-in document through normal layering. The ID <code>default</code> is re
 the engine-supplied fallback agent and cannot be authored at all.</p>
 <p>If no authored agent is runnable as a root, the engine synthesizes the built-in
 <code>default</code> coding agent bound to the first available model selection. Its prompt
-and standard read/write/bash permission map are fixed by the engine.</p>
+and explicit permission map are fixed by the engine: read is allowed with
+additional asks and secret-file denies, while write, bash, and delegate ask by
+default. MCP remains omitted. User agents do not inherit this list and must
+declare their own tool permissions.</p>
 <h2 id="internal-agents">Internal agents<a class="headerlink" href="#internal-agents" title="Permanent link">&para;</a></h2>
 <p>The harness runs three internal agents. They are stateless, tool-less model
 calls with a strict text-only output contract, and they emit their own event
