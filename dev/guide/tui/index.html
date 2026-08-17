@@ -548,6 +548,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#live-tool-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      Live tool output
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#approvals" class="md-nav__link">
     <span class="md-ellipsis">
       Approvals
@@ -1084,6 +1093,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#live-tool-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      Live tool output
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#approvals" class="md-nav__link">
     <span class="md-ellipsis">
       Approvals
@@ -1217,6 +1235,13 @@ to close, or the <code>c</code>, <code>r</code>, and <code>f</code> accelerators
 </ul>
 <p>Assistant and tool rows keep their normal expand/collapse behavior and do not
 open the message menu.</p>
+<h2 id="live-tool-output">Live tool output<a class="headerlink" href="#live-tool-output" title="Permanent link">&para;</a></h2>
+<p>Expanded bash rows show sanitized stdout and stderr while the command runs.
+The live preview is capped at 1 MiB and reports when that limit is reached. On
+completion, failure, cancellation, or interruption, the same row swaps to the
+committed terminal result. Reopening a session renders only that committed
+content. Assistant text follows the same rule: streamed partials are replaced
+by the committed turn.</p>
 <h2 id="approvals">Approvals<a class="headerlink" href="#approvals" title="Permanent link">&para;</a></h2>
 <p>An approval modal presents the prepared operation and the decisions allowed by
 its constraints: allow once, allow for the session tree, reject, or cancel.

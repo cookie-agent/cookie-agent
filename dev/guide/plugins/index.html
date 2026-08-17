@@ -1285,6 +1285,16 @@ capabilities. Capabilities are fixed for the process lifetime.</p>
 starts after initialization and has no replay. Events are sent only after their session append is
 durable; a buffered session's newly persisted prefix is sent in sequence after atomic publication.
 Per-session sequence order is preserved, while cross-session ordering is unspecified.</p>
+<p>Durable <code>tool_call_progress</code> events include optional sanitized bash output chunks,
+so event-subscribed plugins observe live tool output through this same stream.
+Model text and reasoning deltas are still not exposed to plugins. Chunk bursts do
+not consume plugin publication quotas, which apply in the plugin-to-engine
+direction. They use one 1024-entry FIFO delivery queue. When full, admission
+evicts the oldest lowest-priority record: chunk first, then ordinary non-chunk,
+and terminal only when the queue contains nothing else. Accepted records always
+append at the tail, so retained events preserve per-session sequence order while
+tool termination survives chunk and ordinary floods. Drops are counted separately
+by chunk, ordinary, or terminal class in their diagnostic message.</p>
 <p>This stream is observational and not durable. Each plugin has an independent bounded 1024-message
 queue. A full queue drops delivery for that plugin, increments its dropped-event status counter,
 and records a session diagnostic. It cannot delay session persistence, another plugin, or the
@@ -1346,7 +1356,9 @@ model, so the turn continues without executing the tool. Modified arguments are 
 the pinned <code>ToolSpec</code> JSON Schema. Hooks cannot alter <code>permission_name</code> or <code>resource</code>, denied calls
 are never disclosed to plugins, and an allow hook never grants permission.</p>
 <p><code>plugin/intercept/tool_after_result</code> observes the tool result and may replace its content before
-termination is committed. <code>agent_before_start</code> may append to or replace the system prompt and may
+termination is committed. Streamed tool chunks are display previews and are
+superseded by the committed terminal content, including plugin replacements.
+<code>agent_before_start</code> may append to or replace the system prompt and may
 inject a role-preserving text message. Prompt replacements and appends compose in plugin order.
 Accepted injections are committed as <code>message_injected</code> during run setup, before the submitted
 input, so restart, replay, fork, and versionless projection see the same message.</p>
@@ -1376,7 +1388,8 @@ It never receives body data.</p>
 <p><code>message_end</code> receives the complete assembled assistant content after streaming and before
 <code>model_turn_committed</code>. It may replace content but not the assistant role. The replacement is
 validated as a complete persisted turn and becomes the durable turn; already emitted text and
-reasoning deltas remain historical stream records.</p>
+reasoning deltas remain historical stream records. TUI and replay projections
+replace accumulated partials with that committed content.</p>
 <p><code>model_before_select</code>, <code>session_before_fork</code>, and <code>session_before_revert</code> may block their operation
 with a user-facing reason. Model selection interception occurs when the configured selection is
 first used to start a run, when a later run changes selection, and before a fallback transition. It
@@ -1389,8 +1402,7 @@ and session usable and the RPC returns that reason.</p>
 diagnosed and skipped. Timeout, crash, malformed response, or queue failure is fail-open per plugin,
 and later plugins still run. Hooks receive the same short-lived context grant used by plugin emit.
 Except for root-only <code>user_before_input</code>, user-facing agent hooks also run for delegated sessions.
-Internal title, approval, and compaction agents remain outside extension interception. Streaming
-output chunks are not part of this protocol stage.</p>
+Internal title, approval, and compaction agents remain outside extension interception.</p>
 <h2 id="tools">Tools<a class="headerlink" href="#tools" title="Permanent link">&para;</a></h2>
 <p>Each tool declaration contains its verbatim <code>name</code>, description, JSON Schema parameters,
 verbatim <code>permission_name</code>, and an optional <code>primary_resource_param</code>. Names are not prefixed or
