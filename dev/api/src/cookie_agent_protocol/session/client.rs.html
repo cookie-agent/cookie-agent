@@ -2159,7 +2159,7 @@
 <a href=#2159 id=2159 data-nosnippet>2159</a>
 <a href=#2160 id=2160 data-nosnippet>2160</a>    <span class="kw">fn </span>event(session_id: SessionId, seq: u64) -&gt; StoredEvent {
 <a href=#2161 id=2161 data-nosnippet>2161</a>        StoredEvent {
-<a href=#2162 id=2162 data-nosnippet>2162</a>            event_schema_version: <span class="kw">crate</span>::EventSchemaVersion::current(),
+<a href=#2162 id=2162 data-nosnippet>2162</a>            engine_version: <span class="prelude-val">None</span>,
 <a href=#2163 id=2163 data-nosnippet>2163</a>            session_id,
 <a href=#2164 id=2164 data-nosnippet>2164</a>            run_id: <span class="prelude-val">Some</span>(<span class="kw">crate</span>::RunId::new_v7()),
 <a href=#2165 id=2165 data-nosnippet>2165</a>            seq,
@@ -2775,7 +2775,7 @@
 <a href=#2775 id=2775 data-nosnippet>2775</a>        <span class="kw">let </span>(recovery, _recovery_receiver) = recovery();
 <a href=#2776 id=2776 data-nosnippet>2776</a>        <span class="kw">let </span><span class="kw-2">mut </span>tools = HashMap::new();
 <a href=#2777 id=2777 data-nosnippet>2777</a>        <span class="kw">let </span>started = StoredEvent {
-<a href=#2778 id=2778 data-nosnippet>2778</a>            event_schema_version: cookie_agent_protocol::EventSchemaVersion::current(),
+<a href=#2778 id=2778 data-nosnippet>2778</a>            engine_version: <span class="prelude-val">None</span>,
 <a href=#2779 id=2779 data-nosnippet>2779</a>            session_id,
 <a href=#2780 id=2780 data-nosnippet>2780</a>            run_id: <span class="prelude-val">Some</span>(cookie_agent_protocol::RunId::new_v7()),
 <a href=#2781 id=2781 data-nosnippet>2781</a>            seq: <span class="number">1</span>,

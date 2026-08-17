@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["EventLogError","OutputMessage"],"fn":["append_jsonl","fsync_directory","load_jsonl"],"struct":["EventLog","OutputHub"]};
+window.SIDEBAR_ITEMS = {"enum":["EventLogError","OutputMessage"],"fn":["append_jsonl","fsync_directory","load_jsonl"],"struct":["EventLoadDiagnostic","EventLog","OutputHub"]};

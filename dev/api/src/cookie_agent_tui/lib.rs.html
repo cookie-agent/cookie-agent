@@ -37,12 +37,12 @@
 <a href=#37 id=37 data-nosnippet>37</a>    <span class="kw">use </span>cookie_agent_protocol::{
 <a href=#38 id=38 data-nosnippet>38</a>        AgentId, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
 <a href=#39 id=39 data-nosnippet>39</a>        ApprovalId, ApprovalRequest, ApprovalResourceSource, ApprovalTrigger, DecisionTrace,
-<a href=#40 id=40 data-nosnippet>40</a>        EventPayload, EventSchemaVersion, EventSubscriptionMessage, MatchedPermissionRule,
-<a href=#41 id=41 data-nosnippet>41</a>        ModelKey, ModelSelection, OutputDelta, OutputSnapshot, OutputSnapshotEnvelope,
-<a href=#42 id=42 data-nosnippet>42</a>        OutputStream, PermissionAction, PermissionEffect, PreparedApprovalResource,
-<a href=#43 id=43 data-nosnippet>43</a>        PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
-<a href=#44 id=44 data-nosnippet>44</a>        PreparedResourceDigest, PreparedResourceIdentity, ProviderId, RunSelection, SafeCode,
-<a href=#45 id=45 data-nosnippet>45</a>        SessionCreateParams, SessionId, Sha256Digest, StoredEvent, ToolCallId,
+<a href=#40 id=40 data-nosnippet>40</a>        EventPayload, EventSubscriptionMessage, MatchedPermissionRule, ModelKey, ModelSelection,
+<a href=#41 id=41 data-nosnippet>41</a>        OutputDelta, OutputSnapshot, OutputSnapshotEnvelope, OutputStream, PermissionAction,
+<a href=#42 id=42 data-nosnippet>42</a>        PermissionEffect, PreparedApprovalResource, PreparedBindingLifetime,
+<a href=#43 id=43 data-nosnippet>43</a>        PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
+<a href=#44 id=44 data-nosnippet>44</a>        PreparedResourceIdentity, ProviderId, RunSelection, SafeCode, SessionCreateParams,
+<a href=#45 id=45 data-nosnippet>45</a>        SessionId, Sha256Digest, StoredEvent, ToolCallId,
 <a href=#46 id=46 data-nosnippet>46</a>    };
 <a href=#47 id=47 data-nosnippet>47</a>    <span class="kw">use </span>cookie_agent_server::Server;
 <a href=#48 id=48 data-nosnippet>48</a>    <span class="kw">use </span>jiff::Timestamp;
@@ -320,7 +320,7 @@
 <a href=#320 id=320 data-nosnippet>320</a>        text: <span class="kw-2">&amp;</span>str,
 <a href=#321 id=321 data-nosnippet>321</a>    ) -&gt; StoredEvent {
 <a href=#322 id=322 data-nosnippet>322</a>        StoredEvent {
-<a href=#323 id=323 data-nosnippet>323</a>            event_schema_version: EventSchemaVersion::current(),
+<a href=#323 id=323 data-nosnippet>323</a>            engine_version: <span class="prelude-val">None</span>,
 <a href=#324 id=324 data-nosnippet>324</a>            session_id,
 <a href=#325 id=325 data-nosnippet>325</a>            run_id: <span class="prelude-val">Some</span>(run_id),
 <a href=#326 id=326 data-nosnippet>326</a>            seq,
@@ -381,7 +381,7 @@
 <a href=#381 id=381 data-nosnippet>381</a>        <span class="kw">let </span>run_id = cookie_agent_protocol::RunId::new_v7();
 <a href=#382 id=382 data-nosnippet>382</a>        <span class="kw">let </span><span class="kw-2">mut </span>store = StateStore::default();
 <a href=#383 id=383 data-nosnippet>383</a>        store.apply_event(StoredEvent {
-<a href=#384 id=384 data-nosnippet>384</a>            event_schema_version: EventSchemaVersion::current(),
+<a href=#384 id=384 data-nosnippet>384</a>            engine_version: <span class="prelude-val">None</span>,
 <a href=#385 id=385 data-nosnippet>385</a>            session_id: session,
 <a href=#386 id=386 data-nosnippet>386</a>            run_id: <span class="prelude-val">Some</span>(run_id),
 <a href=#387 id=387 data-nosnippet>387</a>            seq: <span class="number">1</span>,
@@ -391,7 +391,7 @@
 <a href=#391 id=391 data-nosnippet>391</a>            },
 <a href=#392 id=392 data-nosnippet>392</a>        });
 <a href=#393 id=393 data-nosnippet>393</a>        store.apply_event(StoredEvent {
-<a href=#394 id=394 data-nosnippet>394</a>            event_schema_version: EventSchemaVersion::current(),
+<a href=#394 id=394 data-nosnippet>394</a>            engine_version: <span class="prelude-val">None</span>,
 <a href=#395 id=395 data-nosnippet>395</a>            session_id: session,
 <a href=#396 id=396 data-nosnippet>396</a>            run_id: <span class="prelude-val">Some</span>(run_id),
 <a href=#397 id=397 data-nosnippet>397</a>            seq: <span class="number">2</span>,
@@ -422,7 +422,7 @@
 <a href=#422 id=422 data-nosnippet>422</a>        <span class="kw">let </span>request = approval_request();
 <a href=#423 id=423 data-nosnippet>423</a>        <span class="kw">let </span>approval_id = request.approval_id();
 <a href=#424 id=424 data-nosnippet>424</a>        app.store.apply_event(StoredEvent {
-<a href=#425 id=425 data-nosnippet>425</a>            event_schema_version: EventSchemaVersion::current(),
+<a href=#425 id=425 data-nosnippet>425</a>            engine_version: <span class="prelude-val">None</span>,
 <a href=#426 id=426 data-nosnippet>426</a>            session_id: session.session_id,
 <a href=#427 id=427 data-nosnippet>427</a>            run_id: <span class="prelude-val">Some</span>(cookie_agent_protocol::RunId::new_v7()),
 <a href=#428 id=428 data-nosnippet>428</a>            seq: <span class="number">2</span>,
@@ -430,7 +430,7 @@
 <a href=#430 id=430 data-nosnippet>430</a>            payload: EventPayload::ApprovalRequested { request },
 <a href=#431 id=431 data-nosnippet>431</a>        });
 <a href=#432 id=432 data-nosnippet>432</a>        app.store.apply_event(StoredEvent {
-<a href=#433 id=433 data-nosnippet>433</a>            event_schema_version: EventSchemaVersion::current(),
+<a href=#433 id=433 data-nosnippet>433</a>            engine_version: <span class="prelude-val">None</span>,
 <a href=#434 id=434 data-nosnippet>434</a>            session_id: session.session_id,
 <a href=#435 id=435 data-nosnippet>435</a>            run_id: <span class="prelude-val">Some</span>(cookie_agent_protocol::RunId::new_v7()),
 <a href=#436 id=436 data-nosnippet>436</a>            seq: <span class="number">3</span>,

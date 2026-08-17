@@ -1026,11 +1026,27 @@
 
 
 <h1 id="event-reference">Event Reference<a class="headerlink" href="#event-reference" title="Permanent link">&para;</a></h1>
-<p>Session persistence and subscriptions write event schema 21 and reopen schemas
-15-21. Every stored event
-contains <code>event_schema_version</code>, <code>session_id</code>, required nullable <code>run_id</code>, a
-positive physical <code>seq</code>, <code>timestamp</code>, and a tagged <code>payload</code>. Events requiring a
-run ID reject a null envelope value.</p>
+<p>Session persistence and subscriptions use a versionless event format. Every new
+stored event contains <code>engine_version</code>, <code>session_id</code>, required nullable <code>run_id</code>,
+a positive physical <code>seq</code>, <code>timestamp</code>, and a tagged <code>payload</code>. The
+<code>engine_version</code> is the writing engine's binary semver; it is diagnostic metadata,
+not a compatibility gate, and old records may omit it. Legacy
+<code>event_schema_version</code> fields are ignored when reading.</p>
+<p>Readers handle each JSONL line independently. Fully readable events load
+normally. If a known event has an absent or type-mismatched optional field, that
+field defaults and the event loads with an in-memory degradation diagnostic.
+Unknown event tags, broken required fields, corrupt JSON, and unknown envelope
+fields cause that event to be skipped. Sequence numbers must increase strictly,
+but gaps are retained and reported rather than making the session unreadable.
+Each contiguous missing sequence range produces one bounded diagnostic. An
+unreadable initial <code>session_created</code> record is the exception: without creation
+identity the session cannot open, so the engine reports an unsupported-era or
+corrupt-log error.</p>
+<p>Writers remain strict: every appended event passes validation. Event evolution
+is additive only. Existing variant tags and fields are never removed or renamed,
+existing required fields remain required, and new fields must be optional. New
+behavior that cannot fit an optional field uses a new variant tag. CI compares
+the generated <code>EventPayload</code> schema with the committed additive baseline.</p>
 <h2 id="payloads">Payloads<a class="headerlink" href="#payloads" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1046,7 +1062,7 @@ run ID reject a null envelope value.</p>
 </tr>
 <tr>
 <td>User input</td>
-<td><code>user_input_admitted</code>, <code>user_input_submitted</code>, <code>user_input_recalled</code>, <code>user_input_applied</code></td>
+<td><code>user_input_admitted</code>, <code>user_input_submitted</code>, <code>user_input_recalled</code>, <code>user_input_recalled_v2</code>, <code>user_input_applied</code></td>
 </tr>
 <tr>
 <td>Run</td>
@@ -1058,7 +1074,7 @@ run ID reject a null envelope value.</p>
 </tr>
 <tr>
 <td>Tools</td>
-<td><code>tool_call_started</code>, <code>tool_call_progress</code>, <code>tool_call_terminated</code>, <code>tool_output_elided</code>, <code>tool_stdin_submitted</code>, <code>tool_call_linked</code>, <code>delegate_queued</code>, <code>delegate_finished</code>, <code>delegate_finished_v2</code></td>
+<td><code>tool_call_started</code>, <code>tool_call_progress</code>, <code>tool_call_terminated</code>, <code>tool_output_elided</code>, <code>tool_stdin_submitted</code>, <code>tool_call_linked</code>, <code>delegate_queued</code>, <code>delegate_finished</code>, <code>delegate_finished_v2</code>, <code>delegate_child_terminated</code></td>
 </tr>
 <tr>
 <td>Approvals</td>
@@ -1076,34 +1092,34 @@ run ID reject a null envelope value.</p>
 </table>
 <p><code>context_compaction_auto_disabled</code> is a legacy durable event retained for old
 session logs. Current engines no longer emit it.</p>
-<p>Schema 15 adds <code>delegate_queued</code> and <code>delegate_finished</code>. The completion event is
+<p>Delegation persistence includes <code>delegate_queued</code> and <code>delegate_finished</code>. The completion event is
 written to the parent run and carries <code>{ session_id, status, preview,
 total_lines }</code>; <code>preview</code> is limited to the first 20 lines and 2 KiB. It becomes
 model-visible at the next turn boundary, while full output remains available
 through <code>get_subagent_result</code>.</p>
-<p>Schema 16 adds <code>delegated_context_seeded</code> and <code>delegate_finished_v2</code>.
+<p>Later delegation records add <code>delegated_context_seeded</code> and <code>delegate_finished_v2</code>.
 <code>delegated_context_seeded</code> is a runless creation event containing the bounded,
 text-only user/assistant turns copied by <code>inherit_context</code>; it must precede the
 child's first run and deterministically rebuilds the same initial model history
 after restart. <code>delegate_finished_v2</code> adds the delegation <code>invocation_id</code> to the
 same completion payload so repeated resumes of one child each receive exactly
 one teaser. Current engines emit the V2 completion form.</p>
-<p>Schema 18 adds the runless <code>session_permission_overlay_set</code> event. Its <code>overlay</code>
+<p>The runless <code>session_permission_overlay_set</code> event's <code>overlay</code>
 contains the complete, validated set of unique <code>(action, resource)</code> rules for
 the session. The latest visible event wins. Because it is an ordinary branch
 event, restart replay, revert, and fork recover the same overlay without a
 sidecar file.</p>
-<p>Schema 19 adds <code>model_usage_recorded</code>. It follows a committed provider turn and
+<p><code>model_usage_recorded</code> follows a committed provider turn and
 contains the positive <code>model_turn_seq</code>, agent ID, resolved model identity, and
 Oven's normalized usage fields: inclusive input/output totals plus optional
 uncached input, cache-read input, cache-write input, text output, and reasoning
 output counts. Event-log validation requires its run, agent, model, and turn to
 match and rejects duplicate records for one turn. Session, agent, and global
 usage projections rebuild from these events after restart, revert, and fork.</p>
-<p>Schema 20 adds <code>internal_agent_usage_recorded</code>. It attributes each completed
+<p><code>internal_agent_usage_recorded</code> attributes each completed
 internal model request to its internal run, internal agent ID, kind, and resolved
 model. The same session, agent, and global projections include these records.</p>
-<p>Schema 21 adds <code>skill_loaded</code> and <code>skill_invocation_noted</code>. <code>skill_loaded</code>
+<p><code>skill_loaded</code> and <code>skill_invocation_noted</code> persist skill use. <code>skill_loaded</code>
 stores the rendered body, skill name, source path, arguments, base directory,
 and at most ten supporting-file paths. It is pinned across context checkpoints.
 An identical repeat uses the shorter <code>skill_invocation_noted</code> payload.</p>
@@ -1122,7 +1138,7 @@ continues to recall the newest pending input.</p>
 <h2 id="subscriptions">Subscriptions<a class="headerlink" href="#subscriptions" title="Permanent link">&para;</a></h2>
 <p><code>events.subscribe</code> returns all retained events after the optional cursor and
 starts <code>events.subscription</code> notifications. A notification is tagged as either:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;event&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;event_schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">21</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;event&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;engine_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.1.0&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;seq&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">43</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
 </code></pre></div>
 <p>or a gap indicating that the subscriber must rebuild its disposable projection:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>

@@ -1144,17 +1144,17 @@ and the CLI share one implementation of the protocol mechanics.</p>
 <tr>
 <td><code>session.create</code></td>
 <td>Run selection</td>
-<td>Session metadata</td>
+<td>Session metadata with skipped-event diagnostics</td>
 </tr>
 <tr>
 <td><code>session.list</code></td>
 <td>Optional cwd identity</td>
-<td>Session metadata list</td>
+<td>Session metadata list with skipped-event diagnostics</td>
 </tr>
 <tr>
 <td><code>session.get</code></td>
 <td>Session ID</td>
-<td>Session metadata</td>
+<td>Session metadata with skipped-event diagnostics</td>
 </tr>
 <tr>
 <td><code>session.usage</code></td>
@@ -1184,7 +1184,7 @@ and the CLI share one implementation of the protocol mechanics.</p>
 <tr>
 <td><code>session.resume</code></td>
 <td>Session ID</td>
-<td>Resumed session metadata</td>
+<td>Resumed session metadata with skipped-event diagnostics</td>
 </tr>
 <tr>
 <td><code>session.rename</code></td>
@@ -1320,7 +1320,12 @@ the title, and continues with new physical sequences.</p>
 <p>The shared client maps these to <code>ClientDelivery</code> variants (<code>Live</code>, replay
 deliveries, output stream events, <code>RuntimeChanged</code>, <code>RecoveryFailed</code>), so a UI
 consumes one ordered stream and never parses raw JSON-RPC frames.</p>
-<p>See <a href="../events/">Events</a> for schema-21 event payloads.</p>
+<p>Session metadata includes additive <code>skipped_events</code> entries with the physical
+sequence (or source line number when no sequence was readable) and a safe reason.
+An empty array means the event log loaded without skipped records. Optional-field
+degradations remain available to the engine as load diagnostics but are not
+reported as skipped events.</p>
+<p>See <a href="../events/">Events</a> for event payloads and durability semantics.</p>
 
 
 
