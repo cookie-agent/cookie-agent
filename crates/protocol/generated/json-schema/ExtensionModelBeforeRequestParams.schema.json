@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionModelBeforeRequestParams",
+  "type": "object",
+  "properties": {
+    "attempt_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "context_id": {
+      "type": "string"
+    },
+    "messages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ExtensionModelMessage"
+      }
+    },
+    "model": {
+      "$ref": "#/$defs/ResolvedModelRef"
+    },
+    "params": {
+      "$ref": "#/$defs/ExtensionModelParamsAdjustments"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "context_id",
+    "attempt_id",
+    "messages",
+    "model",
+    "params"
+  ],
+  "$defs": {
+    "AdaptorId": {
+      "type": "string",
+      "enum": [
+        "anthropic",
+        "openai-chat",
+        "openai-responses",
+        "openai-compatible",
+        "google-gemini",
+        "google-vertex-gemini",
+        "aws-bedrock-converse",
+        "azure-openai-chat",
+        "azure-openai-responses",
+        "cohere-v2-chat"
+      ]
+    },
+    "ExtensionMessageRole": {
+      "type": "string",
+      "enum": [
+        "system",
+        "user",
+        "assistant",
+        "tool"
+      ]
+    },
+    "ExtensionModelMessage": {
+      "type": "object",
+      "properties": {
+        "content": true,
+        "role": {
+          "$ref": "#/$defs/ExtensionMessageRole"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "content"
+      ]
+    },
+    "ExtensionModelParamsAdjustments": {
+      "type": "object",
+      "properties": {
+        "max_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "temperature": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "top_p": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ResolvedModelRef": {
+      "type": "object",
+      "properties": {
+        "adapter_id": {
+          "$ref": "#/$defs/AdaptorId"
+        },
+        "model_id": {
+          "type": "string",
+          "maxLength": 384,
+          "minLength": 1,
+          "pattern": "^[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
+        },
+        "provider_id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "selection": {
+          "description": "One exact base or named-variant model selection.",
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 3,
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
+            },
+            "variant": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "variant"
+          ]
+        },
+        "selection_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "selection",
+        "provider_id",
+        "model_id",
+        "adapter_id",
+        "selection_fingerprint"
+      ]
+    }
+  }
+}

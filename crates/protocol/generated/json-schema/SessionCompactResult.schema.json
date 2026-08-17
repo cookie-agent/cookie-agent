@@ -3,6 +3,12 @@
   "title": "SessionCompactResult",
   "type": "object",
   "properties": {
+    "cancellation_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "compacted": {
       "type": "boolean"
     }

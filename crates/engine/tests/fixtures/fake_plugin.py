@@ -52,7 +52,7 @@ for line in sys.stdin:
             "jsonrpc": "2.0",
             "id": request_id,
             "result": {
-                "protocol_version": os.environ.get("FIXTURE_PROTOCOL_VERSION", "0.0.3"),
+                "protocol_version": os.environ.get("FIXTURE_PROTOCOL_VERSION", "0.0.4"),
                 "name": os.environ.get("FIXTURE_NAME", "fixture"),
                 "version": "1.0.0",
                 "capabilities": json.loads(os.environ.get(
@@ -143,14 +143,42 @@ for line in sys.stdin:
             "plugin/intercept/tool_after_result": "FIXTURE_TOOL_AFTER_RESULT",
             "plugin/intercept/agent_before_start": "FIXTURE_AGENT_BEFORE_RESULT",
             "plugin/intercept/session_before_compact": "FIXTURE_COMPACT_BEFORE_RESULT",
+            "plugin/intercept/user_before_input": "FIXTURE_USER_BEFORE_INPUT_RESULT",
+            "plugin/intercept/model_before_request": "FIXTURE_MODEL_BEFORE_REQUEST_RESULT",
+            "plugin/intercept/provider_before_headers": "FIXTURE_PROVIDER_BEFORE_HEADERS_RESULT",
+            "plugin/intercept/provider_before_request": "FIXTURE_PROVIDER_BEFORE_REQUEST_RESULT",
+            "plugin/intercept/provider_after_response": "FIXTURE_PROVIDER_AFTER_RESPONSE_RESULT",
+            "plugin/intercept/message_end": "FIXTURE_MESSAGE_END_RESULT",
+            "plugin/intercept/model_before_select": "FIXTURE_MODEL_BEFORE_SELECT_RESULT",
+            "plugin/intercept/session_before_fork": "FIXTURE_SESSION_BEFORE_FORK_RESULT",
+            "plugin/intercept/session_before_revert": "FIXTURE_SESSION_BEFORE_REVERT_RESULT",
         }[method]
         defaults = {
             "plugin/intercept/tool_before_call": {"action": "allow"},
             "plugin/intercept/tool_after_result": {"action": "keep"},
             "plugin/intercept/agent_before_start": {},
             "plugin/intercept/session_before_compact": {},
+            "plugin/intercept/user_before_input": {"action": "allow"},
+            "plugin/intercept/model_before_request": {"action": "keep"},
+            "plugin/intercept/provider_before_headers": {"set": {}, "delete": []},
+            "plugin/intercept/provider_before_request": {"action": "keep"},
+            "plugin/intercept/provider_after_response": {},
+            "plugin/intercept/message_end": {"action": "keep"},
+            "plugin/intercept/model_before_select": {"action": "allow"},
+            "plugin/intercept/session_before_fork": {"action": "allow"},
+            "plugin/intercept/session_before_revert": {"action": "allow"},
         }
         result = json.loads(os.environ.get(result_env, json.dumps(defaults[method])))
+        if method == "plugin/intercept/user_before_input":
+            transform_from = os.environ.get("FIXTURE_USER_TRANSFORM_FROM")
+            if transform_from is not None:
+                if message.get("params", {}).get("text") == transform_from:
+                    result = {
+                        "action": "transform",
+                        "new_text": os.environ.get("FIXTURE_USER_TRANSFORM_TO", ""),
+                    }
+                else:
+                    result = {"action": "allow"}
         send({"jsonrpc": "2.0", "id": request_id, "result": result})
     elif method == "plugin/shutdown":
         marker = os.environ.get("FIXTURE_SHUTDOWN_FILE")

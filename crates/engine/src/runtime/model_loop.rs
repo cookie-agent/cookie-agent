@@ -8,9 +8,10 @@ use std::{
 
 use cookie_agent_protocol::{
     ApprovalDecisionSource, ExtensionAgentBeforeStartParams, ExtensionToolAfterResultAction,
-    ExtensionToolAfterResultParams, InternalAgentKind, InvocationId, OperationFingerprint,
-    PersistedAssistantPart, PluginDiagnosticKind, RunId, RunStartParams, RunStartResult, SessionId,
-    SessionOrigin, SessionStatus, Sha256Digest, StoredEvent, ToolCallId, ToolCallStart,
+    ExtensionToolAfterResultParams, ExtensionUserBeforeInputAction, ExtensionUserBeforeInputParams,
+    InternalAgentKind, InvocationId, OperationFingerprint, PersistedAssistantPart,
+    PluginDiagnosticKind, RunId, RunStartParams, RunStartResult, SessionId, SessionOrigin,
+    SessionStatus, Sha256Digest, StoredEvent, ToolCallId, ToolCallStart,
 };
 use futures_util::StreamExt;
 use oven_sdk::{ModelError, Request as ModelRequest, ToolDefinition};
@@ -19,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     ActiveRun, ApprovalToolInput, AttemptTurn, Engine, EngineError, Event,
     MAX_PENDING_PREPARED_TOOLS, ModelApprovalInput, PendingTool, PredictiveCompactionInput,
-    SessionCommand, ToolCallFailureCode, ToolFailure,
+    SessionCommand, ToolCallFailureCode, ToolFailure, UserInputInterception,
     approval_projection::denied_tool_failure,
     compaction::{CompactionInput, latest_checkpoint_seq, resolve_compaction_trigger},
     helpers::safe_error,
@@ -56,6 +57,77 @@ impl Engine {
             ));
         }
         let session = self.inner.store.get(params.session_id)?;
+        let mut original_input = match self
+            .intercept_user_input(params.session_id, params.input)
+            .await?
+        {
+            UserInputInterception::Accepted {
+                input,
+                original_input,
+            } => {
+                params.input = input;
+                original_input
+            }
+            UserInputInterception::Handled { reason } => {
+                return Err(EngineError::InputHandled(reason));
+            }
+        };
+        let from_model = session
+            .log
+            .events()
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                Event::RunStarted { selection, .. } => Some(selection.model.clone()),
+                _ => None,
+            });
+        if from_model.as_ref() != Some(&params.selection.model) {
+            let context_id = crate::plugin::plugin_context_id();
+            for plugin in self.inner.plugins.interception_plugins(
+                cookie_agent_protocol::ExtensionInterceptionHook::ModelBeforeSelect,
+            ) {
+                let result = self
+                    .inner
+                    .plugins
+                    .intercept_named::<_, cookie_agent_protocol::ExtensionAllowBlockResult>(
+                        &plugin,
+                        cookie_agent_protocol::PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD,
+                        &cookie_agent_protocol::ExtensionModelBeforeSelectParams {
+                            session_id: params.session_id,
+                            context_id: context_id.clone(),
+                            from: from_model.clone(),
+                            to: params.selection.model.clone(),
+                            source: if from_model.is_some() {
+                                cookie_agent_protocol::ExtensionModelSelectSource::User
+                            } else {
+                                cookie_agent_protocol::ExtensionModelSelectSource::Config
+                            },
+                        },
+                        Some(params.session_id),
+                        Some(&context_id),
+                    )
+                    .await;
+                match result {
+                    Ok(result)
+                        if result.action
+                            == cookie_agent_protocol::ExtensionAllowBlockAction::Block =>
+                    {
+                        let reason = result
+                            .reason
+                            .unwrap_or_else(|| format!("model selection blocked by {plugin}"));
+                        self.record_plugin_diagnostic(
+                            params.session_id,
+                            plugin,
+                            PluginDiagnosticKind::HookBlocked,
+                            reason.clone(),
+                        );
+                        return Err(EngineError::ModelSelectionBlocked(reason));
+                    }
+                    Ok(_) => {}
+                    Err(error) => self.record_interception_error(params.session_id, plugin, error),
+                }
+            }
+        }
         let staged_skill = self.pending_child_skill(params.session_id);
         let direct_skill = (staged_skill.is_none())
             .then(|| cookie_agent_protocol::decode_skill_submission(&params.input))
@@ -65,6 +137,7 @@ impl Engine {
                     .unwrap_or_else(|| "Apply the loaded skill to the current session.".into());
                 (name, args)
             });
+        original_input = original_input.filter(|original| original != &params.input);
         let direct_plan = direct_skill
             .as_ref()
             .map(|(name, args)| self.prepare_user_skill_invocation(name, args))
@@ -128,6 +201,7 @@ impl Engine {
             prospective_grants.as_ref(),
         )?;
         let context_id = crate::plugin::plugin_context_id();
+        let mut injected_messages = Vec::new();
         for plugin in self.inner.plugins.interception_plugins(
             cookie_agent_protocol::ExtensionInterceptionHook::AgentBeforeStart,
         ) {
@@ -145,6 +219,7 @@ impl Engine {
                             "session_id": params.session_id,
                             "input": params.input,
                             "system_prompt": run_policy.agent.composed_prompt,
+                            "injected_messages": injected_messages,
                         }),
                     },
                     Some(params.session_id),
@@ -153,21 +228,56 @@ impl Engine {
                 .await;
             match result {
                 Ok(result) => {
-                    if let Some(addendum) = result.addendum.filter(|value| !value.is_empty()) {
+                    if let Some(replacement) = result
+                        .replace_system_prompt
+                        .filter(|value| !value.is_empty())
+                    {
+                        if replacement.len() > 128 * 1024 {
+                            self.record_plugin_diagnostic(
+                                params.session_id,
+                                plugin.clone(),
+                                PluginDiagnosticKind::InvalidModification,
+                                "plugin replacement system prompt exceeds the byte limit".into(),
+                            );
+                        } else {
+                            run_policy.agent.composed_prompt = replacement;
+                            run_policy.agent.prompt_fingerprint =
+                                Sha256Digest::of_bytes(run_policy.agent.composed_prompt.as_bytes());
+                        }
+                    }
+                    if let Some(addendum) = result
+                        .append_to_system_prompt
+                        .or(result.addendum)
+                        .filter(|value| !value.is_empty())
+                    {
                         if run_policy.agent.composed_prompt.len() + 1 + addendum.len() > 128 * 1024
+                        {
+                            self.record_plugin_diagnostic(
+                                params.session_id,
+                                plugin.clone(),
+                                PluginDiagnosticKind::InvalidModification,
+                                "plugin agent addendum exceeds the system prompt byte limit".into(),
+                            );
+                        } else {
+                            run_policy.agent.composed_prompt.push('\n');
+                            run_policy.agent.composed_prompt.push_str(&addendum);
+                            run_policy.agent.prompt_fingerprint =
+                                Sha256Digest::of_bytes(run_policy.agent.composed_prompt.as_bytes());
+                        }
+                    }
+                    if let Some(message) = result.inject_message {
+                        if message.content.trim().is_empty()
+                            || message.role == cookie_agent_protocol::ExtensionMessageRole::Tool
                         {
                             self.record_plugin_diagnostic(
                                 params.session_id,
                                 plugin,
                                 PluginDiagnosticKind::InvalidModification,
-                                "plugin agent addendum exceeds the system prompt byte limit".into(),
+                                "plugin injected an empty or unsupported tool-role message".into(),
                             );
-                            continue;
+                        } else {
+                            injected_messages.push(message);
                         }
-                        run_policy.agent.composed_prompt.push('\n');
-                        run_policy.agent.composed_prompt.push_str(&addendum);
-                        run_policy.agent.prompt_fingerprint =
-                            Sha256Digest::of_bytes(run_policy.agent.composed_prompt.as_bytes());
                     }
                 }
                 Err(error) => {
@@ -224,7 +334,31 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(run_id, active.clone());
-        let serialized_message_bytes = serialized_input_bytes(&params.input)?;
+        for message in injected_messages {
+            if let Err(error) = self
+                .append(
+                    params.session_id,
+                    Some(run_id),
+                    Event::MessageInjected {
+                        role: message.role,
+                        input: message.content,
+                    },
+                )
+                .await
+            {
+                return Err(self
+                    .terminalize_run_setup_failure(&active, run_id, error)
+                    .await);
+            }
+        }
+        let serialized_message_bytes = match serialized_input_bytes(&params.input) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return Err(self
+                    .terminalize_run_setup_failure(&active, run_id, error)
+                    .await);
+            }
+        };
         let compacted = self
             .maybe_predictive_compact_before_input(PredictiveCompactionInput {
                 session: params.session_id,
@@ -246,15 +380,23 @@ impl Engine {
             return Ok(RunStartResult { run_id });
         }
         if let Err(error) = compacted {
-            self.inner
-                .active
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&run_id);
-            return Err(error);
+            return Err(self
+                .terminalize_run_setup_failure(&active, run_id, error)
+                .await);
         }
-        if let Err(error) = self
-            .append(
+        let setup_result = async {
+            if let Some(original_input) = original_input {
+                self.append(
+                    params.session_id,
+                    Some(run_id),
+                    Event::UserInputTransformed {
+                        original_input,
+                        input: params.input.clone(),
+                    },
+                )
+                .await?;
+            }
+            self.append(
                 params.session_id,
                 Some(run_id),
                 Event::UserInputSubmitted {
@@ -262,13 +404,12 @@ impl Engine {
                 },
             )
             .await
-        {
-            self.inner
-                .active
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&run_id);
-            return Err(error);
+        }
+        .await;
+        if let Err(error) = setup_result {
+            return Err(self
+                .terminalize_run_setup_failure(&active, run_id, error)
+                .await);
         }
         self.clear_skill_turn_state(params.session_id);
         if staged_skill.is_some()
@@ -277,30 +418,30 @@ impl Engine {
                 .install_prepared_skill(params.session_id, Some(run_id), &plan)
                 .await
         {
+            return Err(self
+                .terminalize_run_setup_failure(&active, run_id, error)
+                .await);
+        }
+        // A sweeper may have terminalized this durable run before active-run
+        // registration. Never resurrect a cancelled run with a live loop.
+        if self.run_cancelled_recorded(params.session_id, run_id)? {
             self.inner
                 .active
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&run_id);
-            return Err(error);
-        }
-        // A sweeper may have terminalized this durable run before active-run
-        // registration. Never resurrect a cancelled run with a live loop.
-        if self.run_cancelled_recorded(params.session_id, run_id)? {
             return Ok(RunStartResult { run_id });
         }
         if let Some((invocation_id, generation)) = admission
             && let Err(error) =
                 self.publish_admission_run(invocation_id, generation, params.session_id, run_id)
         {
-            let cancelled = self
-                .cancel_run_durably(run_id, Some("delegate admission publication failed".into()));
+            self.cancel_run_durably(run_id, Some("delegate admission publication failed".into()))?;
             self.inner
                 .active
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&run_id);
-            cancelled?;
             return Err(error);
         }
         if self.run_cancelled_recorded(params.session_id, run_id)? {
@@ -406,7 +547,7 @@ impl Engine {
             input.policy,
             Some(binding),
         )?;
-        let compacted = self
+        let compacted = match self
             .maybe_compact_context(CompactionInput {
                 session: input.session,
                 run: input.run,
@@ -421,8 +562,145 @@ impl Engine {
                 focus: None,
                 actor_direct: input.actor_direct,
             })
-            .await?;
+            .await
+        {
+            Ok(compacted) => compacted,
+            Err(EngineError::CompactionCancelled(_)) => return Ok(false),
+            Err(error) => return Err(error),
+        };
         Ok(latest_checkpoint_seq(&compacted) > before)
+    }
+
+    pub(super) async fn intercept_user_input(
+        &self,
+        session_id: SessionId,
+        input: String,
+    ) -> Result<UserInputInterception, EngineError> {
+        let session = self.inner.store.get(session_id)?;
+        if !matches!(session.meta.origin, SessionOrigin::Root) {
+            return Ok(UserInputInterception::Accepted {
+                input,
+                original_input: None,
+            });
+        }
+        self.inner.plugins.await_eager_ready().await;
+        let original_input = input.clone();
+        let mut current = input;
+        let context_id = crate::plugin::plugin_context_id();
+        for plugin in self
+            .inner
+            .plugins
+            .interception_plugins(cookie_agent_protocol::ExtensionInterceptionHook::UserBeforeInput)
+        {
+            let result = self
+                .inner
+                .plugins
+                .intercept_named::<_, cookie_agent_protocol::ExtensionUserBeforeInputResult>(
+                    &plugin,
+                    cookie_agent_protocol::PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD,
+                    &ExtensionUserBeforeInputParams {
+                        session_id,
+                        context_id: context_id.clone(),
+                        text: current.clone(),
+                    },
+                    Some(session_id),
+                    Some(&context_id),
+                )
+                .await;
+            match result {
+                Ok(result) if result.action == ExtensionUserBeforeInputAction::Transform => {
+                    match result.new_text.filter(|text| !text.trim().is_empty()) {
+                        Some(text) => current = text,
+                        None => self.record_plugin_diagnostic(
+                            session_id,
+                            plugin,
+                            PluginDiagnosticKind::InvalidModification,
+                            "plugin transformed user input to empty text".into(),
+                        ),
+                    }
+                }
+                Ok(result) if result.action == ExtensionUserBeforeInputAction::Handled => {
+                    return Ok(UserInputInterception::Handled {
+                        reason: result
+                            .reason
+                            .unwrap_or_else(|| format!("handled by {plugin}")),
+                    });
+                }
+                Ok(_) => {}
+                Err(error) => self.record_interception_error(session_id, plugin, error),
+            }
+        }
+        let audit_original = (current != original_input).then_some(original_input);
+        Ok(UserInputInterception::Accepted {
+            input: current,
+            original_input: audit_original,
+        })
+    }
+
+    async fn terminalize_run_setup_failure(
+        &self,
+        active: &Arc<ActiveRun>,
+        run_id: RunId,
+        setup_error: EngineError,
+    ) -> EngineError {
+        match self
+            .append(
+                active.session,
+                Some(run_id),
+                Event::RunFailed {
+                    error: safe_error(&setup_error.to_string()),
+                },
+            )
+            .await
+        {
+            Ok(()) => {
+                self.inner
+                    .active
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&run_id);
+                setup_error
+            }
+            Err(terminal_error) => terminal_error,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_active_run_for_test(&self, run_id: RunId) -> bool {
+        self.inner
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(&run_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn retry_run_setup_terminalization_for_test(
+        &self,
+        run_id: RunId,
+    ) -> Result<(), EngineError> {
+        let active = self
+            .inner
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&run_id)
+            .cloned()
+            .ok_or(EngineError::MissingRun(run_id))?;
+        self.append(
+            active.session,
+            Some(run_id),
+            Event::RunFailed {
+                error: safe_error("run setup terminalization retried"),
+            },
+        )
+        .await?;
+        self.inner
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&run_id);
+        Ok(())
     }
 
     pub(super) async fn run_loop(
@@ -877,7 +1155,8 @@ impl Engine {
                     policy,
                     Some(binding),
                 )?;
-                let request_events = self
+                let uncompacted_events = request_events.clone();
+                let request_events = match self
                     .maybe_compact_context(CompactionInput {
                         session,
                         run,
@@ -892,7 +1171,12 @@ impl Engine {
                         focus: None,
                         actor_direct: false,
                     })
-                    .await?;
+                    .await
+                {
+                    Ok(events) => events,
+                    Err(EngineError::CompactionCancelled(_)) => uncompacted_events,
+                    Err(error) => return Err(error),
+                };
                 let input_through_seq = request_events.last().map_or(0, |event| event.seq);
                 let context = assemble_model_context(
                     &request_events,
@@ -900,9 +1184,6 @@ impl Engine {
                     binding,
                     composed_prompt,
                 )?;
-                let serialized_context_bytes = serde_json::to_vec(&(&context.history, &tools))
-                    .map_err(|error| ModelError::invalid_request(error.to_string()))?
-                    .len();
                 let replay_preflight = context.replay_decisions;
                 let turn_context = Arc::new(TurnAgentContext {
                     agent: policy.agent.agent.clone(),
@@ -923,10 +1204,151 @@ impl Engine {
                 if let Some(native_context) = context.native_context {
                     request = request.with_native_context(native_context);
                 }
-                let request = model.prepare_request_with_cache_strategy(
+                let mut request = model.prepare_request_before_cache_strategy(
                     request,
                     policy.prompt_cache_strategy.as_ref(),
                 );
+                let context_id = crate::plugin::plugin_context_id();
+                for plugin in self.inner.plugins.interception_plugins(
+                    cookie_agent_protocol::ExtensionInterceptionHook::ModelBeforeRequest,
+                ) {
+                    let messages =
+                        extension_messages(&request.history).map_err(EngineError::Model)?;
+                    let result = self.inner.plugins.intercept_named::<_, cookie_agent_protocol::ExtensionModelBeforeRequestResult>(
+                        &plugin,
+                        cookie_agent_protocol::PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD,
+                        &cookie_agent_protocol::ExtensionModelBeforeRequestParams {
+                            session_id: session,
+                            context_id: context_id.clone(),
+                            attempt_id,
+                            messages,
+                            model: wire_model(binding),
+                            params: extension_model_params(&request),
+                        },
+                        Some(session),
+                        Some(&context_id),
+                    ).await;
+                    match result {
+                        Ok(result) => {
+                            let candidate = (|| {
+                                let mut candidate = request.clone();
+                                match result.action {
+                                    cookie_agent_protocol::ExtensionModelBeforeRequestAction::Keep => {}
+                                    cookie_agent_protocol::ExtensionModelBeforeRequestAction::Replace => {
+                                        let messages = result.messages.ok_or_else(|| {
+                                            Box::new(ModelError::invalid_request(
+                                                "replace requires messages",
+                                            ))
+                                        })?;
+                                        candidate.history =
+                                            history_from_extension_messages(messages)?;
+                                    }
+                                }
+                                if let Some(adjustments) = result.params_adjustments {
+                                    apply_model_params(&mut candidate, adjustments);
+                                }
+                                model
+                                    .model()
+                                    .validate_request(&candidate)
+                                    .map_err(Box::new)?;
+                                Ok::<_, Box<ModelError>>(candidate)
+                            })();
+                            match candidate {
+                                Ok(candidate) => request = candidate,
+                                Err(error) => self.record_plugin_diagnostic(
+                                    session,
+                                    plugin,
+                                    PluginDiagnosticKind::InvalidModification,
+                                    format!("invalid model request interception result: {error}"),
+                                ),
+                            }
+                        }
+                        Err(error) => self.record_interception_error(session, plugin, error),
+                    }
+                }
+                request = model
+                    .apply_prompt_cache_strategy(request, policy.prompt_cache_strategy.as_ref());
+                for plugin in self.inner.plugins.interception_plugins(
+                    cookie_agent_protocol::ExtensionInterceptionHook::ProviderBeforeHeaders,
+                ) {
+                    let result = self.inner.plugins.intercept_named::<_, cookie_agent_protocol::ExtensionProviderBeforeHeadersResult>(
+                        &plugin,
+                        cookie_agent_protocol::PLUGIN_INTERCEPT_PROVIDER_BEFORE_HEADERS_METHOD,
+                        &cookie_agent_protocol::ExtensionProviderBeforeHeadersParams {
+                            session_id: session,
+                            context_id: context_id.clone(),
+                            attempt_id,
+                            headers: std::collections::BTreeMap::new(),
+                        },
+                        Some(session), Some(&context_id),
+                    ).await;
+                    match result {
+                        Ok(result) if !result.set.is_empty() || !result.delete.is_empty() => self
+                            .record_plugin_diagnostic(
+                                session,
+                                plugin,
+                                PluginDiagnosticKind::UnsupportedCapability,
+                                "provider header mutation is unavailable with pinned Oven adapters"
+                                    .into(),
+                            ),
+                        Ok(_) => {}
+                        Err(error) => self.record_interception_error(session, plugin, error),
+                    }
+                }
+                for plugin in self.inner.plugins.interception_plugins(
+                    cookie_agent_protocol::ExtensionInterceptionHook::ProviderBeforeRequest,
+                ) {
+                    let payload = model
+                        .provider_request_payload(&request)
+                        .map_err(EngineError::Model)?;
+                    let result = self.inner.plugins.intercept_named::<_, cookie_agent_protocol::ExtensionProviderBeforeRequestResult>(
+                        &plugin,
+                        cookie_agent_protocol::PLUGIN_INTERCEPT_PROVIDER_BEFORE_REQUEST_METHOD,
+                        &cookie_agent_protocol::ExtensionProviderBeforeRequestParams {
+                            session_id: session,
+                            context_id: context_id.clone(),
+                            attempt_id,
+                            payload,
+                        },
+                        Some(session), Some(&context_id),
+                    ).await;
+                    match result {
+                        Ok(result) if result.action == cookie_agent_protocol::ExtensionProviderBeforeRequestAction::Replace => {
+                            let candidate = result
+                                .payload
+                                .ok_or_else(|| {
+                                    Box::new(ModelError::invalid_request("replace requires payload"))
+                                })
+                                .and_then(|payload| model.request_from_provider_payload(payload));
+                            match candidate {
+                                Ok(candidate) => request = candidate,
+                                Err(error) => self.record_plugin_diagnostic(
+                                    session,
+                                    plugin,
+                                    PluginDiagnosticKind::InvalidModification,
+                                    error.to_string(),
+                                ),
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(error) => self.record_interception_error(session, plugin, error),
+                    }
+                }
+                let authoritative_prompt = serde_json::to_vec(&request)
+                    .map_err(|error| ModelError::invalid_request(error.to_string()))?;
+                self.append(
+                    session,
+                    Some(run),
+                    Event::ModelRequestPrepared {
+                        attempt_id,
+                        prompt_fingerprint: Sha256Digest::of_bytes(&authoritative_prompt),
+                    },
+                )
+                .await?;
+                let serialized_context_bytes =
+                    serde_json::to_vec(&(&request.history, &request.tools))
+                        .map_err(|error| ModelError::invalid_request(error.to_string()))?
+                        .len();
                 let abort = AbortBridge::new(cancellation.clone());
                 let response = tokio::select! {
                     result = model.model().stream(request, abort.signal()) => result,
@@ -942,6 +1364,27 @@ impl Engine {
                             request,
                             response,
                         } = response;
+                        if let Some(status) = response.http_status {
+                            for plugin in self.inner.plugins.interception_plugins(
+                                cookie_agent_protocol::ExtensionInterceptionHook::ProviderAfterResponse,
+                            ) {
+                                let result = self.inner.plugins.intercept_named::<_, cookie_agent_protocol::ExtensionProviderAfterResponseResult>(
+                                    &plugin,
+                                    cookie_agent_protocol::PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD,
+                                    &cookie_agent_protocol::ExtensionProviderAfterResponseParams {
+                                        session_id: session,
+                                        context_id: context_id.clone(),
+                                        attempt_id,
+                                        status,
+                                        headers: std::collections::BTreeMap::new(),
+                                    },
+                                    Some(session), Some(&context_id),
+                                ).await;
+                                if let Err(error) = result {
+                                    self.record_interception_error(session, plugin, error);
+                                }
+                            }
+                        }
                         self.append(
                             session,
                             Some(run),
@@ -1036,7 +1479,38 @@ impl Engine {
                 };
                 match result {
                     Ok(turn) => {
-                        let (turn, warnings) = persist_turn(turn, &self.inner.artifacts, binding)?;
+                        let (mut turn, warnings) =
+                            persist_turn(turn, &self.inner.artifacts, binding)?;
+                        for plugin in self.inner.plugins.interception_plugins(
+                            cookie_agent_protocol::ExtensionInterceptionHook::MessageEnd,
+                        ) {
+                            let result = self.inner.plugins.intercept_named::<_, cookie_agent_protocol::ExtensionMessageEndResult>(
+                                &plugin,
+                                cookie_agent_protocol::PLUGIN_INTERCEPT_MESSAGE_END_METHOD,
+                                &cookie_agent_protocol::ExtensionMessageEndParams {
+                                    session_id: session,
+                                    context_id: context_id.clone(),
+                                    attempt_id,
+                                    role: cookie_agent_protocol::ExtensionMessageRole::Assistant,
+                                    content: turn.content.clone(),
+                                },
+                                Some(session), Some(&context_id),
+                            ).await;
+                            match result {
+                                Ok(result) if result.action == cookie_agent_protocol::ExtensionMessageEndAction::Replace => {
+                                    if let Some(content) = result.content {
+                                        let mut candidate = turn.clone();
+                                        candidate.content = content;
+                                        match candidate.validate_for(&wire_model(binding)) {
+                                            Ok(()) => turn = candidate,
+                                            Err(error) => self.record_plugin_diagnostic(session, plugin, PluginDiagnosticKind::InvalidModification, format!("invalid message replacement: {error}")),
+                                        }
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(error) => self.record_interception_error(session, plugin, error),
+                            }
+                        }
                         let resolved_model = wire_model(binding);
                         let model_turn_seq = self.next_model_turn_seq(session)?;
                         self.append(
@@ -1124,7 +1598,8 @@ impl Engine {
                             policy,
                             Some(binding),
                         )?;
-                        let recovered = self
+                        let unrecovered_events = recovery_events.clone();
+                        let recovered = match self
                             .maybe_compact_context(CompactionInput {
                                 session,
                                 run,
@@ -1139,7 +1614,12 @@ impl Engine {
                                 focus: None,
                                 actor_direct: false,
                             })
-                            .await?;
+                            .await
+                        {
+                            Ok(events) => events,
+                            Err(EngineError::CompactionCancelled(_)) => unrecovered_events,
+                            Err(error) => return Err(error),
+                        };
                         let after = recovered
                             .iter()
                             .rev()
@@ -1181,6 +1661,53 @@ impl Engine {
             let Some(next) = chain.get(entry + 1) else {
                 return Err(last_error.into());
             };
+            let context_id = crate::plugin::plugin_context_id();
+            let mut selection_blocked = false;
+            for plugin in self.inner.plugins.interception_plugins(
+                cookie_agent_protocol::ExtensionInterceptionHook::ModelBeforeSelect,
+            ) {
+                let result = self
+                    .inner
+                    .plugins
+                    .intercept_named::<_, cookie_agent_protocol::ExtensionAllowBlockResult>(
+                        &plugin,
+                        cookie_agent_protocol::PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD,
+                        &cookie_agent_protocol::ExtensionModelBeforeSelectParams {
+                            session_id: session,
+                            context_id: context_id.clone(),
+                            from: Some(binding.selection.clone()),
+                            to: next.selection.clone(),
+                            source:
+                                cookie_agent_protocol::ExtensionModelSelectSource::FallbackRestore,
+                        },
+                        Some(session),
+                        Some(&context_id),
+                    )
+                    .await;
+                match result {
+                    Ok(result)
+                        if result.action
+                            == cookie_agent_protocol::ExtensionAllowBlockAction::Block =>
+                    {
+                        let reason = result
+                            .reason
+                            .unwrap_or_else(|| format!("model fallback blocked by {plugin}"));
+                        self.record_plugin_diagnostic(
+                            session,
+                            plugin,
+                            PluginDiagnosticKind::HookBlocked,
+                            reason,
+                        );
+                        selection_blocked = true;
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(error) => self.record_interception_error(session, plugin, error),
+                }
+            }
+            if selection_blocked {
+                return Err(last_error.into());
+            }
             self.append(
                 session,
                 Some(run),
@@ -1203,6 +1730,104 @@ impl Engine {
             }
         }
         Err(last_error.into())
+    }
+
+    pub(super) fn record_interception_error(
+        &self,
+        session: SessionId,
+        plugin: String,
+        error: String,
+    ) {
+        let kind = if error.contains("crashed") || error.contains("not connected") {
+            PluginDiagnosticKind::InterceptionCrash
+        } else {
+            PluginDiagnosticKind::InterceptionTimeout
+        };
+        self.record_plugin_diagnostic(session, plugin, kind, error);
+    }
+}
+
+fn extension_messages(
+    history: &[oven_sdk::HistoryTurn],
+) -> Result<Vec<cookie_agent_protocol::ExtensionModelMessage>, Box<ModelError>> {
+    history
+        .iter()
+        .map(|turn| {
+            let (role, content) = match turn {
+                oven_sdk::HistoryTurn::System(message) => (
+                    cookie_agent_protocol::ExtensionMessageRole::System,
+                    serde_json::to_value(message),
+                ),
+                oven_sdk::HistoryTurn::User(message) => (
+                    cookie_agent_protocol::ExtensionMessageRole::User,
+                    serde_json::to_value(message),
+                ),
+                oven_sdk::HistoryTurn::Assistant(message) => (
+                    cookie_agent_protocol::ExtensionMessageRole::Assistant,
+                    serde_json::to_value(message),
+                ),
+                oven_sdk::HistoryTurn::Tool(message) => (
+                    cookie_agent_protocol::ExtensionMessageRole::Tool,
+                    serde_json::to_value(message),
+                ),
+            };
+            Ok(cookie_agent_protocol::ExtensionModelMessage {
+                role,
+                content: content
+                    .map_err(|error| Box::new(ModelError::invalid_request(error.to_string())))?,
+            })
+        })
+        .collect()
+}
+
+fn history_from_extension_messages(
+    messages: Vec<cookie_agent_protocol::ExtensionModelMessage>,
+) -> Result<Vec<oven_sdk::HistoryTurn>, Box<ModelError>> {
+    if messages.is_empty() {
+        return Err(Box::new(ModelError::invalid_request(
+            "replacement message list must not be empty",
+        )));
+    }
+    messages
+        .into_iter()
+        .map(|message| {
+            let kind = match message.role {
+                cookie_agent_protocol::ExtensionMessageRole::System => "system",
+                cookie_agent_protocol::ExtensionMessageRole::User => "user",
+                cookie_agent_protocol::ExtensionMessageRole::Assistant => "assistant",
+                cookie_agent_protocol::ExtensionMessageRole::Tool => "tool",
+            };
+            serde_json::from_value(serde_json::json!({
+                "type": kind,
+                "value": message.content,
+            }))
+            .map_err(|error| Box::new(ModelError::invalid_request(error.to_string())))
+        })
+        .collect()
+}
+
+fn extension_model_params(
+    request: &ModelRequest,
+) -> cookie_agent_protocol::ExtensionModelParamsAdjustments {
+    cookie_agent_protocol::ExtensionModelParamsAdjustments {
+        max_tokens: request.inference.max_output_tokens,
+        temperature: request.inference.temperature,
+        top_p: request.inference.top_p,
+    }
+}
+
+fn apply_model_params(
+    request: &mut ModelRequest,
+    adjustments: cookie_agent_protocol::ExtensionModelParamsAdjustments,
+) {
+    if let Some(max_tokens) = adjustments.max_tokens {
+        request.inference.max_output_tokens = Some(max_tokens);
+    }
+    if let Some(temperature) = adjustments.temperature {
+        request.inference.temperature = Some(temperature);
+    }
+    if let Some(top_p) = adjustments.top_p {
+        request.inference.top_p = Some(top_p);
     }
 }
 

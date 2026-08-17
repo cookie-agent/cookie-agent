@@ -8,6 +8,22 @@
         "string",
         "null"
       ]
+    },
+    "cancel": {
+      "type": "boolean",
+      "default": false
+    },
+    "instructions_override": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "additionalProperties": false

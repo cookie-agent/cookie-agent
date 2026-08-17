@@ -255,7 +255,7 @@ async fn exact_version_mismatch_fails_without_stopping_engine() {
         "fixture",
         &[
             ("FIXTURE_NAME", "fixture".into()),
-            ("FIXTURE_PROTOCOL_VERSION", "0.0.2".into()),
+            ("FIXTURE_PROTOCOL_VERSION", "0.0.3".into()),
         ],
         "",
     );
@@ -265,7 +265,7 @@ async fn exact_version_mismatch_fails_without_stopping_engine() {
         status(&harness.engine, "fixture")
             .reason
             .unwrap()
-            .contains("0.0.2")
+            .contains("0.0.3")
     );
     harness
         .engine

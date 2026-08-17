@@ -1,11 +1,11 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::BTreeMap};
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-pub const EXTENSION_PROTOCOL_VERSION: &str = "0.0.3";
+pub const EXTENSION_PROTOCOL_VERSION: &str = "0.0.4";
 pub const PLUGIN_INITIALIZE_METHOD: &str = "plugin/initialize";
 pub const PLUGIN_PING_METHOD: &str = "plugin/ping";
 pub const PLUGIN_SHUTDOWN_METHOD: &str = "plugin/shutdown";
@@ -19,9 +19,25 @@ pub const PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD: &str = "plugin/intercept/to
 pub const PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD: &str = "plugin/intercept/agent_before_start";
 pub const PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD: &str =
     "plugin/intercept/session_before_compact";
+pub const PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD: &str = "plugin/intercept/user_before_input";
+pub const PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD: &str =
+    "plugin/intercept/model_before_request";
+pub const PLUGIN_INTERCEPT_PROVIDER_BEFORE_HEADERS_METHOD: &str =
+    "plugin/intercept/provider_before_headers";
+pub const PLUGIN_INTERCEPT_PROVIDER_BEFORE_REQUEST_METHOD: &str =
+    "plugin/intercept/provider_before_request";
+pub const PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD: &str =
+    "plugin/intercept/provider_after_response";
+pub const PLUGIN_INTERCEPT_MESSAGE_END_METHOD: &str = "plugin/intercept/message_end";
+pub const PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD: &str =
+    "plugin/intercept/model_before_select";
+pub const PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD: &str =
+    "plugin/intercept/session_before_fork";
+pub const PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD: &str =
+    "plugin/intercept/session_before_revert";
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
-#[ts(type = "\"0.0.3\"")]
+#[ts(type = "\"0.0.4\"")]
 pub struct ExtensionProtocolVersion(());
 
 impl ExtensionProtocolVersion {
@@ -66,7 +82,7 @@ impl JsonSchema for ExtensionProtocolVersion {
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"string","const":"0.0.3"})
+        json_schema!({"type":"string","const":"0.0.4"})
     }
 }
 
@@ -88,6 +104,15 @@ pub enum ExtensionInterceptionHook {
     ToolAfterResult,
     AgentBeforeStart,
     SessionBeforeCompact,
+    UserBeforeInput,
+    ModelBeforeRequest,
+    ProviderBeforeHeaders,
+    ProviderBeforeRequest,
+    ProviderAfterResponse,
+    MessageEnd,
+    ModelBeforeSelect,
+    SessionBeforeFork,
+    SessionBeforeRevert,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
@@ -290,6 +315,28 @@ pub struct ExtensionAgentBeforeStartParams {
 pub struct ExtensionAgentBeforeStartResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addendum: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub append_to_system_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace_system_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inject_message: Option<ExtensionInjectedMessage>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionMessageRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionInjectedMessage {
+    pub role: ExtensionMessageRole,
+    pub content: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
@@ -299,6 +346,8 @@ pub struct ExtensionSessionBeforeCompactParams {
     pub context_id: String,
     pub checkpoint_id: String,
     pub additions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
@@ -306,6 +355,239 @@ pub struct ExtensionSessionBeforeCompactParams {
 pub struct ExtensionSessionBeforeCompactResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addendum: Option<String>,
+    #[serde(default)]
+    pub cancel: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions_override: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionUserBeforeInputParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionUserBeforeInputAction {
+    Allow,
+    Transform,
+    Handled,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionUserBeforeInputResult {
+    pub action: ExtensionUserBeforeInputAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionModelMessage {
+    pub role: ExtensionMessageRole,
+    pub content: Value,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionModelParamsAdjustments {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionModelBeforeRequestParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    pub attempt_id: crate::AttemptId,
+    pub messages: Vec<ExtensionModelMessage>,
+    pub model: crate::ResolvedModelRef,
+    pub params: ExtensionModelParamsAdjustments,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionModelBeforeRequestAction {
+    Keep,
+    Replace,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionModelBeforeRequestResult {
+    pub action: ExtensionModelBeforeRequestAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messages: Option<Vec<ExtensionModelMessage>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params_adjustments: Option<ExtensionModelParamsAdjustments>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionProviderBeforeHeadersParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    pub attempt_id: crate::AttemptId,
+    pub headers: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionProviderBeforeHeadersResult {
+    #[serde(default)]
+    pub set: BTreeMap<String, String>,
+    #[serde(default)]
+    pub delete: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionProviderBeforeRequestParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    pub attempt_id: crate::AttemptId,
+    pub payload: Value,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionProviderBeforeRequestAction {
+    Keep,
+    Replace,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionProviderBeforeRequestResult {
+    pub action: ExtensionProviderBeforeRequestAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionProviderAfterResponseParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    pub attempt_id: crate::AttemptId,
+    pub status: u16,
+    pub headers: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionProviderAfterResponseResult {}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionMessageEndParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    pub attempt_id: crate::AttemptId,
+    pub role: ExtensionMessageRole,
+    pub content: Vec<crate::PersistedAssistantPart>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionMessageEndAction {
+    Keep,
+    Replace,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionMessageEndResult {
+    pub action: ExtensionMessageEndAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<Vec<crate::PersistedAssistantPart>>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionModelSelectSource {
+    User,
+    Config,
+    FallbackRestore,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionModelBeforeSelectParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "ModelSelection | null")]
+    pub from: Option<cookie_agent_identity::ModelSelection>,
+    #[ts(type = "ModelSelection")]
+    pub to: cookie_agent_identity::ModelSelection,
+    pub source: ExtensionModelSelectSource,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionAllowBlockAction {
+    Allow,
+    Block,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionAllowBlockResult {
+    pub action: ExtensionAllowBlockAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionSessionBeforeForkParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    pub through_seq: u64,
+}
+
+pub type ExtensionSessionBeforeForkResult = ExtensionAllowBlockResult;
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionSessionBeforeRevertParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    pub through_seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionSessionBeforeRevertAction {
+    Allow,
+    Block,
+    Override,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionSessionBeforeRevertResult {
+    pub action: ExtensionSessionBeforeRevertAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions_override: Option<String>,
 }
 
 #[must_use]

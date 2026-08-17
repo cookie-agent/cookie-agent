@@ -930,6 +930,7 @@ fn validate_records(
                 }),
                 EventPayload::TextDelta { attempt_id, .. }
                 | EventPayload::ReasoningDelta { attempt_id, .. }
+                | EventPayload::ModelRequestPrepared { attempt_id, .. }
                 | EventPayload::AttemptAbandoned { attempt_id }
                 | EventPayload::ModelReplayEvaluated { attempt_id, .. }
                 | EventPayload::ModelTurnCommitted { attempt_id, .. } => {
@@ -1293,7 +1294,8 @@ fn validate_records(
                     },
                 );
             }
-            EventPayload::TextDelta { attempt_id, .. }
+            EventPayload::ModelRequestPrepared { attempt_id, .. }
+            | EventPayload::TextDelta { attempt_id, .. }
             | EventPayload::ReasoningDelta { attempt_id, .. } => {
                 validate_attempt_owner(path, &attempts, *attempt_id, record.run_id)?;
             }

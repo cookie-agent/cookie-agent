@@ -84,8 +84,8 @@ syntax errors use Clap's exit code `2` before the runtime starts.
 
 | Exit code | Meaning |
 |---|---|
-| `0` | `RunCompleted` |
-| `1` | `RunFailed`, or an unrecoverable active-driver failure |
+| `0` | `RunCompleted`, or `user_before_input` intentionally handled the input without starting a run |
+| `1` | `RunFailed`, blocked model selection, or an unrecoverable active-driver failure |
 | `3` | `RunCancelled` after the engine accepted a permission-triggered cancellation |
 | `4` | Other `RunCancelled` outcomes and every `RunInterrupted`, including `SIGINT`, timeout, and turn-limit cancellation |
 | `5` | Environment or setup failure before the run becomes active |

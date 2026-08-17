@@ -5,6 +5,12 @@
   "properties": {
     "accepted": {
       "type": "boolean"
+    },
+    "handled_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "additionalProperties": false,

@@ -99,16 +99,18 @@ window. The one-second safety margin assumes the engine-to-SDK delivery interval
 second; the engine remains authoritative, and a timing rejection is surfaced as
 `ExtensionEmitStatus::Rejected`.
 
-Interception handlers use the canonical `tool_before_call`, `tool_after_result`,
-`agent_before_start`, and `session_before_compact` builder methods with helpers such as `allow`,
-`block`, `modify`, `replace`, and `addendum`. Tool, subscription, explicitly enabled publishing,
+Interception handlers use builder methods named after every hook, including `user_before_input`,
+`model_before_request`, `provider_before_headers`, `provider_before_request`,
+`provider_after_response`, `message_end`, `model_before_select`, `session_before_fork`, and
+`session_before_revert`. Helpers cover allow/block, replacement, prompt append/replacement,
+message injection, compaction cancellation, and instruction override. Tool, subscription, explicitly enabled publishing,
 and interception capabilities are derived by the SDK; plugin authors do not construct capability
 flags or set the extension protocol version. See [Protocol](#protocol) for delivery, grant, quota,
 and hook-chaining details.
 
 ## Protocol
 
-The extension protocol version is the semantic-version string `0.0.3`. Before version 1.0,
+The extension protocol version is the semantic-version string `0.0.4`. Before version 1.0,
 cookie agent requires an exact version match: additive method or schema changes bump the patch
 version, and plugins must update before connecting to the new engine. A plugin reporting any
 other value is refused and its status contains the reported mismatch.
@@ -136,7 +138,7 @@ Per-session sequence order is preserved, while cross-session ordering is unspeci
 This stream is observational and not durable. Each plugin has an independent bounded 1024-message
 queue. A full queue drops delivery for that plugin, increments its dropped-event status counter,
 and records a session diagnostic. It cannot delay session persistence, another plugin, or the
-engine. There is no event-type filter in protocol 0.0.3; replay and filtered subscriptions remain
+engine. There is no event-type filter in protocol 0.0.4; replay and filtered subscriptions remain
 future work.
 
 Plugins with `subscribe_bus: true` also receive non-durable `plugin/bus_event` notifications.
@@ -182,8 +184,11 @@ receive it normally.
 
 ## Interception
 
-Plugins register any of `tool_before_call`, `tool_after_result`, `agent_before_start`, and
-`session_before_compact` in `capabilities.intercept`. Hooks run synchronously in configured
+Plugins register hook names in `capabilities.intercept`. The complete 0.0.4 set is
+`tool_before_call`, `tool_after_result`, `agent_before_start`, `session_before_compact`,
+`user_before_input`, `model_before_request`, `provider_before_headers`,
+`provider_before_request`, `provider_after_response`, `message_end`, `model_before_select`,
+`session_before_fork`, and `session_before_revert`. An unlisted hook is never delivered. Hooks run synchronously in configured
 registration order. User-file order is retained; workspace entries replace same-name user entries
 in place, while new workspace plugins append in workspace order. Each hook has
 `interception_timeout_ms` (2000 by default); timeout, process
@@ -199,12 +204,57 @@ the pinned `ToolSpec` JSON Schema. Hooks cannot alter `permission_name` or `reso
 are never disclosed to plugins, and an allow hook never grants permission.
 
 `plugin/intercept/tool_after_result` observes the tool result and may replace its content before
-termination is committed. `plugin/intercept/agent_before_start` returns a system-prompt addendum.
-`plugin/intercept/session_before_compact` returns additions to the checkpoint instructions. These
-hooks chain accepted state: later result hooks see prior replacements, later agent hooks see the
-accumulated prompt, and later compaction hooks receive prior `additions`. Invalid or oversized
-changes are diagnosed and are not forwarded. Hooks cannot mutate session identity or checkpoint
-boundaries.
+termination is committed. `agent_before_start` may append to or replace the system prompt and may
+inject a role-preserving text message. Prompt replacements and appends compose in plugin order.
+Accepted injections are committed as `message_injected` during run setup, before the submitted
+input, so restart, replay, fork, and versionless projection see the same message.
+
+`user_before_input` runs for initial root-session input and active-run steering before
+the corresponding input commit, including `cookie run`. It may allow, transform to non-empty text,
+or handle the input without starting or steering an agent run. A real final transform commits the
+transformed text and writes an adjacent `user_input_transformed` audit event containing both
+original and transformed values. A no-op transform, including a chain that returns to the original
+text, writes no audit event. Delegated sessions and subagent steering do not receive this hook.
+
+`model_before_request` runs for every user-facing root or delegated agent model attempt after
+history assembly and before provider conversion. Internal title, approval, and compaction agents
+do not receive it. It receives role-tagged messages whose `content` is Oven's complete
+serialized role-specific content, the resolved model, attempt ID, and inference parameters. A full
+replacement becomes the request sent to the model and the request used for prompt-size accounting.
+Replacement history and inference controls must pass Oven's structural and model-capability
+validation before later plugins see them. Parameter adjustments apply with either `keep` or
+`replace`; `replace` requires a complete message list. Prompt-cache markers are placed only after
+the final validated model-hook result.
+
+Pinned Oven adapters in 0.0.4 do not expose their adapter-assembled HTTP headers or raw provider
+JSON. Accordingly, `provider_before_headers` receives an empty map; requesting a non-empty `set` or
+`delete` mutation records an `unsupported_capability` diagnostic and does not mutate the HTTP
+request. `provider_before_request` operates on Oven's normalized request JSON, not the adapter's raw
+wire body. Replacement validation guarantees a JSON object, successful normalized-request
+deserialization, and Oven's model invariants. `provider_after_response` is observe-only, runs after
+the response head and before stream consumption, and exposes HTTP status with an empty header map.
+It never receives body data.
+
+`message_end` receives the complete assembled assistant content after streaming and before
+`model_turn_committed`. It may replace content but not the assistant role. The replacement is
+validated as a complete persisted turn and becomes the durable turn; already emitted text and
+reasoning deltas remain historical stream records.
+
+`model_before_select`, `session_before_fork`, and `session_before_revert` may block their operation
+with a user-facing reason. Model selection interception occurs when the configured selection is
+first used to start a run, when a later run changes selection, and before a fallback transition. It
+does not run for unchanged selections, draft UI changes before run start, skill-scoped model
+overrides, or internal-agent model choices. A blocked model selection retains the current selection.
+Revert may also chain an instruction override. `session_before_compact` may append instructions,
+replace the current instructions, or cancel compaction with a reason; cancellation leaves the engine
+and session usable and the RPC returns that reason.
+
+All mutation chains pass only validated current state to the next plugin. Invalid modifications are
+diagnosed and skipped. Timeout, crash, malformed response, or queue failure is fail-open per plugin,
+and later plugins still run. Hooks receive the same short-lived context grant used by plugin emit.
+Except for root-only `user_before_input`, user-facing agent hooks also run for delegated sessions.
+Internal title, approval, and compaction agents remain outside extension interception. Streaming
+output chunks are not part of this protocol stage.
 
 ## Tools
 
@@ -249,5 +299,5 @@ terminates the process if needed. Shutdown remains bounded when initialization i
 
 ## Current limitation
 
-Plugin resource methods remain deferred. Protocol 0.0.3 event subscriptions have no replay or
+Plugin resource methods remain deferred. Protocol 0.0.4 event subscriptions have no replay or
 per-event-type filters.

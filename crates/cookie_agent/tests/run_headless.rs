@@ -34,6 +34,11 @@ use cookie_agent_protocol::{
 use cookie_agent_tools::{BuiltinTools, delegate::DelegateToolProvider, skill::SkillTool};
 use tempfile::TempDir;
 
+const PLUGIN_FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../engine/tests/fixtures/fake_plugin.py"
+);
+
 enum MockResponse {
     Sse(String),
     Status(u16),
@@ -1066,6 +1071,77 @@ fn cookie_binary_maps_run_and_environment_failures() {
         .output()
         .expect("run invalid cookie CLI");
     assert_eq!(clap.status.code(), Some(2), "{}", process_report(&clap));
+}
+
+#[test]
+fn cookie_binary_treats_plugin_handled_input_as_success_without_a_run() {
+    let fixture = ProcessFixture::new();
+    let config = fixture.workspace.join(".cookie-agent/config.toml");
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(config)
+        .expect("append plugin config");
+    writeln!(
+        file,
+        r#"
+[plugins.command_handler]
+command = "/usr/bin/python3"
+args = ['{PLUGIN_FIXTURE}']
+env = {{ FIXTURE_NAME = 'command_handler', FIXTURE_CAPABILITIES = '{{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["user_before_input"]}}', FIXTURE_USER_BEFORE_INPUT_RESULT = '{{"action":"handled","reason":"command consumed"}}' }}
+"#
+    )
+    .expect("plugin config");
+
+    let output = fixture.run(&["run", "/handled", "--output", "none"]);
+    assert_eq!(output.status.code(), Some(0), "{}", process_report(&output));
+    assert!(output.stdout.is_empty(), "{}", process_report(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("command consumed"),
+        "{}",
+        process_report(&output)
+    );
+    assert!(
+        stderr.contains("no run started"),
+        "{}",
+        process_report(&output)
+    );
+    assert!(fixture.server.requests().is_empty());
+}
+
+#[test]
+fn cookie_binary_treats_blocked_model_selection_as_failure() {
+    let fixture = ProcessFixture::new();
+    let config = fixture.workspace.join(".cookie-agent/config.toml");
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(config)
+        .expect("append plugin config");
+    writeln!(
+        file,
+        r#"
+[plugins.model_guard]
+command = "/usr/bin/python3"
+args = ['{PLUGIN_FIXTURE}']
+env = {{ FIXTURE_NAME = 'model_guard', FIXTURE_CAPABILITIES = '{{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["model_before_select"]}}', FIXTURE_MODEL_BEFORE_SELECT_RESULT = '{{"action":"block","reason":"model denied"}}' }}
+"#
+    )
+    .expect("plugin config");
+
+    let output = fixture.run(&["run", "blocked model", "--output", "none"]);
+    assert_eq!(output.status.code(), Some(1), "{}", process_report(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("model denied"),
+        "{}",
+        process_report(&output)
+    );
+    assert!(
+        !stderr.contains("no run started"),
+        "{}",
+        process_report(&output)
+    );
+    assert!(fixture.server.requests().is_empty());
 }
 
 #[test]

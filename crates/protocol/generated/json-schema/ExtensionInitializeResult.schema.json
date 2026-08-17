@@ -11,7 +11,7 @@
     },
     "protocol_version": {
       "type": "string",
-      "const": "0.0.3"
+      "const": "0.0.4"
     },
     "tools": {
       "type": "array",
@@ -38,7 +38,16 @@
         "tool_before_call",
         "tool_after_result",
         "agent_before_start",
-        "session_before_compact"
+        "session_before_compact",
+        "user_before_input",
+        "model_before_request",
+        "provider_before_headers",
+        "provider_before_request",
+        "provider_after_response",
+        "message_end",
+        "model_before_select",
+        "session_before_fork",
+        "session_before_revert"
       ]
     },
     "ExtensionPluginCapabilities": {

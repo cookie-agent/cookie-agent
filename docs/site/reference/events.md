@@ -30,9 +30,9 @@ the generated `EventPayload` schema with the committed additive baseline.
 |---|---|
 | Session | `session_created`, `session_reverted`, `session_permission_overlay_set`, `skill_loaded`, `skill_invocation_noted`, `session_title_committed`, `delegated_context_seeded` |
 | Plugins | `plugin_event_added`, `plugin_diagnostic` |
-| User input | `user_input_admitted`, `user_input_submitted`, `user_input_recalled`, `user_input_recalled_v2`, `user_input_applied` |
+| User input | `message_injected`, `user_input_admitted`, `user_input_submitted`, `user_input_transformed`, `user_input_recalled`, `user_input_recalled_v2`, `user_input_applied` |
 | Run | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_interrupted` |
-| Model | `model_attempt_started`, `text_delta`, `reasoning_delta`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback` |
+| Model | `model_attempt_started`, `model_request_prepared`, `text_delta`, `reasoning_delta`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback` |
 | Tools | `tool_call_started`, `tool_call_progress`, `tool_call_terminated`, `tool_output_elided`, `tool_stdin_submitted`, `tool_call_linked`, `delegate_queued`, `delegate_finished`, `delegate_finished_v2`, `delegate_child_terminated` |
 | Delegation durability | `delegation_reserved`, `delegation_started`, `delegation_run_started`, `delegation_run_attached`, `delegation_finished` |
 | Approvals | `approval_requested`, `approval_evaluated`, `approval_escalated`, `approval_user_decision_recorded`, `approval_finalized`, `approval_cancelled`, `approval_doom_loop_detected`, `tree_approval_grant_committed` |
@@ -98,6 +98,10 @@ output counts. Event-log validation requires its run, agent, model, and turn to
 match and rejects duplicate records for one turn. Session, agent, and global
 usage projections rebuild from these events after restart, revert, and fork.
 
+`model_request_prepared` follows request assembly and all accepted model/provider request hooks.
+Its `prompt_fingerprint` hashes the authoritative normalized request sent to the provider, while
+`model_attempt_started` remains the earlier cancellation and lifecycle boundary.
+
 `internal_agent_usage_recorded` attributes each completed
 internal model request to its internal run, internal agent ID, kind, and resolved
 model. The same session, agent, and global projections include these records.
@@ -115,6 +119,12 @@ appends matching runless `user_input_recalled` events so those inputs cannot lea
 into a later resume. Promotion appends the ordinary run-owned
 `user_input_submitted` event, so transcript rendering and model history use the
 same path as interactive run steering.
+
+`message_injected` is a run-owned role and text message accepted from `agent_before_start`. It is
+written during run setup and projected into model history, so reopen, fork, revert, and compaction
+use the injected message without consulting the plugin again. `user_input_transformed` is the
+run-owned audit record written immediately before `user_input_submitted` when `user_before_input`
+changes direct input; it contains both `original_input` and the non-empty committed `input`.
 
 Running-resume rollback appends `user_input_recalled_v2` with the exact
 `user_input_seq` of its admission. Replay removes that specific pending input

@@ -175,21 +175,66 @@ impl ResolvedExecutableModel {
         self.prepare_request_inner(request, Some(strategy))
     }
 
+    /// Applies model defaults while deferring prompt-cache placement until interception completes.
+    #[must_use]
+    pub fn prepare_request_before_cache_strategy(
+        &self,
+        request: Request,
+        strategy: Option<&AnthropicCacheStrategyConfig>,
+    ) -> Request {
+        self.prepare_request_defaults(request, Some(strategy)).0
+    }
+
+    /// Applies prompt-cache placement once to an authoritative intercepted request.
+    #[must_use]
+    pub fn apply_prompt_cache_strategy(
+        &self,
+        mut request: Request,
+        strategy: Option<&AnthropicCacheStrategyConfig>,
+    ) -> Request {
+        if self
+            .model
+            .capabilities()
+            .features
+            .contains(Capability::PROMPT_CACHING)
+            && let Some(strategy) = strategy
+        {
+            apply_cache_strategy(&mut request, strategy);
+        }
+        request
+    }
+
+    /// Serializes the prepared provider request at the engine interception boundary.
+    pub fn provider_request_payload(
+        &self,
+        request: &Request,
+    ) -> Result<Value, Box<oven_sdk::ModelError>> {
+        serde_json::to_value(request)
+            .map_err(|error| Box::new(oven_sdk::ModelError::invalid_request(error.to_string())))
+    }
+
+    /// Rebuilds and validates a plugin-replaced request payload before provider execution.
+    pub fn request_from_provider_payload(
+        &self,
+        payload: Value,
+    ) -> Result<Request, Box<oven_sdk::ModelError>> {
+        if !payload.is_object() {
+            return Err(Box::new(oven_sdk::ModelError::invalid_request(
+                "replacement provider payload must be a JSON object",
+            )));
+        }
+        let request: Request = serde_json::from_value(payload)
+            .map_err(|error| Box::new(oven_sdk::ModelError::invalid_request(error.to_string())))?;
+        self.model.validate_request(&request).map_err(Box::new)?;
+        Ok(request)
+    }
+
     fn prepare_request_inner(
         &self,
         request: Request,
         strategy_override: Option<Option<&AnthropicCacheStrategyConfig>>,
     ) -> Request {
-        let mut request = self
-            .defaults
-            .apply(&crate::ProviderOptions::default(), request);
-        request
-            .provider_options
-            .extend(self.provider_options.clone());
-        if let Some(strategy) = strategy_override {
-            set_cache_strategy(&mut request.provider_options, strategy);
-        }
-        let strategy = take_cache_strategy(&mut request.provider_options);
+        let (mut request, strategy) = self.prepare_request_defaults(request, strategy_override);
         if self
             .model
             .capabilities()
@@ -200,6 +245,24 @@ impl ResolvedExecutableModel {
             apply_cache_strategy(&mut request, &strategy);
         }
         request
+    }
+
+    fn prepare_request_defaults(
+        &self,
+        request: Request,
+        strategy_override: Option<Option<&AnthropicCacheStrategyConfig>>,
+    ) -> (Request, Option<AnthropicCacheStrategyConfig>) {
+        let mut request = self
+            .defaults
+            .apply(&crate::ProviderOptions::default(), request);
+        request
+            .provider_options
+            .extend(self.provider_options.clone());
+        if let Some(strategy) = strategy_override {
+            set_cache_strategy(&mut request.provider_options, strategy);
+        }
+        let strategy = take_cache_strategy(&mut request.provider_options);
+        (request, strategy)
     }
 }
 

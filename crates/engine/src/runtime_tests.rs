@@ -7195,6 +7195,361 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
     reopened.shutdown().await;
 }
 
+#[tokio::test]
+async fn user_input_transform_audit_uses_the_final_chain_value() {
+    let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["user_before_input"]}"#;
+    let cases = [
+        (
+            "noop",
+            vec![("only", r#"{"action":"transform","new_text":"original"}"#)],
+            "original",
+            None,
+        ),
+        (
+            "returned",
+            vec![
+                (
+                    "first",
+                    r#"{"action":"transform","new_text":"intermediate"}"#,
+                ),
+                ("second", r#"{"action":"transform","new_text":"original"}"#),
+            ],
+            "original",
+            None,
+        ),
+        (
+            "changed",
+            vec![("only", r#"{"action":"transform","new_text":"transformed"}"#)],
+            "transformed",
+            Some(("original", "transformed")),
+        ),
+    ];
+
+    for (name, results, expected_input, expected_audit) in cases {
+        let (endpoint, captured) = scripted_model_server().await;
+        let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+        let plugins = results
+            .into_iter()
+            .map(|(plugin, result)| {
+                (
+                    plugin.into(),
+                    interception_plugin(
+                        plugin,
+                        &[
+                            ("FIXTURE_CAPABILITIES", capabilities.into()),
+                            ("FIXTURE_USER_BEFORE_INPUT_RESULT", result.into()),
+                        ],
+                    ),
+                )
+            })
+            .collect();
+        reopen_with_interception_plugins(&mut fixture, plugins).await;
+        let session = fixture.engine.create_session(selection.clone()).unwrap();
+        fixture
+            .engine
+            .start_run(RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new(format!("user-transform-{name}")).unwrap(),
+                selection,
+                input: "original".into(),
+            })
+            .await
+            .expect("run starts after transform chain");
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+        let request = captured.await.unwrap();
+        assert!(request.contains(expected_input));
+        let events = fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .unwrap()
+            .log
+            .events();
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::UserInputSubmitted { input } if input == expected_input
+        )));
+        let audits = events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::UserInputTransformed {
+                    original_input,
+                    input,
+                } => Some((original_input.as_str(), input.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(audits, expected_audit.into_iter().collect::<Vec<_>>());
+        fixture.engine.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn setup_append_terminal_failure_retains_active_tombstone_until_retry() {
+    for inject_message in [false, true] {
+        let (mut fixture, selection) = custom_fixture_with_endpoint("http://127.0.0.1:9/v1");
+        if inject_message {
+            let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["agent_before_start"]}"#;
+            reopen_with_interception_plugins(
+                &mut fixture,
+                vec![(
+                    "inject".into(),
+                    interception_plugin(
+                        "inject",
+                        &[
+                            ("FIXTURE_CAPABILITIES", capabilities.into()),
+                            (
+                                "FIXTURE_AGENT_BEFORE_RESULT",
+                                r#"{"inject_message":{"role":"user","content":"injected"}}"#.into(),
+                            ),
+                        ],
+                    ),
+                )],
+            )
+            .await;
+        }
+        let session = fixture.engine.create_session(selection.clone()).unwrap();
+        fixture
+            .engine
+            .inner
+            .run_setup_append_failures
+            .store(2, Ordering::Release);
+        let error = fixture
+            .engine
+            .start_run(RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new(format!("setup-failure-{inject_message}")).unwrap(),
+                selection,
+                input: "setup input".into(),
+            })
+            .await
+            .expect_err("terminal append failure is propagated");
+        assert!(
+            error
+                .to_string()
+                .contains("injected run failed append failure")
+        );
+        let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
+        assert_eq!(projection.status, SessionStatus::Running);
+        let run_id = *projection.runs.keys().next().expect("durable started run");
+        assert!(fixture.engine.has_active_run_for_test(run_id));
+
+        fixture
+            .engine
+            .retry_run_setup_terminalization_for_test(run_id)
+            .await
+            .expect("terminal append retry");
+        assert!(!fixture.engine.has_active_run_for_test(run_id));
+        assert_eq!(
+            fixture
+                .engine
+                .get_session(session.session_id)
+                .unwrap()
+                .status,
+            SessionStatus::Failed
+        );
+        fixture.engine.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn compact_cancellation_reason_reaches_the_engine_result() {
+    let (endpoint, captured) = scripted_model_server().await;
+    let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["session_before_compact"]}"#;
+    reopen_with_interception_plugins(
+        &mut fixture,
+        vec![(
+            "compact".into(),
+            interception_plugin(
+                "compact",
+                &[
+                    ("FIXTURE_CAPABILITIES", capabilities.into()),
+                    (
+                        "FIXTURE_COMPACT_BEFORE_RESULT",
+                        r#"{"cancel":true,"reason":"keep this context"}"#.into(),
+                    ),
+                ],
+            ),
+        )],
+    )
+    .await;
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("compact-cancel-reason").unwrap(),
+            selection,
+            input: "complete before compacting".into(),
+        })
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    captured.await.unwrap();
+    let result = fixture
+        .engine
+        .compact_session_result(session.session_id, None)
+        .await
+        .unwrap();
+    assert!(!result.compacted);
+    assert_eq!(
+        result.cancellation_reason.as_deref(),
+        Some("keep this context")
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn active_run_steering_uses_user_input_interception_and_audit() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["user_before_input"]}"#;
+    reopen_with_interception_plugins(
+        &mut fixture,
+        vec![(
+            "steer".into(),
+            interception_plugin(
+                "steer",
+                &[
+                    ("FIXTURE_CAPABILITIES", capabilities.into()),
+                    ("FIXTURE_USER_TRANSFORM_FROM", "steer original".into()),
+                    ("FIXTURE_USER_TRANSFORM_TO", "steer transformed".into()),
+                ],
+            ),
+        )],
+    )
+    .await;
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    let started = fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("intercepted-steer").unwrap(),
+            selection,
+            input: "initial prompt".into(),
+        })
+        .await
+        .unwrap();
+    let steered = fixture
+        .engine
+        .steer(started.run_id, "steer original".into())
+        .await
+        .unwrap();
+    assert!(steered.accepted);
+    assert!(steered.handled_reason.is_none());
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "initial prompt",
+            scripted_text_body("first"),
+        ))
+        .unwrap();
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "steer transformed",
+            scripted_text_body("second"),
+        ))
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let requests = captured.await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].contains("steer transformed"));
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputTransformed { original_input, input }
+            if original_input == "steer original" && input == "steer transformed"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputAdmitted { input } if input == "steer transformed"
+    )));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn blocking_steering_uses_the_same_input_interception_and_audit() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["user_before_input"]}"#;
+    reopen_with_interception_plugins(
+        &mut fixture,
+        vec![(
+            "blocking".into(),
+            interception_plugin(
+                "blocking",
+                &[
+                    ("FIXTURE_CAPABILITIES", capabilities.into()),
+                    ("FIXTURE_USER_TRANSFORM_FROM", "blocking original".into()),
+                    ("FIXTURE_USER_TRANSFORM_TO", "blocking transformed".into()),
+                ],
+            ),
+        )],
+    )
+    .await;
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    let started = fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("blocking-intercepted-steer").unwrap(),
+            selection,
+            input: "initial prompt".into(),
+        })
+        .await
+        .unwrap();
+    let blocking_engine = fixture.engine.clone();
+    let steered = tokio::task::spawn_blocking(move || {
+        blocking_engine.steer_blocking(started.run_id, "blocking original".into())
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(steered.accepted);
+    assert!(steered.handled_reason.is_none());
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "initial prompt",
+            scripted_text_body("first"),
+        ))
+        .unwrap();
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "blocking transformed",
+            scripted_text_body("second"),
+        ))
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let requests = captured.await.unwrap();
+    assert!(requests[1].contains("blocking transformed"));
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputTransformed { original_input, input }
+            if original_input == "blocking original" && input == "blocking transformed"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::UserInputAdmitted { input } if input == "blocking transformed"
+    )));
+    fixture.engine.shutdown().await;
+}
+
 fn anthropic_usage_body(
     text: &str,
     input_tokens: u64,
@@ -7313,6 +7668,182 @@ async fn anthropic_prompt_caching_records_wire_markers_usage_and_rollup() {
     assert_eq!(rollup.cache_read_tokens, 50);
     assert_eq!(rollup.request_count, 3);
     assert_eq!(rollup.cache_hit_rate, Some(50.0 / 90.0));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
+    let bodies = vec![anthropic_usage_body("done", 10, 0, 0)];
+    let (endpoint, captured, _reached, _release) =
+        scripted_server_with_delayed_response(bodies, usize::MAX).await;
+    let primary = "---\ndescription: Intercepted Anthropic cache test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nOriginal system prompt.\n";
+    let (mut fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+            &endpoint,
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            None,
+            "anthropic-compatible",
+        );
+    let marker = tempfile::tempdir().unwrap();
+    let provider_file = marker.path().join("provider.jsonl");
+    let model_capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["model_before_request"]}"#;
+    let provider_capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["provider_before_headers","provider_after_response"]}"#;
+    let replacement = serde_json::json!({
+        "action": "replace",
+        "messages": [
+            {
+                "role": "system",
+                "content": {
+                    "content": [{"type":"text","value":{"text":"Replacement system","metadata":null}}],
+                    "provider_options": {}
+                }
+            },
+            {
+                "role": "user",
+                "content": {
+                    "content": [{"type":"text","value":{"text":"Replacement user","metadata":null}}],
+                    "provider_options": {}
+                }
+            }
+        ]
+    })
+    .to_string();
+    reopen_with_interception_plugins(
+        &mut fixture,
+        vec![
+            (
+                "invalid".into(),
+                interception_plugin(
+                    "invalid",
+                    &[
+                        ("FIXTURE_CAPABILITIES", model_capabilities.into()),
+                        (
+                            "FIXTURE_MODEL_BEFORE_REQUEST_RESULT",
+                            r#"{"action":"replace","params_adjustments":{"max_tokens":7}}"#.into(),
+                        ),
+                    ],
+                ),
+            ),
+            (
+                "replace".into(),
+                interception_plugin(
+                    "replace",
+                    &[
+                        ("FIXTURE_CAPABILITIES", model_capabilities.into()),
+                        ("FIXTURE_MODEL_BEFORE_REQUEST_RESULT", replacement),
+                    ],
+                ),
+            ),
+            (
+                "adjust".into(),
+                interception_plugin(
+                    "adjust",
+                    &[
+                        ("FIXTURE_CAPABILITIES", model_capabilities.into()),
+                        (
+                            "FIXTURE_MODEL_BEFORE_REQUEST_RESULT",
+                            r#"{"action":"keep","params_adjustments":{"max_tokens":19}}"#.into(),
+                        ),
+                    ],
+                ),
+            ),
+            (
+                "provider".into(),
+                interception_plugin(
+                    "provider",
+                    &[
+                        ("FIXTURE_CAPABILITIES", provider_capabilities.into()),
+                        (
+                            "FIXTURE_PROVIDER_BEFORE_HEADERS_RESULT",
+                            r#"{"set":{"x-test":"value"},"delete":[]}"#.into(),
+                        ),
+                        (
+                            "FIXTURE_INTERCEPT_FILE",
+                            provider_file.display().to_string(),
+                        ),
+                    ],
+                ),
+            ),
+        ],
+    )
+    .await;
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::new(AtomicBool::new(false)),
+        }));
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("intercepted-cache").unwrap(),
+            selection,
+            input: "original user".into(),
+        })
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let requests = captured.await.unwrap();
+    let body = request_body(&requests[0]);
+    assert_eq!(body["max_tokens"], 19);
+    assert_eq!(body["system"][0]["text"], "Replacement system");
+    assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
+    let last_content = body["messages"].as_array().unwrap().last().unwrap()["content"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(last_content["text"], "Replacement user");
+    assert_eq!(last_content["cache_control"]["ttl"], "5m");
+    assert_eq!(cache_marker_count(&body), 3);
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let events = fixture
+                .engine
+                .inner
+                .store
+                .get(session.session_id)
+                .unwrap()
+                .log
+                .events();
+            let invalid = events.iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    EventPayload::PluginDiagnostic { kind, message, .. }
+                        if *kind == cookie_agent_protocol::PluginDiagnosticKind::InvalidModification
+                            && message.contains("replace requires messages")
+                )
+            });
+            let unsupported = events.iter().any(|event| matches!(
+                &event.payload,
+                EventPayload::PluginDiagnostic { kind, .. }
+                    if *kind == cookie_agent_protocol::PluginDiagnosticKind::UnsupportedCapability
+            ));
+            if invalid && unsupported {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("plugin diagnostics");
+    let provider_calls = fs::read_to_string(provider_file).unwrap();
+    let after = provider_calls
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|call| call["method"] == "plugin/intercept/provider_after_response")
+        .expect("provider response observation");
+    assert_eq!(after["params"]["status"], 200);
+    assert_eq!(after["params"]["headers"], serde_json::json!({}));
     fixture.engine.shutdown().await;
 }
 

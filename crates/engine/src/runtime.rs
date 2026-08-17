@@ -120,6 +120,14 @@ pub enum EngineError {
     SessionRunning(SessionId),
     #[error("client run id conflicts with durable run parameters")]
     RunIdempotencyConflict,
+    #[error("input was handled by plugin: {0}")]
+    InputHandled(String),
+    #[error("model selection was blocked by plugin: {0}")]
+    ModelSelectionBlocked(String),
+    #[error("session operation was blocked by plugin: {0}")]
+    SessionOperationBlocked(String),
+    #[error("compaction cancelled by plugin: {0}")]
+    CompactionCancelled(String),
     #[error("tool call is not running or is not interactive")]
     StdinUnavailable,
     #[error("approval `{approval_id}` is not pending for session {session_id}")]
@@ -231,6 +239,16 @@ struct PendingPromotionState {
     promoted: bool,
     pending: Vec<PendingInput>,
     continue_run: bool,
+}
+
+pub(super) enum UserInputInterception {
+    Accepted {
+        input: String,
+        original_input: Option<String>,
+    },
+    Handled {
+        reason: String,
+    },
 }
 
 impl ContextTokenEstimator {
@@ -788,6 +806,7 @@ enum SessionCommand {
     Steer {
         run: RunId,
         input: String,
+        original_input: Option<String>,
         reply: oneshot::Sender<Result<RunSteerResult, EngineError>>,
     },
     AdmitDelegatedResume {
@@ -814,10 +833,11 @@ enum SessionCommand {
     },
     Compact {
         focus: Option<String>,
-        reply: oneshot::Sender<Result<bool, EngineError>>,
+        reply: oneshot::Sender<Result<cookie_agent_protocol::SessionCompactResult, EngineError>>,
     },
     Revert {
         through_seq: u64,
+        instructions_override: Option<String>,
         reply: oneshot::Sender<Result<SessionRevertResult, EngineError>>,
     },
     Fork {
@@ -1038,6 +1058,8 @@ pub(crate) struct Inner {
     #[cfg(test)]
     pub(crate) delegate_terminal_append_failures: AtomicU64,
     #[cfg(test)]
+    pub(crate) run_setup_append_failures: AtomicU64,
+    #[cfg(test)]
     pub(crate) resume_monitor_failures: AtomicU64,
 }
 
@@ -1188,6 +1210,8 @@ impl Engine {
                 delegate_start_failures: AtomicU64::new(0),
                 #[cfg(test)]
                 delegate_terminal_append_failures: AtomicU64::new(0),
+                #[cfg(test)]
+                run_setup_append_failures: AtomicU64::new(0),
                 #[cfg(test)]
                 resume_monitor_failures: AtomicU64::new(0),
             }),

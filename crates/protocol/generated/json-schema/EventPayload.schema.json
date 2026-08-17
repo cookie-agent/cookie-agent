@@ -323,6 +323,26 @@
         "input": {
           "type": "string"
         },
+        "role": {
+          "$ref": "#/$defs/ExtensionMessageRole"
+        },
+        "type": {
+          "type": "string",
+          "const": "message_injected"
+        }
+      },
+      "required": [
+        "type",
+        "role",
+        "input"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "string"
+        },
         "type": {
           "type": "string",
           "const": "user_input_admitted"
@@ -346,6 +366,26 @@
       },
       "required": [
         "type",
+        "input"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "original_input": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "user_input_transformed"
+        }
+      },
+      "required": [
+        "type",
+        "original_input",
         "input"
       ]
     },
@@ -558,6 +598,30 @@
         "fallback_index",
         "retry_ordinal",
         "resolved_model",
+        "prompt_fingerprint"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "attempt_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "prompt_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "type": {
+          "type": "string",
+          "const": "model_request_prepared"
+        }
+      },
+      "required": [
+        "type",
+        "attempt_id",
         "prompt_fingerprint"
       ]
     },
@@ -2671,6 +2735,15 @@
         "child_session_id"
       ]
     },
+    "ExtensionMessageRole": {
+      "type": "string",
+      "enum": [
+        "system",
+        "user",
+        "assistant",
+        "tool"
+      ]
+    },
     "FrozenCredentialBinding": {
       "type": "object",
       "properties": {
@@ -4348,6 +4421,7 @@
         "hook_blocked",
         "oversized_event",
         "invalid_modification",
+        "unsupported_capability",
         "context_mismatch",
         "rate_limited"
       ]

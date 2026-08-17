@@ -8,7 +8,56 @@
         "string",
         "null"
       ]
+    },
+    "append_to_system_prompt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "inject_message": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExtensionInjectedMessage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "replace_system_prompt": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "ExtensionInjectedMessage": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/ExtensionMessageRole"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "content"
+      ]
+    },
+    "ExtensionMessageRole": {
+      "type": "string",
+      "enum": [
+        "system",
+        "user",
+        "assistant",
+        "tool"
+      ]
+    }
+  }
 }

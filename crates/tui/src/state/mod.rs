@@ -1846,11 +1846,14 @@ fn reduce_event(
             state.created_at = Some(timestamp);
         }
         EventPayload::DelegatedContextSeeded { .. }
+        | EventPayload::MessageInjected { .. }
+        | EventPayload::UserInputTransformed { .. }
         | EventPayload::DelegationReserved { .. }
         | EventPayload::DelegationStarted { .. }
         | EventPayload::DelegationRunStarted { .. }
         | EventPayload::DelegationRunAttached { .. }
         | EventPayload::DelegationFinished { .. }
+        | EventPayload::ModelRequestPrepared { .. }
         | EventPayload::ModelUsageRecorded { .. }
         | EventPayload::InternalAgentUsageRecorded { .. }
         | EventPayload::ToolStdinSubmitted { .. }

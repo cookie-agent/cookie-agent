@@ -2061,6 +2061,7 @@ impl Engine {
                     .request(child_session_id, |reply| SessionCommand::Steer {
                         run: child_run_id,
                         input: message,
+                        original_input: None,
                         reply,
                     })
                     .await?;

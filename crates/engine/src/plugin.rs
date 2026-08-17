@@ -751,16 +751,39 @@ impl PluginRegistry {
                     Some(&params.context_id),
                 )
                 .await;
-            if let Ok(result) = &result
-                && let Some(addendum) = result.addendum.as_deref().filter(|value| !value.is_empty())
-                && let Some(system_prompt) = chained
-                    .prompt_context
-                    .get_mut("system_prompt")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_owned)
-            {
-                chained.prompt_context["system_prompt"] =
-                    Value::String(format!("{system_prompt}\n{addendum}"));
+            if let Ok(result) = &result {
+                if let Some(replacement) = result
+                    .replace_system_prompt
+                    .as_ref()
+                    .filter(|value| !value.is_empty())
+                {
+                    chained.prompt_context["system_prompt"] = Value::String(replacement.clone());
+                }
+                if let Some(addendum) = result
+                    .append_to_system_prompt
+                    .as_ref()
+                    .or(result.addendum.as_ref())
+                    .filter(|value| !value.is_empty())
+                    && let Some(system_prompt) = chained
+                        .prompt_context
+                        .get("system_prompt")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                {
+                    chained.prompt_context["system_prompt"] =
+                        Value::String(format!("{system_prompt}\n{addendum}"));
+                }
+                if let Some(message) = &result.inject_message {
+                    let messages = chained
+                        .prompt_context
+                        .as_object_mut()
+                        .expect("prompt context is an object")
+                        .entry("injected_messages")
+                        .or_insert_with(|| Value::Array(Vec::new()));
+                    if let Some(messages) = messages.as_array_mut() {
+                        messages.push(serde_json::to_value(message).expect("message serializes"));
+                    }
+                }
             }
             results.push((plugin, result));
         }
@@ -789,7 +812,18 @@ impl PluginRegistry {
             {
                 chained.additions.push(addendum);
             }
+            if let Ok(result) = &result
+                && let Some(instructions) = result.instructions_override.clone()
+            {
+                chained.instructions = Some(instructions);
+            }
             results.push((plugin, result));
+            if results
+                .last()
+                .is_some_and(|(_, result)| result.as_ref().is_ok_and(|result| result.cancel))
+            {
+                break;
+            }
         }
         results
     }
@@ -2342,6 +2376,7 @@ mod tests {
                     context_id: plugin_context_id(),
                     checkpoint_id: "checkpoint".into(),
                     additions: Vec::new(),
+                    instructions: None,
                 })
                 .await[0]
                 .1
@@ -2540,6 +2575,7 @@ mod tests {
                 context_id: plugin_context_id(),
                 checkpoint_id: "checkpoint".into(),
                 additions: Vec::new(),
+                instructions: None,
             })
             .await;
         let records = std::fs::read_to_string(alpha_file)

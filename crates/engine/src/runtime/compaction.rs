@@ -8,7 +8,8 @@ use cookie_agent_protocol::{
     ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
     ContextCheckpointCommit, ContextRehydratedFile, ExtensionSessionBeforeCompactParams,
     InternalAgentKind, InternalSummaryCheckpoint, PersistedAssistantPart, PluginDiagnosticKind,
-    RunId, SessionId, SessionStatus, Sha256Digest, StoredEvent, SummaryByteLimit, ToolCallId,
+    RunId, SessionCompactResult, SessionId, SessionStatus, Sha256Digest, StoredEvent,
+    SummaryByteLimit, ToolCallId,
 };
 use oven_sdk::{
     CompactionCapability, CompactionRequest, ModelError, Request as ModelRequest, ToolDefinition,
@@ -73,6 +74,16 @@ impl Engine {
         session: SessionId,
         focus: Option<&str>,
     ) -> Result<bool, EngineError> {
+        self.compact_session_result(session, focus)
+            .await
+            .map(|result| result.compacted)
+    }
+
+    pub async fn compact_session_result(
+        &self,
+        session: SessionId,
+        focus: Option<&str>,
+    ) -> Result<SessionCompactResult, EngineError> {
         let focus = focus.map(str::to_owned);
         self.request(session, |reply| SessionCommand::Compact { focus, reply })
             .await
@@ -82,7 +93,7 @@ impl Engine {
         &self,
         session: SessionId,
         focus: Option<&str>,
-    ) -> Result<bool, EngineError> {
+    ) -> Result<SessionCompactResult, EngineError> {
         let projection = self.inner.store.get(session)?;
         if projection.status == SessionStatus::Running {
             return Err(EngineError::SessionRunning(session));
@@ -105,7 +116,7 @@ impl Engine {
         )?;
         let tools = self.tool_definitions(session, &policy)?;
         let before = latest_checkpoint_seq(&events);
-        let compacted = self
+        let compacted = match self
             .maybe_compact_context(CompactionInput {
                 session,
                 run,
@@ -120,8 +131,21 @@ impl Engine {
                 focus,
                 actor_direct: false,
             })
-            .await?;
-        Ok(latest_checkpoint_seq(&compacted) > before)
+            .await
+        {
+            Ok(compacted) => compacted,
+            Err(EngineError::CompactionCancelled(reason)) => {
+                return Ok(SessionCompactResult {
+                    compacted: false,
+                    cancellation_reason: Some(reason),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(SessionCompactResult {
+            compacted: latest_checkpoint_seq(&compacted) > before,
+            cancellation_reason: None,
+        })
     }
 
     pub(super) async fn maybe_compact_context(
@@ -172,6 +196,7 @@ impl Engine {
                         context_id: context_id.clone(),
                         checkpoint_id: format!("{}:{requested_input_through_seq}", input.session),
                         additions: additions.clone(),
+                        instructions: compaction_focus.clone(),
                     },
                     Some(input.session),
                     Some(&context_id),
@@ -179,6 +204,31 @@ impl Engine {
                 .await;
             match result {
                 Ok(result) => {
+                    if result.cancel {
+                        let reason = result
+                            .reason
+                            .unwrap_or_else(|| "compaction cancelled by plugin".into());
+                        self.record_plugin_diagnostic(
+                            input.session,
+                            plugin,
+                            PluginDiagnosticKind::HookBlocked,
+                            reason.clone(),
+                        );
+                        return Err(EngineError::CompactionCancelled(reason));
+                    }
+                    if let Some(instructions) = result.instructions_override {
+                        if instructions.len() > 64 * 1024 {
+                            self.record_plugin_diagnostic(
+                                input.session,
+                                plugin.clone(),
+                                PluginDiagnosticKind::InvalidModification,
+                                "plugin compaction instruction override exceeds the 64 KiB limit"
+                                    .into(),
+                            );
+                        } else {
+                            compaction_focus = Some(instructions);
+                        }
+                    }
                     if let Some(addendum) = result.addendum.filter(|value| !value.is_empty()) {
                         let addition_bytes = additions.iter().map(String::len).sum::<usize>();
                         if addition_bytes.saturating_add(addendum.len()) > 64 * 1024 {

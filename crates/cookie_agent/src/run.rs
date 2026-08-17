@@ -401,6 +401,13 @@ struct PrepareError {
 }
 
 impl PrepareError {
+    fn handled(reason: String) -> Self {
+        Self {
+            error: anyhow!(reason).context("input handled by plugin; no run started"),
+            exit_code: 0,
+        }
+    }
+
     fn setup(error: impl Into<anyhow::Error>) -> Self {
         Self {
             error: error.into(),
@@ -476,7 +483,10 @@ async fn prepare_run(
             input: prompt,
         })
         .await
-        .map_err(|error| PrepareError::run(anyhow!(error).context("start headless run")))?
+        .map_err(|error| match error {
+            EngineError::InputHandled(reason) => PrepareError::handled(reason),
+            error => PrepareError::run(anyhow!(error).context("start headless run")),
+        })?
         .run_id;
     Ok(PreparedRun {
         session_id: session.session_id,

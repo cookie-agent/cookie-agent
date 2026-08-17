@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionUserBeforeInputResult",
+  "type": "object",
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/ExtensionUserBeforeInputAction"
+    },
+    "new_text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "action"
+  ],
+  "$defs": {
+    "ExtensionUserBeforeInputAction": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "transform",
+        "handled"
+      ]
+    }
+  }
+}

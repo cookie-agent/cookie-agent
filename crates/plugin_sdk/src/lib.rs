@@ -11,11 +11,23 @@ mod framing;
 mod server;
 
 pub use cookie_agent_protocol::{
-    EXTENSION_PROTOCOL_VERSION, ExtensionAgentBeforeStartParams, ExtensionBusEventParams,
-    ExtensionEmitStatus, ExtensionEventParams, ExtensionInterceptionHook,
-    ExtensionSessionBeforeCompactParams, ExtensionToolAfterResultAction,
+    EXTENSION_PROTOCOL_VERSION, ExtensionAgentBeforeStartParams, ExtensionAgentBeforeStartResult,
+    ExtensionAllowBlockAction, ExtensionAllowBlockResult, ExtensionBusEventParams,
+    ExtensionEmitStatus, ExtensionEventParams, ExtensionInjectedMessage, ExtensionInterceptionHook,
+    ExtensionMessageEndAction, ExtensionMessageEndParams, ExtensionMessageEndResult,
+    ExtensionMessageRole, ExtensionModelBeforeRequestAction, ExtensionModelBeforeRequestParams,
+    ExtensionModelBeforeRequestResult, ExtensionModelBeforeSelectParams, ExtensionModelMessage,
+    ExtensionModelParamsAdjustments, ExtensionProviderAfterResponseParams,
+    ExtensionProviderAfterResponseResult, ExtensionProviderBeforeHeadersParams,
+    ExtensionProviderBeforeHeadersResult, ExtensionProviderBeforeRequestAction,
+    ExtensionProviderBeforeRequestParams, ExtensionProviderBeforeRequestResult,
+    ExtensionSessionBeforeCompactParams, ExtensionSessionBeforeCompactResult,
+    ExtensionSessionBeforeForkParams, ExtensionSessionBeforeForkResult,
+    ExtensionSessionBeforeRevertAction, ExtensionSessionBeforeRevertParams,
+    ExtensionSessionBeforeRevertResult, ExtensionToolAfterResultAction,
     ExtensionToolAfterResultParams, ExtensionToolAfterResultResult, ExtensionToolBeforeCallAction,
     ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult, ExtensionToolCallParams,
+    ExtensionUserBeforeInputAction, ExtensionUserBeforeInputParams, ExtensionUserBeforeInputResult,
     SessionId,
 };
 pub use error::{PluginError, ToolFailure};
@@ -78,6 +90,28 @@ impl Addendum {
     }
 }
 
+impl From<Addendum> for ExtensionAgentBeforeStartResult {
+    fn from(value: Addendum) -> Self {
+        Self {
+            addendum: value.into_option(),
+            append_to_system_prompt: None,
+            replace_system_prompt: None,
+            inject_message: None,
+        }
+    }
+}
+
+impl From<Addendum> for ExtensionSessionBeforeCompactResult {
+    fn from(value: Addendum) -> Self {
+        Self {
+            addendum: value.into_option(),
+            cancel: false,
+            reason: None,
+            instructions_override: None,
+        }
+    }
+}
+
 /// Allows a tool call without changing its arguments.
 #[must_use]
 pub fn allow() -> ExtensionToolBeforeCallResult {
@@ -125,4 +159,67 @@ pub fn replace(content: impl Into<String>) -> ExtensionToolAfterResultResult {
 #[must_use]
 pub fn addendum(text: impl Into<String>) -> Addendum {
     Addendum(Some(text.into()))
+}
+
+/// Appends text to the current system prompt.
+#[must_use]
+pub fn append_system_prompt(text: impl Into<String>) -> ExtensionAgentBeforeStartResult {
+    ExtensionAgentBeforeStartResult {
+        addendum: None,
+        append_to_system_prompt: Some(text.into()),
+        replace_system_prompt: None,
+        inject_message: None,
+    }
+}
+
+/// Replaces the current system prompt.
+#[must_use]
+pub fn replace_system_prompt(text: impl Into<String>) -> ExtensionAgentBeforeStartResult {
+    ExtensionAgentBeforeStartResult {
+        addendum: None,
+        append_to_system_prompt: None,
+        replace_system_prompt: Some(text.into()),
+        inject_message: None,
+    }
+}
+
+/// Injects one durable message at run start.
+#[must_use]
+pub fn inject_message(
+    role: ExtensionMessageRole,
+    content: impl Into<String>,
+) -> ExtensionAgentBeforeStartResult {
+    ExtensionAgentBeforeStartResult {
+        addendum: None,
+        append_to_system_prompt: None,
+        replace_system_prompt: None,
+        inject_message: Some(ExtensionInjectedMessage {
+            role,
+            content: content.into(),
+        }),
+    }
+}
+
+/// Cancels compaction with a user-facing reason.
+#[must_use]
+pub fn cancel_compaction(reason: impl Into<String>) -> ExtensionSessionBeforeCompactResult {
+    ExtensionSessionBeforeCompactResult {
+        addendum: None,
+        cancel: true,
+        reason: Some(reason.into()),
+        instructions_override: None,
+    }
+}
+
+/// Replaces compaction instructions.
+#[must_use]
+pub fn override_compaction_instructions(
+    instructions: impl Into<String>,
+) -> ExtensionSessionBeforeCompactResult {
+    ExtensionSessionBeforeCompactResult {
+        addendum: None,
+        cancel: false,
+        reason: None,
+        instructions_override: Some(instructions.into()),
+    }
 }

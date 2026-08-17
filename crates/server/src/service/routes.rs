@@ -166,12 +166,11 @@ impl ServerProtocol for Server {
 
     async fn compact_session(&self, params: SessionCompactParams) -> Result<SessionCompactResult> {
         self.engine
-            .compact_session(
+            .compact_session_result(
                 params.session_id,
                 params.focus.as_ref().map(|focus| focus.as_str()),
             )
             .await
-            .map(|compacted| SessionCompactResult { compacted })
             .map_err(protocol_fault)
     }
 

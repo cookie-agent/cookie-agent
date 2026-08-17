@@ -11,7 +11,7 @@
     },
     "protocol_version": {
       "type": "string",
-      "const": "0.0.3"
+      "const": "0.0.4"
     }
   },
   "additionalProperties": false,

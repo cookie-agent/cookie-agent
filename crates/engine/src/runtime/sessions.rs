@@ -303,8 +303,84 @@ impl Engine {
         session_id: SessionId,
         through_seq: u64,
     ) -> Result<SessionRevertResult, EngineError> {
+        let context_id = crate::plugin::plugin_context_id();
+        let mut instructions = self
+            .inner
+            .store
+            .get(session_id)?
+            .log
+            .events()
+            .iter()
+            .find_map(|event| match &event.payload {
+                cookie_agent_protocol::EventPayload::UserInputSubmitted { input }
+                    if event.seq > through_seq =>
+                {
+                    Some(input.clone())
+                }
+                _ => None,
+            });
+        let mut instructions_override = None;
+        for plugin in self.inner.plugins.interception_plugins(
+            cookie_agent_protocol::ExtensionInterceptionHook::SessionBeforeRevert,
+        ) {
+            let result = self
+                .inner
+                .plugins
+                .intercept_named::<_, cookie_agent_protocol::ExtensionSessionBeforeRevertResult>(
+                    &plugin,
+                    cookie_agent_protocol::PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD,
+                    &cookie_agent_protocol::ExtensionSessionBeforeRevertParams {
+                        session_id,
+                        context_id: context_id.clone(),
+                        through_seq,
+                        instructions: instructions.clone(),
+                    },
+                    Some(session_id),
+                    Some(&context_id),
+                )
+                .await;
+            match result {
+                Ok(result)
+                    if result.action
+                        == cookie_agent_protocol::ExtensionSessionBeforeRevertAction::Block =>
+                {
+                    let reason = result
+                        .reason
+                        .unwrap_or_else(|| format!("session revert blocked by {plugin}"));
+                    self.record_plugin_diagnostic(
+                        session_id,
+                        plugin,
+                        cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
+                        reason.clone(),
+                    );
+                    return Err(EngineError::SessionOperationBlocked(reason));
+                }
+                Ok(result)
+                    if result.action
+                        == cookie_agent_protocol::ExtensionSessionBeforeRevertAction::Override =>
+                {
+                    if let Some(replacement) = result
+                        .instructions_override
+                        .filter(|value| !value.trim().is_empty())
+                    {
+                        instructions = Some(replacement.clone());
+                        instructions_override = Some(replacement);
+                    } else {
+                        self.record_plugin_diagnostic(
+                            session_id,
+                            plugin,
+                            cookie_agent_protocol::PluginDiagnosticKind::InvalidModification,
+                            "empty revert instruction override".into(),
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => self.record_interception_error(session_id, plugin, error),
+            }
+        }
         self.request(session_id, |reply| SessionCommand::Revert {
             through_seq,
+            instructions_override,
             reply,
         })
         .await
@@ -314,6 +390,44 @@ impl Engine {
         session_id: SessionId,
         through_seq: u64,
     ) -> Result<SessionForkResult, EngineError> {
+        let context_id = crate::plugin::plugin_context_id();
+        for plugin in self.inner.plugins.interception_plugins(
+            cookie_agent_protocol::ExtensionInterceptionHook::SessionBeforeFork,
+        ) {
+            let result = self
+                .inner
+                .plugins
+                .intercept_named::<_, cookie_agent_protocol::ExtensionSessionBeforeForkResult>(
+                    &plugin,
+                    cookie_agent_protocol::PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD,
+                    &cookie_agent_protocol::ExtensionSessionBeforeForkParams {
+                        session_id,
+                        context_id: context_id.clone(),
+                        through_seq,
+                    },
+                    Some(session_id),
+                    Some(&context_id),
+                )
+                .await;
+            match result {
+                Ok(result)
+                    if result.action == cookie_agent_protocol::ExtensionAllowBlockAction::Block =>
+                {
+                    let reason = result
+                        .reason
+                        .unwrap_or_else(|| format!("session fork blocked by {plugin}"));
+                    self.record_plugin_diagnostic(
+                        session_id,
+                        plugin,
+                        cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
+                        reason.clone(),
+                    );
+                    return Err(EngineError::SessionOperationBlocked(reason));
+                }
+                Ok(_) => {}
+                Err(error) => self.record_interception_error(session_id, plugin, error),
+            }
+        }
         self.request(session_id, |reply| SessionCommand::Fork {
             through_seq,
             reply,

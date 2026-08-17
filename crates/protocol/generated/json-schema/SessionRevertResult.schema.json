@@ -3,6 +3,12 @@
   "title": "SessionRevertResult",
   "type": "object",
   "properties": {
+    "instructions_override": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "session": {
       "$ref": "#/$defs/SessionMeta"
     }

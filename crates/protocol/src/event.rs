@@ -1566,10 +1566,18 @@ pub enum EventPayload {
         selected_suffix: Vec<FrozenModelBinding>,
         input_through_seq: u64,
     },
+    MessageInjected {
+        role: crate::ExtensionMessageRole,
+        input: String,
+    },
     UserInputAdmitted {
         input: String,
     },
     UserInputSubmitted {
+        input: String,
+    },
+    UserInputTransformed {
+        original_input: String,
         input: String,
     },
     UserInputRecalled {
@@ -1612,6 +1620,10 @@ pub enum EventPayload {
         fallback_index: u32,
         retry_ordinal: u32,
         resolved_model: ResolvedModelRef,
+        prompt_fingerprint: Sha256Digest,
+    },
+    ModelRequestPrepared {
+        attempt_id: AttemptId,
         prompt_fingerprint: Sha256Digest,
     },
     TextDelta {
@@ -1931,6 +1943,20 @@ impl EventPayload {
                     .validate_selected_suffix(selection, selected_suffix)
                     .map_err(|_| EventSchemaError::InvalidSelectedSuffix)?;
             }
+            Self::MessageInjected { role, input }
+                if input.trim().is_empty() || *role == crate::ExtensionMessageRole::Tool =>
+            {
+                return Err(EventSchemaError::InvalidJson);
+            }
+            Self::UserInputTransformed {
+                original_input,
+                input,
+            } if original_input.trim().is_empty()
+                || input.trim().is_empty()
+                || original_input == input =>
+            {
+                return Err(EventSchemaError::InvalidJson);
+            }
             Self::ModelAttemptStarted {
                 attempt_ordinal,
                 resolved_model,
@@ -2167,6 +2193,7 @@ pub enum PluginDiagnosticKind {
     HookBlocked,
     OversizedEvent,
     InvalidModification,
+    UnsupportedCapability,
     ContextMismatch,
     RateLimited,
 }

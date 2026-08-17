@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionModelBeforeRequestResult",
+  "type": "object",
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/ExtensionModelBeforeRequestAction"
+    },
+    "messages": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/ExtensionModelMessage"
+      }
+    },
+    "params_adjustments": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExtensionModelParamsAdjustments"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "action"
+  ],
+  "$defs": {
+    "ExtensionMessageRole": {
+      "type": "string",
+      "enum": [
+        "system",
+        "user",
+        "assistant",
+        "tool"
+      ]
+    },
+    "ExtensionModelBeforeRequestAction": {
+      "type": "string",
+      "enum": [
+        "keep",
+        "replace"
+      ]
+    },
+    "ExtensionModelMessage": {
+      "type": "object",
+      "properties": {
+        "content": true,
+        "role": {
+          "$ref": "#/$defs/ExtensionMessageRole"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "content"
+      ]
+    },
+    "ExtensionModelParamsAdjustments": {
+      "type": "object",
+      "properties": {
+        "max_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "temperature": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "top_p": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

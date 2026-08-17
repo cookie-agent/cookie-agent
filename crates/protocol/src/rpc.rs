@@ -520,10 +520,12 @@ pub struct SessionCompactParams {
     #[schemars(with = "crate::NullableSchema<SafeDisplayText>", required)]
     pub focus: Option<SafeDisplayText>,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCompactResult {
     pub compacted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancellation_reason: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
@@ -537,6 +539,8 @@ pub struct SessionRevertParams {
 #[serde(deny_unknown_fields)]
 pub struct SessionRevertResult {
     pub session: SessionMeta,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions_override: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
@@ -634,10 +638,12 @@ pub struct RunSteerParams {
     pub run_id: RunId,
     pub input: String,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RunSteerResult {
     pub accepted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handled_reason: Option<String>,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]

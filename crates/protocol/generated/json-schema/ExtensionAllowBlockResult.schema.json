@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionAllowBlockResult",
+  "type": "object",
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/ExtensionAllowBlockAction"
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "action"
+  ],
+  "$defs": {
+    "ExtensionAllowBlockAction": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "block"
+      ]
+    }
+  }
+}

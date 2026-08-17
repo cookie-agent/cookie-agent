@@ -5,7 +5,10 @@ use cookie_agent_protocol::{
     RunToolStdinParams, RunToolStdinResult, SessionId, SessionStatus,
 };
 
-use super::{ActiveRun, Engine, EngineError, Event, SessionCommand, helpers::safe_error};
+use super::{
+    ActiveRun, Engine, EngineError, Event, SessionCommand, UserInputInterception,
+    helpers::safe_error,
+};
 
 impl Engine {
     pub async fn start_run(&self, params: RunStartParams) -> Result<RunStartResult, EngineError> {
@@ -40,12 +43,24 @@ impl Engine {
             .get(&run_id)
             .cloned()
             .ok_or(EngineError::MissingRun(run_id))?;
-        self.request(active.session, |reply| SessionCommand::Steer {
-            run: run_id,
-            input,
-            reply,
-        })
-        .await
+        match self.intercept_user_input(active.session, input).await? {
+            UserInputInterception::Accepted {
+                input,
+                original_input,
+            } => {
+                self.request(active.session, |reply| SessionCommand::Steer {
+                    run: run_id,
+                    input,
+                    original_input,
+                    reply,
+                })
+                .await
+            }
+            UserInputInterception::Handled { reason } => Ok(RunSteerResult {
+                accepted: false,
+                handled_reason: Some(reason),
+            }),
+        }
     }
 
     /// Synchronous setup/CLI wrapper. Do not call from a Tokio runtime.
@@ -54,19 +69,13 @@ impl Engine {
         run_id: RunId,
         input: String,
     ) -> Result<RunSteerResult, EngineError> {
-        let active = self
-            .inner
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&run_id)
-            .cloned()
-            .ok_or(EngineError::MissingRun(run_id))?;
-        self.request_blocking(active.session, |reply| SessionCommand::Steer {
-            run: run_id,
-            input,
-            reply,
-        })
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                EngineError::Mcp(format!("create blocking steering runtime: {error}"))
+            })?
+            .block_on(self.steer(run_id, input))
     }
 
     pub async fn recall_steer(&self, run_id: RunId) -> Result<RunRecallSteerResult, EngineError> {

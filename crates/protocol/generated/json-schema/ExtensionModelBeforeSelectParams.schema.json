@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionModelBeforeSelectParams",
+  "type": "object",
+  "properties": {
+    "context_id": {
+      "type": "string"
+    },
+    "from": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModelSelection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "source": {
+      "$ref": "#/$defs/ExtensionModelSelectSource"
+    },
+    "to": {
+      "$ref": "#/$defs/ModelSelection"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "context_id",
+    "to",
+    "source"
+  ],
+  "$defs": {
+    "ExtensionModelSelectSource": {
+      "type": "string",
+      "enum": [
+        "user",
+        "config",
+        "fallback_restore"
+      ]
+    },
+    "ModelSelection": {
+      "description": "One exact base or named-variant model selection.",
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
+        },
+        "variant": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "model"
+      ]
+    }
+  }
+}

@@ -509,7 +509,10 @@ impl Engine {
     pub(crate) async fn enqueue_compact_without_residency_for_test(
         &self,
         session: SessionId,
-    ) -> Result<oneshot::Receiver<Result<bool, EngineError>>, EngineError> {
+    ) -> Result<
+        oneshot::Receiver<Result<cookie_agent_protocol::SessionCompactResult, EngineError>>,
+        EngineError,
+    > {
         let actor = self
             .inner
             .actors
@@ -652,6 +655,33 @@ impl Engine {
                 let _ = reply.send(Ok(()));
             }
             SessionCommand::Append { run, event, reply } => {
+                #[cfg(test)]
+                if matches!(
+                    &event,
+                    Event::MessageInjected { .. }
+                        | Event::UserInputTransformed { .. }
+                        | Event::UserInputSubmitted { .. }
+                        | Event::RunFailed { .. }
+                ) && self
+                    .inner
+                    .run_setup_append_failures
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                        remaining.checked_sub(1)
+                    })
+                    .is_ok()
+                {
+                    let event_name = match &event {
+                        Event::MessageInjected { .. } => "message injected",
+                        Event::UserInputTransformed { .. } => "user input transformed",
+                        Event::UserInputSubmitted { .. } => "user input submitted",
+                        Event::RunFailed { .. } => "run failed",
+                        _ => unreachable!("run setup failure filter checked"),
+                    };
+                    let _ = reply.send(Err(EngineError::Mcp(format!(
+                        "injected {event_name} append failure"
+                    ))));
+                    return;
+                }
                 let _ = reply.send(self.append_direct(session, run, event));
             }
             SessionCommand::AppendPluginEvent {
@@ -741,7 +771,12 @@ impl Engine {
                     });
                 }
             }
-            SessionCommand::Steer { run, input, reply } => {
+            SessionCommand::Steer {
+                run,
+                input,
+                original_input,
+                reply,
+            } => {
                 let active = self
                     .inner
                     .active
@@ -763,18 +798,33 @@ impl Engine {
                                     .get(&run)
                                     .is_some_and(|run| run.status == SessionStatus::Running) =>
                             {
-                                Ok(RunSteerResult { accepted: false })
+                                Ok(RunSteerResult {
+                                    accepted: false,
+                                    handled_reason: None,
+                                })
                             }
-                            Ok(_) => self
-                                .append_direct(
+                            Ok(_) => (|| {
+                                if let Some(original_input) = original_input {
+                                    self.append_direct(
+                                        session,
+                                        Some(run),
+                                        Event::UserInputTransformed {
+                                            original_input,
+                                            input: input.clone(),
+                                        },
+                                    )?;
+                                }
+                                self.append_direct(
                                     session,
                                     Some(run),
                                     Event::UserInputAdmitted { input },
-                                )
-                                .map(|()| {
-                                    self.clear_skill_turn_state(session);
-                                    RunSteerResult { accepted: true }
-                                }),
+                                )?;
+                                self.clear_skill_turn_state(session);
+                                Ok(RunSteerResult {
+                                    accepted: true,
+                                    handled_reason: None,
+                                })
+                            })(),
                         }
                     }
                 };
@@ -977,7 +1027,11 @@ impl Engine {
                     });
                 }
             }
-            SessionCommand::Revert { through_seq, reply } => {
+            SessionCommand::Revert {
+                through_seq,
+                instructions_override,
+                reply,
+            } => {
                 if !self.reserve_compaction(session) {
                     let _ = reply.send(Err(EngineError::SessionRunning(session)));
                 } else {
@@ -1007,6 +1061,7 @@ impl Engine {
                         self.rebuild_visible_tree_grants();
                         Ok(SessionRevertResult {
                             session: self.inner.store.get(session)?.metadata(),
+                            instructions_override,
                         })
                     })();
                     self.release_compaction_direct(session).await;

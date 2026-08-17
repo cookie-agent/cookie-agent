@@ -4792,18 +4792,26 @@ impl App {
                 // reservations now and reports the pending lane through
                 // events; only a transport failure can strand the text, and
                 // that is owed back to the composer.
-                if let Err(error) = client
+                match client
                     .steer_run(RunSteerParams {
                         run_id,
                         input: input.clone(),
                     })
                     .await
                 {
-                    let _ = updates.send(RpcUpdate::SteerFailed {
-                        session_id,
-                        input,
-                        error: error.to_string(),
-                    });
+                    Ok(result) if result.handled_reason.is_some() => {
+                        let _ = updates.send(RpcUpdate::Status(
+                            result.handled_reason.expect("reason is present"),
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        let _ = updates.send(RpcUpdate::SteerFailed {
+                            session_id,
+                            input,
+                            error: error.to_string(),
+                        });
+                    }
                 }
             } else if let Err(error) = client
                 .start_run(RunStartParams {
@@ -5108,7 +5116,8 @@ impl App {
                 })
                 .await
             {
-                Ok(_) => {
+                Ok(result) => {
+                    let text = result.instructions_override.unwrap_or(text);
                     let _ = updates.send(RpcUpdate::Reverted { session_id, text });
                     return;
                 }
@@ -5346,6 +5355,9 @@ impl App {
             .await
         {
             Ok(result) if result.compacted => "context compacted".into(),
+            Ok(result) if result.cancellation_reason.is_some() => {
+                result.cancellation_reason.expect("reason is present")
+            }
             Ok(_) => "context did not require or could not produce a smaller checkpoint".into(),
             Err(error) => format!("context compaction failed: {error}"),
         };

@@ -225,6 +225,7 @@ pub(crate) fn replay_decisions_with_preflight(
 
 #[derive(Clone)]
 enum LogicalTurn {
+    System(String),
     User(UserMessage),
     SeedAssistant(String),
     Assistant(Box<AssistantRecord>),
@@ -379,7 +380,19 @@ fn assemble_history_with_replay(
                     }
                 }));
             }
-            EventPayload::UserInputSubmitted { input } => {
+            EventPayload::MessageInjected { role, input } => match role {
+                cookie_agent_protocol::ExtensionMessageRole::System => {
+                    logical.push(LogicalTurn::System(input.clone()));
+                }
+                cookie_agent_protocol::ExtensionMessageRole::User => {
+                    logical.push(LogicalTurn::User(user_text(input)));
+                }
+                cookie_agent_protocol::ExtensionMessageRole::Assistant => {
+                    logical.push(LogicalTurn::SeedAssistant(input.clone()));
+                }
+                cookie_agent_protocol::ExtensionMessageRole::Tool => {}
+            },
+            EventPayload::UserInputSubmitted { input, .. } => {
                 submitted.insert(envelope.seq, input.clone());
             }
             EventPayload::UserInputApplied { user_input_seq } => {
@@ -579,6 +592,15 @@ fn assemble_history_with_replay(
     let mut replay_decisions = Vec::new();
     for turn in logical {
         match turn {
+            LogicalTurn::System(text) => {
+                history[0] = match history.remove(0) {
+                    HistoryTurn::System(mut message) => {
+                        message.content.push(SystemPart::Text(TextPart::new(text)));
+                        HistoryTurn::system(message)
+                    }
+                    _ => unreachable!("assembled history starts with a system message"),
+                };
+            }
             LogicalTurn::User(user) => history.push(HistoryTurn::user(user)),
             LogicalTurn::SeedAssistant(text) => {
                 history.push(HistoryTurn::assistant(CompletedTurn::new(
@@ -1884,6 +1906,47 @@ mod tests {
         assert!(serialized.contains("predictive summary"));
         assert!(serialized.contains("extremely long live user input"));
         assert!(!serialized.contains("old compacted input"));
+    }
+
+    #[test]
+    fn injected_and_transformed_messages_replay_from_durable_events() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let binding = binding();
+        let run = RunId::new_v7();
+        let events = vec![
+            event(
+                1,
+                run,
+                EventPayload::MessageInjected {
+                    role: cookie_agent_protocol::ExtensionMessageRole::User,
+                    input: "durable injected context".into(),
+                },
+            ),
+            event(
+                2,
+                run,
+                EventPayload::UserInputTransformed {
+                    original_input: "original command".into(),
+                    input: "committed transformed input".into(),
+                },
+            ),
+            event(
+                3,
+                run,
+                EventPayload::UserInputSubmitted {
+                    input: "committed transformed input".into(),
+                },
+            ),
+            event(4, run, EventPayload::UserInputApplied { user_input_seq: 3 }),
+        ];
+
+        let context = assemble_model_context(&events, &store, &binding, "System prompt.")
+            .expect("assembled context");
+        let serialized = serde_json::to_string(&context.history).expect("serialized history");
+        assert!(serialized.contains("durable injected context"));
+        assert!(serialized.contains("committed transformed input"));
+        assert!(!serialized.contains("original command"));
     }
 
     #[test]

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionProviderBeforeRequestResult",
+  "type": "object",
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/ExtensionProviderBeforeRequestAction"
+    },
+    "payload": true
+  },
+  "additionalProperties": false,
+  "required": [
+    "action"
+  ],
+  "$defs": {
+    "ExtensionProviderBeforeRequestAction": {
+      "type": "string",
+      "enum": [
+        "keep",
+        "replace"
+      ]
+    }
+  }
+}

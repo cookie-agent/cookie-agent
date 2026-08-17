@@ -8,18 +8,32 @@ use std::{
 
 use cookie_agent_protocol::{
     ErrorResponse, ExtensionAgentBeforeStartParams, ExtensionAgentBeforeStartResult,
-    ExtensionBusEventParams, ExtensionEmitParams, ExtensionEmitResultParams, ExtensionEmitStatus,
-    ExtensionEventParams, ExtensionInitializeParams, ExtensionInitializeResult,
-    ExtensionInterceptionHook, ExtensionPingParams, ExtensionPingResult,
-    ExtensionPluginCapabilities, ExtensionProtocolVersion, ExtensionSessionBeforeCompactParams,
-    ExtensionSessionBeforeCompactResult, ExtensionShutdownParams, ExtensionToolAfterResultParams,
+    ExtensionAllowBlockResult, ExtensionBusEventParams, ExtensionEmitParams,
+    ExtensionEmitResultParams, ExtensionEmitStatus, ExtensionEventParams,
+    ExtensionInitializeParams, ExtensionInitializeResult, ExtensionInterceptionHook,
+    ExtensionMessageEndParams, ExtensionMessageEndResult, ExtensionModelBeforeRequestParams,
+    ExtensionModelBeforeRequestResult, ExtensionModelBeforeSelectParams, ExtensionPingParams,
+    ExtensionPingResult, ExtensionPluginCapabilities, ExtensionProtocolVersion,
+    ExtensionProviderAfterResponseParams, ExtensionProviderAfterResponseResult,
+    ExtensionProviderBeforeHeadersParams, ExtensionProviderBeforeHeadersResult,
+    ExtensionProviderBeforeRequestParams, ExtensionProviderBeforeRequestResult,
+    ExtensionSessionBeforeCompactParams, ExtensionSessionBeforeCompactResult,
+    ExtensionSessionBeforeForkParams, ExtensionSessionBeforeRevertParams,
+    ExtensionSessionBeforeRevertResult, ExtensionShutdownParams, ExtensionToolAfterResultParams,
     ExtensionToolAfterResultResult, ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult,
-    ExtensionToolCallParams, ExtensionToolCallResult, JsonRpcError, JsonRpcId, JsonRpcVersion,
-    Notification, PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD,
-    PLUGIN_EVENT_METHOD, PLUGIN_INITIALIZE_METHOD, PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
-    PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD, PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
-    PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD, PLUGIN_PING_METHOD, PLUGIN_SHUTDOWN_METHOD,
-    PLUGIN_TOOLS_CALL_METHOD, Request, SessionId, SuccessResponse,
+    ExtensionToolCallParams, ExtensionToolCallResult, ExtensionUserBeforeInputParams,
+    ExtensionUserBeforeInputResult, JsonRpcError, JsonRpcId, JsonRpcVersion, Notification,
+    PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD,
+    PLUGIN_INITIALIZE_METHOD, PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
+    PLUGIN_INTERCEPT_MESSAGE_END_METHOD, PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD,
+    PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD, PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD,
+    PLUGIN_INTERCEPT_PROVIDER_BEFORE_HEADERS_METHOD,
+    PLUGIN_INTERCEPT_PROVIDER_BEFORE_REQUEST_METHOD,
+    PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD, PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD,
+    PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD, PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
+    PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD, PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD,
+    PLUGIN_PING_METHOD, PLUGIN_SHUTDOWN_METHOD, PLUGIN_TOOLS_CALL_METHOD, Request, SessionId,
+    SuccessResponse,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -31,7 +45,7 @@ use tokio::{
 };
 
 use crate::{
-    Addendum, PluginError, ToolDecl, ToolFailure, ToolOutput,
+    PluginError, ToolDecl, ToolFailure, ToolOutput,
     framing::{MAX_FRAME_BYTES, read_frame},
 };
 
@@ -64,10 +78,87 @@ type ToolAfterHandler = Arc<
         + Sync,
 >;
 type AgentBeforeHandler = Arc<
-    dyn Fn(PluginContext, ExtensionAgentBeforeStartParams) -> HandlerFuture<Addendum> + Send + Sync,
+    dyn Fn(
+            PluginContext,
+            ExtensionAgentBeforeStartParams,
+        ) -> HandlerFuture<ExtensionAgentBeforeStartResult>
+        + Send
+        + Sync,
 >;
 type CompactHandler = Arc<
-    dyn Fn(PluginContext, ExtensionSessionBeforeCompactParams) -> HandlerFuture<Addendum>
+    dyn Fn(
+            PluginContext,
+            ExtensionSessionBeforeCompactParams,
+        ) -> HandlerFuture<ExtensionSessionBeforeCompactResult>
+        + Send
+        + Sync,
+>;
+type UserBeforeInputHandler = Arc<
+    dyn Fn(
+            PluginContext,
+            ExtensionUserBeforeInputParams,
+        ) -> HandlerFuture<ExtensionUserBeforeInputResult>
+        + Send
+        + Sync,
+>;
+type ModelBeforeRequestHandler = Arc<
+    dyn Fn(
+            PluginContext,
+            ExtensionModelBeforeRequestParams,
+        ) -> HandlerFuture<ExtensionModelBeforeRequestResult>
+        + Send
+        + Sync,
+>;
+type ProviderBeforeHeadersHandler = Arc<
+    dyn Fn(
+            PluginContext,
+            ExtensionProviderBeforeHeadersParams,
+        ) -> HandlerFuture<ExtensionProviderBeforeHeadersResult>
+        + Send
+        + Sync,
+>;
+type ProviderBeforeRequestHandler = Arc<
+    dyn Fn(
+            PluginContext,
+            ExtensionProviderBeforeRequestParams,
+        ) -> HandlerFuture<ExtensionProviderBeforeRequestResult>
+        + Send
+        + Sync,
+>;
+type ProviderAfterResponseHandler = Arc<
+    dyn Fn(
+            PluginContext,
+            ExtensionProviderAfterResponseParams,
+        ) -> HandlerFuture<ExtensionProviderAfterResponseResult>
+        + Send
+        + Sync,
+>;
+type MessageEndHandler = Arc<
+    dyn Fn(PluginContext, ExtensionMessageEndParams) -> HandlerFuture<ExtensionMessageEndResult>
+        + Send
+        + Sync,
+>;
+type ModelBeforeSelectHandler = Arc<
+    dyn Fn(
+            PluginContext,
+            ExtensionModelBeforeSelectParams,
+        ) -> HandlerFuture<ExtensionAllowBlockResult>
+        + Send
+        + Sync,
+>;
+type SessionBeforeForkHandler = Arc<
+    dyn Fn(
+            PluginContext,
+            ExtensionSessionBeforeForkParams,
+        ) -> HandlerFuture<ExtensionAllowBlockResult>
+        + Send
+        + Sync,
+>;
+type SessionBeforeRevertHandler = Arc<
+    dyn Fn(
+            PluginContext,
+            ExtensionSessionBeforeRevertParams,
+        ) -> HandlerFuture<ExtensionSessionBeforeRevertResult>
         + Send
         + Sync,
 >;
@@ -89,6 +180,15 @@ struct Handlers {
     tool_after: Option<ToolAfterHandler>,
     agent_before: Option<AgentBeforeHandler>,
     compact: Option<CompactHandler>,
+    user_before_input: Option<UserBeforeInputHandler>,
+    model_before_request: Option<ModelBeforeRequestHandler>,
+    provider_before_headers: Option<ProviderBeforeHeadersHandler>,
+    provider_before_request: Option<ProviderBeforeRequestHandler>,
+    provider_after_response: Option<ProviderAfterResponseHandler>,
+    message_end: Option<MessageEndHandler>,
+    model_before_select: Option<ModelBeforeSelectHandler>,
+    session_before_fork: Option<SessionBeforeForkHandler>,
+    session_before_revert: Option<SessionBeforeRevertHandler>,
     event: Option<EventHandler>,
     bus: Option<BusHandler>,
     publish_bus: bool,
@@ -109,6 +209,33 @@ impl Handlers {
         }
         if self.compact.is_some() {
             intercept.push(ExtensionInterceptionHook::SessionBeforeCompact);
+        }
+        if self.user_before_input.is_some() {
+            intercept.push(ExtensionInterceptionHook::UserBeforeInput);
+        }
+        if self.model_before_request.is_some() {
+            intercept.push(ExtensionInterceptionHook::ModelBeforeRequest);
+        }
+        if self.provider_before_headers.is_some() {
+            intercept.push(ExtensionInterceptionHook::ProviderBeforeHeaders);
+        }
+        if self.provider_before_request.is_some() {
+            intercept.push(ExtensionInterceptionHook::ProviderBeforeRequest);
+        }
+        if self.provider_after_response.is_some() {
+            intercept.push(ExtensionInterceptionHook::ProviderAfterResponse);
+        }
+        if self.message_end.is_some() {
+            intercept.push(ExtensionInterceptionHook::MessageEnd);
+        }
+        if self.model_before_select.is_some() {
+            intercept.push(ExtensionInterceptionHook::ModelBeforeSelect);
+        }
+        if self.session_before_fork.is_some() {
+            intercept.push(ExtensionInterceptionHook::SessionBeforeFork);
+        }
+        if self.session_before_revert.is_some() {
+            intercept.push(ExtensionInterceptionHook::SessionBeforeRevert);
         }
         ExtensionPluginCapabilities {
             tools: !self.tools.is_empty(),
@@ -355,9 +482,7 @@ impl PluginServer {
                     handler,
                     tasks,
                     |handler, ctx, params| handler(ctx, params),
-                    |value| ExtensionAgentBeforeStartResult {
-                        addendum: value.into_option(),
-                    },
+                    |value| value,
                 )
                 .await?;
             }
@@ -369,9 +494,106 @@ impl PluginServer {
                     handler,
                     tasks,
                     |handler, ctx, params| handler(ctx, params),
-                    |value| ExtensionSessionBeforeCompactResult {
-                        addendum: value.into_option(),
-                    },
+                    |value| value,
+                )
+                .await?;
+            }
+            PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD => {
+                dispatch_intercept(
+                    request,
+                    context,
+                    self.handlers.user_before_input.clone(),
+                    tasks,
+                    |handler, ctx, params| handler(ctx, params),
+                    |value| value,
+                )
+                .await?;
+            }
+            PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD => {
+                dispatch_intercept(
+                    request,
+                    context,
+                    self.handlers.model_before_request.clone(),
+                    tasks,
+                    |handler, ctx, params| handler(ctx, params),
+                    |value| value,
+                )
+                .await?;
+            }
+            PLUGIN_INTERCEPT_PROVIDER_BEFORE_HEADERS_METHOD => {
+                dispatch_intercept(
+                    request,
+                    context,
+                    self.handlers.provider_before_headers.clone(),
+                    tasks,
+                    |handler, ctx, params| handler(ctx, params),
+                    |value| value,
+                )
+                .await?;
+            }
+            PLUGIN_INTERCEPT_PROVIDER_BEFORE_REQUEST_METHOD => {
+                dispatch_intercept(
+                    request,
+                    context,
+                    self.handlers.provider_before_request.clone(),
+                    tasks,
+                    |handler, ctx, params| handler(ctx, params),
+                    |value| value,
+                )
+                .await?;
+            }
+            PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD => {
+                dispatch_intercept(
+                    request,
+                    context,
+                    self.handlers.provider_after_response.clone(),
+                    tasks,
+                    |handler, ctx, params| handler(ctx, params),
+                    |value| value,
+                )
+                .await?;
+            }
+            PLUGIN_INTERCEPT_MESSAGE_END_METHOD => {
+                dispatch_intercept(
+                    request,
+                    context,
+                    self.handlers.message_end.clone(),
+                    tasks,
+                    |handler, ctx, params| handler(ctx, params),
+                    |value| value,
+                )
+                .await?;
+            }
+            PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD => {
+                dispatch_intercept(
+                    request,
+                    context,
+                    self.handlers.model_before_select.clone(),
+                    tasks,
+                    |handler, ctx, params| handler(ctx, params),
+                    |value| value,
+                )
+                .await?;
+            }
+            PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD => {
+                dispatch_intercept(
+                    request,
+                    context,
+                    self.handlers.session_before_fork.clone(),
+                    tasks,
+                    |handler, ctx, params| handler(ctx, params),
+                    |value| value,
+                )
+                .await?;
+            }
+            PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD => {
+                dispatch_intercept(
+                    request,
+                    context,
+                    self.handlers.session_before_revert.clone(),
+                    tasks,
+                    |handler, ctx, params| handler(ctx, params),
+                    |value| value,
                 )
                 .await?;
             }
@@ -516,25 +738,138 @@ impl PluginServerBuilder {
 
     /// Registers the `agent_before_start` interception hook.
     #[must_use]
-    pub fn agent_before_start<F, Fut>(mut self, handler: F) -> Self
+    pub fn agent_before_start<F, Fut, R>(mut self, handler: F) -> Self
     where
         F: Fn(PluginContext, ExtensionAgentBeforeStartParams) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Addendum> + Send + 'static,
+        Fut: Future<Output = R> + Send + 'static,
+        R: Into<ExtensionAgentBeforeStartResult> + Send + 'static,
     {
         self.handlers.agent_before = Some(Arc::new(move |context, request| {
-            Box::pin(handler(context, request))
+            let future = handler(context, request);
+            Box::pin(async move { future.await.into() })
         }));
         self
     }
 
     /// Registers the `session_before_compact` interception hook.
     #[must_use]
-    pub fn session_before_compact<F, Fut>(mut self, handler: F) -> Self
+    pub fn session_before_compact<F, Fut, R>(mut self, handler: F) -> Self
     where
         F: Fn(PluginContext, ExtensionSessionBeforeCompactParams) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Addendum> + Send + 'static,
+        Fut: Future<Output = R> + Send + 'static,
+        R: Into<ExtensionSessionBeforeCompactResult> + Send + 'static,
     {
         self.handlers.compact = Some(Arc::new(move |context, request| {
+            let future = handler(context, request);
+            Box::pin(async move { future.await.into() })
+        }));
+        self
+    }
+
+    /// Registers the `user_before_input` interception hook.
+    #[must_use]
+    pub fn user_before_input<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(PluginContext, ExtensionUserBeforeInputParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ExtensionUserBeforeInputResult> + Send + 'static,
+    {
+        self.handlers.user_before_input = Some(Arc::new(move |context, request| {
+            Box::pin(handler(context, request))
+        }));
+        self
+    }
+    /// Registers the `model_before_request` interception hook.
+    #[must_use]
+    pub fn model_before_request<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(PluginContext, ExtensionModelBeforeRequestParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ExtensionModelBeforeRequestResult> + Send + 'static,
+    {
+        self.handlers.model_before_request = Some(Arc::new(move |context, request| {
+            Box::pin(handler(context, request))
+        }));
+        self
+    }
+    /// Registers the `provider_before_headers` interception hook.
+    #[must_use]
+    pub fn provider_before_headers<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(PluginContext, ExtensionProviderBeforeHeadersParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ExtensionProviderBeforeHeadersResult> + Send + 'static,
+    {
+        self.handlers.provider_before_headers = Some(Arc::new(move |context, request| {
+            Box::pin(handler(context, request))
+        }));
+        self
+    }
+    /// Registers the `provider_before_request` interception hook.
+    #[must_use]
+    pub fn provider_before_request<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(PluginContext, ExtensionProviderBeforeRequestParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ExtensionProviderBeforeRequestResult> + Send + 'static,
+    {
+        self.handlers.provider_before_request = Some(Arc::new(move |context, request| {
+            Box::pin(handler(context, request))
+        }));
+        self
+    }
+    /// Registers the observe-only `provider_after_response` interception hook.
+    #[must_use]
+    pub fn provider_after_response<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(PluginContext, ExtensionProviderAfterResponseParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ExtensionProviderAfterResponseResult> + Send + 'static,
+    {
+        self.handlers.provider_after_response = Some(Arc::new(move |context, request| {
+            Box::pin(handler(context, request))
+        }));
+        self
+    }
+    /// Registers the `message_end` interception hook.
+    #[must_use]
+    pub fn message_end<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(PluginContext, ExtensionMessageEndParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ExtensionMessageEndResult> + Send + 'static,
+    {
+        self.handlers.message_end = Some(Arc::new(move |context, request| {
+            Box::pin(handler(context, request))
+        }));
+        self
+    }
+    /// Registers the `model_before_select` interception hook.
+    #[must_use]
+    pub fn model_before_select<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(PluginContext, ExtensionModelBeforeSelectParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ExtensionAllowBlockResult> + Send + 'static,
+    {
+        self.handlers.model_before_select = Some(Arc::new(move |context, request| {
+            Box::pin(handler(context, request))
+        }));
+        self
+    }
+    /// Registers the `session_before_fork` interception hook.
+    #[must_use]
+    pub fn session_before_fork<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(PluginContext, ExtensionSessionBeforeForkParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ExtensionAllowBlockResult> + Send + 'static,
+    {
+        self.handlers.session_before_fork = Some(Arc::new(move |context, request| {
+            Box::pin(handler(context, request))
+        }));
+        self
+    }
+    /// Registers the `session_before_revert` interception hook.
+    #[must_use]
+    pub fn session_before_revert<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(PluginContext, ExtensionSessionBeforeRevertParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ExtensionSessionBeforeRevertResult> + Send + 'static,
+    {
+        self.handlers.session_before_revert = Some(Arc::new(move |context, request| {
             Box::pin(handler(context, request))
         }));
         self
@@ -835,6 +1170,15 @@ intercept_params!(
     ExtensionToolAfterResultParams,
     ExtensionAgentBeforeStartParams,
     ExtensionSessionBeforeCompactParams,
+    ExtensionUserBeforeInputParams,
+    ExtensionModelBeforeRequestParams,
+    ExtensionProviderBeforeHeadersParams,
+    ExtensionProviderBeforeRequestParams,
+    ExtensionProviderAfterResponseParams,
+    ExtensionMessageEndParams,
+    ExtensionModelBeforeSelectParams,
+    ExtensionSessionBeforeForkParams,
+    ExtensionSessionBeforeRevertParams,
 );
 
 async fn dispatch_intercept<P, H, O, R>(
@@ -1263,6 +1607,170 @@ mod tests {
         write_wire(&mut engine_write, &ping).await;
         assert_eq!(read_wire(&mut engine_read).await["result"], json!({}));
 
+        write_wire(&mut engine_write, &extension_shutdown_notification()).await;
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn loopback_dispatches_every_hook() {
+        let server = PluginServer::builder("hooks", "0.1.0")
+            .agent_before_start(|_ctx, _| async { crate::append_system_prompt("agent") })
+            .session_before_compact(|_ctx, _| async { crate::cancel_compaction("compact") })
+            .user_before_input(|_ctx, _| async {
+                ExtensionUserBeforeInputResult {
+                    action: cookie_agent_protocol::ExtensionUserBeforeInputAction::Transform,
+                    new_text: Some("changed".into()),
+                    reason: None,
+                }
+            })
+            .model_before_request(|_ctx, _| async {
+                ExtensionModelBeforeRequestResult {
+                    action: cookie_agent_protocol::ExtensionModelBeforeRequestAction::Keep,
+                    messages: None,
+                    params_adjustments: None,
+                }
+            })
+            .provider_before_headers(|_ctx, _| async {
+                ExtensionProviderBeforeHeadersResult {
+                    set: [("x-test".into(), "yes".into())].into(),
+                    delete: vec!["x-old".into()],
+                }
+            })
+            .provider_before_request(|_ctx, _| async {
+                ExtensionProviderBeforeRequestResult {
+                    action: cookie_agent_protocol::ExtensionProviderBeforeRequestAction::Keep,
+                    payload: None,
+                }
+            })
+            .provider_after_response(|_ctx, _| async { ExtensionProviderAfterResponseResult {} })
+            .message_end(|_ctx, _| async {
+                ExtensionMessageEndResult {
+                    action: cookie_agent_protocol::ExtensionMessageEndAction::Keep,
+                    content: None,
+                }
+            })
+            .model_before_select(|_ctx, _| async {
+                ExtensionAllowBlockResult {
+                    action: cookie_agent_protocol::ExtensionAllowBlockAction::Allow,
+                    reason: None,
+                }
+            })
+            .session_before_fork(|_ctx, _| async {
+                ExtensionAllowBlockResult {
+                    action: cookie_agent_protocol::ExtensionAllowBlockAction::Allow,
+                    reason: None,
+                }
+            })
+            .session_before_revert(|_ctx, _| async {
+                ExtensionSessionBeforeRevertResult {
+                    action: cookie_agent_protocol::ExtensionSessionBeforeRevertAction::Override,
+                    reason: None,
+                    instructions_override: Some("revert".into()),
+                }
+            })
+            .build()
+            .unwrap();
+        assert_eq!(server.handlers.capabilities().intercept.len(), 11);
+
+        let (engine_side, plugin_side) = tokio::io::duplex(256 * 1024);
+        let (plugin_read, plugin_write) = tokio::io::split(plugin_side);
+        let server_task = tokio::spawn(server.run_io(plugin_read, plugin_write));
+        let (engine_read, mut engine_write) = tokio::io::split(engine_side);
+        let mut engine_read = BufReader::new(engine_read);
+        write_wire(&mut engine_write, &extension_initialize_request("test")).await;
+        let initialize = read_wire(&mut engine_read).await;
+        assert_eq!(
+            initialize["result"]["capabilities"]["intercept"]
+                .as_array()
+                .unwrap()
+                .len(),
+            11
+        );
+
+        let session = SessionId::new_v7();
+        let attempt = cookie_agent_protocol::AttemptId::new_v7();
+        let model_selection = json!({"model": "custom.test/model", "variant": null});
+        let resolved_model = json!({
+            "selection": model_selection.clone(),
+            "provider_id": "custom.test",
+            "model_id": "model",
+            "adapter_id": "openai-responses",
+            "selection_fingerprint": "0".repeat(64),
+        });
+        let calls = [
+            (
+                PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
+                json!({"session_id":session,"context_id":"hook","agent_path":"test","prompt_context":{}}),
+                json!("agent"),
+            ),
+            (
+                PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD,
+                json!({"session_id":session,"context_id":"hook","checkpoint_id":"one","additions":[]}),
+                json!(true),
+            ),
+            (
+                PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD,
+                json!({"session_id":session,"context_id":"hook","text":"old"}),
+                json!("changed"),
+            ),
+            (
+                PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD,
+                json!({"session_id":session,"context_id":"hook","attempt_id":attempt,"messages":[],"model":resolved_model,"params":{}}),
+                json!("keep"),
+            ),
+            (
+                PLUGIN_INTERCEPT_PROVIDER_BEFORE_HEADERS_METHOD,
+                json!({"session_id":session,"context_id":"hook","attempt_id":attempt,"headers":{}}),
+                json!("yes"),
+            ),
+            (
+                PLUGIN_INTERCEPT_PROVIDER_BEFORE_REQUEST_METHOD,
+                json!({"session_id":session,"context_id":"hook","attempt_id":attempt,"payload":{}}),
+                json!("keep"),
+            ),
+            (
+                PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD,
+                json!({"session_id":session,"context_id":"hook","attempt_id":attempt,"status":200,"headers":{}}),
+                Value::Null,
+            ),
+            (
+                PLUGIN_INTERCEPT_MESSAGE_END_METHOD,
+                json!({"session_id":session,"context_id":"hook","attempt_id":attempt,"role":"assistant","content":[]}),
+                json!("keep"),
+            ),
+            (
+                PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD,
+                json!({"session_id":session,"context_id":"hook","from":null,"to":model_selection,"source":"user"}),
+                json!("allow"),
+            ),
+            (
+                PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD,
+                json!({"session_id":session,"context_id":"hook","through_seq":1}),
+                json!("allow"),
+            ),
+            (
+                PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD,
+                json!({"session_id":session,"context_id":"hook","through_seq":1}),
+                json!("revert"),
+            ),
+        ];
+        for (index, (method, params, expected)) in calls.into_iter().enumerate() {
+            write_wire(
+                &mut engine_write,
+                &Request::new(JsonRpcId::Number(index as i64 + 2), method, Some(params)),
+            )
+            .await;
+            let response = read_wire(&mut engine_read).await;
+            let result = response["result"].clone();
+            if expected.is_null() {
+                assert_eq!(result, json!({}), "{method}");
+            } else {
+                assert!(
+                    result.to_string().contains(&expected.to_string()),
+                    "{method}: {response}"
+                );
+            }
+        }
         write_wire(&mut engine_write, &extension_shutdown_notification()).await;
         server_task.await.unwrap().unwrap();
     }
