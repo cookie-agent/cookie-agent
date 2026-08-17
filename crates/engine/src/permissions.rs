@@ -230,42 +230,37 @@ impl PermissionPipeline {
         permission_name: &str,
     ) -> bool {
         let Ok(action) = Self::action_for_permission_name(permission_name) else {
-            return true;
+            return false;
         };
-        let overlay_rules = overlay
+        let effective_overlay = overlay
             .into_iter()
             .flat_map(|overlay| overlay.rules.iter())
             .filter(|rule| rule.action == action)
-            .collect::<Vec<_>>();
-        if action == PermissionAction::Mcp
-            && overlay_rules.is_empty()
-            && !policy.permissions.iter().any(|rule| rule.action == action)
+            .map(|rule| (rule.resource.as_str(), rule.effect))
+            .collect::<HashMap<_, _>>();
+        if effective_overlay
+            .values()
+            .any(|effect| *effect != PermissionEffect::Deny)
         {
-            return false;
+            return true;
         }
-        let overlay_wildcard = overlay_rules
-            .iter()
-            .rev()
-            .find(|rule| rule.resource.as_str() == "*");
-        if let Some(deny) = overlay_wildcard {
-            return deny.effect != PermissionEffect::Deny
-                || overlay_rules.iter().any(|rule| {
-                    rule.resource.as_str() != "*" && rule.effect != PermissionEffect::Deny
-                });
-        }
-        let Some(deny) = policy
+        let effective_policy = policy
             .permissions
             .iter()
-            .find(|rule| rule.action == action && rule.resource.as_str() == "*")
-        else {
-            return true;
-        };
-        deny.effect != PermissionEffect::Deny
-            || policy.permissions.iter().any(|rule| {
-                rule.action == action
-                    && rule.resource.as_str() != "*"
-                    && rule.effect != PermissionEffect::Deny
-            })
+            .filter(|rule| rule.action == action)
+            .map(|rule| (rule.resource.as_str(), rule.effect))
+            .collect::<HashMap<_, _>>();
+
+        // Visibility only estimates whether some resource may be usable. Treat
+        // each policy pattern as a candidate string for overlay deny matching;
+        // operation evaluation remains authoritative for actual resources.
+        effective_policy.iter().any(|(resource, effect)| {
+            *effect != PermissionEffect::Deny
+                && !effective_overlay.iter().any(|(pattern, effect)| {
+                    *effect == PermissionEffect::Deny
+                        && (*pattern == "*" || simple_wildcard_match(pattern, resource))
+                })
+        })
     }
 }
 
@@ -1552,7 +1547,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_visibility_requires_effective_unconditional_deny() {
+    fn tool_visibility_requires_an_effective_non_deny_rule() {
         let hidden = policy(vec![rule(
             "deny-all",
             PermissionAction::Read,
@@ -1642,15 +1637,139 @@ mod tests {
                 permission_name,
             ));
         }
+
+        assert!(!PermissionPipeline::tool_visible(
+            &policy(Vec::new()),
+            "unknown"
+        ));
     }
 
     #[test]
-    fn empty_permissions_expose_builtin_actions_but_not_mcp() {
+    fn empty_permissions_hide_all_known_actions() {
         let policy = policy(Vec::new());
-        for permission_name in ["read", "write", "bash"] {
-            assert!(PermissionPipeline::tool_visible(&policy, permission_name));
+        for permission_name in ["read", "write", "bash", "delegate", "mcp"] {
+            assert!(!PermissionPipeline::tool_visible(&policy, permission_name));
         }
-        assert!(!PermissionPipeline::tool_visible(&policy, "mcp"));
+    }
+
+    #[test]
+    fn session_overlay_can_expose_or_hide_tools() {
+        let empty_policy = policy(Vec::new());
+        let named_allow = SessionPermissionOverlay {
+            rules: vec![rule(
+                "overlay-named-allow",
+                PermissionAction::Read,
+                "README.md",
+                PermissionEffect::Allow,
+            )],
+        };
+        assert!(PermissionPipeline::tool_visible_with_overlay(
+            &empty_policy,
+            Some(&named_allow),
+            "read"
+        ));
+
+        let deny_with_exception = SessionPermissionOverlay {
+            rules: vec![
+                rule(
+                    "overlay-wildcard-deny",
+                    PermissionAction::Read,
+                    "*",
+                    PermissionEffect::Deny,
+                ),
+                rule(
+                    "overlay-named-ask",
+                    PermissionAction::Read,
+                    "README.md",
+                    PermissionEffect::Ask,
+                ),
+            ],
+        };
+        assert!(PermissionPipeline::tool_visible_with_overlay(
+            &empty_policy,
+            Some(&deny_with_exception),
+            "read"
+        ));
+
+        let wildcard_deny = SessionPermissionOverlay {
+            rules: vec![rule(
+                "overlay-wildcard-deny",
+                PermissionAction::Read,
+                "*",
+                PermissionEffect::Deny,
+            )],
+        };
+        let policy_allow = policy(vec![rule(
+            "policy-allow",
+            PermissionAction::Read,
+            "*",
+            PermissionEffect::Allow,
+        )]);
+        assert!(!PermissionPipeline::tool_visible_with_overlay(
+            &policy_allow,
+            Some(&wildcard_deny),
+            "read"
+        ));
+
+        let named_policy_allow = policy(vec![rule(
+            "policy-named-allow",
+            PermissionAction::Read,
+            "README.md",
+            PermissionEffect::Allow,
+        )]);
+        let identical_named_deny = SessionPermissionOverlay {
+            rules: vec![rule(
+                "overlay-named-deny",
+                PermissionAction::Read,
+                "README.md",
+                PermissionEffect::Deny,
+            )],
+        };
+        assert!(!PermissionPipeline::tool_visible_with_overlay(
+            &named_policy_allow,
+            Some(&identical_named_deny),
+            "read"
+        ));
+
+        let markdown_deny = SessionPermissionOverlay {
+            rules: vec![rule(
+                "overlay-markdown-deny",
+                PermissionAction::Read,
+                "*.md",
+                PermissionEffect::Deny,
+            )],
+        };
+        assert!(!PermissionPipeline::tool_visible_with_overlay(
+            &named_policy_allow,
+            Some(&markdown_deny),
+            "read"
+        ));
+
+        let text_deny = SessionPermissionOverlay {
+            rules: vec![rule(
+                "overlay-text-deny",
+                PermissionAction::Read,
+                "*.txt",
+                PermissionEffect::Deny,
+            )],
+        };
+        assert!(PermissionPipeline::tool_visible_with_overlay(
+            &named_policy_allow,
+            Some(&text_deny),
+            "read"
+        ));
+
+        let policy_wildcard_allow = policy(vec![rule(
+            "policy-wildcard-allow",
+            PermissionAction::Read,
+            "*",
+            PermissionEffect::Allow,
+        )]);
+        assert!(PermissionPipeline::tool_visible_with_overlay(
+            &policy_wildcard_allow,
+            Some(&identical_named_deny),
+            "read"
+        ));
     }
 
     #[test]

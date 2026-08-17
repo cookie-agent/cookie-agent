@@ -380,7 +380,7 @@ impl Engine {
         }
     }
 
-    pub(super) fn tool_definitions(
+    pub(crate) fn tool_definitions(
         &self,
         session: SessionId,
         policy: &FrozenRunPolicy,

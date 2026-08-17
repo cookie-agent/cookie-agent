@@ -61,17 +61,36 @@ Generic read allows do not override the built-in ask behavior for `.env` and
 
 ## Tool availability and delegation
 
-Tool availability is permission-driven for every action. `read`, `write`
-(including `edit`), and `bash` are visible when their action is omitted because
-unmatched calls ask by default. A bare deny hides an action's tools. A mapped
-action with `"*": deny` also hides them when it has no more-specific non-deny
-exception; resource patterns still decide individual calls once tools are
-visible.
+Tools are opt-in. A permission action must have at least one effective `allow`
+or `ask` rule in the agent document or session overlay before that action's
+tools are visible. Omitting an action hides its tools. A bare deny, or `"*":
+deny` with no named non-deny exception, also hides them. Resource patterns still
+decide individual calls once tools are visible.
 
-MCP tools are absent when the `mcp` action is omitted and appear only for a
-non-fully-denied `mcp` entry. Delegation tools are absent unless the `delegate`
-map names at least one eligible target with `allow` or `ask`. There is no
-separate tool allowlist.
+For example, this agent exposes read, write/edit, and bash with granular write
+and command policies while leaving delegation and MCP tools hidden:
+
+```markdown
+---
+description: Workspace implementation agent
+mode: primary
+enabled: true
+models:
+  - { model: "openai/gpt-5", variant: null }
+permissions:
+  read: allow
+  write:
+    "src/*": ask
+  bash:
+    "cargo test*": allow
+    "cargo fmt*": allow
+---
+Implement and verify requested workspace changes.
+```
+
+MCP tools follow the same rule: the `mcp` action must contain a non-deny rule.
+Delegation tools additionally require the `delegate` map to name at least one
+eligible target with `allow` or `ask`. There is no separate tool allowlist.
 
 There is also no separate MCP server approval prompt or trust store. Configured,
 enabled servers follow their normal lazy or eager connection lifecycle, while
@@ -129,9 +148,10 @@ The editor does not accept freeform YAML.
 
 An overlay rule is evaluated before matching rules from the frozen agent
 snapshot. If no overlay rule matches, evaluation falls back to the agent
-document and then the normal default (`ask`; MCP remains hidden when neither
-layer configures it). Changes affect subsequent visibility and permission
-evaluations only. They do not rewrite an active run's frozen agent/model
+document and then the normal default (`ask`). This default affects evaluation
+only; an action omitted from both layers has no visible tools. Changes affect
+subsequent visibility and permission evaluations only. They do not rewrite an
+active run's frozen agent/model
 identity or retroactively cancel an operation already executing. A pending
 tree-approval response is rejected as changed if the session overlay changed
 after that approval was requested, so it cannot commit a stale durable grant.

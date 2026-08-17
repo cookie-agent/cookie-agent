@@ -53,13 +53,13 @@ removes that document cap.
 a hard error. Internal agents use the 30-second invocation timeout when
 `timeout_ms` is zero or omitted.
 
-Tool visibility is derived only from `permissions`. With no `permissions` field,
-the `read`, `write`, `edit`, and `bash` tools are visible and unmatched calls ask
-by default. `edit` uses the `write` action. Delegation tools require a `delegate`
-map naming at least one eligible target, and MCP tools require a non-fully-denied
-`mcp` entry. A bare action deny hides that action's tools. A mapped action with
-`"*": deny` also hides them unless it contains a more specific `allow` or `ask`
-exception.
+Tool visibility is derived only from `permissions`, and user agents must opt in
+to each action they need. With no `permissions` field, no tools are visible. An
+action becomes visible when it has at least one effective `allow` or `ask` rule;
+`edit` uses the `write` action. Delegation tools additionally require a
+`delegate` map naming at least one eligible target. A bare action deny hides
+that action's tools. A mapped action with `"*": deny` also hides them unless it
+contains a more specific `allow` or `ask` exception.
 
 The former `tools` field is removed. Documents that still declare it fail
 with an error naming `tools` and directing the author to `permissions`; remove
@@ -163,7 +163,10 @@ the engine-supplied fallback agent and cannot be authored at all.
 
 If no authored agent is runnable as a root, the engine synthesizes the built-in
 `default` coding agent bound to the first available model selection. Its prompt
-and standard read/write/bash permission map are fixed by the engine.
+and explicit permission map are fixed by the engine: read is allowed with
+additional asks and secret-file denies, while write, bash, and delegate ask by
+default. MCP remains omitted. User agents do not inherit this list and must
+declare their own tool permissions.
 
 ## Internal agents
 

@@ -719,6 +719,71 @@ impl PreparedExecutor for TestRehydrationReadExecutor {
     }
 }
 
+struct TestToolDefinitionProvider;
+
+#[async_trait]
+impl ToolProvider for TestToolDefinitionProvider {
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok([
+            ("read", "read"),
+            ("write", "write"),
+            ("edit", "write"),
+            ("bash", "bash"),
+            ("delegate", "delegate"),
+            ("fixture_mcp", "mcp"),
+        ]
+        .into_iter()
+        .map(|(name, permission_name)| ToolSpec {
+            name: name.into(),
+            permission_name: permission_name.into(),
+            description: format!("Test {name} tool definition"),
+            parameters: serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+            }),
+        })
+        .collect())
+    }
+
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        match tool_name {
+            "read" => Ok("read"),
+            "write" | "edit" => Ok("write"),
+            "bash" => Ok("bash"),
+            "delegate" => Ok("delegate"),
+            "fixture_mcp" => Ok("mcp"),
+            _ => Err(ToolError::execution("unknown test tool definition")),
+        }
+    }
+
+    fn get_permission_resource(
+        &self,
+        name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        Ok((Self::get_permission_name(name)?, Some("test".into())))
+    }
+
+    fn get_display_argument(
+        &self,
+        _name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        Ok("test".into())
+    }
+
+    async fn prepare(
+        &self,
+        _ctx: ToolPreparationContext,
+        _call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        Err(ToolError::execution(
+            "definition-only test provider cannot prepare tools",
+        ))
+    }
+}
+
 struct Fixture {
     _directory: TempDir,
     engine: Engine,
@@ -3921,6 +3986,9 @@ fn empty_startup_is_coherent_and_rejects_fabricated_sessions() {
 #[test]
 fn available_models_synthesize_default_agent_and_admit_sessions() {
     let fixture = synthetic_default_fixture(None);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestToolDefinitionProvider));
     let snapshot = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
     assert_eq!(snapshot.models.len(), 2);
     assert_eq!(snapshot.agents.len(), 4);
@@ -3943,12 +4011,14 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
             .map(|variant| variant.as_str()),
         Some("precise")
     );
+    let selection = RunSelection {
+        agent: agent.id.clone(),
+        model: agent.resolved_fallback[0].clone(),
+    };
+    let policy = frozen_root_policy(&fixture, &selection);
     let session = fixture
         .engine
-        .create_session(RunSelection {
-            agent: agent.id.clone(),
-            model: agent.resolved_fallback[0].clone(),
-        })
+        .create_session(selection)
         .expect("synthetic-agent session");
     let frozen = fixture
         .engine
@@ -3962,15 +4032,14 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
         cookie_agent_protocol::AgentDocumentSource::BuiltIn
     );
     assert!(frozen.delegation.is_none());
-    for permission_name in ["read", "write", "bash"] {
-        assert!(crate::permissions::PermissionPipeline::tool_visible(
-            &frozen,
-            permission_name
-        ));
-    }
-    assert!(!crate::permissions::PermissionPipeline::tool_visible(
-        &frozen, "mcp"
-    ));
+    let tool_names = fixture
+        .engine
+        .tool_definitions(session.session_id, &policy)
+        .expect("built-in default tool definitions")
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+    assert_eq!(tool_names, ["bash", "edit", "read", "write"]);
     assert!(frozen.permissions.iter().any(|rule| {
         rule.action == PermissionAction::Read
             && rule.resource.as_str() == "store-v3.json"
@@ -4060,6 +4129,78 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
             "{action:?} {resource}"
         );
     }
+}
+
+#[test]
+fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
+    let sparse_agent = "---\ndescription: Sparse tool test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/a-model\", variant: null }]\npermissions:\n  read: allow\n---\nTest sparse tool visibility.\n";
+    let mut fixture = synthetic_default_fixture(Some(sparse_agent));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestToolDefinitionProvider));
+    let snapshot = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
+    let agent = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.id.as_str() == "primary")
+        .expect("sparse primary agent");
+    let selection = RunSelection {
+        agent: agent.id.clone(),
+        model: agent.resolved_fallback[0].clone(),
+    };
+    let mut policy = frozen_root_policy(&fixture, &selection);
+    let session = fixture
+        .engine
+        .create_session(selection)
+        .expect("sparse-agent session");
+
+    assert_eq!(
+        fixture
+            .engine
+            .tool_definitions(session.session_id, &policy)
+            .expect("structurally gated sparse tool definitions")
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>(),
+        ["read"]
+    );
+
+    let worker = "---\ndescription: Worker tool target\nmode: subagent\nenabled: true\nmodels: []\npermissions: {}\n---\nTest worker.\n";
+    fixture = synthetic_default_fixture(Some(worker));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestToolDefinitionProvider));
+    let snapshot = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
+    let default = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.id.as_str() == "default")
+        .expect("built-in default agent");
+    let selection = RunSelection {
+        agent: default.id.clone(),
+        model: default.resolved_fallback[0].clone(),
+    };
+    policy = frozen_root_policy(&fixture, &selection);
+    // The default document has delegate permission but no named target; supply
+    // valid frozen target metadata to exercise the structural gate's open path.
+    policy.agent.delegation = Some(cookie_agent_protocol::FrozenDelegationPolicy {
+        targets: vec![AgentId::new("primary").expect("worker agent ID")],
+        effective_depth_ceiling: 3,
+    });
+    let session = fixture
+        .engine
+        .create_session(selection)
+        .expect("default-agent session");
+    assert_eq!(
+        fixture
+            .engine
+            .tool_definitions(session.session_id, &policy)
+            .expect("delegate-enabled default tool definitions")
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>(),
+        ["bash", "delegate", "edit", "read", "write"]
+    );
 }
 
 #[test]
