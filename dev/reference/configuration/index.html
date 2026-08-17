@@ -937,6 +937,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#pluginsname" class="md-nav__link">
+    <span class="md-ellipsis">
+      [plugins.&lt;name&gt;]
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#providers" class="md-nav__link">
     <span class="md-ellipsis">
       [providers]
@@ -1252,6 +1261,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#pluginsname" class="md-nav__link">
+    <span class="md-ellipsis">
+      [plugins.&lt;name&gt;]
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#providers" class="md-nav__link">
     <span class="md-ellipsis">
       [providers]
@@ -1469,6 +1487,12 @@ resumes on restart.</p>
 <td>table</td>
 <td>empty</td>
 <td>MCP tool server definitions</td>
+</tr>
+<tr>
+<td><code>plugins</code></td>
+<td>table</td>
+<td>empty</td>
+<td>Executable plugin definitions</td>
 </tr>
 </tbody>
 </table>
@@ -1843,6 +1867,76 @@ permission and naming behavior.</p>
 <td>integer</td>
 <td><code>30000</code></td>
 <td>Positive timeout for connect, list, and call operations.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="pluginsname"><code>[plugins.&lt;name&gt;]</code><a class="headerlink" href="#pluginsname" title="Permanent link">&para;</a></h2>
+<p>Plugin definitions are layered by plugin name. A workspace definition replaces the same
+user-level plugin. See the <a href="../../guide/plugins/">Plugins guide</a> for protocol, permission, and tool
+precedence behavior.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>command</code></td>
+<td>string</td>
+<td><em>(required)</em></td>
+<td>Plugin executable.</td>
+</tr>
+<tr>
+<td><code>args</code></td>
+<td>array of strings</td>
+<td>empty</td>
+<td>Command arguments.</td>
+</tr>
+<tr>
+<td><code>env</code></td>
+<td>map of strings</td>
+<td>empty</td>
+<td>Complete child environment; inherited variables are cleared.</td>
+</tr>
+<tr>
+<td><code>cwd</code></td>
+<td>string</td>
+<td><em>(none)</em></td>
+<td>Child working directory.</td>
+</tr>
+<tr>
+<td><code>enabled</code></td>
+<td>boolean</td>
+<td><code>true</code></td>
+<td>Whether the plugin starts with the engine.</td>
+</tr>
+<tr>
+<td><code>interception_timeout_ms</code></td>
+<td>integer</td>
+<td><code>2000</code></td>
+<td>Positive timeout for interception requests.</td>
+</tr>
+<tr>
+<td><code>startup_timeout_ms</code></td>
+<td>integer</td>
+<td><code>10000</code></td>
+<td>Positive timeout for initialization.</td>
+</tr>
+<tr>
+<td><code>shutdown_grace_ms</code></td>
+<td>integer</td>
+<td><code>3000</code></td>
+<td>Positive graceful shutdown period before termination.</td>
+</tr>
+<tr>
+<td><code>tool_timeout_ms</code></td>
+<td>integer</td>
+<td><code>30000</code></td>
+<td>Positive timeout for each plugin tool call.</td>
 </tr>
 </tbody>
 </table>

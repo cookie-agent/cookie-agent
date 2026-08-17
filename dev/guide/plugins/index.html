@@ -645,6 +645,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      Tools
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#lifecycle" class="md-nav__link">
     <span class="md-ellipsis">
       Lifecycle
@@ -1048,6 +1057,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      Tools
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#lifecycle" class="md-nav__link">
     <span class="md-ellipsis">
       Lifecycle
@@ -1101,6 +1119,7 @@ entry replaces a user entry with the same name.</p>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">interception_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2000</span>
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="n">startup_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">10000</span>
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">shutdown_grace_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3000</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">tool_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">30000</span>
 </code></pre></div>
 <p><code>command</code> is required for every plugin entry. <code>args</code> and <code>env</code> default to empty collections,
 <code>enabled</code> defaults to <code>true</code>, and <code>cwd</code> is optional. All timeout values must be positive. A
@@ -1108,31 +1127,54 @@ disabled entry is not started but is still validated. Plugin processes receive o
 variables in <code>env</code>; the engine clears its inherited environment, including <code>PATH</code>, before adding
 those configured values. Configure <code>PATH</code> explicitly when the plugin itself needs it.</p>
 <h2 id="protocol">Protocol<a class="headerlink" href="#protocol" title="Permanent link">&para;</a></h2>
-<p>The extension protocol version is the semantic-version string <code>0.0.1</code>. Before version 1.0,
-cookie agent requires an exact version match. A plugin reporting any other value is refused and
-its status contains the reported mismatch.</p>
+<p>The extension protocol version is the semantic-version string <code>0.0.2</code>. Before version 1.0,
+cookie agent requires an exact version match: additive method or schema changes bump the patch
+version, and plugins must update before connecting to the new engine. A plugin reporting any
+other value is refused and its status contains the reported mismatch.</p>
 <p>The engine sends <code>plugin/initialize</code> with the protocol version, engine version, and engine
 capabilities. The plugin returns its exact protocol version, configured plugin name, plugin
 version, capabilities, and tool declarations. Tool names must be unique within the plugin and
 use <code>snake_case</code>. The reported plugin name must exactly match the configuration entry.</p>
-<p>Stage 3 also supports <code>plugin/ping</code> for liveness and sends the <code>plugin/shutdown</code> notification
-during engine shutdown. The names <code>plugin/tools/call</code>, <code>plugin/resources/list</code>,
-<code>plugin/resources/read</code>, <code>plugin/events/subscribe</code>, and <code>plugin/events/publish</code> are reserved for
-later protocol stages and are not implemented.</p>
+<p>The protocol also supports <code>plugin/ping</code> for liveness and sends the <code>plugin/shutdown</code>
+notification during engine shutdown.</p>
+<h2 id="tools">Tools<a class="headerlink" href="#tools" title="Permanent link">&para;</a></h2>
+<p>Each tool declaration contains its verbatim <code>name</code>, description, JSON Schema parameters,
+verbatim <code>permission_name</code>, and an optional <code>primary_resource_param</code>. Names are not prefixed or
+rewritten. The primary resource parameter supplies the approval display argument and call
+resource when present.</p>
+<p>At execution time the engine sends <code>plugin/tools/call</code> with the tool name, session and invocation
+IDs, arguments, resource, and an optional cancellation token. The plugin returns <code>content</code> and
+<code>is_error</code>. A JSON-RPC error, transport failure, timeout, cancellation, or plugin exit fails the
+tool call. <code>is_error</code> remains structured tool-result metadata, parallel to MCP tool results.</p>
+<p>Plugin tools use the fail-closed permission pipeline. They are hidden until the agent policy or a
+session overlay has an <code>allow</code> or <code>ask</code> rule for the <code>plugin</code> action and declared permission. The
+permission resource is the declared permission name followed by the primary resource when one is
+present. For example:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">permissions</span><span class="p">:</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">plugin</span><span class="p">:</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="s">"issue_read</span><span class="nv"> </span><span class="s">*"</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">allow</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="s">"issue_delete</span><span class="nv"> </span><span class="s">*"</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ask</span>
+</code></pre></div>
+<p>Skill <code>allowed-tools</code> entries <code>Plugin</code> and <code>Plugin(name:*)</code> govern plugin tools in the same way as
+the existing MCP group. A pinned call to a connected but disallowed plugin tool reports that the
+tool is not enabled instead of treating it as undiscovered.</p>
 <h2 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h2>
 <p>Plugin state progresses through <code>disconnected</code>, <code>connecting</code>, and <code>connected</code>, or to <code>failed</code>
 with a diagnostic reason. Spawn failures, handshake timeouts, malformed responses, version or
 name mismatches, declaration errors, name collisions, unexpected EOF, and process exits affect
 only that plugin; the engine and other plugins continue running.</p>
-<p>Discovered tool names are claimed in the same global namespace as built-in and MCP tools. A
-collision fails the plugin. Claims are removed immediately when its process exits or standard
-output closes. During shutdown, the engine sends <code>plugin/shutdown</code>, closes plugin standard input,
-waits for <code>shutdown_grace_ms</code>, and then terminates the process if needed. Shutdown remains bounded
-when initialization is still pending.</p>
+<p>Discovered tool names are claimed in the same global namespace as built-in and MCP tools. A plugin
+that collides with either category fails. When plugins collide with each other, the last plugin to
+finish registration wins that tool; the earlier plugin remains connected for its other tools and
+publishes a status diagnostic. The winner's permission declaration applies. Claims and listings
+are removed immediately when the owning process exits or standard output closes, and prepared
+calls fail revalidation after removal. Crashed plugins stay failed until engine restart.</p>
+<p>Each call is bounded by <code>tool_timeout_ms</code>, which defaults to 30000. During shutdown, the engine
+sends <code>plugin/shutdown</code>, closes plugin standard input, waits for <code>shutdown_grace_ms</code>, and then
+terminates the process if needed. Shutdown remains bounded when initialization is still pending.</p>
 <h2 id="current-limitation">Current limitation<a class="headerlink" href="#current-limitation" title="Permanent link">&para;</a></h2>
-<p>This stage discovers declarations only. Claimed names are reserved against collisions, but
-plugin tools are not exposed to model sessions and cannot execute. Resource access and event
-streaming are also deferred to later stages.</p>
+<p>Plugin resource methods and session event streaming remain deferred to stage 5. Stage 4 does not
+send session events to plugins.</p>
 
 
 
