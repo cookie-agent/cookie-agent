@@ -1089,7 +1089,7 @@ the generated <code>EventPayload</code> schema with the committed additive basel
 </tr>
 <tr>
 <td>User input</td>
-<td><code>user_input_admitted</code>, <code>user_input_submitted</code>, <code>user_input_recalled</code>, <code>user_input_recalled_v2</code>, <code>user_input_applied</code></td>
+<td><code>message_injected</code>, <code>user_input_admitted</code>, <code>user_input_submitted</code>, <code>user_input_transformed</code>, <code>user_input_recalled</code>, <code>user_input_recalled_v2</code>, <code>user_input_applied</code></td>
 </tr>
 <tr>
 <td>Run</td>
@@ -1097,7 +1097,7 @@ the generated <code>EventPayload</code> schema with the committed additive basel
 </tr>
 <tr>
 <td>Model</td>
-<td><code>model_attempt_started</code>, <code>text_delta</code>, <code>reasoning_delta</code>, <code>attempt_abandoned</code>, <code>model_replay_evaluated</code>, <code>model_turn_committed</code>, <code>model_usage_recorded</code>, <code>model_fallback</code></td>
+<td><code>model_attempt_started</code>, <code>model_request_prepared</code>, <code>text_delta</code>, <code>reasoning_delta</code>, <code>attempt_abandoned</code>, <code>model_replay_evaluated</code>, <code>model_turn_committed</code>, <code>model_usage_recorded</code>, <code>model_fallback</code></td>
 </tr>
 <tr>
 <td>Tools</td>
@@ -1172,6 +1172,9 @@ uncached input, cache-read input, cache-write input, text output, and reasoning
 output counts. Event-log validation requires its run, agent, model, and turn to
 match and rejects duplicate records for one turn. Session, agent, and global
 usage projections rebuild from these events after restart, revert, and fork.</p>
+<p><code>model_request_prepared</code> follows request assembly and all accepted model/provider request hooks.
+Its <code>prompt_fingerprint</code> hashes the authoritative normalized request sent to the provider, while
+<code>model_attempt_started</code> remains the earlier cancellation and lifecycle boundary.</p>
 <p><code>internal_agent_usage_recorded</code> attributes each completed
 internal model request to its internal run, internal agent ID, kind, and resolved
 model. The same session, agent, and global projections include these records.</p>
@@ -1187,6 +1190,11 @@ appends matching runless <code>user_input_recalled</code> events so those inputs
 into a later resume. Promotion appends the ordinary run-owned
 <code>user_input_submitted</code> event, so transcript rendering and model history use the
 same path as interactive run steering.</p>
+<p><code>message_injected</code> is a run-owned role and text message accepted from <code>agent_before_start</code>. It is
+written during run setup and projected into model history, so reopen, fork, revert, and compaction
+use the injected message without consulting the plugin again. <code>user_input_transformed</code> is the
+run-owned audit record written immediately before <code>user_input_submitted</code> when <code>user_before_input</code>
+changes direct input; it contains both <code>original_input</code> and the non-empty committed <code>input</code>.</p>
 <p>Running-resume rollback appends <code>user_input_recalled_v2</code> with the exact
 <code>user_input_seq</code> of its admission. Replay removes that specific pending input
 and preserves direct steers admitted after it. Legacy <code>user_input_recalled</code>

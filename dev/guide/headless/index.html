@@ -1193,11 +1193,11 @@ syntax errors use Clap's exit code <code>2</code> before the runtime starts.</p>
 <tbody>
 <tr>
 <td><code>0</code></td>
-<td><code>RunCompleted</code></td>
+<td><code>RunCompleted</code>, or <code>user_before_input</code> intentionally handled the input without starting a run</td>
 </tr>
 <tr>
 <td><code>1</code></td>
-<td><code>RunFailed</code>, or an unrecoverable active-driver failure</td>
+<td><code>RunFailed</code>, blocked model selection, or an unrecoverable active-driver failure</td>
 </tr>
 <tr>
 <td><code>3</code></td>
