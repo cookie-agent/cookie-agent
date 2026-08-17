@@ -1061,6 +1061,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Sessions and persistence">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#event-bus" class="md-nav__link">
+    <span class="md-ellipsis">
+      Event bus
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1214,6 +1229,21 @@
       Sessions and persistence
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="Sessions and persistence">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#event-bus" class="md-nav__link">
+    <span class="md-ellipsis">
+      Event bus
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1514,12 +1544,30 @@ their child directories remain ordinary sessions available for inspection.</p>
 <p>Project model-snapshot manifests live inside the workspace at
 <code>.cookie-agent/model-snapshots/</code> and are the only per-project engine state the
 workspace owns.</p>
+<h3 id="event-bus">Event bus<a class="headerlink" href="#event-bus" title="Permanent link">&para;</a></h3>
+<p>The durable session append path publishes raw events to independent bounded
+plugin streams only after the JSONL append and projection publication complete.
+These streams are best-effort observers and never participate in consistency or
+backpressure. The non-durable engine bus accepts plugin sources as
+<code>EngineEvent::PluginEvent</code>; it fans out to RPC frontends and other subscribed
+plugins with session identity but without replay or cursor semantics. RPC fan-out
+is connection-local and requires a successful event subscription for that session. A plugin's
+own publication is excluded from both plugin fan-out paths.</p>
+<p>Plugin diagnostics use a mutex-protected coalescing counter rather than a
+message queue. Producers only increment a normalized key and wake a periodic
+flusher; detailed message cardinality is capped and excess keys use exact
+per-session/plugin/kind overflow counters. Appends and shutdown draining have
+deadlines, with incomplete drains surfaced on plugin status before the flusher
+is aborted. Plugin
+publish contexts are expiring one-shot grants activated at outbound delivery,
+so a token cannot be replayed or retargeted to another session.</p>
 <h2 id="protocol-surface">Protocol surface<a class="headerlink" href="#protocol-surface" title="Permanent link">&para;</a></h2>
 <p>The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
 an authenticated WebSocket at <code>/ws</code>, protocol 9 current-only, <code>handshake</code> first.
 Discovery is a single <code>runtime.snapshot.get</code> call that returns one coherent
-runtime snapshot (schema 4). Session events stream through <code>events.subscribe</code>
-and tool output streams through separate snapshot/delta/gap notifications.</p>
+runtime snapshot (schema 4). Session events stream through <code>events.subscribe</code>,
+plugin bus events through <code>events.plugin</code>, and tool output through separate
+snapshot/delta/gap notifications.</p>
 <p>What moved is where the mechanics live: handshake, request/response
 correlation, notification demux, replay/gap recovery, and shutdown are now
 implemented once in the <code>protocol</code> crate and shared by the server, the TUI, and

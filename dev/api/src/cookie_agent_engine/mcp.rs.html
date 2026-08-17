@@ -2864,9 +2864,9 @@
 <a href=#2864 id=2864 data-nosnippet>2864</a>
 <a href=#2865 id=2865 data-nosnippet>2865</a>    <span class="kw">fn </span>list_count(directory: <span class="kw-2">&amp;</span>tempfile::TempDir) -&gt; usize {
 <a href=#2866 id=2866 data-nosnippet>2866</a>        std::fs::read_to_string(directory.path().join(<span class="string">"list-count"</span>))
-<a href=#2867 id=2867 data-nosnippet>2867</a>            .expect(<span class="string">"tools/list count"</span>)
-<a href=#2868 id=2868 data-nosnippet>2868</a>            .parse()
-<a href=#2869 id=2869 data-nosnippet>2869</a>            .expect(<span class="string">"numeric tools/list count"</span>)
+<a href=#2867 id=2867 data-nosnippet>2867</a>            .ok()
+<a href=#2868 id=2868 data-nosnippet>2868</a>            .and_then(|count| count.parse().ok())
+<a href=#2869 id=2869 data-nosnippet>2869</a>            .unwrap_or(<span class="number">0</span>)
 <a href=#2870 id=2870 data-nosnippet>2870</a>    }
 <a href=#2871 id=2871 data-nosnippet>2871</a>
 <a href=#2872 id=2872 data-nosnippet>2872</a>    <span class="kw">async fn </span>wait_for_list_count(directory: <span class="kw-2">&amp;</span>tempfile::TempDir, expected: usize) {

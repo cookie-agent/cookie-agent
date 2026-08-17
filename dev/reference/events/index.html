@@ -1084,6 +1084,10 @@ the generated <code>EventPayload</code> schema with the committed additive basel
 <td><code>session_created</code>, <code>session_reverted</code>, <code>session_permission_overlay_set</code>, <code>skill_loaded</code>, <code>skill_invocation_noted</code>, <code>session_title_committed</code>, <code>delegated_context_seeded</code></td>
 </tr>
 <tr>
+<td>Plugins</td>
+<td><code>plugin_event_added</code>, <code>plugin_diagnostic</code></td>
+</tr>
+<tr>
 <td>User input</td>
 <td><code>user_input_admitted</code>, <code>user_input_submitted</code>, <code>user_input_recalled</code>, <code>user_input_recalled_v2</code>, <code>user_input_applied</code></td>
 </tr>
@@ -1119,6 +1123,12 @@ the generated <code>EventPayload</code> schema with the committed additive basel
 </table>
 <p><code>context_compaction_auto_disabled</code> is a legacy durable event retained for old
 session logs. Current engines no longer emit it.</p>
+<p><code>plugin_event_added</code> is a runless plugin publication containing <code>plugin</code>, <code>name</code>, and arbitrary
+JSON <code>payload</code>. Plugin-originated payloads are capped at 256 KiB, names at 128 characters, and the
+complete serialized event at 272 KiB; per-plugin/session rate and byte quotas apply. The event is normal
+branch content: it survives reopen and fork, is visible to model history and compaction, and is
+tombstoned by revert. <code>plugin_diagnostic</code> records operational notices such as interception
+timeouts, hook blocks, invalid modifications, oversized publications, and dropped stream counts.</p>
 <p>Delegation persistence includes <code>delegate_queued</code> and <code>delegate_finished</code>. The completion event is
 written to the parent run and carries <code>{ session_id, status, preview,
 total_lines }</code>; <code>preview</code> is limited to the first 20 lines and 2 KiB. It becomes
