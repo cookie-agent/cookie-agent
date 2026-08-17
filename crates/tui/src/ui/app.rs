@@ -24,7 +24,7 @@ use cookie_agent_protocol::{
     SessionListParams, SessionMeta, SessionPermissionClearParams, SessionPermissionGetParams,
     SessionPermissionGetResult, SessionPermissionSetParams, SessionRevertParams,
     SessionSetPermissionModeParams, SessionStatus, SessionTitle, SessionTitleChange, SessionTree,
-    SessionTreeParams, SessionUsageParams, SessionUsageResult, VariantId,
+    SessionTreeParams, SessionUsageParams, SessionUsageResult, StoredEvent, VariantId,
 };
 use crossterm::{
     event::{
@@ -63,8 +63,8 @@ use crate::{
 use super::events::{RenderScheduler, TerminalRestore};
 use super::input::{self, InputState};
 use super::management::{
-    McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm, PermissionPanel, UsagePanel,
-    cycle_effect,
+    McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm, PermissionPanel, SkillPanel,
+    UsagePanel, cycle_effect,
 };
 use super::pickers::{
     SearchPickerFocus, SearchPickerState, SessionSearchRow, cycle_selection, flatten_tree,
@@ -75,7 +75,8 @@ use super::provider::{
     ProviderRowState, action_name, row_label, row_state,
 };
 use super::slash::{
-    CommandSpec, SlashCommand, Submission, command_help_lines, move_selection, parse_submission,
+    CommandSpec, SlashCommand, Submission, command_help_lines, move_selection,
+    parse_submission_with_skills,
 };
 use super::transcript::{
     BlockHit, BlockId, ConversationScroll, LayoutCache, ScrollbarGeometry, wrapped_line,
@@ -98,7 +99,29 @@ pub(super) enum Modal {
     RevertConfirm,
     Mcp,
     Permissions,
+    Skills,
     Usage,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum PaletteEntry<'a> {
+    Command(&'static CommandSpec),
+    Skill(&'a cookie_agent_protocol::SkillDescriptor),
+}
+
+impl PaletteEntry<'_> {
+    fn label(self) -> String {
+        match self {
+            Self::Command(spec) => format!("{} — {}", spec.usage, spec.description),
+            Self::Skill(skill) => {
+                let hint = skill
+                    .argument_hint
+                    .as_deref()
+                    .map_or(String::new(), |hint| format!(" {hint}"));
+                format!("/{}{} — {}", skill.name, hint, skill.description)
+            }
+        }
+    }
 }
 
 /// Where copied text goes: the terminal's OSC 52 clipboard escape in
@@ -392,6 +415,9 @@ pub struct App {
     /// Revision of the current model descriptor snapshot.
     pub(super) model_revision: Option<cookie_agent_protocol::ModelRevision>,
     pub(super) providers: Vec<ProviderDescriptor>,
+    pub(super) skills: Vec<cookie_agent_protocol::SkillDescriptor>,
+    #[cfg(test)]
+    pub(super) skill_refresh_requests: Vec<SessionId>,
     pub(super) catalog_revision: Option<cookie_agent_protocol::CatalogRevision>,
     /// Client-local draft selection; never alters an active run.
     pub(super) draft: Option<RunSelection>,
@@ -417,6 +443,7 @@ pub struct App {
     pub(super) permission_modes: HashMap<SessionId, PermissionMode>,
     pub(super) mcp_panel: McpPanel,
     pub(super) permission_panel: PermissionPanel,
+    pub(super) skill_panel: SkillPanel,
     pub(super) usage_panel: UsagePanel,
     pub(super) conversation_scroll: ConversationScroll,
     pub(super) scrollbar_geometry: Option<ScrollbarGeometry>,
@@ -554,6 +581,10 @@ pub(super) enum RpcUpdate {
         session_id: SessionId,
         result: Result<SessionPermissionGetResult, String>,
     },
+    SkillsLoaded {
+        session_id: SessionId,
+        result: Result<cookie_agent_protocol::SkillsListResult, String>,
+    },
     UsageLoaded {
         session_id: Option<SessionId>,
         session: Result<Option<SessionUsageResult>, String>,
@@ -631,6 +662,57 @@ const TREE_REFRESH_TIMEOUT: Duration = Duration::from_secs(2);
 const TREE_SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(6);
 const STDIN_RPC_TIMEOUT: Duration = Duration::from_secs(1);
 impl App {
+    #[cfg(test)]
+    pub(crate) async fn wait_for_skill_refresh_for_test(&mut self) {
+        while let Some(update) = self.rpc_updates_rx.recv().await {
+            let skills = matches!(update, RpcUpdate::SkillsLoaded { .. });
+            self.handle_rpc_update(update);
+            if skills {
+                break;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn skill_names_for_test(&self) -> Vec<&str> {
+        self.skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn skill_visible_for_test(&self, name: &str) -> Option<bool> {
+        self.skills
+            .iter()
+            .find(|skill| skill.name == name)
+            .map(|skill| skill.visible)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn skill_palette_labels_for_test(&self) -> Vec<String> {
+        self.palette_entries()
+            .into_iter()
+            .map(PaletteEntry::label)
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn submit_text_for_test(&mut self, text: &str) {
+        self.input.set_buffer(text.to_owned());
+        self.submit_input().await;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn refresh_skills_for_event_for_test(&mut self, event: &StoredEvent) {
+        self.refresh_skills_for_event(event);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn skill_refresh_count_for_test(&self) -> usize {
+        self.skill_refresh_requests.len()
+    }
+
     pub async fn new(client: Client) -> Result<Self, crate::config::TuiConfigError> {
         Self::new_with_startup_mode(client, false).await
     }
@@ -673,6 +755,9 @@ impl App {
             models: Vec::new(),
             model_revision: None,
             providers: Vec::new(),
+            skills: Vec::new(),
+            #[cfg(test)]
+            skill_refresh_requests: Vec::new(),
             catalog_revision: None,
             draft: None,
             connect_provider: None,
@@ -695,6 +780,7 @@ impl App {
             permission_modes: HashMap::new(),
             mcp_panel: McpPanel::default(),
             permission_panel: PermissionPanel::default(),
+            skill_panel: SkillPanel::default(),
             usage_panel: UsagePanel::default(),
             conversation_scroll: ConversationScroll::default(),
             scrollbar_geometry: None,
@@ -1860,8 +1946,23 @@ impl App {
                     return;
                 }
                 match result {
-                    Ok(result) => self.permission_panel.install(result),
+                    Ok(result) => {
+                        self.permission_panel.install(result);
+                        self.load_skills_for_session(session_id);
+                    }
                     Err(error) => self.status = format!("permission update failed: {error}"),
+                }
+            }
+            RpcUpdate::SkillsLoaded { session_id, result } => {
+                if self.selected != Some(session_id) {
+                    return;
+                }
+                match result {
+                    Ok(result) => {
+                        self.skills = result.skills.clone();
+                        self.skill_panel.install(result);
+                    }
+                    Err(error) => self.status = format!("skill discovery failed: {error}"),
                 }
             }
             RpcUpdate::UsageLoaded {
@@ -1982,7 +2083,8 @@ impl App {
     }
 
     pub(super) fn set_selected_session(&mut self, session_id: SessionId) {
-        if self.selected != Some(session_id) {
+        let changed = self.selected != Some(session_id);
+        if changed {
             // Watching a different session should begin at its live tail.
             self.conversation_scroll = ConversationScroll::default();
             self.scrollbar_geometry = None;
@@ -1996,6 +2098,9 @@ impl App {
             }
         }
         self.selected = Some(session_id);
+        if changed {
+            self.load_skills_for_session(session_id);
+        }
         self.rebind_draft_to_selected_session();
         // Voided inputs (run-end casualties, cross-session recalls) are
         // restored exactly when their session is being viewed.
@@ -2093,6 +2198,15 @@ impl App {
             .is_some_and(|event| matches!(&event.payload, EventPayload::ToolCallLinked { .. }));
         let title_change = event.and_then(title_change_from_event);
         let status_change = event.and_then(status_change_from_event);
+        let refresh_skills = event.and_then(|event| {
+            (Some(event.session_id) == self.selected
+                && matches!(
+                    event.payload,
+                    EventPayload::RunStarted { .. }
+                        | EventPayload::SessionPermissionOverlaySet { .. }
+                ))
+            .then(|| event.clone())
+        });
         if let Some((session_id, title, seq)) = title_change {
             self.apply_title_patch(session_id, title, seq);
         }
@@ -2127,6 +2241,9 @@ impl App {
             // without per-entry events, so drain whatever the viewed session
             // is owed back into the composer.
             self.restore_voided_inputs();
+            if let Some(event) = &refresh_skills {
+                self.refresh_skills_for_event(event);
+            }
         }
         match outcome {
             DeliveryOutcome::Applied => {}
@@ -2239,6 +2356,32 @@ impl App {
                 .map_err(|error| error.to_string());
             let _ = updates.send(RpcUpdate::PermissionsLoaded { session_id, result });
         });
+    }
+
+    fn load_skills_for_session(&mut self, session_id: SessionId) {
+        #[cfg(test)]
+        self.skill_refresh_requests.push(session_id);
+        self.skills.clear();
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .list_skills(cookie_agent_protocol::SkillsListParams { session_id })
+                .await
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::SkillsLoaded { session_id, result });
+        });
+    }
+
+    fn refresh_skills_for_event(&mut self, event: &StoredEvent) {
+        if Some(event.session_id) == self.selected
+            && matches!(
+                event.payload,
+                EventPayload::RunStarted { .. } | EventPayload::SessionPermissionOverlaySet { .. }
+            )
+        {
+            self.load_skills_for_session(event.session_id);
+        }
     }
 
     fn load_usage(&mut self) {
@@ -2636,6 +2779,26 @@ impl App {
             Modal::RevertConfirm => self.handle_revert_confirm_key(key).await,
             Modal::Mcp => self.handle_mcp_key(key).await,
             Modal::Permissions => self.handle_permissions_key(key).await,
+            Modal::Skills => match key.code {
+                KeyCode::Esc => self.modal = Modal::None,
+                KeyCode::Up => move_picker_selection(
+                    &mut self.skill_panel.selection,
+                    self.skill_panel
+                        .result
+                        .as_ref()
+                        .map_or(0, |result| result.skills.len()),
+                    true,
+                ),
+                KeyCode::Down => move_picker_selection(
+                    &mut self.skill_panel.selection,
+                    self.skill_panel
+                        .result
+                        .as_ref()
+                        .map_or(0, |result| result.skills.len()),
+                    false,
+                ),
+                _ => {}
+            },
             Modal::Usage => {
                 if key.code == KeyCode::Esc {
                     self.modal = Modal::None;
@@ -2746,8 +2909,30 @@ impl App {
         };
     }
 
-    pub(super) fn palette_entries(&self) -> Vec<&'static CommandSpec> {
+    pub(super) fn palette_entries(&self) -> Vec<PaletteEntry<'_>> {
+        let query = self
+            .input
+            .as_str()
+            .strip_prefix('/')
+            .unwrap_or_default()
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         super::slash::entries(self.input.as_str())
+            .into_iter()
+            .map(PaletteEntry::Command)
+            .chain(
+                self.skills
+                    .iter()
+                    .filter(|skill| {
+                        skill.precedence_winner
+                            && skill.user_invocable
+                            && (query.is_empty() || skill.name.contains(&query))
+                    })
+                    .map(PaletteEntry::Skill),
+            )
+            .collect()
     }
 
     pub(super) fn current_session_search_rows(&self) -> Vec<SessionSearchRow> {
@@ -2781,7 +2966,7 @@ impl App {
             Modal::Models => self.draft_models().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
             Modal::UserMessage => USER_MENU_ITEMS.len(),
-            Modal::Mcp | Modal::Permissions | Modal::Usage => 0,
+            Modal::Mcp | Modal::Permissions | Modal::Skills | Modal::Usage => 0,
             Modal::ConnectDetails
             | Modal::ConnectSetup
             | Modal::ConnectError
@@ -2866,22 +3051,26 @@ impl App {
     }
 
     pub(super) async fn activate_palette_entry(&mut self, index: usize) {
-        let Some(spec) = self.palette_entries().get(index).copied() else {
+        let Some(entry) = self.palette_entries().get(index).copied() else {
             return;
+        };
+        let (usage, requires_arguments) = match entry {
+            PaletteEntry::Command(spec) => (spec.usage.to_owned(), spec.requires_arguments),
+            PaletteEntry::Skill(skill) => (format!("/{}", skill.name), true),
         };
         self.palette_dismissed = true;
         self.palette_state.select(Some(0));
         self.mutate_input(|input| {
-            input.set_buffer(if spec.requires_arguments {
+            input.set_buffer(if requires_arguments {
                 format!(
                     "{} ",
-                    spec.usage.split_whitespace().next().expect("command usage")
+                    usage.split_whitespace().next().expect("command usage")
                 )
             } else {
-                spec.usage.into()
+                usage
             });
         });
-        if !spec.requires_arguments {
+        if !requires_arguments {
             self.submit_input().await;
         }
     }
@@ -3649,6 +3838,7 @@ impl App {
                     | Modal::RevertConfirm
                     | Modal::Mcp
                     | Modal::Permissions
+                    | Modal::Skills
                     | Modal::Usage
                     | Modal::None => 0,
                 };
@@ -4511,7 +4701,7 @@ impl App {
             | Modal::DisconnectConfirm => {}
             Modal::UserMessage => self.activate_user_menu_entry(index),
             Modal::RevertConfirm => {}
-            Modal::Mcp | Modal::Permissions | Modal::Usage => {}
+            Modal::Mcp | Modal::Permissions | Modal::Skills | Modal::Usage => {}
             Modal::None => {}
         }
     }
@@ -4520,7 +4710,13 @@ impl App {
         if self.input.as_str().trim().is_empty() {
             return;
         }
-        let submission = match parse_submission(self.input.as_str()) {
+        let skills = self
+            .skills
+            .iter()
+            .filter(|skill| skill.precedence_winner && skill.user_invocable)
+            .map(|skill| skill.name.clone())
+            .collect::<Vec<_>>();
+        let submission = match parse_submission_with_skills(self.input.as_str(), &skills) {
             Ok(submission) => submission,
             Err(error) => {
                 self.mutate_input(|input| {
@@ -5058,6 +5254,49 @@ impl App {
                     self.modal = Modal::Permissions;
                     self.permission_panel.begin_load();
                     self.load_permissions();
+                }
+            }
+            SlashCommand::Skills => {
+                let Some(session_id) = self.selected else {
+                    self.status = "select a session before listing skills".into();
+                    return;
+                };
+                self.modal = Modal::Skills;
+                match self
+                    .client
+                    .list_skills(cookie_agent_protocol::SkillsListParams { session_id })
+                    .await
+                {
+                    Ok(result) => {
+                        self.skills = result.skills.clone();
+                        self.skill_panel.install(result);
+                        self.status = "skills loaded".into();
+                    }
+                    Err(error) => self.status = format!("list skills failed: {error}"),
+                }
+            }
+            SlashCommand::Skill { name, args } => {
+                let Some(session_id) = self.selected else {
+                    self.status = "select a session before invoking a skill".into();
+                    return;
+                };
+                match self
+                    .client
+                    .get_skill(cookie_agent_protocol::SkillsGetParams {
+                        session_id,
+                        name: name.clone(),
+                        args: args.clone(),
+                    })
+                    .await
+                {
+                    Ok(result) if result.skill.user_invocable => {
+                        self.submit_prompt(cookie_agent_protocol::encode_skill_submission(
+                            &name, &args,
+                        ))
+                        .await;
+                    }
+                    Ok(_) => self.status = "skill is not user-invocable".into(),
+                    Err(error) => self.status = format!("load skill failed: {error}"),
                 }
             }
             SlashCommand::Usage => {
@@ -5724,6 +5963,14 @@ impl App {
                     frame,
                     centered(frame.area(), 82, 76),
                     &mut self.permission_panel,
+                    &self.theme,
+                );
+            }
+            Modal::Skills => {
+                super::management::render_skills(
+                    frame,
+                    centered(frame.area(), 88, 76),
+                    &mut self.skill_panel,
                     &self.theme,
                 );
             }
@@ -6544,12 +6791,12 @@ impl App {
     }
 
     pub(super) fn render_command_palette(&mut self, frame: &mut ratatui::Frame, area: Rect) {
-        let entries = self.palette_entries();
         self.clamp_palette_selection();
+        let entries = self.palette_entries();
         let query = self.input.as_str().strip_prefix('/').unwrap_or_default();
         let labels = entries
             .iter()
-            .map(|spec| format!("{} — {}", spec.usage, spec.description))
+            .map(|entry| entry.label())
             .collect::<Vec<_>>();
         self.hit_map.palette = Some(area);
         self.hit_map.palette_rows = super::slash::render(

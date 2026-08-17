@@ -14,6 +14,8 @@ pub(crate) enum SlashCommand {
     Connect,
     Mcp,
     Permissions,
+    Skills,
+    Skill { name: String, args: String },
     Usage,
     Sessions,
     Cancel,
@@ -65,6 +67,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &["perms"],
         usage: "/permissions",
         description: "edit session permission overrides",
+        requires_arguments: false,
+    },
+    CommandSpec {
+        name: "skills",
+        aliases: &[],
+        usage: "/skills",
+        description: "show discovered skills",
         requires_arguments: false,
     },
     CommandSpec {
@@ -145,7 +154,15 @@ pub(crate) fn command_spec(name: &str) -> Option<&'static CommandSpec> {
         .find(|spec| spec.name == name || spec.aliases.contains(&name))
 }
 
+#[cfg(test)]
 pub(crate) fn parse_submission(input: &str) -> Result<Submission, String> {
+    parse_submission_with_skills(input, &[])
+}
+
+pub(crate) fn parse_submission_with_skills(
+    input: &str,
+    skills: &[String],
+) -> Result<Submission, String> {
     // Commands are deliberately single-line. Multiline text beginning with
     // `/` is always sent verbatim as a prompt, so a pasted block cannot
     // accidentally execute a client command.
@@ -163,10 +180,24 @@ pub(crate) fn parse_submission(input: &str) -> Result<Submission, String> {
         !COMMANDS
             .iter()
             .any(|spec| spec.name == *name || spec.aliases.contains(name))
+            && !skills.iter().any(|skill| skill == name)
     }) {
         return Err(format!("unknown command: /{command_line}"));
     }
-    let command = if parts.first() == Some(&"compact") {
+    let command = if let Some(name) = parts
+        .first()
+        .filter(|name| skills.iter().any(|skill| skill == **name))
+    {
+        let args = command_line
+            .strip_prefix(name)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_owned();
+        SlashCommand::Skill {
+            name: (*name).to_owned(),
+            args,
+        }
+    } else if parts.first() == Some(&"compact") {
         let focus = command_line
             .strip_prefix("compact")
             .map(str::trim)
@@ -180,6 +211,7 @@ pub(crate) fn parse_submission(input: &str) -> Result<Submission, String> {
             ["connect"] => SlashCommand::Connect,
             ["mcp"] => SlashCommand::Mcp,
             ["permissions"] | ["perms"] => SlashCommand::Permissions,
+            ["skills"] => SlashCommand::Skills,
             ["sessions"] => SlashCommand::Sessions,
             ["usage"] => SlashCommand::Usage,
             ["cancel"] => SlashCommand::Cancel,
@@ -209,7 +241,7 @@ pub(crate) fn command_help() -> String {
 
 #[cfg(test)]
 mod parse_tests {
-    use super::{SlashCommand, Submission, parse_submission};
+    use super::{SlashCommand, Submission, parse_submission, parse_submission_with_skills};
 
     #[test]
     fn compact_accepts_an_optional_focus() {
@@ -222,6 +254,25 @@ mod parse_tests {
             Submission::Command(SlashCommand::Compact(Some(
                 "preserve parser decisions".into()
             )))
+        );
+    }
+
+    #[test]
+    fn parses_skills_panel_and_dynamic_skill_invocation() {
+        assert_eq!(
+            parse_submission("/skills").unwrap(),
+            Submission::Command(SlashCommand::Skills)
+        );
+        assert_eq!(
+            parse_submission_with_skills(
+                "/release-check v1.2.0 --strict",
+                &["release-check".into()]
+            )
+            .unwrap(),
+            Submission::Command(SlashCommand::Skill {
+                name: "release-check".into(),
+                args: "v1.2.0 --strict".into(),
+            })
         );
     }
 }

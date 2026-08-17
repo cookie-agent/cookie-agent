@@ -14,6 +14,8 @@ Ctrl-P opens the command palette. The available commands are:
 | `/new` | Choose the next root-run agent |
 | `/connect` | Connect or update a managed provider |
 | `/sessions` | Choose a session |
+| `/skills` | List discovered skills, sources, precedence, and permission effects |
+| `/<skill-name> [args]` | Invoke a user-invocable skill |
 | `/usage` | Show selected-session and global usage |
 | `/cancel` | Cancel the active run |
 | `/compact [focus]` | Compact the selected idle session |

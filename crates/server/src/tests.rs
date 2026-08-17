@@ -106,6 +106,7 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
         user_mcp_servers,
         workspace_mcp_servers,
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
+        skills: cookie_agent_config::SkillRegistry::default(),
     };
     let engine = Engine::open(EngineOptions {
         data_dir: directory.path().join("data"),
@@ -323,6 +324,7 @@ fn harness_with_catalog(
         user_mcp_servers: BTreeMap::new(),
         workspace_mcp_servers: BTreeMap::new(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
+        skills: cookie_agent_config::SkillRegistry::default(),
     };
     let engine = Engine::open(EngineOptions {
         data_dir: directory.path().join("data"),

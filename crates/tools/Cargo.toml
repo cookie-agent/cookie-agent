@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 cookie_agent_engine = { version = "=0.1.0", path = "../engine" }
+cookie_agent_config = { version = "=0.1.0", path = "../config" }
 cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
 libc = "0.2"
 rustix.workspace = true

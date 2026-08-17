@@ -3,4 +3,4 @@
 /**
  * An event/session-JSONL schema accepted by this build.
  */
-export type EventSchemaVersion = 15 | 16 | 17 | 18 | 19 | 20;
+export type EventSchemaVersion = 15 | 16 | 17 | 18 | 19 | 20 | 21;

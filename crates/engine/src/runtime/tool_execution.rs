@@ -56,6 +56,7 @@ impl Engine {
         };
         let depth = session_depth(&session.meta.origin);
         let permission_overlay = &session.permission_overlay;
+        let grants = self.skill_grants_for_session(session_id);
         let delegate_enabled = policy.agent.delegation.as_ref().is_some_and(|delegation| {
             depth < delegation.effective_depth_ceiling
                 && delegation.targets.iter().any(|target| {
@@ -85,7 +86,7 @@ impl Engine {
                 .find(|tool| tool.name == call.name)
                 .map(|tool| (provider.clone(), tool.permission_name))
         });
-        if provider.is_none() {
+        if provider.is_none() && (call.name != "skill" || self.is_direct_skill_call(call.id)) {
             provider = providers.iter().find_map(|candidate| {
                 candidate
                     .permission_for_unlisted_tool(&call.name)
@@ -107,12 +108,16 @@ impl Engine {
         };
         let delegation_tool = permission_name == "delegate";
         let enabled = !delegation_tool || delegate_enabled;
+        let direct_skill = call.name == "skill" && self.is_direct_skill_call(call.id);
         if !enabled
-            || !PermissionPipeline::tool_visible_with_overlay(
-                &policy.agent,
-                Some(permission_overlay),
-                &permission_name,
-            )
+            || (!direct_skill
+                && !PermissionPipeline::tool_visible_with_grants(
+                    &policy.agent,
+                    Some(permission_overlay),
+                    grants.as_ref(),
+                    &permission_name,
+                    self.inner.store.cwd(),
+                ))
         {
             return PreparedToolCall {
                 prepared: Err(ToolFailure {
@@ -174,9 +179,11 @@ impl Engine {
                     message: error.to_string(),
                 })?
                 .permission_overlay;
-            let permission = engine.inner.permissions.decide_operation_with_overlay(
+            let grants = engine.skill_grants_for_session(active.session);
+            let permission = engine.inner.permissions.decide_operation_with_grants(
                 &active.policy.agent,
                 Some(&permission_overlay),
+                grants.as_ref(),
                 &operation,
                 &policy_labels,
                 engine.inner.store.cwd(),
@@ -386,6 +393,7 @@ impl Engine {
         policy: &FrozenRunPolicy,
     ) -> Result<Vec<ToolDefinition>, EngineError> {
         let session_projection = self.inner.store.get(session)?;
+        let grants = self.skill_grants_for_session(session);
         let depth = session_depth(&session_projection.meta.origin);
         let delegate_enabled = policy.agent.delegation.as_ref().is_some_and(|delegation| {
             depth < delegation.effective_depth_ceiling
@@ -416,10 +424,12 @@ impl Engine {
                 let delegation_tool = tool.permission_name == "delegate";
                 let enabled = !delegation_tool || delegate_enabled;
                 if enabled
-                    && PermissionPipeline::tool_visible_with_overlay(
+                    && PermissionPipeline::tool_visible_with_grants(
                         &policy.agent,
                         Some(&session_projection.permission_overlay),
+                        grants.as_ref(),
                         &tool.permission_name,
+                        self.inner.store.cwd(),
                     )
                 {
                     if !names.insert(tool.name.clone()) {
@@ -492,6 +502,7 @@ fn fallback_permission_name(tool_name: &str) -> Option<&'static str> {
         "delegate_subagent" | "get_subagent_result" | "steer_subagent" | "cancel_subagent" => {
             Some("delegate")
         }
+        "skill" => Some("skill"),
         _ => None,
     }
 }

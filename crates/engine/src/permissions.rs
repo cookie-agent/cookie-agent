@@ -125,6 +125,7 @@ impl PermissionPipeline {
             "bash" => Ok(PermissionAction::Bash),
             "delegate" => Ok(PermissionAction::Delegate),
             "mcp" => Ok(PermissionAction::Mcp),
+            "skill" => Ok(PermissionAction::Skill),
             other => Err(PermissionError::UnknownAction(other.into())),
         }
     }
@@ -219,6 +220,71 @@ impl PermissionPipeline {
     }
 
     #[must_use]
+    pub fn decide_operation_with_grants(
+        &self,
+        policy: &AgentSnapshot,
+        overlay: Option<&SessionPermissionOverlay>,
+        grants: Option<&SessionPermissionOverlay>,
+        operation: &PreparedOperationIdentity,
+        policy_labels: &[Option<String>],
+        workspace: &Path,
+    ) -> PermissionDecision {
+        let mut decision = self.decide_operation_with_overlay(
+            policy,
+            overlay,
+            operation,
+            policy_labels,
+            workspace,
+        );
+        let Some(grants) = grants else {
+            return decision;
+        };
+        for (evaluation, (resource, normalized)) in decision
+            .evaluations
+            .iter_mut()
+            .zip(operation.resources().iter().zip(policy_labels))
+        {
+            if evaluation.effect != PermissionEffect::Ask {
+                continue;
+            }
+            let granted = grants.rules.iter().any(|rule| {
+                rule.effect == PermissionEffect::Allow
+                    && rule.action == resource.capability
+                    && normalized.as_ref().is_some_and(|normalized| {
+                        permission_pattern_matches(
+                            rule.resource.as_str(),
+                            normalized,
+                            &absolute_resource(workspace, normalized),
+                            workspace,
+                        )
+                    })
+            });
+            if granted {
+                evaluation.effect = PermissionEffect::Allow;
+                evaluation.trace.effect = PermissionEffect::Allow;
+                evaluation.trace.precedence_reason =
+                    "turn-scoped skill grant allows an otherwise ask operation".into();
+            }
+        }
+        decision.effect = if decision
+            .evaluations
+            .iter()
+            .any(|evaluation| evaluation.effect == PermissionEffect::Deny)
+        {
+            PermissionEffect::Deny
+        } else if decision
+            .evaluations
+            .iter()
+            .any(|evaluation| evaluation.effect == PermissionEffect::Ask)
+        {
+            PermissionEffect::Ask
+        } else {
+            PermissionEffect::Allow
+        };
+        decision
+    }
+
+    #[must_use]
     pub fn tool_visible(policy: &AgentSnapshot, permission_name: &str) -> bool {
         Self::tool_visible_with_overlay(policy, None, permission_name)
     }
@@ -260,6 +326,36 @@ impl PermissionPipeline {
                     *effect == PermissionEffect::Deny
                         && (*pattern == "*" || simple_wildcard_match(pattern, resource))
                 })
+        })
+    }
+
+    #[must_use]
+    pub fn tool_visible_with_grants(
+        policy: &AgentSnapshot,
+        overlay: Option<&SessionPermissionOverlay>,
+        grants: Option<&SessionPermissionOverlay>,
+        permission_name: &str,
+        workspace: &Path,
+    ) -> bool {
+        if Self::tool_visible_with_overlay(policy, overlay, permission_name) {
+            return true;
+        }
+        let Ok(action) = Self::action_for_permission_name(permission_name) else {
+            return false;
+        };
+        grants.is_some_and(|grants| {
+            grants.rules.iter().any(|grant| {
+                grant.action == action
+                    && grant.effect == PermissionEffect::Allow
+                    && effective_permission_with_overlay(
+                        policy,
+                        overlay,
+                        action,
+                        grant.resource.as_str(),
+                        workspace,
+                    )
+                    .0 != PermissionEffect::Deny
+            })
         })
     }
 }
@@ -744,6 +840,12 @@ impl crate::Engine {
     }
 }
 
+pub(crate) fn governing_agent_for_skills(
+    session: &crate::session::SessionProjection,
+) -> AgentSnapshot {
+    governing_agent(session)
+}
+
 fn governing_agent(session: &crate::session::SessionProjection) -> AgentSnapshot {
     let latest_run = session
         .log
@@ -796,6 +898,7 @@ fn effective_permission_view(
         PermissionAction::Bash,
         PermissionAction::Delegate,
         PermissionAction::Mcp,
+        PermissionAction::Skill,
     ]
     .into_iter()
     .map(|action| {
@@ -913,6 +1016,180 @@ mod tests {
             select_governing_agent(&creation, None).permissions,
             creation.permissions
         );
+    }
+
+    #[test]
+    fn skill_grants_allow_ask_but_never_override_deny() {
+        let grants = SessionPermissionOverlay {
+            rules: vec![rule(
+                "skill-grant",
+                PermissionAction::Bash,
+                "git status",
+                PermissionEffect::Allow,
+            )],
+        };
+        let operation = operation(vec![resource(
+            PermissionAction::Bash,
+            "git status",
+            b"git status",
+        )]);
+        let labels = [Some("git status".into())];
+        let pipeline = PermissionPipeline::default();
+        let ask = pipeline.decide_operation_with_grants(
+            &policy(vec![rule(
+                "ask",
+                PermissionAction::Bash,
+                "*",
+                PermissionEffect::Ask,
+            )]),
+            None,
+            Some(&grants),
+            &operation,
+            &labels,
+            std::path::Path::new("/workspace"),
+        );
+        assert_eq!(ask.effect, PermissionEffect::Allow);
+
+        let denied = pipeline.decide_operation_with_grants(
+            &policy(vec![rule(
+                "deny",
+                PermissionAction::Bash,
+                "*",
+                PermissionEffect::Deny,
+            )]),
+            None,
+            Some(&grants),
+            &operation,
+            &labels,
+            std::path::Path::new("/workspace"),
+        );
+        assert_eq!(denied.effect, PermissionEffect::Deny);
+    }
+
+    #[test]
+    fn turn_scoped_skill_grant_temporarily_publishes_hidden_tool() {
+        let base_policy = policy(Vec::new());
+        let grants = SessionPermissionOverlay {
+            rules: vec![
+                rule(
+                    "skill-grant-exact",
+                    PermissionAction::Bash,
+                    "git",
+                    PermissionEffect::Allow,
+                ),
+                rule(
+                    "skill-grant-prefix",
+                    PermissionAction::Bash,
+                    "git *",
+                    PermissionEffect::Allow,
+                ),
+            ],
+        };
+        assert!(!PermissionPipeline::tool_visible_with_grants(
+            &base_policy,
+            None,
+            None,
+            "bash",
+            std::path::Path::new("/workspace"),
+        ));
+        assert!(PermissionPipeline::tool_visible_with_grants(
+            &base_policy,
+            None,
+            Some(&grants),
+            "bash",
+            std::path::Path::new("/workspace"),
+        ));
+        for command in ["git", "git status", "git commit -m x"] {
+            let operation = operation(vec![resource(
+                PermissionAction::Bash,
+                command,
+                command.as_bytes(),
+            )]);
+            let decision = PermissionPipeline::default().decide_operation_with_grants(
+                &base_policy,
+                None,
+                Some(&grants),
+                &operation,
+                &[Some(command.into())],
+                std::path::Path::new("/workspace"),
+            );
+            assert_eq!(decision.effect, PermissionEffect::Allow, "{command}");
+        }
+        let ungranted = PermissionPipeline::default().decide_operation_with_grants(
+            &base_policy,
+            None,
+            Some(&grants),
+            &operation(vec![resource(
+                PermissionAction::Bash,
+                "cargo test",
+                b"cargo test",
+            )]),
+            &[Some("cargo test".into())],
+            std::path::Path::new("/workspace"),
+        );
+        assert_eq!(ungranted.effect, PermissionEffect::Ask);
+        assert!(!PermissionPipeline::tool_visible_with_grants(
+            &base_policy,
+            None,
+            None,
+            "bash",
+            std::path::Path::new("/workspace"),
+        ));
+
+        let denied = policy(vec![rule(
+            "deny",
+            PermissionAction::Bash,
+            "*",
+            PermissionEffect::Deny,
+        )]);
+        assert!(!PermissionPipeline::tool_visible_with_grants(
+            &denied,
+            None,
+            Some(&grants),
+            "bash",
+            std::path::Path::new("/workspace"),
+        ));
+    }
+
+    #[test]
+    fn skill_grant_can_publish_another_skill_action() {
+        let base_policy = policy(Vec::new());
+        let grants = SessionPermissionOverlay {
+            rules: vec![rule(
+                "skill-chain",
+                PermissionAction::Skill,
+                "other-skill",
+                PermissionEffect::Allow,
+            )],
+        };
+        assert!(!PermissionPipeline::tool_visible_with_grants(
+            &base_policy,
+            None,
+            None,
+            "skill",
+            std::path::Path::new("/workspace"),
+        ));
+        assert!(PermissionPipeline::tool_visible_with_grants(
+            &base_policy,
+            None,
+            Some(&grants),
+            "skill",
+            std::path::Path::new("/workspace"),
+        ));
+        let operation = operation(vec![resource(
+            PermissionAction::Skill,
+            "other-skill",
+            b"other-skill",
+        )]);
+        let decision = PermissionPipeline::default().decide_operation_with_grants(
+            &base_policy,
+            None,
+            Some(&grants),
+            &operation,
+            &[Some("other-skill".into())],
+            std::path::Path::new("/workspace"),
+        );
+        assert_eq!(decision.effect, PermissionEffect::Allow);
     }
 
     fn rule(

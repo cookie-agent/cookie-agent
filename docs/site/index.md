@@ -5,7 +5,7 @@ connections, sessions, model execution, permissions, and persistence; the
 terminal UI communicates with it over the versioned JSON-RPC protocol.
 
 Writers use current schemas. Readers reopen event schemas 15-18 and delegation
-journal schemas 11-14; other persisted and wire surfaces remain current-only.
+journal schemas 11-15; other persisted and wire surfaces remain current-only.
 [Architecture](architecture.md) describes how the pieces fit together; this site
 turns that implementation into task-oriented guides and reference material.
 

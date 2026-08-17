@@ -19,7 +19,7 @@ use cookie_agent_protocol::{
     SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
     SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
     SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, SessionUsageParams,
-    SessionUsageResult,
+    SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult,
 };
 
 use super::Server;
@@ -148,6 +148,18 @@ impl ServerProtocol for Server {
         self.engine
             .clear_session_permission(params.session_id, params.action, &params.resource)
             .await
+            .map_err(protocol_fault)
+    }
+
+    async fn list_skills(&self, params: SkillsListParams) -> Result<SkillsListResult> {
+        self.engine
+            .list_skills(params.session_id)
+            .map_err(protocol_fault)
+    }
+
+    async fn get_skill(&self, params: SkillsGetParams) -> Result<SkillsGetResult> {
+        self.engine
+            .get_skill(params.session_id, &params.name, &params.args)
             .map_err(protocol_fault)
     }
 

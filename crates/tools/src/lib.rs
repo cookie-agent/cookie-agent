@@ -20,6 +20,7 @@ pub mod delegate;
 pub mod edit;
 pub mod fs_cap;
 pub mod read;
+pub mod skill;
 pub mod write;
 
 #[cfg(test)]

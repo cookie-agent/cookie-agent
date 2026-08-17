@@ -27,7 +27,8 @@ use crate::{
     SessionRenameResult, SessionResumeParams, SessionResumeResult, SessionRevertParams,
     SessionRevertResult, SessionSetPermissionModeParams, SessionSetPermissionModeResult,
     SessionTitle, SessionTreeParams, SessionTreeResult, SessionUsageParams, SessionUsageResult,
-    SuccessResponse, Transport, TransportError,
+    SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult, SuccessResponse,
+    Transport, TransportError,
 };
 
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
@@ -118,6 +119,8 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: SessionPermissionClearParams,
     ) -> Result<SessionPermissionMutationResult, ServerFault>;
+    async fn list_skills(&self, params: SkillsListParams) -> Result<SkillsListResult, ServerFault>;
+    async fn get_skill(&self, params: SkillsGetParams) -> Result<SkillsGetResult, ServerFault>;
     async fn compact_session(
         &self,
         params: SessionCompactParams,
@@ -352,6 +355,8 @@ async fn dispatch<S: ServerProtocol>(
         "session.permission.clear" => {
             value(server.clear_session_permission(decode(params)?).await?)
         }
+        "skills.list" => value(server.list_skills(decode(params)?).await?),
+        "skills.get" => value(server.get_skill(decode(params)?).await?),
         "session.compact" => value(server.compact_session(decode(params)?).await?),
         "session.revert" => value(server.revert_session(decode(params)?).await?),
         "session.fork" => value(server.fork_session(decode(params)?).await?),

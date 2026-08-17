@@ -2,11 +2,10 @@ use std::sync::{Arc, atomic::Ordering};
 
 use cookie_agent_protocol::{
     DelegatedContextRole, DelegatedContextTurn, InvocationId, PersistedToolResult as ToolResult,
-    RunId, RunStartParams, SafeToolError, SessionId, SessionOrigin, SessionStatus, Sha256Digest,
-    ToolCallId, ToolCallTermination, ToolTerminationOutcome,
+    RunId, RunStartParams, SafeToolError, SessionId, SessionOrigin, SessionStatus, ToolCallId,
+    ToolCallTermination, ToolTerminationOutcome,
 };
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
@@ -253,6 +252,21 @@ impl Engine {
         generation: u64,
     ) -> Result<DelegateHandle, EngineError> {
         let admission_guard = self.inner.delegation_admission.lock().await;
+        if invocation
+            .prompt
+            .starts_with(super::skills::RESERVED_STAGED_SKILL_PREFIX)
+        {
+            return Err(EngineError::MissingTool(
+                "delegate prompt uses a reserved staged-skill prefix".into(),
+            ));
+        }
+        let staged_skill = self
+            .inner
+            .pending_skill_forks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&invocation.parent_tool_call_id)
+            .map(super::skills::PreparedSkillInvocation::staged_payload);
         if invocation.resume_session_id.is_some() && invocation.inherit_context {
             return Err(EngineError::MissingTool(
                 "resume_session_id and inherit_context cannot both be set".into(),
@@ -270,7 +284,8 @@ impl Engine {
                 && existing.request.description == invocation.description
                 && existing.request.prompt == invocation.prompt
                 && existing.request.resume_session_id == invocation.resume_session_id
-                && existing.request.inherit_context == invocation.inherit_context;
+                && existing.request.inherit_context == invocation.inherit_context
+                && existing.request.staged_skill == staged_skill;
             if !request_matches {
                 return Err(EngineError::MissingTool(
                     "delegate redelivery does not match its durable reservation".into(),
@@ -397,20 +412,6 @@ impl Engine {
             .as_ref()
             .and_then(|child| child.meta.title.clone())
             .unwrap_or(proposed_title);
-        let fingerprint_payload = serde_json::to_vec(&(
-            &invocation.agent_type,
-            &invocation.description,
-            &invocation.prompt,
-            &invocation.resume_session_id,
-            invocation.inherit_context,
-            invocation.background,
-            &seeded_context,
-            &child_policy.agent,
-            &child_policy.selected_suffix,
-        ))
-        .map_err(|_| EngineError::RuntimeCompileFailed)?;
-        let fingerprint = Sha256Digest::new(format!("{:x}", Sha256::digest(&fingerprint_payload)))
-            .map_err(|_| EngineError::RuntimeCompileFailed)?;
         let request = journal::DelegateRequestPayload {
             description: invocation.description,
             prompt: invocation.prompt,
@@ -419,7 +420,14 @@ impl Engine {
             inherit_context: invocation.inherit_context,
             seeded_context,
             background: Some(invocation.background),
+            staged_skill,
         };
+        let fingerprint = journal::delegation_request_fingerprint(
+            &child_policy.agent,
+            &child_policy.selected_suffix,
+            &request,
+        )
+        .map_err(|()| EngineError::RuntimeCompileFailed)?;
 
         let root_session_id = match parent.meta.origin {
             SessionOrigin::Delegated {
@@ -503,11 +511,34 @@ impl Engine {
                 return Err(error);
             }
         };
+        self.transfer_pending_skill_fork(invocation.parent_tool_call_id, child.session_id);
         self.publish_admission_child(invocation_id, generation, child.session_id)?;
         let entry = self
             .journal_get(invocation_id)
             .await?
             .ok_or_else(|| EngineError::MissingTool("delegate reservation disappeared".into()))?;
+        #[cfg(test)]
+        let skill_fork_hook = if entry.request.staged_skill.is_some() {
+            self.inner
+                .skill_fork_reservation_hook
+                .lock()
+                .expect("skill fork reservation hook lock poisoned")
+                .take()
+        } else {
+            None
+        };
+        #[cfg(test)]
+        if let Some(hook) = skill_fork_hook {
+            if let Some(reached) = hook
+                .reached
+                .lock()
+                .expect("skill fork reservation reached lock poisoned")
+                .take()
+            {
+                let _ = reached.send(());
+            }
+            hook.release.notified().await;
+        }
         if resume_child.is_some() {
             self.inner
                 .delegation_queue
@@ -1135,6 +1166,9 @@ impl Engine {
             ));
         }
         let child = self.inner.store.get(entry.reservation.child_session_id)?;
+        if let Some(staged_skill) = &entry.request.staged_skill {
+            self.stage_child_skill_from_journal(entry.reservation.child_session_id, staged_skill);
+        }
         if let Some((invocation_id, generation)) = admission {
             self.mark_admission_starting(invocation_id, generation)?;
         }
@@ -2166,6 +2200,24 @@ impl Engine {
             .lock()
             .expect("resume admission hook lock poisoned") =
             Some(Arc::new(super::ResumeAdmissionHook {
+                reached: std::sync::Mutex::new(Some(reached)),
+                release: Arc::clone(&release),
+            }));
+        (receiver, release)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_skill_fork_reservation_hook(
+        &self,
+    ) -> (oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
+        let (reached, receiver) = oneshot::channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        *self
+            .inner
+            .skill_fork_reservation_hook
+            .lock()
+            .expect("skill fork reservation hook lock poisoned") =
+            Some(Arc::new(super::PagingRaceHook {
                 reached: std::sync::Mutex::new(Some(reached)),
                 release: Arc::clone(&release),
             }));

@@ -956,6 +956,64 @@
         {
           "type": "object",
           "properties": {
+            "args": {
+              "type": "string"
+            },
+            "base_dir": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "rendered_body": {
+              "type": "string"
+            },
+            "source_path": {
+              "type": "string"
+            },
+            "supporting_files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 10
+            },
+            "type": {
+              "type": "string",
+              "const": "skill_loaded"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "name",
+            "rendered_body",
+            "source_path",
+            "args",
+            "base_dir",
+            "supporting_files"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "skill_invocation_noted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "name"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "agent": {
               "$ref": "#/$defs/AgentSnapshot"
             },
@@ -3069,7 +3127,7 @@
           "description": "Current wildcard grammar: '*' matches any characters, '?' matches one character, and the exact '${workspace_dir}' expression is allowed; controls, globstar, escapes, classes, and every other brace form are forbidden. Runtime deserialization additionally enforces a maximum of 4096 UTF-8 bytes; x-cookie-agent-maxUtf8Bytes records that byte limit because JSON Schema maxLength counts Unicode code points.",
           "type": "string",
           "minLength": 1,
-          "pattern": "^(?!.*\\*\\*)(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$",
+          "pattern": "^(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$",
           "x-cookie-agent-maxUtf8Bytes": 4096
         },
         "source_layer": {
@@ -3378,7 +3436,8 @@
         "write",
         "bash",
         "delegate",
-        "mcp"
+        "mcp",
+        "skill"
       ]
     },
     "PermissionEffect": {
@@ -3402,7 +3461,7 @@
           "description": "Current wildcard grammar: '*' matches any characters, '?' matches one character, and the exact '${workspace_dir}' expression is allowed; controls, globstar, escapes, classes, and every other brace form are forbidden. Runtime deserialization additionally enforces a maximum of 4096 UTF-8 bytes; x-cookie-agent-maxUtf8Bytes records that byte limit because JSON Schema maxLength counts Unicode code points.",
           "type": "string",
           "minLength": 1,
-          "pattern": "^(?!.*\\*\\*)(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$",
+          "pattern": "^(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$",
           "x-cookie-agent-maxUtf8Bytes": 4096
         }
       },
@@ -5094,7 +5153,8 @@
             17,
             18,
             19,
-            20
+            20,
+            21
           ]
         },
         "payload": {

@@ -225,7 +225,7 @@ canonical working directory:
     cwd                            # canonical project path
     sessions/<session-id>/         # events.jsonl + meta.json cache
     artifacts/                     # content-addressed tool output
-    delegations.jsonl              # delegation journal (writes 14; reads 11-14)
+    delegations.jsonl              # delegation journal (writes 15; reads 11-15)
     grant-invalidations.jsonl      # tree-grant invalidation journal
     runtime-revisions-v8.jsonl     # runtime revision index
 ```

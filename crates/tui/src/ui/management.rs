@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use cookie_agent_protocol::{
     GlobalUsageResult, McpConfigTarget, McpServerDefinition, McpServerInfo, McpServerState,
     PermissionAction, PermissionEffect, PermissionRuleSource, SessionPermissionGetResult,
-    SessionUsageResult, UsageRollup,
+    SessionUsageResult, SkillsListResult, UsageRollup,
 };
 use ratatui::{
     Frame,
@@ -388,6 +388,20 @@ pub(super) struct PermissionPanel {
 }
 
 #[derive(Default)]
+pub(super) struct SkillPanel {
+    pub(super) result: Option<SkillsListResult>,
+    pub(super) selection: ListState,
+}
+
+impl SkillPanel {
+    pub(super) fn install(&mut self, result: SkillsListResult) {
+        self.result = Some(result);
+        let len = self.result.as_ref().map_or(0, |result| result.skills.len());
+        self.selection.select((len > 0).then_some(0));
+    }
+}
+
+#[derive(Default)]
 pub(super) struct UsagePanel {
     pub(super) session: Option<SessionUsageResult>,
     pub(super) global: Option<GlobalUsageResult>,
@@ -674,6 +688,51 @@ pub(super) fn render_permissions(
     );
 }
 
+pub(super) fn render_skills(frame: &mut Frame, area: Rect, panel: &mut SkillPanel, theme: &Theme) {
+    paint_panel(frame, area, theme);
+    let items = panel
+        .result
+        .as_ref()
+        .map(|result| {
+            result
+                .skills
+                .iter()
+                .map(|skill| {
+                    ListItem::new(format!(
+                        "{}  {:?}  {:?}  {}  {}",
+                        skill.name,
+                        skill.source,
+                        skill.permission_effect,
+                        if skill.precedence_winner {
+                            "winner"
+                        } else {
+                            "shadowed"
+                        },
+                        skill.location
+                    ))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    frame.render_stateful_widget(
+        List::new(items)
+            .highlight_symbol("> ")
+            .highlight_style(theme.selected())
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme.panel_border())
+                    .title("Skills")
+                    .title_bottom(
+                        Line::from(Span::styled("arrows move | esc close", theme.internal()))
+                            .right_aligned(),
+                    ),
+            ),
+        area,
+        &mut panel.selection,
+    );
+}
+
 pub(super) fn render_usage(frame: &mut Frame, area: Rect, panel: &UsagePanel, theme: &Theme) {
     paint_panel(frame, area, theme);
     let chunks = Layout::default()
@@ -810,6 +869,7 @@ fn action_label(action: PermissionAction) -> &'static str {
         PermissionAction::Bash => "bash",
         PermissionAction::Delegate => "delegate",
         PermissionAction::Mcp => "mcp",
+        PermissionAction::Skill => "skill",
     }
 }
 
@@ -846,7 +906,7 @@ mod tests {
         EffectivePermissionAction, GlobalUsageResult, McpConfigSource, McpOAuthDefinition,
         McpServerDefinition, McpServerInfo, McpServerState, ModelUsageRollup, PermissionAction,
         PermissionEffect, PermissionRuleSource, SessionId, SessionPermissionGetResult,
-        SessionUsageResult, UsageRollup,
+        SessionUsageResult, SkillDescriptor, SkillSource, SkillsListResult, UsageRollup,
     };
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -1022,6 +1082,48 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(text.contains("write  *  deny  [session_overlay]"), "{text}");
+    }
+
+    #[test]
+    fn skills_panel_renders_source_precedence_permission_and_location() {
+        let mut panel = super::SkillPanel::default();
+        panel.install(SkillsListResult {
+            skills: vec![SkillDescriptor {
+                name: "release-check".into(),
+                description: "Check a release".into(),
+                when_to_use: None,
+                location: "/workspace/.cookie-agent/skills/release-check/SKILL.md".into(),
+                source: SkillSource::Project,
+                precedence_winner: true,
+                permission_effect: PermissionEffect::Allow,
+                visible: true,
+                user_invocable: true,
+                argument_hint: Some("<tag>".into()),
+            }],
+        });
+        let mut terminal = Terminal::new(TestBackend::new(120, 8)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                super::render_skills(
+                    frame,
+                    frame.area(),
+                    &mut panel,
+                    &crate::theme::Theme::default(),
+                );
+            })
+            .expect("render skills");
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            text.contains("release-check  Project  Allow  winner"),
+            "{text}"
+        );
+        assert!(text.contains("/workspace/.cookie-agent/skills"), "{text}");
     }
 
     #[test]

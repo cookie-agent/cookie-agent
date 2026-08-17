@@ -1415,6 +1415,18 @@ pub enum EventPayload {
     SessionPermissionOverlaySet {
         overlay: SessionPermissionOverlay,
     },
+    SkillLoaded {
+        name: String,
+        rendered_body: String,
+        source_path: String,
+        args: String,
+        base_dir: String,
+        #[schemars(length(max = 10))]
+        supporting_files: Vec<String>,
+    },
+    SkillInvocationNoted {
+        name: String,
+    },
     RunStarted {
         client_run_id: ClientRunId,
         selection: RunSelection,
@@ -1697,6 +1709,8 @@ impl EventPayload {
             Self::SessionCreated { .. }
                 | Self::SessionReverted { .. }
                 | Self::SessionPermissionOverlaySet { .. }
+                | Self::SkillLoaded { .. }
+                | Self::SkillInvocationNoted { .. }
                 | Self::SessionTitleCommitted { .. }
                 | Self::UserInputAdmitted { .. }
                 | Self::UserInputRecalled { .. }
@@ -1723,6 +1737,26 @@ impl EventPayload {
             Self::SessionPermissionOverlaySet { overlay } => overlay
                 .validate()
                 .map_err(|_| EventSchemaError::InvalidSessionPermissionOverlay)?,
+            Self::SkillLoaded {
+                name,
+                rendered_body,
+                source_path,
+                base_dir,
+                supporting_files,
+                ..
+            } => {
+                if name.is_empty()
+                    || rendered_body.is_empty()
+                    || source_path.is_empty()
+                    || base_dir.is_empty()
+                    || supporting_files.len() > 10
+                {
+                    return Err(EventSchemaError::InvalidSkillEvent);
+                }
+            }
+            Self::SkillInvocationNoted { name } if name.is_empty() => {
+                return Err(EventSchemaError::InvalidSkillEvent);
+            }
             Self::RunStarted {
                 selection,
                 agent,
@@ -2090,6 +2124,7 @@ pub enum EventSchemaError {
     InvalidFallback,
     InvalidRevertSequence,
     InvalidSessionPermissionOverlay,
+    InvalidSkillEvent,
     ZeroEventSequence,
     InvalidSessionCreatedEnvelope,
     MissingRunId,
@@ -2144,6 +2179,7 @@ impl fmt::Display for EventSchemaError {
             }
             Self::InvalidRevertSequence => "session revert sequence must be positive",
             Self::InvalidSessionPermissionOverlay => "session permission overlay is invalid",
+            Self::InvalidSkillEvent => "skill event is invalid",
             Self::ZeroEventSequence => "event sequence must be positive",
             Self::InvalidSessionCreatedEnvelope => {
                 "SessionCreated must be sequence 1 with no run_id"

@@ -56,6 +56,7 @@ nav:
       - Permissions: guide/permissions.md
       - MCP servers: guide/mcp.md
       - Agents: guide/agents.md
+      - Skills: guide/skills.md
       - Configuration: guide/configuration.md
       - Providers: guide/providers.md
       - Compaction: guide/compaction.md

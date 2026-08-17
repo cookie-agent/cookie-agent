@@ -81,6 +81,22 @@ pub enum ConfigError {
     IneligibleDelegationTarget { agent: AgentId, target: AgentId },
     #[error("agent `{agent}` repeats fallback model `{model}`")]
     DuplicateFallbackModel { agent: AgentId, model: ModelKey },
+    #[error(
+        "invalid skill name `{name}` at `{path}`; expected ^[a-z0-9]+(-[a-z0-9]+)*$ with at most 64 characters"
+    )]
+    SkillName { path: PathBuf, name: String },
+    #[error(
+        "skill name mismatch at `{path}`: directory `{directory}`, frontmatter `{frontmatter}`"
+    )]
+    SkillNameMismatch {
+        path: PathBuf,
+        directory: String,
+        frontmatter: String,
+    },
+    #[error("invalid skill document `{path}`: {message}")]
+    SkillDocument { path: PathBuf, message: String },
+    #[error("available skill listing cannot fit within one percent of the model context")]
+    SkillListingBudget,
 }
 
 impl fmt::Debug for ConfigError {

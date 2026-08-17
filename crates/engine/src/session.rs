@@ -371,6 +371,7 @@ impl SessionStore {
                     | EventPayload::UserInputSubmitted { .. }
                     | EventPayload::DelegatedContextSeeded { .. }
                     | EventPayload::SessionPermissionOverlaySet { .. }
+                    | EventPayload::SkillLoaded { .. }
             );
         let envelope = current.log.append(run, event)?;
         let rebuilt = projection(current.log.clone())?;
@@ -522,6 +523,18 @@ impl SessionStore {
             return result;
         }
         projection.log.mark_persisted();
+        Ok(())
+    }
+
+    pub(crate) fn persist_buffered_session(&self, id: SessionId) -> Result<(), SessionError> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let projection = self.get(id)?;
+        if !projection.log.is_persisted() {
+            self.persist_buffered(id, &projection)?;
+        }
         Ok(())
     }
 

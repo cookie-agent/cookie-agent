@@ -272,9 +272,10 @@ impl Engine {
         } else {
             None
         };
+        let checkpoint_prefix =
+            model_history::checkpoint_retained_history(&context.history, &events, None);
         if let Some(window) = native_checkpoint {
-            let retained_history = context.history.get(..1).unwrap_or(&context.history);
-            let input_tokens_after = estimated_request_tokens(retained_history, input.tools)?;
+            let input_tokens_after = estimated_request_tokens(&checkpoint_prefix, input.tools)?;
             let budgets = ContextCheckpointBudgets {
                 context_limit_tokens: context_limit,
                 trigger_tokens: trigger_tokens.max(1).min(context_limit),
@@ -342,9 +343,12 @@ impl Engine {
             summary_limit,
         )
         .map_err(|error| EngineError::from(ModelError::invalid_response(error.to_string())))?;
-        let input_tokens_after = estimated_tokens_for_bytes(
-            model_history::framed_compaction_summary(checkpoint.summary()).len(),
+        let retained_history = model_history::checkpoint_retained_history(
+            &checkpoint_prefix,
+            &events,
+            Some(checkpoint.summary()),
         );
+        let input_tokens_after = estimated_request_tokens(&retained_history, input.tools)?;
         let budgets = ContextCheckpointBudgets {
             context_limit_tokens: context_limit,
             trigger_tokens: trigger_tokens.max(1).min(context_limit),
@@ -528,9 +532,11 @@ impl Engine {
                 continue;
             };
             let permission_overlay = session.permission_overlay;
-            let permission = self.inner.permissions.decide_operation_with_overlay(
+            let grants = self.skill_grants_for_session(input.session);
+            let permission = self.inner.permissions.decide_operation_with_grants(
                 &input.owner_policy.agent,
                 Some(&permission_overlay),
+                grants.as_ref(),
                 &prepared.operation,
                 &prepared.policy_labels,
                 self.inner.store.cwd(),

@@ -77,6 +77,49 @@ pub struct DelegateRequestPayloadV4 {
     pub background: bool,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum StagedSkillProvenance {
+    SkillFork,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct StagedSkillPayload {
+    pub provenance: StagedSkillProvenance,
+    pub name: String,
+    pub args: String,
+    pub rendered_body: String,
+    pub source_path: String,
+    pub base_dir: String,
+    #[schemars(length(max = 10))]
+    pub supporting_files: Vec<String>,
+    #[schemars(length(max = 256))]
+    pub grants: Vec<PermissionRule>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<ModelKey>", required)]
+    #[ts(type = "ModelKey | null")]
+    pub model: Option<ModelKey>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DelegateRequestPayloadV5 {
+    pub description: String,
+    pub prompt: String,
+    pub title: SessionTitle,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<SessionId>", required)]
+    pub resume_session_id: Option<SessionId>,
+    pub inherit_context: bool,
+    #[schemars(length(max = 65536))]
+    pub seeded_context: Vec<DelegatedContextTurn>,
+    pub background: bool,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<StagedSkillPayload>", required)]
+    pub staged_skill: Option<StagedSkillPayload>,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[allow(clippy::large_enum_variant)]
@@ -172,6 +215,29 @@ pub enum DelegationJournalRecord {
         request_fingerprint: Sha256Digest,
         prompt: String,
         request: DelegateRequestPayloadV4,
+    },
+    DelegationStartedV5 {
+        reservation: DelegationReservation,
+        child_agent: Box<AgentSnapshot>,
+        #[ts(type = "ModelSnapshotRevision")]
+        manifest_revision: ModelSnapshotRevision,
+        #[ts(type = "RuntimeRevision")]
+        runtime_revision: RuntimeRevision,
+        #[ts(type = "CatalogRevision")]
+        catalog_revision: CatalogRevision,
+        #[ts(type = "ProviderStateRevision")]
+        provider_state_revision: ProviderStateRevision,
+        #[ts(type = "ModelRevision")]
+        model_revision: ModelRevision,
+        #[ts(type = "AgentRevision")]
+        agent_revision: AgentRevision,
+        #[ts(type = "RecipeRegistryRevision")]
+        recipe_registry_revision: RecipeRegistryRevision,
+        #[schemars(length(min = 1, max = 256))]
+        selected_suffix: Vec<FrozenModelBinding>,
+        request_fingerprint: Sha256Digest,
+        prompt: String,
+        request: DelegateRequestPayloadV5,
     },
     DelegationLinked {
         invocation_id: InvocationId,

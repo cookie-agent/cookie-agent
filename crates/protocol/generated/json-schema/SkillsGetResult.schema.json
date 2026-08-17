@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillsGetResult",
+  "type": "object",
+  "properties": {
+    "rendered": {
+      "type": "string"
+    },
+    "skill": {
+      "$ref": "#/$defs/SkillDescriptor"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "skill",
+    "rendered"
+  ],
+  "$defs": {
+    "PermissionEffect": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "ask",
+        "deny"
+      ]
+    },
+    "SkillDescriptor": {
+      "type": "object",
+      "properties": {
+        "argument_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "location": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "permission_effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "precedence_winner": {
+          "type": "boolean"
+        },
+        "source": {
+          "$ref": "#/$defs/SkillSource"
+        },
+        "user_invocable": {
+          "type": "boolean"
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "when_to_use": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "description",
+        "when_to_use",
+        "location",
+        "source",
+        "precedence_winner",
+        "permission_effect",
+        "visible",
+        "user_invocable",
+        "argument_hint"
+      ]
+    },
+    "SkillSource": {
+      "type": "string",
+      "enum": [
+        "user",
+        "project"
+      ]
+    }
+  }
+}

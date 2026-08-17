@@ -53,6 +53,8 @@ and the CLI share one implementation of the protocol mechanics.
 | `session.resume` | Session ID | Resumed session metadata |
 | `session.rename` | Session ID, client rename ID, set/clear/reset change | Session metadata and client ID |
 | `session.set_permission_mode` | Session ID, `auto_approve`/`ask`/`yolo` | Empty object |
+| `skills.list` | Session ID | Discovered skills with source, precedence, visibility, and permission effect |
+| `skills.get` | Session ID, skill name, arguments | Permission-checked rendered preview and descriptor |
 | `session.compact` | Session ID, required nullable focus | Whether a checkpoint was committed |
 | `session.revert` | Session ID, positive `through_seq` | Updated session metadata |
 | `session.fork` | Session ID, positive `through_seq` | New session ID |
@@ -65,8 +67,9 @@ and the CLI share one implementation of the protocol mechanics.
 | `approval.list` | Root session ID, optional status | Approval records and tree grants |
 | `approval.respond` | Approval identity/revision/fingerprint, client ID, decision, optional rejection feedback | Updated approval record |
 
-Discovery is only `runtime.snapshot.get`; protocol 9 has no independent model,
-agent, or catalog list RPCs.
+Model, agent, and catalog discovery uses `runtime.snapshot.get`. Skills use the
+session-aware `skills.list` and `skills.get` methods because visibility depends
+on the governing run policy and session overlay.
 
 ## Steering
 
@@ -108,4 +111,4 @@ The shared client maps these to `ClientDelivery` variants (`Live`, replay
 deliveries, output stream events, `RuntimeChanged`, `RecoveryFailed`), so a UI
 consumes one ordered stream and never parses raw JSON-RPC frames.
 
-See [Events](events.md) for schema-20 event payloads.
+See [Events](events.md) for schema-21 event payloads.

@@ -1,7 +1,7 @@
 # Event Reference
 
-Session persistence and subscriptions write event schema 20 and reopen schemas
-15-20. Every stored event
+Session persistence and subscriptions write event schema 21 and reopen schemas
+15-21. Every stored event
 contains `event_schema_version`, `session_id`, required nullable `run_id`, a
 positive physical `seq`, `timestamp`, and a tagged `payload`. Events requiring a
 run ID reject a null envelope value.
@@ -10,7 +10,7 @@ run ID reject a null envelope value.
 
 | Category | Event payload types |
 |---|---|
-| Session | `session_created`, `session_reverted`, `session_permission_overlay_set`, `session_title_committed`, `delegated_context_seeded` |
+| Session | `session_created`, `session_reverted`, `session_permission_overlay_set`, `skill_loaded`, `skill_invocation_noted`, `session_title_committed`, `delegated_context_seeded` |
 | User input | `user_input_admitted`, `user_input_submitted`, `user_input_recalled`, `user_input_applied` |
 | Run | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_interrupted` |
 | Model | `model_attempt_started`, `text_delta`, `reasoning_delta`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback` |
@@ -54,6 +54,11 @@ Schema 20 adds `internal_agent_usage_recorded`. It attributes each completed
 internal model request to its internal run, internal agent ID, kind, and resolved
 model. The same session, agent, and global projections include these records.
 
+Schema 21 adds `skill_loaded` and `skill_invocation_noted`. `skill_loaded`
+stores the rendered body, skill name, source path, arguments, base directory,
+and at most ten supporting-file paths. It is pinned across context checkpoints.
+An identical repeat uses the shorter `skill_invocation_noted` payload.
+
 `user_input_admitted` normally belongs to an active run. A steer accepted for a
 queued delegated child is runless and requires that the session have no active
 run. It is persisted immediately and enters the next run's pending-input FIFO,
@@ -74,7 +79,7 @@ continues to recall the newest pending input.
 starts `events.subscription` notifications. A notification is tagged as either:
 
 ```json
-{ "type": "event", "event": { "event_schema_version": 20 } }
+{ "type": "event", "event": { "event_schema_version": 21 } }
 ```
 
 or a gap indicating that the subscriber must rebuild its disposable projection:

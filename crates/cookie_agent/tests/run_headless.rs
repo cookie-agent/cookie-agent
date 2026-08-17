@@ -19,7 +19,7 @@ use std::{
 
 use cookie_agent::run::{AllowedTool, OutputMode, PermissionModeArg, RunArgs, execute_with_io};
 use cookie_agent_config::load;
-use cookie_agent_engine::{Engine, EngineOptions};
+use cookie_agent_engine::{Engine, EngineHistoryView, EngineOptions};
 use cookie_agent_models::{
     ModelManager,
     catalog::{
@@ -31,7 +31,7 @@ use cookie_agent_models::{
 use cookie_agent_protocol::{
     ClientRunId, PermissionAction, PermissionEffect, RunSelection, RunStartParams, SessionId,
 };
-use cookie_agent_tools::{BuiltinTools, delegate::DelegateToolProvider};
+use cookie_agent_tools::{BuiltinTools, delegate::DelegateToolProvider, skill::SkillTool};
 use tempfile::TempDir;
 
 enum MockResponse {
@@ -235,6 +235,9 @@ impl Fixture {
         engine
             .try_register_tool_provider(Arc::new(DelegateToolProvider::new(engine.clone())))
             .expect("delegate tools");
+        engine
+            .try_register_tool_provider(Arc::new(SkillTool::new(engine.clone())))
+            .expect("skill tool");
         Self {
             _root: root,
             workspace,
@@ -428,6 +431,355 @@ async fn headless_outputs_prompt_sources_selection_and_verbose_tool_output() {
         .expect("write permission");
     assert_eq!(write.effect, PermissionEffect::Ask);
 
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn headless_skill_is_permission_checked_and_injected_before_the_prompt() {
+    let fixture = Fixture::new().await;
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("skill loaded")));
+    let mut args = run_args("check with the skill");
+    args.skill = Some("release-check".into());
+    args.skill_args = Some("v1.2.0".into());
+    args.allowed_tools = vec![AllowedTool::Skill("release-check".into())];
+    let result = fixture.run(args, "").await;
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let request = fixture
+        .server
+        .requests()
+        .into_iter()
+        .next()
+        .expect("model request");
+    assert!(request.contains("Release v1.2.0 from v1.2.0"), "{request}");
+    assert!(request.contains("check with the skill"), "{request}");
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn model_disabled_skill_lookup_rejects_without_leaking_hidden_hints() {
+    let fixture = Fixture::new().await;
+    let session = fixture
+        .engine
+        .create_session(RunSelection {
+            agent: "primary".parse().expect("agent"),
+            model: cookie_agent_protocol::ModelSelection {
+                model: "custom.local/test".parse().expect("model"),
+                variant: None,
+            },
+        })
+        .expect("session");
+    assert!(
+        fixture
+            .engine
+            .get_skill(session.session_id, "hidden-model", "")
+            .is_ok(),
+        "user preview remains available"
+    );
+    let listed = fixture
+        .engine
+        .list_skills(session.session_id)
+        .expect("skill list");
+    let visibility = |name: &str| {
+        listed
+            .skills
+            .iter()
+            .find(|skill| skill.name == name && skill.precedence_winner)
+            .map(|skill| skill.visible)
+            .expect("listed skill")
+    };
+    assert!(visibility("release-check"));
+    assert!(!visibility("hidden-model"));
+    assert!(!visibility("denied-skill"));
+    let hidden = fixture
+        .engine
+        .get_model_skill(session.session_id, "hidden-model", "")
+        .unwrap_err()
+        .to_string();
+    let hidden_hints = hidden.split("valid skills:").nth(1).unwrap_or_default();
+    assert!(hidden_hints.contains("release-check"), "{hidden}");
+    assert!(!hidden_hints.contains("hidden-model"), "{hidden}");
+    assert!(!hidden.contains("denied-skill"), "{hidden}");
+
+    let denied = fixture
+        .engine
+        .get_model_skill(session.session_id, "denied-skill", "")
+        .unwrap_err()
+        .to_string();
+    let hints = denied.split("valid skills:").nth(1).unwrap_or_default();
+    assert!(!hints.contains("hidden-model"), "{denied}");
+    assert!(!hints.contains("denied-skill"), "{denied}");
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn direct_skill_ask_routes_through_headless_auto_rejection() {
+    let fixture = Fixture::new().await;
+    let mut args = run_args("approval required");
+    args.skill = Some("release-check".into());
+    args.permission_mode = PermissionModeArg::Ask;
+    args.output = Some(OutputMode::Json);
+    let result = fixture.run(args, "").await;
+    assert_eq!(result.code, 3, "{}\n{}", result.stderr, result.stdout);
+    let records = parse_json_lines(&result.stdout);
+    assert!(records.iter().any(|record| {
+        record["type"] == "event" && record["event"]["payload"]["type"] == "approval_escalated"
+    }));
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn skill_grant_executes_hidden_bash_for_one_turn_only() {
+    let fixture = Fixture::new().await;
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "bash",
+        r#"{"command":"git --version"}"#,
+    )));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("granted")));
+    let mut first = run_args("use the grant");
+    first.agent = Some("skill-host".parse().expect("agent"));
+    first.skill = Some("release-check".into());
+    first.output = Some(OutputMode::Json);
+    let first = fixture.run(first, "").await;
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    let first_records = parse_json_lines(&first.stdout);
+    let session_id: SessionId =
+        serde_json::from_value(first_records.last().expect("summary")["session_id"].clone())
+            .expect("session ID");
+    let first_run: cookie_agent_protocol::RunId =
+        serde_json::from_value(first_records.last().expect("summary")["run_id"].clone())
+            .expect("run ID");
+    assert!(first_records.iter().any(|record| {
+        record["type"] == "event"
+            && record["event"]["payload"]["type"] == "tool_call_terminated"
+            && record["event"]["payload"]["outcome"] == "completed"
+    }));
+    assert!(
+        fixture
+            .engine
+            .steer(first_run, "unconfirmed steer".into())
+            .await
+            .is_err()
+    );
+    let failed_start = fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id,
+            client_run_id: ClientRunId::new(uuid::Uuid::now_v7().to_string())
+                .expect("client run ID"),
+            selection: RunSelection {
+                agent: "missing-agent".parse().expect("agent"),
+                model: cookie_agent_protocol::ModelSelection {
+                    model: "custom.local/test".parse().expect("model"),
+                    variant: None,
+                },
+            },
+            input: cookie_agent_protocol::encode_skill_submission_with_prompt(
+                "release-check",
+                "failed",
+                Some("must not install"),
+            ),
+        })
+        .await;
+    assert!(failed_start.is_err());
+
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "bash",
+        r#"{"command":"git init leaked-repo"}"#,
+    )));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("not granted")));
+    let mut second = run_args("next user turn");
+    second.resume_session = Some(session_id);
+    let second = fixture.run(second, "").await;
+    assert_eq!(second.code, 0, "{}", second.stderr);
+    assert!(!fixture.workspace.join("leaked-repo").exists());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn fork_skill_uses_delegate_approval_and_installs_only_in_child() {
+    let fixture = Fixture::new().await;
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "skill",
+        r#"{"name":"fork-skill","args":""}"#,
+    )));
+    let mut denied = run_args("fork requires approval");
+    denied.agent = Some("skill-host".parse().expect("agent"));
+    denied.permission_mode = PermissionModeArg::Ask;
+    denied.output = Some(OutputMode::Json);
+    let denied = fixture.run(denied, "").await;
+    assert_eq!(denied.code, 3, "{}", denied.stderr);
+    assert!(parse_json_lines(&denied.stdout).iter().any(|record| {
+        record["type"] == "event" && record["event"]["payload"]["type"] == "approval_escalated"
+    }));
+
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "skill",
+        r#"{"name":"fork-skill","args":""}"#,
+    )));
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "bash",
+        r#"{"command":"git --version"}"#,
+    )));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("child done")));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("parent done")));
+    let mut allowed = run_args("fork with approval grant");
+    allowed.agent = Some("skill-host".parse().expect("agent"));
+    allowed.allowed_tools = vec![AllowedTool::Delegate];
+    allowed.output = Some(OutputMode::Json);
+    let allowed = fixture.run(allowed, "").await;
+    assert_eq!(allowed.code, 0, "{}", allowed.stderr);
+    let records = parse_json_lines(&allowed.stdout);
+    let parent: SessionId =
+        serde_json::from_value(records.last().expect("summary")["session_id"].clone())
+            .expect("parent session");
+    let child = fixture
+        .engine
+        .children(parent)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| {
+            panic!(
+                "fork child missing; output={} requests={:?}",
+                allowed.stdout,
+                fixture.server.requests()
+            )
+        })
+        .session_id;
+    let child_history = serde_json::to_string(
+        &fixture
+            .engine
+            .get_history(child, EngineHistoryView::Assembled)
+            .await
+            .expect("child history"),
+    )
+    .expect("child history JSON");
+    assert!(
+        child_history.contains("Forked skill body"),
+        "{child_history}"
+    );
+    let body_requests = fixture
+        .server
+        .requests()
+        .into_iter()
+        .filter(|request| request.contains("Forked skill body"))
+        .collect::<Vec<_>>();
+    assert!(
+        !body_requests.is_empty(),
+        "child request omitted skill body"
+    );
+    for request in body_requests {
+        assert_eq!(request.matches("Forked skill body").count(), 1, "{request}");
+    }
+    let parent_history = serde_json::to_string(
+        &fixture
+            .engine
+            .get_history(parent, EngineHistoryView::Assembled)
+            .await
+            .expect("parent history"),
+    )
+    .expect("parent history JSON");
+    assert!(
+        !parent_history.contains("Forked skill body"),
+        "{parent_history}"
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn direct_fork_skill_uses_prepared_delegate_path() {
+    let fixture = Fixture::new().await;
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "bash",
+        r#"{"command":"git --version"}"#,
+    )));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("child direct done")));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("parent direct done")));
+    let mut args = run_args("direct fork");
+    args.agent = Some("skill-host".parse().expect("agent"));
+    args.skill = Some("fork-skill".into());
+    args.allowed_tools = vec![AllowedTool::Delegate];
+    args.output = Some(OutputMode::Json);
+    let result = fixture.run(args, "").await;
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let records = parse_json_lines(&result.stdout);
+    let parent: SessionId =
+        serde_json::from_value(records.last().expect("summary")["session_id"].clone())
+            .expect("parent");
+    let child = fixture
+        .engine
+        .children(parent)
+        .into_iter()
+        .next()
+        .expect("direct fork child");
+    let history = serde_json::to_string(
+        &fixture
+            .engine
+            .get_history(child.session_id, EngineHistoryView::Assembled)
+            .await
+            .expect("child history"),
+    )
+    .expect("history JSON");
+    assert!(history.contains("Forked skill body"), "{history}");
+    let body_requests = fixture
+        .server
+        .requests()
+        .into_iter()
+        .filter(|request| request.contains("Forked skill body"))
+        .collect::<Vec<_>>();
+    assert!(
+        !body_requests.is_empty(),
+        "child request omitted skill body"
+    );
+    for request in body_requests {
+        assert_eq!(request.matches("Forked skill body").count(), 1, "{request}");
+    }
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn prospective_chained_skill_listing_preserves_a_grants_after_b_loads() {
+    let fixture = Fixture::new().await;
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "skill",
+        r#"{"name":"grant-b","args":""}"#,
+    )));
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "bash",
+        r#"{"command":"git --version"}"#,
+    )));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("chain complete")));
+    let mut args = run_args("chain skills");
+    args.agent = Some("skill-host".parse().expect("agent"));
+    args.skill = Some("grant-a".into());
+    let result = fixture.run(args, "").await;
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let requests = fixture.server.requests();
+    assert!(
+        requests[0].contains("<name>grant-b</name>"),
+        "{}",
+        requests[0]
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("git --version"))
+    );
     fixture.shutdown().await;
 }
 
@@ -759,6 +1111,8 @@ fn run_args(prompt: &str) -> RunArgs {
         variant: None,
         permission_mode: PermissionModeArg::AutoApprove,
         allowed_tools: Vec::new(),
+        skill: None,
+        skill_args: None,
         max_turns: 100,
         timeout: 10,
         resume_session: None,
@@ -835,9 +1189,96 @@ fn assert_jsonl_structure(records: &[serde_json::Value]) {
 fn write_workspace(workspace: &Path, endpoint: &str) {
     let root = workspace.join(".cookie-agent");
     let agents = root.join("agents");
+    let skills = root.join("skills");
     fs::create_dir_all(&agents).expect("agent directory");
+    for skill in [
+        "release-check",
+        "hidden-model",
+        "denied-skill",
+        "fork-skill",
+        "grant-a",
+        "grant-b",
+    ] {
+        fs::create_dir_all(skills.join(skill)).expect("skill directory");
+    }
     make_private(&root);
     make_private(&agents);
+    make_private(&skills);
+    for skill in [
+        "release-check",
+        "hidden-model",
+        "denied-skill",
+        "fork-skill",
+        "grant-a",
+        "grant-b",
+    ] {
+        make_private(&skills.join(skill));
+    }
+    fs::write(
+        skills.join("release-check/SKILL.md"),
+        r#"---
+name: release-check
+description: Check a release
+allowed-tools: Bash(git:*) Read
+---
+Release $1 from $ARGUMENTS.
+"#,
+    )
+    .expect("release skill");
+    fs::write(
+        skills.join("hidden-model/SKILL.md"),
+        r#"---
+name: hidden-model
+description: User-only hidden skill
+disable-model-invocation: true
+---
+Hidden body.
+"#,
+    )
+    .expect("hidden model skill");
+    fs::write(
+        skills.join("denied-skill/SKILL.md"),
+        r#"---
+name: denied-skill
+description: Denied skill
+---
+Denied body.
+"#,
+    )
+    .expect("denied skill");
+    fs::write(
+        skills.join("fork-skill/SKILL.md"),
+        r#"---
+name: fork-skill
+description: Fork this skill
+allowed-tools: Bash(git:*)
+context: fork
+---
+Forked skill body.
+"#,
+    )
+    .expect("fork skill");
+    fs::write(
+        skills.join("grant-a/SKILL.md"),
+        r#"---
+name: grant-a
+description: Grant another skill and bash
+allowed-tools: Skill(grant-b) Bash(git:*)
+---
+Grant A body.
+"#,
+    )
+    .expect("grant A skill");
+    fs::write(
+        skills.join("grant-b/SKILL.md"),
+        r#"---
+name: grant-b
+description: Grantless second skill
+---
+Grant B body.
+"#,
+    )
+    .expect("grant B skill");
     fs::write(
         root.join("config.toml"),
         format!(
@@ -852,11 +1293,11 @@ auth = {{ method = "no-auth-v1", values = {{}} }}
 
 [providers."custom.local".models.test]
 display_name = "Headless Test"
-capabilities = {{ input = ["text"], output = ["text"], context_tokens = 8192, output_tokens = 2048, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {{}} }}
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 65536, output_tokens = 2048, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {{}} }}
 
 [providers."custom.local".models.alternate]
 display_name = "Headless Alternate"
-capabilities = {{ input = ["text"], output = ["text"], context_tokens = 8192, output_tokens = 2048, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {{}} }}
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 65536, output_tokens = 2048, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {{}} }}
 "#,
         ),
     )
@@ -875,6 +1316,9 @@ permissions:
   read: ask
   write: ask
   bash: ask
+  skill:
+    "*": ask
+    denied-skill: deny
   delegate:
     reviewer: allow
 ---
@@ -897,6 +1341,26 @@ Review delegated work.
 "#,
     )
     .expect("reviewer agent");
+    fs::write(
+        agents.join("skill-host.md"),
+        r#"---
+description: Skill grant integration agent
+mode: primary
+enabled: true
+models:
+  - { model: "custom.local/test", variant: null }
+permissions:
+  skill:
+    release-check: allow
+    fork-skill: allow
+    grant-a: allow
+  delegate:
+    reviewer: ask
+---
+Use loaded skills.
+"#,
+    )
+    .expect("skill host agent");
 }
 
 fn make_private(path: &Path) {

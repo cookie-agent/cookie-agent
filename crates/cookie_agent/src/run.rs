@@ -52,23 +52,51 @@ impl From<PermissionModeArg> for PermissionMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, ValueEnum)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum AllowedTool {
     Read,
     Write,
     Bash,
     Delegate,
     Mcp,
+    Skill(String),
 }
 
 impl AllowedTool {
-    const fn action(self) -> PermissionAction {
+    const fn action(&self) -> PermissionAction {
         match self {
             Self::Read => PermissionAction::Read,
             Self::Write => PermissionAction::Write,
             Self::Bash => PermissionAction::Bash,
             Self::Delegate => PermissionAction::Delegate,
             Self::Mcp => PermissionAction::Mcp,
+            Self::Skill(_) => PermissionAction::Skill,
+        }
+    }
+
+    fn resource(&self) -> &str {
+        match self {
+            Self::Skill(name) => name,
+            _ => "*",
+        }
+    }
+}
+
+impl std::str::FromStr for AllowedTool {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "read" => Ok(Self::Read),
+            "write" => Ok(Self::Write),
+            "bash" => Ok(Self::Bash),
+            "delegate" => Ok(Self::Delegate),
+            "mcp" => Ok(Self::Mcp),
+            _ => value
+                .strip_prefix("skill:")
+                .filter(|name| !name.is_empty())
+                .map(|name| Self::Skill(name.to_owned()))
+                .ok_or_else(|| "expected read, write, bash, delegate, mcp, or skill:<name>".into()),
         }
     }
 }
@@ -102,8 +130,14 @@ pub struct RunArgs {
     #[arg(long, value_enum, default_value_t)]
     pub permission_mode: PermissionModeArg,
     /// Permission action to allow. May be repeated or comma-delimited.
-    #[arg(long, value_enum, value_delimiter = ',')]
+    #[arg(long, value_delimiter = ',')]
     pub allowed_tools: Vec<AllowedTool>,
+    /// Load a user-invocable skill before running the prompt.
+    #[arg(long)]
+    pub skill: Option<String>,
+    /// Arguments supplied to --skill.
+    #[arg(long, requires = "skill")]
+    pub skill_args: Option<String>,
     /// Maximum committed root model turns.
     #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..))]
     pub max_turns: u32,
@@ -403,6 +437,13 @@ async fn prepare_run(
     apply_allowed_tools(engine, session.session_id, &args.allowed_tools)
         .await
         .map_err(PrepareError::setup)?;
+    let prompt = args.skill.as_ref().map_or(prompt.clone(), |skill| {
+        cookie_agent_protocol::encode_skill_submission_with_prompt(
+            skill,
+            args.skill_args.as_deref().unwrap_or_default(),
+            Some(&prompt),
+        )
+    });
     let cursor = engine
         .get_session(session.session_id)
         .map_err(|error| PrepareError::setup(anyhow!(error).context("reload headless session")))?
@@ -567,17 +608,16 @@ async fn apply_allowed_tools(
     session_id: SessionId,
     allowed: &[AllowedTool],
 ) -> anyhow::Result<()> {
-    let actions = allowed
+    let rules = allowed
         .iter()
-        .copied()
-        .map(AllowedTool::action)
+        .map(|allowed| (allowed.action(), allowed.resource().to_owned()))
         .collect::<HashSet<_>>();
-    for action in actions {
+    for (action, resource) in rules {
         engine
             .set_session_permission(
                 session_id,
                 action,
-                WildcardPattern::new("*").expect("static wildcard is valid"),
+                WildcardPattern::new(resource).context("parse allowed-tools resource")?,
                 PermissionEffect::Allow,
             )
             .await

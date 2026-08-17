@@ -32,7 +32,8 @@ use crate::{
     SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
     SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
     SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, SessionUsageParams,
-    SessionUsageResult, StoredEvent, ToolCallId, Transport, TransportError,
+    SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult,
+    StoredEvent, ToolCallId, Transport, TransportError,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -138,6 +139,8 @@ pub trait ClientProtocol: Send + Sync {
         &self,
         params: SessionPermissionClearParams,
     ) -> Result<SessionPermissionMutationResult, ClientError>;
+    async fn list_skills(&self, params: SkillsListParams) -> Result<SkillsListResult, ClientError>;
+    async fn get_skill(&self, params: SkillsGetParams) -> Result<SkillsGetResult, ClientError>;
     async fn compact_session(
         &self,
         params: SessionCompactParams,
@@ -607,6 +610,17 @@ impl Client {
         self.call("session.permission.clear", &params).await
     }
 
+    pub async fn list_skills(
+        &self,
+        params: SkillsListParams,
+    ) -> Result<SkillsListResult, ClientError> {
+        self.call("skills.list", &params).await
+    }
+
+    pub async fn get_skill(&self, params: SkillsGetParams) -> Result<SkillsGetResult, ClientError> {
+        self.call("skills.get", &params).await
+    }
+
     pub async fn compact_session(
         &self,
         params: SessionCompactParams,
@@ -908,6 +922,12 @@ impl ClientProtocol for Client {
     ) -> Result<SessionPermissionMutationResult, ClientError> {
         Client::clear_session_permission(self, params).await
     }
+    async fn list_skills(&self, params: SkillsListParams) -> Result<SkillsListResult, ClientError> {
+        Client::list_skills(self, params).await
+    }
+    async fn get_skill(&self, params: SkillsGetParams) -> Result<SkillsGetResult, ClientError> {
+        Client::get_skill(self, params).await
+    }
     async fn compact_session(
         &self,
         params: SessionCompactParams,
@@ -1124,6 +1144,12 @@ where
         params: SessionPermissionClearParams,
     ) -> Result<SessionPermissionMutationResult, ClientError> {
         self.deref().clear_session_permission(params).await
+    }
+    async fn list_skills(&self, params: SkillsListParams) -> Result<SkillsListResult, ClientError> {
+        self.deref().list_skills(params).await
+    }
+    async fn get_skill(&self, params: SkillsGetParams) -> Result<SkillsGetResult, ClientError> {
+        self.deref().get_skill(params).await
     }
     async fn compact_session(
         &self,

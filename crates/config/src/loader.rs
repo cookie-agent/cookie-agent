@@ -36,6 +36,7 @@ pub struct LoadedConfiguration {
     pub user_mcp_servers: BTreeMap<String, crate::McpServerConfig>,
     pub workspace_mcp_servers: BTreeMap<String, crate::McpServerConfig>,
     pub config_paths: ConfigLayerPaths,
+    pub skills: crate::SkillRegistry,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -68,7 +69,9 @@ impl LoadedConfiguration {
 pub fn load(cwd: &Path) -> Result<LoadedConfiguration, ConfigError> {
     let cwd = cwd.canonicalize().map_err(ConfigError::Io)?;
     let user = user_root();
-    load_from_roots(user.as_deref(), Some(&cwd.join(".cookie-agent")))
+    let mut loaded = load_from_roots(user.as_deref(), Some(&cwd.join(".cookie-agent")))?;
+    loaded.skills = crate::load_skills(&cwd)?;
+    Ok(loaded)
 }
 
 /// Loads explicit roots, primarily for composition and adversarial tests.
@@ -158,6 +161,7 @@ pub fn load_from_roots(
             user: user_root.map(|root| root.join("config.toml")),
             workspace: workspace_root.map(|root| root.join("config.toml")),
         },
+        skills: crate::SkillRegistry::default(),
     })
 }
 

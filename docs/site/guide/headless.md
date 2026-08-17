@@ -41,9 +41,17 @@ session tree, the runner rejects it, cancels the root run, and waits for the
 matching terminal event.
 
 `--allowed-tools` may be repeated or comma-delimited and accepts `read`,
-`write`, `bash`, `delegate`, and `mcp`. It adds an `allow` overlay for each
+`write`, `bash`, `delegate`, `mcp`, and `skill:<name>`. It adds an `allow` overlay for each
 listed permission action. It does not deny omitted actions or replace existing
 agent policy.
+
+## Skills
+
+`--skill <name>` loads a user-invocable skill before the prompt run.
+`--skill-args <text>` supplies its raw arguments and requires `--skill`. Skill
+permission is evaluated before injection; use `--allowed-tools skill:<name>` to
+grant it explicitly in unattended runs. The load appends the same durable event
+used by interactive and model invocation.
 
 ## Output
 

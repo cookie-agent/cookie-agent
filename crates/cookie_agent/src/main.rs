@@ -355,6 +355,15 @@ async fn compose_with<T: CatalogTransport + 'static>(
         engine.shutdown().await;
         return Err(error);
     }
+    if let Err(error) = engine
+        .try_register_tool_provider(Arc::new(cookie_agent_tools::skill::SkillTool::new(
+            engine.clone(),
+        )))
+        .context("register skill tool")
+    {
+        engine.shutdown().await;
+        return Err(error);
+    }
     let server = Arc::new(Server::new(engine.clone()));
     let catalog_refresh_shutdown = CancellationToken::new();
     let catalog_refresh_task = tokio::spawn(run_catalog_refresh_loop(
@@ -1171,6 +1180,8 @@ mod tests {
                     variant: Some("base".into()),
                     permission_mode: run::PermissionModeArg::Ask,
                     allowed_tools: vec![run::AllowedTool::Read, run::AllowedTool::Bash],
+                    skill: None,
+                    skill_args: None,
                     max_turns: 7,
                     timeout: 30,
                     resume_session: None,
@@ -1214,6 +1225,31 @@ mod tests {
             ]
         );
         assert_eq!(args.output_mode(), run::OutputMode::Json);
+        let Command::Run { args } = Cli::try_parse_from([
+            "cookie",
+            "run",
+            "prompt",
+            "--skill",
+            "release-check",
+            "--skill-args",
+            "v1.2.0",
+            "--allowed-tools",
+            "skill:release-check",
+        ])
+        .unwrap()
+        .command
+        .unwrap() else {
+            panic!("run command");
+        };
+        assert_eq!(args.skill.as_deref(), Some("release-check"));
+        assert_eq!(args.skill_args.as_deref(), Some("v1.2.0"));
+        assert_eq!(
+            args.allowed_tools,
+            [run::AllowedTool::Skill("release-check".into())]
+        );
+        assert!(
+            Cli::try_parse_from(["cookie", "run", "prompt", "--skill-args", "orphan"]).is_err()
+        );
         assert!(Cli::try_parse_from(["cookie", "run"]).is_err());
         assert!(Cli::try_parse_from(["cookie", "run", "positional", "-p", "named"]).is_err());
         assert!(Cli::try_parse_from(["cookie", "run", "-p", "named", "-f", "prompt.txt"]).is_err());

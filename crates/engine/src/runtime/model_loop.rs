@@ -42,7 +42,7 @@ use crate::{
 impl Engine {
     pub(super) async fn start_run_direct(
         &self,
-        params: RunStartParams,
+        mut params: RunStartParams,
         admission: Option<(InvocationId, u64)>,
     ) -> Result<RunStartResult, EngineError> {
         self.inner.mcp.await_eager_ready().await;
@@ -54,6 +54,21 @@ impl Engine {
             ));
         }
         let session = self.inner.store.get(params.session_id)?;
+        let staged_skill = self.pending_child_skill(params.session_id);
+        let direct_skill = (staged_skill.is_none())
+            .then(|| cookie_agent_protocol::decode_skill_submission(&params.input))
+            .flatten()
+            .map(|(name, args, prompt)| {
+                params.input = prompt
+                    .unwrap_or_else(|| "Apply the loaded skill to the current session.".into());
+                (name, args)
+            });
+        let direct_plan = direct_skill
+            .as_ref()
+            .map(|(name, args)| self.prepare_user_skill_invocation(name, args))
+            .transpose()?;
+        let prospective_plan = staged_skill.as_ref().or(direct_plan.as_ref());
+        let prospective_grants = prospective_plan.and_then(|plan| plan.grants());
         if let Some(run) = session
             .runs
             .values()
@@ -72,7 +87,7 @@ impl Engine {
             tool_output_max_lines: self.inner.config.runtime.tool_output.max_lines,
             tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
         };
-        let run_policy = match &session.meta.origin {
+        let mut run_policy = match &session.meta.origin {
             SessionOrigin::Root => {
                 self.reconcile_provider_store()?;
                 let runtime = self.current_runtime();
@@ -105,6 +120,11 @@ impl Engine {
                 )?
             }
         };
+        self.compose_skill_listing(
+            params.session_id,
+            &mut run_policy,
+            prospective_grants.as_ref(),
+        )?;
         let run_id = RunId::new_v7();
         let input_through_seq = session.meta.last_event_seq;
         self.append(
@@ -195,6 +215,20 @@ impl Engine {
                 .remove(&run_id);
             return Err(error);
         }
+        self.clear_skill_turn_state(params.session_id);
+        if staged_skill.is_some()
+            && let Some(plan) = self.take_pending_child_skill(params.session_id)
+            && let Err(error) = self
+                .install_prepared_skill(params.session_id, Some(run_id), &plan)
+                .await
+        {
+            self.inner
+                .active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&run_id);
+            return Err(error);
+        }
         // A sweeper may have terminalized this durable run before active-run
         // registration. Never resurrect a cancelled run with a live loop.
         if self.run_cancelled_recorded(params.session_id, run_id)? {
@@ -224,6 +258,46 @@ impl Engine {
         }
         let engine = self.clone();
         tokio::spawn(async move {
+            if let Some((name, args)) = direct_skill
+                && let Err(error) = engine
+                    .execute_direct_skill(active.clone(), run_id, name, args)
+                    .await
+            {
+                if matches!(error, EngineError::Permission(_)) {
+                    tokio::select! {
+                        () = active.cancellation.cancelled() => {
+                            let _ = engine.append_run_cancelled_once(&active, run_id, None);
+                        }
+                        () = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                            let _ = engine
+                                .append(
+                                    active.session,
+                                    Some(run_id),
+                                    Event::RunFailed {
+                                        error: safe_error(&error.to_string()),
+                                    },
+                                )
+                                .await;
+                        }
+                    }
+                } else if active.cancellation.is_cancelled() {
+                    let _ = engine.append_run_cancelled_once(&active, run_id, None);
+                } else {
+                    let _ = engine
+                        .append(
+                            active.session,
+                            Some(run_id),
+                            Event::RunFailed {
+                                error: safe_error(&error.to_string()),
+                            },
+                        )
+                        .await;
+                }
+                if let Ok(mut active_runs) = engine.inner.active.lock() {
+                    active_runs.remove(&run_id);
+                }
+                return;
+            }
             if let Err(error) = engine.run_loop(run_id, active).await {
                 // A provider-attempt persistence error may also prevent the
                 // terminal append. Retain this active tombstone for reopen
@@ -308,14 +382,41 @@ impl Engine {
                 self.append_run_cancelled_once(&active, run_id, None)?;
                 return Ok(());
             }
-            let tools = self.tool_definitions(active.session, &active.policy)?;
+            let override_model = self.take_skill_model_override(active.session);
+            let mut turn_policy = None;
+            if let Some(model) = override_model {
+                let descriptor = active
+                    .policy
+                    .runtime
+                    .result
+                    .snapshot
+                    .models
+                    .iter()
+                    .find(|descriptor| descriptor.key == model)
+                    .ok_or(EngineError::NoRunnableModel)?;
+                let selection = cookie_agent_protocol::ModelSelection {
+                    model,
+                    variant: descriptor.default_variant.clone(),
+                };
+                let binding = crate::model_snapshots::binding_for_selection(
+                    &active.policy.runtime.current_manifest,
+                    &active.policy.runtime.models,
+                    &selection,
+                )?;
+                let mut policy = active.policy.as_ref().clone();
+                policy.selected_suffix = vec![binding];
+                turn_policy = Some(policy);
+                fallback_entry = 0;
+            }
+            let policy = turn_policy.as_ref().unwrap_or(&active.policy);
+            let tools = self.tool_definitions(active.session, policy)?;
             let prompt_events = self.prompt_events(active.session, run_id).await?;
             let attempt = match self
                 .stream_attempt(
                     active.session,
                     run_id,
                     &active.cancellation,
-                    &active.policy,
+                    policy,
                     &mut fallback_entry,
                     prompt_events,
                     tools,

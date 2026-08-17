@@ -1838,7 +1838,9 @@ fn reduce_event(
         | EventPayload::InternalAgentUsageRecorded { .. }
         | EventPayload::ToolStdinSubmitted { .. }
         | EventPayload::ToolCallLinked { .. }
-        | EventPayload::SessionPermissionOverlaySet { .. } => {}
+        | EventPayload::SessionPermissionOverlaySet { .. }
+        | EventPayload::SkillLoaded { .. }
+        | EventPayload::SkillInvocationNoted { .. } => {}
     }
 }
 

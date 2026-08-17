@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillsGetParams",
+  "type": "object",
+  "properties": {
+    "args": {
+      "type": "string",
+      "default": ""
+    },
+    "name": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "name"
+  ]
+}

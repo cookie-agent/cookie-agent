@@ -277,6 +277,11 @@ fn validate_records(
                     return corrupt(path, "SessionPermissionOverlaySet must not have run_id");
                 }
             }
+            EventPayload::SkillLoaded { .. } | EventPayload::SkillInvocationNoted { .. } => {
+                if record.run_id.is_some() {
+                    require_started_run(path, &runs, record.run_id)?;
+                }
+            }
             EventPayload::DelegateChildTerminated { .. } => {
                 if record.run_id.is_some() {
                     return corrupt(path, "DelegateChildTerminated must not have run_id");

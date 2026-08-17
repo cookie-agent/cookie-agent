@@ -3,4 +3,4 @@
 /**
  * A delegation-journal schema accepted by this build.
  */
-export type DelegationJournalSchemaVersion = 11 | 12 | 13 | 14;
+export type DelegationJournalSchemaVersion = 11 | 12 | 13 | 14 | 15;

@@ -22,8 +22,8 @@ observability are all built in.
   effects.
 - **Agent documents** — Markdown files with YAML frontmatter define personas,
   models, and permissions. Author your own or use the built-in `default`.
-- **Skill loading** — `SKILL.md` support following the agentskills.io standard
-  (coming soon).
+- **Skill loading** — strict user/project `SKILL.md` discovery, permission-aware
+  model and user invocation, turn-scoped tool grants, and forked skill context.
 - **Observability** — per-session token usage, prompt-cache hit rates, and
   estimated cost rollups.
 - **Headless runs** — `cookie run` executes a prompt without the TUI, suitable

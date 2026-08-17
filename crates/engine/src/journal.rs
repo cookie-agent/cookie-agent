@@ -13,6 +13,7 @@ use cookie_agent_protocol::{
     ModelSnapshotRevision, ProviderStateRevision, RecipeRegistryRevision, RunId, RuntimeRevision,
     SessionId, SessionTitle, Sha256Digest, StoredDelegationJournalRecord, ToolCallId,
 };
+use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use crate::events::{EventLogError, append_jsonl, load_jsonl};
@@ -28,6 +29,30 @@ pub struct DelegateRequestPayload {
     pub inherit_context: bool,
     pub seeded_context: Vec<cookie_agent_protocol::DelegatedContextTurn>,
     pub background: Option<bool>,
+    pub staged_skill: Option<cookie_agent_protocol::StagedSkillPayload>,
+}
+
+pub(crate) fn delegation_request_fingerprint(
+    child_agent: &AgentSnapshot,
+    selected_suffix: &[FrozenModelBinding],
+    request: &DelegateRequestPayload,
+) -> Result<Sha256Digest, ()> {
+    let background = request.background.ok_or(())?;
+    let payload = serde_json::to_vec(&(
+        &child_agent.agent,
+        &request.description,
+        &request.prompt,
+        &request.title,
+        &request.resume_session_id,
+        request.inherit_context,
+        background,
+        &request.seeded_context,
+        child_agent,
+        selected_suffix,
+        &request.staged_skill,
+    ))
+    .map_err(|_| ())?;
+    Sha256Digest::new(format!("{:x}", Sha256::digest(payload))).map_err(|_| ())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -478,7 +503,7 @@ fn reserve(
         path,
         &StoredDelegationJournalRecord {
             delegation_journal_schema_version: DelegationJournalSchemaVersion::current(),
-            record: DelegationJournalRecord::DelegationStartedV4 {
+            record: DelegationJournalRecord::DelegationStartedV5 {
                 reservation,
                 child_agent: Box::new(child_agent),
                 manifest_revision: revisions.manifest_revision,
@@ -491,7 +516,7 @@ fn reserve(
                 selected_suffix,
                 request_fingerprint,
                 prompt: request.prompt.clone(),
-                request: cookie_agent_protocol::DelegateRequestPayloadV4 {
+                request: cookie_agent_protocol::DelegateRequestPayloadV5 {
                     description: request.description,
                     prompt: request.prompt,
                     title: request.title,
@@ -499,6 +524,7 @@ fn reserve(
                     inherit_context: request.inherit_context,
                     seeded_context: request.seeded_context,
                     background: request.background.expect("checked execution mode"),
+                    staged_skill: request.staged_skill,
                 },
             },
         },
@@ -702,7 +728,9 @@ fn apply(
                     inherit_context: false,
                     seeded_context: Vec::new(),
                     background: None,
+                    staged_skill: None,
                 },
+                false,
             )?;
         }
         DelegationJournalRecord::DelegationStartedV2 {
@@ -728,6 +756,7 @@ fn apply(
                 inherit_context: false,
                 seeded_context: Vec::new(),
                 background: None,
+                staged_skill: None,
             };
             apply_started(
                 state,
@@ -746,6 +775,7 @@ fn apply(
                 request_fingerprint,
                 prompt,
                 request,
+                false,
             )?;
         }
         DelegationJournalRecord::DelegationStartedV3 {
@@ -771,6 +801,7 @@ fn apply(
                 inherit_context: request.inherit_context,
                 seeded_context: request.seeded_context,
                 background: None,
+                staged_skill: None,
             };
             apply_started(
                 state,
@@ -789,6 +820,7 @@ fn apply(
                 request_fingerprint,
                 prompt,
                 request,
+                false,
             )?;
         }
         DelegationJournalRecord::DelegationStartedV4 {
@@ -814,6 +846,7 @@ fn apply(
                 inherit_context: request.inherit_context,
                 seeded_context: request.seeded_context,
                 background: Some(request.background),
+                staged_skill: None,
             };
             apply_started(
                 state,
@@ -832,6 +865,52 @@ fn apply(
                 request_fingerprint,
                 prompt,
                 request,
+                false,
+            )?;
+        }
+        DelegationJournalRecord::DelegationStartedV5 {
+            reservation,
+            child_agent,
+            manifest_revision,
+            runtime_revision,
+            catalog_revision,
+            provider_state_revision,
+            model_revision,
+            agent_revision,
+            recipe_registry_revision,
+            selected_suffix,
+            request_fingerprint,
+            prompt,
+            request,
+        } => {
+            let request = DelegateRequestPayload {
+                description: request.description,
+                prompt: request.prompt,
+                title: request.title,
+                resume_session_id: request.resume_session_id,
+                inherit_context: request.inherit_context,
+                seeded_context: request.seeded_context,
+                background: Some(request.background),
+                staged_skill: request.staged_skill,
+            };
+            apply_started(
+                state,
+                reservation,
+                *child_agent,
+                DelegationRuntimeRevisions {
+                    manifest_revision,
+                    runtime_revision,
+                    catalog_revision,
+                    provider_state_revision,
+                    model_revision,
+                    agent_revision,
+                    recipe_registry_revision,
+                },
+                selected_suffix,
+                request_fingerprint,
+                prompt,
+                request,
+                true,
             )?;
         }
         DelegationJournalRecord::DelegationLinked { invocation_id } => {
@@ -912,7 +991,11 @@ fn apply_started(
     request_fingerprint: Sha256Digest,
     prompt: String,
     request: DelegateRequestPayload,
+    verify_fingerprint: bool,
 ) -> Result<(), JournalError> {
+    let fingerprint_valid = !verify_fingerprint
+        || delegation_request_fingerprint(&child_agent, &selected_suffix, &request)
+            .is_ok_and(|computed| computed == request_fingerprint);
     if state.entries.contains_key(&reservation.invocation_id)
         || !valid_request(&request)
         || request
@@ -920,6 +1003,7 @@ fn apply_started(
             .is_some_and(|session_id| session_id != reservation.child_session_id)
         || prompt.is_empty()
         || request.prompt != prompt
+        || !fingerprint_valid
         || selected_suffix.is_empty()
         || selected_suffix
             .iter()
@@ -968,6 +1052,19 @@ fn valid_request(request: &DelegateRequestPayload) -> bool {
         return false;
     }
     if request.seeded_context.len() > 65_536 {
+        return false;
+    }
+    let invalid_staged_skill = request.staged_skill.as_ref().is_some_and(|skill| {
+        skill.provenance != cookie_agent_protocol::StagedSkillProvenance::SkillFork
+            || skill.name.is_empty()
+            || skill.rendered_body.is_empty()
+            || skill.source_path.is_empty()
+            || skill.base_dir.is_empty()
+            || skill.supporting_files.len() > 10
+            || skill.grants.len() > 256
+            || request.resume_session_id.is_some()
+    });
+    if invalid_staged_skill {
         return false;
     }
     if request

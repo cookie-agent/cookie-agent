@@ -142,13 +142,13 @@ fn runtime() -> RuntimeSnapshotV1 {
 #[test]
 fn wire_versions_accept_only_documented_event_and_delegation_history() {
     assert_eq!(PROTOCOL_VERSION, 9);
-    assert_eq!(EVENT_SCHEMA_VERSION, 20);
+    assert_eq!(EVENT_SCHEMA_VERSION, 21);
     assert_eq!(SESSION_META_SCHEMA_VERSION, 9);
-    assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 14);
+    assert_eq!(DELEGATION_JOURNAL_SCHEMA_VERSION, 15);
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 4);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(8)).is_err());
     assert!(serde_json::from_value::<AgentSchemaVersion>(json!(4)).is_err());
-    for version in [15, 16, 17, 18, 19] {
+    for version in [15, 16, 17, 18, 19, 20, 21] {
         assert_eq!(
             serde_json::from_value::<EventSchemaVersion>(json!(version))
                 .unwrap()
@@ -157,21 +157,23 @@ fn wire_versions_accept_only_documented_event_and_delegation_history() {
         );
     }
     assert!(serde_json::from_value::<EventSchemaVersion>(json!(14)).is_err());
-    assert!(serde_json::from_value::<EventSchemaVersion>(json!(21)).is_err());
+    assert!(serde_json::from_value::<EventSchemaVersion>(json!(22)).is_err());
     assert_eq!(
         serde_json::from_value::<DelegationJournalSchemaVersion>(json!(11))
             .unwrap()
             .value(),
         11
     );
-    assert_eq!(
-        serde_json::from_value::<DelegationJournalSchemaVersion>(json!(14))
-            .unwrap()
-            .value(),
-        14
-    );
+    for version in [11, 12, 13, 14, 15] {
+        assert_eq!(
+            serde_json::from_value::<DelegationJournalSchemaVersion>(json!(version))
+                .unwrap()
+                .value(),
+            version
+        );
+    }
     assert!(serde_json::from_value::<DelegationJournalSchemaVersion>(json!(10)).is_err());
-    assert!(serde_json::from_value::<DelegationJournalSchemaVersion>(json!(15)).is_err());
+    assert!(serde_json::from_value::<DelegationJournalSchemaVersion>(json!(16)).is_err());
     assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(3)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
 }
@@ -877,7 +879,7 @@ fn current_delegation_journal_roundtrips_actual_start_record() {
     let manifest_revision = binding.manifest_revision.clone();
     let record = StoredDelegationJournalRecord {
         delegation_journal_schema_version: DelegationJournalSchemaVersion::current(),
-        record: DelegationJournalRecord::DelegationStartedV4 {
+        record: DelegationJournalRecord::DelegationStartedV5 {
             reservation: DelegationReservation {
                 invocation_id: InvocationId::new_v7(),
                 parent_session_id: SessionId::new_v7(),
@@ -896,7 +898,7 @@ fn current_delegation_journal_roundtrips_actual_start_record() {
             selected_suffix: vec![binding],
             request_fingerprint: Sha256Digest::of_bytes(b"request"),
             prompt: "Review the implementation".into(),
-            request: DelegateRequestPayloadV4 {
+            request: DelegateRequestPayloadV5 {
                 description: "Review implementation".into(),
                 prompt: "Review the implementation".into(),
                 title: SessionTitle::new("Review implementation").unwrap(),
@@ -904,6 +906,7 @@ fn current_delegation_journal_roundtrips_actual_start_record() {
                 inherit_context: false,
                 seeded_context: Vec::new(),
                 background: true,
+                staged_skill: None,
             },
         },
     };
@@ -932,7 +935,7 @@ fn current_delegation_journal_roundtrips_actual_start_record() {
 }
 
 #[test]
-fn delegation_v4_is_additive_to_all_exported_request_shapes() {
+fn delegation_v5_is_additive_to_all_exported_request_shapes() {
     let legacy = json!({
         "task":"Review the implementation",
         "context":[],
@@ -966,11 +969,17 @@ fn delegation_v4_is_additive_to_all_exported_request_shapes() {
     let decoded: DelegateRequestPayloadV4 = serde_json::from_value(v4.clone()).unwrap();
     assert_eq!(serde_json::to_value(decoded).unwrap(), v4);
 
+    let mut v5 = v4;
+    v5["staged_skill"] = json!(null);
+    let decoded: DelegateRequestPayloadV5 = serde_json::from_value(v5.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), v5);
+
     let schema = serde_json::to_string(&json_schema_documents()).unwrap();
     assert!(schema.contains("delegation_started"));
     assert!(schema.contains("delegation_started_v2"));
     assert!(schema.contains("delegation_started_v3"));
     assert!(schema.contains("delegation_started_v4"));
+    assert!(schema.contains("delegation_started_v5"));
 }
 
 #[test]

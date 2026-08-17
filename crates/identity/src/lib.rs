@@ -166,14 +166,14 @@ impl WildcardPattern {
     pub const MAX_BYTES: usize = 4096;
     pub const WORKSPACE_DIR_EXPRESSION: &'static str = "${workspace_dir}";
     pub const JSON_SCHEMA_MAX_UTF8_BYTES_EXTENSION: &'static str = "x-cookie-agent-maxUtf8Bytes";
-    pub const JSON_SCHEMA_PATTERN: &'static str = "^(?!.*\\*\\*)(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$";
+    pub const JSON_SCHEMA_PATTERN: &'static str =
+        "^(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$";
 
     pub fn new(value: impl Into<String>) -> Result<Self, IdentityError> {
         let value = value.into();
         let without_workspace_expression = value.replace(Self::WORKSPACE_DIR_EXPRESSION, "");
         if (1..=Self::MAX_BYTES).contains(&value.len())
             && !value.chars().any(char::is_control)
-            && !value.contains("**")
             && !without_workspace_expression
                 .chars()
                 .any(|character| matches!(character, '\\' | '[' | ']' | '{' | '}'))
@@ -784,13 +784,14 @@ mod tests {
             "literal(value)",
             "資料/?",
             "${workspace_dir}/src/*",
+            "**",
+            "a**b",
+            "src/**",
         ] {
             assert!(WildcardPattern::new(pattern).is_ok(), "{pattern:?}");
         }
         for pattern in [
             "",
-            "**",
-            "a**b",
             r"a\\*",
             "[ab]",
             "{a,b}",

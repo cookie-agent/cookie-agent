@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -70,6 +70,7 @@ mod recovery;
 mod residency;
 mod runs;
 mod sessions;
+mod skills;
 mod titles;
 pub(crate) mod tool_execution;
 
@@ -78,6 +79,7 @@ pub(crate) use artifacts::{ArtifactStore, OutputCapture};
 use delegation::DelegationRecord;
 pub use get_history::EngineHistoryView;
 use helpers::safe_code;
+pub use skills::SkillInvocation;
 
 use crate::tool_api::{
     PreparedExecutorCell, PreparedSerializationKey, PreparedTool, StdinWrite, ToolCall, ToolError,
@@ -746,6 +748,12 @@ pub(crate) struct Inner {
     pub(crate) pending_approvals: Mutex<HashMap<(SessionId, ApprovalId), PendingApproval>>,
     permission_modes: Mutex<HashMap<SessionId, PermissionMode>>,
     pub(crate) permission_overlay_mutation: tokio::sync::Mutex<()>,
+    pub(crate) skills: Arc<cookie_agent_config::SkillRegistry>,
+    pub(crate) skill_grants: Mutex<HashMap<SessionId, BTreeMap<String, skills::SkillGrantOverlay>>>,
+    pub(crate) skill_models: Mutex<HashMap<SessionId, cookie_agent_protocol::ModelKey>>,
+    pending_skill_forks: Mutex<HashMap<ToolCallId, skills::PreparedSkillInvocation>>,
+    pending_child_skills: Mutex<HashMap<SessionId, skills::PreparedSkillInvocation>>,
+    direct_skill_calls: Mutex<HashSet<ToolCallId>>,
     compaction_in_progress: Mutex<HashSet<SessionId>>,
     compaction_deferred: Mutex<HashMap<SessionId, VecDeque<SessionCommand>>>,
     context_token_estimators: Mutex<HashMap<SessionId, ContextTokenEstimator>>,
@@ -774,6 +782,8 @@ pub(crate) struct Inner {
     #[cfg(test)]
     resume_attachment_hook: Mutex<Option<Arc<ResumeAdmissionHook>>>,
     #[cfg(test)]
+    skill_fork_reservation_hook: Mutex<Option<Arc<PagingRaceHook>>>,
+    #[cfg(test)]
     resume_rollback_hook: Mutex<Option<Arc<ResumeAdmissionHook>>>,
     #[cfg(test)]
     admission_blocking_hook: Mutex<Option<AdmissionBlockingHook>>,
@@ -798,6 +808,7 @@ pub struct Engine {
 
 impl Engine {
     pub fn open(options: EngineOptions) -> Result<Self, EngineError> {
+        let skills = Arc::new(options.config.skills.clone());
         let config_store = crate::config_store::ConfigStore::new(&options.config);
         let current_models = options.model_manager.current();
         let authored_agents = options.config.agent_registry();
@@ -873,6 +884,12 @@ impl Engine {
                 pending_approvals: Mutex::new(HashMap::new()),
                 permission_modes: Mutex::new(HashMap::new()),
                 permission_overlay_mutation: tokio::sync::Mutex::new(()),
+                skills,
+                skill_grants: Mutex::new(HashMap::new()),
+                skill_models: Mutex::new(HashMap::new()),
+                pending_skill_forks: Mutex::new(HashMap::new()),
+                pending_child_skills: Mutex::new(HashMap::new()),
+                direct_skill_calls: Mutex::new(HashSet::new()),
                 compaction_in_progress: Mutex::new(HashSet::new()),
                 compaction_deferred: Mutex::new(HashMap::new()),
                 context_token_estimators: Mutex::new(HashMap::new()),
@@ -900,6 +917,8 @@ impl Engine {
                 resume_admission_hook: Mutex::new(None),
                 #[cfg(test)]
                 resume_attachment_hook: Mutex::new(None),
+                #[cfg(test)]
+                skill_fork_reservation_hook: Mutex::new(None),
                 #[cfg(test)]
                 resume_rollback_hook: Mutex::new(None),
                 #[cfg(test)]

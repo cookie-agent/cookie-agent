@@ -429,6 +429,89 @@ pub struct SessionPermissionMutationResult {
     pub permissions: Vec<EffectivePermissionAction>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillSource {
+    User,
+    Project,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SkillDescriptor {
+    pub name: String,
+    pub description: String,
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<String>", required)]
+    pub when_to_use: Option<String>,
+    pub location: String,
+    pub source: SkillSource,
+    pub precedence_winner: bool,
+    pub permission_effect: PermissionEffect,
+    pub visible: bool,
+    pub user_invocable: bool,
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<String>", required)]
+    pub argument_hint: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SkillsListParams {
+    pub session_id: SessionId,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SkillsListResult {
+    pub skills: Vec<SkillDescriptor>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SkillsGetParams {
+    pub session_id: SessionId,
+    pub name: String,
+    #[serde(default)]
+    pub args: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SkillsGetResult {
+    pub skill: SkillDescriptor,
+    pub rendered: String,
+}
+
+const SKILL_SUBMISSION_PREFIX: &str = "\u{0}cookie-skill:";
+
+#[must_use]
+pub fn encode_skill_submission(name: &str, args: &str) -> String {
+    encode_skill_submission_with_prompt(name, args, None)
+}
+
+#[must_use]
+pub fn encode_skill_submission_with_prompt(name: &str, args: &str, prompt: Option<&str>) -> String {
+    format!(
+        "{SKILL_SUBMISSION_PREFIX}{}",
+        serde_json::json!({"name": name, "args": args, "prompt": prompt})
+    )
+}
+
+#[must_use]
+pub fn decode_skill_submission(input: &str) -> Option<(String, String, Option<String>)> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Submission {
+        name: String,
+        args: String,
+        prompt: Option<String>,
+    }
+    let submission: Submission =
+        serde_json::from_str(input.strip_prefix(SKILL_SUBMISSION_PREFIX)?).ok()?;
+    Some((submission.name, submission.args, submission.prompt))
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCompactParams {

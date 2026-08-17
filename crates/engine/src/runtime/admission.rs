@@ -89,11 +89,29 @@ impl Engine {
         let resume_session_id = request.resume_session_id;
         let seeded_context = request.seeded_context.clone();
         let parent = self.inner.store.get(parent_session_id)?;
-        if parent
+        let pending_tool = parent
             .runs
             .get(&parent_run_id)
-            .and_then(|run| run.pending_calls.get(&parent_tool_call_id))
-            .is_none_or(|tool| tool != "delegate_subagent")
+            .and_then(|run| run.pending_calls.get(&parent_tool_call_id));
+        let staged_skill_fork = self
+            .inner
+            .pending_skill_forks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(&parent_tool_call_id);
+        let pending_skill_fork =
+            pending_tool.is_some_and(|tool| tool == "skill") && staged_skill_fork;
+        let direct_skill_fork = pending_tool.is_none()
+            && staged_skill_fork
+            && self
+                .inner
+                .direct_skill_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&parent_tool_call_id);
+        if pending_tool.is_none_or(|tool| tool != "delegate_subagent")
+            && !pending_skill_fork
+            && !direct_skill_fork
         {
             return Err(EngineError::MissingTool(
                 "delegate call is not pending".into(),
@@ -185,13 +203,15 @@ impl Engine {
                 self.ensure_delegated_title(existing.meta.session_id, invocation_id, child_title)
                     .await?;
             }
-            self.ensure_parent_link(
-                parent_session_id,
-                parent_run_id,
-                parent_tool_call_id,
-                existing.meta.session_id,
-            )
-            .await?;
+            if !direct_skill_fork {
+                self.ensure_parent_link(
+                    parent_session_id,
+                    parent_run_id,
+                    parent_tool_call_id,
+                    existing.meta.session_id,
+                )
+                .await?;
+            }
             let journal = self.inner.journal.clone();
             self.spawn_admission_blocking(move || journal.mark_linked(invocation_id))
                 .await?;
@@ -247,6 +267,11 @@ impl Engine {
             .await?;
         self.ensure_delegated_title(child_session_id, invocation_id, child_title)
             .await?;
+        if entry.request.staged_skill.is_some() {
+            self.inner
+                .store
+                .persist_buffered_session(child_session_id)?;
+        }
         if admission.is_some_and(|(invocation_id, generation)| {
             !self.admission_generation_live(invocation_id, generation)
         }) {
@@ -254,13 +279,15 @@ impl Engine {
                 "delegate admission was abandoned".into(),
             ));
         }
-        self.ensure_parent_link(
-            parent_session_id,
-            parent_run_id,
-            parent_tool_call_id,
-            child_session_id,
-        )
-        .await?;
+        if !direct_skill_fork {
+            self.ensure_parent_link(
+                parent_session_id,
+                parent_run_id,
+                parent_tool_call_id,
+                child_session_id,
+            )
+            .await?;
+        }
         let journal = self.inner.journal.clone();
         self.spawn_admission_blocking(move || journal.mark_linked(invocation_id))
             .await?;

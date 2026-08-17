@@ -2006,6 +2006,7 @@ mod tests {
             user_mcp_servers: BTreeMap::new(),
             workspace_mcp_servers: BTreeMap::new(),
             config_paths: cookie_agent_config::ConfigLayerPaths::default(),
+            skills: cookie_agent_config::SkillRegistry::default(),
         };
         let engine = Engine::open(EngineOptions {
             data_dir: directory.path().join("data"),
@@ -7625,6 +7626,32 @@ mod tests {
             Submission::Prompt("line one\n/quit".into())
         );
         assert!(parse_submission("/nope").is_err());
+    }
+
+    #[tokio::test]
+    async fn selected_session_visibility_changes_refresh_skills() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        assert!(app.store.apply_event(session_created(session, 1)));
+        app.selected = Some(session);
+
+        let permission_event = StoredEvent {
+            event_schema_version: EventSchemaVersion::current(),
+            session_id: session,
+            run_id: None,
+            seq: 2,
+            timestamp: Timestamp::now(),
+            payload: EventPayload::SessionPermissionOverlaySet {
+                overlay: cookie_agent_protocol::SessionPermissionOverlay::empty(),
+            },
+        };
+        app.refresh_skills_for_event_for_test(&permission_event);
+        assert_eq!(app.skill_refresh_count_for_test(), 1);
+
+        let run_event =
+            run_started_with_suffix(session, 3, RunId::new_v7(), vec![resolved_model(None)]);
+        app.refresh_skills_for_event_for_test(&run_event);
+        assert_eq!(app.skill_refresh_count_for_test(), 2);
     }
 
     #[test]

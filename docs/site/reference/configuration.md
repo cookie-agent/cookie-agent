@@ -10,6 +10,7 @@ Three independent configuration surfaces exist:
 |---|---|
 | Runtime and providers | `~/.config/cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` |
 | Agents | `~/.config/cookie_agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` |
+| Skills | `~/.config/cookie-agent/skills/<name>/SKILL.md` and `.cookie-agent/skills/<name>/SKILL.md` from cwd to worktree root |
 | TUI | `$XDG_CONFIG_HOME/cookie_agent/tui.toml` or `~/.config/cookie_agent/tui.toml` |
 
 ## Layering and strictness
@@ -77,6 +78,20 @@ Minimal valid file:
 
 [providers]
 ```
+
+Skill access is configured in agent document permissions like other scoped
+capabilities:
+
+```yaml
+permissions:
+  skill:
+    release-check: allow
+    internal-only: deny
+```
+
+`skill` resources are skill names. A deny hides the skill from model discovery;
+an allow or ask can publish it and the conditional `skill` tool. Skill
+`allowed-tools` grants never override a governing deny.
 
 ## `[server]`
 

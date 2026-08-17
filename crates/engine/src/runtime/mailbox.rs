@@ -556,7 +556,10 @@ impl Engine {
                                     Some(run),
                                     Event::UserInputAdmitted { input },
                                 )
-                                .map(|()| RunSteerResult { accepted: true }),
+                                .map(|()| {
+                                    self.clear_skill_turn_state(session);
+                                    RunSteerResult { accepted: true }
+                                }),
                         }
                     }
                 };
@@ -596,6 +599,7 @@ impl Engine {
                                     Event::UserInputAdmitted { input },
                                 )
                                 .and_then(|()| {
+                                    self.clear_skill_turn_state(session);
                                     let admission_seq =
                                         self.inner.store.get(session)?.meta.last_event_seq;
                                     Ok(super::DelegatedResumeAdmission {

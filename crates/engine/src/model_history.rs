@@ -32,6 +32,28 @@ pub(crate) fn framed_compaction_summary(summary: &str) -> String {
     format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}")
 }
 
+pub(crate) fn checkpoint_retained_history(
+    history: &[HistoryTurn],
+    events: &[StoredEvent],
+    summary: Option<&str>,
+) -> Vec<HistoryTurn> {
+    let pinned_skills = events
+        .iter()
+        .filter(|event| matches!(event.payload, EventPayload::SkillLoaded { .. }))
+        .count();
+    let mut retained = history
+        .iter()
+        .take(1_usize.saturating_add(pinned_skills))
+        .cloned()
+        .collect::<Vec<_>>();
+    if let Some(summary) = summary {
+        retained.push(HistoryTurn::user(user_text(&framed_compaction_summary(
+            summary,
+        ))));
+    }
+    retained
+}
+
 pub(crate) fn tool_output_elision_marker(
     retained: &ArtifactReference,
     original_bytes: u64,
@@ -254,11 +276,21 @@ pub(crate) fn assemble_model_context(
             replay_decisions: assembled.replay_decisions,
         });
     };
-    let after = events
+    let mut after = events
         .iter()
         .filter(|event| event.seq > commit.boundaries.source_through_seq)
         .cloned()
         .collect::<Vec<_>>();
+    let mut pinned_skills = events
+        .iter()
+        .filter(|event| {
+            event.seq <= commit.boundaries.source_through_seq
+                && matches!(event.payload, EventPayload::SkillLoaded { .. })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    pinned_skills.append(&mut after);
+    let after = pinned_skills;
     match &commit.checkpoint {
         ContextCheckpoint::InternalSummary { checkpoint } => {
             let mut assembled =
@@ -307,6 +339,13 @@ fn assemble_history_with_replay(
     binding: &FrozenModelBinding,
     composed_prompt: &str,
 ) -> Result<AssembledHistory, HistoryError> {
+    let loaded_skills = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::SkillLoaded { rendered_body, .. } => Some(rendered_body.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     let mut logical = Vec::<LogicalTurn>::new();
     let mut submitted = HashMap::<u64, String>::new();
     let mut pending_model_calls = HashMap::<
@@ -518,6 +557,11 @@ fn assemble_history_with_replay(
     let mut history = vec![HistoryTurn::system(SystemMessage::new(vec![
         SystemPart::Text(TextPart::new(composed_prompt)),
     ]))];
+    history.extend(
+        loaded_skills
+            .iter()
+            .map(|body| HistoryTurn::user(user_text(body))),
+    );
     let mut replay_decisions = Vec::new();
     for turn in logical {
         match turn {
@@ -1303,15 +1347,17 @@ mod tests {
         ToolTerminationOutcome, Usage,
     };
     use oven_sdk::{
-        AdapterId, NativeContextScope as OvenNativeContextScope,
+        AdapterId, HistoryTurn, NativeContextScope as OvenNativeContextScope,
         NativeContextWindow as OvenNativeContextWindow, ReplayDecision as OvenReplayDecision,
-        ReplayDisposition as OvenReplayDisposition, ResourceId,
+        ReplayDisposition as OvenReplayDisposition, ResourceId, SystemMessage, SystemPart,
+        TextPart,
     };
 
     use super::{
         COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, assemble_full_history,
-        assemble_model_context, framed_compaction_summary, replay_decisions,
-        replay_decisions_with_preflight, restore_replay, tool_output_elision_marker, wire_model,
+        assemble_model_context, checkpoint_retained_history, framed_compaction_summary,
+        replay_decisions, replay_decisions_with_preflight, restore_replay,
+        tool_output_elision_marker, wire_model,
     };
 
     #[test]
@@ -1328,6 +1374,46 @@ mod tests {
             framed_compaction_summary("state"),
             format!("{COMPACTION_SUMMARY_PREFIX}state{COMPACTION_SUMMARY_SUFFIX}")
         );
+    }
+
+    #[test]
+    fn checkpoint_accounting_retains_every_pinned_skill_body() {
+        let run = RunId::new_v7();
+        let skill_event = |seq, name: &str, body: &str| {
+            event(
+                seq,
+                run,
+                EventPayload::SkillLoaded {
+                    name: name.into(),
+                    rendered_body: body.into(),
+                    source_path: format!("/{name}/SKILL.md"),
+                    args: String::new(),
+                    base_dir: format!("/{name}"),
+                    supporting_files: Vec::new(),
+                },
+            )
+        };
+        let events = vec![
+            skill_event(1, "one", "first pinned body"),
+            skill_event(2, "two", "second pinned body"),
+        ];
+        let history = vec![
+            HistoryTurn::system(SystemMessage::new(vec![SystemPart::Text(TextPart::new(
+                "system",
+            ))])),
+            HistoryTurn::user(super::user_text("first pinned body")),
+            HistoryTurn::user(super::user_text("second pinned body")),
+            HistoryTurn::user(super::user_text("discarded conversation")),
+        ];
+        let native = checkpoint_retained_history(&history, &events, None);
+        assert_eq!(native.len(), 3);
+        let summarized = checkpoint_retained_history(&history, &events, Some("summary"));
+        assert_eq!(summarized.len(), 4);
+        let encoded = serde_json::to_string(&summarized).expect("history JSON");
+        assert!(encoded.contains("first pinned body"));
+        assert!(encoded.contains("second pinned body"));
+        assert!(encoded.contains("<summary>\\nsummary"));
+        assert!(!encoded.contains("discarded conversation"));
     }
 
     #[test]

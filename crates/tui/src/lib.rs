@@ -157,6 +157,10 @@ mod tests {
     }
 
     fn in_process_server() -> (tempfile::TempDir, Arc<Server>) {
+        in_process_server_with_skills(false)
+    }
+
+    fn in_process_server_with_skills(with_skills: bool) -> (tempfile::TempDir, Arc<Server>) {
         let directory = tempfile::tempdir().expect("temporary data directory");
         #[cfg(unix)]
         {
@@ -198,6 +202,19 @@ mod tests {
             .expect("model manager"),
         );
         let agent_id = AgentId::new("primary").expect("agent id");
+        let skills = if with_skills {
+            let root = directory.path().join("skills");
+            fs::create_dir_all(root.join("fresh-skill")).expect("skill directory");
+            fs::write(
+                root.join("fresh-skill/SKILL.md"),
+                "---\nname: fresh-skill\ndescription: Fresh session skill\nargument-hint: <value>\n---\nFresh $ARGUMENTS.\n",
+            )
+            .expect("skill document");
+            cookie_agent_config::load_skill_roots(None, &[root]).expect("skill registry")
+        } else {
+            cookie_agent_config::SkillRegistry::default()
+        };
+        let agent = test_agent_document(&agent_id);
         let config = LoadedConfiguration {
             runtime: RuntimeConfig {
                 server: ServerConfig::default(),
@@ -210,11 +227,12 @@ mod tests {
                 pricing: cookie_agent_config::PricingConfig::default(),
                 providers,
             },
-            agents: BTreeMap::from([(agent_id.clone(), test_agent_document(&agent_id))]),
+            agents: BTreeMap::from([(agent_id.clone(), agent)]),
             mcp_servers: BTreeMap::new(),
             user_mcp_servers: BTreeMap::new(),
             workspace_mcp_servers: BTreeMap::new(),
             config_paths: cookie_agent_config::ConfigLayerPaths::default(),
+            skills,
         };
         let engine = Engine::open(EngineOptions {
             data_dir: directory.path().join("data"),
@@ -224,6 +242,13 @@ mod tests {
             tools: Vec::new(),
         })
         .expect("open engine");
+        if with_skills {
+            engine
+                .try_register_tool_provider(Arc::new(cookie_agent_tools::skill::SkillTool::new(
+                    engine.clone(),
+                )))
+                .expect("skill tool");
+        }
         (directory, Arc::new(Server::new(engine)))
     }
 
@@ -470,6 +495,106 @@ mod tests {
                 .iter()
                 .all(|event| event.session_id == session.session_id)
         );
+    }
+
+    #[tokio::test]
+    async fn fresh_session_selection_discovers_skill_slash_commands() {
+        let (_directory, server) = in_process_server_with_skills(true);
+        let setup = Client::connect_in_process(server.clone());
+        setup.handshake().await.expect("setup handshake");
+        let session = setup
+            .create_session(SessionCreateParams {
+                selection: test_run_selection(),
+            })
+            .await
+            .expect("session")
+            .session;
+        setup
+            .set_permission_mode(cookie_agent_protocol::SessionSetPermissionModeParams {
+                session_id: session.session_id,
+                mode: cookie_agent_protocol::PermissionMode::Ask,
+            })
+            .await
+            .expect("ask mode");
+
+        let observer = Client::connect_in_process(server.clone());
+        observer.handshake().await.expect("observer handshake");
+        let mut deliveries = observer
+            .subscribe_deliveries()
+            .expect("observer deliveries");
+        observer
+            .subscribe_events(session.session_id, Some(1))
+            .await
+            .expect("observe session");
+
+        let client = Client::connect_in_process(server);
+        client.handshake().await.expect("handshake");
+        let mut app = App::new(client).await.expect("app");
+        app.wait_for_skill_refresh_for_test().await;
+        assert_eq!(app.skill_names_for_test(), ["fresh-skill"]);
+        assert_eq!(app.skill_visible_for_test("fresh-skill"), Some(false));
+        assert!(
+            app.skill_palette_labels_for_test()
+                .iter()
+                .any(|label| label.contains("/fresh-skill <value>"))
+        );
+        app.submit_text_for_test("/fresh-skill value").await;
+        let loaded = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let mut run_id = None;
+            let mut approval = None;
+            loop {
+                let event = match deliveries.recv().await.expect("delivery") {
+                    crate::ClientDelivery::Live { message, .. } => match message.as_ref() {
+                        cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
+                            Some(event.clone())
+                        }
+                        _ => None,
+                    },
+                    crate::ClientDelivery::ReplayEvent { event, .. } => Some(event),
+                    _ => None,
+                };
+                let Some(event) = event else { continue };
+                if matches!(event.payload, EventPayload::RunStarted { .. }) {
+                    run_id = event.run_id;
+                }
+                if let EventPayload::ApprovalRequested { request } = &event.payload {
+                    approval = Some((event.session_id, request.clone()));
+                }
+                if matches!(event.payload, EventPayload::ApprovalEscalated { .. }) {
+                    let (session_id, request) = approval.take().expect("approval request");
+                    let request_revision = serde_json::to_value(&request)
+                        .expect("approval JSON")["revision"]
+                        .as_u64()
+                        .expect("approval revision");
+                    observer
+                        .respond_approval(cookie_agent_protocol::ApprovalRespondParams {
+                            session_id,
+                            approval_id: request.approval_id(),
+                            request_revision,
+                            operation_fingerprint: request.operation_fingerprint().clone(),
+                            client_response_id: cookie_agent_protocol::ClientResponseId::new(
+                                uuid::Uuid::now_v7().to_string(),
+                            )
+                            .expect("response ID"),
+                            decision: cookie_agent_protocol::ApprovalUserDecision::ApproveOnce,
+                            feedback: None,
+                        })
+                        .await
+                        .expect("approve direct skill");
+                }
+                if matches!(event.payload, EventPayload::SkillLoaded { ref name, .. } if name == "fresh-skill") {
+                    break run_id;
+                }
+            }
+        })
+        .await;
+        let run_id = loaded
+            .expect("fresh skill command timed out")
+            .expect("skill run ID");
+        observer
+            .cancel_run(cookie_agent_protocol::RunCancelParams { run_id })
+            .await
+            .expect("cancel test run");
     }
 
     #[tokio::test]

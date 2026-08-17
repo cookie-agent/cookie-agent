@@ -742,6 +742,7 @@ name = "cookie_agent_tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "cookie_agent_config",
  "cookie_agent_engine",
  "cookie_agent_models",
  "cookie_agent_protocol",
@@ -766,6 +767,7 @@ dependencies = [
  "cookie_agent_models",
  "cookie_agent_protocol",
  "cookie_agent_server",
+ "cookie_agent_tools",
  "crossterm",
  "futures-util",
  "insta",

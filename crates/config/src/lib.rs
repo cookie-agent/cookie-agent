@@ -7,6 +7,7 @@ mod loader;
 mod mcp_store;
 mod runtime;
 mod secure_fs;
+mod skills;
 mod toml_values;
 mod wildcard;
 
@@ -26,5 +27,9 @@ pub use runtime::{
     McpOAuthConfig, McpOAuthSettings, McpServerConfig, ModelPricing, PicoUsdPerMillion,
     PricingConfig, PromptCachingConfig, RuntimeConfig, ServerConfig, SessionTitleConfig,
     ToolOutputConfig,
+};
+pub use skills::{
+    SkillAllowedTool, SkillContext, SkillDiagnostic, SkillDiscovery, SkillDocument,
+    SkillFrontmatter, SkillRegistry, load_skill_roots, load_skills, render_available_skills,
 };
 pub use wildcard::simple_wildcard_match;
