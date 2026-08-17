@@ -1770,6 +1770,16 @@
               "minLength": 1,
               "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
             },
+            "output_chunk": {
+              "description": "Control-free bounded presentation text.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
             "tool_call_id": {
               "type": "string",
               "format": "uuid"

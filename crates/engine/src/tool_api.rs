@@ -41,6 +41,7 @@ pub struct ToolCall {
 pub struct ToolProgress {
     pub tool_call_id: ToolCallId,
     pub message: String,
+    pub output_chunk: Option<String>,
 }
 
 #[derive(Clone, Debug)]

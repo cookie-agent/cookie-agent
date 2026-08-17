@@ -61,6 +61,7 @@ pub(crate) const MAX_PLUGIN_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_PLUGIN_EVENT_NAME_CHARS: usize = 128;
 pub(crate) const MAX_PLUGIN_EVENT_TOTAL_BYTES: usize = 272 * 1024;
 const PLUGIN_OUTBOUND_CAPACITY: usize = 1024;
+const PLUGIN_NOTIFICATION_CAPACITY: usize = 1024;
 const PLUGIN_CONTEXT_CAPACITY: usize = 1024;
 const PLUGIN_SPENT_CONTEXT_CAPACITY: usize = 256;
 const PLUGIN_NOTIFICATION_CONTEXT_LIFETIME: Duration = Duration::from_secs(5);
@@ -106,6 +107,14 @@ pub(crate) struct PluginEmitOutcome {
 #[derive(Clone, Debug)]
 pub(crate) struct PluginDeliveryDrop {
     pub plugin: String,
+    pub class: PluginDeliveryClass,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PluginDeliveryClass {
+    Chunk,
+    Ordinary,
+    Terminal,
 }
 
 pub(crate) type PluginEmitHandler = Arc<
@@ -148,6 +157,7 @@ struct PluginRuntime {
     config: PluginConfig,
     status: Mutex<PluginStatus>,
     control: Mutex<Option<mpsc::Sender<Control>>>,
+    notifications: Mutex<Arc<PluginNotificationQueue>>,
     declarations: Mutex<Vec<ExtensionToolDeclaration>>,
     capabilities: Mutex<Option<ExtensionPluginCapabilities>>,
     dropped_events: AtomicU64,
@@ -217,6 +227,104 @@ enum Control {
     Shutdown,
 }
 
+struct QueuedPluginNotification {
+    control: Control,
+    class: PluginDeliveryClass,
+}
+
+struct PluginNotificationQueue {
+    capacity: usize,
+    queued: Mutex<VecDeque<QueuedPluginNotification>>,
+    notify: Notify,
+}
+
+impl PluginNotificationQueue {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            queued: Mutex::new(VecDeque::new()),
+            notify: Notify::new(),
+        }
+    }
+
+    fn push(&self, control: Control, class: PluginDeliveryClass) -> Option<PluginDeliveryClass> {
+        let mut queued = self
+            .queued
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dropped = if queued.len() < self.capacity {
+            None
+        } else {
+            let index = match class {
+                PluginDeliveryClass::Chunk => queued
+                    .iter()
+                    .position(|item| item.class == PluginDeliveryClass::Chunk),
+                PluginDeliveryClass::Ordinary => queued
+                    .iter()
+                    .position(|item| item.class == PluginDeliveryClass::Chunk)
+                    .or_else(|| {
+                        queued
+                            .iter()
+                            .position(|item| item.class == PluginDeliveryClass::Ordinary)
+                    }),
+                PluginDeliveryClass::Terminal => queued
+                    .iter()
+                    .position(|item| item.class == PluginDeliveryClass::Chunk)
+                    .or_else(|| {
+                        queued
+                            .iter()
+                            .position(|item| item.class == PluginDeliveryClass::Ordinary)
+                    })
+                    .or_else(|| {
+                        queued
+                            .iter()
+                            .position(|item| item.class == PluginDeliveryClass::Terminal)
+                    }),
+            };
+            let Some(index) = index else {
+                return Some(class);
+            };
+            queued.remove(index).map(|item| item.class)
+        };
+        queued.push_back(QueuedPluginNotification { control, class });
+        drop(queued);
+        self.notify.notify_one();
+        dropped
+    }
+
+    #[cfg(test)]
+    fn pop(&self) -> Option<Control> {
+        self.queued
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pop_front()
+            .map(|item| item.control)
+    }
+
+    async fn notified(&self) {
+        self.notify.notified().await;
+    }
+
+    fn drain(&self) -> VecDeque<Control> {
+        std::mem::take(
+            &mut *self
+                .queued
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+        .into_iter()
+        .map(|item| item.control)
+        .collect()
+    }
+
+    fn clear(&self) {
+        self.queued
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+}
+
 enum ReaderEvent {
     Message(String),
     Failed(String),
@@ -259,6 +367,23 @@ struct PluginRegistryInner {
     emit_handler: Arc<Mutex<Option<PluginEmitHandler>>>,
 }
 
+fn record_plugin_delivery_drop(
+    runtime: &PluginRuntime,
+    drops: &mut Vec<PluginDeliveryDrop>,
+    class: PluginDeliveryClass,
+) {
+    let count = runtime.dropped_events.fetch_add(1, Ordering::AcqRel) + 1;
+    runtime
+        .status
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .dropped_events = count;
+    drops.push(PluginDeliveryDrop {
+        plugin: runtime.name.clone(),
+        class,
+    });
+}
+
 #[derive(Clone)]
 pub struct PluginRegistry {
     inner: Arc<PluginRegistryInner>,
@@ -298,6 +423,9 @@ impl PluginRegistry {
                         dropped_events: 0,
                     }),
                     control: Mutex::new(None),
+                    notifications: Mutex::new(Arc::new(PluginNotificationQueue::new(
+                        PLUGIN_NOTIFICATION_CAPACITY,
+                    ))),
                     declarations: Mutex::new(Vec::new()),
                     capabilities: Mutex::new(None),
                     dropped_events: AtomicU64::new(0),
@@ -357,12 +485,17 @@ impl PluginRegistry {
         {
             let plugin = Arc::clone(plugin);
             let (control, receiver) = mpsc::channel(PLUGIN_OUTBOUND_CAPACITY);
+            let notifications = plugin
+                .notifications
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
             *plugin
                 .control
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(control);
             let task = runtime.spawn(async move {
-                plugin.run(receiver).await;
+                plugin.run(receiver, notifications).await;
             });
             self.inner
                 .tasks
@@ -506,11 +639,22 @@ impl PluginRegistry {
             PLUGIN_EVENT_METHOD,
             Some(serde_json::to_value(params).expect("plugin event params serialize")),
         );
+        let class = match &event.payload {
+            cookie_agent_protocol::EventPayload::ToolCallProgress {
+                output_chunk: Some(_),
+                ..
+            } => PluginDeliveryClass::Chunk,
+            cookie_agent_protocol::EventPayload::ToolCallTerminated { .. } => {
+                PluginDeliveryClass::Terminal
+            }
+            _ => PluginDeliveryClass::Ordinary,
+        };
         self.stream_notification(
             notification,
             event.session_id,
             &context_id,
             source_plugin,
+            class,
             |capabilities| capabilities.subscribe_events,
         )
     }
@@ -532,6 +676,7 @@ impl PluginRegistry {
             event.session_id,
             &context_id,
             source_plugin,
+            PluginDeliveryClass::Ordinary,
             |capabilities| capabilities.subscribe_bus,
         )
     }
@@ -542,6 +687,7 @@ impl PluginRegistry {
         session_id: cookie_agent_protocol::SessionId,
         context_id: &str,
         source_plugin: Option<&str>,
+        class: PluginDeliveryClass,
         subscribed: impl Fn(&ExtensionPluginCapabilities) -> bool,
     ) -> Vec<PluginDeliveryDrop> {
         let mut drops = Vec::new();
@@ -558,31 +704,29 @@ impl PluginRegistry {
             if !enabled {
                 continue;
             }
-            let sender = runtime
+            if runtime
                 .control
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_none()
+            {
+                continue;
+            }
+            let notifications = runtime
+                .notifications
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone();
-            let Some(sender) = sender else { continue };
-            match sender.try_send(Control::Notify {
-                notification: notification.clone(),
-                session_id,
-                context_id: context_id.to_owned(),
-                context_lifetime: PLUGIN_NOTIFICATION_CONTEXT_LIFETIME,
-            }) {
-                Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    let count = runtime.dropped_events.fetch_add(1, Ordering::AcqRel) + 1;
-                    runtime
-                        .status
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .dropped_events = count;
-                    drops.push(PluginDeliveryDrop {
-                        plugin: runtime.name.clone(),
-                    });
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => {}
+            if let Some(dropped) = notifications.push(
+                Control::Notify {
+                    notification: notification.clone(),
+                    session_id,
+                    context_id: context_id.to_owned(),
+                    context_lifetime: PLUGIN_NOTIFICATION_CONTEXT_LIFETIME,
+                },
+                class,
+            ) {
+                record_plugin_delivery_drop(runtime, &mut drops, dropped);
             }
         }
         drops
@@ -1041,13 +1185,18 @@ impl PluginRuntime {
         }
     }
 
-    async fn run(self: Arc<Self>, receiver: mpsc::Receiver<Control>) {
+    async fn run(
+        self: Arc<Self>,
+        receiver: mpsc::Receiver<Control>,
+        notifications: Arc<PluginNotificationQueue>,
+    ) {
         self.set_status(PluginState::Connecting, None, Vec::new());
-        let result = self.spawn_and_supervise(receiver).await;
+        let result = self.spawn_and_supervise(receiver, &notifications).await;
         *self
             .control
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        notifications.clear();
         *self
             .contexts
             .lock()
@@ -1067,7 +1216,11 @@ impl PluginRuntime {
         }
     }
 
-    async fn spawn_and_supervise(&self, receiver: mpsc::Receiver<Control>) -> Result<(), String> {
+    async fn spawn_and_supervise(
+        &self,
+        receiver: mpsc::Receiver<Control>,
+        notifications: &Arc<PluginNotificationQueue>,
+    ) -> Result<(), String> {
         let command = self
             .config
             .command
@@ -1093,7 +1246,9 @@ impl PluginRuntime {
         let mut child = wrapped
             .spawn()
             .map_err(|error| format!("spawn failure: {error}"))?;
-        let result = self.supervise_spawned(&mut child, receiver).await;
+        let result = self
+            .supervise_spawned(&mut child, receiver, notifications)
+            .await;
         let cleanup = terminate_and_reap(&mut child).await;
         match (result, cleanup) {
             (Err(reason), Err(cleanup)) => Err(format!("{reason}; cleanup failed: {cleanup}")),
@@ -1106,6 +1261,7 @@ impl PluginRuntime {
         &self,
         child: &mut Box<dyn ChildWrapper>,
         receiver: mpsc::Receiver<Control>,
+        notifications: &Arc<PluginNotificationQueue>,
     ) -> Result<(), String> {
         let stdin = child
             .stdin()
@@ -1116,7 +1272,9 @@ impl PluginRuntime {
             .take()
             .ok_or_else(|| "spawn failure: child stdout unavailable".to_owned())?;
         let (reader_task, inbound) = spawn_reader(stdout);
-        let result = self.run_host_loop(child, stdin, receiver, inbound).await;
+        let result = self
+            .run_host_loop(child, stdin, receiver, notifications, inbound)
+            .await;
         reader_task.abort();
         let _ = reader_task.await;
         result
@@ -1127,6 +1285,7 @@ impl PluginRuntime {
         child: &mut Box<dyn ChildWrapper>,
         mut stdin: tokio::process::ChildStdin,
         mut control: mpsc::Receiver<Control>,
+        notifications: &Arc<PluginNotificationQueue>,
         mut inbound: mpsc::Receiver<ReaderEvent>,
     ) -> Result<(), String> {
         write_json(
@@ -1171,6 +1330,22 @@ impl PluginRuntime {
                     }
                     Some(ReaderEvent::Failed(reason)) => return Err(reason),
                     Some(ReaderEvent::Eof) | None => return Err("plugin stdout reached EOF".into()),
+                },
+                () = notifications.notified() => {
+                    for notification in notifications.drain() {
+                        match notification {
+                            Control::Notify { notification, session_id, context_id, context_lifetime } if connected => {
+                                self.register_context(
+                                    &context_id,
+                                    session_id,
+                                    Instant::now() + context_lifetime,
+                                );
+                                write_json(&mut stdin, &notification).await?;
+                            }
+                            Control::Notify { .. } => {}
+                            _ => unreachable!("notification queue accepts only notifications"),
+                        }
+                    }
                 },
                 command = control.recv() => match command {
                     Some(Control::Ping(reply)) if connected => {
@@ -1892,18 +2067,19 @@ mod tests {
 
     use cookie_agent_config::PluginConfig;
     use cookie_agent_protocol::{
-        AgentId, CancellationCapability, EventPayload, ExtensionAgentBeforeStartParams,
-        ExtensionBusEventParams, ExtensionSessionBeforeCompactParams,
-        ExtensionToolAfterResultAction, ExtensionToolAfterResultParams,
-        ExtensionToolBeforeCallAction, ExtensionToolBeforeCallParams, Modality, ModelCapabilities,
-        Notification, PluginDiagnosticKind, ReplayCapability, RunId, SessionId, StoredEvent,
-        ToolCallId,
+        AgentId, AssistantToolCallRef, CancellationCapability, EventPayload,
+        ExtensionAgentBeforeStartParams, ExtensionBusEventParams,
+        ExtensionSessionBeforeCompactParams, ExtensionToolAfterResultAction,
+        ExtensionToolAfterResultParams, ExtensionToolBeforeCallAction,
+        ExtensionToolBeforeCallParams, Modality, ModelCallId, ModelCapabilities, Notification,
+        PersistedToolResult, PluginDiagnosticKind, ReplayCapability, RunId, SafeDisplayText,
+        SessionId, StoredEvent, ToolCallId, ToolCallTermination, ToolTerminationOutcome,
     };
     use indexmap::IndexMap;
     use serde_json::Value;
     use tokio_util::sync::CancellationToken;
 
-    use super::{Control, PluginRegistry, PluginState, plugin_context_id};
+    use super::{Control, PluginDeliveryClass, PluginRegistry, PluginState, plugin_context_id};
     use crate::{
         ArtifactStore,
         events::OutputHub,
@@ -2216,11 +2392,23 @@ mod tests {
                 run_id: None,
                 seq,
                 timestamp: jiff::Timestamp::now(),
-                payload: EventPayload::PluginDiagnostic {
-                    plugin: "engine".into(),
-                    kind: PluginDiagnosticKind::HookBlocked,
-                    message: format!("event {seq}"),
-                    count: 1,
+                payload: if seq == 2 {
+                    EventPayload::ToolCallProgress {
+                        tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
+                        message: cookie_agent_protocol::SafeDisplayText::new("bash stdout")
+                            .expect("message"),
+                        output_chunk: Some(
+                            cookie_agent_protocol::SafeDisplayText::new("partial output")
+                                .expect("chunk"),
+                        ),
+                    }
+                } else {
+                    EventPayload::PluginDiagnostic {
+                        plugin: "engine".into(),
+                        kind: PluginDiagnosticKind::HookBlocked,
+                        message: format!("event {seq}"),
+                        count: 1,
+                    }
                 },
             };
             assert!(
@@ -2257,12 +2445,17 @@ mod tests {
         })
         .await
         .expect("streamed notifications");
-        let seqs = std::fs::read_to_string(&event_file)
+        let records = std::fs::read_to_string(&event_file)
             .expect("event file")
             .lines()
-            .map(|line| serde_json::from_str::<Value>(line).expect("event JSON")["seq"].clone())
+            .map(|line| serde_json::from_str::<Value>(line).expect("event JSON"))
+            .collect::<Vec<_>>();
+        let seqs = records
+            .iter()
+            .map(|record| record["seq"].clone())
             .collect::<Vec<_>>();
         assert_eq!(seqs, [serde_json::json!(2), serde_json::json!(3)]);
+        assert_eq!(records[0]["event"]["output_chunk"], "partial output");
 
         let self_event = StoredEvent {
             engine_version: None,
@@ -2603,24 +2796,25 @@ mod tests {
             .get("fixture")
             .expect("fixture runtime");
         let original = runtime
-            .control
+            .notifications
             .lock()
-            .expect("control lock")
-            .clone()
-            .expect("control sender");
-        let (full_sender, _held_receiver) = tokio::sync::mpsc::channel(1);
-        *runtime.control.lock().expect("control lock") = Some(full_sender);
+            .expect("notification lock")
+            .clone();
+        *runtime.notifications.lock().expect("notification lock") =
+            Arc::new(super::PluginNotificationQueue::new(1));
         let event = StoredEvent {
             engine_version: None,
             session_id: SessionId::new_v7(),
             run_id: None,
             seq: 2,
             timestamp: jiff::Timestamp::now(),
-            payload: EventPayload::PluginDiagnostic {
-                plugin: "engine".into(),
-                kind: PluginDiagnosticKind::HookBlocked,
-                message: "buffer test".into(),
-                count: 1,
+            payload: EventPayload::ToolCallProgress {
+                tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
+                message: cookie_agent_protocol::SafeDisplayText::new("bash stdout")
+                    .expect("message"),
+                output_chunk: Some(
+                    cookie_agent_protocol::SafeDisplayText::new("flood chunk").expect("chunk"),
+                ),
             },
         };
         assert!(
@@ -2640,7 +2834,152 @@ mod tests {
             "queued or failed delivery registered a context grant before host dequeue"
         );
         assert_eq!(harness.registry.statuses()[0].dropped_events, 1);
-        *runtime.control.lock().expect("control lock") = Some(original);
+        *runtime.notifications.lock().expect("notification lock") = original;
+        harness.registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn chunk_flood_evicts_by_priority_without_reordering_terminal() {
+        let capabilities = r#"{"tools":true,"resources":false,"subscribe_events":true,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
+        let harness = harness(&[("FIXTURE_CAPABILITIES", capabilities)], 1_000).await;
+        let runtime = harness
+            .registry
+            .inner
+            .plugins
+            .get("fixture")
+            .expect("fixture runtime");
+        let original = runtime
+            .notifications
+            .lock()
+            .expect("notification lock")
+            .clone();
+        let notifications = Arc::new(super::PluginNotificationQueue::new(17));
+        *runtime.notifications.lock().expect("notification lock") = Arc::clone(&notifications);
+        let session_id = SessionId::new_v7();
+        let call_id = ToolCallId::new_v7();
+        let owner = AssistantToolCallRef {
+            model_turn_seq: 1,
+            content_index: 0,
+            model_call_id: ModelCallId::new("plugin-flood-call").expect("model call id"),
+            provider_item_id: None,
+        };
+        let event = |seq, payload| StoredEvent {
+            engine_version: None,
+            session_id,
+            run_id: None,
+            seq,
+            timestamp: jiff::Timestamp::now(),
+            payload,
+        };
+
+        let chunk = |seq| {
+            event(
+                seq,
+                EventPayload::ToolCallProgress {
+                    tool_call_id: call_id,
+                    message: SafeDisplayText::new("bash stdout").expect("message"),
+                    output_chunk: Some(
+                        SafeDisplayText::new(format!("chunk {seq}")).expect("chunk"),
+                    ),
+                },
+            )
+        };
+        assert!(
+            harness
+                .registry
+                .stream_session_event(&chunk(1), None)
+                .is_empty()
+        );
+        for seq in 2..=17 {
+            assert!(
+                harness
+                    .registry
+                    .stream_session_event(
+                        &event(
+                            seq,
+                            EventPayload::PluginDiagnostic {
+                                plugin: "engine".into(),
+                                kind: PluginDiagnosticKind::HookBlocked,
+                                message: format!("ordinary {seq}"),
+                                count: 1,
+                            },
+                        ),
+                        None,
+                    )
+                    .is_empty()
+            );
+        }
+        let first_overflow = harness.registry.stream_session_event(
+            &event(
+                18,
+                EventPayload::PluginDiagnostic {
+                    plugin: "engine".into(),
+                    kind: PluginDiagnosticKind::HookBlocked,
+                    message: "ordinary overflow".into(),
+                    count: 1,
+                },
+            ),
+            None,
+        );
+        assert_eq!(first_overflow.len(), 1);
+        assert_eq!(first_overflow[0].class, PluginDeliveryClass::Chunk);
+        let second_overflow = harness.registry.stream_session_event(
+            &event(
+                19,
+                EventPayload::PluginDiagnostic {
+                    plugin: "engine".into(),
+                    kind: PluginDiagnosticKind::HookBlocked,
+                    message: "second ordinary overflow".into(),
+                    count: 1,
+                },
+            ),
+            None,
+        );
+        assert_eq!(second_overflow.len(), 1);
+        assert_eq!(second_overflow[0].class, PluginDeliveryClass::Ordinary);
+        let terminal_drops = harness.registry.stream_session_event(
+            &event(
+                20,
+                EventPayload::ToolCallTerminated {
+                    termination: ToolCallTermination {
+                        tool_call_id: call_id,
+                        owner,
+                        outcome: ToolTerminationOutcome::Completed,
+                        result: Some(PersistedToolResult {
+                            title: SafeDisplayText::new("Bash").expect("title"),
+                            output: "done".into(),
+                            metadata: Value::Null,
+                            truncation: None,
+                            attachments: Vec::new(),
+                        }),
+                        error: None,
+                    },
+                },
+            ),
+            None,
+        );
+
+        assert_eq!(terminal_drops.len(), 1);
+        assert_eq!(terminal_drops[0].class, PluginDeliveryClass::Ordinary);
+        assert_eq!(harness.registry.statuses()[0].dropped_events, 3);
+        let mut delivered = Vec::new();
+        while let Some(control) = notifications.pop() {
+            let Control::Notify { notification, .. } = control else {
+                panic!("event notification")
+            };
+            let params = notification.params.expect("params");
+            delivered.push((
+                params["seq"].as_u64().expect("sequence"),
+                params["event"]["type"]
+                    .as_str()
+                    .expect("event type")
+                    .to_owned(),
+            ));
+        }
+        assert!(delivered.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert_eq!(delivered.last(), Some(&(20, "tool_call_terminated".into())));
+
+        *runtime.notifications.lock().expect("notification lock") = original;
         harness.registry.shutdown().await;
     }
 

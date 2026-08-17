@@ -102,6 +102,20 @@ usage projections rebuild from these events after restart, revert, and fork.
 Its `prompt_fingerprint` hashes the authoritative normalized request sent to the provider, while
 `model_attempt_started` remains the earlier cancellation and lifecycle boundary.
 
+`tool_call_progress` contains the existing control-free `message` plus an optional
+control-free `output_chunk`. Bash coalesces stdout and stderr for up to 50 ms or
+4 KiB before emitting chunks; each durable chunk is bounded by the 1 KiB
+`SafeDisplayText` limit. The display preview stops after 1 MiB per call and one
+progress message marks the truncation. The terminal tool result and any
+`tool_output_elided` artifact remain authoritative and retain their existing
+bounds. Historical chunks may be replayed to event consumers, but projections
+replace them when `tool_call_terminated` is reduced.
+
+During cancellation cleanup, a progress record is considered retained once its
+append command enters the session actor mailbox; actor FIFO then orders it before
+the later terminal command even if persistence has not completed yet. Cleanup
+deadline diagnostics count only progress records that never entered that mailbox.
+
 `internal_agent_usage_recorded` attributes each completed
 internal model request to its internal run, internal agent ID, kind, and resolved
 model. The same session, agent, and global projections include these records.
@@ -156,4 +170,5 @@ numbers were truncated or reused.
 
 Tool stdout and stderr use separate snapshot, delta, and gap notifications.
 Offsets are byte offsets, and clients use a snapshot after a gap before applying
-later deltas.
+later deltas. The ordinary event subscription also includes durable
+`tool_call_progress` output chunks and terminal events without a separate filter.

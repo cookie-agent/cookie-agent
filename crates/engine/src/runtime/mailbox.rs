@@ -95,6 +95,31 @@ impl Engine {
         .await
     }
 
+    pub(super) async fn enqueue_append(
+        &self,
+        session: SessionId,
+        run: Option<RunId>,
+        event: Event,
+    ) -> Result<oneshot::Receiver<Result<(), EngineError>>, EngineError> {
+        let (reply, receiver) = oneshot::channel();
+        let _residency = self.inner.residency_mutation.lock().await;
+        self.inner.store.get(session)?;
+        self.spawn_actor(session);
+        let actor = self
+            .inner
+            .actors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session)
+            .cloned()
+            .ok_or(EngineError::MissingActor(session))?;
+        actor
+            .send(SessionCommand::Append { run, event, reply })
+            .await
+            .map_err(|_| EngineError::ActorStopped)?;
+        Ok(receiver)
+    }
+
     /// Synchronous setup/CLI wrapper. Do not call from a Tokio runtime.
     pub fn append_blocking(
         &self,
@@ -235,11 +260,16 @@ impl Engine {
         drops: Vec<crate::plugin::PluginDeliveryDrop>,
     ) {
         for drop in drops {
+            let class = match drop.class {
+                crate::plugin::PluginDeliveryClass::Chunk => "chunk",
+                crate::plugin::PluginDeliveryClass::Ordinary => "ordinary",
+                crate::plugin::PluginDeliveryClass::Terminal => "terminal",
+            };
             self.queue_plugin_diagnostic(
                 session,
                 drop.plugin,
                 PluginDiagnosticKind::EventDrop,
-                "plugin event buffer overflow; event delivery was dropped".into(),
+                format!("plugin {class} event buffer overflow; event delivery was dropped"),
                 1,
             );
         }

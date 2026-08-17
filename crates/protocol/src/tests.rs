@@ -316,6 +316,36 @@ fn event_payload_best_effort_defaults_only_optional_fields() {
     assert!(
         deserialize_event_payload_best_effort(json!({"type":"run_failed","error":42})).is_err()
     );
+
+    let tool_call_id = ToolCallId::new_v7();
+    let old_progress = deserialize_event_payload_best_effort(json!({
+        "type": "tool_call_progress",
+        "tool_call_id": tool_call_id,
+        "message": "working"
+    }))
+    .expect("progress from before output chunks remains readable");
+    assert!(old_progress.degraded_fields.is_empty());
+    assert_eq!(
+        old_progress.payload,
+        EventPayload::ToolCallProgress {
+            tool_call_id,
+            message: SafeDisplayText::new("working").expect("message"),
+            output_chunk: None,
+        }
+    );
+
+    let chunk_progress = deserialize_event_payload_best_effort(json!({
+        "type": "tool_call_progress",
+        "tool_call_id": tool_call_id,
+        "message": "bash stdout",
+        "output_chunk": "partial output"
+    }))
+    .expect("optional output chunk parses");
+    assert!(matches!(
+        chunk_progress.payload,
+        EventPayload::ToolCallProgress { output_chunk: Some(chunk), .. }
+            if chunk.as_str() == "partial output"
+    ));
 }
 
 #[test]

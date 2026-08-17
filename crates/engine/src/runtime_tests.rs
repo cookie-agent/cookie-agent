@@ -9,6 +9,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_config::{
     ApprovalConfig, ContextCompactionConfig, LoadedConfiguration, LoadedMcpServer, McpServerConfig,
     McpServerSource, PluginConfig, RuntimeConfig, ServerConfig, SessionTitleConfig,
@@ -34,9 +35,9 @@ use cookie_agent_protocol::{
     PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
     PreparedResourceDigest, PreparedResourceIdentity, ProviderConnectParams,
     ProviderCredentialValues, ProviderDisconnectParams, ProviderId, ProviderModelId, RunSelection,
-    RunStartParams, RuntimeChangeReason, SessionId, SessionStatus, SessionTitle,
-    SessionTitleChange, SetupFieldId, Sha256Digest, ToolCallId, ToolTerminationOutcome,
-    TreeApprovalGrant, TreeApprovalGrantId, WildcardPattern,
+    RunStartParams, RunToolStdinParams, RuntimeChangeReason, SessionId, SessionStatus,
+    SessionTitle, SessionTitleChange, SetupFieldId, Sha256Digest, ToolCallId,
+    ToolTerminationOutcome, TreeApprovalGrant, TreeApprovalGrantId, WildcardPattern,
 };
 use jiff::Timestamp;
 use tempfile::TempDir;
@@ -45,7 +46,7 @@ use crate::events::EventLog;
 use crate::{
     DelegateInvocation, Engine, EngineError, EngineHistoryView, EngineOptions, PreparedExecutor,
     PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProvider, ToolSpec, TurnAgentContext,
+    ToolPreparationContext, ToolProgress, ToolProvider, ToolSpec, TurnAgentContext,
 };
 
 const PLUGIN_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
@@ -826,6 +827,190 @@ async fn clearing_allow_overlay_to_default_ask_invalidates_tree_grants() {
     assert_eq!(bash.effect, PermissionEffect::Ask);
     assert_eq!(bash.source, PermissionRuleSource::Default);
     fixture.engine.shutdown().await;
+}
+
+#[derive(Clone)]
+struct TestStreamingBashProvider {
+    output_started: Arc<tokio::sync::Notify>,
+    stdin_received: Arc<tokio::sync::Notify>,
+    cleanup_progress_sent: Arc<tokio::sync::Notify>,
+}
+
+struct TestStreamingBashExecutor {
+    call_id: ToolCallId,
+    command: String,
+    output_started: Arc<tokio::sync::Notify>,
+    stdin_received: Arc<tokio::sync::Notify>,
+    cleanup_progress_sent: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl ToolProvider for TestStreamingBashProvider {
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok(vec![ToolSpec {
+            name: "bash".into(),
+            permission_name: "bash".into(),
+            description: "Stream until cancelled".into(),
+            parameters: serde_json::json!({
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{
+                    "command":{"type":"string"},
+                    "interactive":{"type":"boolean"}
+                },
+                "required":["command","interactive"]
+            }),
+        }])
+    }
+
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        match tool_name {
+            "bash" => Ok("bash"),
+            _ => Err(ToolError::execution(
+                "streaming provider received another tool",
+            )),
+        }
+    }
+
+    fn get_permission_resource(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        let command = arguments
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ToolError::execution("missing command"))?;
+        Ok((Self::get_permission_name(name)?, Some(command.into())))
+    }
+
+    fn get_display_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        self.get_permission_resource(name, arguments)?
+            .1
+            .ok_or_else(|| ToolError::execution("missing command"))
+    }
+
+    async fn prepare(
+        &self,
+        _ctx: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        let command = call
+            .arguments
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ToolError::execution("missing command"))?
+            .to_owned();
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(command.as_bytes()),
+            vec![ApprovalCapability {
+                action: PermissionAction::Bash,
+                operation: PreparedCapabilityOperation::new("bash:execute")
+                    .map_err(|error| ToolError::execution(error.to_string()))?,
+            }],
+            vec![PreparedApprovalResource {
+                capability: PermissionAction::Bash,
+                canonical: PreparedResourceIdentity::new(format!(
+                    "command:{}",
+                    Sha256Digest::of_bytes(command.as_bytes())
+                ))
+                .map_err(|error| ToolError::execution(error.to_string()))?,
+                binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
+                    command.as_bytes(),
+                ),
+                binding_lifetime: PreparedBindingLifetime::ProcessLocal,
+                boundary: ApprovalBoundary::Exact,
+                source: ApprovalResourceSource::PrimaryOperation,
+            }],
+            Sha256Digest::of_bytes(b"streaming bash context"),
+        )
+        .map_err(|error| ToolError::execution(error.to_string()))?;
+        PreparedTool::new(
+            operation,
+            call.arguments,
+            None,
+            Box::new(TestStreamingBashExecutor {
+                call_id: call.id,
+                command: command.clone(),
+                output_started: Arc::clone(&self.output_started),
+                stdin_received: Arc::clone(&self.stdin_received),
+                cleanup_progress_sent: Arc::clone(&self.cleanup_progress_sent),
+            }),
+        )?
+        .with_policy_labels(vec![command])
+    }
+}
+
+#[async_trait]
+impl PreparedExecutor for TestStreamingBashExecutor {
+    async fn revalidate(&self) -> Result<(), ToolError> {
+        Ok(())
+    }
+
+    async fn execute(
+        self: Box<Self>,
+        context: ToolExecutionContext,
+    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
+        context
+            .progress
+            .send(ToolProgress {
+                tool_call_id: self.call_id,
+                message: "bash stdout".into(),
+                output_chunk: Some(if self.command == "timeout" {
+                    "stdout before internal timeout".into()
+                } else {
+                    "before cancellation".into()
+                }),
+            })
+            .await?;
+        self.output_started.notify_one();
+        if self.command == "timeout" {
+            context
+                .progress
+                .send(ToolProgress {
+                    tool_call_id: self.call_id,
+                    message: "bash stderr".into(),
+                    output_chunk: Some("stderr before internal timeout".into()),
+                })
+                .await?;
+            return Err(ToolError::execution("bash timed out"));
+        }
+        let mut stdin = context
+            .stdin
+            .ok_or_else(|| ToolError::execution("interactive stdin missing"))?;
+        let write = stdin
+            .recv()
+            .await
+            .ok_or_else(|| ToolError::execution("interactive stdin closed"))?;
+        if write.data != b"input\n" || write.eof {
+            return Err(ToolError::execution("unexpected interactive stdin"));
+        }
+        self.stdin_received.notify_one();
+        context.cancellation.cancelled().await;
+        if self.command == "wedge" {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        context
+            .progress
+            .send(ToolProgress {
+                tool_call_id: self.call_id,
+                message: "bash stdout".into(),
+                output_chunk: Some("during cancellation cleanup".into()),
+            })
+            .await?;
+        self.cleanup_progress_sent.notify_one();
+        tokio::time::sleep(if self.command == "wedge" {
+            std::time::Duration::from_secs(3)
+        } else {
+            std::time::Duration::from_millis(25)
+        })
+        .await;
+        Err(ToolError::execution("streaming bash cancelled"))
+    }
 }
 
 #[derive(Clone)]
@@ -6437,6 +6622,407 @@ async fn cancel_during_start_prediction_aborts_compaction_without_appending_inpu
             .compaction_reserved_for_test(session.session_id)
     );
     assert_eq!(captured.await.expect("cancel server task").len(), 2);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
+    let (endpoint, responses, captured) = scripted_channel_server(1).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_body(
+                "interactive-cancel",
+                "bash",
+                serde_json::json!({"command":"stream", "interactive":true}),
+            ),
+        ))
+        .expect("scripted tool response");
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Streaming cancellation test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: allow\n---\nTest interactive streaming cancellation.\n",
+    );
+    let output_started = Arc::new(tokio::sync::Notify::new());
+    let stdin_received = Arc::new(tokio::sync::Notify::new());
+    let cleanup_progress_sent = Arc::new(tokio::sync::Notify::new());
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestStreamingBashProvider {
+            output_started: Arc::clone(&output_started),
+            stdin_received: Arc::clone(&stdin_received),
+            cleanup_progress_sent,
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("streaming session");
+    fixture
+        .engine
+        .set_permission_mode(session.session_id, PermissionMode::Yolo)
+        .expect("yolo mode");
+    let run = fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("interactive-stream-cancel").expect("client run id"),
+            selection,
+            input: "start interactive stream".into(),
+        })
+        .await
+        .expect("run started")
+        .run_id;
+    if tokio::time::timeout(std::time::Duration::from_secs(2), output_started.notified())
+        .await
+        .is_err()
+    {
+        panic!(
+            "first output chunk timed out: {:#?}",
+            fixture
+                .engine
+                .inner
+                .store
+                .get(session.session_id)
+                .expect("timed out projection")
+                .log
+                .events()
+        );
+    }
+    let call_id = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("streaming projection")
+        .log
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallStarted { start } if event.run_id == Some(run) => {
+                Some(start.tool_call_id)
+            }
+            _ => None,
+        })
+        .expect("started tool call");
+    fixture
+        .engine
+        .tool_stdin(RunToolStdinParams {
+            run_id: run,
+            call_id,
+            data: Some(STANDARD.encode(b"input\n")),
+            eof: false,
+        })
+        .await
+        .expect("interactive stdin accepted");
+    tokio::time::timeout(std::time::Duration::from_secs(2), stdin_received.notified())
+        .await
+        .expect("executor received stdin");
+    fixture.engine.cancel_run(run).await.expect("cancel run");
+
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let terminated = fixture
+                .engine
+                .inner
+                .store
+                .get(session.session_id)
+                .expect("cancelled projection")
+                .log
+                .events()
+                .iter()
+                .any(|event| {
+                    matches!(
+                        &event.payload,
+                        EventPayload::ToolCallTerminated { termination }
+                            if termination.tool_call_id == call_id
+                    )
+                });
+            if terminated {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("tool termination after cancellation cleanup");
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("final projection")
+        .log
+        .events();
+    let terminal_seq = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination }
+                if termination.tool_call_id == call_id =>
+            {
+                Some(event.seq)
+            }
+            _ => None,
+        })
+        .expect("terminal sequence");
+    let chunks = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCallProgress {
+                tool_call_id,
+                output_chunk: Some(chunk),
+                ..
+            } if *tool_call_id == call_id => Some((event.seq, chunk.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        chunks.iter().map(|(_, chunk)| *chunk).collect::<Vec<_>>(),
+        ["before cancellation", "during cancellation cleanup"]
+    );
+    assert!(chunks.iter().all(|(seq, _)| *seq < terminal_seq));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolStdinSubmitted { tool_call_id, byte_count }
+            if tool_call_id == call_id && byte_count == 6
+    )));
+
+    assert_eq!(captured.await.expect("scripted server").len(), 1);
+    fixture.engine.shutdown().await;
+}
+
+async fn start_streaming_bash_test_run(
+    command: &str,
+    interactive: bool,
+) -> (
+    Fixture,
+    SessionId,
+    cookie_agent_protocol::RunId,
+    ToolCallId,
+    Arc<tokio::sync::Notify>,
+    Arc<tokio::sync::Notify>,
+    tokio::task::JoinHandle<Vec<String>>,
+) {
+    let (endpoint, responses, captured) = scripted_channel_server(1).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_body(
+                "streaming-test-call",
+                "bash",
+                serde_json::json!({"command":command, "interactive":interactive}),
+            ),
+        ))
+        .expect("scripted tool response");
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Streaming timeout test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: allow\n---\nTest streaming timeout ordering.\n",
+    );
+    let output_started = Arc::new(tokio::sync::Notify::new());
+    let stdin_received = Arc::new(tokio::sync::Notify::new());
+    let cleanup_progress_sent = Arc::new(tokio::sync::Notify::new());
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestStreamingBashProvider {
+            output_started: Arc::clone(&output_started),
+            stdin_received: Arc::clone(&stdin_received),
+            cleanup_progress_sent: Arc::clone(&cleanup_progress_sent),
+        }));
+    let session_id = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("streaming session")
+        .session_id;
+    let run_id = fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id,
+            client_run_id: ClientRunId::new(format!("streaming-{command}")).expect("client run id"),
+            selection,
+            input: "start streaming test".into(),
+        })
+        .await
+        .expect("run started")
+        .run_id;
+    tokio::time::timeout(std::time::Duration::from_secs(2), output_started.notified())
+        .await
+        .expect("streaming output started");
+    let call_id = fixture
+        .engine
+        .inner
+        .store
+        .get(session_id)
+        .expect("streaming projection")
+        .log
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallStarted { start } if event.run_id == Some(run_id) => {
+                Some(start.tool_call_id)
+            }
+            _ => None,
+        })
+        .expect("started tool call");
+    (
+        fixture,
+        session_id,
+        run_id,
+        call_id,
+        stdin_received,
+        cleanup_progress_sent,
+        captured,
+    )
+}
+
+#[tokio::test]
+async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
+    let (fixture, session_id, run_id, call_id, stdin_received, cleanup_progress_sent, captured) =
+        start_streaming_bash_test_run("wedge", true).await;
+    fixture
+        .engine
+        .tool_stdin(RunToolStdinParams {
+            run_id,
+            call_id,
+            data: Some(STANDARD.encode(b"input\n")),
+            eof: false,
+        })
+        .await
+        .expect("interactive stdin accepted");
+    tokio::time::timeout(std::time::Duration::from_secs(2), stdin_received.notified())
+        .await
+        .expect("executor received stdin");
+    fixture.engine.block_tool_progress_appends_for_test();
+    let cancelled_at = std::time::Instant::now();
+    fixture
+        .engine
+        .cancel_run(run_id)
+        .await
+        .expect("cancel wedged run");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        cleanup_progress_sent.notified(),
+    )
+    .await
+    .expect("cleanup progress accepted");
+    let error_message = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let terminal = fixture
+                .engine
+                .inner
+                .store
+                .get(session_id)
+                .expect("wedged projection")
+                .log
+                .events()
+                .iter()
+                .find_map(|event| match &event.payload {
+                    EventPayload::ToolCallTerminated { termination }
+                        if termination.tool_call_id == call_id =>
+                    {
+                        termination
+                            .error
+                            .as_ref()
+                            .map(|error| error.message.to_string())
+                    }
+                    _ => None,
+                });
+            if let Some(message) = terminal {
+                break message;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("bounded cancellation cleanup");
+    assert!(cancelled_at.elapsed() < std::time::Duration::from_secs(3));
+    assert!(
+        error_message.contains("cleanup deadline elapsed"),
+        "{error_message}"
+    );
+    assert!(
+        error_message
+            .contains("1 progress record(s) never entered the session mailbox and were discarded"),
+        "{error_message}"
+    );
+    assert_eq!(captured.await.expect("scripted server").len(), 1);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn bash_internal_timeout_commits_all_chunks_before_terminal_event() {
+    let (fixture, session_id, _run_id, call_id, _stdin_received, _cleanup_progress_sent, captured) =
+        start_streaming_bash_test_run("timeout", false).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if fixture
+                .engine
+                .inner
+                .store
+                .get(session_id)
+                .expect("timeout projection")
+                .log
+                .events()
+                .iter()
+                .any(|event| {
+                    matches!(
+                        &event.payload,
+                        EventPayload::ToolCallTerminated { termination }
+                            if termination.tool_call_id == call_id
+                    )
+                })
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("bash timeout terminal event");
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session_id)
+        .expect("final timeout projection")
+        .log
+        .events();
+    let terminal = events
+        .iter()
+        .find(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::ToolCallTerminated { termination }
+                    if termination.tool_call_id == call_id
+            )
+        })
+        .expect("timeout termination");
+    let chunks = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCallProgress {
+                tool_call_id,
+                output_chunk: Some(chunk),
+                ..
+            } if *tool_call_id == call_id => Some((event.seq, chunk.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        chunks.iter().map(|(_, chunk)| *chunk).collect::<Vec<_>>(),
+        [
+            "stdout before internal timeout",
+            "stderr before internal timeout"
+        ]
+    );
+    assert!(chunks.iter().all(|(seq, _)| *seq < terminal.seq));
+    let EventPayload::ToolCallTerminated { termination } = &terminal.payload else {
+        unreachable!()
+    };
+    assert!(
+        termination
+            .error
+            .as_ref()
+            .is_some_and(|error| error.message.as_str() == "bash timed out")
+    );
+    assert_eq!(captured.await.expect("scripted server").len(), 1);
     fixture.engine.shutdown().await;
 }
 

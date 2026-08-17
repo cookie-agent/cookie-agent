@@ -52,6 +52,7 @@ pub struct ToolCallState {
     pub arguments: String,
     pub status: ToolStatus,
     pub detail: String,
+    pub has_output_chunks: bool,
 }
 
 impl ToolCallState {
@@ -1454,6 +1455,7 @@ fn reduce_event(
                     arguments,
                     status: ToolStatus::Running,
                     detail: identities,
+                    has_output_chunks: false,
                 },
             );
             place_tool_rows(state);
@@ -1461,9 +1463,21 @@ fn reduce_event(
         EventPayload::ToolCallProgress {
             tool_call_id,
             message,
+            output_chunk,
         } => {
             if let Some(tool) = state.tools.get_mut(&tool_call_id) {
-                tool.detail = message.to_string();
+                if let Some(output_chunk) = output_chunk {
+                    if !tool.has_output_chunks {
+                        tool.detail.clear();
+                        tool.has_output_chunks = true;
+                    }
+                    tool.detail.push_str(output_chunk.as_str());
+                } else if tool.has_output_chunks {
+                    tool.detail.push('\n');
+                    tool.detail.push_str(message.as_str());
+                } else {
+                    tool.detail = message.to_string();
+                }
             }
             bump_tool_item(state, tool_call_id);
         }
@@ -1495,9 +1509,8 @@ fn reduce_event(
             };
             if let Some(tool) = state.tools.get_mut(&tool_call_id) {
                 tool.status = status;
-                if !detail.is_empty() {
-                    tool.detail = detail;
-                }
+                tool.detail = detail;
+                tool.has_output_chunks = false;
             }
             state.output.remove(&(tool_call_id, false));
             state.output.remove(&(tool_call_id, true));
@@ -2834,6 +2847,7 @@ mod tests {
                 arguments: "{}".into(),
                 status: ToolStatus::Running,
                 detail: String::new(),
+                has_output_chunks: false,
             },
         );
         state
@@ -2848,6 +2862,25 @@ mod tests {
             SessionId::new_v7(),
             None,
             1,
+            jiff::Timestamp::now(),
+            EventPayload::ToolCallProgress {
+                tool_call_id: call_id,
+                message: cookie_agent_protocol::SafeDisplayText::new("bash stdout")
+                    .expect("progress message"),
+                output_chunk: Some(
+                    cookie_agent_protocol::SafeDisplayText::new("streamed preview")
+                        .expect("output chunk"),
+                ),
+            },
+        );
+        assert_eq!(state.tools[&call_id].detail, "streamed preview");
+        assert!(state.tools[&call_id].has_output_chunks);
+
+        reduce_event(
+            &mut state,
+            SessionId::new_v7(),
+            None,
+            2,
             jiff::Timestamp::now(),
             EventPayload::ToolCallTerminated {
                 termination: cookie_agent_protocol::ToolCallTermination {
@@ -2870,10 +2903,129 @@ mod tests {
         assert!(!state.output.contains_key(&(call_id, false)));
         assert!(!state.output.contains_key(&(call_id, true)));
         assert_eq!(state.tools[&call_id].status, ToolStatus::Completed);
+        assert!(!state.tools[&call_id].has_output_chunks);
         assert_eq!(
             state.tools[&call_id].detail,
             "Bash\nstdout:\nonce\n\nstderr:\n"
         );
+    }
+
+    #[test]
+    fn committed_assistant_text_replaces_streamed_delta() {
+        let item_id = 1;
+        let mut state = assistant_state_with_item(item_id);
+        append_assistant_delta(
+            &mut state,
+            item_id,
+            10,
+            "streamed draft".into(),
+            AssistantPartKind::Text,
+            jiff::Timestamp::now(),
+        );
+        let turn = PersistedModelTurn {
+            content: vec![cookie_agent_protocol::PersistedAssistantPart::Text {
+                text: "committed replacement".into(),
+                metadata: None,
+            }],
+            provider_options: BTreeMap::new(),
+            finish_reason: cookie_agent_protocol::ModelFinishReason::Stop,
+            usage: Usage::default(),
+            response_metadata: BTreeMap::new(),
+            provider_metadata: BTreeMap::new(),
+            native_replay: None,
+        };
+
+        rebuild_committed_children(&mut state, item_id, 1, 20, &turn);
+
+        let TranscriptItem::Assistant { children, .. } = &state.transcript[0] else {
+            panic!("assistant item")
+        };
+        assert!(matches!(
+            children.as_slice(),
+            [AssistantChild::Text { markdown, .. }]
+                if markdown.as_str() == "committed replacement"
+        ));
+    }
+
+    #[test]
+    fn replay_with_tool_chunks_ends_at_committed_result_only() {
+        let session_id = SessionId::new_v7();
+        let run_id = RunId::new_v7();
+        let call_id = ToolCallId::new_v7();
+        let owner = AssistantToolCallRef {
+            model_turn_seq: 1,
+            content_index: 0,
+            model_call_id: cookie_agent_protocol::ModelCallId::new("replay-call")
+                .expect("model call id"),
+            provider_item_id: None,
+        };
+        let event = |seq, payload| StoredEvent {
+            engine_version: None,
+            session_id,
+            run_id: Some(run_id),
+            seq,
+            timestamp: jiff::Timestamp::now(),
+            payload,
+        };
+        let events = vec![
+            event(
+                1,
+                EventPayload::ToolCallStarted {
+                    start: cookie_agent_protocol::ToolCallStart {
+                        tool_call_id: call_id,
+                        owner: owner.clone(),
+                        presentation: cookie_agent_protocol::ToolCallPresentation {
+                            title: cookie_agent_protocol::SafeDisplayText::new("Bash")
+                                .expect("title"),
+                            primary_argument: None,
+                        },
+                        operation_fingerprint: serde_json::from_value(serde_json::json!({
+                            "digest": "1".repeat(64)
+                        }))
+                        .expect("fingerprint"),
+                    },
+                },
+            ),
+            event(
+                2,
+                EventPayload::ToolCallProgress {
+                    tool_call_id: call_id,
+                    message: cookie_agent_protocol::SafeDisplayText::new("bash stdout")
+                        .expect("message"),
+                    output_chunk: Some(
+                        cookie_agent_protocol::SafeDisplayText::new("historical chunk")
+                            .expect("chunk"),
+                    ),
+                },
+            ),
+            event(
+                3,
+                EventPayload::ToolCallTerminated {
+                    termination: cookie_agent_protocol::ToolCallTermination {
+                        tool_call_id: call_id,
+                        owner,
+                        outcome: ToolTerminationOutcome::Completed,
+                        result: Some(cookie_agent_protocol::PersistedToolResult {
+                            title: cookie_agent_protocol::SafeDisplayText::new("Bash")
+                                .expect("title"),
+                            output: "committed replacement".into(),
+                            metadata: serde_json::Value::Null,
+                            truncation: None,
+                            attachments: Vec::new(),
+                        }),
+                        error: None,
+                    },
+                },
+            ),
+        ];
+
+        let replayed = reduce_session_events(session_id, 0, &events);
+        assert_eq!(
+            replayed.tools[&call_id].detail,
+            "Bash\ncommitted replacement"
+        );
+        assert!(!replayed.tools[&call_id].detail.contains("historical chunk"));
+        assert!(!replayed.tools[&call_id].has_output_chunks);
     }
 
     #[test]

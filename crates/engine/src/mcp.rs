@@ -437,6 +437,7 @@ impl ClientHandler for McpClientHandler {
                 .send(ToolProgress {
                     tool_call_id,
                     message: message.clone(),
+                    output_chunk: None,
                 })
                 .await;
         }

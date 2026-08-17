@@ -27,9 +27,63 @@ use crate::{
     policy::FrozenRunPolicy,
     tool_api::{
         PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-        ToolPreparationContext, ToolProvider, ToolStdin,
+        ToolPreparationContext, ToolProgress, ToolProvider, ToolStdin,
     },
 };
+
+const TOOL_CANCELLATION_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn tool_progress_event(progress: &ToolProgress) -> Event {
+    Event::ToolCallProgress {
+        tool_call_id: progress.tool_call_id,
+        message: safe_display(&progress.message),
+        output_chunk: progress.output_chunk.as_deref().map(safe_display),
+    }
+}
+
+async fn append_tool_progress(
+    engine: &Engine,
+    session: SessionId,
+    run: RunId,
+    progress: ToolProgress,
+) -> Result<(), EngineError> {
+    engine
+        .append(session, Some(run), tool_progress_event(&progress))
+        .await
+}
+
+async fn enqueue_cleanup_tool_progress(
+    engine: &Engine,
+    session: SessionId,
+    run: RunId,
+    progress: ToolProgress,
+) -> Result<(), EngineError> {
+    #[cfg(test)]
+    let block = engine
+        .inner
+        .tool_progress_append_block
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    #[cfg(test)]
+    if let Some(block) = block {
+        block.notified().await;
+    }
+    let completion = engine
+        .enqueue_append(session, Some(run), tool_progress_event(&progress))
+        .await?;
+    drop(completion);
+    Ok(())
+}
+
+fn close_and_discard_progress(progress_rx: &mut mpsc::Receiver<ToolProgress>) -> usize {
+    progress_rx.close();
+    let mut discarded = 0;
+    while progress_rx.try_recv().is_ok() {
+        discarded += 1;
+    }
+    discarded
+}
 
 impl Engine {
     pub(super) async fn prepare_tool_call(
@@ -530,6 +584,7 @@ impl Engine {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .insert(call.id, stdin_tx);
             }
+            let tool_cancellation = active.cancellation.child_token();
             let invoke = executor.execute(ToolExecutionContext {
                 session: active.session,
                 run,
@@ -543,7 +598,7 @@ impl Engine {
                         )
                     },
                 ),
-                cancellation: active.cancellation.child_token(),
+                cancellation: tool_cancellation.clone(),
                 stdin: interactive.then_some(stdin),
                 turn_context,
                 artifacts: engine.inner.artifacts.clone(),
@@ -557,6 +612,15 @@ impl Engine {
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .remove(&call.id);
+                        while let Ok(progress) = progress_rx.try_recv() {
+                            let _ = append_tool_progress(
+                                &engine,
+                                active.session,
+                                run,
+                                progress,
+                            )
+                            .await;
+                        }
                         // Tool implementations drain their producers before
                         // resolving.  Finalizing here makes all emitted deltas
                         // precede the completion notification committed by the
@@ -595,22 +659,80 @@ impl Engine {
                         };
                     }
                     Some(progress) = progress_rx.recv() => {
-                        let _ = engine.append(active.session, Some(run), Event::ToolCallProgress { tool_call_id: progress.tool_call_id, message: safe_display(&progress.message) }).await;
+                        let _ = append_tool_progress(
+                            &engine,
+                            active.session,
+                            run,
+                            progress,
+                        )
+                        .await;
                     }
                     _ = active.cancellation.cancelled() => {
+                        tool_cancellation.cancel();
                         active
                             .stdin
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .remove(&call.id);
+                        let cleanup_deadline =
+                            tokio::time::Instant::now() + TOOL_CANCELLATION_CLEANUP_TIMEOUT;
+                        let cleanup = tokio::time::sleep_until(cleanup_deadline);
+                        tokio::pin!(cleanup);
+                        let mut discarded_progress = 0;
+                        let mut cleanup_timed_out = false;
+                        'cleanup: loop {
+                            tokio::select! {
+                                _ = &mut invoke => {
+                                    while let Ok(progress) = progress_rx.try_recv() {
+                                        if tokio::time::timeout_at(
+                                            cleanup_deadline,
+                                            enqueue_cleanup_tool_progress(&engine, active.session, run, progress),
+                                        )
+                                        .await
+                                        .is_err()
+                                        {
+                                            cleanup_timed_out = true;
+                                            discarded_progress = 1 + close_and_discard_progress(&mut progress_rx);
+                                            break 'cleanup;
+                                        }
+                                    }
+                                    break;
+                                }
+                                Some(progress) = progress_rx.recv() => {
+                                    if tokio::time::timeout_at(
+                                        cleanup_deadline,
+                                        enqueue_cleanup_tool_progress(&engine, active.session, run, progress),
+                                    )
+                                    .await
+                                    .is_err()
+                                    {
+                                        cleanup_timed_out = true;
+                                        discarded_progress = 1 + close_and_discard_progress(&mut progress_rx);
+                                        break;
+                                    }
+                                }
+                                () = &mut cleanup => {
+                                    cleanup_timed_out = true;
+                                    discarded_progress = close_and_discard_progress(&mut progress_rx);
+                                    break;
+                                }
+                            }
+                        }
                         if let Some(capture) = &capture {
                             capture.discard();
                         }
                         hub.finalize();
                         engine.retain_finalized_output_hub(call.id);
+                        let message = if cleanup_timed_out {
+                            format!(
+                                "tool call cancelled after it started; cleanup deadline elapsed and {discarded_progress} progress record(s) never entered the session mailbox and were discarded"
+                            )
+                        } else {
+                            "tool call cancelled after it started".into()
+                        };
                         return Err(ToolFailure {
                             code: ToolCallFailureCode::ExecutionFailed,
-                            message: "tool call cancelled after it started".into(),
+                            message,
                         });
                     }
                 }

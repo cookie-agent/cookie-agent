@@ -135,6 +135,17 @@ starts after initialization and has no replay. Events are sent only after their 
 durable; a buffered session's newly persisted prefix is sent in sequence after atomic publication.
 Per-session sequence order is preserved, while cross-session ordering is unspecified.
 
+Durable `tool_call_progress` events include optional sanitized bash output chunks,
+so event-subscribed plugins observe live tool output through this same stream.
+Model text and reasoning deltas are still not exposed to plugins. Chunk bursts do
+not consume plugin publication quotas, which apply in the plugin-to-engine
+direction. They use one 1024-entry FIFO delivery queue. When full, admission
+evicts the oldest lowest-priority record: chunk first, then ordinary non-chunk,
+and terminal only when the queue contains nothing else. Accepted records always
+append at the tail, so retained events preserve per-session sequence order while
+tool termination survives chunk and ordinary floods. Drops are counted separately
+by chunk, ordinary, or terminal class in their diagnostic message.
+
 This stream is observational and not durable. Each plugin has an independent bounded 1024-message
 queue. A full queue drops delivery for that plugin, increments its dropped-event status counter,
 and records a session diagnostic. It cannot delay session persistence, another plugin, or the
@@ -204,7 +215,9 @@ the pinned `ToolSpec` JSON Schema. Hooks cannot alter `permission_name` or `reso
 are never disclosed to plugins, and an allow hook never grants permission.
 
 `plugin/intercept/tool_after_result` observes the tool result and may replace its content before
-termination is committed. `agent_before_start` may append to or replace the system prompt and may
+termination is committed. Streamed tool chunks are display previews and are
+superseded by the committed terminal content, including plugin replacements.
+`agent_before_start` may append to or replace the system prompt and may
 inject a role-preserving text message. Prompt replacements and appends compose in plugin order.
 Accepted injections are committed as `message_injected` during run setup, before the submitted
 input, so restart, replay, fork, and versionless projection see the same message.
@@ -238,7 +251,8 @@ It never receives body data.
 `message_end` receives the complete assembled assistant content after streaming and before
 `model_turn_committed`. It may replace content but not the assistant role. The replacement is
 validated as a complete persisted turn and becomes the durable turn; already emitted text and
-reasoning deltas remain historical stream records.
+reasoning deltas remain historical stream records. TUI and replay projections
+replace accumulated partials with that committed content.
 
 `model_before_select`, `session_before_fork`, and `session_before_revert` may block their operation
 with a user-facing reason. Model selection interception occurs when the configured selection is
@@ -253,8 +267,7 @@ All mutation chains pass only validated current state to the next plugin. Invali
 diagnosed and skipped. Timeout, crash, malformed response, or queue failure is fail-open per plugin,
 and later plugins still run. Hooks receive the same short-lived context grant used by plugin emit.
 Except for root-only `user_before_input`, user-facing agent hooks also run for delegated sessions.
-Internal title, approval, and compaction agents remain outside extension interception. Streaming
-output chunks are not part of this protocol stage.
+Internal title, approval, and compaction agents remain outside extension interception.
 
 ## Tools
 

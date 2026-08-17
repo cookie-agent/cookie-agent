@@ -1677,6 +1677,9 @@ pub enum EventPayload {
     ToolCallProgress {
         tool_call_id: ToolCallId,
         message: SafeDisplayText,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        output_chunk: Option<SafeDisplayText>,
     },
     ToolCallTerminated {
         #[serde(flatten)]

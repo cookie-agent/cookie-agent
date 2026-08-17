@@ -1052,6 +1052,8 @@ pub(crate) struct Inner {
     #[cfg(test)]
     plugin_diagnostic_append_block: Mutex<Option<Arc<tokio::sync::Notify>>>,
     #[cfg(test)]
+    tool_progress_append_block: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    #[cfg(test)]
     pub(crate) publication_failure: AtomicBool,
     #[cfg(test)]
     pub(crate) delegate_start_failures: AtomicU64,
@@ -1204,6 +1206,8 @@ impl Engine {
                 abandoned_sweep_hook: Mutex::new(None),
                 #[cfg(test)]
                 plugin_diagnostic_append_block: Mutex::new(None),
+                #[cfg(test)]
+                tool_progress_append_block: Mutex::new(None),
                 #[cfg(test)]
                 publication_failure: AtomicBool::new(false),
                 #[cfg(test)]
@@ -1706,6 +1710,16 @@ impl Engine {
         *self
             .inner
             .plugin_diagnostic_append_block
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(Arc::new(tokio::sync::Notify::new()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn block_tool_progress_appends_for_test(&self) {
+        *self
+            .inner
+            .tool_progress_append_block
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) =
             Some(Arc::new(tokio::sync::Notify::new()));

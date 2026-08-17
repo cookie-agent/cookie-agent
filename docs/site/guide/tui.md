@@ -65,6 +65,15 @@ to close, or the `c`, `r`, and `f` accelerators.
 Assistant and tool rows keep their normal expand/collapse behavior and do not
 open the message menu.
 
+## Live tool output
+
+Expanded bash rows show sanitized stdout and stderr while the command runs.
+The live preview is capped at 1 MiB and reports when that limit is reached. On
+completion, failure, cancellation, or interruption, the same row swaps to the
+committed terminal result. Reopening a session renders only that committed
+content. Assistant text follows the same rule: streamed partials are replaced
+by the committed turn.
+
 ## Approvals
 
 An approval modal presents the prepared operation and the decisions allowed by

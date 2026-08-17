@@ -1156,7 +1156,9 @@ fn tool_child_layout(
         if !tool.detail.is_empty() {
             body.extend(tool_body_lines(tool, context));
         }
-        if let Some(call_id) = call_id {
+        if !tool.has_output_chunks
+            && let Some(call_id) = call_id
+        {
             for (stderr, label) in [(false, "STDOUT"), (true, "STDERR")] {
                 if let Some(output) = state.output.get(&(call_id, stderr)) {
                     let gap = if output.has_gap { " [OUTPUT GAP]" } else { "" };
@@ -4011,6 +4013,7 @@ mod tests {
                 arguments: r#"{"command":"true"}"#.into(),
                 status: ToolStatus::Completed,
                 detail: String::new(),
+                has_output_chunks: false,
             },
         );
 
@@ -4114,6 +4117,7 @@ mod tests {
                 arguments: r#"{"command": "touch README.md"}"#.into(),
                 status: ToolStatus::Running,
                 detail: String::new(),
+                has_output_chunks: false,
             },
         );
         let rendered = transcript_layout(&state, None, 60)
@@ -4168,6 +4172,7 @@ mod tests {
                 arguments: r#"{"command":"printf a-very-long-single-line-tool-argument"}"#.into(),
                 status: ToolStatus::Running,
                 detail: String::new(),
+                has_output_chunks: false,
             },
         );
         let width = 18;
@@ -8291,6 +8296,7 @@ mod tests {
                 arguments: format!(r#"{{"path": "{path}"}}"#),
                 status,
                 detail: detail.into(),
+                has_output_chunks: false,
             },
         );
         state
@@ -9995,6 +10001,7 @@ mod tests {
                 arguments: String::new(),
                 status: ToolStatus::Running,
                 detail: String::new(),
+                has_output_chunks: false,
             },
         );
         store.apply_output_gap(cookie_agent_protocol::OutputGap {
@@ -10362,6 +10369,7 @@ mod tests {
                     arguments: "{}".into(),
                     status,
                     detail: String::new(),
+                    has_output_chunks: false,
                 },
             );
         }
