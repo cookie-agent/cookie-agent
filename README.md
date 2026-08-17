@@ -8,8 +8,8 @@ Simple and mighty coding agent.
 
 cookie agent is a Rust-powered terminal coding agent. The surface stays
 minimalistic — a daemon, a TUI, a headless runner — while the batteries are
-included underneath: providers, permissions, delegation, sessions, and
-observability are all built in.
+included underneath: providers, permissions, delegation, sessions, plugins,
+and observability are all built in.
 
 ## Highlights
 
@@ -17,6 +17,8 @@ observability are all built in.
   tasks that keep running while you keep working.
 - **MCP servers** — attach local or remote MCP tool servers, including
   streamable HTTP servers with OAuth.
+- **Plugins** — run out-of-process JSON-RPC extensions that add tools, observe
+  events, and intercept tool calls, agent starts, and compaction.
 - **Permissions** — every capability is opt-in. Agents see only the tools
   their permission map allows, with resource-pattern rules and ask/allow/deny
   effects.
@@ -28,8 +30,8 @@ observability are all built in.
   estimated cost rollups.
 - **Headless runs** — `cookie run` executes a prompt without the TUI, suitable
   for CI and scripting.
-- **Durable sessions** — versioned, persisted sessions with automatic context
-  compaction.
+- **Durable sessions** — versionless persisted history with best-effort reading
+  and automatic context compaction.
 
 ## Quick start
 
@@ -57,5 +59,6 @@ cookie run "Review this workspace"
 Setup, configuration, and task-oriented guides are at
 [cookie-agent.github.io/cookie-agent](https://cookie-agent.github.io/cookie-agent/),
 including [Getting Started](https://cookie-agent.github.io/cookie-agent/getting-started/),
-[Providers](https://cookie-agent.github.io/cookie-agent/guide/providers/), and
+[Providers](https://cookie-agent.github.io/cookie-agent/guide/providers/),
+[Plugins](https://cookie-agent.github.io/cookie-agent/guide/plugins/), and
 [Permissions](https://cookie-agent.github.io/cookie-agent/guide/permissions/).

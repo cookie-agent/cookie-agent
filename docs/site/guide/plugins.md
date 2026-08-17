@@ -5,7 +5,7 @@ process. Each enabled plugin starts eagerly when `Engine::open` runs and communi
 newline-delimited JSON-RPC 2.0 on standard input and standard output. Plugin logs go to the
 engine's standard error stream.
 
-## Configuration
+## Configuring a plugin
 
 Configure each plugin under `[plugins.<name>]` in user or workspace `config.toml`. A workspace
 entry replaces a user entry with the same name.
@@ -28,6 +28,18 @@ tool_timeout_ms = 30000
 disabled entry is not started but is still validated. Plugin processes receive only the
 variables in `env`; the engine clears its inherited environment, including `PATH`, before adding
 those configured values. Configure `PATH` explicitly when the plugin itself needs it.
+
+During `plugin/initialize`, this executable must declare every capability it uses. A tool-only
+plugin sets `tools: true`, leaves subscription and publishing flags false, and returns an empty
+`intercept` array plus its tool declarations. The agent document must then enable each declared
+permission and resource, for example:
+
+```yaml
+permissions:
+  plugin:
+    "issue_read *": allow
+    "issue_delete *": ask
+```
 
 ## Protocol
 
@@ -144,18 +156,12 @@ tool call. `is_error` remains structured tool-result metadata, parallel to MCP t
 Plugin tools use the fail-closed permission pipeline. They are hidden until the agent policy or a
 session overlay has an `allow` or `ask` rule for the `plugin` action and declared permission. The
 permission resource is the declared permission name followed by the primary resource when one is
-present. For example:
+present. The `issue_read *` rule above allows that declared permission for any primary resource.
 
-```yaml
-permissions:
-  plugin:
-    "issue_read *": allow
-    "issue_delete *": ask
-```
-
-Skill `allowed-tools` entries `Plugin` and `Plugin(name:*)` govern plugin tools in the same way as
-the existing MCP group. A pinned call to a connected but disallowed plugin tool reports that the
-tool is not enabled instead of treating it as undiscovered.
+[Skill `allowed-tools`](skills.md#invocation-and-permissions) entries `Plugin` and
+`Plugin(name:*)` govern plugin tools in the same way as the existing MCP group. A pinned call to a
+connected but disallowed plugin tool reports that the tool is not enabled instead of treating it
+as undiscovered.
 
 ## Lifecycle
 
@@ -164,12 +170,13 @@ with a diagnostic reason. Spawn failures, handshake timeouts, malformed response
 name mismatches, declaration errors, name collisions, unexpected EOF, and process exits affect
 only that plugin; the engine and other plugins continue running.
 
-Discovered tool names are claimed in the same global namespace as built-in and MCP tools. A plugin
-that collides with either category fails. When plugins collide with each other, the last plugin to
-finish registration wins that tool; the earlier plugin remains connected for its other tools and
-publishes a status diagnostic. The winner's permission declaration applies. Claims and listings
-are removed immediately when the owning process exits or standard output closes, and prepared
-calls fail revalidation after removal. Crashed plugins stay failed until engine restart.
+Discovered tool names share one namespace with built-in and MCP tools. Built-in names are reserved,
+and MCP claims take precedence over plugin claims; a plugin collision fails, and a later lazy MCP
+claim preempts the plugin. When plugins collide with each other, the last plugin to finish
+registration wins that tool; the earlier plugin remains connected for its other tools and publishes
+a status diagnostic. The winner's permission declaration applies. Claims and listings are removed
+immediately when the owning process exits or standard output closes, and prepared calls fail
+revalidation after removal. Crashed plugins stay failed until engine restart.
 
 Each call is bounded by `tool_timeout_ms`, which defaults to 30000. During shutdown, the engine
 sends `plugin/shutdown`, closes plugin standard input, waits for `shutdown_grace_ms`, and then

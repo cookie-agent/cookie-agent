@@ -62,7 +62,12 @@ string of bare `Tool` names or `Tool(pattern)` entries. Patterns may contain
 spaces and parentheses; a bare tool means `*`. Tool names are case-insensitive,
 and `Edit` maps to the `write` permission just like the builtin edit tool.
 Accepted names are `Read`, `Write`, `Edit`, `Bash`, `Delegate`, `Skill`, and
-`Mcp`. The older Cookie Agent `action:pattern` list form is not accepted.
+`Mcp`, and `Plugin`. The older Cookie Agent `action:pattern` list form is not
+accepted.
+
+`Plugin` grants the complete plugin permission group. `Plugin(name:*)` grants
+both `name` and `name *`, where `name` is a plugin-declared permission prefix;
+this is the same prefix expansion used by `Mcp(name:*)`.
 
 Claude's `prefix:*` convention is translated to Cookie Agent's full-resource
 glob semantics. For example, `Bash(git:*)` creates grants for both `git` and

@@ -4,7 +4,7 @@ cookie agent reads three independent configuration surfaces:
 
 | Surface | Location |
 |---|---|
-| Runtime, providers, and MCP servers | `~/.config/cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` |
+| Runtime, providers, MCP servers, and plugins | `~/.config/cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` |
 | Agents | `~/.config/cookie_agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` |
 | TUI | `$XDG_CONFIG_HOME/cookie_agent/tui.toml` or `~/.config/cookie_agent/tui.toml` |
 
@@ -23,10 +23,10 @@ key-by-key reference, see [Configuration Reference](../reference/configuration.m
 There is no upward workspace search: configuration is loaded from the exact
 working directory the daemon started in. The user layer and the workspace layer
 are both optional. Workspace settings replace the corresponding user settings. A
-same-ID workspace provider, MCP server, or agent replaces the complete user definition;
-nested fields never merge. Every authored file is parsed strictly. Unknown fields,
-leftover schema/version fields, wrong types, and malformed content are hard errors;
-there are no migrations or silently ignored fields.
+same-ID workspace provider, MCP server, plugin, or agent replaces the complete user
+definition; nested fields never merge. Every authored file is parsed strictly.
+Unknown fields, leftover schema/version fields, wrong types, and malformed content
+are hard errors; there are no migrations or silently ignored fields.
 
 ## Minimum runtime configuration
 
@@ -89,6 +89,22 @@ Validation rules that apply regardless of what you set:
   [Providers](providers.md)).
 - MCP servers require exactly one stdio command or Streamable HTTP URL (see
   [MCP servers](mcp.md)).
+
+## Plugins
+
+Plugins use the same user and exact-workspace `config.toml` layers as runtime
+settings. A minimal executable plugin entry is:
+
+```toml
+[plugins.issue_tracker]
+command = "/opt/cookie-plugins/issue-tracker"
+args = ["--stdio"]
+```
+
+A same-name workspace entry replaces the complete user entry. Set `enabled =
+false` to keep a plugin from starting; its command, timeouts, and other fields
+are still validated. See [Plugins](plugins.md) for protocol, capabilities,
+permissions, and lifecycle behavior.
 
 ## Environment interpolation
 

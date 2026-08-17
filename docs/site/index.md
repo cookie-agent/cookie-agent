@@ -33,8 +33,8 @@ when the provider is first used, not during the connect flow.
 
 See [Getting Started](getting-started.md) for configuration and first-run
 details, [Providers](guide/providers.md) for managed and custom provider
-options, and [Configuration](reference/configuration.md) for every configurable
-item.
+options, [Plugins](guide/plugins.md) for executable extensions, and
+[Configuration](reference/configuration.md) for every configurable item.
 
 !!! warning "Keep credentials out of Git"
     Prefer `/connect` or `${env:NAME}` interpolation. Do not commit `.env`, a

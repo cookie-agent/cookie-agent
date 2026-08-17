@@ -8,7 +8,7 @@ Three independent configuration surfaces exist:
 
 | Surface | Location |
 |---|---|
-| Runtime and providers | `~/.config/cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` |
+| Runtime, providers, MCP servers, and plugins | `~/.config/cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` |
 | Agents | `~/.config/cookie_agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` |
 | Skills | `~/.config/cookie-agent/skills/<name>/SKILL.md` and `.cookie-agent/skills/<name>/SKILL.md` from cwd to worktree root |
 | TUI | `$XDG_CONFIG_HOME/cookie_agent/tui.toml` or `~/.config/cookie_agent/tui.toml` |
@@ -19,7 +19,8 @@ The user layer and the exact working directory's `.cookie-agent` layer are both
 optional. Configuration is loaded from the exact working directory only; there
 is no upward search. Within a layer, `config.toml` and the `agents/` directory
 are optional. A workspace layer replaces the corresponding user settings and
-providers/agents wholesale by ID; nested fields never merge.
+providers, MCP servers, plugins, and agents wholesale by ID; nested fields
+never merge.
 
 Every authored file is parsed strictly. Unknown keys, leftover `schema` or
 `schema_version` keys, wrong types, and malformed content are hard errors with an
@@ -229,8 +230,11 @@ permission and naming behavior.
 
 ## `[plugins.<name>]`
 
-Plugin definitions are layered by plugin name. A workspace definition replaces the same
-user-level plugin. See the [Plugins guide](../guide/plugins.md) for protocol, permission, and tool
+Plugin definitions are layered by plugin name. A workspace definition replaces
+the complete same-name user definition without merging nested fields. The
+replacement keeps that user's position in authored order, which is also the
+interception order; workspace-only plugins append in workspace-authored order.
+See the [Plugins guide](../guide/plugins.md) for protocol, permission, and tool
 precedence behavior.
 
 | Key | Type | Default | Description |
@@ -244,6 +248,30 @@ precedence behavior.
 | `startup_timeout_ms` | integer | `10000` | Positive timeout for initialization. |
 | `shutdown_grace_ms` | integer | `3000` | Positive graceful shutdown period before termination. |
 | `tool_timeout_ms` | integer | `30000` | Positive timeout for each plugin tool call. |
+
+Plugin entries reject unknown fields. `command` must be present and nonempty,
+`cwd` must be nonempty when set, and every timeout must be greater than zero.
+These rules apply even when `enabled = false`; disabling an entry prevents
+startup but does not bypass configuration validation.
+
+The child receives only the variables in `env`. It does not inherit the
+engine's environment, including `PATH`; use an absolute `command` and configure
+`PATH` explicitly when the executable or its children need it.
+
+Complete example:
+
+```toml
+[plugins.issue_tracker]
+command = "/opt/cookie-plugins/issue-tracker" # Required executable path.
+args = ["--stdio"]                            # Optional arguments.
+env = { PATH = "/usr/bin:/bin", MODE = "local" } # Complete child environment.
+cwd = "/workspace"                           # Optional child working directory.
+enabled = true                                # Start when the engine opens.
+interception_timeout_ms = 2000                # Per interception hook.
+startup_timeout_ms = 10000                    # Initialization handshake.
+shutdown_grace_ms = 3000                      # Grace before termination.
+tool_timeout_ms = 30000                       # Per plugin tool call.
+```
 
 ## `[providers]`
 
