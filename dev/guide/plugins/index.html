@@ -636,6 +636,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#rust-sdk" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rust SDK
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#protocol" class="md-nav__link">
     <span class="md-ellipsis">
       Protocol
@@ -1075,6 +1084,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#rust-sdk" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rust SDK
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#protocol" class="md-nav__link">
     <span class="md-ellipsis">
       Protocol
@@ -1189,6 +1207,62 @@ permission and resource, for example:</p>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="s">"issue_read</span><span class="nv"> </span><span class="s">*"</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">allow</span>
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="s">"issue_delete</span><span class="nv"> </span><span class="s">*"</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ask</span>
 </code></pre></div>
+<h2 id="rust-sdk">Rust SDK<a class="headerlink" href="#rust-sdk" title="Permanent link">&para;</a></h2>
+<p>Rust plugins can use the official <code>cookie_agent_plugin_sdk</code> workspace crate. Until the SDK is
+published separately, add it as a path dependency together with <code>serde_json</code> and Tokio:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[dependencies]</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">cookie_agent_plugin_sdk</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">path</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"../cookie-agent/crates/plugin_sdk"</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">serde_json</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"1"</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">tokio</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">version</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"1"</span><span class="p">,</span><span class="w"> </span><span class="n">features</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"macros"</span><span class="p">,</span><span class="w"> </span><span class="s2">"rt"</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<p>Register handlers with <code>PluginServer</code>; the SDK validates tool parameter schemas and handles the
+initialize, ping, shutdown, framing, and JSON-RPC messages:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">use</span><span class="w"> </span><span class="n">cookie_agent_plugin_sdk</span><span class="p">::{</span><span class="n">PluginServer</span><span class="p">,</span><span class="w"> </span><span class="n">ToolDecl</span><span class="p">,</span><span class="w"> </span><span class="n">ToolOutput</span><span class="p">};</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="k">use</span><span class="w"> </span><span class="n">serde_json</span><span class="p">::</span><span class="n">json</span><span class="p">;</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="cp">#[tokio::main(flavor = </span><span class="s">"current_thread"</span><span class="cp">)]</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">(),</span><span class="w"> </span><span class="n">cookie_agent_plugin_sdk</span><span class="p">::</span><span class="n">PluginError</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="n">PluginServer</span><span class="p">::</span><span class="n">builder</span><span class="p">(</span><span class="s">"echo"</span><span class="p">,</span><span class="w"> </span><span class="s">"0.1.0"</span><span class="p">)</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">        </span><span class="p">.</span><span class="n">tool</span><span class="p">(</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">            </span><span class="n">ToolDecl</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">                </span><span class="n">name</span><span class="p">:</span><span class="w"> </span><span class="s">"echo"</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">                </span><span class="n">description</span><span class="p">:</span><span class="w"> </span><span class="s">"Echo text back to the model"</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">                </span><span class="n">parameters</span><span class="p">:</span><span class="w"> </span><span class="nc">json</span><span class="o">!</span><span class="p">({</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">                    </span><span class="s">"type"</span><span class="p">:</span><span class="w"> </span><span class="s">"object"</span><span class="p">,</span>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">                    </span><span class="s">"properties"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="s">"text"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="s">"type"</span><span class="p">:</span><span class="w"> </span><span class="s">"string"</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">},</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">                    </span><span class="s">"required"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s">"text"</span><span class="p">]</span>
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="w">                </span><span class="p">}),</span>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="w">                </span><span class="n">permission_name</span><span class="p">:</span><span class="w"> </span><span class="s">"echo"</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="w">                </span><span class="n">primary_resource_param</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="w">            </span><span class="p">},</span>
+<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="w">            </span><span class="o">|</span><span class="n">_ctx</span><span class="p">,</span><span class="w"> </span><span class="n">request</span><span class="o">|</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="k">move</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">text</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">request</span><span class="p">.</span><span class="n">arguments</span><span class="p">[</span><span class="s">"text"</span><span class="p">].</span><span class="n">as_str</span><span class="p">().</span><span class="n">unwrap_or_default</span><span class="p">();</span>
+<a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="w">                </span><span class="nb">Ok</span><span class="p">(</span><span class="n">ToolOutput</span><span class="p">::</span><span class="n">success</span><span class="p">(</span><span class="n">text</span><span class="p">))</span>
+<a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="w">            </span><span class="p">},</span>
+<a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="w">        </span><span class="p">)</span>
+<a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="w">        </span><span class="p">.</span><span class="n">run_stdio</span><span class="p">()</span>
+<a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="w">        </span><span class="p">.</span><span class="k">await</span>
+<a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a><span class="p">}</span>
+</code></pre></div>
+<p>Event and bus handlers are registered with <code>on_event</code> and <code>on_bus_event</code>. A handler can publish
+once from its automatically tracked context grant with
+<code>ctx.emit_bus(event.session_id, "name", payload)</code> or
+<code>ctx.emit_session(event.session_id, "name", payload)</code>. Bus and durable session publishing are off
+by default and are enabled explicitly with <code>enable_bus_publishing</code> and
+<code>enable_session_publishing</code>, respectively. These set process-lifetime protocol capabilities. When
+both are enabled, every emitted event is offered to both routes; <code>emit_bus</code> and <code>emit_session</code>
+return the selected route's status. Each handler context is scoped to its triggering token, so
+concurrent callbacks for one session cannot consume each other's grants. Notification grants expire
+four seconds after the SDK reader decodes the frame, so inbound queue delay consumes the local
+window. The one-second safety margin assumes the engine-to-SDK delivery interval is under one
+second; the engine remains authoritative, and a timing rejection is surfaced as
+<code>ExtensionEmitStatus::Rejected</code>.</p>
+<p>Interception handlers use the canonical <code>tool_before_call</code>, <code>tool_after_result</code>,
+<code>agent_before_start</code>, and <code>session_before_compact</code> builder methods with helpers such as <code>allow</code>,
+<code>block</code>, <code>modify</code>, <code>replace</code>, and <code>addendum</code>. Tool, subscription, explicitly enabled publishing,
+and interception capabilities are derived by the SDK; plugin authors do not construct capability
+flags or set the extension protocol version. See <a href="#protocol">Protocol</a> for delivery, grant, quota,
+and hook-chaining details.</p>
 <h2 id="protocol">Protocol<a class="headerlink" href="#protocol" title="Permanent link">&para;</a></h2>
 <p>The extension protocol version is the semantic-version string <code>0.0.3</code>. Before version 1.0,
 cookie agent requires an exact version match: additive method or schema changes bump the patch
