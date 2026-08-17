@@ -562,6 +562,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#skills" class="md-nav__link">
+    <span class="md-ellipsis">
+      Skills
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#output" class="md-nav__link">
     <span class="md-ellipsis">
       Output
@@ -670,6 +679,29 @@
   
   <span class="md-ellipsis">
     Agents
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Skills
     
   </span>
   
@@ -1020,6 +1052,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#skills" class="md-nav__link">
+    <span class="md-ellipsis">
+      Skills
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#output" class="md-nav__link">
     <span class="md-ellipsis">
       Output
@@ -1087,9 +1128,15 @@ never wait for approval input. When an approval escalates anywhere in the
 session tree, the runner rejects it, cancels the root run, and waits for the
 matching terminal event.</p>
 <p><code>--allowed-tools</code> may be repeated or comma-delimited and accepts <code>read</code>,
-<code>write</code>, <code>bash</code>, <code>delegate</code>, and <code>mcp</code>. It adds an <code>allow</code> overlay for each
+<code>write</code>, <code>bash</code>, <code>delegate</code>, <code>mcp</code>, and <code>skill:&lt;name&gt;</code>. It adds an <code>allow</code> overlay for each
 listed permission action. It does not deny omitted actions or replace existing
 agent policy.</p>
+<h2 id="skills">Skills<a class="headerlink" href="#skills" title="Permanent link">&para;</a></h2>
+<p><code>--skill &lt;name&gt;</code> loads a user-invocable skill before the prompt run.
+<code>--skill-args &lt;text&gt;</code> supplies its raw arguments and requires <code>--skill</code>. Skill
+permission is evaluated before injection; use <code>--allowed-tools skill:&lt;name&gt;</code> to
+grant it explicitly in unattended runs. The load appends the same durable event
+used by interactive and model invocation.</p>
 <h2 id="output">Output<a class="headerlink" href="#output" title="Permanent link">&para;</a></h2>
 <p>Select <code>text</code>, <code>json</code>, or <code>none</code> with <code>-o/--output</code>. <code>--json</code> is an alias for
 <code>--output json</code> and conflicts with an explicit <code>--output</code>. <code>--output-file</code>

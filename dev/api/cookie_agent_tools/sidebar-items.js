@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["bash","delegate","edit","fs_cap","read","write"],"struct":["BuiltinTools"]};
+window.SIDEBAR_ITEMS = {"mod":["bash","delegate","edit","fs_cap","read","skill","write"],"struct":["BuiltinTools"]};

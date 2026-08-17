@@ -595,6 +595,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Skills
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/configuration/" class="md-nav__link">
         
   
@@ -1174,6 +1197,16 @@ and the CLI share one implementation of the protocol mechanics.</p>
 <td>Empty object</td>
 </tr>
 <tr>
+<td><code>skills.list</code></td>
+<td>Session ID</td>
+<td>Discovered skills with source, precedence, visibility, and permission effect</td>
+</tr>
+<tr>
+<td><code>skills.get</code></td>
+<td>Session ID, skill name, arguments</td>
+<td>Permission-checked rendered preview and descriptor</td>
+</tr>
+<tr>
 <td><code>session.compact</code></td>
 <td>Session ID, required nullable focus</td>
 <td>Whether a checkpoint was committed</td>
@@ -1230,8 +1263,9 @@ and the CLI share one implementation of the protocol mechanics.</p>
 </tr>
 </tbody>
 </table>
-<p>Discovery is only <code>runtime.snapshot.get</code>; protocol 9 has no independent model,
-agent, or catalog list RPCs.</p>
+<p>Model, agent, and catalog discovery uses <code>runtime.snapshot.get</code>. Skills use the
+session-aware <code>skills.list</code> and <code>skills.get</code> methods because visibility depends
+on the governing run policy and session overlay.</p>
 <h2 id="steering">Steering<a class="headerlink" href="#steering" title="Permanent link">&para;</a></h2>
 <p><code>run.steer</code> requires an active target run. It immediately appends
 <code>user_input_admitted</code> and returns <code>{ "accepted": true }</code>; admission does not
@@ -1286,7 +1320,7 @@ the title, and continues with new physical sequences.</p>
 <p>The shared client maps these to <code>ClientDelivery</code> variants (<code>Live</code>, replay
 deliveries, output stream events, <code>RuntimeChanged</code>, <code>RecoveryFailed</code>), so a UI
 consumes one ordered stream and never parses raw JSON-RPC frames.</p>
-<p>See <a href="../events/">Events</a> for schema-20 event payloads.</p>
+<p>See <a href="../events/">Events</a> for schema-21 event payloads.</p>
 
 
 
