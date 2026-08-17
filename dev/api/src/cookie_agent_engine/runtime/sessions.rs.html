@@ -236,7 +236,7 @@
 <a href=#236 id=236 data-nosnippet>236</a>    </span><span class="kw">pub fn </span>children(<span class="kw-2">&amp;</span><span class="self">self</span>, id: SessionId) -&gt; Vec&lt;cookie_agent_protocol::ChildSummary&gt; {
 <a href=#237 id=237 data-nosnippet>237</a>        <span class="kw">let </span>known: HashSet&lt;<span class="kw">_</span>&gt; = <span class="self">self
 <a href=#238 id=238 data-nosnippet>238</a>            </span>.inner
-<a href=#239 id=239 data-nosnippet>239</a>            .journal
+<a href=#239 id=239 data-nosnippet>239</a>            .delegation_events
 <a href=#240 id=240 data-nosnippet>240</a>            .entries()
 <a href=#241 id=241 data-nosnippet>241</a>            .into_iter()
 <a href=#242 id=242 data-nosnippet>242</a>            .map(|entry| {

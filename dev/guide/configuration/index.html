@@ -1146,7 +1146,7 @@ keeps <code>/connect</code> available.</p>
 <p>All runtime sections default to safe values; you only need to write the ones you
 want to change:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[server]</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">host</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;127.0.0.1&quot;</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">host</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"127.0.0.1"</span>
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">port</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">7419</span>
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
 <a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="k">[tool_output]</span>
@@ -1195,8 +1195,8 @@ available in permission patterns, agent documents, or custom static headers.
 Interpolation is applied at load time; a missing variable fails startup with the
 offending path.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[providers.openai]</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;${env:OPENAI_API_KEY}&quot;</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"models_dev"</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"${env:OPENAI_API_KEY}"</span>
 </code></pre></div>
 <p>Prefer interpolation or <code>/connect</code> over plaintext credentials, and never commit
 <code>.env</code> or a credential-bearing config.</p>
@@ -1208,15 +1208,15 @@ YAML frontmatter and a nonempty Markdown body used as the system prompt:</p>
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>mode: subagent
 <a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>enabled: true
 <a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>models:
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: &quot;openai/gpt-5&quot;, variant: null }
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: "openai/gpt-5", variant: null }
 <a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>limits:
 <a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>  max_output_tokens: 2048
 <a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>permissions:
 <a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>  read: allow
 <a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>  write: deny
 <a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>  bash:
-<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>    &quot;git diff*&quot;: allow
-<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>    &quot;*&quot;: ask
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>    "git diff*": allow
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>    "*": ask
 <a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="gu">  delegate: deny</span>
 <a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="gu">---</span>
 <a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>Review the requested change and report concrete findings.
@@ -1234,8 +1234,8 @@ otherwise <code>~/.config/cookie_agent/</code>. It is independent of the runtime
 there is no workspace layer and no environment-variable override. A missing file
 uses defaults; unknown keys or malformed values are rejected naming the path and
 key.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">minimum_event_level</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;warning&quot;</span><span class="w">   </span><span class="c1"># debug | info | warning | error</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">theme</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;default&quot;</span><span class="w">                 </span><span class="c1"># default | mono | high-contrast</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">minimum_event_level</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"warning"</span><span class="w">   </span><span class="c1"># debug | info | warning | error</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">theme</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"default"</span><span class="w">                 </span><span class="c1"># default | mono | high-contrast</span>
 </code></pre></div>
 <p><code>theme</code> takes precedence over <code>COOKIE_THEME</code> and terminal detection, but
 <code>NO_COLOR</code> and <code>TERM=dumb</code> always force monochrome. See

@@ -1142,15 +1142,15 @@ wrong type, or malformed YAML construct is also rejected.</p>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>mode: subagent
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>enabled: true
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>models:
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: &quot;openai/gpt-5&quot;, variant: null }
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: "openai/gpt-5", variant: null }
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>limits:
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  max_output_tokens: 2048
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>permissions:
 <a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  read: allow
 <a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>  write: deny
 <a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>  bash:
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    &quot;git diff*&quot;: allow
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    &quot;*&quot;: ask
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    "git diff*": allow
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    "*": ask
 <a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="gu">  delegate: deny</span>
 <a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="gu">---</span>
 <a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>Review the requested change and report concrete findings.
@@ -1366,7 +1366,7 @@ keeps its own selection:</p>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>mode: internal
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>enabled: true
 <a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>models:
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: &quot;openai/gpt-5-mini&quot;, variant: null }
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: "openai/gpt-5-mini", variant: null }
 <a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>limits:
 <a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>  timeout_ms: 30000
 <a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>  max_output_tokens: 2048

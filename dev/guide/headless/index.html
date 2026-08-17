@@ -1102,11 +1102,11 @@
 TUI, daemon, or an in-process protocol server. It is intended for CI and scripts.</p>
 <h2 id="prompt-input">Prompt input<a class="headerlink" href="#prompt-input" title="Permanent link">&para;</a></h2>
 <p>Provide exactly one prompt source:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="go">cookie run &quot;Review this workspace&quot;</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="go">cookie run -p &quot;Review this workspace&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="go">cookie run "Review this workspace"</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="go">cookie run -p "Review this workspace"</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="go">cookie run -f request.txt</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="go">printf &#39;%s\n&#39; &#39;Review this workspace&#39; | cookie run -</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="go">printf &#39;%s\n&#39; &#39;Review this workspace&#39; | cookie run -p -</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="go">printf '%s\n' 'Review this workspace' | cookie run -</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="go">printf '%s\n' 'Review this workspace' | cookie run -p -</span>
 </code></pre></div>
 <p>The positional prompt, <code>-p/--prompt</code>, and <code>-f/--prompt-file</code> conflict with each
 other. <code>-</code> reads standard input for any of them.</p>

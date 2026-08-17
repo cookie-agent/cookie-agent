@@ -1702,9 +1702,9 @@ catalog, or to override catalog prices with the provider terms that apply to
 your account. Catalog context tiers are selected independently for each request
 from its reported input-token count. Keys are canonical model identities,
 including the provider ID.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[pricing.models.</span><span class="s2">&quot;custom.example/model-name&quot;</span><span class="k">]</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">input_per_million_usd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;1.25&quot;</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">output_per_million_usd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;5.0&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[pricing.models.</span><span class="s2">"custom.example/model-name"</span><span class="k">]</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">input_per_million_usd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"1.25"</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">output_per_million_usd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"5.0"</span>
 </code></pre></div>
 <p>All fields are optional quoted, finite, nonnegative decimal USD rates per
 million tokens. Quoting preserves the authored decimal exactly:</p>
@@ -1829,8 +1829,8 @@ value is one of two tagged sources. See the <a href="../../guide/providers/">Pro
 for complete examples.</p>
 <h3 id="managed-providers-source-models_dev">Managed providers (<code>source = "models_dev"</code>)<a class="headerlink" href="#managed-providers-source-models_dev" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[providers.openai]</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;models_dev&quot;</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;${env:OPENAI_API_KEY}&quot;</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"models_dev"</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"${env:OPENAI_API_KEY}"</span>
 </code></pre></div>
 <table>
 <thead>
@@ -1919,12 +1919,12 @@ fails with a migration error naming the adapter-specific replacement.</p>
 <h3 id="custom-providers-source-custom">Custom providers (<code>source = "custom"</code>)<a class="headerlink" href="#custom-providers-source-custom" title="Permanent link">&para;</a></h3>
 <p>Provider IDs under <code>custom.</code> are config-only, never appear in <code>/connect</code>, and
 never use the provider store.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[providers.</span><span class="s2">&quot;custom.example&quot;</span><span class="k">]</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;custom&quot;</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://api.example.invalid/v1&quot;</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">adaptor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai-compatible&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[providers.</span><span class="s2">"custom.example"</span><span class="k">]</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"custom"</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"https://api.example.invalid/v1"</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">adaptor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"openai-compatible"</span>
 <a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">setup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;bearer-api-key-v1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">api_key</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;${env:CUSTOM_API_KEY}&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"bearer-api-key-v1"</span><span class="p">,</span><span class="w"> </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">api_key</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"${env:CUSTOM_API_KEY}"</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
 <a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="n">headers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
 </code></pre></div>
 <table>

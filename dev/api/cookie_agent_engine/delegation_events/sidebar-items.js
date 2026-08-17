@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["DelegationEventError"],"struct":["DelegationEntry","DelegationEventStore","DelegationRuntimeRevisions"]};
