@@ -30,7 +30,8 @@ type Result<T> = std::result::Result<T, ServerFault>;
 #[async_trait]
 impl ServerProtocol for Server {
     async fn connected(&self, context: ServerContext) {
-        self.start_runtime_notifications(context);
+        self.start_runtime_notifications(context.clone());
+        self.start_engine_event_notifications(context);
     }
 
     async fn create_session(&self, params: SessionCreateParams) -> Result<SessionCreateResult> {
@@ -233,6 +234,7 @@ impl ServerProtocol for Server {
             .subscribe(params.session_id, params.cursor)
             .await
             .map_err(protocol_fault)?;
+        context.register_session_subscription(params.session_id);
         self.start_event_tail(receiver, context.clone());
         for event in &result.events {
             if let cookie_agent_protocol::EventPayload::ToolCallStarted { start } = &event.payload {

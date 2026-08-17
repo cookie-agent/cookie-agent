@@ -2184,6 +2184,12 @@ impl App {
             };
             return;
         }
+        if let ClientDelivery::PluginEvent(event) = &delivery {
+            if Some(event.session_id) == self.selected {
+                self.status = format!("plugin {}: {}", event.plugin, event.name);
+            }
+            return;
+        }
         let event = match &delivery {
             ClientDelivery::Live { message, .. } => match message.as_ref() {
                 cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {

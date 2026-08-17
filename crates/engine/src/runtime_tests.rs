@@ -11,8 +11,8 @@ use std::{
 use async_trait::async_trait;
 use cookie_agent_config::{
     ApprovalConfig, ContextCompactionConfig, LoadedConfiguration, LoadedMcpServer, McpServerConfig,
-    McpServerSource, RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
-    load_from_roots,
+    McpServerSource, PluginConfig, RuntimeConfig, ServerConfig, SessionTitleConfig,
+    ToolOutputConfig, load_from_roots,
 };
 use cookie_agent_models::{
     ModelManager,
@@ -47,6 +47,541 @@ use crate::{
     PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
     ToolPreparationContext, ToolProvider, ToolSpec, TurnAgentContext,
 };
+
+const PLUGIN_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
+
+#[tokio::test]
+async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
+    let (mut fixture, selection) = custom_fixture();
+    let session = fixture.engine.create_session(selection).expect("session");
+    fixture
+        .engine
+        .set_session_permission(
+            session.session_id,
+            PermissionAction::Read,
+            WildcardPattern::new("*").expect("wildcard"),
+            PermissionEffect::Allow,
+        )
+        .await
+        .expect("persist session");
+    fixture.engine.shutdown().await;
+
+    let event_file = fixture._directory.path().join("plugin-events.jsonl");
+    let result_file = fixture._directory.path().join("plugin-results.jsonl");
+    fixture.config.plugins.insert(
+        "fixture".into(),
+        PluginConfig {
+            command: Some("python3".into()),
+            args: vec![PLUGIN_FIXTURE.into()],
+            env: BTreeMap::from([
+                ("FIXTURE_NAME".into(), "fixture".into()),
+                (
+                    "FIXTURE_CAPABILITIES".into(),
+                    r#"{"tools":false,"resources":false,"subscribe_events":true,"subscribe_bus":true,"publish_bus":true,"publish_session_events":true,"intercept":[]}"#.into(),
+                ),
+                (
+                    "FIXTURE_EMIT_ON_EVENT".into(),
+                    r#"{"name":"fixture_notice","payload":{"value":7}}"#.into(),
+                ),
+                (
+                    "FIXTURE_EVENT_FILE".into(),
+                    event_file.display().to_string(),
+                ),
+                (
+                    "FIXTURE_EMIT_RESULT_FILE".into(),
+                    result_file.display().to_string(),
+                ),
+            ]),
+            cwd: None,
+            enabled: true,
+            interception_timeout_ms: 2_000,
+            startup_timeout_ms: 10_000,
+            shutdown_grace_ms: 3_000,
+            tool_timeout_ms: 30_000,
+        },
+    );
+    let mut other = fixture.config.plugins["fixture"].clone();
+    other.enabled = false;
+    other.env.insert("FIXTURE_NAME".into(), "other".into());
+    fixture.config.plugins.insert("other".into(), other);
+    let engine = reopen_engine(&fixture);
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !engine
+            .plugin_statuses()
+            .iter()
+            .any(|status| status.state == crate::PluginState::Connected)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("plugin connected");
+
+    let mut bus = engine.subscribe_engine_events();
+    engine
+        .append(
+            session.session_id,
+            None,
+            EventPayload::PluginDiagnostic {
+                plugin: "engine".into(),
+                kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
+                message: "trigger".into(),
+                count: 1,
+            },
+        )
+        .await
+        .expect("trigger event");
+    let event = tokio::time::timeout(std::time::Duration::from_secs(3), bus.recv())
+        .await
+        .expect("bus timeout")
+        .expect("bus event");
+    assert!(matches!(
+        event,
+        crate::EngineEvent::PluginEvent { ref plugin, ref name, ref payload, .. }
+            if plugin == "fixture" && name == "fixture_notice" && payload["value"] == 7
+    ));
+
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let projection = engine
+                .inner
+                .store
+                .get(session.session_id)
+                .expect("projection");
+            if projection.log.events().iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    EventPayload::PluginEventAdded { plugin, name, payload }
+                        if plugin == "fixture" && name == "fixture_notice" && payload["value"] == 7
+                )
+            }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("durable plugin event");
+    let streamed = fs::read_to_string(&event_file).expect("streamed events");
+    assert_eq!(
+        streamed.lines().count(),
+        1,
+        "published event echoed to source"
+    );
+
+    let oversized = engine
+        .publish_plugin_emit(crate::plugin::PluginEmitRequest {
+            plugin: "fixture".into(),
+            session_id: session.session_id,
+            context: crate::plugin::PluginEmitContext::Granted,
+            name: "oversized".into(),
+            payload: serde_json::Value::String("x".repeat(256 * 1024 + 1)),
+            publish_bus: true,
+            publish_session_events: true,
+        })
+        .await;
+    assert_eq!(
+        oversized.bus,
+        cookie_agent_protocol::ExtensionEmitStatus::Dropped
+    );
+    assert_eq!(
+        oversized.durable,
+        cookie_agent_protocol::ExtensionEmitStatus::Rejected
+    );
+    let mismatched = engine
+        .publish_plugin_emit(crate::plugin::PluginEmitRequest {
+            plugin: "fixture".into(),
+            session_id: session.session_id,
+            context: crate::plugin::PluginEmitContext::Rejected {
+                diagnostic_session_id: Some(session.session_id),
+                reason: "test mismatch".into(),
+            },
+            name: "mismatched".into(),
+            payload: serde_json::json!({}),
+            publish_bus: true,
+            publish_session_events: true,
+        })
+        .await;
+    assert_eq!(
+        mismatched.durable,
+        cookie_agent_protocol::ExtensionEmitStatus::Rejected
+    );
+    assert!(
+        mismatched
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("test mismatch"))
+    );
+
+    let mut throttled = None;
+    for ordinal in 0..=crate::plugin::PLUGIN_EVENTS_PER_SECOND {
+        let outcome = engine
+            .publish_plugin_emit(crate::plugin::PluginEmitRequest {
+                plugin: "fixture".into(),
+                session_id: session.session_id,
+                context: crate::plugin::PluginEmitContext::Granted,
+                name: format!("spam_{ordinal}"),
+                payload: serde_json::json!({"ordinal": ordinal}),
+                publish_bus: true,
+                publish_session_events: false,
+            })
+            .await;
+        if outcome.bus == cookie_agent_protocol::ExtensionEmitStatus::Dropped {
+            throttled = Some(outcome);
+            break;
+        }
+    }
+    assert!(
+        throttled
+            .and_then(|outcome| outcome.reason)
+            .is_some_and(|reason| reason.contains("40 events per second"))
+    );
+    let unaffected = engine
+        .publish_plugin_emit(crate::plugin::PluginEmitRequest {
+            plugin: "other".into(),
+            session_id: session.session_id,
+            context: crate::plugin::PluginEmitContext::Granted,
+            name: "other_notice".into(),
+            payload: serde_json::json!({"ok": true}),
+            publish_bus: true,
+            publish_session_events: false,
+        })
+        .await;
+    assert_eq!(
+        unaffected.bus,
+        cookie_agent_protocol::ExtensionEmitStatus::Published
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let events = engine
+                .inner
+                .store
+                .get(session.session_id)
+                .expect("quota diagnostics")
+                .log
+                .events();
+            let rate_limited = events.iter().any(|event| {
+                matches!(
+                    event.payload,
+                    EventPayload::PluginDiagnostic {
+                        kind: cookie_agent_protocol::PluginDiagnosticKind::RateLimited,
+                        ..
+                    }
+                )
+            });
+            let context_mismatch = events.iter().any(|event| {
+                matches!(
+                    event.payload,
+                    EventPayload::PluginDiagnostic {
+                        kind: cookie_agent_protocol::PluginDiagnosticKind::ContextMismatch,
+                        ..
+                    }
+                )
+            });
+            if rate_limited && context_mismatch {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("aggregated quota diagnostic");
+    engine.runtime_snapshot().expect("engine remains usable");
+    engine.shutdown().await;
+
+    let reopened = reopen_engine(&fixture);
+    assert!(
+        reopened
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("reopened session")
+            .log
+            .events()
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::PluginEventAdded { .. }))
+    );
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
+    let (mut fixture, selection) = custom_fixture();
+    let session_a = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session A");
+    let session_b = fixture.engine.create_session(selection).expect("session B");
+    for session_id in [session_a.session_id, session_b.session_id] {
+        fixture
+            .engine
+            .set_session_permission(
+                session_id,
+                PermissionAction::Read,
+                WildcardPattern::new("*").expect("wildcard"),
+                PermissionEffect::Allow,
+            )
+            .await
+            .expect("persist session");
+    }
+    fixture.engine.shutdown().await;
+    fixture.config.plugins.insert(
+        "fixture".into(),
+        PluginConfig {
+            command: Some("python3".into()),
+            args: vec![PLUGIN_FIXTURE.into()],
+            env: BTreeMap::from([
+                ("FIXTURE_NAME".into(), "fixture".into()),
+                (
+                    "FIXTURE_CAPABILITIES".into(),
+                    r#"{"tools":false,"resources":false,"subscribe_events":true,"subscribe_bus":false,"publish_bus":false,"publish_session_events":true,"intercept":[]}"#.into(),
+                ),
+                (
+                    "FIXTURE_EMIT_ON_EVENT".into(),
+                    r#"{"name":"delayed_a","payload":{"source":"a"}}"#.into(),
+                ),
+                ("FIXTURE_EMIT_FIRST_AFTER_SECOND".into(), "1".into()),
+                ("FIXTURE_EMIT_COUNT".into(), "2".into()),
+            ]),
+            cwd: None,
+            enabled: true,
+            interception_timeout_ms: 2_000,
+            startup_timeout_ms: 10_000,
+            shutdown_grace_ms: 3_000,
+            tool_timeout_ms: 30_000,
+        },
+    );
+    let engine = reopen_engine(&fixture);
+    engine.inner.plugins.await_eager_ready().await;
+    for (session_id, message) in [
+        (session_a.session_id, "trigger A"),
+        (session_b.session_id, "trigger B"),
+    ] {
+        engine
+            .append(
+                session_id,
+                None,
+                EventPayload::PluginDiagnostic {
+                    plugin: "engine".into(),
+                    kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
+                    message: message.into(),
+                    count: 1,
+                },
+            )
+            .await
+            .expect("trigger event");
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let events = engine
+                .inner
+                .store
+                .get(session_a.session_id)
+                .expect("session A")
+                .log
+                .events();
+            let published = events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        &event.payload,
+                        EventPayload::PluginEventAdded { name, .. } if name == "delayed_a"
+                    )
+                })
+                .count();
+            let replay_diagnosed = events.iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    EventPayload::PluginDiagnostic {
+                        kind: cookie_agent_protocol::PluginDiagnosticKind::ContextMismatch,
+                        ..
+                    }
+                )
+            });
+            if published == 1 && replay_diagnosed {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("delayed session A emit");
+    assert!(
+        engine
+            .inner
+            .store
+            .get(session_b.session_id)
+            .expect("session B")
+            .log
+            .events()
+            .iter()
+            .all(|event| !matches!(
+                &event.payload,
+                EventPayload::PluginEventAdded { name, .. } if name == "delayed_a"
+            ))
+    );
+    let unknown = engine
+        .publish_plugin_emit(crate::plugin::PluginEmitRequest {
+            plugin: "fixture".into(),
+            session_id: session_b.session_id,
+            context: crate::plugin::PluginEmitContext::Rejected {
+                diagnostic_session_id: None,
+                reason: "unknown replay token".into(),
+            },
+            name: "unknown".into(),
+            payload: serde_json::json!({}),
+            publish_bus: false,
+            publish_session_events: true,
+        })
+        .await;
+    assert_eq!(
+        unknown.durable,
+        cookie_agent_protocol::ExtensionEmitStatus::Rejected
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(
+        engine
+            .inner
+            .store
+            .get(session_b.session_id)
+            .expect("session B")
+            .log
+            .events()
+            .iter()
+            .all(|event| !matches!(
+                event.payload,
+                EventPayload::PluginDiagnostic {
+                    kind: cookie_agent_protocol::PluginDiagnosticKind::ContextMismatch,
+                    ..
+                }
+            )),
+        "unknown token routed a diagnostic to the plugin-supplied session"
+    );
+    assert!(
+        engine.plugin_statuses().iter().any(|status| {
+            status.plugin == "fixture"
+                && status
+                    .reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("unknown replay token"))
+        }),
+        "unknown token was not diagnosed against the offender"
+    );
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn plugin_diagnostic_coalescing_is_exact_and_shutdown_drains() {
+    const DROP_COUNT: u64 = 5_000;
+    const DISTINCT_COUNT: u64 = 5_000;
+
+    let (fixture, selection) = custom_fixture();
+    let session = fixture.engine.create_session(selection).expect("session");
+    fixture
+        .engine
+        .set_session_permission(
+            session.session_id,
+            PermissionAction::Read,
+            WildcardPattern::new("*").expect("wildcard"),
+            PermissionEffect::Allow,
+        )
+        .await
+        .expect("persist session");
+    for _ in 0..DROP_COUNT {
+        fixture.engine.record_plugin_diagnostic(
+            session.session_id,
+            "lagging".into(),
+            cookie_agent_protocol::PluginDiagnosticKind::EventDrop,
+            "buffer overflow".into(),
+        );
+    }
+    for ordinal in 0..DISTINCT_COUNT {
+        fixture.engine.record_plugin_diagnostic(
+            session.session_id,
+            "fixture".into(),
+            cookie_agent_protocol::PluginDiagnosticKind::InvalidModification,
+            format!("distinct diagnostic {ordinal}"),
+        );
+    }
+    assert!(fixture.engine.pending_plugin_diagnostic_keys_for_test() <= 257);
+    fixture.engine.shutdown().await;
+
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("session after shutdown")
+        .log
+        .all_events();
+    let dropped = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::PluginDiagnostic {
+                plugin,
+                kind: cookie_agent_protocol::PluginDiagnosticKind::EventDrop,
+                message,
+                count,
+            } if plugin == "lagging" && message == "buffer overflow" => Some(*count),
+            _ => None,
+        })
+        .sum::<u64>();
+    let distinct = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::PluginDiagnostic {
+                plugin,
+                kind: cookie_agent_protocol::PluginDiagnosticKind::InvalidModification,
+                message: _,
+                count,
+            } if plugin == "fixture" => Some(*count),
+            _ => None,
+        })
+        .sum::<u64>();
+    assert_eq!(dropped, DROP_COUNT);
+    assert_eq!(distinct, DISTINCT_COUNT);
+}
+
+#[tokio::test]
+async fn plugin_diagnostic_wedge_does_not_block_shutdown() {
+    let (mut fixture, selection) = custom_fixture();
+    let session = fixture
+        .engine
+        .create_session(selection)
+        .expect("diagnostic session");
+    fixture
+        .engine
+        .set_session_permission(
+            session.session_id,
+            PermissionAction::Read,
+            WildcardPattern::new("*").expect("wildcard"),
+            PermissionEffect::Allow,
+        )
+        .await
+        .expect("persist session");
+    fixture.engine.shutdown().await;
+    let mut plugin = interception_plugin("fixture", &[]);
+    plugin.enabled = false;
+    fixture.config.plugins.insert("fixture".into(), plugin);
+    fixture.engine = reopen_engine(&fixture);
+    fixture.engine.block_plugin_diagnostic_appends_for_test();
+    fixture.engine.record_plugin_diagnostic(
+        session.session_id,
+        "fixture".into(),
+        cookie_agent_protocol::PluginDiagnosticKind::EventDrop,
+        "wedged diagnostic".into(),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), fixture.engine.shutdown())
+        .await
+        .expect("diagnostic wedge blocked shutdown");
+    assert!(fixture.engine.plugin_statuses().iter().any(|status| {
+        status.plugin == "fixture"
+            && status
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("drain incomplete"))
+    }));
+}
 
 fn test_turn_context() -> Arc<TurnAgentContext> {
     Arc::new(TurnAgentContext {
@@ -538,7 +1073,7 @@ impl ToolProvider for TestWriteProvider {
             parameters: serde_json::json!({
                 "type": "object",
                 "additionalProperties": false,
-                "properties": {}
+                "properties": {"value":{"type":"string"}}
             }),
         }])
     }
@@ -573,7 +1108,7 @@ impl ToolProvider for TestWriteProvider {
     async fn prepare(
         &self,
         _ctx: ToolPreparationContext,
-        _call: ToolCall,
+        call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
         let label = "approval-test.txt";
         let operation = PreparedOperationIdentity::new(
@@ -599,7 +1134,7 @@ impl ToolProvider for TestWriteProvider {
         .map_err(|error| ToolError::execution(error.to_string()))?;
         PreparedTool::new(
             operation,
-            serde_json::json!({}),
+            call.arguments,
             None,
             Box::new(TestWriteExecutor {
                 executed: Arc::clone(&self.executed),
@@ -896,7 +1431,7 @@ fn fixture() -> Fixture {
         mcp_servers: BTreeMap::new(),
         user_mcp_servers: BTreeMap::new(),
         workspace_mcp_servers: BTreeMap::new(),
-        plugins: BTreeMap::new(),
+        plugins: Default::default(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
         skills: cookie_agent_config::SkillRegistry::default(),
     };
@@ -3765,6 +4300,69 @@ async fn wait_for_session_not_running(engine: &Engine, session_id: SessionId) {
     })
     .await
     .expect("session completion");
+}
+
+fn interception_plugin(name: &str, extra_env: &[(&str, String)]) -> PluginConfig {
+    let mut env = BTreeMap::from([
+        ("FIXTURE_NAME".into(), name.to_owned()),
+        ("FIXTURE_TOOLS".into(), "[]".into()),
+        (
+            "FIXTURE_CAPABILITIES".into(),
+            r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}"#.into(),
+        ),
+    ]);
+    env.extend(
+        extra_env
+            .iter()
+            .cloned()
+            .map(|(key, value)| (key.into(), value)),
+    );
+    PluginConfig {
+        command: Some("python3".into()),
+        args: vec![PLUGIN_FIXTURE.into()],
+        env,
+        cwd: None,
+        enabled: true,
+        interception_timeout_ms: 2_000,
+        startup_timeout_ms: 10_000,
+        shutdown_grace_ms: 3_000,
+        tool_timeout_ms: 30_000,
+    }
+}
+
+async fn reopen_with_interception_plugins(
+    fixture: &mut Fixture,
+    plugins: Vec<(String, PluginConfig)>,
+) {
+    fixture.engine.shutdown().await;
+    fixture.config.plugins = plugins.into_iter().collect();
+    fixture.engine = reopen_engine(fixture);
+    fixture.engine.inner.plugins.await_eager_ready().await;
+}
+
+async fn reject_approval(
+    engine: &Engine,
+    approval: &cookie_agent_protocol::ApprovalRecord,
+    client_response_id: &str,
+) {
+    let request_revision = serde_json::to_value(&approval.request)
+        .expect("approval request JSON")
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .expect("approval request revision");
+    engine
+        .approval_respond(ApprovalRespondParams {
+            session_id: approval.session_id,
+            approval_id: approval.request.approval_id(),
+            request_revision,
+            operation_fingerprint: approval.request.operation_fingerprint().clone(),
+            client_response_id: ClientResponseId::new(client_response_id)
+                .expect("client response ID"),
+            decision: ApprovalUserDecision::Reject,
+            feedback: None,
+        })
+        .await
+        .expect("reject approval");
 }
 
 #[tokio::test]
@@ -7338,6 +7936,164 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         "independent fork"
     );
     reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn tool_before_hooks_run_only_after_permission_and_approval() {
+    let capabilities_marker = tempfile::tempdir().expect("hook markers");
+
+    let (denied_endpoint, _) = scripted_zero_resource_tool_server().await;
+    let (mut denied, denied_selection) = denied_approval_fixture_with_endpoint(&denied_endpoint);
+    let denied_file = capabilities_marker.path().join("denied.jsonl");
+    reopen_with_interception_plugins(
+        &mut denied,
+        vec![(
+            "hook".into(),
+            interception_plugin(
+                "hook",
+                &[("FIXTURE_INTERCEPT_FILE", denied_file.display().to_string())],
+            ),
+        )],
+    )
+    .await;
+    denied
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::new(AtomicBool::new(false)),
+        }));
+    let denied_session = denied
+        .engine
+        .create_session(denied_selection.clone())
+        .expect("denied session");
+    denied
+        .engine
+        .start_run(RunStartParams {
+            session_id: denied_session.session_id,
+            client_run_id: ClientRunId::new("denied-hook").expect("run ID"),
+            selection: denied_selection,
+            input: "try denied write".into(),
+        })
+        .await
+        .expect("denied run");
+    wait_for_session_not_running(&denied.engine, denied_session.session_id).await;
+    assert!(!denied_file.exists(), "denied call reached plugin hook");
+    denied.engine.shutdown().await;
+
+    for (decision, marker_name) in [(true, "approved"), (false, "rejected")] {
+        let (endpoint, _) = scripted_zero_resource_tool_server().await;
+        let (mut fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+        let marker = capabilities_marker
+            .path()
+            .join(format!("{marker_name}.jsonl"));
+        reopen_with_interception_plugins(
+            &mut fixture,
+            vec![(
+                "hook".into(),
+                interception_plugin(
+                    "hook",
+                    &[("FIXTURE_INTERCEPT_FILE", marker.display().to_string())],
+                ),
+            )],
+        )
+        .await;
+        let executed = Arc::new(AtomicBool::new(false));
+        fixture
+            .engine
+            .register_tool_provider(Arc::new(TestWriteProvider {
+                executed: Arc::clone(&executed),
+            }));
+        let session = fixture
+            .engine
+            .create_session(selection.clone())
+            .expect("approval session");
+        fixture
+            .engine
+            .start_run(RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new(format!("{marker_name}-hook")).expect("run ID"),
+                selection,
+                input: "try approved write".into(),
+            })
+            .await
+            .expect("approval run");
+        let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+        assert!(!marker.exists(), "hook ran before approval decision");
+        if decision {
+            approve_once(&fixture.engine, &approval, "approve-hook").await;
+            wait_for_tool_execution(&executed).await;
+            assert!(marker.exists(), "approved call did not reach hook");
+        } else {
+            reject_approval(&fixture.engine, &approval, "reject-hook").await;
+            wait_for_session_not_running(&fixture.engine, session.session_id).await;
+            assert!(!marker.exists(), "rejected approval reached hook");
+        }
+        fixture.engine.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn validated_tool_modification_reprepares_before_the_next_hook() {
+    let (endpoint, _) = scripted_zero_resource_tool_server().await;
+    let (mut fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Hook chain test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nTest hook chaining.\n",
+    );
+    let marker = tempfile::tempdir().expect("hook marker");
+    let alpha_file = marker.path().join("alpha.jsonl");
+    reopen_with_interception_plugins(
+        &mut fixture,
+        vec![
+            (
+                "zeta".into(),
+                interception_plugin(
+                    "zeta",
+                    &[(
+                        "FIXTURE_TOOL_BEFORE_RESULT",
+                        r#"{"action":"allow","modified_arguments":{"value":"zeta"}}"#.into(),
+                    )],
+                ),
+            ),
+            (
+                "alpha".into(),
+                interception_plugin(
+                    "alpha",
+                    &[("FIXTURE_INTERCEPT_FILE", alpha_file.display().to_string())],
+                ),
+            ),
+        ],
+    )
+    .await;
+    let executed = Arc::new(AtomicBool::new(false));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("validated-hook-chain").expect("run ID"),
+            selection,
+            input: "run write".into(),
+        })
+        .await
+        .expect("run");
+    wait_for_tool_execution(&executed).await;
+    let alpha: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(alpha_file)
+            .expect("alpha hook")
+            .lines()
+            .next()
+            .expect("alpha hook line"),
+    )
+    .expect("alpha hook JSON");
+    assert_eq!(alpha["params"]["arguments"]["value"], "zeta");
+    fixture.engine.shutdown().await;
 }
 
 #[tokio::test]

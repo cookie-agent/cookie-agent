@@ -34,6 +34,8 @@ url.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+cookie_agent_engine = { version = "=0.1.0", path = "../engine", features = ["test-support"] }
+cookie_agent_protocol = { version = "=0.1.0", path = "../protocol", features = ["test-support"] }
 jiff.workspace = true
 oven-sdk.workspace = true
 tempfile.workspace = true

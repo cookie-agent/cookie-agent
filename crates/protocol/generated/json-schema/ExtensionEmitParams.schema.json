@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionEmitParams",
+  "type": "object",
+  "properties": {
+    "context_id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string",
+      "maxLength": 128,
+      "minLength": 1
+    },
+    "payload": true,
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "context_id",
+    "name",
+    "payload"
+  ]
+}

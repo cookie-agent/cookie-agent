@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionAgentBeforeStartParams",
+  "type": "object",
+  "properties": {
+    "agent_path": {
+      "type": "string"
+    },
+    "context_id": {
+      "type": "string"
+    },
+    "prompt_context": true,
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "context_id",
+    "agent_path",
+    "prompt_context"
+  ]
+}

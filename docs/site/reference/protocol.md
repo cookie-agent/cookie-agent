@@ -103,6 +103,7 @@ the title, and continues with new physical sequences.
 |---|---|
 | `runtime.changed` | Previous revision, complete snapshot, sorted change reasons |
 | `events.subscription` | One stored event or a session sequence gap |
+| `events.plugin` | Session-scoped non-durable plugin event |
 | `events.tool_output_snapshot` | Stream and retained output snapshot |
 | `events.tool_output_delta` | Tool call, stream, byte offset, data |
 | `events.tool_output_gap` | Tool call, stream, next available offset |

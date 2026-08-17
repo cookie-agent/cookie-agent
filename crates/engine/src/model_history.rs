@@ -527,6 +527,20 @@ fn assemble_history_with_replay(
             EventPayload::ContextRehydrated { files } => {
                 logical.push(LogicalTurn::Rehydration(files.clone()));
             }
+            EventPayload::PluginEventAdded {
+                plugin,
+                name,
+                payload,
+            } => {
+                logical.push(LogicalTurn::User(user_text(&format!(
+                    "<plugin_event>{}</plugin_event>",
+                    serde_json::json!({
+                        "plugin": plugin,
+                        "name": name,
+                        "payload": payload,
+                    })
+                ))));
+            }
             EventPayload::DelegateFinished {
                 session_id,
                 status,

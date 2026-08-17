@@ -23,6 +23,21 @@ if env_file:
             "configured": os.environ.get("FIXTURE_CONFIGURED_SENTINEL"),
         }, output)
 
+pending_emit_context = None
+
+
+def emit_from_context(context):
+    configured = os.environ.get("FIXTURE_EMIT_ON_EVENT")
+    if not configured:
+        return
+    emit = json.loads(configured)
+    emit["session_id"] = os.environ.get(
+        "FIXTURE_EMIT_SESSION_ID", context.get("session_id")
+    )
+    emit["context_id"] = context.get("context_id")
+    for _ in range(int(os.environ.get("FIXTURE_EMIT_COUNT", "1"))):
+        send({"jsonrpc": "2.0", "method": "plugin/emit", "params": emit})
+
 for line in sys.stdin:
     message = json.loads(line)
     method = message.get("method")
@@ -37,10 +52,13 @@ for line in sys.stdin:
             "jsonrpc": "2.0",
             "id": request_id,
             "result": {
-                "protocol_version": os.environ.get("FIXTURE_PROTOCOL_VERSION", "0.0.2"),
+                "protocol_version": os.environ.get("FIXTURE_PROTOCOL_VERSION", "0.0.3"),
                 "name": os.environ.get("FIXTURE_NAME", "fixture"),
                 "version": "1.0.0",
-                "capabilities": {"tools": True, "resources": False},
+                "capabilities": json.loads(os.environ.get(
+                    "FIXTURE_CAPABILITIES",
+                    '{"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}',
+                )),
                 "tools": json.loads(os.environ.get("FIXTURE_TOOLS", "[]")),
             },
         })
@@ -84,6 +102,56 @@ for line in sys.stdin:
             send({"jsonrpc": "2.0", "method": "plugin/future_notice", "params": {}})
             send({"jsonrpc": "2.0", "id": 900, "method": "plugin/future_request", "params": {}})
         send({"jsonrpc": "2.0", "id": request_id, "result": {}})
+    elif method == "plugin/event":
+        context = message.get("params", {})
+        event_file = os.environ.get("FIXTURE_EVENT_FILE")
+        if event_file:
+            with open(event_file, "a", encoding="utf-8") as output:
+                output.write(json.dumps(message.get("params", {}), separators=(",", ":")) + "\n")
+        if os.environ.get("FIXTURE_EMIT_FIRST_AFTER_SECOND") == "1":
+            if pending_emit_context is None:
+                pending_emit_context = context
+            else:
+                emit_from_context(pending_emit_context)
+                pending_emit_context = None
+        else:
+            emit_from_context(context)
+        time.sleep(int(os.environ.get("FIXTURE_EVENT_DELAY_MS", "0")) / 1000)
+    elif method == "plugin/bus_event":
+        bus_file = os.environ.get("FIXTURE_BUS_EVENT_FILE")
+        if bus_file:
+            with open(bus_file, "a", encoding="utf-8") as output:
+                output.write(json.dumps(message.get("params", {}), separators=(",", ":")) + "\n")
+    elif method == "plugin/emit_result":
+        result_file = os.environ.get("FIXTURE_EMIT_RESULT_FILE")
+        if result_file:
+            with open(result_file, "a", encoding="utf-8") as output:
+                output.write(json.dumps(message.get("params", {}), separators=(",", ":")) + "\n")
+    elif method and method.startswith("plugin/intercept/"):
+        intercept_file = os.environ.get("FIXTURE_INTERCEPT_FILE")
+        if intercept_file:
+            with open(intercept_file, "a", encoding="utf-8") as output:
+                output.write(json.dumps({
+                    "method": method,
+                    "params": message.get("params", {}),
+                }, separators=(",", ":")) + "\n")
+        time.sleep(int(os.environ.get("FIXTURE_INTERCEPT_DELAY_MS", "0")) / 1000)
+        if os.environ.get("FIXTURE_CRASH_DURING_INTERCEPT") == "1":
+            os._exit(19)
+        result_env = {
+            "plugin/intercept/tool_before_call": "FIXTURE_TOOL_BEFORE_RESULT",
+            "plugin/intercept/tool_after_result": "FIXTURE_TOOL_AFTER_RESULT",
+            "plugin/intercept/agent_before_start": "FIXTURE_AGENT_BEFORE_RESULT",
+            "plugin/intercept/session_before_compact": "FIXTURE_COMPACT_BEFORE_RESULT",
+        }[method]
+        defaults = {
+            "plugin/intercept/tool_before_call": {"action": "allow"},
+            "plugin/intercept/tool_after_result": {"action": "keep"},
+            "plugin/intercept/agent_before_start": {},
+            "plugin/intercept/session_before_compact": {},
+        }
+        result = json.loads(os.environ.get(result_env, json.dumps(defaults[method])))
+        send({"jsonrpc": "2.0", "id": request_id, "result": result})
     elif method == "plugin/shutdown":
         marker = os.environ.get("FIXTURE_SHUTDOWN_FILE")
         if marker:

@@ -7,9 +7,10 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    ApprovalDecisionSource, InternalAgentKind, InvocationId, OperationFingerprint,
-    PersistedAssistantPart, RunId, RunStartParams, RunStartResult, SessionId, SessionOrigin,
-    SessionStatus, StoredEvent, ToolCallId, ToolCallStart,
+    ApprovalDecisionSource, ExtensionAgentBeforeStartParams, ExtensionToolAfterResultAction,
+    ExtensionToolAfterResultParams, InternalAgentKind, InvocationId, OperationFingerprint,
+    PersistedAssistantPart, PluginDiagnosticKind, RunId, RunStartParams, RunStartResult, SessionId,
+    SessionOrigin, SessionStatus, Sha256Digest, StoredEvent, ToolCallId, ToolCallStart,
 };
 use futures_util::StreamExt;
 use oven_sdk::{ModelError, Request as ModelRequest, ToolDefinition};
@@ -126,6 +127,59 @@ impl Engine {
             &mut run_policy,
             prospective_grants.as_ref(),
         )?;
+        let context_id = crate::plugin::plugin_context_id();
+        for plugin in self.inner.plugins.interception_plugins(
+            cookie_agent_protocol::ExtensionInterceptionHook::AgentBeforeStart,
+        ) {
+            let result = self
+                .inner
+                .plugins
+                .intercept_named::<_, cookie_agent_protocol::ExtensionAgentBeforeStartResult>(
+                    &plugin,
+                    cookie_agent_protocol::PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
+                    &ExtensionAgentBeforeStartParams {
+                        session_id: params.session_id,
+                        context_id: context_id.clone(),
+                        agent_path: run_policy.agent.agent.to_string(),
+                        prompt_context: serde_json::json!({
+                            "session_id": params.session_id,
+                            "input": params.input,
+                            "system_prompt": run_policy.agent.composed_prompt,
+                        }),
+                    },
+                    Some(params.session_id),
+                    Some(&context_id),
+                )
+                .await;
+            match result {
+                Ok(result) => {
+                    if let Some(addendum) = result.addendum.filter(|value| !value.is_empty()) {
+                        if run_policy.agent.composed_prompt.len() + 1 + addendum.len() > 128 * 1024
+                        {
+                            self.record_plugin_diagnostic(
+                                params.session_id,
+                                plugin,
+                                PluginDiagnosticKind::InvalidModification,
+                                "plugin agent addendum exceeds the system prompt byte limit".into(),
+                            );
+                            continue;
+                        }
+                        run_policy.agent.composed_prompt.push('\n');
+                        run_policy.agent.composed_prompt.push_str(&addendum);
+                        run_policy.agent.prompt_fingerprint =
+                            Sha256Digest::of_bytes(run_policy.agent.composed_prompt.as_bytes());
+                    }
+                }
+                Err(error) => {
+                    let kind = if error.contains("crashed") || error.contains("not connected") {
+                        PluginDiagnosticKind::InterceptionCrash
+                    } else {
+                        PluginDiagnosticKind::InterceptionTimeout
+                    };
+                    self.record_plugin_diagnostic(params.session_id, plugin, kind, error);
+                }
+            }
+        }
         let run_id = RunId::new_v7();
         let input_through_seq = session.meta.last_event_seq;
         self.append(
@@ -647,26 +701,99 @@ impl Engine {
             }
             // Awaiting task handles is outside any session actor. Results are
             // committed in provider tool-call order, regardless of completion order.
-            for (id, task) in calls.iter().map(|call| call.0).zip(tasks) {
-                let result = if active.cancellation.is_cancelled() {
-                    Err(ToolFailure {
-                        code: ToolCallFailureCode::ExecutionFailed,
-                        message: "tool call cancelled after it started".into(),
-                    })
+            for (call, task) in calls.iter().zip(tasks) {
+                let id = call.0;
+                let (mut result, arguments) = if active.cancellation.is_cancelled() {
+                    (
+                        Err(ToolFailure {
+                            code: ToolCallFailureCode::ExecutionFailed,
+                            message: "tool call cancelled after it started".into(),
+                        }),
+                        call.5.clone(),
+                    )
                 } else {
                     match task {
                         PendingTool::Prepared(prepared) => {
-                            self.execute_tool(
-                                active.clone(),
-                                run_id,
-                                *prepared,
-                                Arc::clone(&attempt.turn_context),
-                            )
-                            .await
+                            let intercepted_arguments = prepared.intercepted_arguments.clone();
+                            let result = self
+                                .execute_tool(
+                                    active.clone(),
+                                    run_id,
+                                    *prepared,
+                                    Arc::clone(&attempt.turn_context),
+                                )
+                                .await;
+                            let arguments = intercepted_arguments
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .clone();
+                            (result, arguments)
                         }
-                        PendingTool::ImmediateFailure(failure) => Err(failure),
+                        PendingTool::ImmediateFailure(failure) => (Err(failure), call.5.clone()),
                     }
                 };
+                let (mut result_content, is_error) = match &result {
+                    Ok(result) => (result.output.clone(), false),
+                    Err(failure) => (failure.message.clone(), true),
+                };
+                let context_id = crate::plugin::plugin_context_id();
+                for plugin in self.inner.plugins.interception_plugins(
+                    cookie_agent_protocol::ExtensionInterceptionHook::ToolAfterResult,
+                ) {
+                    let intercepted = self
+                        .inner
+                        .plugins
+                        .intercept_named::<_, cookie_agent_protocol::ExtensionToolAfterResultResult>(
+                            &plugin,
+                            cookie_agent_protocol::PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
+                            &ExtensionToolAfterResultParams {
+                                session_id: active.session,
+                                context_id: context_id.clone(),
+                                tool: call.4.to_string(),
+                                arguments: arguments.clone(),
+                                result_content: result_content.clone(),
+                                is_error,
+                            },
+                            Some(active.session),
+                            Some(&context_id),
+                        )
+                        .await;
+                    match intercepted {
+                        Ok(intercepted)
+                            if intercepted.action == ExtensionToolAfterResultAction::Replace =>
+                        {
+                            if let Some(replacement) = intercepted.replacement_content {
+                                if replacement.len()
+                                    > active.policy.result_limits.tool_output_max_bytes
+                                {
+                                    self.record_plugin_diagnostic(
+                                        active.session,
+                                        plugin,
+                                        PluginDiagnosticKind::InvalidModification,
+                                        "plugin replacement exceeds the tool output byte limit"
+                                            .into(),
+                                    );
+                                    continue;
+                                }
+                                result_content.clone_from(&replacement);
+                                match &mut result {
+                                    Ok(result) => result.output = replacement,
+                                    Err(failure) => failure.message = replacement,
+                                }
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            let kind =
+                                if error.contains("crashed") || error.contains("not connected") {
+                                    PluginDiagnosticKind::InterceptionCrash
+                                } else {
+                                    PluginDiagnosticKind::InterceptionTimeout
+                                };
+                            self.record_plugin_diagnostic(active.session, plugin, kind, error);
+                        }
+                    }
+                }
                 self.submit_tool_result_status(active.session, run_id, id, result)
                     .await?;
             }

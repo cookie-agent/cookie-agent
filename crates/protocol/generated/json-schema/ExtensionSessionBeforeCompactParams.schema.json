@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionSessionBeforeCompactParams",
+  "type": "object",
+  "properties": {
+    "additions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "checkpoint_id": {
+      "type": "string"
+    },
+    "context_id": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "context_id",
+    "checkpoint_id",
+    "additions"
+  ]
+}

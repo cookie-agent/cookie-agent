@@ -687,6 +687,7 @@ impl StateStore {
                 DeliveryOutcome::Applied
             }
             ClientDelivery::RecoveryFailed { .. } => DeliveryOutcome::Applied,
+            ClientDelivery::PluginEvent(_) => DeliveryOutcome::Applied,
             ClientDelivery::RuntimeChanged(_) => DeliveryOutcome::Applied,
         }
     }
@@ -1804,6 +1805,23 @@ fn reduce_event(
             format!(
                 "automatic context compaction disabled after remaining above the trigger ({observed_tokens}/{trigger_tokens} tokens); manual compaction remains available"
             ),
+        ),
+        EventPayload::PluginEventAdded { plugin, name, .. } => {
+            push_event(state, EventLevel::Info, format!("plugin {plugin}: {name}"))
+        }
+        EventPayload::PluginDiagnostic {
+            plugin,
+            message,
+            count,
+            ..
+        } => push_event(
+            state,
+            EventLevel::Warning,
+            if count > 1 {
+                format!("plugin {plugin}: {message} (count: {count})")
+            } else {
+                format!("plugin {plugin}: {message}")
+            },
         ),
         EventPayload::SessionTitleCommitted { change, .. } => {
             push_event(state, EventLevel::Info, render_title_commit(&change));

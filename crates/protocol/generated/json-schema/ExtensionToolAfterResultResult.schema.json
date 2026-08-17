@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionToolAfterResultResult",
+  "type": "object",
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/ExtensionToolAfterResultAction"
+    },
+    "note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "replacement_content": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "action"
+  ],
+  "$defs": {
+    "ExtensionToolAfterResultAction": {
+      "type": "string",
+      "enum": [
+        "keep",
+        "replace"
+      ]
+    }
+  }
+}

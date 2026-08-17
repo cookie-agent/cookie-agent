@@ -2,7 +2,8 @@ use std::{collections::HashSet, path::Path, sync::Arc};
 
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalDecisionSource, ApprovalId, ApprovalRequest, ApprovalTrigger,
-    InternalAgentKind, OperationFingerprint, PersistedToolResult as ToolResult,
+    ExtensionToolBeforeCallAction, ExtensionToolBeforeCallParams, InternalAgentKind,
+    OperationFingerprint, PersistedToolResult as ToolResult, PluginDiagnosticKind,
     PreparedOperationIdentity, RunId, SessionId, Sha256Digest, ToolCallId, ToolCallPresentation,
     ToolOutputTruncation,
 };
@@ -13,7 +14,7 @@ use tokio::sync::mpsc;
 use super::artifacts::MAX_ATTACHMENT_BYTES;
 use super::{
     ActiveRun, ApprovalToolInput, Engine, EngineError, Event, PreparedToolCall, PublishedTool,
-    PublishedToolSet, ToolCallFailureCode, ToolFailure,
+    PublishedToolSet, ToolCallFailureCode, ToolFailure, ToolInterceptionContext,
     approval_flow::approval_expiry,
     approval_projection::denied_tool_failure,
     artifacts::{ArtifactStore, OutputCapture},
@@ -77,6 +78,7 @@ impl Engine {
             Ok(session) => session,
             Err(error) => {
                 return PreparedToolCall {
+                    intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
                     call,
                     permission_name: None,
                     presentation: fallback_presentation,
@@ -84,6 +86,7 @@ impl Engine {
                         code: ToolCallFailureCode::ExecutionFailed,
                         message: error.to_string(),
                     }),
+                    interception: None,
                 };
             }
         };
@@ -125,13 +128,11 @@ impl Engine {
                     Arc::ptr_eq(provider, &published.provider) && spec == &published.spec
                 }) =>
             {
-                Some((
-                    published.provider.clone(),
-                    published.spec.permission_name.clone(),
-                ))
+                Some((published.provider.clone(), published.spec.clone()))
             }
             Some(Some(_)) => {
                 return PreparedToolCall {
+                    intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
                     prepared: Err(ToolFailure {
                         code: ToolCallFailureCode::OperationChanged,
                         message: format!(
@@ -142,10 +143,12 @@ impl Engine {
                     call,
                     permission_name: None,
                     presentation: fallback_presentation,
+                    interception: None,
                 };
             }
             Some(None) => {
                 return PreparedToolCall {
+                    intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
                     prepared: Err(ToolFailure {
                         code: ToolCallFailureCode::ExecutionFailed,
                         message: format!("tool `{}` was not published to the model", call.name),
@@ -153,9 +156,10 @@ impl Engine {
                     call,
                     permission_name: None,
                     presentation: fallback_presentation,
+                    interception: None,
                 };
             }
-            None => current.map(|(provider, spec)| (provider, spec.permission_name)),
+            None => current,
         };
         if published.is_none()
             && provider.is_none()
@@ -166,11 +170,22 @@ impl Engine {
                     .permission_for_unlisted_tool(&call.name)
                     .ok()
                     .flatten()
-                    .map(|permission_name| (candidate.clone(), permission_name.to_owned()))
+                    .map(|permission_name| {
+                        (
+                            candidate.clone(),
+                            crate::ToolSpec {
+                                name: call.name.clone(),
+                                permission_name: permission_name.to_owned(),
+                                description: String::new(),
+                                parameters: serde_json::json!(true),
+                            },
+                        )
+                    })
             });
         }
-        let Some((provider, permission_name)) = provider else {
+        let Some((provider, tool_spec)) = provider else {
             return PreparedToolCall {
+                intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
                 prepared: Err(ToolFailure {
                     code: ToolCallFailureCode::ExecutionFailed,
                     message: format!("tool `{}` is unavailable", call.name),
@@ -178,8 +193,10 @@ impl Engine {
                 call,
                 permission_name: None,
                 presentation: fallback_presentation,
+                interception: None,
             };
         };
+        let permission_name = tool_spec.permission_name.clone();
         let delegation_tool = permission_name == "delegate";
         let enabled = !delegation_tool || delegate_enabled;
         let direct_skill = call.name == "skill" && self.is_direct_skill_call(call.id);
@@ -194,6 +211,7 @@ impl Engine {
                 ))
         {
             return PreparedToolCall {
+                intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
                 prepared: Err(ToolFailure {
                     code: ToolCallFailureCode::ExecutionFailed,
                     message: format!("tool `{}` is not enabled for this session", call.name),
@@ -201,8 +219,13 @@ impl Engine {
                 call,
                 permission_name: Some(permission_name),
                 presentation: fallback_presentation,
+                interception: None,
             };
         }
+        let original_resource = provider
+            .get_permission_resource(&call.name, &call.arguments)
+            .ok()
+            .and_then(|(_, resource)| resource);
         let presentation = provider.presentation(&call);
         let context = ToolPreparationContext {
             session: session_id,
@@ -211,7 +234,7 @@ impl Engine {
             workspace_root: self.inner.store.cwd().to_owned(),
             turn_context,
         };
-        let prepared = match provider.prepare(context, call.clone()).await {
+        let prepared = match provider.prepare(context.clone(), call.clone()).await {
             Ok(prepared) => {
                 apply_permission_resource(provider.as_ref(), &call.name, &permission_name, prepared)
                     .map_err(Into::into)
@@ -219,10 +242,18 @@ impl Engine {
             Err(error) => Err(error.into()),
         };
         PreparedToolCall {
+            intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
             call,
-            permission_name: Some(permission_name),
+            permission_name: Some(permission_name.clone()),
             presentation,
             prepared,
+            interception: Some(ToolInterceptionContext {
+                provider,
+                spec: tool_spec,
+                preparation: context,
+                permission_name,
+                permission_resource: original_resource,
+            }),
         }
     }
 
@@ -235,15 +266,16 @@ impl Engine {
     ) -> Result<ToolResult, ToolFailure> {
         let engine = self.clone();
         {
-            let PreparedToolCall { call, prepared, .. } = prepared;
-            let prepared = prepared?;
+            let PreparedToolCall {
+                mut call,
+                prepared,
+                interception,
+                intercepted_arguments,
+                ..
+            } = prepared;
+            let mut prepared = prepared?;
             let operation = prepared.operation.clone();
             let policy_labels = prepared.policy_labels.clone();
-            let _serialization_guard = if let Some(key) = &prepared.serialization_key {
-                Some(engine.mutation_lock(key).lock_owned().await)
-            } else {
-                None
-            };
             let permission_overlay = engine
                 .inner
                 .store
@@ -334,6 +366,131 @@ impl Engine {
                     });
                 }
             }
+            if let Some(interception) = interception {
+                let context_id = crate::plugin::plugin_context_id();
+                for plugin in engine.inner.plugins.interception_plugins(
+                    cookie_agent_protocol::ExtensionInterceptionHook::ToolBeforeCall,
+                ) {
+                    let result = engine
+                        .inner
+                        .plugins
+                        .intercept_named::<_, cookie_agent_protocol::ExtensionToolBeforeCallResult>(
+                            &plugin,
+                            cookie_agent_protocol::PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
+                            &ExtensionToolBeforeCallParams {
+                                session_id: active.session,
+                                context_id: context_id.clone(),
+                                tool: call.name.clone(),
+                                arguments: call.arguments.clone(),
+                                permission_name: interception.permission_name.clone(),
+                                resource: interception.permission_resource.clone(),
+                            },
+                            Some(active.session),
+                            Some(&context_id),
+                        )
+                        .await;
+                    let result = match result {
+                        Ok(result) => result,
+                        Err(error) => {
+                            let kind =
+                                if error.contains("crashed") || error.contains("not connected") {
+                                    PluginDiagnosticKind::InterceptionCrash
+                                } else {
+                                    PluginDiagnosticKind::InterceptionTimeout
+                                };
+                            engine.record_plugin_diagnostic(active.session, plugin, kind, error);
+                            continue;
+                        }
+                    };
+                    if result.action == ExtensionToolBeforeCallAction::Block {
+                        let message = result
+                            .message_to_model
+                            .or(result.reason)
+                            .unwrap_or_else(|| format!("plugin `{plugin}` blocked the tool call"));
+                        engine.record_plugin_diagnostic(
+                            active.session,
+                            plugin,
+                            PluginDiagnosticKind::HookBlocked,
+                            message.clone(),
+                        );
+                        return Err(ToolFailure {
+                            code: ToolCallFailureCode::ExecutionFailed,
+                            message,
+                        });
+                    }
+                    let Some(arguments) = result.modified_arguments else {
+                        continue;
+                    };
+                    let valid_schema = jsonschema::validator_for(&interception.spec.parameters)
+                        .is_ok_and(|validator| validator.is_valid(&arguments));
+                    let modified_resource = interception
+                        .provider
+                        .get_permission_resource(&call.name, &arguments)
+                        .ok()
+                        .and_then(|(_, resource)| resource);
+                    if !arguments.is_object()
+                        || !valid_schema
+                        || modified_resource != interception.permission_resource
+                    {
+                        let message = format!(
+                            "plugin `{plugin}` produced invalid tool arguments or changed the permission resource"
+                        );
+                        engine.record_plugin_diagnostic(
+                            active.session,
+                            plugin,
+                            PluginDiagnosticKind::InvalidModification,
+                            message.clone(),
+                        );
+                        return Err(ToolFailure {
+                            code: ToolCallFailureCode::ExecutionFailed,
+                            message,
+                        });
+                    }
+                    let mut modified_call = call.clone();
+                    modified_call.arguments = arguments;
+                    let candidate = interception
+                        .provider
+                        .prepare(interception.preparation.clone(), modified_call.clone())
+                        .await
+                        .and_then(|prepared| {
+                            apply_permission_resource(
+                                interception.provider.as_ref(),
+                                &modified_call.name,
+                                &interception.permission_name,
+                                prepared,
+                            )
+                        })
+                        .map_err(ToolFailure::from)?;
+                    if candidate.operation.capabilities() != operation.capabilities()
+                        || candidate.operation.resources() != operation.resources()
+                        || candidate.policy_labels != policy_labels
+                    {
+                        let message = format!(
+                            "plugin `{plugin}` changed the approved permission capability or resource"
+                        );
+                        engine.record_plugin_diagnostic(
+                            active.session,
+                            plugin,
+                            PluginDiagnosticKind::InvalidModification,
+                            message.clone(),
+                        );
+                        return Err(ToolFailure {
+                            code: ToolCallFailureCode::ExecutionFailed,
+                            message,
+                        });
+                    }
+                    call = modified_call;
+                    prepared = candidate;
+                    *intercepted_arguments
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = call.arguments.clone();
+                }
+            }
+            let _serialization_guard = if let Some(key) = &prepared.serialization_key {
+                Some(engine.mutation_lock(key).lock_owned().await)
+            } else {
+                None
+            };
             let executor = prepared
                 .executor
                 .lock()

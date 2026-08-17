@@ -31,7 +31,7 @@ those configured values. Configure `PATH` explicitly when the plugin itself need
 
 ## Protocol
 
-The extension protocol version is the semantic-version string `0.0.2`. Before version 1.0,
+The extension protocol version is the semantic-version string `0.0.3`. Before version 1.0,
 cookie agent requires an exact version match: additive method or schema changes bump the patch
 version, and plugins must update before connecting to the new engine. A plugin reporting any
 other value is refused and its status contains the reported mismatch.
@@ -43,6 +43,91 @@ use `snake_case`. The reported plugin name must exactly match the configuration 
 
 The protocol also supports `plugin/ping` for liveness and sends the `plugin/shutdown`
 notification during engine shutdown.
+
+The initialize result declares `subscribe_events`, `subscribe_bus`, `publish_bus`,
+`publish_session_events`, and an `intercept` hook-name array in addition to tool and resource
+capabilities. Capabilities are fixed for the process lifetime.
+
+## Event streaming
+
+A plugin with `subscribe_events: true` receives `plugin/event` notifications containing
+`session_id`, physical `seq`, the raw `EventPayload` JSON as `event`, and `timestamp`. Delivery
+starts after initialization and has no replay. Events are sent only after their session append is
+durable; a buffered session's newly persisted prefix is sent in sequence after atomic publication.
+Per-session sequence order is preserved, while cross-session ordering is unspecified.
+
+This stream is observational and not durable. Each plugin has an independent bounded 1024-message
+queue. A full queue drops delivery for that plugin, increments its dropped-event status counter,
+and records a session diagnostic. It cannot delay session persistence, another plugin, or the
+engine. There is no event-type filter in protocol 0.0.3; replay and filtered subscriptions remain
+future work.
+
+Plugins with `subscribe_bus: true` also receive non-durable `plugin/bus_event` notifications.
+These real-time notifications have the source plugin, session, name, and arbitrary JSON payload,
+and carry no cursor or delivery guarantee.
+
+## Event publishing
+
+`plugin/emit` publishes `{ session_id, context_id, name, payload }`. The session and opaque context
+token must exactly match a recent engine notification or request delivered to that plugin. This
+keeps interleaved session A and B callbacks correlated without mutable ambient session state;
+mismatches are rejected and diagnosed. Context tokens are short-lived one-shot grants: the first
+emit atomically consumes the token, replay is rejected, request tokens are revoked when the
+request ends, and notification tokens expire five seconds after wire delivery. Queued controls
+carry a lifetime duration; grants are activated immediately around successful host wire delivery,
+so queue delay does not consume their lifetime. Cancellation before dequeue records the token as
+spent and prevents later activation. Unknown tokens never use the plugin-supplied
+session as a diagnostic target; only a known triggering session may receive a durable diagnostic.
+With `publish_bus`, the
+engine emits an `EngineEvent::PluginEvent`, forwards it to other subscribed plugins, and sends an
+`events.plugin` notification only to RPC connections subscribed to that session. With
+`publish_session_events`, it also appends
+`plugin_event_added` to the session log. The durable event is ordinary branch data: it survives
+reopen, enters model history and compaction, and is removed from the visible branch by revert in
+the same way as other events.
+
+Payload JSON is limited to 256 KiB, names to 128 control-free characters, and the complete
+serialized event to 272 KiB. Each plugin/session pair may publish 40 events per second and 4 MiB
+per minute; another plugin or session has independent quotas. `plugin/emit_result` reports separate
+`bus` and `durable`
+statuses as `published`, `dropped`, or `rejected`, with a reason when applicable. Oversized bus
+or rate-limited bus payloads are dropped and durable payloads are rejected. Repeated violations
+and stream drops increment a coalescing counter keyed by session, plugin, kind, and message. The
+message key is control-normalized and truncated to 200 characters. At most 256 detailed keys are
+retained per batch; additional distinct messages coalesce into an exact `(overflow)` counter per
+session/plugin/kind. The map is swapped and flushed every 100 ms off the session append path;
+increments cannot be lost to queue saturation. Diagnostic appends have a 250 ms timeout and engine
+shutdown allows at most five seconds for draining before aborting the flusher and marking affected
+plugin statuses as incomplete. A plugin
+never receives its own
+published event through either subscription, preventing accidental feedback loops; other plugins
+receive it normally.
+
+## Interception
+
+Plugins register any of `tool_before_call`, `tool_after_result`, `agent_before_start`, and
+`session_before_compact` in `capabilities.intercept`. Hooks run synchronously in configured
+registration order. User-file order is retained; workspace entries replace same-name user entries
+in place, while new workspace plugins append in workspace order. Each hook has
+`interception_timeout_ms` (2000 by default); timeout, process
+exit, or a full plugin queue fails open, records a diagnostic, and allows remaining hooks to run.
+
+`plugin/intercept/tool_before_call` runs only after the original operation passes policy and any
+user/model approval. It may allow, block, or return modified arguments. Each modification is
+schema-validated and re-prepared through the pinned provider before later hooks see it; its
+permission capabilities, resources, and labels must remain identical to the approved operation.
+A block short-circuits later hooks and returns a tool error to the
+model, so the turn continues without executing the tool. Modified arguments are validated against
+the pinned `ToolSpec` JSON Schema. Hooks cannot alter `permission_name` or `resource`, denied calls
+are never disclosed to plugins, and an allow hook never grants permission.
+
+`plugin/intercept/tool_after_result` observes the tool result and may replace its content before
+termination is committed. `plugin/intercept/agent_before_start` returns a system-prompt addendum.
+`plugin/intercept/session_before_compact` returns additions to the checkpoint instructions. These
+hooks chain accepted state: later result hooks see prior replacements, later agent hooks see the
+accumulated prompt, and later compaction hooks receive prior `additions`. Invalid or oversized
+changes are diagnosed and are not forwarded. Hooks cannot mutate session identity or checkpoint
+boundaries.
 
 ## Tools
 
@@ -92,5 +177,5 @@ terminates the process if needed. Shutdown remains bounded when initialization i
 
 ## Current limitation
 
-Plugin resource methods and session event streaming remain deferred to stage 5. Stage 4 does not
-send session events to plugins.
+Plugin resource methods remain deferred. Protocol 0.0.3 event subscriptions have no replay or
+per-event-type filters.

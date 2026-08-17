@@ -1097,6 +1097,58 @@
         {
           "type": "object",
           "properties": {
+            "name": {
+              "type": "string"
+            },
+            "payload": true,
+            "plugin": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "plugin_event_added"
+            }
+          },
+          "required": [
+            "type",
+            "plugin",
+            "name",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "$ref": "#/$defs/PluginDiagnosticKind"
+            },
+            "message": {
+              "type": "string"
+            },
+            "plugin": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "plugin_diagnostic"
+            }
+          },
+          "required": [
+            "type",
+            "plugin",
+            "kind",
+            "message",
+            "count"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "agent": {
               "$ref": "#/$defs/AgentSnapshot"
             },
@@ -4327,6 +4379,19 @@
         "metadata",
         "truncation",
         "attachments"
+      ]
+    },
+    "PluginDiagnosticKind": {
+      "type": "string",
+      "enum": [
+        "event_drop",
+        "interception_timeout",
+        "interception_crash",
+        "hook_blocked",
+        "oversized_event",
+        "invalid_modification",
+        "context_mismatch",
+        "rate_limited"
       ]
     },
     "PreparedApprovalResource": {

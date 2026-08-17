@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -52,6 +52,7 @@ use crate::{
         AgentRegistry, PublishedRuntime, RuntimePublication, build_runtime_snapshot,
     },
     session::{SessionError, SessionStore},
+    tool_api::ToolPreparationContext,
 };
 
 mod admission;
@@ -324,6 +325,16 @@ struct PreparedToolCall {
     permission_name: Option<String>,
     presentation: ToolCallPresentation,
     prepared: Result<PreparedTool, ToolFailure>,
+    interception: Option<ToolInterceptionContext>,
+    intercepted_arguments: Arc<Mutex<Value>>,
+}
+
+struct ToolInterceptionContext {
+    provider: Arc<dyn ToolProvider>,
+    spec: ToolSpec,
+    preparation: ToolPreparationContext,
+    permission_name: String,
+    permission_resource: Option<String>,
 }
 
 struct PublishedTool {
@@ -471,6 +482,144 @@ struct PersistedSubscriber {
     sender: mpsc::Sender<EventSubscriptionMessage>,
 }
 
+type PluginDiagnosticKey = (
+    SessionId,
+    String,
+    cookie_agent_protocol::PluginDiagnosticKind,
+    String,
+);
+type PluginDiagnosticGroup = (
+    SessionId,
+    String,
+    cookie_agent_protocol::PluginDiagnosticKind,
+);
+
+const PLUGIN_DIAGNOSTIC_MESSAGE_CHARS: usize = 200;
+const PLUGIN_DIAGNOSTIC_DETAIL_KEYS: usize = 256;
+const PLUGIN_DIAGNOSTIC_OVERFLOW_MESSAGE: &str = "(overflow)";
+const PLUGIN_DIAGNOSTIC_APPEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+const PLUGIN_DIAGNOSTIC_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[derive(Debug, Default)]
+struct PendingPluginDiagnostics {
+    details: HashMap<PluginDiagnosticKey, u64>,
+    overflow: HashMap<PluginDiagnosticGroup, u64>,
+}
+
+#[derive(Debug, Default)]
+struct PluginDiagnosticAccumulator {
+    pending: Mutex<PendingPluginDiagnostics>,
+    notify: tokio::sync::Notify,
+    shutdown: AtomicBool,
+    active_plugin: Mutex<Option<String>>,
+}
+
+impl PluginDiagnosticAccumulator {
+    fn record(&self, key: PluginDiagnosticKey, count: u64) {
+        let (session_id, plugin, kind, message) = key;
+        let message = normalize_plugin_diagnostic_message(&message);
+        let key = (session_id, plugin.clone(), kind, message);
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let total = if pending.details.contains_key(&key)
+            || pending.details.len() < PLUGIN_DIAGNOSTIC_DETAIL_KEYS
+        {
+            pending.details.entry(key).or_default()
+        } else {
+            pending
+                .overflow
+                .entry((session_id, plugin, kind))
+                .or_default()
+        };
+        *total = total.saturating_add(count);
+        drop(pending);
+        self.notify.notify_one();
+    }
+
+    fn take(&self) -> Vec<(PluginDiagnosticKey, u64)> {
+        let pending = std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        let mut records = pending.details.into_iter().collect::<Vec<_>>();
+        records.extend(
+            pending
+                .overflow
+                .into_iter()
+                .map(|((session_id, plugin, kind), count)| {
+                    (
+                        (
+                            session_id,
+                            plugin,
+                            kind,
+                            PLUGIN_DIAGNOSTIC_OVERFLOW_MESSAGE.into(),
+                        ),
+                        count,
+                    )
+                }),
+        );
+        records
+    }
+
+    fn is_empty(&self) -> bool {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.details.is_empty() && pending.overflow.is_empty()
+    }
+
+    #[cfg(test)]
+    fn key_count(&self) -> usize {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.details.len() + pending.overflow.len()
+    }
+
+    fn offenders(&self) -> HashSet<String> {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut offenders = pending
+            .details
+            .keys()
+            .map(|(_, plugin, _, _)| plugin.clone())
+            .chain(pending.overflow.keys().map(|(_, plugin, _)| plugin.clone()))
+            .collect::<HashSet<_>>();
+        drop(pending);
+        if let Some(plugin) = self
+            .active_plugin
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        {
+            offenders.insert(plugin);
+        }
+        offenders
+    }
+}
+
+fn normalize_plugin_diagnostic_message(message: &str) -> String {
+    message
+        .chars()
+        .take(PLUGIN_DIAGNOSTIC_MESSAGE_CHARS)
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StoredRuntimeRevisionMapping {
@@ -539,14 +688,89 @@ impl RuntimeRevisionIndex {
 const SESSION_MAILBOX_CAPACITY: usize = 256;
 const PERSISTED_SUBSCRIBER_QUEUE_CAPACITY: usize = 256;
 const MAX_PENDING_PREPARED_TOOLS: usize = 64;
+const PLUGIN_DIAGNOSTIC_BATCH_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 /// Semantic revision of the no-model builtin runtime contract.
 /// This is intentionally independent of the protocol and event schema version.
 pub(crate) const UNAVAILABLE_BUILTIN_REVISION: &str = "internal-agent.unavailable.runtime.1";
+
+async fn run_plugin_diagnostic_aggregator(
+    inner: Weak<Inner>,
+    diagnostics: Arc<PluginDiagnosticAccumulator>,
+) {
+    loop {
+        let notified = diagnostics.notify.notified();
+        if diagnostics.is_empty() && !diagnostics.shutdown.load(Ordering::Acquire) {
+            notified.await;
+            continue;
+        }
+        if !diagnostics.shutdown.load(Ordering::Acquire) {
+            tokio::time::sleep(PLUGIN_DIAGNOSTIC_BATCH_DELAY).await;
+        }
+        let batch = diagnostics.take();
+        let Some(inner) = inner.upgrade() else {
+            return;
+        };
+        #[cfg(test)]
+        let append_block = inner
+            .plugin_diagnostic_append_block
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let engine = Engine { inner };
+        for ((session_id, plugin, kind, message), count) in batch {
+            *diagnostics
+                .active_plugin
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(plugin.clone());
+            let append = async {
+                #[cfg(test)]
+                if let Some(block) = &append_block {
+                    block.notified().await;
+                }
+                engine
+                    .request(session_id, |reply| SessionCommand::AppendPluginEvent {
+                        plugin: plugin.clone(),
+                        session: session_id,
+                        event: Event::PluginDiagnostic {
+                            plugin: plugin.clone(),
+                            kind,
+                            message,
+                            count,
+                        },
+                        reply,
+                    })
+                    .await
+            };
+            if tokio::time::timeout(PLUGIN_DIAGNOSTIC_APPEND_TIMEOUT, append)
+                .await
+                .is_err()
+            {
+                engine.inner.plugins.note_offender_diagnostic(
+                    &plugin,
+                    "plugin diagnostic drain incomplete: append timed out".into(),
+                );
+            }
+            *diagnostics
+                .active_plugin
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        }
+        if diagnostics.shutdown.load(Ordering::Acquire) && diagnostics.is_empty() {
+            return;
+        }
+    }
+}
 
 #[allow(clippy::large_enum_variant)]
 enum SessionCommand {
     Append {
         run: Option<RunId>,
+        event: Event,
+        reply: oneshot::Sender<Result<(), EngineError>>,
+    },
+    AppendPluginEvent {
+        plugin: String,
+        session: SessionId,
         event: Event,
         reply: oneshot::Sender<Result<(), EngineError>>,
     },
@@ -737,6 +961,9 @@ pub(crate) struct Inner {
     published_runtime: ArcSwap<PublishedRuntime>,
     runtime_mutation: Mutex<()>,
     runtime_notifications: broadcast::Sender<RuntimeChangedNotification>,
+    engine_events: broadcast::Sender<crate::EngineEvent>,
+    plugin_diagnostics: Arc<PluginDiagnosticAccumulator>,
+    plugin_diagnostic_task: Mutex<Option<JoinHandle<()>>>,
     runtime_revision_index: Mutex<RuntimeRevisionIndex>,
     manifest_store: ModelSnapshotManifestStore,
     tools: Mutex<Vec<Arc<dyn ToolProvider>>>,
@@ -803,6 +1030,8 @@ pub(crate) struct Inner {
     #[cfg(test)]
     abandoned_sweep_hook: Mutex<Option<AbandonedSweepHook>>,
     #[cfg(test)]
+    plugin_diagnostic_append_block: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    #[cfg(test)]
     pub(crate) publication_failure: AtomicBool,
     #[cfg(test)]
     pub(crate) delegate_start_failures: AtomicU64,
@@ -861,6 +1090,8 @@ impl Engine {
             store.project_dir_path().join("grant-invalidations.jsonl"),
         )?;
         let (runtime_notifications, _) = broadcast::channel(64);
+        let (engine_events, _) = broadcast::channel(256);
+        let plugin_diagnostics = Arc::new(PluginDiagnosticAccumulator::default());
         let mut runtime_revision_index = RuntimeRevisionIndex::open(
             store.project_dir_path().join("runtime-revisions-v8.jsonl"),
         )?;
@@ -881,6 +1112,9 @@ impl Engine {
                 published_runtime: ArcSwap::from(published_runtime),
                 runtime_mutation: Mutex::new(()),
                 runtime_notifications,
+                engine_events,
+                plugin_diagnostics: Arc::clone(&plugin_diagnostics),
+                plugin_diagnostic_task: Mutex::new(None),
                 runtime_revision_index: Mutex::new(runtime_revision_index),
                 manifest_store,
                 tools: Mutex::new(tools),
@@ -947,6 +1181,8 @@ impl Engine {
                 #[cfg(test)]
                 abandoned_sweep_hook: Mutex::new(None),
                 #[cfg(test)]
+                plugin_diagnostic_append_block: Mutex::new(None),
+                #[cfg(test)]
                 publication_failure: AtomicBool::new(false),
                 #[cfg(test)]
                 delegate_start_failures: AtomicU64::new(0),
@@ -956,6 +1192,34 @@ impl Engine {
                 resume_monitor_failures: AtomicU64::new(0),
             }),
         };
+        let weak = Arc::downgrade(&engine.inner);
+        engine
+            .inner
+            .plugins
+            .set_emit_handler(Arc::new(move |request| {
+                let weak = weak.clone();
+                Box::pin(async move {
+                    let Some(inner) = weak.upgrade() else {
+                        return crate::plugin::PluginEmitOutcome {
+                            bus: cookie_agent_protocol::ExtensionEmitStatus::Dropped,
+                            durable: cookie_agent_protocol::ExtensionEmitStatus::Rejected,
+                            reason: Some("engine is shutting down".into()),
+                        };
+                    };
+                    Engine { inner }.publish_plugin_emit(request).await
+                })
+            }));
+        if let Some(runtime) = &engine.inner.runtime {
+            let weak = Arc::downgrade(&engine.inner);
+            let task = runtime.spawn(async move {
+                run_plugin_diagnostic_aggregator(weak, plugin_diagnostics).await;
+            });
+            *engine
+                .inner
+                .plugin_diagnostic_task
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(task);
+        }
         engine.validate_referenced_manifests()?;
         for session in engine.inner.store.all() {
             engine.spawn_actor(session.meta.session_id);
@@ -993,6 +1257,17 @@ impl Engine {
     #[must_use]
     pub fn subscribe_runtime_changes(&self) -> broadcast::Receiver<RuntimeChangedNotification> {
         self.inner.runtime_notifications.subscribe()
+    }
+
+    #[must_use]
+    pub fn subscribe_engine_events(&self) -> broadcast::Receiver<crate::EngineEvent> {
+        self.inner.engine_events.subscribe()
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn publish_engine_event_for_test(&self, event: crate::EngineEvent) {
+        let _ = self.inner.engine_events.send(event);
     }
 
     pub fn connect_provider(
@@ -1402,6 +1677,21 @@ impl Engine {
         self.inner.plugins.statuses()
     }
 
+    #[cfg(test)]
+    pub(crate) fn block_plugin_diagnostic_appends_for_test(&self) {
+        *self
+            .inner
+            .plugin_diagnostic_append_block
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(Arc::new(tokio::sync::Notify::new()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_plugin_diagnostic_keys_for_test(&self) -> usize {
+        self.inner.plugin_diagnostics.key_count()
+    }
+
     pub async fn ping_plugin(&self, name: &str) -> Result<(), String> {
         self.inner.plugins.ping(name).await
     }
@@ -1460,6 +1750,31 @@ impl Engine {
         }
         self.inner.plugins.shutdown().await;
         self.inner.mcp.shutdown().await;
+        self.inner
+            .plugin_diagnostics
+            .shutdown
+            .store(true, Ordering::Release);
+        self.inner.plugin_diagnostics.notify.notify_one();
+        let diagnostic_task = self
+            .inner
+            .plugin_diagnostic_task
+            .lock()
+            .ok()
+            .and_then(|mut task| task.take());
+        if let Some(mut task) = diagnostic_task
+            && tokio::time::timeout(PLUGIN_DIAGNOSTIC_SHUTDOWN_TIMEOUT, &mut task)
+                .await
+                .is_err()
+        {
+            for plugin in self.inner.plugin_diagnostics.offenders() {
+                self.inner.plugins.note_offender_diagnostic(
+                    &plugin,
+                    "plugin diagnostic drain incomplete: shutdown deadline exceeded".into(),
+                );
+            }
+            task.abort();
+            let _ = task.await;
+        }
         self.inner
             .actors
             .lock()

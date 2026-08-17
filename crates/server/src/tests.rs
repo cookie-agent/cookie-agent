@@ -37,6 +37,43 @@ struct Harness {
     server: Arc<Server>,
 }
 
+#[tokio::test]
+async fn plugin_events_are_filtered_by_connection_session_subscription() {
+    let harness = harness();
+    let session_a = cookie_agent_protocol::SessionId::new_v7();
+    let session_b = cookie_agent_protocol::SessionId::new_v7();
+    let (context_a, mut notifications_a) = cookie_agent_protocol::test_server_context();
+    let (context_b, mut notifications_b) = cookie_agent_protocol::test_server_context();
+    context_a.register_session_subscription(session_a);
+    context_b.register_session_subscription(session_b);
+    harness.server.start_engine_event_notifications(context_a);
+    harness.server.start_engine_event_notifications(context_b);
+
+    harness
+        .engine
+        .publish_engine_event_for_test(cookie_agent_engine::EngineEvent::PluginEvent {
+            session_id: session_a,
+            plugin: "fixture".into(),
+            name: "session_a".into(),
+            payload: serde_json::json!({}),
+        });
+    let notification =
+        tokio::time::timeout(std::time::Duration::from_secs(1), notifications_a.recv())
+            .await
+            .expect("session A notification")
+            .expect("session A queue");
+    assert_eq!(notification["method"], "events.plugin");
+    assert_eq!(notification["params"]["session_id"], session_a.to_string());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), notifications_b.recv())
+            .await
+            .is_err(),
+        "session A event leaked to session B connection"
+    );
+    harness.server.shutdown();
+    harness.engine.shutdown().await;
+}
+
 fn harness() -> Harness {
     harness_with_mcp(BTreeMap::new())
 }
@@ -105,7 +142,7 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
         mcp_servers,
         user_mcp_servers,
         workspace_mcp_servers,
-        plugins: BTreeMap::new(),
+        plugins: Default::default(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
         skills: cookie_agent_config::SkillRegistry::default(),
     };
@@ -324,7 +361,7 @@ fn harness_with_catalog(
         mcp_servers: BTreeMap::new(),
         user_mcp_servers: BTreeMap::new(),
         workspace_mcp_servers: BTreeMap::new(),
-        plugins: BTreeMap::new(),
+        plugins: Default::default(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
         skills: cookie_agent_config::SkillRegistry::default(),
     };

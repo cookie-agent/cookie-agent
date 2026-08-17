@@ -246,13 +246,34 @@ Project model-snapshot manifests live inside the workspace at
 `.cookie-agent/model-snapshots/` and are the only per-project engine state the
 workspace owns.
 
+### Event bus
+
+The durable session append path publishes raw events to independent bounded
+plugin streams only after the JSONL append and projection publication complete.
+These streams are best-effort observers and never participate in consistency or
+backpressure. The non-durable engine bus accepts plugin sources as
+`EngineEvent::PluginEvent`; it fans out to RPC frontends and other subscribed
+plugins with session identity but without replay or cursor semantics. RPC fan-out
+is connection-local and requires a successful event subscription for that session. A plugin's
+own publication is excluded from both plugin fan-out paths.
+
+Plugin diagnostics use a mutex-protected coalescing counter rather than a
+message queue. Producers only increment a normalized key and wake a periodic
+flusher; detailed message cardinality is capped and excess keys use exact
+per-session/plugin/kind overflow counters. Appends and shutdown draining have
+deadlines, with incomplete drains surfaced on plugin status before the flusher
+is aborted. Plugin
+publish contexts are expiring one-shot grants activated at outbound delivery,
+so a token cannot be replayed or retargeted to another session.
+
 ## Protocol surface
 
 The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
 an authenticated WebSocket at `/ws`, protocol 9 current-only, `handshake` first.
 Discovery is a single `runtime.snapshot.get` call that returns one coherent
-runtime snapshot (schema 4). Session events stream through `events.subscribe`
-and tool output streams through separate snapshot/delta/gap notifications.
+runtime snapshot (schema 4). Session events stream through `events.subscribe`,
+plugin bus events through `events.plugin`, and tool output through separate
+snapshot/delta/gap notifications.
 
 What moved is where the mechanics live: handshake, request/response
 correlation, notification demux, replay/gap recovery, and shutdown are now

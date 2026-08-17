@@ -65,11 +65,21 @@ fn disabled_plugin_still_rejects_invalid_fields() {
 
 #[test]
 fn workspace_plugin_overrides_user_entry_by_name() {
-    let user = root("[plugins.demo]\ncommand = \"user-plugin\"\n");
+    let user = root(
+        "[plugins.zeta]\ncommand = \"zeta\"\n[plugins.demo]\ncommand = \"user-plugin\"\n[plugins.alpha]\ncommand = \"alpha\"\n",
+    );
     let workspace = root("[plugins.demo]\ncommand = \"workspace-plugin\"\n");
     let loaded = load_from_roots(Some(user.path()), Some(workspace.path())).expect("plugins");
     assert_eq!(
         loaded.plugins["demo"].command.as_deref(),
         Some("workspace-plugin")
+    );
+    assert_eq!(
+        loaded
+            .plugins
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["zeta", "demo", "alpha"]
     );
 }

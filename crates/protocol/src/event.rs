@@ -80,7 +80,7 @@ pub enum SessionOrigin {
     },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Idle,
@@ -1533,6 +1533,17 @@ pub enum EventPayload {
     SkillInvocationNoted {
         name: String,
     },
+    PluginEventAdded {
+        plugin: String,
+        name: String,
+        payload: Value,
+    },
+    PluginDiagnostic {
+        plugin: String,
+        kind: PluginDiagnosticKind,
+        message: String,
+        count: u64,
+    },
     RunStarted {
         client_run_id: ClientRunId,
         selection: RunSelection,
@@ -1862,6 +1873,8 @@ impl EventPayload {
                 | Self::SessionPermissionOverlaySet { .. }
                 | Self::SkillLoaded { .. }
                 | Self::SkillInvocationNoted { .. }
+                | Self::PluginEventAdded { .. }
+                | Self::PluginDiagnostic { .. }
                 | Self::SessionTitleCommitted { .. }
                 | Self::UserInputAdmitted { .. }
                 | Self::UserInputRecalled { .. }
@@ -2143,6 +2156,19 @@ impl EventPayload {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginDiagnosticKind {
+    EventDrop,
+    InterceptionTimeout,
+    InterceptionCrash,
+    HookBlocked,
+    OversizedEvent,
+    InvalidModification,
+    ContextMismatch,
+    RateLimited,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]

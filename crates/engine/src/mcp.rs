@@ -2864,9 +2864,9 @@ for line in sys.stdin:
 
     fn list_count(directory: &tempfile::TempDir) -> usize {
         std::fs::read_to_string(directory.path().join("list-count"))
-            .expect("tools/list count")
-            .parse()
-            .expect("numeric tools/list count")
+            .ok()
+            .and_then(|count| count.parse().ok())
+            .unwrap_or(0)
     }
 
     async fn wait_for_list_count(directory: &tempfile::TempDir, expected: usize) {

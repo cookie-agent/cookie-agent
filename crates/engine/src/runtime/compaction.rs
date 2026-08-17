@@ -6,9 +6,9 @@ use std::{
 use cookie_agent_config::ContextCompactionTrigger;
 use cookie_agent_protocol::{
     ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
-    ContextCheckpointCommit, ContextRehydratedFile, InternalAgentKind, InternalSummaryCheckpoint,
-    PersistedAssistantPart, RunId, SessionId, SessionStatus, Sha256Digest, StoredEvent,
-    SummaryByteLimit, ToolCallId,
+    ContextCheckpointCommit, ContextRehydratedFile, ExtensionSessionBeforeCompactParams,
+    InternalAgentKind, InternalSummaryCheckpoint, PersistedAssistantPart, PluginDiagnosticKind,
+    RunId, SessionId, SessionStatus, Sha256Digest, StoredEvent, SummaryByteLimit, ToolCallId,
 };
 use oven_sdk::{
     CompactionCapability, CompactionRequest, ModelError, Request as ModelRequest, ToolDefinition,
@@ -155,6 +155,60 @@ impl Engine {
             return Ok(current_events);
         }
 
+        let mut compaction_focus = input.focus.map(str::to_owned);
+        let mut additions = Vec::new();
+        let context_id = crate::plugin::plugin_context_id();
+        for plugin in self.inner.plugins.interception_plugins(
+            cookie_agent_protocol::ExtensionInterceptionHook::SessionBeforeCompact,
+        ) {
+            let result = self
+                .inner
+                .plugins
+                .intercept_named::<_, cookie_agent_protocol::ExtensionSessionBeforeCompactResult>(
+                    &plugin,
+                    cookie_agent_protocol::PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD,
+                    &ExtensionSessionBeforeCompactParams {
+                        session_id: input.session,
+                        context_id: context_id.clone(),
+                        checkpoint_id: format!("{}:{requested_input_through_seq}", input.session),
+                        additions: additions.clone(),
+                    },
+                    Some(input.session),
+                    Some(&context_id),
+                )
+                .await;
+            match result {
+                Ok(result) => {
+                    if let Some(addendum) = result.addendum.filter(|value| !value.is_empty()) {
+                        let addition_bytes = additions.iter().map(String::len).sum::<usize>();
+                        if addition_bytes.saturating_add(addendum.len()) > 64 * 1024 {
+                            self.record_plugin_diagnostic(
+                                input.session,
+                                plugin,
+                                PluginDiagnosticKind::InvalidModification,
+                                "plugin compaction additions exceed the 64 KiB limit".into(),
+                            );
+                            continue;
+                        }
+                        let focus = compaction_focus.get_or_insert_with(String::new);
+                        if !focus.is_empty() {
+                            focus.push('\n');
+                        }
+                        focus.push_str(&addendum);
+                        additions.push(addendum);
+                    }
+                }
+                Err(error) => {
+                    let kind = if error.contains("crashed") || error.contains("not connected") {
+                        PluginDiagnosticKind::InterceptionCrash
+                    } else {
+                        PluginDiagnosticKind::InterceptionTimeout
+                    };
+                    self.record_plugin_diagnostic(input.session, plugin, kind, error);
+                }
+            }
+        }
+
         let composed_prompt = self.run_agent_prompt(input.session, input.run)?;
         let mut events = input.events.clone();
         let mut context = assemble_model_context(
@@ -175,7 +229,8 @@ impl Engine {
             {
                 self.estimated_request_tokens(input.session, &context.history, input.tools)?
             } else {
-                let (history, _) = compaction_history(context.history.clone(), input.focus);
+                let (history, _) =
+                    compaction_history(context.history.clone(), compaction_focus.as_deref());
                 self.estimated_request_tokens(input.session, &history, input.tools)?
             };
             compaction_input_fits(input.binding, input.internal_policy, raw_fit_tokens)
@@ -237,7 +292,7 @@ impl Engine {
                     input.owner_policy.prompt_cache_strategy.as_ref(),
                 );
                 let mut compact_request = CompactionRequest::new(request);
-                let instructions = input.focus.map(str::to_owned);
+                let instructions = compaction_focus.clone();
                 compact_request = match input.binding.protocol_recipe.as_str() {
                     "oven.openai.responses" => compact_request
                         .with_openai_responses_compaction_options(
@@ -307,7 +362,8 @@ impl Engine {
             }
         }
 
-        let (history, instruction) = compaction_history(context.history, input.focus);
+        let (history, instruction) =
+            compaction_history(context.history, compaction_focus.as_deref());
         let input_tokens_before =
             self.estimated_request_tokens(input.session, &history, input.tools)?;
         let summary = self

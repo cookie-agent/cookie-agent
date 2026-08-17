@@ -805,6 +805,11 @@ fn validate_record_local(path: &Path, record: &StoredEvent) -> Result<(), EventL
         EventPayload::DelegatedContextSeeded { .. } if record.run_id.is_some() => {
             return corrupt(path, "DelegatedContextSeeded must be runless");
         }
+        EventPayload::PluginEventAdded { .. } | EventPayload::PluginDiagnostic { .. }
+            if record.run_id.is_some() =>
+        {
+            return corrupt(path, "plugin events must be runless");
+        }
         EventPayload::SessionTitleCommitted { change, .. } => {
             let runless = matches!(
                 change,
@@ -1705,6 +1710,11 @@ fn validate_records(
             }
             EventPayload::TreeApprovalGrantCommitted { grant } => {
                 validate_approval_owner(path, &approval_owners, grant.approval_id, record.run_id)?;
+            }
+            EventPayload::PluginEventAdded { .. } | EventPayload::PluginDiagnostic { .. } => {
+                if record.run_id.is_some() {
+                    return corrupt(path, "plugin events must be runless");
+                }
             }
             _ => {
                 require_started_run(path, &runs, record.run_id)?;

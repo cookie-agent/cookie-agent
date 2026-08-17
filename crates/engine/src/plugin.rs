@@ -1,7 +1,12 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
+    future::Future,
+    pin::Pin,
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -9,15 +14,28 @@ use async_trait::async_trait;
 use cookie_agent_config::PluginConfig;
 use cookie_agent_protocol::{
     ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, EXTENSION_PROTOCOL_VERSION,
-    ErrorResponse, ExtensionInitializeResult, ExtensionPingParams, ExtensionPingResult,
-    ExtensionToolCallParams, ExtensionToolCallResult, ExtensionToolDeclaration, JsonRpcError,
-    JsonRpcId, JsonRpcVersion, Notification, PLUGIN_PING_METHOD, PLUGIN_TOOLS_CALL_METHOD,
-    PermissionAction, PreparedApprovalResource, PreparedBindingLifetime,
-    PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
-    PreparedResourceIdentity, Request, Response, SafeDisplayText, Sha256Digest, SuccessResponse,
-    extension_initialize_request, extension_shutdown_notification,
+    ErrorResponse, ExtensionBusEventParams, ExtensionEmitParams, ExtensionEmitResultParams,
+    ExtensionEmitStatus, ExtensionEventParams, ExtensionInitializeResult,
+    ExtensionInterceptionHook, ExtensionPingParams, ExtensionPingResult,
+    ExtensionPluginCapabilities, ExtensionToolCallParams, ExtensionToolCallResult,
+    ExtensionToolDeclaration, JsonRpcError, JsonRpcId, JsonRpcVersion, Notification,
+    PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD,
+    PLUGIN_PING_METHOD, PLUGIN_TOOLS_CALL_METHOD, PermissionAction, PreparedApprovalResource,
+    PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
+    PreparedResourceDigest, PreparedResourceIdentity, Request, Response, SafeDisplayText,
+    Sha256Digest, SuccessResponse, extension_initialize_request, extension_shutdown_notification,
+};
+#[cfg(test)]
+use cookie_agent_protocol::{
+    ExtensionAgentBeforeStartParams, ExtensionAgentBeforeStartResult,
+    ExtensionSessionBeforeCompactParams, ExtensionSessionBeforeCompactResult,
+    ExtensionToolAfterResultParams, ExtensionToolAfterResultResult, ExtensionToolBeforeCallParams,
+    ExtensionToolBeforeCallResult, PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
+    PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD, PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
+    PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
 };
 use futures_util::StreamExt as _;
+use indexmap::IndexMap;
 use oven_sdk::JsonSchema;
 #[cfg(windows)]
 use process_wrap::tokio::JobObject;
@@ -39,6 +57,72 @@ use crate::tool_api::{
 };
 
 const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_PLUGIN_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_PLUGIN_EVENT_NAME_CHARS: usize = 128;
+pub(crate) const MAX_PLUGIN_EVENT_TOTAL_BYTES: usize = 272 * 1024;
+const PLUGIN_OUTBOUND_CAPACITY: usize = 1024;
+const PLUGIN_CONTEXT_CAPACITY: usize = 1024;
+const PLUGIN_SPENT_CONTEXT_CAPACITY: usize = 256;
+const PLUGIN_NOTIFICATION_CONTEXT_LIFETIME: Duration = Duration::from_secs(5);
+const PLUGIN_SPENT_CONTEXT_LIFETIME: Duration = Duration::from_secs(30);
+pub(crate) const PLUGIN_EVENTS_PER_SECOND: u32 = 40;
+pub(crate) const PLUGIN_BYTES_PER_MINUTE: usize = 4 * 1024 * 1024;
+
+#[derive(Debug)]
+struct PublishQuota {
+    second_started: Instant,
+    minute_started: Instant,
+    events_this_second: u32,
+    bytes_this_minute: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PluginEmitRequest {
+    pub plugin: String,
+    pub session_id: cookie_agent_protocol::SessionId,
+    pub context: PluginEmitContext,
+    pub name: String,
+    pub payload: Value,
+    pub publish_bus: bool,
+    pub publish_session_events: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum PluginEmitContext {
+    Granted,
+    Rejected {
+        diagnostic_session_id: Option<cookie_agent_protocol::SessionId>,
+        reason: String,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PluginEmitOutcome {
+    pub bus: ExtensionEmitStatus,
+    pub durable: ExtensionEmitStatus,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PluginDeliveryDrop {
+    pub plugin: String,
+}
+
+pub(crate) type PluginEmitHandler = Arc<
+    dyn Fn(PluginEmitRequest) -> Pin<Box<dyn Future<Output = PluginEmitOutcome> + Send>>
+        + Send
+        + Sync,
+>;
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum EngineEvent {
+    PluginEvent {
+        session_id: cookie_agent_protocol::SessionId,
+        plugin: String,
+        name: String,
+        payload: Value,
+    },
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -56,6 +140,7 @@ pub struct PluginStatus {
     pub state: PluginState,
     pub reason: Option<String>,
     pub tools: Vec<String>,
+    pub dropped_events: u64,
 }
 
 struct PluginRuntime {
@@ -64,17 +149,70 @@ struct PluginRuntime {
     status: Mutex<PluginStatus>,
     control: Mutex<Option<mpsc::Sender<Control>>>,
     declarations: Mutex<Vec<ExtensionToolDeclaration>>,
+    capabilities: Mutex<Option<ExtensionPluginCapabilities>>,
+    dropped_events: AtomicU64,
     forced_failure: Mutex<Option<String>>,
     forced_failure_notify: Notify,
     ready: Arc<Notify>,
     mcp: Arc<crate::McpRegistry>,
+    emit_handler: Arc<Mutex<Option<PluginEmitHandler>>>,
+    contexts: Mutex<PluginContexts>,
+    publish_quotas: Mutex<HashMap<cookie_agent_protocol::SessionId, PublishQuota>>,
+}
+
+#[derive(Debug, Default)]
+struct PluginContexts {
+    active: VecDeque<PluginContextGrant>,
+    spent: VecDeque<PluginSpentContext>,
+}
+
+#[derive(Debug)]
+struct PluginContextGrant {
+    id: String,
+    session_id: cookie_agent_protocol::SessionId,
+    expires_at: Instant,
+}
+
+#[derive(Debug)]
+struct PluginSpentContext {
+    id: String,
+    session_id: cookie_agent_protocol::SessionId,
+    expires_at: Instant,
+}
+
+struct PluginContextLease {
+    runtime: Arc<PluginRuntime>,
+    context_id: String,
+    session_id: cookie_agent_protocol::SessionId,
+}
+
+impl Drop for PluginContextLease {
+    fn drop(&mut self) {
+        self.runtime
+            .revoke_context(&self.context_id, self.session_id);
+    }
 }
 
 enum Control {
     Ping(oneshot::Sender<Result<(), String>>),
     ToolCall {
         params: ExtensionToolCallParams,
+        context_lifetime: Duration,
         reply: oneshot::Sender<Result<ExtensionToolCallResult, String>>,
+    },
+    Notify {
+        notification: Notification,
+        session_id: cookie_agent_protocol::SessionId,
+        context_id: String,
+        context_lifetime: Duration,
+    },
+    Intercept {
+        method: &'static str,
+        params: Value,
+        session_id: Option<cookie_agent_protocol::SessionId>,
+        context_id: Option<String>,
+        context_lifetime: Option<Duration>,
+        reply: oneshot::Sender<Result<Value, String>>,
     },
     Shutdown,
 }
@@ -97,6 +235,10 @@ enum PendingRequest {
         deadline: Instant,
         reply: oneshot::Sender<Result<ExtensionToolCallResult, String>>,
     },
+    Intercept {
+        deadline: Instant,
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
 }
 
 impl PendingRequest {
@@ -104,15 +246,17 @@ impl PendingRequest {
         match self {
             Self::Initialize { deadline }
             | Self::Ping { deadline, .. }
-            | Self::ToolCall { deadline, .. } => *deadline,
+            | Self::ToolCall { deadline, .. }
+            | Self::Intercept { deadline, .. } => *deadline,
         }
     }
 }
 
 struct PluginRegistryInner {
-    plugins: BTreeMap<String, Arc<PluginRuntime>>,
+    plugins: IndexMap<String, Arc<PluginRuntime>>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
     ready: Arc<Notify>,
+    emit_handler: Arc<Mutex<Option<PluginEmitHandler>>>,
 }
 
 #[derive(Clone)]
@@ -130,11 +274,12 @@ impl std::fmt::Debug for PluginRegistry {
 
 impl PluginRegistry {
     pub(crate) fn new(
-        plugins: BTreeMap<String, PluginConfig>,
+        plugins: IndexMap<String, PluginConfig>,
         mcp: Arc<crate::McpRegistry>,
     ) -> Self {
         let ready = Arc::new(Notify::new());
-        let plugins = plugins
+        let emit_handler = Arc::new(Mutex::new(None));
+        let plugins: IndexMap<String, Arc<PluginRuntime>> = plugins
             .into_iter()
             .map(|(name, config)| {
                 let state = if config.enabled {
@@ -150,13 +295,19 @@ impl PluginRegistry {
                         state,
                         reason: None,
                         tools: Vec::new(),
+                        dropped_events: 0,
                     }),
                     control: Mutex::new(None),
                     declarations: Mutex::new(Vec::new()),
+                    capabilities: Mutex::new(None),
+                    dropped_events: AtomicU64::new(0),
                     forced_failure: Mutex::new(None),
                     forced_failure_notify: Notify::new(),
                     ready: Arc::clone(&ready),
                     mcp: Arc::clone(&mcp),
+                    emit_handler: Arc::clone(&emit_handler),
+                    contexts: Mutex::new(PluginContexts::default()),
+                    publish_quotas: Mutex::new(HashMap::new()),
                 });
                 (name, runtime)
             })
@@ -165,6 +316,7 @@ impl PluginRegistry {
             plugins,
             tasks: Mutex::new(Vec::new()),
             ready,
+            emit_handler,
         });
         let weak = Arc::downgrade(&inner);
         mcp.set_plugin_collision_handler(Arc::new(move |plugin, tool, replacement| {
@@ -204,7 +356,7 @@ impl PluginRegistry {
             .filter(|plugin| plugin.config.enabled)
         {
             let plugin = Arc::clone(plugin);
-            let (control, receiver) = mpsc::channel(8);
+            let (control, receiver) = mpsc::channel(PLUGIN_OUTBOUND_CAPACITY);
             *plugin
                 .control
                 .lock()
@@ -278,6 +430,370 @@ impl PluginRegistry {
             .map_err(|_| format!("plugin `{name}` stopped during ping"))?
     }
 
+    pub(crate) fn set_emit_handler(&self, handler: PluginEmitHandler) {
+        *self
+            .inner
+            .emit_handler
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handler);
+    }
+
+    pub(crate) fn check_publish_quota(
+        &self,
+        plugin: &str,
+        session_id: cookie_agent_protocol::SessionId,
+        event_bytes: usize,
+    ) -> Result<(), &'static str> {
+        let runtime = self
+            .inner
+            .plugins
+            .get(plugin)
+            .ok_or("plugin is not registered")?;
+        let now = Instant::now();
+        let mut quotas = runtime
+            .publish_quotas
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let quota = quotas.entry(session_id).or_insert(PublishQuota {
+            second_started: now,
+            minute_started: now,
+            events_this_second: 0,
+            bytes_this_minute: 0,
+        });
+        if now.duration_since(quota.second_started) >= Duration::from_secs(1) {
+            quota.second_started = now;
+            quota.events_this_second = 0;
+        }
+        if now.duration_since(quota.minute_started) >= Duration::from_secs(60) {
+            quota.minute_started = now;
+            quota.bytes_this_minute = 0;
+        }
+        if quota.events_this_second >= PLUGIN_EVENTS_PER_SECOND {
+            return Err("plugin event rate exceeds 40 events per second");
+        }
+        if quota.bytes_this_minute.saturating_add(event_bytes) > PLUGIN_BYTES_PER_MINUTE {
+            return Err("plugin event volume exceeds 4 MiB per minute");
+        }
+        quota.events_this_second += 1;
+        quota.bytes_this_minute += event_bytes;
+        Ok(())
+    }
+
+    pub(crate) fn note_offender_diagnostic(&self, plugin: &str, reason: String) {
+        if let Some(runtime) = self.inner.plugins.get(plugin) {
+            runtime
+                .status
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .reason = Some(reason);
+        }
+    }
+
+    pub(crate) fn stream_session_event(
+        &self,
+        event: &cookie_agent_protocol::StoredEvent,
+        source_plugin: Option<&str>,
+    ) -> Vec<PluginDeliveryDrop> {
+        let context_id = plugin_context_id();
+        let params = ExtensionEventParams {
+            session_id: event.session_id,
+            context_id: context_id.clone(),
+            seq: event.seq,
+            event: event.payload.clone(),
+            timestamp: event.timestamp,
+        };
+        let notification = Notification::new(
+            PLUGIN_EVENT_METHOD,
+            Some(serde_json::to_value(params).expect("plugin event params serialize")),
+        );
+        self.stream_notification(
+            notification,
+            event.session_id,
+            &context_id,
+            source_plugin,
+            |capabilities| capabilities.subscribe_events,
+        )
+    }
+
+    pub(crate) fn stream_bus_event(
+        &self,
+        event: &ExtensionBusEventParams,
+        source_plugin: Option<&str>,
+    ) -> Vec<PluginDeliveryDrop> {
+        let context_id = plugin_context_id();
+        let mut event = event.clone();
+        event.context_id = Some(context_id.clone());
+        let notification = Notification::new(
+            PLUGIN_BUS_EVENT_METHOD,
+            Some(serde_json::to_value(&event).expect("plugin bus event params serialize")),
+        );
+        self.stream_notification(
+            notification,
+            event.session_id,
+            &context_id,
+            source_plugin,
+            |capabilities| capabilities.subscribe_bus,
+        )
+    }
+
+    fn stream_notification(
+        &self,
+        notification: Notification,
+        session_id: cookie_agent_protocol::SessionId,
+        context_id: &str,
+        source_plugin: Option<&str>,
+        subscribed: impl Fn(&ExtensionPluginCapabilities) -> bool,
+    ) -> Vec<PluginDeliveryDrop> {
+        let mut drops = Vec::new();
+        for runtime in self.inner.plugins.values() {
+            if source_plugin == Some(runtime.name.as_str()) {
+                continue;
+            }
+            let enabled = runtime
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+                .is_some_and(&subscribed);
+            if !enabled {
+                continue;
+            }
+            let sender = runtime
+                .control
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            let Some(sender) = sender else { continue };
+            match sender.try_send(Control::Notify {
+                notification: notification.clone(),
+                session_id,
+                context_id: context_id.to_owned(),
+                context_lifetime: PLUGIN_NOTIFICATION_CONTEXT_LIFETIME,
+            }) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    let count = runtime.dropped_events.fetch_add(1, Ordering::AcqRel) + 1;
+                    runtime
+                        .status
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .dropped_events = count;
+                    drops.push(PluginDeliveryDrop {
+                        plugin: runtime.name.clone(),
+                    });
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {}
+            }
+        }
+        drops
+    }
+
+    pub(crate) fn interception_plugins(&self, hook: ExtensionInterceptionHook) -> Vec<String> {
+        self.inner
+            .plugins
+            .values()
+            .filter(|runtime| {
+                runtime
+                    .capabilities
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .as_ref()
+                    .is_some_and(|capabilities| capabilities.intercept.contains(&hook))
+            })
+            .map(|runtime| runtime.name.clone())
+            .collect()
+    }
+
+    pub(crate) async fn intercept_named<P, R>(
+        &self,
+        plugin: &str,
+        method: &'static str,
+        params: &P,
+        session_id: Option<cookie_agent_protocol::SessionId>,
+        context_id: Option<&str>,
+    ) -> Result<R, String>
+    where
+        P: serde::Serialize,
+        R: serde::de::DeserializeOwned,
+    {
+        let runtime = self
+            .inner
+            .plugins
+            .get(plugin)
+            .ok_or_else(|| format!("unknown plugin `{plugin}`"))?;
+        let params = serde_json::to_value(params).expect("interception params serialize");
+        self.intercept_runtime(runtime, method, params, session_id, context_id)
+            .await
+    }
+
+    async fn intercept_runtime<R>(
+        &self,
+        runtime: &Arc<PluginRuntime>,
+        method: &'static str,
+        params: Value,
+        session_id: Option<cookie_agent_protocol::SessionId>,
+        context_id: Option<&str>,
+    ) -> Result<R, String>
+    where
+        R: serde::de::DeserializeOwned,
+    {
+        let sender = runtime
+            .control
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| "plugin is not connected".to_owned())?;
+        let (reply, receive) = oneshot::channel();
+        let context_lifetime = context_id.map(|_| {
+            Duration::from_millis(runtime.config.interception_timeout_ms.saturating_add(100))
+        });
+        sender
+            .try_send(Control::Intercept {
+                method,
+                params,
+                session_id,
+                context_id: context_id.map(str::to_owned),
+                context_lifetime,
+                reply,
+            })
+            .map_err(|_| "plugin interception queue is full".to_owned())?;
+        let _lease = match (session_id, context_id) {
+            (Some(session_id), Some(context_id)) => Some(PluginContextLease {
+                runtime: Arc::clone(runtime),
+                context_id: context_id.to_owned(),
+                session_id,
+            }),
+            _ => None,
+        };
+        match tokio::time::timeout(
+            Duration::from_millis(runtime.config.interception_timeout_ms + 50),
+            receive,
+        )
+        .await
+        {
+            Ok(Ok(Ok(value))) => serde_json::from_value(value)
+                .map_err(|error| format!("malformed interception result: {error}")),
+            Ok(Ok(Err(error))) => Err(error),
+            Ok(Err(_)) => Err("plugin crashed during interception".into()),
+            Err(_) => Err("plugin interception timed out".into()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn intercept_tool_before_call(
+        &self,
+        params: &ExtensionToolBeforeCallParams,
+    ) -> Vec<(String, Result<ExtensionToolBeforeCallResult, String>)> {
+        let mut results = Vec::new();
+        for plugin in self.interception_plugins(ExtensionInterceptionHook::ToolBeforeCall) {
+            let result = self
+                .intercept_named::<_, ExtensionToolBeforeCallResult>(
+                    &plugin,
+                    PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
+                    params,
+                    Some(params.session_id),
+                    Some(&params.context_id),
+                )
+                .await;
+            let blocked = result.as_ref().is_ok_and(|result| {
+                result.action == cookie_agent_protocol::ExtensionToolBeforeCallAction::Block
+            });
+            results.push((plugin, result));
+            if blocked {
+                break;
+            }
+        }
+        results
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn intercept_tool_after_result(
+        &self,
+        params: &ExtensionToolAfterResultParams,
+    ) -> Vec<(String, Result<ExtensionToolAfterResultResult, String>)> {
+        let mut chained = params.clone();
+        let mut results = Vec::new();
+        for plugin in self.interception_plugins(ExtensionInterceptionHook::ToolAfterResult) {
+            let result = self
+                .intercept_named::<_, ExtensionToolAfterResultResult>(
+                    &plugin,
+                    PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
+                    &chained,
+                    Some(params.session_id),
+                    Some(&params.context_id),
+                )
+                .await;
+            if let Ok(result) = &result
+                && result.action == cookie_agent_protocol::ExtensionToolAfterResultAction::Replace
+                && let Some(replacement) = &result.replacement_content
+            {
+                chained.result_content = replacement.clone();
+            }
+            results.push((plugin, result));
+        }
+        results
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn intercept_agent_before_start(
+        &self,
+        params: &ExtensionAgentBeforeStartParams,
+    ) -> Vec<(String, Result<ExtensionAgentBeforeStartResult, String>)> {
+        let mut chained = params.clone();
+        let mut results = Vec::new();
+        for plugin in self.interception_plugins(ExtensionInterceptionHook::AgentBeforeStart) {
+            let result = self
+                .intercept_named::<_, ExtensionAgentBeforeStartResult>(
+                    &plugin,
+                    PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
+                    &chained,
+                    Some(params.session_id),
+                    Some(&params.context_id),
+                )
+                .await;
+            if let Ok(result) = &result
+                && let Some(addendum) = result.addendum.as_deref().filter(|value| !value.is_empty())
+                && let Some(system_prompt) = chained
+                    .prompt_context
+                    .get_mut("system_prompt")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned)
+            {
+                chained.prompt_context["system_prompt"] =
+                    Value::String(format!("{system_prompt}\n{addendum}"));
+            }
+            results.push((plugin, result));
+        }
+        results
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn intercept_session_before_compact(
+        &self,
+        params: &ExtensionSessionBeforeCompactParams,
+    ) -> Vec<(String, Result<ExtensionSessionBeforeCompactResult, String>)> {
+        let mut chained = params.clone();
+        let mut results = Vec::new();
+        for plugin in self.interception_plugins(ExtensionInterceptionHook::SessionBeforeCompact) {
+            let result = self
+                .intercept_named::<_, ExtensionSessionBeforeCompactResult>(
+                    &plugin,
+                    PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD,
+                    &chained,
+                    Some(params.session_id),
+                    Some(&params.context_id),
+                )
+                .await;
+            if let Ok(result) = &result
+                && let Some(addendum) = result.addendum.clone().filter(|value| !value.is_empty())
+            {
+                chained.additions.push(addendum);
+            }
+            results.push((plugin, result));
+        }
+        results
+    }
+
     fn resolve_tool(
         &self,
         tool: &str,
@@ -320,16 +836,29 @@ impl PluginRegistry {
             .clone()
             .ok_or_else(|| ToolError::execution(format!("plugin `{plugin}` is not running")))?;
         let (reply, receive) = oneshot::channel();
+        let context_id = params.context_id.clone();
+        let session_id = params.session_id;
+        let context_lifetime =
+            Duration::from_millis(runtime.config.tool_timeout_ms.saturating_add(100));
         sender
-            .send(Control::ToolCall { params, reply })
+            .send(Control::ToolCall {
+                params,
+                context_lifetime,
+                reply,
+            })
             .await
             .map_err(|_| ToolError::execution(format!("plugin `{plugin}` is not running")))?;
-        receive
-            .await
-            .map_err(|_| {
-                ToolError::execution(format!("plugin `{plugin}` stopped during tool call"))
-            })?
-            .map_err(ToolError::execution)
+        let _lease = PluginContextLease {
+            runtime: Arc::clone(&runtime),
+            context_id: context_id.clone(),
+            session_id,
+        };
+        match receive.await {
+            Ok(result) => result.map_err(ToolError::execution),
+            Err(_) => Err(ToolError::execution(format!(
+                "plugin `{plugin}` stopped during tool call"
+            ))),
+        }
     }
 
     pub async fn shutdown(&self) {
@@ -354,7 +883,7 @@ impl PluginRegistry {
             })
             .collect::<Vec<_>>();
         for sender in senders {
-            let _ = sender.send(Control::Shutdown).await;
+            let _ = sender.try_send(Control::Shutdown);
         }
         let tasks = self
             .inner
@@ -375,6 +904,109 @@ impl PluginRegistry {
 }
 
 impl PluginRuntime {
+    fn register_context(
+        &self,
+        context_id: &str,
+        session_id: cookie_agent_protocol::SessionId,
+        expires_at: Instant,
+    ) {
+        let now = Instant::now();
+        let mut contexts = self
+            .contexts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        prune_plugin_contexts(&mut contexts, now);
+        if contexts
+            .spent
+            .iter()
+            .any(|context| context.id == context_id)
+        {
+            return;
+        }
+        if expires_at <= now {
+            remember_spent_context(&mut contexts, context_id.to_owned(), session_id, now);
+            return;
+        }
+        contexts.active.push_back(PluginContextGrant {
+            id: context_id.to_owned(),
+            session_id,
+            expires_at,
+        });
+        if contexts.active.len() > PLUGIN_CONTEXT_CAPACITY
+            && let Some(evicted) = contexts.active.pop_front()
+        {
+            remember_spent_context(&mut contexts, evicted.id, evicted.session_id, now);
+        }
+    }
+
+    fn revoke_context(&self, context_id: &str, session_id: cookie_agent_protocol::SessionId) {
+        let now = Instant::now();
+        let mut contexts = self
+            .contexts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        prune_plugin_contexts(&mut contexts, now);
+        if let Some(index) = contexts
+            .active
+            .iter()
+            .position(|context| context.id == context_id)
+            && let Some(context) = contexts.active.remove(index)
+        {
+            remember_spent_context(&mut contexts, context.id, context.session_id, now);
+        } else if !contexts
+            .spent
+            .iter()
+            .any(|context| context.id == context_id)
+        {
+            remember_spent_context(&mut contexts, context_id.to_owned(), session_id, now);
+        }
+    }
+
+    fn consume_context(
+        &self,
+        context_id: &str,
+        session_id: cookie_agent_protocol::SessionId,
+    ) -> PluginEmitContext {
+        let now = Instant::now();
+        let mut contexts = self
+            .contexts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        prune_plugin_contexts(&mut contexts, now);
+        if let Some(index) = contexts
+            .active
+            .iter()
+            .position(|context| context.id == context_id)
+            && let Some(context) = contexts.active.remove(index)
+        {
+            let granted = context.session_id == session_id;
+            let diagnostic_session_id = context.session_id;
+            remember_spent_context(&mut contexts, context.id, context.session_id, now);
+            return if granted {
+                PluginEmitContext::Granted
+            } else {
+                PluginEmitContext::Rejected {
+                    diagnostic_session_id: Some(diagnostic_session_id),
+                    reason: "session_id does not match the delivered context".into(),
+                }
+            };
+        }
+        if let Some(context) = contexts
+            .spent
+            .iter()
+            .find(|context| context.id == context_id)
+        {
+            return PluginEmitContext::Rejected {
+                diagnostic_session_id: Some(context.session_id),
+                reason: "context_id was already consumed, expired, or revoked".into(),
+            };
+        }
+        PluginEmitContext::Rejected {
+            diagnostic_session_id: None,
+            reason: "context_id is unknown to this plugin".into(),
+        }
+    }
+
     async fn run(self: Arc<Self>, receiver: mpsc::Receiver<Control>) {
         self.set_status(PluginState::Connecting, None, Vec::new());
         let result = self.spawn_and_supervise(receiver).await;
@@ -382,10 +1014,18 @@ impl PluginRuntime {
             .control
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self
+            .contexts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = PluginContexts::default();
         self.declarations
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        *self
+            .capabilities
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         self.mcp.release_plugin_tools(&self.name);
         match result {
             Ok(()) => self.set_status(PluginState::Disconnected, None, Vec::new()),
@@ -519,7 +1159,12 @@ impl PluginRuntime {
                     Some(Control::Ping(reply)) => {
                         let _ = reply.send(Err(format!("plugin `{}` is not connected", self.name)));
                     }
-                    Some(Control::ToolCall { params, reply }) if connected => {
+                    Some(Control::ToolCall { params, context_lifetime, reply }) if connected => {
+                        self.register_context(
+                            &params.context_id,
+                            params.session_id,
+                            Instant::now() + context_lifetime,
+                        );
                         let id = next_request_id;
                         next_request_id = next_request_id.checked_add(1)
                             .ok_or_else(|| "plugin request id space exhausted".to_owned())?;
@@ -537,6 +1182,40 @@ impl PluginRuntime {
                         });
                     }
                     Some(Control::ToolCall { reply, .. }) => {
+                        let _ = reply.send(Err(format!("plugin `{}` is not connected", self.name)));
+                    }
+                    Some(Control::Notify { notification, session_id, context_id, context_lifetime }) if connected => {
+                        self.register_context(
+                            &context_id,
+                            session_id,
+                            Instant::now() + context_lifetime,
+                        );
+                        write_json(&mut stdin, &notification).await?;
+                    }
+                    Some(Control::Notify { .. }) => {}
+                    Some(Control::Intercept { method, params, session_id, context_id, context_lifetime, reply }) if connected => {
+                        if let (Some(session_id), Some(context_id), Some(context_lifetime)) =
+                            (session_id, context_id.as_deref(), context_lifetime)
+                        {
+                            self.register_context(
+                                context_id,
+                                session_id,
+                                Instant::now() + context_lifetime,
+                            );
+                        }
+                        let id = next_request_id;
+                        next_request_id = next_request_id.checked_add(1)
+                            .ok_or_else(|| "plugin request id space exhausted".to_owned())?;
+                        write_json(&mut stdin, &Request::new(
+                            JsonRpcId::Number(id), method, Some(params),
+                        )).await?;
+                        pending.insert(id, PendingRequest::Intercept {
+                            deadline: Instant::now()
+                                + Duration::from_millis(self.config.interception_timeout_ms),
+                            reply,
+                        });
+                    }
+                    Some(Control::Intercept { reply, .. }) => {
                         let _ = reply.send(Err(format!("plugin `{}` is not connected", self.name)));
                     }
                     Some(Control::Shutdown) | None => {
@@ -562,6 +1241,9 @@ impl PluginRuntime {
                             }
                             PendingRequest::ToolCall { reply, .. } => {
                                 let _ = reply.send(Err("plugin tool call timed out".into()));
+                            }
+                            PendingRequest::Intercept { reply, .. } => {
+                                let _ = reply.send(Err("plugin interception timed out".into()));
                             }
                         }
                     }
@@ -595,8 +1277,58 @@ impl PluginRuntime {
                 };
                 write_json(stdin, &response).await?;
             } else {
-                serde_json::from_value::<Notification>(value)
+                let notification = serde_json::from_value::<Notification>(value)
                     .map_err(|error| format!("malformed plugin notification: {error}"))?;
+                if notification.method == PLUGIN_EMIT_METHOD {
+                    let params: ExtensionEmitParams =
+                        serde_json::from_value(notification.params.unwrap_or(Value::Null))
+                            .map_err(|error| {
+                                format!("malformed plugin emit notification: {error}")
+                            })?;
+                    let capabilities = self
+                        .capabilities
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone();
+                    let handler = self
+                        .emit_handler()
+                        .ok_or_else(|| "plugin event publisher is unavailable".to_owned())?;
+                    let outcome = if let Some(capabilities) = capabilities {
+                        let context = self.consume_context(&params.context_id, params.session_id);
+                        handler(PluginEmitRequest {
+                            plugin: self.name.clone(),
+                            session_id: params.session_id,
+                            context,
+                            name: params.name.clone(),
+                            payload: params.payload,
+                            publish_bus: capabilities.publish_bus,
+                            publish_session_events: capabilities.publish_session_events,
+                        })
+                        .await
+                    } else {
+                        PluginEmitOutcome {
+                            bus: ExtensionEmitStatus::Rejected,
+                            durable: ExtensionEmitStatus::Rejected,
+                            reason: Some("plugin is not initialized".into()),
+                        }
+                    };
+                    write_json(
+                        stdin,
+                        &Notification::new(
+                            PLUGIN_EMIT_RESULT_METHOD,
+                            Some(
+                                serde_json::to_value(ExtensionEmitResultParams {
+                                    name: params.name,
+                                    bus: outcome.bus,
+                                    durable: outcome.durable,
+                                    reason: outcome.reason,
+                                })
+                                .expect("emit result params serialize"),
+                            ),
+                        ),
+                    )
+                    .await?;
+                }
             }
             return Ok(());
         }
@@ -629,6 +1361,11 @@ impl PluginRuntime {
                     .declarations
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) = initialize.tools;
+                *self
+                    .capabilities
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    Some(initialize.capabilities);
                 self.set_status(PluginState::Connected, None, names);
                 *connected = true;
                 Ok(())
@@ -640,6 +1377,17 @@ impl PluginRuntime {
             }
             PendingRequest::ToolCall { reply, .. } => {
                 let result = parse_tool_call(response);
+                let _ = reply.send(result);
+                Ok(())
+            }
+            PendingRequest::Intercept { reply, .. } => {
+                let result = match response {
+                    Response::Success(success) => Ok(success.result),
+                    Response::Error(error) => Err(format!(
+                        "plugin interception rejected: {}",
+                        error.error.message
+                    )),
+                };
                 let _ = reply.send(result);
                 Ok(())
             }
@@ -657,6 +1405,47 @@ impl PluginRuntime {
         drop(status);
         self.ready.notify_waiters();
     }
+
+    fn emit_handler(&self) -> Option<PluginEmitHandler> {
+        self.emit_handler
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+fn prune_plugin_contexts(contexts: &mut PluginContexts, now: Instant) {
+    let mut active = VecDeque::with_capacity(contexts.active.len());
+    while let Some(context) = contexts.active.pop_front() {
+        if context.expires_at <= now {
+            let expired = context;
+            remember_spent_context(contexts, expired.id, expired.session_id, now);
+        } else {
+            active.push_back(context);
+        }
+    }
+    contexts.active = active;
+    contexts.spent.retain(|context| context.expires_at > now);
+}
+
+fn remember_spent_context(
+    contexts: &mut PluginContexts,
+    id: String,
+    session_id: cookie_agent_protocol::SessionId,
+    now: Instant,
+) {
+    contexts.spent.push_back(PluginSpentContext {
+        id,
+        session_id,
+        expires_at: now + PLUGIN_SPENT_CONTEXT_LIFETIME,
+    });
+    if contexts.spent.len() > PLUGIN_SPENT_CONTEXT_CAPACITY {
+        contexts.spent.pop_front();
+    }
+}
+
+pub(crate) fn plugin_context_id() -> String {
+    uuid::Uuid::now_v7().to_string()
 }
 
 fn spawn_reader(
@@ -879,6 +1668,7 @@ impl PreparedExecutor for PluginExecutor {
         let params = ExtensionToolCallParams {
             tool: self.call.name.clone(),
             session_id: self.session,
+            context_id: plugin_context_id(),
             invocation_id: self.call.id,
             arguments: self.call.arguments.clone(),
             resource: self.resource.clone(),
@@ -1068,12 +1858,18 @@ mod tests {
 
     use cookie_agent_config::PluginConfig;
     use cookie_agent_protocol::{
-        AgentId, CancellationCapability, Modality, ModelCapabilities, ReplayCapability, RunId,
-        SessionId, ToolCallId,
+        AgentId, CancellationCapability, EventPayload, ExtensionAgentBeforeStartParams,
+        ExtensionBusEventParams, ExtensionSessionBeforeCompactParams,
+        ExtensionToolAfterResultAction, ExtensionToolAfterResultParams,
+        ExtensionToolBeforeCallAction, ExtensionToolBeforeCallParams, Modality, ModelCapabilities,
+        Notification, PluginDiagnosticKind, ReplayCapability, RunId, SessionId, StoredEvent,
+        ToolCallId,
     };
+    use indexmap::IndexMap;
+    use serde_json::Value;
     use tokio_util::sync::CancellationToken;
 
-    use super::{PluginRegistry, PluginState};
+    use super::{Control, PluginRegistry, PluginState, plugin_context_id};
     use crate::{
         ArtifactStore,
         events::OutputHub,
@@ -1120,7 +1916,9 @@ mod tests {
                     shutdown_grace_ms: 3_000,
                     tool_timeout_ms: timeout_ms,
                 },
-            )]),
+            )])
+            .into_iter()
+            .collect(),
             mcp,
         );
         registry.start_eager(&tokio::runtime::Handle::current());
@@ -1138,6 +1936,59 @@ mod tests {
         })
         .await
         .expect("plugin connected");
+        Harness {
+            directory,
+            registry,
+        }
+    }
+
+    async fn multi_harness(plugins: &[(&str, &[(&str, &str)])]) -> Harness {
+        let directory = tempfile::tempdir().expect("plugin test directory");
+        let mcp = Arc::new(
+            crate::McpRegistry::new(BTreeMap::new(), directory.path().join("oauth.json"))
+                .expect("MCP registry"),
+        );
+        let plugins: IndexMap<String, PluginConfig> = plugins
+            .iter()
+            .map(|(name, extra_env)| {
+                let mut env = BTreeMap::from([
+                    ("FIXTURE_NAME".into(), (*name).to_owned()),
+                    ("FIXTURE_TOOLS".into(), "[]".into()),
+                ]);
+                env.extend(
+                    extra_env
+                        .iter()
+                        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned())),
+                );
+                let interception_timeout_ms = env
+                    .remove("FIXTURE_HOST_INTERCEPTION_TIMEOUT_MS")
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(2_000);
+                (
+                    (*name).to_owned(),
+                    PluginConfig {
+                        command: Some("python3".into()),
+                        args: vec![FIXTURE.into()],
+                        env,
+                        cwd: None,
+                        enabled: true,
+                        interception_timeout_ms,
+                        startup_timeout_ms: 10_000,
+                        shutdown_grace_ms: 3_000,
+                        tool_timeout_ms: 1_000,
+                    },
+                )
+            })
+            .collect();
+        let registry = PluginRegistry::new(plugins, mcp);
+        registry.start_eager(&tokio::runtime::Handle::current());
+        registry.await_eager_ready().await;
+        assert!(
+            registry
+                .statuses()
+                .iter()
+                .all(|status| status.state == PluginState::Connected)
+        );
         Harness {
             directory,
             registry,
@@ -1299,6 +2150,558 @@ mod tests {
         );
         let executor = stale.executor.lock().await.take().expect("stale executor");
         assert!(executor.revalidate().await.is_err());
+        harness.registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn streams_ordered_events_and_bus_without_self_echo() {
+        let marker = tempfile::tempdir().expect("marker directory");
+        let event_file = marker.path().join("events.jsonl");
+        let bus_file = marker.path().join("bus.jsonl");
+        let capabilities = r#"{"tools":true,"resources":false,"subscribe_events":true,"subscribe_bus":true,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
+        let harness = harness(
+            &[
+                ("FIXTURE_CAPABILITIES", capabilities),
+                (
+                    "FIXTURE_EVENT_FILE",
+                    event_file.to_str().expect("event path"),
+                ),
+                (
+                    "FIXTURE_BUS_EVENT_FILE",
+                    bus_file.to_str().expect("bus path"),
+                ),
+            ],
+            1_000,
+        )
+        .await;
+        let session_id = SessionId::new_v7();
+        for seq in [2, 3] {
+            let event = StoredEvent {
+                engine_version: None,
+                session_id,
+                run_id: None,
+                seq,
+                timestamp: jiff::Timestamp::now(),
+                payload: EventPayload::PluginDiagnostic {
+                    plugin: "engine".into(),
+                    kind: PluginDiagnosticKind::HookBlocked,
+                    message: format!("event {seq}"),
+                    count: 1,
+                },
+            };
+            assert!(
+                harness
+                    .registry
+                    .stream_session_event(&event, None)
+                    .is_empty()
+            );
+        }
+        assert!(
+            harness
+                .registry
+                .stream_bus_event(
+                    &ExtensionBusEventParams {
+                        session_id,
+                        context_id: None,
+                        plugin: "other".into(),
+                        name: "notice".into(),
+                        payload: serde_json::json!({"ok": true}),
+                    },
+                    None,
+                )
+                .is_empty()
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !event_file.exists()
+                || std::fs::read_to_string(&event_file)
+                    .map_or(0, |contents| contents.lines().count())
+                    < 2
+                || !bus_file.exists()
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("streamed notifications");
+        let seqs = std::fs::read_to_string(&event_file)
+            .expect("event file")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("event JSON")["seq"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(seqs, [serde_json::json!(2), serde_json::json!(3)]);
+
+        let self_event = StoredEvent {
+            engine_version: None,
+            session_id,
+            run_id: None,
+            seq: 4,
+            timestamp: jiff::Timestamp::now(),
+            payload: EventPayload::PluginEventAdded {
+                plugin: "fixture".into(),
+                name: "self".into(),
+                payload: Value::Null,
+            },
+        };
+        harness
+            .registry
+            .stream_session_event(&self_event, Some("fixture"));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(
+            std::fs::read_to_string(event_file)
+                .expect("event file")
+                .lines()
+                .count(),
+            2
+        );
+        harness.registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn dispatches_all_interception_hooks_and_fails_open_on_crash() {
+        let capabilities = r#"{"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call","tool_after_result","agent_before_start","session_before_compact"]}"#;
+        let active = harness(
+            &[
+                ("FIXTURE_CAPABILITIES", capabilities),
+                (
+                    "FIXTURE_TOOL_BEFORE_RESULT",
+                    r#"{"action":"allow","modified_arguments":{"text":"modified","path":"src/lib.rs"}}"#,
+                ),
+                (
+                    "FIXTURE_TOOL_AFTER_RESULT",
+                    r#"{"action":"replace","replacement_content":"replaced"}"#,
+                ),
+                (
+                    "FIXTURE_AGENT_BEFORE_RESULT",
+                    r#"{"addendum":"agent addendum"}"#,
+                ),
+                (
+                    "FIXTURE_COMPACT_BEFORE_RESULT",
+                    r#"{"addendum":"compact addendum"}"#,
+                ),
+            ],
+            1_000,
+        )
+        .await;
+        let session_id = SessionId::new_v7();
+        let before = active
+            .registry
+            .intercept_tool_before_call(&ExtensionToolBeforeCallParams {
+                session_id,
+                context_id: plugin_context_id(),
+                tool: "fixture_echo".into(),
+                arguments: serde_json::json!({"text":"original","path":"src/lib.rs"}),
+                permission_name: "fixture_echo".into(),
+                resource: Some("src/lib.rs".into()),
+            })
+            .await;
+        assert!(matches!(
+            &before[0].1,
+            Ok(result)
+                if result.action == ExtensionToolBeforeCallAction::Allow
+                    && result.modified_arguments.as_ref().is_some_and(|value| value["text"] == "modified")
+        ));
+        let after = active
+            .registry
+            .intercept_tool_after_result(&ExtensionToolAfterResultParams {
+                session_id,
+                context_id: plugin_context_id(),
+                tool: "fixture_echo".into(),
+                arguments: Value::Null,
+                result_content: "original".into(),
+                is_error: false,
+            })
+            .await;
+        assert!(matches!(
+            &after[0].1,
+            Ok(result)
+                if result.action == ExtensionToolAfterResultAction::Replace
+                    && result.replacement_content.as_deref() == Some("replaced")
+        ));
+        assert_eq!(
+            active
+                .registry
+                .intercept_agent_before_start(&ExtensionAgentBeforeStartParams {
+                    session_id,
+                    context_id: plugin_context_id(),
+                    agent_path: "primary".into(),
+                    prompt_context: Value::Null,
+                })
+                .await[0]
+                .1
+                .as_ref()
+                .expect("agent interception")
+                .addendum
+                .as_deref(),
+            Some("agent addendum")
+        );
+        assert_eq!(
+            active
+                .registry
+                .intercept_session_before_compact(&ExtensionSessionBeforeCompactParams {
+                    session_id,
+                    context_id: plugin_context_id(),
+                    checkpoint_id: "checkpoint".into(),
+                    additions: Vec::new(),
+                })
+                .await[0]
+                .1
+                .as_ref()
+                .expect("compaction interception")
+                .addendum
+                .as_deref(),
+            Some("compact addendum")
+        );
+        active.registry.shutdown().await;
+
+        let crashed = harness(
+            &[
+                ("FIXTURE_CAPABILITIES", capabilities),
+                ("FIXTURE_CRASH_DURING_INTERCEPT", "1"),
+            ],
+            1_000,
+        )
+        .await;
+        let result = crashed
+            .registry
+            .intercept_tool_before_call(&ExtensionToolBeforeCallParams {
+                session_id,
+                context_id: plugin_context_id(),
+                tool: "fixture_echo".into(),
+                arguments: serde_json::json!({}),
+                permission_name: "fixture_echo".into(),
+                resource: None,
+            })
+            .await;
+        assert!(
+            result[0]
+                .1
+                .as_ref()
+                .is_err_and(|error| error.contains("crashed"))
+        );
+        crashed.registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn tool_before_interception_orders_and_block_short_circuits() {
+        let marker = tempfile::tempdir().expect("marker directory");
+        let second_file = marker.path().join("second.jsonl");
+        let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}"#;
+        let first_env = [
+            ("FIXTURE_CAPABILITIES", capabilities),
+            (
+                "FIXTURE_TOOL_BEFORE_RESULT",
+                r#"{"action":"allow","modified_arguments":{"step":"first"}}"#,
+            ),
+        ];
+        let second_path = second_file.to_str().expect("second path");
+        let second_env = [
+            ("FIXTURE_CAPABILITIES", capabilities),
+            ("FIXTURE_INTERCEPT_FILE", second_path),
+        ];
+        let harness = multi_harness(&[("zeta", &first_env), ("alpha", &second_env)]).await;
+        let params = ExtensionToolBeforeCallParams {
+            session_id: SessionId::new_v7(),
+            context_id: plugin_context_id(),
+            tool: "example".into(),
+            arguments: serde_json::json!({"step":"original"}),
+            permission_name: "read".into(),
+            resource: None,
+        };
+        let results = harness.registry.intercept_tool_before_call(&params).await;
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "zeta");
+        assert_eq!(results[1].0, "alpha");
+        let second: Value = serde_json::from_str(
+            std::fs::read_to_string(&second_file)
+                .expect("second interception")
+                .lines()
+                .next()
+                .expect("second line"),
+        )
+        .expect("second JSON");
+        assert_eq!(second["params"]["arguments"]["step"], "original");
+        harness.registry.shutdown().await;
+
+        let blocked_file = marker.path().join("blocked-second.jsonl");
+        let block_env = [
+            ("FIXTURE_CAPABILITIES", capabilities),
+            (
+                "FIXTURE_TOOL_BEFORE_RESULT",
+                r#"{"action":"block","reason":"blocked"}"#,
+            ),
+        ];
+        let blocked_path = blocked_file.to_str().expect("blocked path");
+        let untouched_env = [
+            ("FIXTURE_CAPABILITIES", capabilities),
+            ("FIXTURE_INTERCEPT_FILE", blocked_path),
+        ];
+        let blocked = multi_harness(&[("zeta", &block_env), ("alpha", &untouched_env)]).await;
+        let results = blocked.registry.intercept_tool_before_call(&params).await;
+        assert_eq!(results.len(), 1);
+        assert!(matches!(
+            &results[0].1,
+            Ok(result) if result.action == ExtensionToolBeforeCallAction::Block
+        ));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!blocked_file.exists());
+        blocked.registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn interception_timeout_fails_open_and_remaining_hooks_continue() {
+        let marker = tempfile::tempdir().expect("marker directory");
+        let second_file = marker.path().join("second.jsonl");
+        let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}"#;
+        let slow_env = [
+            ("FIXTURE_CAPABILITIES", capabilities),
+            ("FIXTURE_INTERCEPT_DELAY_MS", "200"),
+            ("FIXTURE_HOST_INTERCEPTION_TIMEOUT_MS", "30"),
+        ];
+        let second_path = second_file.to_str().expect("second path");
+        let steady_env = [
+            ("FIXTURE_CAPABILITIES", capabilities),
+            ("FIXTURE_INTERCEPT_FILE", second_path),
+        ];
+        let harness = multi_harness(&[("first", &slow_env), ("second", &steady_env)]).await;
+        let results = harness
+            .registry
+            .intercept_tool_before_call(&ExtensionToolBeforeCallParams {
+                session_id: SessionId::new_v7(),
+                context_id: plugin_context_id(),
+                tool: "example".into(),
+                arguments: serde_json::json!({}),
+                permission_name: "read".into(),
+                resource: None,
+            })
+            .await;
+        assert_eq!(results.len(), 2);
+        assert!(
+            results[0]
+                .1
+                .as_ref()
+                .is_err_and(|error| error.contains("timed out"))
+        );
+        assert!(results[1].1.is_ok());
+        assert!(second_file.exists());
+        harness.registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn result_agent_and_compaction_hooks_receive_accumulated_state() {
+        let marker = tempfile::tempdir().expect("marker directory");
+        let alpha_file = marker.path().join("alpha.jsonl");
+        let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_after_result","agent_before_start","session_before_compact"]}"#;
+        let zeta_env = [
+            ("FIXTURE_CAPABILITIES", capabilities),
+            (
+                "FIXTURE_TOOL_AFTER_RESULT",
+                r#"{"action":"replace","replacement_content":"zeta result"}"#,
+            ),
+            (
+                "FIXTURE_AGENT_BEFORE_RESULT",
+                r#"{"addendum":"zeta agent"}"#,
+            ),
+            (
+                "FIXTURE_COMPACT_BEFORE_RESULT",
+                r#"{"addendum":"zeta compact"}"#,
+            ),
+        ];
+        let alpha_path = alpha_file.to_str().expect("alpha path");
+        let alpha_env = [
+            ("FIXTURE_CAPABILITIES", capabilities),
+            ("FIXTURE_INTERCEPT_FILE", alpha_path),
+        ];
+        let harness = multi_harness(&[("zeta", &zeta_env), ("alpha", &alpha_env)]).await;
+        let session_id = SessionId::new_v7();
+        harness
+            .registry
+            .intercept_tool_after_result(&ExtensionToolAfterResultParams {
+                session_id,
+                context_id: plugin_context_id(),
+                tool: "example".into(),
+                arguments: serde_json::json!({}),
+                result_content: "original".into(),
+                is_error: false,
+            })
+            .await;
+        harness
+            .registry
+            .intercept_agent_before_start(&ExtensionAgentBeforeStartParams {
+                session_id,
+                context_id: plugin_context_id(),
+                agent_path: "primary".into(),
+                prompt_context: serde_json::json!({"system_prompt":"original prompt"}),
+            })
+            .await;
+        harness
+            .registry
+            .intercept_session_before_compact(&ExtensionSessionBeforeCompactParams {
+                session_id,
+                context_id: plugin_context_id(),
+                checkpoint_id: "checkpoint".into(),
+                additions: Vec::new(),
+            })
+            .await;
+        let records = std::fs::read_to_string(alpha_file)
+            .expect("alpha records")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("record JSON"))
+            .collect::<Vec<_>>();
+        assert_eq!(records[0]["params"]["result_content"], "zeta result");
+        assert_eq!(
+            records[1]["params"]["prompt_context"]["system_prompt"],
+            "original prompt\nzeta agent"
+        );
+        assert_eq!(records[2]["params"]["additions"][0], "zeta compact");
+        harness.registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn full_plugin_buffer_drops_without_blocking_and_counts_loss() {
+        let capabilities = r#"{"tools":true,"resources":false,"subscribe_events":true,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
+        let harness = harness(&[("FIXTURE_CAPABILITIES", capabilities)], 1_000).await;
+        let runtime = harness
+            .registry
+            .inner
+            .plugins
+            .get("fixture")
+            .expect("fixture runtime");
+        let original = runtime
+            .control
+            .lock()
+            .expect("control lock")
+            .clone()
+            .expect("control sender");
+        let (full_sender, _held_receiver) = tokio::sync::mpsc::channel(1);
+        *runtime.control.lock().expect("control lock") = Some(full_sender);
+        let event = StoredEvent {
+            engine_version: None,
+            session_id: SessionId::new_v7(),
+            run_id: None,
+            seq: 2,
+            timestamp: jiff::Timestamp::now(),
+            payload: EventPayload::PluginDiagnostic {
+                plugin: "engine".into(),
+                kind: PluginDiagnosticKind::HookBlocked,
+                message: "buffer test".into(),
+                count: 1,
+            },
+        };
+        assert!(
+            harness
+                .registry
+                .stream_session_event(&event, None)
+                .is_empty()
+        );
+        let started = std::time::Instant::now();
+        let drops = harness.registry.stream_session_event(&event, None);
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert_eq!(drops.len(), 1);
+        assert_eq!(drops[0].plugin, "fixture");
+        assert_eq!(
+            runtime.contexts.lock().expect("contexts lock").active.len(),
+            0,
+            "queued or failed delivery registered a context grant before host dequeue"
+        );
+        assert_eq!(harness.registry.statuses()[0].dropped_events, 1);
+        *runtime.control.lock().expect("control lock") = Some(original);
+        harness.registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn expired_context_is_spent_and_keeps_only_its_known_session() {
+        let capabilities = r#"{"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
+        let harness = harness(&[("FIXTURE_CAPABILITIES", capabilities)], 1_000).await;
+        let runtime = harness
+            .registry
+            .inner
+            .plugins
+            .get("fixture")
+            .expect("fixture runtime");
+        let session_id = SessionId::new_v7();
+        runtime.register_context(
+            "expiring-context",
+            session_id,
+            tokio::time::Instant::now() + Duration::from_millis(1),
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(matches!(
+            runtime.consume_context("expiring-context", SessionId::new_v7()),
+            super::PluginEmitContext::Rejected {
+                diagnostic_session_id: Some(known_session),
+                ..
+            } if known_session == session_id
+        ));
+        harness.registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn context_lifetime_starts_at_delivery_and_cancelled_queue_entry_stays_spent() {
+        let harness = harness(&[], 1_000).await;
+        let runtime = harness
+            .registry
+            .inner
+            .plugins
+            .get("fixture")
+            .expect("fixture runtime");
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        let session_id = SessionId::new_v7();
+        sender
+            .try_send(Control::Notify {
+                notification: Notification::new("plugin/test", None),
+                session_id,
+                context_id: "delayed".into(),
+                context_lifetime: Duration::from_millis(5),
+            })
+            .expect("queue delayed context");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let Control::Notify {
+            context_id,
+            context_lifetime,
+            ..
+        } = receiver.recv().await.expect("delayed control")
+        else {
+            panic!("expected notification control");
+        };
+        runtime.register_context(
+            &context_id,
+            session_id,
+            tokio::time::Instant::now() + context_lifetime,
+        );
+        assert!(matches!(
+            runtime.consume_context(&context_id, session_id),
+            super::PluginEmitContext::Granted
+        ));
+
+        sender
+            .try_send(Control::Notify {
+                notification: Notification::new("plugin/test", None),
+                session_id,
+                context_id: "cancelled".into(),
+                context_lifetime: Duration::from_secs(1),
+            })
+            .expect("queue cancelled context");
+        runtime.revoke_context("cancelled", session_id);
+        let Control::Notify {
+            context_id,
+            context_lifetime,
+            ..
+        } = receiver.recv().await.expect("cancelled control")
+        else {
+            panic!("expected notification control");
+        };
+        runtime.register_context(
+            &context_id,
+            session_id,
+            tokio::time::Instant::now() + context_lifetime,
+        );
+        assert!(matches!(
+            runtime.consume_context(&context_id, session_id),
+            super::PluginEmitContext::Rejected {
+                diagnostic_session_id: Some(known_session),
+                ..
+            } if known_session == session_id
+        ));
         harness.registry.shutdown().await;
     }
 }

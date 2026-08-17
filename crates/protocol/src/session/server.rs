@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -39,6 +42,7 @@ const MAX_RAW_RENAME_PARAMS_BYTES: usize = 4 * 1024;
 pub struct ServerContext {
     notifications: mpsc::Sender<Value>,
     shutdown: CancellationToken,
+    subscribed_sessions: Arc<Mutex<HashSet<SessionId>>>,
 }
 
 impl ServerContext {
@@ -61,6 +65,38 @@ impl ServerContext {
     pub fn shutdown(&self) -> CancellationToken {
         self.shutdown.clone()
     }
+
+    /// Marks a session as authorized for connection-scoped live notifications.
+    pub fn register_session_subscription(&self, session_id: SessionId) {
+        self.subscribed_sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(session_id);
+    }
+
+    /// Returns whether this connection has successfully subscribed to the session.
+    #[must_use]
+    pub fn is_session_subscribed(&self, session_id: SessionId) -> bool {
+        self.subscribed_sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&session_id)
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+#[must_use]
+pub fn test_server_context() -> (ServerContext, mpsc::Receiver<Value>) {
+    let (notifications, receiver) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
+    (
+        ServerContext {
+            notifications,
+            shutdown: CancellationToken::new(),
+            subscribed_sessions: Arc::new(Mutex::new(HashSet::new())),
+        },
+        receiver,
+    )
 }
 
 /// Server end of the protocol contract after session-level validation.
@@ -263,6 +299,7 @@ where
     let context = ServerContext {
         notifications,
         shutdown,
+        subscribed_sessions: Arc::new(Mutex::new(HashSet::new())),
     };
     let _guard = ConnectionShutdown(context.shutdown());
     let mut handshaken = false;

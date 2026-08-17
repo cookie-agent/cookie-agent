@@ -3,46 +3,49 @@
     "PLUGIN_INITIALIZE_METHOD": "plugin/initialize",
     "PLUGIN_PING_METHOD": "plugin/ping",
     "PLUGIN_SHUTDOWN_METHOD": "plugin/shutdown",
-    "PLUGIN_TOOLS_CALL_METHOD": "plugin/tools/call"
+    "PLUGIN_TOOLS_CALL_METHOD": "plugin/tools/call",
+    "PLUGIN_EVENT_METHOD": "plugin/event",
+    "PLUGIN_BUS_EVENT_METHOD": "plugin/bus_event",
+    "PLUGIN_EMIT_METHOD": "plugin/emit",
+    "PLUGIN_EMIT_RESULT_METHOD": "plugin/emit_result",
+    "PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD": "plugin/intercept/tool_before_call",
+    "PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD": "plugin/intercept/tool_after_result",
+    "PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD": "plugin/intercept/agent_before_start",
+    "PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD": "plugin/intercept/session_before_compact"
   },
   "schemas": {
     "ExtensionInitializeParams.schema.json": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "title": "ExtensionInitializeParams",
-      "type": "object",
-      "properties": {
-        "capabilities": {"$ref":"#/$defs/ExtensionEngineCapabilities"},
-        "engine_version": {"type":"string"},
-        "protocol_version": {"type":"string","const":"0.0.2"}
-      },
-      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema", "title": "ExtensionInitializeParams", "type": "object", "additionalProperties": false,
+      "properties": {"capabilities":{"$ref":"#/$defs/ExtensionEngineCapabilities"},"engine_version":{"type":"string"},"protocol_version":{"type":"string","const":"0.0.3"}},
       "required": ["protocol_version","engine_version","capabilities"],
-      "$defs": {
-        "ExtensionEngineCapabilities": {"type":"object","properties":{"ping":{"type":"boolean"},"shutdown":{"type":"boolean"},"tools":{"type":"boolean"}},"additionalProperties":false,"required":["ping","shutdown","tools"]}
-      }
+      "$defs": {"ExtensionEngineCapabilities":{"type":"object","properties":{"ping":{"type":"boolean"},"shutdown":{"type":"boolean"},"tools":{"type":"boolean"},"event_streaming":{"type":"boolean"},"event_publishing":{"type":"boolean"},"interception":{"type":"boolean"}},"additionalProperties":false,"required":["ping","shutdown","tools","event_streaming","event_publishing","interception"]}}
     },
     "ExtensionInitializeResult.schema.json": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "title": "ExtensionInitializeResult",
-      "type": "object",
-      "properties": {
-        "capabilities": {"$ref":"#/$defs/ExtensionPluginCapabilities"},
-        "name": {"type":"string"},
-        "protocol_version": {"type":"string","const":"0.0.2"},
-        "tools": {"type":"array","items":{"$ref":"#/$defs/ExtensionToolDeclaration"}},
-        "version": {"type":"string"}
-      },
-      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema", "title": "ExtensionInitializeResult", "type": "object", "additionalProperties": false,
+      "properties": {"capabilities":{"$ref":"#/$defs/ExtensionPluginCapabilities"},"name":{"type":"string"},"protocol_version":{"type":"string","const":"0.0.3"},"tools":{"type":"array","items":{"$ref":"#/$defs/ExtensionToolDeclaration"}},"version":{"type":"string"}},
       "required": ["protocol_version","name","version","capabilities","tools"],
       "$defs": {
-        "ExtensionPluginCapabilities": {"type":"object","properties":{"resources":{"type":"boolean"},"tools":{"type":"boolean"}},"additionalProperties":false,"required":["tools","resources"]},
-        "ExtensionToolDeclaration": {"type":"object","properties":{"description":{"type":"string"},"name":{"type":"string"},"parameters":true,"permission_name":{"type":"string"},"primary_resource_param":{"type":["string","null"]}},"additionalProperties":false,"required":["name","description","parameters","permission_name","primary_resource_param"]}
+        "ExtensionInterceptionHook":{"type":"string","enum":["tool_before_call","tool_after_result","agent_before_start","session_before_compact"]},
+        "ExtensionPluginCapabilities":{"type":"object","properties":{"tools":{"type":"boolean"},"resources":{"type":"boolean"},"subscribe_events":{"type":"boolean"},"subscribe_bus":{"type":"boolean"},"publish_bus":{"type":"boolean"},"publish_session_events":{"type":"boolean"},"intercept":{"type":"array","items":{"$ref":"#/$defs/ExtensionInterceptionHook"}}},"additionalProperties":false,"required":["tools","resources","subscribe_events","subscribe_bus","publish_bus","publish_session_events","intercept"]},
+        "ExtensionToolDeclaration":{"type":"object","properties":{"description":{"type":"string"},"name":{"type":"string"},"parameters":true,"permission_name":{"type":"string"},"primary_resource_param":{"type":["string","null"]}},"additionalProperties":false,"required":["name","description","parameters","permission_name","primary_resource_param"]}
       }
     },
     "ExtensionPingParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionPingParams","type":"object","additionalProperties":false},
     "ExtensionPingResult.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionPingResult","type":"object","additionalProperties":false},
     "ExtensionShutdownParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionShutdownParams","type":"object","additionalProperties":false},
-    "ExtensionToolCallParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionToolCallParams","type":"object","properties":{"arguments":true,"cancellation_token":{"type":["string","null"]},"invocation_id":{"type":"string","format":"uuid"},"resource":{"type":["string","null"]},"session_id":{"type":"string","format":"uuid"},"tool":{"type":"string"}},"additionalProperties":false,"required":["tool","session_id","invocation_id","arguments","resource"]},
-    "ExtensionToolCallResult.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionToolCallResult","type":"object","properties":{"content":{"type":"string"},"is_error":{"type":"boolean"}},"additionalProperties":false,"required":["content","is_error"]}
+    "ExtensionToolCallParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionToolCallParams","type":"object","properties":{"arguments":true,"cancellation_token":{"type":["string","null"]},"context_id":{"type":"string"},"invocation_id":{"type":"string","format":"uuid"},"resource":{"type":["string","null"]},"session_id":{"type":"string","format":"uuid"},"tool":{"type":"string"}},"additionalProperties":false,"required":["tool","session_id","context_id","invocation_id","arguments","resource"]},
+    "ExtensionToolCallResult.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionToolCallResult","type":"object","properties":{"content":{"type":"string"},"is_error":{"type":"boolean"}},"additionalProperties":false,"required":["content","is_error"]},
+    "ExtensionEventParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionEventParams","type":"object","properties":{"context_id":{"type":"string"},"event":{"$ref":"#/$defs/EventPayload"},"seq":{"type":"integer","format":"uint64","minimum":1},"session_id":{"type":"string","format":"uuid"},"timestamp":{"type":"string","format":"date-time"}},"additionalProperties":false,"required":["session_id","context_id","seq","event","timestamp"]},
+    "ExtensionBusEventParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionBusEventParams","type":"object","properties":{"context_id":{"type":["string","null"]},"name":{"type":"string"},"payload":true,"plugin":{"type":"string"},"session_id":{"type":"string","format":"uuid"}},"additionalProperties":false,"required":["session_id","plugin","name","payload"]},
+    "ExtensionEmitParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionEmitParams","type":"object","properties":{"context_id":{"type":"string"},"name":{"type":"string","maxLength":128,"minLength":1},"payload":true,"session_id":{"type":"string","format":"uuid"}},"additionalProperties":false,"required":["session_id","context_id","name","payload"]},
+    "ExtensionEmitResultParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionEmitResultParams","type":"object","properties":{"bus":{"$ref":"#/$defs/ExtensionEmitStatus"},"durable":{"$ref":"#/$defs/ExtensionEmitStatus"},"name":{"type":"string"},"reason":{"type":["string","null"]}},"additionalProperties":false,"required":["name","bus","durable"],"$defs":{"ExtensionEmitStatus":{"type":"string","enum":["published","dropped","rejected"]}}},
+    "ExtensionToolBeforeCallParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionToolBeforeCallParams","type":"object","properties":{"arguments":true,"context_id":{"type":"string"},"permission_name":{"type":"string"},"resource":{"type":["string","null"]},"session_id":{"type":"string","format":"uuid"},"tool":{"type":"string"}},"additionalProperties":false,"required":["session_id","context_id","tool","arguments","permission_name","resource"]},
+    "ExtensionToolBeforeCallResult.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionToolBeforeCallResult","type":"object","properties":{"action":{"$ref":"#/$defs/ExtensionToolBeforeCallAction"},"message_to_model":{"type":["string","null"]},"modified_arguments":true,"reason":{"type":["string","null"]}},"additionalProperties":false,"required":["action"],"$defs":{"ExtensionToolBeforeCallAction":{"type":"string","enum":["allow","block"]}}},
+    "ExtensionToolAfterResultParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionToolAfterResultParams","type":"object","properties":{"arguments":true,"context_id":{"type":"string"},"is_error":{"type":"boolean"},"result_content":{"type":"string"},"session_id":{"type":"string","format":"uuid"},"tool":{"type":"string"}},"additionalProperties":false,"required":["session_id","context_id","tool","arguments","result_content","is_error"]},
+    "ExtensionToolAfterResultResult.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionToolAfterResultResult","type":"object","properties":{"action":{"$ref":"#/$defs/ExtensionToolAfterResultAction"},"note":{"type":["string","null"]},"replacement_content":{"type":["string","null"]}},"additionalProperties":false,"required":["action"],"$defs":{"ExtensionToolAfterResultAction":{"type":"string","enum":["keep","replace"]}}},
+    "ExtensionAgentBeforeStartParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionAgentBeforeStartParams","type":"object","properties":{"agent_path":{"type":"string"},"context_id":{"type":"string"},"prompt_context":true,"session_id":{"type":"string","format":"uuid"}},"additionalProperties":false,"required":["session_id","context_id","agent_path","prompt_context"]},
+    "ExtensionAgentBeforeStartResult.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionAgentBeforeStartResult","type":"object","properties":{"addendum":{"type":["string","null"]}},"additionalProperties":false},
+    "ExtensionSessionBeforeCompactParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionSessionBeforeCompactParams","type":"object","properties":{"additions":{"type":"array","items":{"type":"string"}},"checkpoint_id":{"type":"string"},"context_id":{"type":"string"},"session_id":{"type":"string","format":"uuid"}},"additionalProperties":false,"required":["session_id","context_id","checkpoint_id","additions"]},
+    "ExtensionSessionBeforeCompactResult.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionSessionBeforeCompactResult","type":"object","properties":{"addendum":{"type":["string","null"]}},"additionalProperties":false}
   }
 }

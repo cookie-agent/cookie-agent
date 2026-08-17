@@ -6,6 +6,7 @@ use cookie_agent_models::{
     ProviderDefinition,
     adapters::{AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig},
 };
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::ConfigError;
@@ -25,7 +26,7 @@ pub struct McpConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct PluginsConfig {
     #[serde(flatten)]
-    pub plugins: BTreeMap<String, PluginConfig>,
+    pub plugins: IndexMap<String, PluginConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

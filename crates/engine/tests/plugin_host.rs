@@ -237,7 +237,9 @@ async fn ping_dispatches_interleaved_notifications_and_requests() {
     wait_for_state(&harness.engine, "fixture", PluginState::Connected).await;
     harness.engine.ping_plugin("fixture").await.expect("ping");
     tokio::time::timeout(Duration::from_secs(1), async {
-        while !rejected.exists() {
+        while !rejected.exists()
+            || fs::read_to_string(&rejected).is_ok_and(|contents| contents.is_empty())
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
@@ -253,7 +255,7 @@ async fn exact_version_mismatch_fails_without_stopping_engine() {
         "fixture",
         &[
             ("FIXTURE_NAME", "fixture".into()),
-            ("FIXTURE_PROTOCOL_VERSION", "0.0.1".into()),
+            ("FIXTURE_PROTOCOL_VERSION", "0.0.2".into()),
         ],
         "",
     );
@@ -263,7 +265,7 @@ async fn exact_version_mismatch_fails_without_stopping_engine() {
         status(&harness.engine, "fixture")
             .reason
             .unwrap()
-            .contains("0.0.1")
+            .contains("0.0.2")
     );
     harness
         .engine

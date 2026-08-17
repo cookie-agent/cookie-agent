@@ -11,7 +11,7 @@
     },
     "protocol_version": {
       "type": "string",
-      "const": "0.0.2"
+      "const": "0.0.3"
     }
   },
   "additionalProperties": false,
@@ -24,6 +24,15 @@
     "ExtensionEngineCapabilities": {
       "type": "object",
       "properties": {
+        "event_publishing": {
+          "type": "boolean"
+        },
+        "event_streaming": {
+          "type": "boolean"
+        },
+        "interception": {
+          "type": "boolean"
+        },
         "ping": {
           "type": "boolean"
         },
@@ -38,7 +47,10 @@
       "required": [
         "ping",
         "shutdown",
-        "tools"
+        "tools",
+        "event_streaming",
+        "event_publishing",
+        "interception"
       ]
     }
   }

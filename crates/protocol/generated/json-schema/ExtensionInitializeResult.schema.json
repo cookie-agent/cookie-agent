@@ -11,7 +11,7 @@
     },
     "protocol_version": {
       "type": "string",
-      "const": "0.0.2"
+      "const": "0.0.3"
     },
     "tools": {
       "type": "array",
@@ -32,10 +32,37 @@
     "tools"
   ],
   "$defs": {
+    "ExtensionInterceptionHook": {
+      "type": "string",
+      "enum": [
+        "tool_before_call",
+        "tool_after_result",
+        "agent_before_start",
+        "session_before_compact"
+      ]
+    },
     "ExtensionPluginCapabilities": {
       "type": "object",
       "properties": {
+        "intercept": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExtensionInterceptionHook"
+          }
+        },
+        "publish_bus": {
+          "type": "boolean"
+        },
+        "publish_session_events": {
+          "type": "boolean"
+        },
         "resources": {
+          "type": "boolean"
+        },
+        "subscribe_bus": {
+          "type": "boolean"
+        },
+        "subscribe_events": {
           "type": "boolean"
         },
         "tools": {
@@ -45,7 +72,12 @@
       "additionalProperties": false,
       "required": [
         "tools",
-        "resources"
+        "resources",
+        "subscribe_events",
+        "subscribe_bus",
+        "publish_bus",
+        "publish_session_events",
+        "intercept"
       ]
     },
     "ExtensionToolDeclaration": {

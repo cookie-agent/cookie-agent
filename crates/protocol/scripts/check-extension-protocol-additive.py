@@ -14,7 +14,7 @@ schema_root = pathlib.Path(sys.argv[2])
 source = pathlib.Path(sys.argv[3]).read_text()
 methods = dict(
     re.findall(
-        r'pub const (PLUGIN_[A-Z_]+_METHOD): &str = "([^"]+)";',
+        r'pub const\s+(PLUGIN_[A-Z_]+_METHOD):\s*&str\s*=\s*"([^"]+)";',
         source,
     )
 )

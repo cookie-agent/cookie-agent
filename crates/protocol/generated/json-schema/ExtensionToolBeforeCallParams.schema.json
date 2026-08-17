@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionToolBeforeCallParams",
+  "type": "object",
+  "properties": {
+    "arguments": true,
+    "context_id": {
+      "type": "string"
+    },
+    "permission_name": {
+      "type": "string"
+    },
+    "resource": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "tool": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "context_id",
+    "tool",
+    "arguments",
+    "permission_name",
+    "resource"
+  ]
+}

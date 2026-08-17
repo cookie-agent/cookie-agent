@@ -8,6 +8,7 @@ use std::{
 use cookie_agent_identity::AgentId;
 use cookie_agent_identity::ProviderId;
 use cookie_agent_models::ProviderDefinition;
+use indexmap::IndexMap;
 use serde::Deserialize as _;
 
 use crate::{
@@ -36,7 +37,7 @@ pub struct LoadedConfiguration {
     pub mcp_servers: BTreeMap<String, LoadedMcpServer>,
     pub user_mcp_servers: BTreeMap<String, crate::McpServerConfig>,
     pub workspace_mcp_servers: BTreeMap<String, crate::McpServerConfig>,
-    pub plugins: BTreeMap<String, crate::PluginConfig>,
+    pub plugins: IndexMap<String, crate::PluginConfig>,
     pub config_paths: ConfigLayerPaths,
     pub skills: crate::SkillRegistry,
 }
@@ -104,7 +105,7 @@ pub fn load_from_roots(
     let mut mcp_servers = BTreeMap::new();
     let mut user_mcp_servers = BTreeMap::new();
     let mut workspace_mcp_servers = BTreeMap::new();
-    let mut plugins = BTreeMap::new();
+    let mut plugins = IndexMap::new();
     for root in [user.as_ref(), workspace.as_ref()].into_iter().flatten() {
         if let Some((mut layer, source_text)) = root.load_runtime()? {
             apply_settings(&mut runtime, &layer);
@@ -130,16 +131,18 @@ pub fn load_from_roots(
                 }
             }
             if let Some(layer_plugins) = layer.plugins.take() {
-                plugins.extend(layer_plugins.plugins.into_iter().map(|(name, config)| {
-                    (
-                        name,
+                plugins.extend(plugins_in_authored_order(layer_plugins, &source_text).map(
+                    |(name, config)| {
                         (
-                            config,
-                            root.path.join("config.toml"),
-                            Arc::clone(&source_text),
-                        ),
-                    )
-                }));
+                            name,
+                            (
+                                config,
+                                root.path.join("config.toml"),
+                                Arc::clone(&source_text),
+                            ),
+                        )
+                    },
+                ));
             }
             for (id, mut value) in std::mem::take(&mut layer.providers) {
                 interpolate_provider_values(
@@ -191,6 +194,26 @@ pub fn load_from_roots(
             workspace: workspace_root.map(|root| root.join("config.toml")),
         },
         skills: crate::SkillRegistry::default(),
+    })
+}
+
+fn plugins_in_authored_order(
+    mut plugins: crate::PluginsConfig,
+    source_text: &str,
+) -> impl Iterator<Item = (String, crate::PluginConfig)> {
+    let document = source_text
+        .parse::<toml_edit::DocumentMut>()
+        .expect("validated TOML reparses for plugin ordering");
+    let names: Vec<String> = document
+        .get("plugins")
+        .and_then(toml_edit::Item::as_table)
+        .map(|table| table.iter().map(|(name, _)| name.to_owned()).collect())
+        .unwrap_or_default();
+    names.into_iter().filter_map(move |name| {
+        plugins
+            .plugins
+            .shift_remove(&name)
+            .map(|config| (name, config))
     })
 }
 

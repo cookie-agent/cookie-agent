@@ -10,6 +10,9 @@
         "null"
       ]
     },
+    "context_id": {
+      "type": "string"
+    },
     "invocation_id": {
       "type": "string",
       "format": "uuid"
@@ -32,6 +35,7 @@
   "required": [
     "tool",
     "session_id",
+    "context_id",
     "invocation_id",
     "arguments",
     "resource"

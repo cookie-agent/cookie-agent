@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionToolAfterResultParams",
+  "type": "object",
+  "properties": {
+    "arguments": true,
+    "context_id": {
+      "type": "string"
+    },
+    "is_error": {
+      "type": "boolean"
+    },
+    "result_content": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "tool": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "context_id",
+    "tool",
+    "arguments",
+    "result_content",
+    "is_error"
+  ]
+}

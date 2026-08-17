@@ -39,4 +39,40 @@ impl Server {
             }
         });
     }
+
+    pub(crate) fn start_engine_event_notifications(&self, context: ServerContext) {
+        let mut receiver = self.engine.subscribe_engine_events();
+        tokio::spawn(async move {
+            let shutdown = context.shutdown();
+            loop {
+                let event = tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    event = receiver.recv() => match event {
+                        Ok(event) => event,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    },
+                };
+                let cookie_agent_engine::EngineEvent::PluginEvent {
+                    session_id,
+                    plugin,
+                    name,
+                    payload,
+                } = event;
+                if !context.is_session_subscribed(session_id) {
+                    continue;
+                }
+                let params = cookie_agent_protocol::ExtensionBusEventParams {
+                    session_id,
+                    context_id: None,
+                    plugin,
+                    name,
+                    payload,
+                };
+                if context.notify("events.plugin", &params).await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
 }

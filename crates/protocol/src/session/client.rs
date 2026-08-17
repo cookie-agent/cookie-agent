@@ -76,6 +76,7 @@ pub enum ClientDelivery {
     OutputSnapshot(OutputSnapshotEnvelope),
     OutputDelta(OutputDelta),
     OutputGap(OutputGap),
+    PluginEvent(crate::ExtensionBusEventParams),
     RecoveryFailed {
         session_id: Option<SessionId>,
         error: String,
@@ -1792,6 +1793,10 @@ async fn handle_frame(
                 tool_sessions,
             )
             .await;
+        }
+        "events.plugin" => {
+            let event = serde_json::from_value(params)?;
+            deliveries.deliver(ClientDelivery::PluginEvent(event));
         }
         crate::RUNTIME_CHANGED_METHOD => {
             let changed = serde_json::from_value(params)?;

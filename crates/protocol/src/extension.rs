@@ -5,17 +5,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-pub const EXTENSION_PROTOCOL_VERSION: &str = "0.0.2";
+pub const EXTENSION_PROTOCOL_VERSION: &str = "0.0.3";
 pub const PLUGIN_INITIALIZE_METHOD: &str = "plugin/initialize";
 pub const PLUGIN_PING_METHOD: &str = "plugin/ping";
 pub const PLUGIN_SHUTDOWN_METHOD: &str = "plugin/shutdown";
 pub const PLUGIN_TOOLS_CALL_METHOD: &str = "plugin/tools/call";
-
-// Reserved for later protocol stages: plugin/resources/list, plugin/resources/read,
-// plugin/events/subscribe, and plugin/events/publish.
+pub const PLUGIN_EVENT_METHOD: &str = "plugin/event";
+pub const PLUGIN_BUS_EVENT_METHOD: &str = "plugin/bus_event";
+pub const PLUGIN_EMIT_METHOD: &str = "plugin/emit";
+pub const PLUGIN_EMIT_RESULT_METHOD: &str = "plugin/emit_result";
+pub const PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD: &str = "plugin/intercept/tool_before_call";
+pub const PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD: &str = "plugin/intercept/tool_after_result";
+pub const PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD: &str = "plugin/intercept/agent_before_start";
+pub const PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD: &str =
+    "plugin/intercept/session_before_compact";
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
-#[ts(type = "\"0.0.2\"")]
+#[ts(type = "\"0.0.3\"")]
 pub struct ExtensionProtocolVersion(());
 
 impl ExtensionProtocolVersion {
@@ -60,7 +66,7 @@ impl JsonSchema for ExtensionProtocolVersion {
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"string","const":"0.0.2"})
+        json_schema!({"type":"string","const":"0.0.3"})
     }
 }
 
@@ -70,13 +76,30 @@ pub struct ExtensionEngineCapabilities {
     pub ping: bool,
     pub shutdown: bool,
     pub tools: bool,
+    pub event_streaming: bool,
+    pub event_publishing: bool,
+    pub interception: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionInterceptionHook {
+    ToolBeforeCall,
+    ToolAfterResult,
+    AgentBeforeStart,
+    SessionBeforeCompact,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionPluginCapabilities {
     pub tools: bool,
     pub resources: bool,
+    pub subscribe_events: bool,
+    pub subscribe_bus: bool,
+    pub publish_bus: bool,
+    pub publish_session_events: bool,
+    pub intercept: Vec<ExtensionInterceptionHook>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
@@ -126,6 +149,7 @@ pub struct ExtensionShutdownParams {}
 pub struct ExtensionToolCallParams {
     pub tool: String,
     pub session_id: crate::SessionId,
+    pub context_id: String,
     pub invocation_id: crate::ToolCallId,
     pub arguments: Value,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -142,6 +166,148 @@ pub struct ExtensionToolCallResult {
     pub is_error: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionEventParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    #[schemars(range(min = 1))]
+    pub seq: u64,
+    pub event: crate::EventPayload,
+    pub timestamp: jiff::Timestamp,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionBusEventParams {
+    pub session_id: crate::SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    pub plugin: String,
+    pub name: String,
+    pub payload: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionEmitParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    #[schemars(length(min = 1, max = 128))]
+    pub name: String,
+    pub payload: Value,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionEmitStatus {
+    Published,
+    Dropped,
+    Rejected,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionEmitResultParams {
+    pub name: String,
+    pub bus: ExtensionEmitStatus,
+    pub durable: ExtensionEmitStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionToolBeforeCallParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    pub tool: String,
+    pub arguments: Value,
+    pub permission_name: String,
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<String>", required)]
+    pub resource: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionToolBeforeCallAction {
+    Allow,
+    Block,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionToolBeforeCallResult {
+    pub action: ExtensionToolBeforeCallAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_arguments: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_to_model: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionToolAfterResultParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    pub tool: String,
+    pub arguments: Value,
+    pub result_content: String,
+    pub is_error: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionToolAfterResultAction {
+    Keep,
+    Replace,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionToolAfterResultResult {
+    pub action: ExtensionToolAfterResultAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement_content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionAgentBeforeStartParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    pub agent_path: String,
+    pub prompt_context: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionAgentBeforeStartResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addendum: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionSessionBeforeCompactParams {
+    pub session_id: crate::SessionId,
+    pub context_id: String,
+    pub checkpoint_id: String,
+    pub additions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionSessionBeforeCompactResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addendum: Option<String>,
+}
+
 #[must_use]
 pub fn extension_initialize_request(engine_version: impl Into<String>) -> crate::Request {
     let params = ExtensionInitializeParams {
@@ -151,6 +317,9 @@ pub fn extension_initialize_request(engine_version: impl Into<String>) -> crate:
             ping: true,
             shutdown: true,
             tools: true,
+            event_streaming: true,
+            event_publishing: true,
+            interception: true,
         },
     };
     crate::Request::new(

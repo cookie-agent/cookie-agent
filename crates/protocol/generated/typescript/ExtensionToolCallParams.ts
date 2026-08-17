@@ -3,4 +3,4 @@ import type { SessionId } from "./SessionId.js";
 import type { ToolCallId } from "./ToolCallId.js";
 import type { JsonValue } from "./serde_json/JsonValue.js";
 
-export type ExtensionToolCallParams = { tool: string, session_id: SessionId, invocation_id: ToolCallId, arguments: JsonValue, resource: string | null, cancellation_token?: string | null, };
+export type ExtensionToolCallParams = { tool: string, session_id: SessionId, context_id: string, invocation_id: ToolCallId, arguments: JsonValue, resource: string | null, cancellation_token?: string | null, };

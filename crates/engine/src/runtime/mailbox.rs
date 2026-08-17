@@ -5,11 +5,12 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
-    ApprovalStatus, EventSubscriptionMessage, EventsSubscribeResult,
-    PersistedToolResult as ToolResult, RunCancelResult, RunId, RunRecallSteerResult,
-    RunSteerResult, RunToolStdinResult, SafeToolError, SessionForkResult, SessionId,
-    SessionRenameChange, SessionRenameResult, SessionRevertResult, SessionStatus,
-    SessionTitleChange, StoredEvent, ToolCallId, ToolCallTermination, ToolTerminationOutcome,
+    ApprovalStatus, EventSubscriptionMessage, EventsSubscribeResult, ExtensionBusEventParams,
+    ExtensionEmitStatus, PersistedToolResult as ToolResult, PluginDiagnosticKind, RunCancelResult,
+    RunId, RunRecallSteerResult, RunSteerResult, RunToolStdinResult, SafeToolError,
+    SessionForkResult, SessionId, SessionRenameChange, SessionRenameResult, SessionRevertResult,
+    SessionStatus, SessionTitleChange, StoredEvent, ToolCallId, ToolCallTermination,
+    ToolTerminationOutcome,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -151,7 +152,39 @@ impl Engine {
         run: Option<RunId>,
         event: Event,
     ) -> Result<(), EngineError> {
+        self.append_direct_with_source(session, run, event, None)
+    }
+
+    fn append_direct_with_source(
+        &self,
+        session: SessionId,
+        run: Option<RunId>,
+        event: Event,
+        source_plugin: Option<&str>,
+    ) -> Result<(), EngineError> {
+        let was_persisted = self.inner.store.is_persisted(session)?;
         let envelope = self.inner.store.append(session, run, event)?;
+        self.publish_stored_event(&envelope);
+        if !was_persisted && self.inner.store.is_persisted(session)? {
+            for durable in self.inner.store.get(session)?.log.all_events() {
+                let drops = self
+                    .inner
+                    .plugins
+                    .stream_session_event(&durable, source_plugin);
+                self.record_plugin_drops(session, drops);
+            }
+        } else {
+            let drops = self
+                .inner
+                .plugins
+                .stream_session_event(&envelope, source_plugin);
+            self.record_plugin_drops(session, drops);
+        }
+        Ok(())
+    }
+
+    fn publish_stored_event(&self, envelope: &StoredEvent) {
+        let session = envelope.session_id;
         self.inner
             .subscribers
             .lock()
@@ -194,7 +227,179 @@ impl Engine {
                     Err(mpsc::error::TrySendError::Closed(_)) => false,
                 }
             });
-        Ok(())
+    }
+
+    fn record_plugin_drops(
+        &self,
+        session: SessionId,
+        drops: Vec<crate::plugin::PluginDeliveryDrop>,
+    ) {
+        for drop in drops {
+            self.queue_plugin_diagnostic(
+                session,
+                drop.plugin,
+                PluginDiagnosticKind::EventDrop,
+                "plugin event buffer overflow; event delivery was dropped".into(),
+                1,
+            );
+        }
+    }
+
+    pub(crate) fn record_plugin_diagnostic(
+        &self,
+        session: SessionId,
+        plugin: String,
+        kind: PluginDiagnosticKind,
+        message: String,
+    ) {
+        self.queue_plugin_diagnostic(session, plugin, kind, message, 1);
+    }
+
+    fn queue_plugin_diagnostic(
+        &self,
+        session_id: SessionId,
+        plugin: String,
+        kind: PluginDiagnosticKind,
+        message: String,
+        count: u64,
+    ) {
+        self.inner
+            .plugin_diagnostics
+            .record((session_id, plugin, kind, message), count);
+    }
+
+    pub(crate) async fn publish_plugin_emit(
+        &self,
+        request: crate::plugin::PluginEmitRequest,
+    ) -> crate::plugin::PluginEmitOutcome {
+        let session_id = request.session_id;
+        if let crate::plugin::PluginEmitContext::Rejected {
+            diagnostic_session_id,
+            reason,
+        } = &request.context
+        {
+            let message = format!("plugin emit context rejected: {reason}");
+            if let Some(diagnostic_session_id) = diagnostic_session_id {
+                self.queue_plugin_diagnostic(
+                    *diagnostic_session_id,
+                    request.plugin.clone(),
+                    PluginDiagnosticKind::ContextMismatch,
+                    message,
+                    1,
+                );
+            } else {
+                self.inner
+                    .plugins
+                    .note_offender_diagnostic(&request.plugin, message);
+            }
+            return crate::plugin::PluginEmitOutcome {
+                bus: ExtensionEmitStatus::Dropped,
+                durable: ExtensionEmitStatus::Rejected,
+                reason: Some(reason.clone()),
+            };
+        }
+        let payload_bytes =
+            serde_json::to_vec(&request.payload).map_or(usize::MAX, |bytes| bytes.len());
+        let event_bytes = serde_json::to_vec(&Event::PluginEventAdded {
+            plugin: request.plugin.clone(),
+            name: request.name.clone(),
+            payload: request.payload.clone(),
+        })
+        .map_or(usize::MAX, |bytes| bytes.len());
+        let invalid_name = request.name.is_empty()
+            || request.name.chars().count() > crate::plugin::MAX_PLUGIN_EVENT_NAME_CHARS
+            || request.name.chars().any(char::is_control);
+        if invalid_name
+            || payload_bytes > crate::plugin::MAX_PLUGIN_EVENT_PAYLOAD_BYTES
+            || event_bytes > crate::plugin::MAX_PLUGIN_EVENT_TOTAL_BYTES
+        {
+            self.queue_plugin_diagnostic(
+                session_id,
+                request.plugin.clone(),
+                PluginDiagnosticKind::OversizedEvent,
+                "plugin event name or serialized event exceeds its protocol limit".into(),
+                1,
+            );
+            return crate::plugin::PluginEmitOutcome {
+                bus: ExtensionEmitStatus::Dropped,
+                durable: ExtensionEmitStatus::Rejected,
+                reason: Some(format!(
+                    "event name must be 1-{} control-free characters, payload at most {} bytes, and total event at most {} bytes",
+                    crate::plugin::MAX_PLUGIN_EVENT_NAME_CHARS,
+                    crate::plugin::MAX_PLUGIN_EVENT_PAYLOAD_BYTES,
+                    crate::plugin::MAX_PLUGIN_EVENT_TOTAL_BYTES,
+                )),
+            };
+        }
+        if let Err(reason) =
+            self.inner
+                .plugins
+                .check_publish_quota(&request.plugin, session_id, event_bytes)
+        {
+            self.queue_plugin_diagnostic(
+                session_id,
+                request.plugin.clone(),
+                PluginDiagnosticKind::RateLimited,
+                reason.into(),
+                1,
+            );
+            return crate::plugin::PluginEmitOutcome {
+                bus: ExtensionEmitStatus::Dropped,
+                durable: ExtensionEmitStatus::Rejected,
+                reason: Some(reason.into()),
+            };
+        }
+
+        let mut bus = ExtensionEmitStatus::Rejected;
+        let mut durable = ExtensionEmitStatus::Rejected;
+        let mut reason = None;
+        if request.publish_bus {
+            let event = crate::EngineEvent::PluginEvent {
+                session_id,
+                plugin: request.plugin.clone(),
+                name: request.name.clone(),
+                payload: request.payload.clone(),
+            };
+            let _ = self.inner.engine_events.send(event);
+            let drops = self.inner.plugins.stream_bus_event(
+                &ExtensionBusEventParams {
+                    session_id,
+                    context_id: None,
+                    plugin: request.plugin.clone(),
+                    name: request.name.clone(),
+                    payload: request.payload.clone(),
+                },
+                Some(&request.plugin),
+            );
+            self.record_plugin_drops(session_id, drops);
+            bus = ExtensionEmitStatus::Published;
+        }
+        if request.publish_session_events {
+            let result = self
+                .request(session_id, |reply| SessionCommand::AppendPluginEvent {
+                    plugin: request.plugin.clone(),
+                    session: session_id,
+                    event: Event::PluginEventAdded {
+                        plugin: request.plugin.clone(),
+                        name: request.name,
+                        payload: request.payload,
+                    },
+                    reply,
+                })
+                .await;
+            match result {
+                Ok(()) => durable = ExtensionEmitStatus::Published,
+                Err(error) => reason = Some(error.to_string()),
+            }
+        }
+        if !request.publish_bus && !request.publish_session_events {
+            reason = Some("plugin did not declare an event publishing capability".into());
+        }
+        crate::plugin::PluginEmitOutcome {
+            bus,
+            durable,
+            reason,
+        }
     }
 
     pub(super) async fn request<T>(
@@ -448,6 +653,16 @@ impl Engine {
             }
             SessionCommand::Append { run, event, reply } => {
                 let _ = reply.send(self.append_direct(session, run, event));
+            }
+            SessionCommand::AppendPluginEvent {
+                plugin,
+                session: event_session,
+                event,
+                reply,
+            } => {
+                debug_assert_eq!(session, event_session);
+                let _ =
+                    reply.send(self.append_direct_with_source(session, None, event, Some(&plugin)));
             }
             SessionCommand::EnsureToolCallLinked {
                 run,

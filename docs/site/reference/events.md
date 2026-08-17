@@ -29,6 +29,7 @@ the generated `EventPayload` schema with the committed additive baseline.
 | Category | Event payload types |
 |---|---|
 | Session | `session_created`, `session_reverted`, `session_permission_overlay_set`, `skill_loaded`, `skill_invocation_noted`, `session_title_committed`, `delegated_context_seeded` |
+| Plugins | `plugin_event_added`, `plugin_diagnostic` |
 | User input | `user_input_admitted`, `user_input_submitted`, `user_input_recalled`, `user_input_recalled_v2`, `user_input_applied` |
 | Run | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_interrupted` |
 | Model | `model_attempt_started`, `text_delta`, `reasoning_delta`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback` |
@@ -40,6 +41,13 @@ the generated `EventPayload` schema with the committed additive baseline.
 
 `context_compaction_auto_disabled` is a legacy durable event retained for old
 session logs. Current engines no longer emit it.
+
+`plugin_event_added` is a runless plugin publication containing `plugin`, `name`, and arbitrary
+JSON `payload`. Plugin-originated payloads are capped at 256 KiB, names at 128 characters, and the
+complete serialized event at 272 KiB; per-plugin/session rate and byte quotas apply. The event is normal
+branch content: it survives reopen and fork, is visible to model history and compaction, and is
+tombstoned by revert. `plugin_diagnostic` records operational notices such as interception
+timeouts, hook blocks, invalid modifications, oversized publications, and dropped stream counts.
 
 Delegation persistence includes `delegate_queued` and `delegate_finished`. The completion event is
 written to the parent run and carries `{ session_id, status, preview,
