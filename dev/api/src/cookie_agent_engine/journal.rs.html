@@ -958,74 +958,84 @@
 <a href=#958 id=958 data-nosnippet>958</a>}
 <a href=#959 id=959 data-nosnippet>959</a>
 <a href=#960 id=960 data-nosnippet>960</a><span class="kw">fn </span>valid_request(request: <span class="kw-2">&amp;</span>DelegateRequestPayload) -&gt; bool {
-<a href=#961 id=961 data-nosnippet>961</a>    !request.description.is_empty()
-<a href=#962 id=962 data-nosnippet>962</a>        &amp;&amp; !request.prompt.is_empty()
-<a href=#963 id=963 data-nosnippet>963</a>        &amp;&amp; !(request.resume_session_id.is_some() &amp;&amp; request.inherit_context)
-<a href=#964 id=964 data-nosnippet>964</a>        &amp;&amp; (request.inherit_context || request.seeded_context.is_empty())
-<a href=#965 id=965 data-nosnippet>965</a>        &amp;&amp; request.seeded_context.len() &lt;= <span class="number">65_536
-<a href=#966 id=966 data-nosnippet>966</a>        </span>&amp;&amp; request
-<a href=#967 id=967 data-nosnippet>967</a>            .seeded_context
-<a href=#968 id=968 data-nosnippet>968</a>            .iter()
-<a href=#969 id=969 data-nosnippet>969</a>            .all(|turn| !turn.text.is_empty())
-<a href=#970 id=970 data-nosnippet>970</a>        &amp;&amp; request
-<a href=#971 id=971 data-nosnippet>971</a>            .seeded_context
-<a href=#972 id=972 data-nosnippet>972</a>            .iter()
-<a href=#973 id=973 data-nosnippet>973</a>            .map(|turn| turn.text.len())
-<a href=#974 id=974 data-nosnippet>974</a>            .sum::&lt;usize&gt;()
-<a href=#975 id=975 data-nosnippet>975</a>            &lt;= <span class="number">65_536
-<a href=#976 id=976 data-nosnippet>976</a></span>}
-<a href=#977 id=977 data-nosnippet>977</a>
-<a href=#978 id=978 data-nosnippet>978</a><span class="attr">#[cfg(test)]
-<a href=#979 id=979 data-nosnippet>979</a></span><span class="kw">mod </span>tests {
-<a href=#980 id=980 data-nosnippet>980</a>    <span class="kw">use </span>std::fs;
-<a href=#981 id=981 data-nosnippet>981</a>
-<a href=#982 id=982 data-nosnippet>982</a>    <span class="kw">use </span>cookie_agent_protocol::{DelegateRequestPayloadV4, InvocationId};
-<a href=#983 id=983 data-nosnippet>983</a>
-<a href=#984 id=984 data-nosnippet>984</a>    <span class="attr">#[test]
-<a href=#985 id=985 data-nosnippet>985</a>    </span><span class="kw">fn </span>delegate_request_payload_is_strict_and_has_no_serde_defaults() {
-<a href=#986 id=986 data-nosnippet>986</a>        <span class="macro">assert!</span>(
-<a href=#987 id=987 data-nosnippet>987</a>            serde_json::from_value::&lt;DelegateRequestPayloadV4&gt;(<span class="macro">serde_json::json!</span>({
-<a href=#988 id=988 data-nosnippet>988</a>                <span class="string">"description"</span>:<span class="string">"Report"</span>,
-<a href=#989 id=989 data-nosnippet>989</a>                <span class="string">"title"</span>:<span class="string">"Report"</span>,
-<a href=#990 id=990 data-nosnippet>990</a>                <span class="string">"resume_session_id"</span>:null,
-<a href=#991 id=991 data-nosnippet>991</a>                <span class="string">"inherit_context"</span>:<span class="bool-val">false</span>,
-<a href=#992 id=992 data-nosnippet>992</a>                <span class="string">"seeded_context"</span>:[]
-<a href=#993 id=993 data-nosnippet>993</a>            }))
-<a href=#994 id=994 data-nosnippet>994</a>            .is_err()
-<a href=#995 id=995 data-nosnippet>995</a>        );
+<a href=#961 id=961 data-nosnippet>961</a>    <span class="kw">if </span>request.description.is_empty() || request.prompt.is_empty() {
+<a href=#962 id=962 data-nosnippet>962</a>        <span class="kw">return </span><span class="bool-val">false</span>;
+<a href=#963 id=963 data-nosnippet>963</a>    }
+<a href=#964 id=964 data-nosnippet>964</a>    <span class="kw">if </span>request.resume_session_id.is_some() &amp;&amp; request.inherit_context {
+<a href=#965 id=965 data-nosnippet>965</a>        <span class="kw">return </span><span class="bool-val">false</span>;
+<a href=#966 id=966 data-nosnippet>966</a>    }
+<a href=#967 id=967 data-nosnippet>967</a>    <span class="kw">if </span>!request.inherit_context &amp;&amp; !request.seeded_context.is_empty() {
+<a href=#968 id=968 data-nosnippet>968</a>        <span class="kw">return </span><span class="bool-val">false</span>;
+<a href=#969 id=969 data-nosnippet>969</a>    }
+<a href=#970 id=970 data-nosnippet>970</a>    <span class="kw">if </span>request.seeded_context.len() &gt; <span class="number">65_536 </span>{
+<a href=#971 id=971 data-nosnippet>971</a>        <span class="kw">return </span><span class="bool-val">false</span>;
+<a href=#972 id=972 data-nosnippet>972</a>    }
+<a href=#973 id=973 data-nosnippet>973</a>    <span class="kw">if </span>request
+<a href=#974 id=974 data-nosnippet>974</a>        .seeded_context
+<a href=#975 id=975 data-nosnippet>975</a>        .iter()
+<a href=#976 id=976 data-nosnippet>976</a>        .any(|turn| turn.text.is_empty())
+<a href=#977 id=977 data-nosnippet>977</a>    {
+<a href=#978 id=978 data-nosnippet>978</a>        <span class="kw">return </span><span class="bool-val">false</span>;
+<a href=#979 id=979 data-nosnippet>979</a>    }
+<a href=#980 id=980 data-nosnippet>980</a>    request
+<a href=#981 id=981 data-nosnippet>981</a>        .seeded_context
+<a href=#982 id=982 data-nosnippet>982</a>        .iter()
+<a href=#983 id=983 data-nosnippet>983</a>        .map(|turn| turn.text.len())
+<a href=#984 id=984 data-nosnippet>984</a>        .sum::&lt;usize&gt;()
+<a href=#985 id=985 data-nosnippet>985</a>        &lt;= <span class="number">65_536
+<a href=#986 id=986 data-nosnippet>986</a></span>}
+<a href=#987 id=987 data-nosnippet>987</a>
+<a href=#988 id=988 data-nosnippet>988</a><span class="attr">#[cfg(test)]
+<a href=#989 id=989 data-nosnippet>989</a></span><span class="kw">mod </span>tests {
+<a href=#990 id=990 data-nosnippet>990</a>    <span class="kw">use </span>std::fs;
+<a href=#991 id=991 data-nosnippet>991</a>
+<a href=#992 id=992 data-nosnippet>992</a>    <span class="kw">use </span>cookie_agent_protocol::{DelegateRequestPayloadV4, InvocationId};
+<a href=#993 id=993 data-nosnippet>993</a>
+<a href=#994 id=994 data-nosnippet>994</a>    <span class="attr">#[test]
+<a href=#995 id=995 data-nosnippet>995</a>    </span><span class="kw">fn </span>delegate_request_payload_is_strict_and_has_no_serde_defaults() {
 <a href=#996 id=996 data-nosnippet>996</a>        <span class="macro">assert!</span>(
 <a href=#997 id=997 data-nosnippet>997</a>            serde_json::from_value::&lt;DelegateRequestPayloadV4&gt;(<span class="macro">serde_json::json!</span>({
 <a href=#998 id=998 data-nosnippet>998</a>                <span class="string">"description"</span>:<span class="string">"Report"</span>,
-<a href=#999 id=999 data-nosnippet>999</a>                <span class="string">"prompt"</span>:<span class="string">"report"</span>,
-<a href=#1000 id=1000 data-nosnippet>1000</a>                <span class="string">"title"</span>:<span class="string">"Report"</span>,
-<a href=#1001 id=1001 data-nosnippet>1001</a>                <span class="string">"resume_session_id"</span>:null,
-<a href=#1002 id=1002 data-nosnippet>1002</a>                <span class="string">"inherit_context"</span>:<span class="bool-val">false</span>,
-<a href=#1003 id=1003 data-nosnippet>1003</a>                <span class="string">"seeded_context"</span>:[],
-<a href=#1004 id=1004 data-nosnippet>1004</a>                <span class="string">"background"</span>:<span class="bool-val">false</span>,
-<a href=#1005 id=1005 data-nosnippet>1005</a>                <span class="string">"legacy"</span>:<span class="bool-val">true
-<a href=#1006 id=1006 data-nosnippet>1006</a>            </span>}))
-<a href=#1007 id=1007 data-nosnippet>1007</a>            .is_err()
-<a href=#1008 id=1008 data-nosnippet>1008</a>        );
-<a href=#1009 id=1009 data-nosnippet>1009</a>    }
-<a href=#1010 id=1010 data-nosnippet>1010</a>
-<a href=#1011 id=1011 data-nosnippet>1011</a>    <span class="attr">#[test]
-<a href=#1012 id=1012 data-nosnippet>1012</a>    </span><span class="kw">fn </span>journal_replay_accepts_schema_eleven_and_twelve_but_keeps_records_strict() {
-<a href=#1013 id=1013 data-nosnippet>1013</a>        <span class="kw">let </span>invocation_id = InvocationId::new_v7();
-<a href=#1014 id=1014 data-nosnippet>1014</a>        <span class="kw">for </span>value <span class="kw">in </span>[
-<a href=#1015 id=1015 data-nosnippet>1015</a>            <span class="macro">serde_json::json!</span>({
-<a href=#1016 id=1016 data-nosnippet>1016</a>                <span class="string">"delegation_journal_schema_version"</span>:<span class="number">11</span>,
-<a href=#1017 id=1017 data-nosnippet>1017</a>                <span class="string">"record"</span>:{<span class="string">"type"</span>:<span class="string">"delegation_linked"</span>,<span class="string">"invocation_id"</span>:invocation_id}
-<a href=#1018 id=1018 data-nosnippet>1018</a>            }),
-<a href=#1019 id=1019 data-nosnippet>1019</a>            <span class="macro">serde_json::json!</span>({
-<a href=#1020 id=1020 data-nosnippet>1020</a>                <span class="string">"delegation_journal_schema_version"</span>:<span class="number">12</span>,
-<a href=#1021 id=1021 data-nosnippet>1021</a>                <span class="string">"record"</span>:{<span class="string">"type"</span>:<span class="string">"delegation_linked"</span>,<span class="string">"invocation_id"</span>:invocation_id,<span class="string">"legacy"</span>:<span class="bool-val">true</span>}
-<a href=#1022 id=1022 data-nosnippet>1022</a>            }),
-<a href=#1023 id=1023 data-nosnippet>1023</a>        ] {
-<a href=#1024 id=1024 data-nosnippet>1024</a>            <span class="kw">let </span>directory = tempfile::tempdir().expect(<span class="string">"directory"</span>);
-<a href=#1025 id=1025 data-nosnippet>1025</a>            <span class="kw">let </span>path = directory.path().join(<span class="string">"delegation.jsonl"</span>);
-<a href=#1026 id=1026 data-nosnippet>1026</a>            fs::write(<span class="kw-2">&amp;</span>path, <span class="macro">format!</span>(<span class="string">"{value}\n"</span>)).expect(<span class="string">"write journal"</span>);
-<a href=#1027 id=1027 data-nosnippet>1027</a>            <span class="macro">assert!</span>(<span class="kw">super</span>::DelegationJournal::open(path).is_err());
-<a href=#1028 id=1028 data-nosnippet>1028</a>        }
-<a href=#1029 id=1029 data-nosnippet>1029</a>    }
-<a href=#1030 id=1030 data-nosnippet>1030</a>}
+<a href=#999 id=999 data-nosnippet>999</a>                <span class="string">"title"</span>:<span class="string">"Report"</span>,
+<a href=#1000 id=1000 data-nosnippet>1000</a>                <span class="string">"resume_session_id"</span>:null,
+<a href=#1001 id=1001 data-nosnippet>1001</a>                <span class="string">"inherit_context"</span>:<span class="bool-val">false</span>,
+<a href=#1002 id=1002 data-nosnippet>1002</a>                <span class="string">"seeded_context"</span>:[]
+<a href=#1003 id=1003 data-nosnippet>1003</a>            }))
+<a href=#1004 id=1004 data-nosnippet>1004</a>            .is_err()
+<a href=#1005 id=1005 data-nosnippet>1005</a>        );
+<a href=#1006 id=1006 data-nosnippet>1006</a>        <span class="macro">assert!</span>(
+<a href=#1007 id=1007 data-nosnippet>1007</a>            serde_json::from_value::&lt;DelegateRequestPayloadV4&gt;(<span class="macro">serde_json::json!</span>({
+<a href=#1008 id=1008 data-nosnippet>1008</a>                <span class="string">"description"</span>:<span class="string">"Report"</span>,
+<a href=#1009 id=1009 data-nosnippet>1009</a>                <span class="string">"prompt"</span>:<span class="string">"report"</span>,
+<a href=#1010 id=1010 data-nosnippet>1010</a>                <span class="string">"title"</span>:<span class="string">"Report"</span>,
+<a href=#1011 id=1011 data-nosnippet>1011</a>                <span class="string">"resume_session_id"</span>:null,
+<a href=#1012 id=1012 data-nosnippet>1012</a>                <span class="string">"inherit_context"</span>:<span class="bool-val">false</span>,
+<a href=#1013 id=1013 data-nosnippet>1013</a>                <span class="string">"seeded_context"</span>:[],
+<a href=#1014 id=1014 data-nosnippet>1014</a>                <span class="string">"background"</span>:<span class="bool-val">false</span>,
+<a href=#1015 id=1015 data-nosnippet>1015</a>                <span class="string">"legacy"</span>:<span class="bool-val">true
+<a href=#1016 id=1016 data-nosnippet>1016</a>            </span>}))
+<a href=#1017 id=1017 data-nosnippet>1017</a>            .is_err()
+<a href=#1018 id=1018 data-nosnippet>1018</a>        );
+<a href=#1019 id=1019 data-nosnippet>1019</a>    }
+<a href=#1020 id=1020 data-nosnippet>1020</a>
+<a href=#1021 id=1021 data-nosnippet>1021</a>    <span class="attr">#[test]
+<a href=#1022 id=1022 data-nosnippet>1022</a>    </span><span class="kw">fn </span>journal_replay_accepts_schema_eleven_and_twelve_but_keeps_records_strict() {
+<a href=#1023 id=1023 data-nosnippet>1023</a>        <span class="kw">let </span>invocation_id = InvocationId::new_v7();
+<a href=#1024 id=1024 data-nosnippet>1024</a>        <span class="kw">for </span>value <span class="kw">in </span>[
+<a href=#1025 id=1025 data-nosnippet>1025</a>            <span class="macro">serde_json::json!</span>({
+<a href=#1026 id=1026 data-nosnippet>1026</a>                <span class="string">"delegation_journal_schema_version"</span>:<span class="number">11</span>,
+<a href=#1027 id=1027 data-nosnippet>1027</a>                <span class="string">"record"</span>:{<span class="string">"type"</span>:<span class="string">"delegation_linked"</span>,<span class="string">"invocation_id"</span>:invocation_id}
+<a href=#1028 id=1028 data-nosnippet>1028</a>            }),
+<a href=#1029 id=1029 data-nosnippet>1029</a>            <span class="macro">serde_json::json!</span>({
+<a href=#1030 id=1030 data-nosnippet>1030</a>                <span class="string">"delegation_journal_schema_version"</span>:<span class="number">12</span>,
+<a href=#1031 id=1031 data-nosnippet>1031</a>                <span class="string">"record"</span>:{<span class="string">"type"</span>:<span class="string">"delegation_linked"</span>,<span class="string">"invocation_id"</span>:invocation_id,<span class="string">"legacy"</span>:<span class="bool-val">true</span>}
+<a href=#1032 id=1032 data-nosnippet>1032</a>            }),
+<a href=#1033 id=1033 data-nosnippet>1033</a>        ] {
+<a href=#1034 id=1034 data-nosnippet>1034</a>            <span class="kw">let </span>directory = tempfile::tempdir().expect(<span class="string">"directory"</span>);
+<a href=#1035 id=1035 data-nosnippet>1035</a>            <span class="kw">let </span>path = directory.path().join(<span class="string">"delegation.jsonl"</span>);
+<a href=#1036 id=1036 data-nosnippet>1036</a>            fs::write(<span class="kw-2">&amp;</span>path, <span class="macro">format!</span>(<span class="string">"{value}\n"</span>)).expect(<span class="string">"write journal"</span>);
+<a href=#1037 id=1037 data-nosnippet>1037</a>            <span class="macro">assert!</span>(<span class="kw">super</span>::DelegationJournal::open(path).is_err());
+<a href=#1038 id=1038 data-nosnippet>1038</a>        }
+<a href=#1039 id=1039 data-nosnippet>1039</a>    }
+<a href=#1040 id=1040 data-nosnippet>1040</a>}
 </code></pre></div></section></main></body></html>
