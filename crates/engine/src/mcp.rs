@@ -166,6 +166,7 @@ struct RegistryInner {
     servers: Mutex<BTreeMap<String, Arc<ServerRuntime>>>,
     reserved_names: Mutex<HashSet<String>>,
     claimed_names: Mutex<HashMap<String, String>>,
+    plugin_collision_handler: Mutex<Option<PluginCollisionHandler>>,
     oauth_credentials: OAuthCredentialFile,
     shutdown: CancellationToken,
     connection_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -174,6 +175,8 @@ struct RegistryInner {
     eager_pending: AtomicUsize,
     eager_ready: Notify,
 }
+
+type PluginCollisionHandler = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 struct OAuthFlowState {
     generation: u64,
@@ -1075,6 +1078,53 @@ async fn write_oauth_browser_response(
 }
 
 impl McpRegistry {
+    pub(crate) fn set_plugin_collision_handler(&self, handler: PluginCollisionHandler) {
+        *self
+            .inner
+            .plugin_collision_handler
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handler);
+    }
+
+    pub(crate) fn claim_plugin_tools(
+        &self,
+        plugin: &str,
+        names: &[String],
+    ) -> Result<(), ToolError> {
+        let reserved = self
+            .inner
+            .reserved_names
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut claimed = self
+            .inner
+            .claimed_names
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let owner = format!("plugin:{plugin}");
+        let mut local = HashSet::new();
+        for name in names {
+            if reserved.contains(name) || !local.insert(name) || claimed.contains_key(name) {
+                return Err(ToolError::execution(format!(
+                    "plugin `{plugin}` declared colliding tool name `{name}`"
+                )));
+            }
+        }
+        for name in names {
+            claimed.insert(name.clone(), owner.clone());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn release_plugin_tools(&self, plugin: &str) {
+        let owner = format!("plugin:{plugin}");
+        self.inner
+            .claimed_names
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|_, current| current != &owner);
+    }
+
     pub(crate) fn new(
         servers: BTreeMap<String, LoadedMcpServer>,
         oauth_path: std::path::PathBuf,
@@ -1093,6 +1143,7 @@ impl McpRegistry {
                 "cancel_subagent".into(),
             ])),
             claimed_names: Mutex::new(HashMap::new()),
+            plugin_collision_handler: Mutex::new(None),
             oauth_credentials,
             shutdown: CancellationToken::new(),
             connection_tasks: Mutex::new(Vec::new()),
@@ -2307,11 +2358,23 @@ impl ServerRuntime {
             .unwrap_or_else(|p| p.into_inner());
         claimed.retain(|_, owner| owner != &self.name);
         let mut local = HashSet::new();
+        let mut preempted_plugins = Vec::new();
         for tool in &converted {
-            if reserved.contains(&tool.spec.name)
-                || !local.insert(tool.spec.name.clone())
-                || claimed.contains_key(&tool.spec.name)
-            {
+            let claimed_by_plugin = claimed
+                .get(&tool.spec.name)
+                .and_then(|owner| owner.strip_prefix("plugin:"));
+            if reserved.contains(&tool.spec.name) || !local.insert(tool.spec.name.clone()) {
+                drop(claimed);
+                drop(reserved);
+                self.fail(format!(
+                    "MCP server `{}` generated colliding tool name `{}`",
+                    self.name, tool.spec.name
+                ));
+                return;
+            }
+            if let Some(plugin) = claimed_by_plugin {
+                preempted_plugins.push((plugin.to_owned(), tool.spec.name.clone()));
+            } else if claimed.contains_key(&tool.spec.name) {
                 drop(claimed);
                 drop(reserved);
                 self.fail(format!(
@@ -2326,6 +2389,16 @@ impl ServerRuntime {
         }
         drop(claimed);
         drop(reserved);
+        let collision_handler = registry
+            .plugin_collision_handler
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(handler) = collision_handler {
+            for (plugin, tool) in preempted_plugins {
+                handler(&plugin, &tool);
+            }
+        }
         *self.tools.lock().unwrap_or_else(|p| p.into_inner()) = converted;
         drop(publication);
         if self.current_state() == McpServerState::Connected {

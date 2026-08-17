@@ -51,6 +51,12 @@ python3 "${protocol_root}/scripts/check-event-payload-additive.py" \
   "${temporary_root}/generated/json-schema/EventPayload.schema.json"
 bash "${protocol_root}/scripts/test-event-payload-additive.sh" \
   "${temporary_root}/generated/json-schema/EventPayload.schema.json"
+python3 "${protocol_root}/scripts/check-extension-protocol-additive.py" \
+  "${protocol_root}/extension-protocol-baseline.json" \
+  "${temporary_root}/generated/json-schema" \
+  "${protocol_root}/src/extension.rs"
+bash "${protocol_root}/scripts/test-extension-protocol-additive.sh" \
+  "${temporary_root}/generated/json-schema"
 
 "${temporary_root}/typescript/node_modules/.bin/tsc" \
   --project "${temporary_root}/generated/typescript/tsconfig.json" \

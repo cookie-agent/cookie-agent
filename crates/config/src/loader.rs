@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     env,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use cookie_agent_identity::AgentId;
@@ -35,6 +36,7 @@ pub struct LoadedConfiguration {
     pub mcp_servers: BTreeMap<String, LoadedMcpServer>,
     pub user_mcp_servers: BTreeMap<String, crate::McpServerConfig>,
     pub workspace_mcp_servers: BTreeMap<String, crate::McpServerConfig>,
+    pub plugins: BTreeMap<String, crate::PluginConfig>,
     pub config_paths: ConfigLayerPaths,
     pub skills: crate::SkillRegistry,
 }
@@ -102,8 +104,9 @@ pub fn load_from_roots(
     let mut mcp_servers = BTreeMap::new();
     let mut user_mcp_servers = BTreeMap::new();
     let mut workspace_mcp_servers = BTreeMap::new();
+    let mut plugins = BTreeMap::new();
     for root in [user.as_ref(), workspace.as_ref()].into_iter().flatten() {
-        if let Some(mut layer) = root.load_runtime()? {
+        if let Some((mut layer, source_text)) = root.load_runtime()? {
             apply_settings(&mut runtime, &layer);
             if let Some(mcp) = layer.mcp.take() {
                 let source = match root.source {
@@ -125,6 +128,18 @@ pub fn load_from_roots(
                     }
                     mcp_servers.insert(name, LoadedMcpServer { source, config });
                 }
+            }
+            if let Some(layer_plugins) = layer.plugins.take() {
+                plugins.extend(layer_plugins.plugins.into_iter().map(|(name, config)| {
+                    (
+                        name,
+                        (
+                            config,
+                            root.path.join("config.toml"),
+                            Arc::clone(&source_text),
+                        ),
+                    )
+                }));
             }
             for (id, mut value) in std::mem::take(&mut layer.providers) {
                 interpolate_provider_values(
@@ -151,12 +166,26 @@ pub fn load_from_roots(
     for (name, server) in &mcp_servers {
         server.config.validate(name)?;
     }
+    for (name, (plugin, path, text)) in &plugins {
+        if let Some(field) = plugin.invalid_field(name) {
+            return Err(config_decode_error(
+                path,
+                Some(text),
+                &format!("plugin `{name}`: invalid field `{field}`"),
+            ));
+        }
+    }
+    let plugins = plugins
+        .into_iter()
+        .map(|(name, (config, _, _))| (name, config))
+        .collect();
     Ok(LoadedConfiguration {
         runtime,
         agents,
         mcp_servers,
         user_mcp_servers,
         workspace_mcp_servers,
+        plugins,
         config_paths: ConfigLayerPaths {
             user: user_root.map(|root| root.join("config.toml")),
             workspace: workspace_root.map(|root| root.join("config.toml")),
@@ -166,7 +195,7 @@ pub fn load_from_roots(
 }
 
 impl LayerRoot {
-    fn load_runtime(&self) -> Result<Option<RawRuntimeLayer>, ConfigError> {
+    fn load_runtime(&self) -> Result<Option<(RawRuntimeLayer, Arc<str>)>, ConfigError> {
         let Some(bytes) = read_optional_file(&self.path, "config.toml", MAX_CONFIG_BYTES)? else {
             return Ok(None);
         };
@@ -188,7 +217,7 @@ impl LayerRoot {
             ))
         })?;
         let layer = decode_runtime_layer(value.value_mut(), text, &path)?;
-        Ok(Some(layer))
+        Ok(Some((layer, Arc::from(text))))
     }
 
     fn load_agents(&self) -> Result<BTreeMap<AgentId, AgentDocument>, ConfigError> {
@@ -238,6 +267,7 @@ fn decode_runtime_layer(
         "delegation",
         "pricing",
         "mcp",
+        "plugins",
         "providers",
     ];
     let table = value.as_table_mut().ok_or_else(|| {
@@ -300,15 +330,19 @@ fn config_decode_error(path: &Path, text: Option<&str>, message: &str) -> Config
         .map(|field| (field, "unknown field"))
         .or_else(|| {
             extract_serde_field(message, "missing field").map(|field| (field, "missing field"))
+        })
+        .or_else(|| {
+            extract_serde_field(message, "invalid field").map(|field| (field, "invalid field"))
         });
     let detail = field.as_ref().map_or_else(
         || "malformed configuration content".to_owned(),
         |(field, kind)| {
             let line = text.and_then(|text| key_line(text, field));
-            let advice = if *kind == "unknown field" {
-                "remove it"
-            } else {
-                "add it"
+            let advice = match *kind {
+                "unknown field" => "remove it",
+                "missing field" => "add it",
+                "invalid field" => "fix it",
+                _ => unreachable!("known configuration diagnostic kind"),
             };
             match line {
                 Some(line) => format!("line {line}: {kind} `{field}`; {advice}"),

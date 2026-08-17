@@ -22,6 +22,72 @@ pub struct McpConfig {
     pub servers: BTreeMap<String, McpServerConfig>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct PluginsConfig {
+    #[serde(flatten)]
+    pub plugins: BTreeMap<String, PluginConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginConfig {
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    pub cwd: Option<String>,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default = "default_plugin_interception_timeout_ms")]
+    pub interception_timeout_ms: u64,
+    #[serde(default = "default_plugin_startup_timeout_ms")]
+    pub startup_timeout_ms: u64,
+    #[serde(default = "default_plugin_shutdown_grace_ms")]
+    pub shutdown_grace_ms: u64,
+}
+
+impl PluginConfig {
+    pub fn validate(&self, name: &str) -> Result<(), ConfigError> {
+        self.invalid_field(name).map_or(Ok(()), |field| {
+            Err(ConfigError::Plugin {
+                plugin: name.to_owned(),
+                reason: format!("field `{field}` is invalid"),
+            })
+        })
+    }
+
+    pub(crate) fn invalid_field(&self, name: &str) -> Option<&'static str> {
+        if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+            Some("name")
+        } else if self.command.as_ref().is_none_or(String::is_empty) {
+            Some("command")
+        } else if self.cwd.as_ref().is_some_and(String::is_empty) {
+            Some("cwd")
+        } else if self.interception_timeout_ms == 0 {
+            Some("interception_timeout_ms")
+        } else if self.startup_timeout_ms == 0 {
+            Some("startup_timeout_ms")
+        } else if self.shutdown_grace_ms == 0 {
+            Some("shutdown_grace_ms")
+        } else {
+            None
+        }
+    }
+}
+
+const fn default_plugin_interception_timeout_ms() -> u64 {
+    2_000
+}
+
+const fn default_plugin_startup_timeout_ms() -> u64 {
+    10_000
+}
+
+const fn default_plugin_shutdown_grace_ms() -> u64 {
+    3_000
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
@@ -238,6 +304,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) delegation: Option<DelegationConfig>,
     pub(crate) pricing: Option<PricingConfig>,
     pub(crate) mcp: Option<McpConfig>,
+    pub(crate) plugins: Option<PluginsConfig>,
     #[serde(default)]
     pub(crate) providers: SensitiveProviderValues,
 }

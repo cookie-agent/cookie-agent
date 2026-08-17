@@ -1,0 +1,74 @@
+use std::fs;
+
+use cookie_agent_config::load_from_roots;
+
+fn root(config: &str) -> tempfile::TempDir {
+    let directory = tempfile::tempdir().expect("tempdir");
+    fs::write(directory.path().join("config.toml"), config).expect("config");
+    directory
+}
+
+#[test]
+fn enabled_plugin_requires_command() {
+    let directory = root("[plugins.demo]\n");
+    let error = load_from_roots(Some(directory.path()), None).expect_err("missing command");
+    assert!(error.to_string().contains("invalid field `command`"));
+}
+
+#[test]
+fn plugin_unknown_field_is_rejected() {
+    let directory = root("[plugins.demo]\ncommand = \"plugin\"\nunknown = true\n");
+    let error = load_from_roots(Some(directory.path()), None).expect_err("unknown field");
+    assert!(error.to_string().contains("unknown"));
+}
+
+#[test]
+fn plugin_timeouts_must_be_positive() {
+    for timeout in [
+        "interception_timeout_ms = 0",
+        "startup_timeout_ms = 0",
+        "shutdown_grace_ms = 0",
+    ] {
+        let directory = root(&format!(
+            "[plugins.demo]\ncommand = \"plugin\"\n{timeout}\n"
+        ));
+        let error = load_from_roots(Some(directory.path()), None).expect_err("invalid timeout");
+        assert!(error.to_string().contains("invalid field"));
+        assert!(
+            error
+                .to_string()
+                .contains(timeout.split_once(' ').unwrap().0)
+        );
+        assert!(error.to_string().contains("line 3"));
+    }
+}
+
+#[test]
+fn disabled_plugin_with_valid_fields_is_accepted() {
+    let directory = root("[plugins.demo]\ncommand = \"plugin\"\nenabled = false\n");
+    let loaded = load_from_roots(Some(directory.path()), None).expect("disabled plugin");
+    assert!(!loaded.plugins["demo"].enabled);
+}
+
+#[test]
+fn disabled_plugin_still_rejects_invalid_fields() {
+    for invalid in ["cwd = \"\"", "startup_timeout_ms = 0"] {
+        let directory = root(&format!(
+            "[plugins.demo]\ncommand = \"plugin\"\nenabled = false\n{invalid}\n"
+        ));
+        let error = load_from_roots(Some(directory.path()), None).expect_err("invalid disabled");
+        assert!(error.to_string().contains("invalid field"));
+        assert!(error.to_string().contains("line 4"));
+    }
+}
+
+#[test]
+fn workspace_plugin_overrides_user_entry_by_name() {
+    let user = root("[plugins.demo]\ncommand = \"user-plugin\"\n");
+    let workspace = root("[plugins.demo]\ncommand = \"workspace-plugin\"\n");
+    let loaded = load_from_roots(Some(user.path()), Some(workspace.path())).expect("plugins");
+    assert_eq!(
+        loaded.plugins["demo"].command.as_deref(),
+        Some("workspace-plugin")
+    );
+}

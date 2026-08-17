@@ -92,6 +92,7 @@ mod agent;
 mod approval;
 mod bindings;
 mod event;
+mod extension;
 mod identity;
 mod manifest;
 mod model;
@@ -113,6 +114,7 @@ pub use cookie_agent_identity::{
     RuntimeRevision, SafeCode, SetupFieldId, StoreEntryId, VariantId, WildcardPattern,
 };
 pub use event::*;
+pub use extension::*;
 pub use identity::*;
 pub use manifest::*;
 pub use model::*;

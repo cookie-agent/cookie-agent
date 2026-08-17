@@ -731,6 +731,7 @@ pub(crate) struct Inner {
     manifest_store: ModelSnapshotManifestStore,
     tools: Mutex<Vec<Arc<dyn ToolProvider>>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
+    pub(crate) plugins: Arc<crate::PluginRegistry>,
     pub(crate) mcp_mutation: tokio::sync::Mutex<()>,
     pub(crate) approvals: ApprovalStore,
     permissions: PermissionPipeline,
@@ -838,6 +839,10 @@ impl Engine {
             mcp.reserve_provider(provider.as_ref())
                 .map_err(|error| EngineError::MissingTool(error.to_string()))?;
         }
+        let plugins = Arc::new(crate::PluginRegistry::new(
+            options.config.plugins.clone(),
+            Arc::clone(&mcp),
+        ));
         let mut tools = options.tools;
         tools.push(mcp.clone());
         let delegation_events = DelegationEventStore::open(Arc::clone(&store))?;
@@ -869,6 +874,7 @@ impl Engine {
                 manifest_store,
                 tools: Mutex::new(tools),
                 mcp,
+                plugins,
                 mcp_mutation: tokio::sync::Mutex::new(()),
                 approvals: ApprovalStore::default(),
                 permissions: PermissionPipeline::default(),
@@ -957,6 +963,7 @@ impl Engine {
         }
         if let Some(runtime) = &engine.inner.runtime {
             engine.inner.mcp.start_eager(runtime);
+            engine.inner.plugins.start_eager(runtime);
         }
         engine.start_subagent_janitor();
         Ok(engine)
@@ -1379,6 +1386,15 @@ impl Engine {
         self.inner.mcp.statuses()
     }
 
+    #[must_use]
+    pub fn plugin_statuses(&self) -> Vec<crate::PluginStatus> {
+        self.inner.plugins.statuses()
+    }
+
+    pub async fn ping_plugin(&self, name: &str) -> Result<(), String> {
+        self.inner.plugins.ping(name).await
+    }
+
     /// Stops new session mailbox traffic and cancels active work. Existing
     /// client clones may keep a session mailbox alive.
     pub async fn shutdown(&self) {
@@ -1431,6 +1447,7 @@ impl Engine {
         for run in active {
             run.cancellation.cancel();
         }
+        self.inner.plugins.shutdown().await;
         self.inner.mcp.shutdown().await;
         self.inner
             .actors

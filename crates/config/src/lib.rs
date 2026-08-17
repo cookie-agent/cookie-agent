@@ -25,8 +25,8 @@ pub use mcp_store::write_mcp_server;
 pub use runtime::{
     ApprovalConfig, ContextCompactionConfig, ContextCompactionTrigger, DelegationConfig, McpConfig,
     McpOAuthConfig, McpOAuthSettings, McpServerConfig, ModelPricing, PicoUsdPerMillion,
-    PricingConfig, PromptCachingConfig, RuntimeConfig, ServerConfig, SessionTitleConfig,
-    ToolOutputConfig,
+    PluginConfig, PluginsConfig, PricingConfig, PromptCachingConfig, RuntimeConfig, ServerConfig,
+    SessionTitleConfig, ToolOutputConfig,
 };
 pub use skills::{
     SkillAllowedTool, SkillContext, SkillDiagnostic, SkillDiscovery, SkillDocument,

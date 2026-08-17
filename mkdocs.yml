@@ -55,6 +55,7 @@ nav:
       - Sessions: guide/sessions.md
       - Permissions: guide/permissions.md
       - MCP servers: guide/mcp.md
+      - Plugins: guide/plugins.md
       - Agents: guide/agents.md
       - Skills: guide/skills.md
       - Configuration: guide/configuration.md

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionInitializeParams",
+  "type": "object",
+  "properties": {
+    "capabilities": {
+      "$ref": "#/$defs/ExtensionEngineCapabilities"
+    },
+    "engine_version": {
+      "type": "string"
+    },
+    "protocol_version": {
+      "type": "string",
+      "const": "0.0.1"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "engine_version",
+    "capabilities"
+  ],
+  "$defs": {
+    "ExtensionEngineCapabilities": {
+      "type": "object",
+      "properties": {
+        "ping": {
+          "type": "boolean"
+        },
+        "shutdown": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ping",
+        "shutdown"
+      ]
+    }
+  }
+}

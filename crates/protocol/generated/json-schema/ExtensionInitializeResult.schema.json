@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionInitializeResult",
+  "type": "object",
+  "properties": {
+    "capabilities": {
+      "$ref": "#/$defs/ExtensionPluginCapabilities"
+    },
+    "name": {
+      "type": "string"
+    },
+    "protocol_version": {
+      "type": "string",
+      "const": "0.0.1"
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ExtensionToolDeclaration"
+      }
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "name",
+    "version",
+    "capabilities",
+    "tools"
+  ],
+  "$defs": {
+    "ExtensionPluginCapabilities": {
+      "type": "object",
+      "properties": {
+        "resources": {
+          "type": "boolean"
+        },
+        "tools": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "tools",
+        "resources"
+      ]
+    },
+    "ExtensionToolDeclaration": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parameters": true,
+        "permission_name": {
+          "type": "string"
+        },
+        "primary_resource_param": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "description",
+        "parameters",
+        "permission_name",
+        "primary_resource_param"
+      ]
+    }
+  }
+}

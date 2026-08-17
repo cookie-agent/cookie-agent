@@ -231,6 +231,7 @@ mod tests {
             mcp_servers: BTreeMap::new(),
             user_mcp_servers: BTreeMap::new(),
             workspace_mcp_servers: BTreeMap::new(),
+            plugins: BTreeMap::new(),
             config_paths: cookie_agent_config::ConfigLayerPaths::default(),
             skills,
         };
