@@ -869,6 +869,7 @@ fn action_label(action: PermissionAction) -> &'static str {
         PermissionAction::Bash => "bash",
         PermissionAction::Delegate => "delegate",
         PermissionAction::Mcp => "mcp",
+        PermissionAction::Plugin => "plugin",
         PermissionAction::Skill => "skill",
     }
 }

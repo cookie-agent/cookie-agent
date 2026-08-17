@@ -22,7 +22,7 @@ use crate::{
 pub struct SessionToolContext {
     pub session: SessionId,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ToolSpec {
     pub name: String,
     pub permission_name: String,

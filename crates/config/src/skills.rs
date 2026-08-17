@@ -154,7 +154,7 @@ fn parse_allowed_tools(value: &str) -> Result<Vec<SkillAllowedTool>, String> {
         };
         let action = tool_action(name).ok_or_else(|| {
             format!(
-                "unknown allowed-tools tool `{name}`; valid values are Read, Write, Edit, Bash, Delegate, Skill, and Mcp"
+                "unknown allowed-tools tool `{name}`; valid values are Read, Write, Edit, Bash, Delegate, Skill, Mcp, and Plugin"
             )
         })?;
         if let Some(prefix) = pattern.strip_suffix(":*") {
@@ -194,6 +194,8 @@ fn tool_action(name: &str) -> Option<PermissionAction> {
         Some(PermissionAction::Skill)
     } else if name.eq_ignore_ascii_case("mcp") {
         Some(PermissionAction::Mcp)
+    } else if name.eq_ignore_ascii_case("plugin") {
+        Some(PermissionAction::Plugin)
     } else {
         None
     }
@@ -661,7 +663,7 @@ mod tests {
     fn rejects_unknown_and_malformed_allowed_tools_tokens() {
         let unknown = parse_allowed_tools("Unknown").unwrap_err();
         assert!(unknown.contains("unknown allowed-tools tool `Unknown`"));
-        assert!(unknown.contains("Read, Write, Edit, Bash, Delegate, Skill, and Mcp"));
+        assert!(unknown.contains("Read, Write, Edit, Bash, Delegate, Skill, Mcp, and Plugin"));
 
         for malformed in ["", "Bash(", "Bash()", "Bash(:*)", "(git:*)", "Bash(git:*))"] {
             assert!(

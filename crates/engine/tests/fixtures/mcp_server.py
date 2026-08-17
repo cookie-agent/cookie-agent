@@ -65,6 +65,9 @@ for line in sys.stdin:
         response(request_id, {"tools": tools})
     elif method == "tools/call":
         params = message["params"]
+        if os.environ.get("MCP_FIXTURE_CALL_FILE"):
+            with open(os.environ["MCP_FIXTURE_CALL_FILE"], "w", encoding="utf-8") as call_file:
+                json.dump(params, call_file)
         if params["name"] == "fail":
             response(request_id, {
                 "content": [{"type": "text", "text": "fixture failure"}],

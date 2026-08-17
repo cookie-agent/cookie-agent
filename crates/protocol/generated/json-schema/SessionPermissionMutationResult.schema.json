@@ -74,6 +74,7 @@
         "bash",
         "delegate",
         "mcp",
+        "plugin",
         "skill"
       ]
     },

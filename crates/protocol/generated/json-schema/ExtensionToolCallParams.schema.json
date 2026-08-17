@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionToolCallParams",
+  "type": "object",
+  "properties": {
+    "arguments": true,
+    "cancellation_token": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "invocation_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "resource": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "tool": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "tool",
+    "session_id",
+    "invocation_id",
+    "arguments",
+    "resource"
+  ]
+}

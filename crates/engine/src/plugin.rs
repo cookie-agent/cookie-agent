@@ -5,12 +5,17 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use cookie_agent_config::PluginConfig;
 use cookie_agent_protocol::{
-    EXTENSION_PROTOCOL_VERSION, ErrorResponse, ExtensionInitializeResult, ExtensionPingParams,
-    ExtensionPingResult, JsonRpcError, JsonRpcId, JsonRpcVersion, Notification, PLUGIN_PING_METHOD,
-    Request, Response, SuccessResponse, extension_initialize_request,
-    extension_shutdown_notification,
+    ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, EXTENSION_PROTOCOL_VERSION,
+    ErrorResponse, ExtensionInitializeResult, ExtensionPingParams, ExtensionPingResult,
+    ExtensionToolCallParams, ExtensionToolCallResult, ExtensionToolDeclaration, JsonRpcError,
+    JsonRpcId, JsonRpcVersion, Notification, PLUGIN_PING_METHOD, PLUGIN_TOOLS_CALL_METHOD,
+    PermissionAction, PreparedApprovalResource, PreparedBindingLifetime,
+    PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
+    PreparedResourceIdentity, Request, Response, SafeDisplayText, Sha256Digest, SuccessResponse,
+    extension_initialize_request, extension_shutdown_notification,
 };
 use futures_util::StreamExt as _;
 use oven_sdk::JsonSchema;
@@ -27,6 +32,11 @@ use tokio::{
     time::Instant,
 };
 use tokio_util::codec::{FramedRead, LinesCodec};
+
+use crate::tool_api::{
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
+    ToolPreparationContext, ToolProvider, ToolSpec,
+};
 
 const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 
@@ -53,13 +63,19 @@ struct PluginRuntime {
     config: PluginConfig,
     status: Mutex<PluginStatus>,
     control: Mutex<Option<mpsc::Sender<Control>>>,
+    declarations: Mutex<Vec<ExtensionToolDeclaration>>,
     forced_failure: Mutex<Option<String>>,
     forced_failure_notify: Notify,
+    ready: Arc<Notify>,
     mcp: Arc<crate::McpRegistry>,
 }
 
 enum Control {
     Ping(oneshot::Sender<Result<(), String>>),
+    ToolCall {
+        params: ExtensionToolCallParams,
+        reply: oneshot::Sender<Result<ExtensionToolCallResult, String>>,
+    },
     Shutdown,
 }
 
@@ -77,12 +93,18 @@ enum PendingRequest {
         deadline: Instant,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    ToolCall {
+        deadline: Instant,
+        reply: oneshot::Sender<Result<ExtensionToolCallResult, String>>,
+    },
 }
 
 impl PendingRequest {
     fn deadline(&self) -> Instant {
         match self {
-            Self::Initialize { deadline } | Self::Ping { deadline, .. } => *deadline,
+            Self::Initialize { deadline }
+            | Self::Ping { deadline, .. }
+            | Self::ToolCall { deadline, .. } => *deadline,
         }
     }
 }
@@ -90,6 +112,7 @@ impl PendingRequest {
 struct PluginRegistryInner {
     plugins: BTreeMap<String, Arc<PluginRuntime>>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+    ready: Arc<Notify>,
 }
 
 #[derive(Clone)]
@@ -110,6 +133,7 @@ impl PluginRegistry {
         plugins: BTreeMap<String, PluginConfig>,
         mcp: Arc<crate::McpRegistry>,
     ) -> Self {
+        let ready = Arc::new(Notify::new());
         let plugins = plugins
             .into_iter()
             .map(|(name, config)| {
@@ -128,8 +152,10 @@ impl PluginRegistry {
                         tools: Vec::new(),
                     }),
                     control: Mutex::new(None),
+                    declarations: Mutex::new(Vec::new()),
                     forced_failure: Mutex::new(None),
                     forced_failure_notify: Notify::new(),
+                    ready: Arc::clone(&ready),
                     mcp: Arc::clone(&mcp),
                 });
                 (name, runtime)
@@ -138,15 +164,27 @@ impl PluginRegistry {
         let inner = Arc::new(PluginRegistryInner {
             plugins,
             tasks: Mutex::new(Vec::new()),
+            ready,
         });
         let weak = Arc::downgrade(&inner);
-        mcp.set_plugin_collision_handler(Arc::new(move |plugin, tool| {
+        mcp.set_plugin_collision_handler(Arc::new(move |plugin, tool, replacement| {
             let Some(inner) = weak.upgrade() else {
                 return;
             };
             let Some(runtime) = inner.plugins.get(plugin) else {
                 return;
             };
+            if let Some(replacement) = replacement {
+                let mut status = runtime
+                    .status
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                status.tools.retain(|name| name != tool);
+                status.reason = Some(format!(
+                    "tool `{tool}` was replaced by later plugin `{replacement}`"
+                ));
+                return;
+            }
             *runtime
                 .forced_failure
                 .lock()
@@ -179,6 +217,27 @@ impl PluginRegistry {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(task);
+        }
+    }
+
+    pub(crate) async fn await_eager_ready(&self) {
+        loop {
+            let notified = self.inner.ready.notified();
+            let ready = self.inner.plugins.values().all(|plugin| {
+                !plugin.config.enabled
+                    || matches!(
+                        plugin
+                            .status
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .state,
+                        PluginState::Connected | PluginState::Failed
+                    )
+            });
+            if ready {
+                return;
+            }
+            notified.await;
         }
     }
 
@@ -217,6 +276,60 @@ impl PluginRegistry {
         receive
             .await
             .map_err(|_| format!("plugin `{name}` stopped during ping"))?
+    }
+
+    fn resolve_tool(
+        &self,
+        tool: &str,
+    ) -> Result<(Arc<PluginRuntime>, ExtensionToolDeclaration), ToolError> {
+        for runtime in self.inner.plugins.values() {
+            if !runtime.mcp.plugin_owns_tool(&runtime.name, tool) {
+                continue;
+            }
+            let declaration = runtime
+                .declarations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .find(|declaration| declaration.name == tool)
+                .cloned();
+            if let Some(declaration) = declaration {
+                return Ok((Arc::clone(runtime), declaration));
+            }
+        }
+        Err(ToolError::execution(format!(
+            "plugin tool `{tool}` is no longer available"
+        )))
+    }
+
+    async fn call_tool(
+        &self,
+        plugin: &str,
+        params: ExtensionToolCallParams,
+    ) -> Result<ExtensionToolCallResult, ToolError> {
+        let (runtime, _) = self.resolve_tool(&params.tool)?;
+        if runtime.name != plugin {
+            return Err(ToolError::operation_changed(
+                "plugin tool ownership changed after approval",
+            ));
+        }
+        let sender = runtime
+            .control
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| ToolError::execution(format!("plugin `{plugin}` is not running")))?;
+        let (reply, receive) = oneshot::channel();
+        sender
+            .send(Control::ToolCall { params, reply })
+            .await
+            .map_err(|_| ToolError::execution(format!("plugin `{plugin}` is not running")))?;
+        receive
+            .await
+            .map_err(|_| {
+                ToolError::execution(format!("plugin `{plugin}` stopped during tool call"))
+            })?
+            .map_err(ToolError::execution)
     }
 
     pub async fn shutdown(&self) {
@@ -269,6 +382,10 @@ impl PluginRuntime {
             .control
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        self.declarations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         self.mcp.release_plugin_tools(&self.name);
         match result {
             Ok(()) => self.set_status(PluginState::Disconnected, None, Vec::new()),
@@ -402,6 +519,26 @@ impl PluginRuntime {
                     Some(Control::Ping(reply)) => {
                         let _ = reply.send(Err(format!("plugin `{}` is not connected", self.name)));
                     }
+                    Some(Control::ToolCall { params, reply }) if connected => {
+                        let id = next_request_id;
+                        next_request_id = next_request_id.checked_add(1)
+                            .ok_or_else(|| "plugin request id space exhausted".to_owned())?;
+                        let request = Request::new(
+                            JsonRpcId::Number(id),
+                            PLUGIN_TOOLS_CALL_METHOD,
+                            Some(serde_json::to_value(params)
+                                .expect("plugin tool call params serialize")),
+                        );
+                        write_json(&mut stdin, &request).await?;
+                        pending.insert(id, PendingRequest::ToolCall {
+                            deadline: Instant::now()
+                                + Duration::from_millis(self.config.tool_timeout_ms),
+                            reply,
+                        });
+                    }
+                    Some(Control::ToolCall { reply, .. }) => {
+                        let _ = reply.send(Err(format!("plugin `{}` is not connected", self.name)));
+                    }
                     Some(Control::Shutdown) | None => {
                         return graceful_shutdown(
                             child,
@@ -422,6 +559,9 @@ impl PluginRuntime {
                             PendingRequest::Initialize { .. } => return Err("handshake timeout".into()),
                             PendingRequest::Ping { reply, .. } => {
                                 let _ = reply.send(Err("plugin ping timed out".into()));
+                            }
+                            PendingRequest::ToolCall { reply, .. } => {
+                                let _ = reply.send(Err("plugin tool call timed out".into()));
                             }
                         }
                     }
@@ -485,12 +625,21 @@ impl PluginRuntime {
                 self.mcp
                     .claim_plugin_tools(&self.name, &names)
                     .map_err(|error| error.to_string())?;
+                *self
+                    .declarations
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = initialize.tools;
                 self.set_status(PluginState::Connected, None, names);
                 *connected = true;
                 Ok(())
             }
             PendingRequest::Ping { reply, .. } => {
                 let result = parse_ping(response);
+                let _ = reply.send(result);
+                Ok(())
+            }
+            PendingRequest::ToolCall { reply, .. } => {
+                let result = parse_tool_call(response);
                 let _ = reply.send(result);
                 Ok(())
             }
@@ -505,6 +654,8 @@ impl PluginRuntime {
         status.state = state;
         status.reason = reason;
         status.tools = tools;
+        drop(status);
+        self.ready.notify_waiters();
     }
 }
 
@@ -573,6 +724,232 @@ fn parse_ping(response: Response) -> Result<(), String> {
         }
         Response::Error(error) => Err(format!("plugin ping rejected: {}", error.error.message)),
     }
+}
+
+fn parse_tool_call(response: Response) -> Result<ExtensionToolCallResult, String> {
+    match response {
+        Response::Success(SuccessResponse { result, .. }) => serde_json::from_value(result)
+            .map_err(|error| format!("malformed plugin tool call result: {error}")),
+        Response::Error(error) => Err(format!(
+            "plugin tool call rejected: {}",
+            error.error.message
+        )),
+    }
+}
+
+#[async_trait]
+impl ToolProvider for PluginRegistry {
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        let mut tools = Vec::new();
+        for runtime in self.inner.plugins.values() {
+            let declarations = runtime
+                .declarations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            tools.extend(
+                declarations
+                    .into_iter()
+                    .filter(|tool| runtime.mcp.plugin_owns_tool(&runtime.name, &tool.name))
+                    .map(|tool| ToolSpec {
+                        name: tool.name,
+                        permission_name: format!("plugin:{}", tool.permission_name),
+                        description: tool.description,
+                        parameters: tool.parameters,
+                    }),
+            );
+        }
+        Ok(tools)
+    }
+
+    fn get_permission_name(_tool_name: &str) -> Result<&'static str, ToolError> {
+        Ok("plugin")
+    }
+
+    fn get_permission_resource(
+        &self,
+        tool_name: &str,
+        arguments: &Value,
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        let (_, declaration) = self.resolve_tool(tool_name)?;
+        let primary = primary_resource(&declaration, arguments)?;
+        Ok((
+            "plugin",
+            Some(permission_resource(
+                &declaration.permission_name,
+                primary.as_deref(),
+            )),
+        ))
+    }
+
+    fn get_display_argument(&self, name: &str, arguments: &Value) -> Result<String, ToolError> {
+        let (_, declaration) = self.resolve_tool(name)?;
+        Ok(primary_resource(&declaration, arguments)?.unwrap_or_else(|| name.to_owned()))
+    }
+
+    async fn prepare(
+        &self,
+        ctx: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        let (runtime, declaration) = self.resolve_tool(&call.name)?;
+        if !call.arguments.is_object() {
+            return Err(ToolError::execution(
+                "plugin tool arguments must be an object",
+            ));
+        }
+        let normalized = call.arguments.clone();
+        let argument_bytes = serde_json::to_vec(&normalized)
+            .map_err(|error| ToolError::execution(error.to_string()))?;
+        let primary = primary_resource(&declaration, &normalized)?;
+        let permission_label =
+            permission_resource(&declaration.permission_name, primary.as_deref());
+        let resource = PreparedApprovalResource {
+            capability: PermissionAction::Plugin,
+            canonical: PreparedResourceIdentity::new(format!(
+                "plugin-tool:{}",
+                Sha256Digest::of_bytes(permission_label.as_bytes())
+            ))
+            .map_err(|error| ToolError::execution(error.to_string()))?,
+            binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
+                permission_label.as_bytes(),
+            ),
+            binding_lifetime: PreparedBindingLifetime::RestartStable,
+            boundary: ApprovalBoundary::Exact,
+            source: ApprovalResourceSource::PrimaryOperation,
+        };
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(&argument_bytes),
+            vec![ApprovalCapability {
+                action: PermissionAction::Plugin,
+                operation: PreparedCapabilityOperation::new(format!(
+                    "{}:call",
+                    declaration.permission_name
+                ))
+                .map_err(|error| ToolError::execution(error.to_string()))?,
+            }],
+            vec![resource],
+            Sha256Digest::of_bytes(ctx.workspace_root.to_string_lossy().as_bytes()),
+        )
+        .map_err(|error| ToolError::execution(error.to_string()))?;
+        PreparedTool::new(
+            operation,
+            normalized,
+            None,
+            Box::new(PluginExecutor {
+                registry: self.clone(),
+                plugin: runtime.name.clone(),
+                declaration,
+                session: ctx.session,
+                call,
+                resource: primary,
+                timeout: Duration::from_millis(runtime.config.tool_timeout_ms),
+            }),
+        )
+    }
+}
+
+struct PluginExecutor {
+    registry: PluginRegistry,
+    plugin: String,
+    declaration: ExtensionToolDeclaration,
+    session: cookie_agent_protocol::SessionId,
+    call: ToolCall,
+    resource: Option<String>,
+    timeout: Duration,
+}
+
+#[async_trait]
+impl PreparedExecutor for PluginExecutor {
+    async fn revalidate(&self) -> Result<(), ToolError> {
+        let (runtime, declaration) = self.registry.resolve_tool(&self.call.name)?;
+        if runtime.name != self.plugin || declaration != self.declaration {
+            return Err(ToolError::operation_changed(
+                "plugin tool changed after approval",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn execute(
+        self: Box<Self>,
+        context: ToolExecutionContext,
+    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
+        self.revalidate().await?;
+        let params = ExtensionToolCallParams {
+            tool: self.call.name.clone(),
+            session_id: self.session,
+            invocation_id: self.call.id,
+            arguments: self.call.arguments.clone(),
+            resource: self.resource.clone(),
+            cancellation_token: Some(self.call.id.to_string()),
+        };
+        let call = self.registry.call_tool(&self.plugin, params);
+        tokio::pin!(call);
+        let result = tokio::select! {
+            result = &mut call => result,
+            () = context.cancellation.cancelled() => {
+                Err(ToolError::execution("plugin tool call cancelled"))
+            }
+            () = tokio::time::sleep(self.timeout) => {
+                Err(ToolError::execution("plugin tool call timed out"))
+            }
+        }?;
+        Ok(cookie_agent_protocol::PersistedToolResult {
+            title: safe_title(&self.call.name),
+            output: result.content.clone(),
+            metadata: serde_json::json!({
+                "plugin": {
+                    "content": result.content,
+                    "is_error": result.is_error,
+                }
+            }),
+            truncation: None,
+            attachments: Vec::new(),
+        })
+    }
+}
+
+fn primary_resource(
+    declaration: &ExtensionToolDeclaration,
+    arguments: &Value,
+) -> Result<Option<String>, ToolError> {
+    let Some(parameter) = &declaration.primary_resource_param else {
+        return Ok(None);
+    };
+    let value = arguments
+        .as_object()
+        .and_then(|arguments| arguments.get(parameter));
+    value
+        .map(|value| match value {
+            Value::String(value) => Ok(value.clone()),
+            value => serde_json::to_string(value)
+                .map_err(|error| ToolError::execution(error.to_string())),
+        })
+        .transpose()
+}
+
+fn permission_resource(permission_name: &str, primary: Option<&str>) -> String {
+    primary.map_or_else(
+        || permission_name.to_owned(),
+        |primary| format!("{permission_name} {primary}"),
+    )
+}
+
+fn safe_title(value: &str) -> SafeDisplayText {
+    let mut title = String::new();
+    for character in value.chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if title.len() + character.len_utf8() > SafeDisplayText::MAX_BYTES {
+            break;
+        }
+        title.push(character);
+    }
+    SafeDisplayText::new(title).expect("sanitized plugin title")
 }
 
 fn validate_tools(initialize: &ExtensionInitializeResult) -> Result<(), String> {
@@ -683,4 +1060,245 @@ async fn terminate_and_reap(child: &mut Box<dyn ChildWrapper>) -> Result<(), Str
         return Err(format!("plugin termination failed: {error}"));
     }
     wait.map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, sync::Arc, time::Duration};
+
+    use cookie_agent_config::PluginConfig;
+    use cookie_agent_protocol::{
+        AgentId, CancellationCapability, Modality, ModelCapabilities, ReplayCapability, RunId,
+        SessionId, ToolCallId,
+    };
+    use tokio_util::sync::CancellationToken;
+
+    use super::{PluginRegistry, PluginState};
+    use crate::{
+        ArtifactStore,
+        events::OutputHub,
+        tool_api::{
+            ProgressSink, ToolCall, ToolExecutionContext, ToolPreparationContext, ToolProvider,
+            TurnAgentContext,
+        },
+    };
+
+    const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
+    const DECLARATION: &str = r#"[{"name":"fixture_echo","description":"Echo","parameters":{"type":"object","properties":{"text":{"type":"string"},"path":{"type":"string"}}},"permission_name":"fixture_echo","primary_resource_param":"path"}]"#;
+
+    struct Harness {
+        directory: tempfile::TempDir,
+        registry: PluginRegistry,
+    }
+
+    async fn harness(extra_env: &[(&str, &str)], timeout_ms: u64) -> Harness {
+        let directory = tempfile::tempdir().expect("plugin test directory");
+        let mcp = Arc::new(
+            crate::McpRegistry::new(BTreeMap::new(), directory.path().join("oauth.json"))
+                .expect("MCP registry"),
+        );
+        let mut env = BTreeMap::from([
+            ("FIXTURE_NAME".into(), "fixture".into()),
+            ("FIXTURE_TOOLS".into(), DECLARATION.into()),
+        ]);
+        env.extend(
+            extra_env
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+        );
+        let registry = PluginRegistry::new(
+            BTreeMap::from([(
+                "fixture".into(),
+                PluginConfig {
+                    command: Some("python3".into()),
+                    args: vec![FIXTURE.into()],
+                    env,
+                    cwd: None,
+                    enabled: true,
+                    interception_timeout_ms: 2_000,
+                    startup_timeout_ms: 10_000,
+                    shutdown_grace_ms: 3_000,
+                    tool_timeout_ms: timeout_ms,
+                },
+            )]),
+            mcp,
+        );
+        registry.start_eager(&tokio::runtime::Handle::current());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if registry
+                    .statuses()
+                    .iter()
+                    .any(|status| status.state == PluginState::Connected)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("plugin connected");
+        Harness {
+            directory,
+            registry,
+        }
+    }
+
+    fn turn_context() -> Arc<TurnAgentContext> {
+        Arc::new(TurnAgentContext {
+            agent: AgentId::new("test").expect("agent ID"),
+            capabilities: ModelCapabilities {
+                input: [Modality::Text].into_iter().collect(),
+                output: [Modality::Text].into_iter().collect(),
+                context_tokens: 8_192,
+                output_tokens: 2_048,
+                tool_calling: true,
+                parallel_tool_calls: true,
+                structured_output: false,
+                reasoning: false,
+                temperature: true,
+                top_p: true,
+                seed: false,
+                native_replay: ReplayCapability::Optional,
+                cancellation: CancellationCapability::LocalOnly,
+                media: BTreeMap::new(),
+            },
+        })
+    }
+
+    async fn prepared(harness: &Harness) -> crate::PreparedTool {
+        harness
+            .registry
+            .prepare(
+                ToolPreparationContext {
+                    session: SessionId::new_v7(),
+                    run: RunId::new_v7(),
+                    cwd: harness.directory.path().into(),
+                    workspace_root: harness.directory.path().into(),
+                    turn_context: turn_context(),
+                },
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "fixture_echo".into(),
+                    arguments: serde_json::json!({"text":"hello", "path":"src/lib.rs"}),
+                },
+            )
+            .await
+            .expect("prepare plugin call")
+    }
+
+    async fn execute(
+        harness: &Harness,
+        prepared: crate::PreparedTool,
+        cancellation: CancellationToken,
+    ) -> Result<cookie_agent_protocol::PersistedToolResult, crate::ToolError> {
+        let call_id = ToolCallId::new_v7();
+        let executor = prepared
+            .executor
+            .lock()
+            .await
+            .take()
+            .expect("prepared executor");
+        let (progress, _receiver) = tokio::sync::mpsc::channel(1);
+        executor
+            .execute(ToolExecutionContext {
+                session: SessionId::new_v7(),
+                run: RunId::new_v7(),
+                progress: ProgressSink::new(progress, OutputHub::new(call_id, 1024)),
+                cancellation,
+                stdin: None,
+                turn_context: turn_context(),
+                artifacts: ArtifactStore::open(harness.directory.path().join("artifacts"))
+                    .expect("artifact store"),
+            })
+            .await
+    }
+
+    #[tokio::test]
+    async fn plugin_executor_maps_success_and_error_results() {
+        let success = harness(&[], 1_000).await;
+        let arguments = serde_json::json!({"text":"hello", "path":"src/lib.rs"});
+        assert_eq!(
+            success
+                .registry
+                .get_display_argument("fixture_echo", &arguments)
+                .expect("display argument"),
+            "src/lib.rs"
+        );
+        assert_eq!(
+            success
+                .registry
+                .get_permission_resource("fixture_echo", &arguments)
+                .expect("permission resource"),
+            ("plugin", Some("fixture_echo src/lib.rs".into()))
+        );
+        let result = execute(&success, prepared(&success).await, CancellationToken::new())
+            .await
+            .expect("plugin result");
+        assert_eq!(result.output, "hello");
+        assert_eq!(result.metadata["plugin"]["is_error"], false);
+        success.registry.shutdown().await;
+
+        let error = harness(&[("FIXTURE_TOOL_ERROR", "1")], 1_000).await;
+        let result = execute(&error, prepared(&error).await, CancellationToken::new())
+            .await
+            .expect("plugin error result");
+        assert_eq!(result.metadata["plugin"]["is_error"], true);
+        error.registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn plugin_executor_maps_rpc_error_timeout_and_cancellation() {
+        let rpc = harness(&[("FIXTURE_TOOL_RPC_ERROR", "1")], 1_000).await;
+        let error = execute(&rpc, prepared(&rpc).await, CancellationToken::new())
+            .await
+            .expect_err("RPC error");
+        assert!(error.to_string().contains("fixture tool RPC error"));
+        rpc.registry.shutdown().await;
+
+        let slow = harness(&[("FIXTURE_TOOL_DELAY_MS", "200")], 20).await;
+        let error = execute(&slow, prepared(&slow).await, CancellationToken::new())
+            .await
+            .expect_err("timeout");
+        assert!(error.to_string().contains("timed out"));
+        slow.registry.shutdown().await;
+
+        let cancelled = harness(&[("FIXTURE_TOOL_DELAY_MS", "200")], 1_000).await;
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let error = execute(&cancelled, prepared(&cancelled).await, cancellation)
+            .await
+            .expect_err("cancellation");
+        assert!(error.to_string().contains("cancelled"));
+        cancelled.registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn crash_during_call_invalidates_prepared_tool_and_listing() {
+        let harness = harness(&[("FIXTURE_CRASH_DURING_TOOL", "1")], 1_000).await;
+        let stale = prepared(&harness).await;
+        let error = execute(&harness, prepared(&harness).await, CancellationToken::new())
+            .await
+            .expect_err("crash");
+        assert!(error.to_string().contains("stopped during tool call"));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while harness.registry.statuses()[0].state != PluginState::Failed {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("failed state");
+        assert!(
+            harness
+                .registry
+                .tools_for_session(&crate::SessionToolContext {
+                    session: SessionId::new_v7(),
+                })
+                .expect("tool listing")
+                .is_empty()
+        );
+        let executor = stale.executor.lock().await.take().expect("stale executor");
+        assert!(executor.revalidate().await.is_err());
+        harness.registry.shutdown().await;
+    }
 }

@@ -2205,15 +2205,21 @@ fn workspace_internal_agent_replaces_builtin_document_and_limits() {
 }
 
 fn synthetic_default_fixture(authored_agent: Option<&str>) -> Fixture {
+    synthetic_default_fixture_with_config(authored_agent, "http://127.0.0.1:9/v1", "")
+}
+
+fn synthetic_default_fixture_with_config(
+    authored_agent: Option<&str>,
+    endpoint: &str,
+    extra_config: &str,
+) -> Fixture {
     let directory = TempDir::new().expect("temp directory");
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
         .expect("private temp directory");
     let project = directory.path().join(".cookie-agent");
     fs::create_dir(&project).expect("project directory");
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
-    fs::write(
-        project.join("config.toml"),
-        r#"
+    let base_config = r#"
 [providers."custom.test"]
 source = "custom"
 endpoint = "http://127.0.0.1:9/v1"
@@ -2229,9 +2235,10 @@ display_name = "A Model"
 capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "unsupported", cancellation = "local_only", media = {} }
 variants = { zeta = { operation = "add" }, alpha = { operation = "add" }, precise = { operation = "add", defaults = { temperature = 0.25 } } }
 default_variant = "precise"
-"#,
-    )
-    .expect("config");
+"#;
+    let mut config_text = base_config.replace("http://127.0.0.1:9/v1", endpoint);
+    config_text.push_str(extra_config);
+    fs::write(project.join("config.toml"), config_text).expect("config");
     fs::set_permissions(
         project.join("config.toml"),
         fs::Permissions::from_mode(0o600),
@@ -3444,6 +3451,138 @@ async fn scripted_server_with_delayed_response(
         requests
     });
     (format!("http://{address}/v1"), task, reached_rx, release)
+}
+
+#[tokio::test]
+async fn lazy_mcp_preemption_rejects_the_plugin_tool_published_to_the_model() {
+    const PLUGIN_FIXTURE: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
+    const MCP_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py");
+    let first = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"plugin-call\",\"type\":\"function\",\"function\":{\"name\":\"fixture_echo_text\",\"arguments\":\"{\\\"plugin_arg\\\":\\\"published-schema\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n".to_owned();
+    let second = "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned();
+    let (endpoint, server, reached, release) =
+        scripted_server_with_delayed_response(vec![first, second], 0).await;
+    let markers = tempfile::tempdir().expect("call markers");
+    let plugin_call = markers.path().join("plugin-call.json");
+    let mcp_call = markers.path().join("mcp-call.json");
+    let declaration = serde_json::json!([{
+        "name": "fixture_echo_text",
+        "description": "Plugin schema",
+        "parameters": {
+            "type": "object",
+            "properties": {"plugin_arg": {"type": "string"}},
+            "required": ["plugin_arg"]
+        },
+        "permission_name": "issue_read",
+        "primary_resource_param": "plugin_arg"
+    }]);
+    let toml_string = |value: &str| toml::Value::String(value.to_owned()).to_string();
+    let extra_config = format!(
+        r#"
+[plugins.collision]
+command = "python3"
+args = [{}]
+env = {{ FIXTURE_NAME = "collision", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {} }}
+
+[mcp.servers.fixture]
+command = "python3"
+args = [{}]
+env = {{ MCP_FIXTURE_CALL_FILE = {} }}
+lazy = true
+"#,
+        toml_string(PLUGIN_FIXTURE),
+        toml_string(&declaration.to_string()),
+        toml_string(&plugin_call.display().to_string()),
+        toml_string(MCP_FIXTURE),
+        toml_string(&mcp_call.display().to_string()),
+    );
+    let agent = "---\ndescription: Plugin preemption test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/a-model\", variant: null }]\npermissions:\n  plugin:\n    \"issue_read *\": allow\n---\nTest plugin ownership pinning.\n";
+    let fixture = synthetic_default_fixture_with_config(Some(agent), &endpoint, &extra_config);
+    let snapshot = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
+    let agent = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.id.as_str() == "primary")
+        .expect("primary agent");
+    let selection = RunSelection {
+        agent: agent.id.clone(),
+        model: agent.resolved_fallback[0].clone(),
+    };
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("plugin-mcp-preemption").expect("run ID"),
+            selection,
+            input: "use the plugin".into(),
+        })
+        .await
+        .expect("run accepted");
+    tokio::time::timeout(std::time::Duration::from_secs(3), reached)
+        .await
+        .expect("model request reached")
+        .expect("model reach signal");
+
+    fixture
+        .engine
+        .reconnect_mcp_server("fixture".into())
+        .await
+        .expect("connect lazy MCP");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if fixture.engine.plugin_statuses().iter().any(|status| {
+                status.plugin == "collision" && status.state == crate::PluginState::Failed
+            }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("plugin preempted");
+    release.notify_one();
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if fixture
+                .engine
+                .get_session(session.session_id)
+                .is_ok_and(|session| session.status != SessionStatus::Running)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("run completed");
+    let requests = server.await.expect("model server");
+    assert_eq!(requests.len(), 2);
+    let projection = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("session projection");
+    let events = projection.log.events();
+    let termination = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination } => Some(termination),
+            _ => None,
+        })
+        .expect("tool termination");
+    assert_eq!(termination.outcome, ToolTerminationOutcome::Failed);
+    let error = termination.error.as_ref().expect("tool error");
+    assert_eq!(error.code.as_str(), "operation_changed");
+    assert!(error.message.as_str().contains("tool definition changed"));
+    assert!(!plugin_call.exists(), "preempted plugin must not execute");
+    assert!(!mcp_call.exists(), "replacement MCP tool must not execute");
+    fixture.engine.shutdown().await;
 }
 
 async fn scripted_repeated_write_server(

@@ -5,16 +5,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-pub const EXTENSION_PROTOCOL_VERSION: &str = "0.0.1";
+pub const EXTENSION_PROTOCOL_VERSION: &str = "0.0.2";
 pub const PLUGIN_INITIALIZE_METHOD: &str = "plugin/initialize";
 pub const PLUGIN_PING_METHOD: &str = "plugin/ping";
 pub const PLUGIN_SHUTDOWN_METHOD: &str = "plugin/shutdown";
+pub const PLUGIN_TOOLS_CALL_METHOD: &str = "plugin/tools/call";
 
-// Reserved for later protocol stages: plugin/tools/call, plugin/resources/list,
-// plugin/resources/read, plugin/events/subscribe, and plugin/events/publish.
+// Reserved for later protocol stages: plugin/resources/list, plugin/resources/read,
+// plugin/events/subscribe, and plugin/events/publish.
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
-#[ts(type = "\"0.0.1\"")]
+#[ts(type = "\"0.0.2\"")]
 pub struct ExtensionProtocolVersion(());
 
 impl ExtensionProtocolVersion {
@@ -59,7 +60,7 @@ impl JsonSchema for ExtensionProtocolVersion {
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"string","const":"0.0.1"})
+        json_schema!({"type":"string","const":"0.0.2"})
     }
 }
 
@@ -68,6 +69,7 @@ impl JsonSchema for ExtensionProtocolVersion {
 pub struct ExtensionEngineCapabilities {
     pub ping: bool,
     pub shutdown: bool,
+    pub tools: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
@@ -119,6 +121,27 @@ pub struct ExtensionPingResult {}
 #[serde(deny_unknown_fields)]
 pub struct ExtensionShutdownParams {}
 
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionToolCallParams {
+    pub tool: String,
+    pub session_id: crate::SessionId,
+    pub invocation_id: crate::ToolCallId,
+    pub arguments: Value,
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<String>", required)]
+    pub resource: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancellation_token: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionToolCallResult {
+    pub content: String,
+    pub is_error: bool,
+}
+
 #[must_use]
 pub fn extension_initialize_request(engine_version: impl Into<String>) -> crate::Request {
     let params = ExtensionInitializeParams {
@@ -127,6 +150,7 @@ pub fn extension_initialize_request(engine_version: impl Into<String>) -> crate:
         capabilities: ExtensionEngineCapabilities {
             ping: true,
             shutdown: true,
+            tools: true,
         },
     };
     crate::Request::new(
@@ -147,8 +171,8 @@ mod tests {
 
     #[test]
     fn protocol_version_rejection_reports_found_value() {
-        let error = serde_json::from_str::<ExtensionProtocolVersion>("\"0.0.2\"")
+        let error = serde_json::from_str::<ExtensionProtocolVersion>("\"0.0.1\"")
             .expect_err("version mismatch");
-        assert!(error.to_string().contains("0.0.2"));
+        assert!(error.to_string().contains("0.0.1"));
     }
 }

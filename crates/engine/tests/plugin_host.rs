@@ -253,7 +253,7 @@ async fn exact_version_mismatch_fails_without_stopping_engine() {
         "fixture",
         &[
             ("FIXTURE_NAME", "fixture".into()),
-            ("FIXTURE_PROTOCOL_VERSION", "0.0.2".into()),
+            ("FIXTURE_PROTOCOL_VERSION", "0.0.1".into()),
         ],
         "",
     );
@@ -263,7 +263,7 @@ async fn exact_version_mismatch_fails_without_stopping_engine() {
         status(&harness.engine, "fixture")
             .reason
             .unwrap()
-            .contains("0.0.2")
+            .contains("0.0.1")
     );
     harness
         .engine
@@ -490,6 +490,31 @@ async fn built_in_tool_collision_fails_only_that_plugin() {
 }
 
 #[tokio::test]
+async fn skill_tool_collision_fails_plugin_without_breaking_composition() {
+    let config = plugin_table(
+        "collision",
+        &[
+            ("FIXTURE_NAME", "collision".into()),
+            ("FIXTURE_TOOLS", tools("skill")),
+        ],
+        "",
+    );
+    let harness = open_engine(&config);
+    wait_for_state(&harness.engine, "collision", PluginState::Failed).await;
+    assert!(
+        status(&harness.engine, "collision")
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("colliding tool name `skill`"))
+    );
+    harness
+        .engine
+        .runtime_snapshot()
+        .expect("engine remains composed");
+    harness.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn eager_mcp_preempts_plugin_claim_regardless_of_startup_order() {
     let config = format!(
         "{}{}",
@@ -506,6 +531,43 @@ async fn eager_mcp_preempts_plugin_claim_regardless_of_startup_order() {
     let harness = open_engine(&config);
     wait_for_mcp_connected(&harness.engine, "fixture").await;
     wait_for_state(&harness.engine, "collision", PluginState::Failed).await;
+    harness.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn later_plugin_registration_wins_only_the_duplicate_tool() {
+    let first_tools = r#"[{"name":"shared_tool","description":"Shared","parameters":{"type":"object","properties":{}},"permission_name":"first_permission","primary_resource_param":null},{"name":"first_only","description":"First only","parameters":{"type":"object","properties":{}},"permission_name":"first_only","primary_resource_param":null}]"#;
+    let config = format!(
+        "{}{}",
+        plugin_table(
+            "first",
+            &[
+                ("FIXTURE_NAME", "first".into()),
+                ("FIXTURE_TOOLS", first_tools.into()),
+            ],
+            "",
+        ),
+        plugin_table(
+            "second",
+            &[
+                ("FIXTURE_NAME", "second".into()),
+                ("FIXTURE_TOOLS", tools("shared_tool")),
+                ("FIXTURE_DELAY_MS", "100".into()),
+            ],
+            "",
+        )
+    );
+    let harness = open_engine(&config);
+    wait_for_state(&harness.engine, "first", PluginState::Connected).await;
+    wait_for_state(&harness.engine, "second", PluginState::Connected).await;
+    assert_eq!(status(&harness.engine, "first").tools, ["first_only"]);
+    assert!(
+        status(&harness.engine, "first")
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("later plugin `second`"))
+    );
+    assert_eq!(status(&harness.engine, "second").tools, ["shared_tool"]);
     harness.engine.shutdown().await;
 }
 

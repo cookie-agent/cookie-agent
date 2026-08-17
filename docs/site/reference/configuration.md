@@ -71,6 +71,7 @@ Only these optional keys are allowed at the top of `config.toml`.
 | `pricing` | table | empty | Optional model-rate overrides for cost estimates |
 | `providers` | table | empty | Provider definitions |
 | `mcp` | table | empty | MCP tool server definitions |
+| `plugins` | table | empty | Executable plugin definitions |
 
 Minimal valid file:
 
@@ -225,6 +226,24 @@ permission and naming behavior.
 | `enabled` | boolean | `true` | Whether the server may connect. |
 | `lazy` | boolean | `false` | Defer connection and tool listing until first named use. |
 | `timeout_ms` | integer | `30000` | Positive timeout for connect, list, and call operations. |
+
+## `[plugins.<name>]`
+
+Plugin definitions are layered by plugin name. A workspace definition replaces the same
+user-level plugin. See the [Plugins guide](../guide/plugins.md) for protocol, permission, and tool
+precedence behavior.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `command` | string | *(required)* | Plugin executable. |
+| `args` | array of strings | empty | Command arguments. |
+| `env` | map of strings | empty | Complete child environment; inherited variables are cleared. |
+| `cwd` | string | *(none)* | Child working directory. |
+| `enabled` | boolean | `true` | Whether the plugin starts with the engine. |
+| `interception_timeout_ms` | integer | `2000` | Positive timeout for interception requests. |
+| `startup_timeout_ms` | integer | `10000` | Positive timeout for initialization. |
+| `shutdown_grace_ms` | integer | `3000` | Positive graceful shutdown period before termination. |
+| `tool_timeout_ms` | integer | `30000` | Positive timeout for each plugin tool call. |
 
 ## `[providers]`
 

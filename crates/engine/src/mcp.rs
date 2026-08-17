@@ -176,7 +176,7 @@ struct RegistryInner {
     eager_ready: Notify,
 }
 
-type PluginCollisionHandler = Arc<dyn Fn(&str, &str) + Send + Sync>;
+type PluginCollisionHandler = Arc<dyn Fn(&str, &str, Option<&str>) + Send + Sync>;
 
 struct OAuthFlowState {
     generation: u64,
@@ -1103,17 +1103,51 @@ impl McpRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let owner = format!("plugin:{plugin}");
         let mut local = HashSet::new();
+        let mut displaced = Vec::new();
         for name in names {
-            if reserved.contains(name) || !local.insert(name) || claimed.contains_key(name) {
+            if reserved.contains(name) || !local.insert(name) {
                 return Err(ToolError::execution(format!(
                     "plugin `{plugin}` declared colliding tool name `{name}`"
                 )));
+            }
+            if let Some(current) = claimed.get(name) {
+                if let Some(previous) = current.strip_prefix("plugin:") {
+                    if previous != plugin {
+                        displaced.push((previous.to_owned(), name.clone()));
+                    }
+                } else {
+                    return Err(ToolError::execution(format!(
+                        "plugin `{plugin}` declared colliding tool name `{name}`"
+                    )));
+                }
             }
         }
         for name in names {
             claimed.insert(name.clone(), owner.clone());
         }
+        drop(claimed);
+        drop(reserved);
+        let collision_handler = self
+            .inner
+            .plugin_collision_handler
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(handler) = collision_handler {
+            for (previous, tool) in displaced {
+                handler(&previous, &tool, Some(plugin));
+            }
+        }
         Ok(())
+    }
+
+    pub(crate) fn plugin_owns_tool(&self, plugin: &str, tool: &str) -> bool {
+        self.inner
+            .claimed_names
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(tool)
+            .is_some_and(|owner| owner == &format!("plugin:{plugin}"))
     }
 
     pub(crate) fn release_plugin_tools(&self, plugin: &str) {
@@ -1141,6 +1175,7 @@ impl McpRegistry {
                 "get_subagent_result".into(),
                 "steer_subagent".into(),
                 "cancel_subagent".into(),
+                "skill".into(),
             ])),
             claimed_names: Mutex::new(HashMap::new()),
             plugin_collision_handler: Mutex::new(None),
@@ -2396,7 +2431,7 @@ impl ServerRuntime {
             .clone();
         if let Some(handler) = collision_handler {
             for (plugin, tool) in preempted_plugins {
-                handler(&plugin, &tool);
+                handler(&plugin, &tool, None);
             }
         }
         *self.tools.lock().unwrap_or_else(|p| p.into_inner()) = converted;

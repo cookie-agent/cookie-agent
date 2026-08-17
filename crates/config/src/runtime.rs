@@ -45,6 +45,8 @@ pub struct PluginConfig {
     pub startup_timeout_ms: u64,
     #[serde(default = "default_plugin_shutdown_grace_ms")]
     pub shutdown_grace_ms: u64,
+    #[serde(default = "default_plugin_tool_timeout_ms")]
+    pub tool_timeout_ms: u64,
 }
 
 impl PluginConfig {
@@ -70,6 +72,8 @@ impl PluginConfig {
             Some("startup_timeout_ms")
         } else if self.shutdown_grace_ms == 0 {
             Some("shutdown_grace_ms")
+        } else if self.tool_timeout_ms == 0 {
+            Some("tool_timeout_ms")
         } else {
             None
         }
@@ -86,6 +90,10 @@ const fn default_plugin_startup_timeout_ms() -> u64 {
 
 const fn default_plugin_shutdown_grace_ms() -> u64 {
     3_000
+}
+
+const fn default_plugin_tool_timeout_ms() -> u64 {
+    30_000
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

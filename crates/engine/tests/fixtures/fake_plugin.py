@@ -37,7 +37,7 @@ for line in sys.stdin:
             "jsonrpc": "2.0",
             "id": request_id,
             "result": {
-                "protocol_version": os.environ.get("FIXTURE_PROTOCOL_VERSION", "0.0.1"),
+                "protocol_version": os.environ.get("FIXTURE_PROTOCOL_VERSION", "0.0.2"),
                 "name": os.environ.get("FIXTURE_NAME", "fixture"),
                 "version": "1.0.0",
                 "capabilities": {"tools": True, "resources": False},
@@ -53,6 +53,32 @@ for line in sys.stdin:
         if os.environ.get("FIXTURE_INVALID_UTF8_AFTER_INITIALIZE") == "1":
             sys.stdout.buffer.write(b"\xff\n")
             sys.stdout.buffer.flush()
+    elif method == "plugin/tools/call":
+        params = message.get("params", {})
+        call_file = os.environ.get("FIXTURE_TOOL_CALL_FILE")
+        if call_file:
+            with open(call_file, "w", encoding="utf-8") as output:
+                json.dump(params, output)
+        time.sleep(int(os.environ.get("FIXTURE_TOOL_DELAY_MS", "0")) / 1000)
+        if os.environ.get("FIXTURE_CRASH_DURING_TOOL") == "1":
+            os._exit(18)
+        if os.environ.get("FIXTURE_TOOL_RPC_ERROR") == "1":
+            send({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32000, "message": "fixture tool RPC error"},
+            })
+            continue
+        arguments = params.get("arguments", {})
+        content = arguments.get("text", json.dumps(arguments, separators=(",", ":")))
+        send({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "content": content,
+                "is_error": os.environ.get("FIXTURE_TOOL_ERROR") == "1",
+            },
+        })
     elif method == "plugin/ping":
         if os.environ.get("FIXTURE_INTERLEAVE_PING") == "1":
             send({"jsonrpc": "2.0", "method": "plugin/future_notice", "params": {}})

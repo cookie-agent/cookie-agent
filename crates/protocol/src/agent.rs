@@ -122,6 +122,7 @@ pub enum PermissionAction {
     Bash,
     Delegate,
     Mcp,
+    Plugin,
     Skill,
 }
 

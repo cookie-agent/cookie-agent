@@ -57,6 +57,8 @@ macro_rules! protocol_roots {
             ExtensionPingParams,
             ExtensionPingResult,
             ExtensionShutdownParams,
+            ExtensionToolCallParams,
+            ExtensionToolCallResult,
             SessionMeta,
             StoredEvent,
             EventPayload,

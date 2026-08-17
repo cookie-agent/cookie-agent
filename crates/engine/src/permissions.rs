@@ -125,7 +125,11 @@ impl PermissionPipeline {
             "bash" => Ok(PermissionAction::Bash),
             "delegate" => Ok(PermissionAction::Delegate),
             "mcp" => Ok(PermissionAction::Mcp),
+            "plugin" => Ok(PermissionAction::Plugin),
             "skill" => Ok(PermissionAction::Skill),
+            other if other.starts_with("plugin:") && other.len() > "plugin:".len() => {
+                Ok(PermissionAction::Plugin)
+            }
             other => Err(PermissionError::UnknownAction(other.into())),
         }
     }
@@ -298,6 +302,30 @@ impl PermissionPipeline {
         let Ok(action) = Self::action_for_permission_name(permission_name) else {
             return false;
         };
+        if let Some(declared_permission) = permission_name.strip_prefix("plugin:") {
+            let overlay_winner = overlay
+                .into_iter()
+                .flat_map(|overlay| overlay.rules.iter())
+                .enumerate()
+                .filter(|(_, rule)| {
+                    rule.action == PermissionAction::Plugin
+                        && plugin_rule_governs(rule.resource.as_str(), declared_permission)
+                })
+                .max_by_key(|(index, rule)| specificity(rule.resource.as_str(), *index));
+            if let Some((_, rule)) = overlay_winner {
+                return rule.effect != PermissionEffect::Deny;
+            }
+            return policy
+                .permissions
+                .iter()
+                .enumerate()
+                .filter(|(_, rule)| {
+                    rule.action == PermissionAction::Plugin
+                        && plugin_rule_governs(rule.resource.as_str(), declared_permission)
+                })
+                .max_by_key(|(index, rule)| specificity(rule.resource.as_str(), *index))
+                .is_some_and(|(_, rule)| rule.effect != PermissionEffect::Deny);
+        }
         let effective_overlay = overlay
             .into_iter()
             .flat_map(|overlay| overlay.rules.iter())
@@ -343,10 +371,14 @@ impl PermissionPipeline {
         let Ok(action) = Self::action_for_permission_name(permission_name) else {
             return false;
         };
+        let plugin_permission = permission_name.strip_prefix("plugin:");
         grants.is_some_and(|grants| {
             grants.rules.iter().any(|grant| {
                 grant.action == action
                     && grant.effect == PermissionEffect::Allow
+                    && plugin_permission.is_none_or(|permission| {
+                        plugin_rule_governs(grant.resource.as_str(), permission)
+                    })
                     && effective_permission_with_overlay(
                         policy,
                         overlay,
@@ -553,6 +585,14 @@ fn permission_pattern_matches(
     } else {
         simple_wildcard_match(pattern, relative_resource)
     }
+}
+
+fn plugin_rule_governs(pattern: &str, permission_name: &str) -> bool {
+    pattern == "*"
+        || simple_wildcard_match(pattern, permission_name)
+        || pattern
+            .strip_prefix(permission_name)
+            .is_some_and(|suffix| suffix.starts_with(' '))
 }
 
 fn expand_workspace_pattern(pattern: &str, workspace: &Path) -> String {
@@ -898,6 +938,7 @@ fn effective_permission_view(
         PermissionAction::Bash,
         PermissionAction::Delegate,
         PermissionAction::Mcp,
+        PermissionAction::Plugin,
         PermissionAction::Skill,
     ]
     .into_iter()
@@ -1924,9 +1965,81 @@ mod tests {
     #[test]
     fn empty_permissions_hide_all_known_actions() {
         let policy = policy(Vec::new());
-        for permission_name in ["read", "write", "bash", "delegate", "mcp"] {
+        for permission_name in ["read", "write", "bash", "delegate", "mcp", "plugin:echo"] {
             assert!(!PermissionPipeline::tool_visible(&policy, permission_name));
         }
+    }
+
+    #[test]
+    fn plugin_visibility_is_scoped_by_declared_permission_and_overlay() {
+        let plugin_policy = policy(vec![rule(
+            "allow-echo",
+            PermissionAction::Plugin,
+            "echo *",
+            PermissionEffect::Allow,
+        )]);
+        assert!(PermissionPipeline::tool_visible(
+            &plugin_policy,
+            "plugin:echo"
+        ));
+        assert!(!PermissionPipeline::tool_visible(
+            &plugin_policy,
+            "plugin:delete"
+        ));
+
+        let overlay = SessionPermissionOverlay {
+            rules: vec![rule(
+                "deny-echo",
+                PermissionAction::Plugin,
+                "echo *",
+                PermissionEffect::Deny,
+            )],
+        };
+        assert!(!PermissionPipeline::tool_visible_with_overlay(
+            &plugin_policy,
+            Some(&overlay),
+            "plugin:echo"
+        ));
+
+        let grant = SessionPermissionOverlay {
+            rules: vec![rule(
+                "grant-delete",
+                PermissionAction::Plugin,
+                "delete *",
+                PermissionEffect::Allow,
+            )],
+        };
+        assert!(PermissionPipeline::tool_visible_with_grants(
+            &plugin_policy,
+            None,
+            Some(&grant),
+            "plugin:delete",
+            std::path::Path::new("/workspace"),
+        ));
+
+        let read_only_grant = SessionPermissionOverlay {
+            rules: vec![rule(
+                "grant-issue-read",
+                PermissionAction::Plugin,
+                "issue_read *",
+                PermissionEffect::Allow,
+            )],
+        };
+        let empty = policy(Vec::new());
+        assert!(PermissionPipeline::tool_visible_with_grants(
+            &empty,
+            None,
+            Some(&read_only_grant),
+            "plugin:issue_read",
+            std::path::Path::new("/workspace"),
+        ));
+        assert!(!PermissionPipeline::tool_visible_with_grants(
+            &empty,
+            None,
+            Some(&read_only_grant),
+            "plugin:issue_delete",
+            std::path::Path::new("/workspace"),
+        ));
     }
 
     #[test]

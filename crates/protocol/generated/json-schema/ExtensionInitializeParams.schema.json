@@ -11,7 +11,7 @@
     },
     "protocol_version": {
       "type": "string",
-      "const": "0.0.1"
+      "const": "0.0.2"
     }
   },
   "additionalProperties": false,
@@ -29,12 +29,16 @@
         },
         "shutdown": {
           "type": "boolean"
+        },
+        "tools": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false,
       "required": [
         "ping",
-        "shutdown"
+        "shutdown",
+        "tools"
       ]
     }
   }

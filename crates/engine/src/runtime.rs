@@ -83,7 +83,7 @@ pub use skills::SkillInvocation;
 
 use crate::tool_api::{
     PreparedExecutorCell, PreparedSerializationKey, PreparedTool, StdinWrite, ToolCall, ToolError,
-    ToolProvider, TurnAgentContext,
+    ToolProvider, ToolSpec, TurnAgentContext,
 };
 
 #[derive(Clone)]
@@ -324,6 +324,16 @@ struct PreparedToolCall {
     permission_name: Option<String>,
     presentation: ToolCallPresentation,
     prepared: Result<PreparedTool, ToolFailure>,
+}
+
+struct PublishedTool {
+    provider: Arc<dyn ToolProvider>,
+    spec: ToolSpec,
+}
+
+struct PublishedToolSet {
+    definitions: Vec<ToolDefinition>,
+    tools: HashMap<String, PublishedTool>,
 }
 
 #[derive(Clone, Debug)]
@@ -845,6 +855,7 @@ impl Engine {
         ));
         let mut tools = options.tools;
         tools.push(mcp.clone());
+        tools.push(plugins.clone());
         let delegation_events = DelegationEventStore::open(Arc::clone(&store))?;
         let grant_journal = GrantInvalidationJournal::open(
             store.project_dir_path().join("grant-invalidations.jsonl"),

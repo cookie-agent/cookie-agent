@@ -46,6 +46,7 @@ impl Engine {
         admission: Option<(InvocationId, u64)>,
     ) -> Result<RunStartResult, EngineError> {
         self.inner.mcp.await_eager_ready().await;
+        self.inner.plugins.await_eager_ready().await;
         if let Some((invocation_id, generation)) = admission
             && !self.admission_generation_live(invocation_id, generation)
         {
@@ -409,7 +410,7 @@ impl Engine {
                 fallback_entry = 0;
             }
             let policy = turn_policy.as_ref().unwrap_or(&active.policy);
-            let tools = self.tool_definitions(active.session, policy)?;
+            let published_tools = self.published_tool_definitions(active.session, policy)?;
             let prompt_events = self.prompt_events(active.session, run_id).await?;
             let attempt = match self
                 .stream_attempt(
@@ -419,7 +420,7 @@ impl Engine {
                     policy,
                     &mut fallback_entry,
                     prompt_events,
-                    tools,
+                    published_tools.definitions.clone(),
                 )
                 .await
             {
@@ -547,12 +548,13 @@ impl Engine {
                     arguments: arguments.clone(),
                 };
                 let prepared_call = self
-                    .prepare_tool_call(
+                    .prepare_published_tool_call(
                         active.session,
                         run_id,
                         call,
                         &active.policy,
                         Arc::clone(&attempt.turn_context),
+                        published_tools.tools.get(tool.as_str()),
                     )
                     .await;
                 let operation_fingerprint = prepared_call.prepared.as_ref().map_or_else(

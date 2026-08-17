@@ -59,6 +59,8 @@ pub enum AllowedTool {
     Bash,
     Delegate,
     Mcp,
+    Plugin,
+    PluginPermission(String),
     Skill(String),
 }
 
@@ -70,13 +72,14 @@ impl AllowedTool {
             Self::Bash => PermissionAction::Bash,
             Self::Delegate => PermissionAction::Delegate,
             Self::Mcp => PermissionAction::Mcp,
+            Self::Plugin | Self::PluginPermission(_) => PermissionAction::Plugin,
             Self::Skill(_) => PermissionAction::Skill,
         }
     }
 
     fn resource(&self) -> &str {
         match self {
-            Self::Skill(name) => name,
+            Self::Skill(name) | Self::PluginPermission(name) => name,
             _ => "*",
         }
     }
@@ -92,11 +95,21 @@ impl std::str::FromStr for AllowedTool {
             "bash" => Ok(Self::Bash),
             "delegate" => Ok(Self::Delegate),
             "mcp" => Ok(Self::Mcp),
+            "plugin" => Ok(Self::Plugin),
             _ => value
                 .strip_prefix("skill:")
                 .filter(|name| !name.is_empty())
                 .map(|name| Self::Skill(name.to_owned()))
-                .ok_or_else(|| "expected read, write, bash, delegate, mcp, or skill:<name>".into()),
+                .or_else(|| {
+                    value
+                        .strip_prefix("plugin:")
+                        .filter(|name| !name.is_empty())
+                        .map(|name| Self::PluginPermission(name.to_owned()))
+                })
+                .ok_or_else(|| {
+                    "expected read, write, bash, delegate, mcp, plugin, plugin:<name>, or skill:<name>"
+                        .into()
+                }),
         }
     }
 }

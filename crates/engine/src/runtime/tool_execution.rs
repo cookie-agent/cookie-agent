@@ -12,8 +12,8 @@ use tokio::sync::mpsc;
 
 use super::artifacts::MAX_ATTACHMENT_BYTES;
 use super::{
-    ActiveRun, ApprovalToolInput, Engine, EngineError, Event, PreparedToolCall,
-    ToolCallFailureCode, ToolFailure,
+    ActiveRun, ApprovalToolInput, Engine, EngineError, Event, PreparedToolCall, PublishedTool,
+    PublishedToolSet, ToolCallFailureCode, ToolFailure,
     approval_flow::approval_expiry,
     approval_projection::denied_tool_failure,
     artifacts::{ArtifactStore, OutputCapture},
@@ -38,6 +38,39 @@ impl Engine {
         call: ToolCall,
         policy: &FrozenRunPolicy,
         turn_context: Arc<crate::TurnAgentContext>,
+    ) -> PreparedToolCall {
+        self.prepare_tool_call_with_publication(session_id, run, call, policy, turn_context, None)
+            .await
+    }
+
+    pub(super) async fn prepare_published_tool_call(
+        &self,
+        session_id: SessionId,
+        run: RunId,
+        call: ToolCall,
+        policy: &FrozenRunPolicy,
+        turn_context: Arc<crate::TurnAgentContext>,
+        published: Option<&PublishedTool>,
+    ) -> PreparedToolCall {
+        self.prepare_tool_call_with_publication(
+            session_id,
+            run,
+            call,
+            policy,
+            turn_context,
+            Some(published),
+        )
+        .await
+    }
+
+    async fn prepare_tool_call_with_publication(
+        &self,
+        session_id: SessionId,
+        run: RunId,
+        call: ToolCall,
+        policy: &FrozenRunPolicy,
+        turn_context: Arc<crate::TurnAgentContext>,
+        published: Option<Option<&PublishedTool>>,
     ) -> PreparedToolCall {
         let fallback_presentation = tool_title_only(&call.name);
         let session = match self.inner.store.get(session_id) {
@@ -76,7 +109,7 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        let mut provider = providers.iter().find_map(|provider| {
+        let current = providers.iter().find_map(|provider| {
             provider
                 .tools_for_session(&SessionToolContext {
                     session: session_id,
@@ -84,9 +117,50 @@ impl Engine {
                 .ok()?
                 .into_iter()
                 .find(|tool| tool.name == call.name)
-                .map(|tool| (provider.clone(), tool.permission_name))
+                .map(|tool| (provider.clone(), tool))
         });
-        if provider.is_none() && (call.name != "skill" || self.is_direct_skill_call(call.id)) {
+        let mut provider = match published {
+            Some(Some(published))
+                if current.as_ref().is_some_and(|(provider, spec)| {
+                    Arc::ptr_eq(provider, &published.provider) && spec == &published.spec
+                }) =>
+            {
+                Some((
+                    published.provider.clone(),
+                    published.spec.permission_name.clone(),
+                ))
+            }
+            Some(Some(_)) => {
+                return PreparedToolCall {
+                    prepared: Err(ToolFailure {
+                        code: ToolCallFailureCode::OperationChanged,
+                        message: format!(
+                            "tool definition changed after `{}` was published to the model",
+                            call.name
+                        ),
+                    }),
+                    call,
+                    permission_name: None,
+                    presentation: fallback_presentation,
+                };
+            }
+            Some(None) => {
+                return PreparedToolCall {
+                    prepared: Err(ToolFailure {
+                        code: ToolCallFailureCode::ExecutionFailed,
+                        message: format!("tool `{}` was not published to the model", call.name),
+                    }),
+                    call,
+                    permission_name: None,
+                    presentation: fallback_presentation,
+                };
+            }
+            None => current.map(|(provider, spec)| (provider, spec.permission_name)),
+        };
+        if published.is_none()
+            && provider.is_none()
+            && (call.name != "skill" || self.is_direct_skill_call(call.id))
+        {
             provider = providers.iter().find_map(|candidate| {
                 candidate
                     .permission_for_unlisted_tool(&call.name)
@@ -392,6 +466,16 @@ impl Engine {
         session: SessionId,
         policy: &FrozenRunPolicy,
     ) -> Result<Vec<ToolDefinition>, EngineError> {
+        Ok(self
+            .published_tool_definitions(session, policy)?
+            .definitions)
+    }
+
+    pub(super) fn published_tool_definitions(
+        &self,
+        session: SessionId,
+        policy: &FrozenRunPolicy,
+    ) -> Result<PublishedToolSet, EngineError> {
         let session_projection = self.inner.store.get(session)?;
         let grants = self.skill_grants_for_session(session);
         let depth = session_depth(&session_projection.meta.origin);
@@ -410,6 +494,7 @@ impl Engine {
         });
         let mut names = HashSet::new();
         let mut output = Vec::new();
+        let mut published = std::collections::HashMap::new();
         let providers = self
             .inner
             .tools
@@ -438,18 +523,32 @@ impl Engine {
                             tool.name
                         )));
                     }
-                    let schema = JsonSchema::new(tool.parameters).map_err(|error| {
+                    let schema = JsonSchema::new(tool.parameters.clone()).map_err(|error| {
                         EngineError::MissingTool(format!(
                             "tool `{}` has invalid JSON Schema: {error}",
                             tool.name
                         ))
                     })?;
-                    output.push(ToolDefinition::new(tool.name, tool.description, schema));
+                    output.push(ToolDefinition::new(
+                        tool.name.clone(),
+                        tool.description.clone(),
+                        schema,
+                    ));
+                    published.insert(
+                        tool.name.clone(),
+                        PublishedTool {
+                            provider: provider.clone(),
+                            spec: tool,
+                        },
+                    );
                 }
             }
         }
         output.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(output)
+        Ok(PublishedToolSet {
+            definitions: output,
+            tools: published,
+        })
     }
 }
 
@@ -515,7 +614,9 @@ pub(crate) fn apply_permission_resource(
 ) -> Result<PreparedTool, ToolError> {
     let (permission_name, resource) =
         provider.get_permission_resource(name, prepared.normalized_arguments())?;
-    if permission_name != expected_permission_name {
+    if permission_name != expected_permission_name
+        && !(permission_name == "plugin" && expected_permission_name.starts_with("plugin:"))
+    {
         return Err(ToolError::execution(
             "tool permission metadata changed between discovery and preparation",
         ));

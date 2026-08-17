@@ -2,7 +2,8 @@
   "methods": {
     "PLUGIN_INITIALIZE_METHOD": "plugin/initialize",
     "PLUGIN_PING_METHOD": "plugin/ping",
-    "PLUGIN_SHUTDOWN_METHOD": "plugin/shutdown"
+    "PLUGIN_SHUTDOWN_METHOD": "plugin/shutdown",
+    "PLUGIN_TOOLS_CALL_METHOD": "plugin/tools/call"
   },
   "schemas": {
     "ExtensionInitializeParams.schema.json": {
@@ -12,12 +13,12 @@
       "properties": {
         "capabilities": {"$ref":"#/$defs/ExtensionEngineCapabilities"},
         "engine_version": {"type":"string"},
-        "protocol_version": {"type":"string","const":"0.0.1"}
+        "protocol_version": {"type":"string","const":"0.0.2"}
       },
       "additionalProperties": false,
       "required": ["protocol_version","engine_version","capabilities"],
       "$defs": {
-        "ExtensionEngineCapabilities": {"type":"object","properties":{"ping":{"type":"boolean"},"shutdown":{"type":"boolean"}},"additionalProperties":false,"required":["ping","shutdown"]}
+        "ExtensionEngineCapabilities": {"type":"object","properties":{"ping":{"type":"boolean"},"shutdown":{"type":"boolean"},"tools":{"type":"boolean"}},"additionalProperties":false,"required":["ping","shutdown","tools"]}
       }
     },
     "ExtensionInitializeResult.schema.json": {
@@ -27,7 +28,7 @@
       "properties": {
         "capabilities": {"$ref":"#/$defs/ExtensionPluginCapabilities"},
         "name": {"type":"string"},
-        "protocol_version": {"type":"string","const":"0.0.1"},
+        "protocol_version": {"type":"string","const":"0.0.2"},
         "tools": {"type":"array","items":{"$ref":"#/$defs/ExtensionToolDeclaration"}},
         "version": {"type":"string"}
       },
@@ -40,6 +41,8 @@
     },
     "ExtensionPingParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionPingParams","type":"object","additionalProperties":false},
     "ExtensionPingResult.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionPingResult","type":"object","additionalProperties":false},
-    "ExtensionShutdownParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionShutdownParams","type":"object","additionalProperties":false}
+    "ExtensionShutdownParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionShutdownParams","type":"object","additionalProperties":false},
+    "ExtensionToolCallParams.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionToolCallParams","type":"object","properties":{"arguments":true,"cancellation_token":{"type":["string","null"]},"invocation_id":{"type":"string","format":"uuid"},"resource":{"type":["string","null"]},"session_id":{"type":"string","format":"uuid"},"tool":{"type":"string"}},"additionalProperties":false,"required":["tool","session_id","invocation_id","arguments","resource"]},
+    "ExtensionToolCallResult.schema.json": {"$schema":"https://json-schema.org/draft/2020-12/schema","title":"ExtensionToolCallResult","type":"object","properties":{"content":{"type":"string"},"is_error":{"type":"boolean"}},"additionalProperties":false,"required":["content","is_error"]}
   }
 }

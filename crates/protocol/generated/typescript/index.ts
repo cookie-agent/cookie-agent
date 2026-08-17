@@ -83,6 +83,8 @@ export * from "./ExtensionPingResult.js";
 export * from "./ExtensionPluginCapabilities.js";
 export * from "./ExtensionProtocolVersion.js";
 export * from "./ExtensionShutdownParams.js";
+export * from "./ExtensionToolCallParams.js";
+export * from "./ExtensionToolCallResult.js";
 export * from "./ExtensionToolDeclaration.js";
 export * from "./FrozenCredentialBinding.js";
 export * from "./FrozenCredentialSource.js";

@@ -28,6 +28,7 @@ fn plugin_timeouts_must_be_positive() {
         "interception_timeout_ms = 0",
         "startup_timeout_ms = 0",
         "shutdown_grace_ms = 0",
+        "tool_timeout_ms = 0",
     ] {
         let directory = root(&format!(
             "[plugins.demo]\ncommand = \"plugin\"\n{timeout}\n"
