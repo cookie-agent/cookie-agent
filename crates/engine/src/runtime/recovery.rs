@@ -1,8 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use cookie_agent_protocol::{
     ApprovalDecisionSource, ApprovalFinalDecision, ApprovalFinalOutcome, ApprovalReasonCode,
-    ApprovalStatus, SafeToolError, SessionId, SessionOrigin, SessionStatus, ToolCallTermination,
+    ApprovalStatus, SafeToolError, SessionId, SessionStatus, ToolCallTermination,
     ToolTerminationOutcome,
 };
 
@@ -11,7 +11,7 @@ use super::{
     approval_projection::{approval_records, approval_run_id},
     delegation::{
         cancelled_delegate_result, cancelled_delegate_result_with_reason,
-        completed_delegate_result, delegate_failure_result, is_journal_append_failure,
+        completed_delegate_result, delegate_failure_result, is_delegation_event_append_failure,
     },
     helpers::{invocation_id, safe_code, safe_error},
 };
@@ -146,21 +146,94 @@ impl Engine {
                 )?;
             }
         }
-        let mut journal_entries = self.inner.journal.entries();
+        let mut delegation_entries = self.inner.delegation_events.entries();
         let mut latest_invocations = std::collections::HashMap::new();
-        for entry in &journal_entries {
+        for entry in &delegation_entries {
             latest_invocations.insert(
                 entry.reservation.child_session_id,
                 entry.reservation.invocation_id,
             );
         }
-        for entry in &mut journal_entries {
+        for entry in &mut delegation_entries {
+            if self
+                .inner
+                .store
+                .get(entry.reservation.child_session_id)
+                .is_err()
+            {
+                if entry.terminal_status.is_none() {
+                    let reason = safe_error("child_missing: child session was never created");
+                    self.inner.delegation_events.mark_finished_with_reason(
+                        entry.reservation.invocation_id,
+                        SessionStatus::Failed,
+                        Some(reason.clone()),
+                    )?;
+                    entry.terminal_status = Some(SessionStatus::Failed);
+                    entry.terminal_reason = Some(reason);
+                }
+                let parent = self.inner.store.get(entry.reservation.parent_session_id)?;
+                let pending = parent
+                    .runs
+                    .get(&entry.reservation.parent_run_id)
+                    .and_then(|run| {
+                        run.pending_calls
+                            .get(&entry.reservation.parent_tool_call_id)
+                    })
+                    .is_some_and(|tool| tool == "delegate_subagent");
+                if pending {
+                    self.terminate_tool_direct(
+                        entry.reservation.parent_session_id,
+                        entry.reservation.parent_run_id,
+                        entry.reservation.parent_tool_call_id,
+                        ToolTerminationOutcome::Failed,
+                        Some(delegate_failure_result(
+                            Some(entry.reservation.child_session_id),
+                            "delegate child session was never created",
+                        )),
+                        Some(SafeToolError {
+                            code: safe_code("child_missing"),
+                            message: safe_error("delegate child session was never created"),
+                        }),
+                    )?;
+                }
+                continue;
+            }
             if self
                 .inner
                 .store
                 .get(entry.reservation.child_session_id)
                 .is_ok()
             {
+                if entry.terminal_status.is_none() {
+                    let child = self.inner.store.get(entry.reservation.child_session_id)?;
+                    let recovered_status = entry
+                        .child_run_id
+                        .and_then(|run_id| child.runs.get(&run_id).map(|run| run.status))
+                        .or_else(|| {
+                            matches!(
+                                child.status,
+                                SessionStatus::Completed
+                                    | SessionStatus::Failed
+                                    | SessionStatus::Cancelled
+                                    | SessionStatus::Interrupted
+                            )
+                            .then_some(child.status)
+                        });
+                    if let Some(status) = recovered_status.filter(|status| {
+                        matches!(
+                            status,
+                            SessionStatus::Completed
+                                | SessionStatus::Failed
+                                | SessionStatus::Cancelled
+                                | SessionStatus::Interrupted
+                        )
+                    }) {
+                        self.inner
+                            .delegation_events
+                            .mark_finished(entry.reservation.invocation_id, status)?;
+                        entry.terminal_status = Some(status);
+                    }
+                }
                 if entry.request.resume_session_id.is_none() {
                     self.ensure_delegated_context_seed_blocking(
                         entry.reservation.child_session_id,
@@ -207,7 +280,7 @@ impl Engine {
                         && latest_invocations.get(&entry.reservation.child_session_id)
                             == Some(&entry.reservation.invocation_id)
                     {
-                        self.inner.journal.mark_terminated(
+                        self.inner.delegation_events.mark_finished(
                             entry.reservation.invocation_id,
                             SessionStatus::Cancelled,
                         )?;
@@ -234,43 +307,14 @@ impl Engine {
                     entry.reservation.parent_tool_call_id,
                     entry.reservation.child_session_id,
                 )?;
-                if !entry.linked {
+                if !entry.started {
                     self.inner
-                        .journal
-                        .mark_linked(entry.reservation.invocation_id)?;
+                        .delegation_events
+                        .mark_started(entry.reservation.invocation_id)?;
                 }
             }
         }
-        let known_invocations: HashSet<_> = journal_entries
-            .iter()
-            .map(|entry| entry.reservation.invocation_id)
-            .collect();
-        for session in self.inner.store.all() {
-            if let SessionOrigin::Delegated { invocation_id, .. } = session.meta.origin
-                && !known_invocations.contains(&invocation_id)
-            {
-                // A valid delegated directory without a durable reservation is
-                // foreign/orphaned. Preserve it for inspection but never attach it.
-                if !session.runs.is_empty() {
-                    for run in session
-                        .runs
-                        .values()
-                        .filter(|run| run.status != SessionStatus::Interrupted)
-                    {
-                        self.append_blocking(
-                            session.meta.session_id,
-                            Some(run.id),
-                            Event::RunInterrupted {
-                                reason: Some(safe_error(
-                                    "orphaned delegated session without journal reservation",
-                                )),
-                            },
-                        )?;
-                    }
-                }
-            }
-        }
-        self.rebuild_delegation_registry(&journal_entries)?;
+        self.rebuild_delegation_registry(&delegation_entries)?;
         Ok(())
     }
 
@@ -327,7 +371,7 @@ impl Engine {
                         continue;
                     }
                     let invocation = invocation_id(session_id, run.id, *call);
-                    let Some(entry) = self.journal_get(invocation).await? else {
+                    let Some(entry) = self.delegation_event_get(invocation).await? else {
                         self.terminate_tool_direct(
                             session_id,
                             run.id,
@@ -368,6 +412,13 @@ impl Engine {
                     let child = match self.inner.store.get(child_id) {
                         Ok(child) => child,
                         Err(_) => {
+                            self.inner.delegation_events.mark_finished_with_reason(
+                                invocation,
+                                SessionStatus::Failed,
+                                Some(safe_error(
+                                    "child_missing: delegate child session is missing",
+                                )),
+                            )?;
                             self.terminate_tool_direct(
                                 session_id,
                                 run.id,
@@ -386,6 +437,9 @@ impl Engine {
                         }
                     };
                     if child.status == SessionStatus::Completed {
+                        self.inner
+                            .delegation_events
+                            .mark_finished(invocation, SessionStatus::Completed)?;
                         let result = completed_delegate_result(&child, entry.child_run_id);
                         self.terminate_tool_direct(
                             session_id,
@@ -396,6 +450,9 @@ impl Engine {
                             None,
                         )?;
                     } else if child.status == SessionStatus::Cancelled {
+                        self.inner
+                            .delegation_events
+                            .mark_finished(invocation, SessionStatus::Cancelled)?;
                         let result = cancelled_delegate_result(child_id, None);
                         self.terminate_tool_direct(
                             session_id,
@@ -422,14 +479,14 @@ impl Engine {
                                     .lock()
                                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                                     .remove(&recovery_key);
-                                if is_journal_append_failure(&error) {
+                                if is_delegation_event_append_failure(&error) {
                                     let _ = self.resolve_delegate_failure_if_pending_direct(
                                         session_id,
                                         run.id,
                                         *call,
                                         delegate_failure_result(
                                             Some(child_id),
-                                            "delegate journal run confirmation failed",
+                                            "delegate run event confirmation failed",
                                         ),
                                     );
                                 }
@@ -465,6 +522,9 @@ impl Engine {
                                 .remove(&(session_id, parent_run_id, tool_call_id));
                         });
                     } else {
+                        self.inner
+                            .delegation_events
+                            .mark_finished(invocation, SessionStatus::Interrupted)?;
                         self.terminate_tool_direct(
                             session_id,
                             run.id,

@@ -3,9 +3,8 @@
 cookie agent is a subagent-first coding harness built as a Rust workspace of nine
 crates. A local daemon owns provider connections, sessions, model execution,
 permissions, and persistence; a terminal UI communicates with it over a versioned
-JSON-RPC WebSocket protocol. Writers emit only the current schema for each
-durable surface. Event logs reopen schemas 15-18 and delegation journals reopen
-schemas 11-14; other surfaces remain current-only.
+JSON-RPC WebSocket protocol. Session history is a versionless, best-effort-read
+event log; other persisted and wire surfaces remain current-only.
 
 ## Process model
 
@@ -197,9 +196,10 @@ session and drive the run loop:
 - **Approvals.** A stateless approval evaluator (the `approval` internal agent)
   classifies asks in `auto_approve` mode. `ask` skips the classifier, and `yolo`
   approves immediately. A doom-loop guard rejects repeated identical approvals.
-- **Delegation.** The `delegate_subagent` tool reserves a child session under the parent,
-  journals the invocation, and runs the target subagent with an inherited model
-  suffix. Depth and concurrency limits come from `delegation` configuration.
+- **Delegation.** The `delegate_subagent` tool reserves a child session by
+  appending lifecycle events to the parent session, then runs the target
+  subagent with an inherited model suffix. Depth and concurrency limits come
+  from `delegation` configuration.
 - **Internal agents.** The approval, context-compaction, and session-title
   agents run with no tools and a strict text-only output contract, normally on
   the parent run's model via `${parent_model}`. See
@@ -225,20 +225,22 @@ canonical working directory:
     cwd                            # canonical project path
     sessions/<session-id>/         # versionless events.jsonl + rebuildable meta.json cache
     artifacts/                     # content-addressed tool output
-    delegations.jsonl              # delegation journal (writes 15; reads 11-15)
     grant-invalidations.jsonl      # tree-grant invalidation journal
     runtime-revisions-v8.jsonl     # runtime revision index
 ```
 
-Schema 12 is readable for unambiguous records. Its unshipped intermediate
-encoding used `delegation_run_started` for both a newly started resumed run and
-an attachment to an existing run; schema-12 resume/start pairs are rejected
-because their meaning cannot be recovered soundly. The error directs operators
-to move the affected project's `delegations.jsonl` aside and restart. This
-discards in-flight delegation recovery state AND historical child resumability:
-child session event logs remain intact, but without the journal those sessions
-no longer satisfy the journal-backed ownership checks required for
-`resume_session_id`.
+Delegation reservations, child publication, run start/attachment, and terminal
+state use the parent session's `events.jsonl`. On open, the engine projects
+these records while it opens session logs and recovers nonterminal delegations.
+The reservation fingerprint is recomputed from the replayed request, child
+agent snapshot, selected model suffix, and staged-skill provenance; a mismatch
+rejects recovery. A delegation event skipped by best-effort reading is absent
+from the recovery projection and appears in the session's skipped-event
+diagnostics, while other delegations continue to load.
+
+Legacy project-level `delegations.jsonl` files are ignored. In-flight
+delegations that existed only in that pre-release journal are not recovered;
+their child directories remain ordinary sessions available for inspection.
 
 Project model-snapshot manifests live inside the workspace at
 `.cookie-agent/model-snapshots/` and are the only per-project engine state the

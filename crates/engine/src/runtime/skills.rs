@@ -515,7 +515,7 @@ impl Engine {
         Ok(prepared_skill_invocation(&skill, args))
     }
 
-    pub(crate) fn stage_child_skill_from_journal(
+    pub(crate) fn stage_child_skill_from_event(
         &self,
         session: SessionId,
         payload: &cookie_agent_protocol::StagedSkillPayload,

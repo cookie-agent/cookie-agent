@@ -116,9 +116,9 @@ impl Engine {
                 })
                 .collect()
         };
-        let journal = self.inner.journal.clone();
+        let delegation_events = self.inner.delegation_events.clone();
         let children = self
-            .spawn_admission_blocking(move || Ok::<_, EngineError>(journal.entries()))
+            .spawn_admission_blocking(move || Ok::<_, EngineError>(delegation_events.entries()))
             .await?;
         let mut pending = vec![run_id];
         pending.extend(inflight_runs);

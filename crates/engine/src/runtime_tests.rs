@@ -7432,9 +7432,9 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
     assert!(!fixture.engine.inner.store.is_resident(fork.session_id));
     assert!(!fixture.engine.actor_resident_for_test(fork.session_id));
     assert!(fixture.engine.inner.store.is_resident(parent.session_id));
-    let entries = fixture.engine.inner.journal.entries();
+    let entries = fixture.engine.inner.delegation_events.entries();
     assert_eq!(entries.len(), 1);
-    assert!(entries[0].linked);
+    assert!(entries[0].started);
     assert!(entries[0].child_run_id.is_some());
     fixture.engine.shutdown().await;
 
@@ -7453,7 +7453,144 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
             .status,
         cookie_agent_protocol::SessionStatus::Completed
     );
-    assert_eq!(reopened.inner.journal.entries().len(), 1);
+    assert_eq!(reopened.inner.delegation_events.entries().len(), 1);
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool() {
+    fn copy_tree(source: &std::path::Path, target: &std::path::Path) {
+        fs::create_dir_all(target).expect("snapshot directory");
+        for entry in fs::read_dir(source).expect("snapshot source") {
+            let entry = entry.expect("snapshot entry");
+            let destination = target.join(entry.file_name());
+            if entry.file_type().expect("snapshot type").is_dir() {
+                copy_tree(&entry.path(), &destination);
+            } else {
+                fs::copy(entry.path(), destination).expect("snapshot file");
+            }
+        }
+    }
+
+    let (endpoint, responses, server) = scripted_channel_server(1).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_body(
+                "missing-child-delegate",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Crash before child creation",
+                    "prompt":"child must never be created"
+                }),
+            ),
+        ))
+        .expect("parent delegation response");
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let (reserved, release) = fixture.engine.install_delegation_reservation_hook();
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("missing-child-recovery").expect("run ID"),
+            selection,
+            input: "delegate before crashing".into(),
+        })
+        .await
+        .expect("parent run");
+    reserved
+        .await
+        .expect("durable reservation before child creation");
+    let entry = fixture
+        .engine
+        .inner
+        .delegation_events
+        .entries()
+        .last()
+        .expect("reserved delegation")
+        .clone();
+    assert!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(entry.reservation.child_session_id)
+            .is_err()
+    );
+
+    let snapshot = tempfile::tempdir().expect("crash snapshot");
+    copy_tree(
+        &fixture._directory.path().join("data"),
+        &snapshot.path().join("data"),
+    );
+    let cwd = fixture._directory.path().to_owned();
+    let config = fixture.config.clone();
+    let manager = Arc::clone(&fixture.manager);
+    release.notify_one();
+    fixture.engine.shutdown().await;
+    drop(fixture.engine);
+    server.await.expect("missing child server");
+
+    let reopened = Engine::open(EngineOptions {
+        data_dir: snapshot.path().join("data"),
+        cwd,
+        config,
+        model_manager: manager,
+        tools: Vec::new(),
+    })
+    .expect("reopen missing-child reservation window");
+    reopened
+        .resume(parent.session_id)
+        .await
+        .expect("resume terminalized parent");
+    let recovered = reopened
+        .inner
+        .delegation_events
+        .get(entry.reservation.invocation_id)
+        .expect("recovered delegation");
+    assert_eq!(recovered.terminal_status, Some(SessionStatus::Failed));
+    assert!(
+        recovered
+            .terminal_reason
+            .as_ref()
+            .is_some_and(|reason| reason.as_str().contains("child_missing"))
+    );
+    let parent_events = reopened
+        .inner
+        .store
+        .get(parent.session_id)
+        .expect("recovered parent")
+        .log
+        .events();
+    assert!(parent_events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::DelegationFinished {
+            invocation_id,
+            status: SessionStatus::Failed,
+            reason: Some(reason),
+            ..
+        } if *invocation_id == entry.reservation.invocation_id
+            && reason.as_str().contains("child_missing")
+    )));
+    assert!(parent_events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolCallTerminated { termination }
+            if termination.tool_call_id == entry.reservation.parent_tool_call_id
+                && termination.error.as_ref().is_some_and(|error| {
+                    error.code.as_str() == "child_missing"
+                        && error.message.as_str().contains("never created")
+                })
+    )));
     reopened.shutdown().await;
 }
 
@@ -7498,11 +7635,11 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
     let entry = fixture
         .engine
         .inner
-        .journal
+        .delegation_events
         .entries()
         .into_iter()
         .find(|entry| entry.request.staged_skill.is_some())
-        .expect("staged journal entry");
+        .expect("staged reservation event");
     let child_id = entry.reservation.child_session_id;
     let before = fixture
         .engine
@@ -7575,11 +7712,11 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
             .get(parent.session_id)
             .expect("timed out parent");
         panic!(
-            "recovered child completion timed out: child_status={:?} child_events={:#?} parent_status={:?} journal={:#?}",
+            "recovered child completion timed out: child_status={:?} child_events={:#?} parent_status={:?} delegation_events={:#?}",
             child.status,
             child.log.events(),
             parent_projection.status,
-            reopened.inner.journal.entries()
+            reopened.inner.delegation_events.entries()
         );
     }
     let grants = reopened
@@ -8222,9 +8359,9 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
             .count(),
         2
     );
-    let entries = fixture.engine.inner.journal.entries();
+    let entries = fixture.engine.inner.delegation_events.entries();
     assert_eq!(entries.len(), 2);
-    assert!(entries.iter().all(|entry| entry.linked));
+    assert!(entries.iter().all(|entry| entry.started));
     assert!(entries.iter().all(|entry| entry.child_run_id.is_some()));
     let old_parent_run_id = entries[0].reservation.parent_run_id;
     let resumed_child_run_id = entries[1].child_run_id.expect("resumed child run ID");
@@ -9117,7 +9254,7 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
     let resumed_entries = fixture
         .engine
         .inner
-        .journal
+        .delegation_events
         .entries()
         .into_iter()
         .filter(|entry| entry.reservation.child_session_id == resumed_session_id)
@@ -9362,7 +9499,7 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
         fixture
             .engine
             .inner
-            .journal
+            .delegation_events
             .entries()
             .last()
             .and_then(|entry| entry.terminal_status),
@@ -9385,7 +9522,7 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
 }
 
 #[tokio::test]
-async fn inherited_context_is_text_only_journaled_and_deterministic_after_restart() {
+async fn inherited_context_is_event_backed_and_deterministic_after_restart() {
     let (endpoint, responses, server) = scripted_channel_server(5).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
@@ -9502,16 +9639,16 @@ async fn inherited_context_is_text_only_journaled_and_deterministic_after_restar
     assert!(seed_text.contains("parent assistant context"));
     assert!(!seed_text.contains("executed"));
     assert!(seed.iter().map(|turn| turn.text.len()).sum::<usize>() <= 64 * 1024);
-    let journal_entry = fixture
+    let reservation_entry = fixture
         .engine
         .inner
-        .journal
+        .delegation_events
         .entries()
         .into_iter()
         .find(|entry| entry.reservation.child_session_id == child_session_id)
-        .expect("context journal entry");
-    assert!(journal_entry.request.inherit_context);
-    assert_eq!(journal_entry.request.seeded_context, seed);
+        .expect("context reservation event");
+    assert!(reservation_entry.request.inherit_context);
+    assert_eq!(reservation_entry.request.seeded_context, seed);
     let before_restart = serde_json::to_value(
         fixture
             .engine
@@ -9877,10 +10014,10 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
     let resumed_entry = fixture
         .engine
         .inner
-        .journal
+        .delegation_events
         .entries()
         .last()
-        .expect("running resume journal entry")
+        .expect("running resume reservation event")
         .clone();
     let matching_redelivery = DelegateInvocation {
         parent_session_id: resumed_entry.reservation.parent_session_id,
@@ -10037,7 +10174,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         EventPayload::UserInputSubmitted { input }
             if event.run_id == Some(original_run_id) && input == "resume active prompt"
     )));
-    let entries = fixture.engine.inner.journal.entries();
+    let entries = fixture.engine.inner.delegation_events.entries();
     assert_eq!(entries.len(), 2);
     assert!(
         entries
@@ -10173,7 +10310,7 @@ async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_te
     release_admission.notify_one();
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {
-            let entries = fixture.engine.inner.journal.entries();
+            let entries = fixture.engine.inner.delegation_events.entries();
             let latest_cancelled = entries.last().is_some_and(|entry| {
                 entry.reservation.child_session_id == child_session_id
                     && entry.terminal_status == Some(SessionStatus::Cancelled)
@@ -10251,7 +10388,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
     let old_run_id = fixture
         .engine
         .inner
-        .journal
+        .delegation_events
         .get(old_invocation_id)
         .and_then(|entry| entry.child_run_id)
         .expect("cancelled admission old run");
@@ -10275,10 +10412,10 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
     let resumed_invocation_id = fixture
         .engine
         .inner
-        .journal
+        .delegation_events
         .entries()
         .last()
-        .expect("cancelled resume journal reservation")
+        .expect("cancelled resume reservation event")
         .reservation
         .invocation_id;
     assert!(
@@ -10332,17 +10469,16 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
                     EventPayload::UserInputAdmitted { input } if input == "interleaved direct steer"
                 )
             });
-            let latest_cancelled =
-                fixture
-                    .engine
-                    .inner
-                    .journal
-                    .entries()
-                    .last()
-                    .is_some_and(|entry| {
-                        entry.reservation.child_session_id == child_session_id
-                            && entry.terminal_status == Some(SessionStatus::Cancelled)
-                    });
+            let latest_cancelled = fixture
+                .engine
+                .inner
+                .delegation_events
+                .entries()
+                .last()
+                .is_some_and(|entry| {
+                    entry.reservation.child_session_id == child_session_id
+                        && entry.terminal_status == Some(SessionStatus::Cancelled)
+                });
             if recalled && steer_preserved && latest_cancelled {
                 break;
             }
@@ -10499,7 +10635,7 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
             if fixture
                 .engine
                 .inner
-                .journal
+                .delegation_events
                 .entries()
                 .last()
                 .is_some_and(|entry| {
@@ -10514,7 +10650,7 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
         }
     })
     .await
-    .expect("monitor failure terminal journal state");
+    .expect("monitor failure terminal event state");
     let child = fixture
         .engine
         .inner
@@ -10600,10 +10736,10 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
     let invocation_id = fixture
         .engine
         .inner
-        .journal
+        .delegation_events
         .entries()
         .last()
-        .expect("attached resume journal entry")
+        .expect("attached resume event entry")
         .reservation
         .invocation_id;
     fixture
@@ -10616,7 +10752,7 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
             if fixture
                 .engine
                 .inner
-                .journal
+                .delegation_events
                 .get(invocation_id)
                 .is_some_and(|entry| {
                     entry.run_attached
@@ -10678,11 +10814,11 @@ async fn queued_subagent_steer_survives_restart_and_promotes_on_first_run() {
     let queued_id = fixture
         .engine
         .inner
-        .journal
+        .delegation_events
         .entries()
         .into_iter()
         .find(|entry| entry.child_run_id.is_none())
-        .expect("queued child journal entry")
+        .expect("queued child reservation event")
         .reservation
         .child_session_id;
     let steered = fixture
@@ -10826,7 +10962,7 @@ async fn background_startup_failure_releases_capacity_and_notifies() {
         fixture
             .engine
             .inner
-            .journal
+            .delegation_events
             .entries()
             .iter()
             .find(|entry| entry.reservation.child_session_id == failed.session_id)
@@ -11064,7 +11200,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
         fixture
             .engine
             .inner
-            .journal
+            .delegation_events
             .entries()
             .iter()
             .find(|entry| entry.reservation.child_session_id == cancelled_id)
@@ -11108,7 +11244,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
         fixture
             .engine
             .inner
-            .journal
+            .delegation_events
             .entries()
             .iter()
             .find(|entry| entry.reservation.child_session_id == retry_id)
@@ -11124,7 +11260,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
             if fixture
                 .engine
                 .inner
-                .journal
+                .delegation_events
                 .entries()
                 .iter()
                 .find(|entry| entry.reservation.child_session_id == retry_id)
@@ -11142,7 +11278,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
 }
 
 #[tokio::test]
-async fn root_run_and_current_delegation_reservation_reopen_exactly() {
+async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering() {
     let (fixture, selection) = custom_fixture();
     let session = fixture
         .engine
@@ -11152,30 +11288,21 @@ async fn root_run_and_current_delegation_reservation_reopen_exactly() {
         .engine
         .start_run(RunStartParams {
             session_id: session.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("reopen-root").expect("run ID"),
+            client_run_id: ClientRunId::new("event-reservation-reopen").expect("run ID"),
             selection,
-            input: "scripted root input".to_owned(),
+            input: "scripted root input".into(),
         })
         .await
-        .expect("accepted root run");
-    let projection = fixture
+        .expect("root run");
+    let parent = fixture
         .engine
         .inner
         .store
         .get(session.session_id)
-        .expect("root projection");
-    let agent = projection
-        .log
-        .events()
-        .into_iter()
-        .find_map(|event| match event.payload {
-            EventPayload::SessionCreated { creation_agent, .. } => Some(*creation_agent),
-            _ => None,
-        })
-        .expect("creation agent");
+        .expect("parent projection");
+    let agent = parent.creation_agent.clone();
     let runtime = fixture.engine.current_runtime();
-    let invocation_id = InvocationId::new_v7();
-    let revisions = crate::journal::DelegationRuntimeRevisions {
+    let revisions = crate::delegation_events::DelegationRuntimeRevisions {
         manifest_revision: agent.fallback_chain[0].manifest_revision.clone(),
         runtime_revision: runtime.result.snapshot.runtime_revision.clone(),
         catalog_revision: runtime.result.snapshot.catalog_revision.clone(),
@@ -11184,481 +11311,290 @@ async fn root_run_and_current_delegation_reservation_reopen_exactly() {
         agent_revision: runtime.result.snapshot.agent_revision.clone(),
         recipe_registry_revision: runtime.result.snapshot.recipe_registry_revision.clone(),
     };
-    let ordinary_request = crate::journal::DelegateRequestPayload {
-        description: "Scripted delegation".to_owned(),
-        prompt: "scripted delegated task".to_owned(),
-        title: SessionTitle::new("Scripted delegation").expect("delegated title"),
+    let request = cookie_agent_protocol::DelegateRequestPayload {
+        description: "Scripted delegation".into(),
+        prompt: "scripted delegated task".into(),
+        title: SessionTitle::new("Scripted delegation").expect("title"),
         resume_session_id: None,
         inherit_context: false,
         seeded_context: Vec::new(),
-        background: Some(false),
+        background: false,
         staged_skill: None,
     };
-    let ordinary_fingerprint = crate::journal::delegation_request_fingerprint(
+    let fingerprint = crate::delegation_events::delegation_request_fingerprint(
         &agent,
         &agent.fallback_chain,
-        &ordinary_request,
+        &request,
     )
-    .expect("ordinary request fingerprint");
+    .expect("request fingerprint");
+    let invocation_id = InvocationId::new_v7();
     fixture
         .engine
         .inner
-        .journal
+        .delegation_events
         .reserve(
             invocation_id,
             session.session_id,
             run.run_id,
             ToolCallId::new_v7(),
             agent.clone(),
-            revisions.clone(),
+            revisions,
             agent.fallback_chain.clone(),
-            ordinary_fingerprint,
-            ordinary_request,
+            fingerprint,
+            request,
         )
-        .expect("delegation reservation");
-    let staged_invocation_id = InvocationId::new_v7();
-    let staged_prompt = "Apply the staged skill `restart-skill`.".to_owned();
-    let staged_skill = cookie_agent_protocol::StagedSkillPayload {
-        provenance: cookie_agent_protocol::StagedSkillProvenance::SkillFork,
-        name: "restart-skill".into(),
-        args: "restart args".into(),
-        rendered_body: "Restart-pinned rendered body".into(),
-        source_path: "/skills/restart-skill/SKILL.md".into(),
-        base_dir: "/skills/restart-skill".into(),
-        supporting_files: vec!["/skills/restart-skill/reference.md".into()],
-        grants: vec![cookie_agent_protocol::PermissionRule {
-            action: PermissionAction::Bash,
-            resource: cookie_agent_protocol::WildcardPattern::new("git *").expect("grant pattern"),
-            effect: PermissionEffect::Allow,
-        }],
-        model: None,
-    };
-    let staged_request = crate::journal::DelegateRequestPayload {
-        description: "Staged restart skill".to_owned(),
-        prompt: staged_prompt.clone(),
-        title: SessionTitle::new("Staged restart skill").expect("delegated title"),
-        resume_session_id: None,
-        inherit_context: false,
-        seeded_context: Vec::new(),
-        background: Some(false),
-        staged_skill: Some(staged_skill.clone()),
-    };
-    let staged_fingerprint = crate::journal::delegation_request_fingerprint(
-        &agent,
-        &agent.fallback_chain,
-        &staged_request,
-    )
-    .expect("staged request fingerprint");
-    fixture
-        .engine
-        .inner
-        .journal
-        .reserve(
-            staged_invocation_id,
-            session.session_id,
-            run.run_id,
-            ToolCallId::new_v7(),
-            agent.clone(),
-            revisions.clone(),
-            agent.fallback_chain.clone(),
-            staged_fingerprint,
-            staged_request,
-        )
-        .expect("staged skill delegation reservation");
-    let persisted = fs::read_to_string(fixture.engine.inner.journal.path())
-        .expect("persisted delegation journal");
-    let line = persisted.lines().next().expect("started journal record");
-    let raw: serde_json::Value = serde_json::from_str(line).expect("journal JSON");
-    let staged_line = persisted.lines().nth(1).expect("staged journal record");
-    let staged_raw: serde_json::Value =
-        serde_json::from_str(staged_line).expect("staged journal JSON");
-    let mut tampered_records = Vec::new();
-    let mut rendered = staged_raw.clone();
-    rendered["record"]["request"]["staged_skill"]["rendered_body"] =
-        serde_json::json!("tampered body");
-    tampered_records.push(("rendered_body", rendered));
-    let mut title = staged_raw.clone();
-    title["record"]["request"]["title"] = serde_json::json!("Tampered title");
-    tampered_records.push(("title", title));
-    let mut grants = staged_raw.clone();
-    grants["record"]["request"]["staged_skill"]["grants"][0]["resource"] =
-        serde_json::json!("cargo *");
-    tampered_records.push(("grants", grants));
-    let mut model = staged_raw.clone();
-    model["record"]["request"]["staged_skill"]["model"] = serde_json::json!("custom.test/tampered");
-    tampered_records.push(("model", model));
-    let mut source_path = staged_raw.clone();
-    source_path["record"]["request"]["staged_skill"]["source_path"] =
-        serde_json::json!("/tampered/SKILL.md");
-    tampered_records.push(("source_path", source_path));
-    let mut base_dir = staged_raw.clone();
-    base_dir["record"]["request"]["staged_skill"]["base_dir"] = serde_json::json!("/tampered");
-    tampered_records.push(("base_dir", base_dir));
-    for (field, tampered) in tampered_records {
-        let directory = tempfile::tempdir().expect("tampered journal directory");
-        let path = directory.path().join("delegations.jsonl");
-        fs::write(
-            &path,
-            serde_json::to_string(&tampered).expect("tampered JSON") + "\n",
-        )
-        .expect("tampered journal");
-        assert!(
-            crate::journal::DelegationJournal::open(path).is_err(),
-            "V5 replay accepted tampered {field}"
-        );
-    }
-    let generated: cookie_agent_protocol::StoredDelegationJournalRecord =
-        serde_json::from_value(raw.clone()).expect("generated protocol journal type");
-    assert_eq!(
-        serde_json::to_value(&generated).expect("journal reserialization"),
-        raw
-    );
-    let schema: serde_json::Value = serde_json::from_str(include_str!(
-        "../../protocol/generated/json-schema/StoredDelegationJournalRecord.schema.json"
-    ))
-    .expect("generated delegation journal schema");
-    assert_eq!(schema["title"], "StoredDelegationJournalRecord");
-    assert_eq!(
-        schema["properties"]["delegation_journal_schema_version"]["enum"],
-        serde_json::json!([11, 12, 13, 14, 15])
-    );
-    assert_eq!(schema["additionalProperties"], false);
-    let required_keys = |value: &serde_json::Value| {
-        value
-            .as_array()
-            .expect("schema required array")
-            .iter()
-            .map(|key| key.as_str().expect("schema key").to_owned())
-            .collect::<std::collections::BTreeSet<_>>()
-    };
-    assert_eq!(
-        required_keys(&schema["required"]),
-        raw.as_object()
-            .expect("stored record object")
-            .keys()
-            .cloned()
-            .collect()
-    );
-    let started_schema = schema["$defs"]["DelegationJournalRecord"]["oneOf"]
-        .as_array()
-        .expect("journal record variants")
-        .iter()
-        .find(|variant| variant["properties"]["type"]["const"] == "delegation_started_v5")
-        .expect("v5 started schema");
-    assert_eq!(started_schema["additionalProperties"], false);
-    assert_eq!(
-        required_keys(&started_schema["required"]),
-        raw["record"]
-            .as_object()
-            .expect("started record object")
-            .keys()
-            .cloned()
-            .collect()
-    );
-    let schema_text = serde_json::to_string(&schema).expect("schema text");
-    for required in [
-        "manifest_revision",
-        "runtime_revision",
-        "catalog_revision",
-        "provider_state_revision",
-        "model_revision",
-        "agent_revision",
-        "recipe_registry_revision",
-    ] {
-        assert!(schema_text.contains(required), "missing {required}");
-    }
-    let head_directory = tempfile::tempdir().expect("HEAD journal directory");
-    let head_path = head_directory.path().join("delegations.jsonl");
-    let mut head_record = raw.clone();
-    head_record["record"]["child_agent"]["schema"] = serde_json::json!(4);
-    head_record["record"]["child_agent"]
-        .as_object_mut()
-        .expect("child agent object")
-        .remove("max_output_tokens");
-    head_record["record"]["child_agent"]["tools"] =
-        serde_json::json!(["read", "write", "edit", "bash"]);
-    let parsed_head: cookie_agent_protocol::StoredDelegationJournalRecord =
-        serde_json::from_value(head_record.clone()).expect("parse upconverted HEAD record");
-    let cookie_agent_protocol::DelegationJournalRecord::DelegationStartedV5 {
-        child_agent,
-        selected_suffix,
-        request,
-        ..
-    } = parsed_head.record
-    else {
-        panic!("current V5 record");
-    };
-    let head_request = crate::journal::DelegateRequestPayload {
-        description: request.description,
-        prompt: request.prompt,
-        title: request.title,
-        resume_session_id: request.resume_session_id,
-        inherit_context: request.inherit_context,
-        seeded_context: request.seeded_context,
-        background: Some(request.background),
-        staged_skill: request.staged_skill,
-    };
-    head_record["record"]["request_fingerprint"] = serde_json::to_value(
-        crate::journal::delegation_request_fingerprint(
-            &child_agent,
-            &selected_suffix,
-            &head_request,
-        )
-        .expect("HEAD request fingerprint"),
-    )
-    .expect("fingerprint JSON");
-    fs::write(
-        &head_path,
-        serde_json::to_string(&head_record).expect("serialize HEAD journal") + "\n",
-    )
-    .expect("write HEAD journal");
-    let head_journal = crate::journal::DelegationJournal::open(head_path)
-        .expect("open schema-15 journal with schema-4 agent snapshot");
-    let recovered = head_journal
-        .get(invocation_id)
-        .expect("recover HEAD delegation reservation");
-    assert_eq!(recovered.child_agent, agent);
-    assert_eq!(recovered.child_agent.schema.value(), 6);
-    head_journal.shutdown();
-    let legacy_directory = tempfile::tempdir().expect("legacy journal directory");
-    let legacy_path = legacy_directory.path().join("delegations.jsonl");
-    let mut legacy = raw.clone();
-    legacy["delegation_journal_schema_version"] = serde_json::json!(11);
-    legacy["record"]["type"] = serde_json::json!("delegation_started_v2");
-    let legacy_request = legacy["record"]["request"]
-        .as_object_mut()
-        .expect("legacy request object");
-    legacy_request.remove("resume_session_id");
-    legacy_request.remove("inherit_context");
-    legacy_request.remove("seeded_context");
-    legacy_request.remove("background");
-    legacy_request.remove("staged_skill");
-    fs::write(
-        &legacy_path,
-        serde_json::to_string(&legacy).expect("serialize schema-11 V2 journal") + "\n",
-    )
-    .expect("write schema-11 V2 journal");
-    let legacy_journal = crate::journal::DelegationJournal::open(legacy_path)
-        .expect("open shipped schema-11 V2 journal");
-    let legacy_entry = legacy_journal
-        .get(invocation_id)
-        .expect("up-converted V2 journal entry");
-    assert_eq!(legacy_entry.request.description, "Scripted delegation");
-    assert_eq!(legacy_entry.request.prompt, "scripted delegated task");
-    assert_eq!(legacy_entry.request.resume_session_id, None);
-    assert!(!legacy_entry.request.inherit_context);
-    assert!(legacy_entry.request.seeded_context.is_empty());
-    assert_eq!(legacy_entry.request.background, None);
-    legacy_journal.shutdown();
-    let run_transition = serde_json::json!({
-        "delegation_journal_schema_version":14,
-        "record":{
-            "type":"delegation_run_started",
-            "invocation_id":invocation_id,
-            "child_run_id":cookie_agent_protocol::RunId::new_v7()
-        }
-    });
-    let terminal_transition = serde_json::json!({
-        "delegation_journal_schema_version":14,
-        "record":{
-            "type":"delegation_terminated",
-            "invocation_id":invocation_id,
-            "status":"cancelled"
-        }
-    });
-    for (name, transitions) in [
-        (
-            "run-after-terminal",
-            vec![terminal_transition.clone(), run_transition.clone()],
-        ),
-        (
-            "terminal-after-fresh-run",
-            vec![run_transition.clone(), terminal_transition.clone()],
-        ),
-    ] {
-        let directory = tempfile::tempdir().expect("invalid transition directory");
-        let path = directory.path().join("delegations.jsonl");
-        let contents = std::iter::once(raw.clone())
-            .chain(transitions)
-            .map(|record| serde_json::to_string(&record).expect("serialize transition record"))
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
-        fs::write(&path, contents).expect("write invalid journal transition");
-        assert!(
-            crate::journal::DelegationJournal::open(path).is_err(),
-            "journal replay accepted invalid {name} transition"
-        );
-    }
-    let mut terminal_resume = raw.clone();
-    terminal_resume["record"]["request"]["resume_session_id"] =
-        terminal_resume["record"]["reservation"]["child_session_id"].clone();
-    let parsed_terminal_resume: cookie_agent_protocol::StoredDelegationJournalRecord =
-        serde_json::from_value(terminal_resume.clone()).expect("parse terminal resume start");
-    assert!(matches!(
-        &parsed_terminal_resume.record,
-        cookie_agent_protocol::DelegationJournalRecord::DelegationStartedV5 {
-            request: cookie_agent_protocol::DelegateRequestPayloadV5 {
-                resume_session_id: Some(_),
-                ..
-            },
-            ..
-        }
-    ));
-    let cookie_agent_protocol::DelegationJournalRecord::DelegationStartedV5 {
-        child_agent,
-        selected_suffix,
-        request,
-        ..
-    } = &parsed_terminal_resume.record
-    else {
-        unreachable!("checked V5");
-    };
-    let terminal_resume_request = crate::journal::DelegateRequestPayload {
-        description: request.description.clone(),
-        prompt: request.prompt.clone(),
-        title: request.title.clone(),
-        resume_session_id: request.resume_session_id,
-        inherit_context: request.inherit_context,
-        seeded_context: request.seeded_context.clone(),
-        background: Some(request.background),
-        staged_skill: request.staged_skill.clone(),
-    };
-    terminal_resume["record"]["request_fingerprint"] = serde_json::to_value(
-        crate::journal::delegation_request_fingerprint(
-            child_agent,
-            selected_suffix,
-            &terminal_resume_request,
-        )
-        .expect("terminal resume fingerprint"),
-    )
-    .expect("terminal resume fingerprint JSON");
-    let directory = tempfile::tempdir().expect("terminal resume transition directory");
-    let path = directory.path().join("delegations.jsonl");
-    let contents = [
-        terminal_resume.clone(),
-        run_transition.clone(),
-        terminal_transition.clone(),
-    ]
-    .into_iter()
-    .map(|record| serde_json::to_string(&record).expect("serialize terminal resume transition"))
-    .collect::<Vec<_>>()
-    .join("\n")
-        + "\n";
-    fs::write(&path, contents).expect("write terminal resume transition");
+        .expect("reservation event");
+    let event_path = parent.log.path().to_owned();
     assert!(
-        crate::journal::DelegationJournal::open(path).is_err(),
-        "terminal resume's newly started run accepted termination"
+        fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("updated parent")
+            .log
+            .events()
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::DelegationReserved { .. }))
     );
-    let mut ambiguous_start = terminal_resume.clone();
-    ambiguous_start["delegation_journal_schema_version"] = serde_json::json!(12);
-    ambiguous_start["record"]["type"] = serde_json::json!("delegation_started_v3");
-    ambiguous_start["record"]["request"]
-        .as_object_mut()
-        .expect("ambiguous V3 request")
-        .remove("background");
-    ambiguous_start["record"]["request"]
-        .as_object_mut()
-        .expect("ambiguous V3 request")
-        .remove("staged_skill");
-    let mut ambiguous_run = run_transition.clone();
-    ambiguous_run["delegation_journal_schema_version"] = serde_json::json!(12);
-    let directory = tempfile::tempdir().expect("ambiguous schema-12 resume directory");
-    let path = directory.path().join("delegations.jsonl");
-    let contents = [ambiguous_start, ambiguous_run]
-        .into_iter()
-        .map(|record| serde_json::to_string(&record).expect("serialize ambiguous resume"))
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-    fs::write(&path, contents).expect("write ambiguous schema-12 resume");
-    let error = crate::journal::DelegationJournal::open(path)
-        .expect_err("ambiguous schema-12 resume transition must be rejected");
-    let message = error.to_string();
-    assert!(message.contains("delegations.jsonl"));
-    assert!(message.contains("move"));
-    assert!(message.contains("restart"));
-    assert!(message.contains("session event logs remain intact"));
-    let attachment_transition = serde_json::json!({
-        "delegation_journal_schema_version":14,
-        "record":{
-            "type":"delegation_run_attached",
-            "invocation_id":invocation_id,
-            "child_run_id":cookie_agent_protocol::RunId::new_v7()
-        }
-    });
-    let directory = tempfile::tempdir().expect("attachment transition directory");
-    let path = directory.path().join("delegations.jsonl");
-    let contents = [terminal_resume, attachment_transition, terminal_transition]
-        .into_iter()
-        .map(|record| serde_json::to_string(&record).expect("serialize attachment transition"))
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-    fs::write(&path, contents).expect("write attachment transition");
-    let attached = crate::journal::DelegationJournal::open(path)
-        .expect("replay valid attached-run termination");
-    let attached_entry = attached.get(invocation_id).expect("attached journal entry");
-    assert!(attached_entry.run_attached);
-    assert_eq!(
-        attached_entry.terminal_status,
-        Some(SessionStatus::Cancelled)
-    );
-    attached.shutdown();
     fixture.engine.shutdown().await;
 
     let reopened = reopen_engine(&fixture);
-    let reopened_session = reopened
-        .get_session(session.session_id)
-        .expect("reopened root");
-    assert_eq!(
-        reopened_session.manifest_revision,
-        session.manifest_revision
+    assert!(
+        reopened
+            .inner
+            .delegation_events
+            .get(invocation_id)
+            .is_some()
     );
-    let entry = reopened
-        .inner
-        .journal
-        .get(invocation_id)
-        .expect("reopened delegation reservation");
-    assert_eq!(entry.revisions, revisions);
-    assert_eq!(entry.selected_suffix, agent.fallback_chain);
-    let staged_entry = reopened
-        .inner
-        .journal
-        .get(staged_invocation_id)
-        .expect("reopened staged skill reservation");
-    assert_eq!(staged_entry.request.prompt, staged_prompt);
-    assert_eq!(staged_entry.request.staged_skill, Some(staged_skill));
     reopened.shutdown().await;
 
-    let mut forged: serde_json::Value = serde_json::from_str(line).expect("journal value");
-    forged["record"]["runtime_revision"] = serde_json::json!(format!("sha256:{}", "f".repeat(64)));
-    fs::write(
-        fixture.engine.inner.journal.path(),
-        format!(
-            "{}\n",
-            serde_json::to_string(&forged).expect("forged journal")
-        ),
-    )
-    .expect("write forged journal revision");
-    let current = fixture.manager.current();
-    let manager = Arc::new(
-        ModelManager::new(
-            current.authored().clone(),
-            Arc::clone(current.catalog()),
-            ProviderStore::open(fixture._directory.path().join("provider-store"))
-                .expect("reopened provider store"),
-        )
-        .expect("reopened manager"),
-    );
+    let source = fs::read_to_string(&event_path).expect("parent events");
+    let tampered = source
+        .lines()
+        .map(|line| {
+            let mut value: serde_json::Value = serde_json::from_str(line).expect("event JSON");
+            if value["payload"]["type"] == "delegation_reserved" {
+                value["payload"]["request"]["description"] = serde_json::json!("tampered");
+            }
+            serde_json::to_string(&value).expect("tampered event")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(event_path, tampered).expect("tamper parent event");
     let rejected = Engine::open(EngineOptions {
         data_dir: fixture._directory.path().join("data"),
         cwd: fixture._directory.path().to_owned(),
         config: fixture.config,
-        model_manager: manager,
+        model_manager: Arc::clone(&fixture.manager),
         tools: Vec::new(),
     });
-    assert!(matches!(rejected, Err(EngineError::RuntimeCompileFailed)));
+    assert!(matches!(
+        rejected,
+        Err(EngineError::DelegationEvents(
+            crate::delegation_events::DelegationEventError::Corrupt(id)
+        )) if id == invocation_id
+    ));
+}
+
+#[tokio::test]
+async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    let run = fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("best-effort-delegations").expect("run ID"),
+            selection,
+            input: "scripted root input".into(),
+        })
+        .await
+        .expect("root run");
+    let parent = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("parent projection");
+    let agent = parent.creation_agent.clone();
+    let runtime = fixture.engine.current_runtime();
+    let revisions = crate::delegation_events::DelegationRuntimeRevisions {
+        manifest_revision: agent.fallback_chain[0].manifest_revision.clone(),
+        runtime_revision: runtime.result.snapshot.runtime_revision.clone(),
+        catalog_revision: runtime.result.snapshot.catalog_revision.clone(),
+        provider_state_revision: runtime.result.snapshot.provider_state_revision.clone(),
+        model_revision: runtime.result.snapshot.model_revision.clone(),
+        agent_revision: runtime.result.snapshot.agent_revision.clone(),
+        recipe_registry_revision: runtime.result.snapshot.recipe_registry_revision.clone(),
+    };
+    let first_id = InvocationId::new_v7();
+    let second_id = InvocationId::new_v7();
+    let intact_id = InvocationId::new_v7();
+    for (invocation_id, description) in [
+        (first_id, "skipped run start"),
+        (second_id, "skipped finish"),
+        (intact_id, "intact reservation"),
+    ] {
+        let request = cookie_agent_protocol::DelegateRequestPayload {
+            description: description.into(),
+            prompt: format!("{description} delegated task"),
+            title: SessionTitle::new(description).expect("title"),
+            resume_session_id: None,
+            inherit_context: false,
+            seeded_context: Vec::new(),
+            background: false,
+            staged_skill: None,
+        };
+        let fingerprint = crate::delegation_events::delegation_request_fingerprint(
+            &agent,
+            &agent.fallback_chain,
+            &request,
+        )
+        .expect("fingerprint");
+        fixture
+            .engine
+            .inner
+            .delegation_events
+            .reserve(
+                invocation_id,
+                session.session_id,
+                run.run_id,
+                ToolCallId::new_v7(),
+                agent.clone(),
+                revisions.clone(),
+                agent.fallback_chain.clone(),
+                fingerprint,
+                request,
+            )
+            .expect("reservation event");
+    }
+    let first_child = fixture
+        .engine
+        .inner
+        .delegation_events
+        .get(first_id)
+        .expect("first reservation")
+        .reservation
+        .child_session_id;
+    let second_child = fixture
+        .engine
+        .inner
+        .delegation_events
+        .get(second_id)
+        .expect("second reservation")
+        .reservation
+        .child_session_id;
+    let first_run = cookie_agent_protocol::RunId::new_v7();
+    fixture
+        .engine
+        .inner
+        .delegation_events
+        .mark_started(first_id)
+        .expect("first start");
+    fixture
+        .engine
+        .inner
+        .delegation_events
+        .mark_run_started(first_id, first_run)
+        .expect("first run start");
+    fixture
+        .engine
+        .inner
+        .delegation_events
+        .mark_finished(first_id, SessionStatus::Completed)
+        .expect("first finish");
+    fixture
+        .engine
+        .inner
+        .delegation_events
+        .mark_started(second_id)
+        .expect("second start");
+    fixture
+        .engine
+        .inner
+        .delegation_events
+        .mark_finished(second_id, SessionStatus::Failed)
+        .expect("second finish");
+    let event_path = parent.log.path().to_owned();
+    fixture.engine.shutdown().await;
+
+    let source = fs::read_to_string(&event_path).expect("parent events");
+    let source = source
+        .lines()
+        .map(|line| {
+            let mut value: serde_json::Value = serde_json::from_str(line).expect("event JSON");
+            if value["payload"]["type"] == "delegation_run_started"
+                && value["payload"]["invocation_id"] == serde_json::json!(first_id)
+            {
+                value["payload"]["child_run_id"] = serde_json::json!(42);
+            }
+            if value["payload"]["type"] == "delegation_finished"
+                && value["payload"]["invocation_id"] == serde_json::json!(second_id)
+            {
+                value["payload"]["status"] = serde_json::json!(42);
+            }
+            serde_json::to_string(&value).expect("corrupt event")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(event_path, source).expect("write corrupt event");
+
+    let reopened = reopen_engine(&fixture);
+    let parent = reopened
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("best-effort parent");
+    assert_eq!(parent.meta.skipped_events.len(), 2);
+    for (invocation_id, child_session_id) in [
+        (first_id, first_child),
+        (second_id, second_child),
+        (
+            intact_id,
+            reopened
+                .inner
+                .delegation_events
+                .get(intact_id)
+                .expect("intact recovered reservation")
+                .reservation
+                .child_session_id,
+        ),
+    ] {
+        let recovered = reopened
+            .inner
+            .delegation_events
+            .get(invocation_id)
+            .expect("recovered delegation");
+        assert_eq!(recovered.reservation.child_session_id, child_session_id);
+        assert_eq!(recovered.terminal_status, Some(SessionStatus::Failed));
+        assert!(
+            recovered
+                .terminal_reason
+                .as_ref()
+                .is_some_and(|reason| reason.as_str().contains("child_missing"))
+        );
+    }
+    reopened.shutdown().await;
+
+    let reopened_again = reopen_engine(&fixture);
+    for invocation_id in [first_id, second_id, intact_id] {
+        assert_eq!(
+            reopened_again
+                .inner
+                .delegation_events
+                .get(invocation_id)
+                .expect("terminal repair survives another reopen")
+                .terminal_status,
+            Some(SessionStatus::Failed)
+        );
+    }
+    reopened_again.shutdown().await;
 }
 
 #[test]

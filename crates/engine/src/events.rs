@@ -114,13 +114,14 @@ impl EventLog {
         ) {
             return Err(EventLogError::MissingCreation(path));
         }
-        validate_records(&path, session_id, &records, &loaded.validation_taint, None)?;
+        let validation_taint =
+            validate_records(&path, session_id, &records, &loaded.validation_taint, None)?;
         Ok(Arc::new(Self {
             path,
             session_id,
             events: Mutex::new(records),
             diagnostics: loaded.diagnostics,
-            validation_taint: loaded.validation_taint,
+            validation_taint,
             next_seq: AtomicU64::new(loaded.next_seq),
             persisted: AtomicBool::new(true),
         }))
@@ -157,7 +158,7 @@ impl EventLog {
         })?;
         let mut candidate = events.clone();
         candidate.push(event.clone());
-        validate_records(
+        let _ = validate_records(
             &self.path,
             self.session_id,
             &candidate,
@@ -199,6 +200,14 @@ impl EventLog {
     #[must_use]
     pub fn diagnostics(&self) -> &[EventLoadDiagnostic] {
         &self.diagnostics
+    }
+
+    #[must_use]
+    pub(crate) fn delegation_event_tainted(&self, event: &StoredEvent) -> bool {
+        delegation_invocation_from_event(&event.payload).is_some_and(|invocation_id| {
+            self.validation_taint
+                .delegation_before(invocation_id, event.seq)
+        })
     }
 
     #[must_use]
@@ -253,6 +262,16 @@ struct InternalRunAttribution {
     usage_phase_taint_seen: u64,
 }
 
+#[derive(Debug)]
+struct DelegationAttribution {
+    parent_run_id: RunId,
+    child_session_id: SessionId,
+    resume: bool,
+    started: bool,
+    child_run_id: Option<RunId>,
+    finished: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 struct ValidationTaint {
     broad: Vec<(u64, u64)>,
@@ -267,6 +286,8 @@ struct ValidationTaint {
     internal_usage_phases: HashMap<cookie_agent_protocol::InternalAgentRunId, Vec<u64>>,
     tool_terminals: HashMap<ToolCallId, u64>,
     admissions: HashMap<u64, u64>,
+    delegations: HashMap<cookie_agent_protocol::InvocationId, u64>,
+    delegation_repairs: HashMap<cookie_agent_protocol::InvocationId, u64>,
     run_ordering: HashMap<RunId, u64>,
     turn_ordering: Option<u64>,
     active_run_ordering: Option<u64>,
@@ -364,6 +385,33 @@ impl ValidationTaint {
 
     fn admission_before(&self, admission_seq: u64, seq: u64) -> bool {
         self.keyed_before(&self.admissions, &admission_seq, seq)
+    }
+
+    fn delegation_before(
+        &self,
+        invocation_id: cookie_agent_protocol::InvocationId,
+        seq: u64,
+    ) -> bool {
+        self.broad_before(seq)
+            || self.delegations.get(&invocation_id).is_some_and(|tainted| {
+                *tainted < seq
+                    && !self
+                        .delegation_repairs
+                        .get(&invocation_id)
+                        .is_some_and(|repair| *repair >= *tainted && *repair <= seq)
+            })
+    }
+
+    fn delegation_unrepaired_before(
+        &self,
+        invocation_id: cookie_agent_protocol::InvocationId,
+        seq: u64,
+    ) -> bool {
+        self.broad_before(seq)
+            || self
+                .delegations
+                .get(&invocation_id)
+                .is_some_and(|tainted| *tainted < seq)
     }
 
     fn run_ordering_between(&self, run_id: RunId, start_seq: u64, seq: u64) -> bool {
@@ -469,6 +517,17 @@ impl ValidationTaint {
             Some("user_input_admitted") => {
                 self.admissions.entry(seq).or_insert(seq);
             }
+            Some(
+                "delegation_reserved"
+                | "delegation_started"
+                | "delegation_run_started"
+                | "delegation_run_attached"
+                | "delegation_finished",
+            ) => {
+                if let Some(invocation_id) = delegation_invocation_from_value(payload) {
+                    self.delegations.entry(invocation_id).or_insert(seq);
+                }
+            }
             Some("run_completed" | "run_failed" | "run_cancelled" | "run_interrupted") => {
                 self.active_run_ordering.get_or_insert(seq);
             }
@@ -535,6 +594,17 @@ impl ValidationTaint {
             EventPayload::UserInputAdmitted { .. } => {
                 self.admissions.entry(seq).or_insert(seq);
             }
+            EventPayload::DelegationReserved { reservation, .. } => {
+                self.delegations
+                    .entry(reservation.invocation_id)
+                    .or_insert(seq);
+            }
+            EventPayload::DelegationStarted { invocation_id, .. }
+            | EventPayload::DelegationRunStarted { invocation_id, .. }
+            | EventPayload::DelegationRunAttached { invocation_id, .. }
+            | EventPayload::DelegationFinished { invocation_id, .. } => {
+                self.delegations.entry(*invocation_id).or_insert(seq);
+            }
             EventPayload::RunCompleted { .. }
             | EventPayload::RunFailed { .. }
             | EventPayload::RunCancelled { .. }
@@ -594,6 +664,36 @@ impl ValidationTaint {
 
 fn json_field<T: for<'de> Deserialize<'de>>(value: &Value, field: &str) -> Option<T> {
     serde_json::from_value(value.get(field)?.clone()).ok()
+}
+
+fn delegation_invocation_from_value(
+    payload: &Value,
+) -> Option<cookie_agent_protocol::InvocationId> {
+    match payload.get("type").and_then(Value::as_str) {
+        Some("delegation_reserved") => payload
+            .get("reservation")
+            .and_then(|reservation| json_field(reservation, "invocation_id")),
+        Some(
+            "delegation_started"
+            | "delegation_run_started"
+            | "delegation_run_attached"
+            | "delegation_finished",
+        ) => json_field(payload, "invocation_id"),
+        _ => None,
+    }
+}
+
+fn delegation_invocation_from_event(
+    payload: &EventPayload,
+) -> Option<cookie_agent_protocol::InvocationId> {
+    match payload {
+        EventPayload::DelegationReserved { reservation, .. } => Some(reservation.invocation_id),
+        EventPayload::DelegationStarted { invocation_id, .. }
+        | EventPayload::DelegationRunStarted { invocation_id, .. }
+        | EventPayload::DelegationRunAttached { invocation_id, .. }
+        | EventPayload::DelegationFinished { invocation_id, .. } => Some(*invocation_id),
+        _ => None,
+    }
 }
 
 fn validate_observed_duplicates(path: &Path, records: &[StoredEvent]) -> Result<(), EventLogError> {
@@ -728,7 +828,7 @@ fn validate_records(
     records: &[StoredEvent],
     initial_taint: &ValidationTaint,
     strict_from_seq: Option<u64>,
-) -> Result<(), EventLogError> {
+) -> Result<ValidationTaint, EventLogError> {
     validate_observed_duplicates(path, records)?;
     let mut taint = initial_taint.clone();
     let mut runs = HashMap::<RunId, RunAttribution>::new();
@@ -739,6 +839,8 @@ fn validate_records(
     let mut usage_turns = HashSet::<u64>::new();
     let mut internal_runs =
         HashMap::<cookie_agent_protocol::InternalAgentRunId, InternalRunAttribution>::new();
+    let mut delegations =
+        HashMap::<cookie_agent_protocol::InvocationId, DelegationAttribution>::new();
     let mut model_call_owners = HashMap::<(RunId, ModelCallId), AssistantToolCallRef>::new();
     let mut provider_item_owners = HashMap::<(RunId, ProviderItemId), AssistantToolCallRef>::new();
     let mut tool_starts = HashMap::<ToolCallId, (RunId, ToolCallStart)>::new();
@@ -882,6 +984,37 @@ fn validate_records(
                     !approval_owners.contains_key(&grant.approval_id)
                         && taint.approval_before(grant.approval_id, record.seq)
                 }
+                EventPayload::DelegationReserved { reservation, .. } => {
+                    taint.delegation_before(reservation.invocation_id, record.seq)
+                        || record.run_id.is_some_and(|run_id| {
+                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                        })
+                }
+                EventPayload::DelegationStarted { invocation_id, .. }
+                | EventPayload::DelegationRunStarted { invocation_id, .. }
+                | EventPayload::DelegationRunAttached { invocation_id, .. } => {
+                    taint.delegation_before(*invocation_id, record.seq)
+                        || record.run_id.is_some_and(|run_id| {
+                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                        })
+                }
+                EventPayload::DelegationFinished {
+                    invocation_id,
+                    child_session_id,
+                    child_run_id,
+                    ..
+                } => {
+                    let repair_matches = delegations.get(invocation_id).is_some_and(|delegation| {
+                        record.run_id == Some(delegation.parent_run_id)
+                            && *child_session_id == delegation.child_session_id
+                            && *child_run_id == delegation.child_run_id
+                            && !delegation.finished
+                    });
+                    (taint.delegation_before(*invocation_id, record.seq) && !repair_matches)
+                        || record.run_id.is_some_and(|run_id| {
+                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                        })
+                }
                 _ => record.run_id.is_some_and(|run_id| {
                     !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
                 }),
@@ -909,6 +1042,90 @@ fn validate_records(
                 if record.run_id.is_some() {
                     return corrupt(path, "SessionPermissionOverlaySet must not have run_id");
                 }
+            }
+            EventPayload::DelegationReserved {
+                reservation,
+                request,
+                ..
+            } => {
+                if record.run_id != Some(reservation.parent_run_id)
+                    || record.session_id != reservation.parent_session_id
+                    || !runs.contains_key(&reservation.parent_run_id)
+                    || delegations
+                        .insert(
+                            reservation.invocation_id,
+                            DelegationAttribution {
+                                parent_run_id: reservation.parent_run_id,
+                                child_session_id: reservation.child_session_id,
+                                resume: request.resume_session_id.is_some(),
+                                started: false,
+                                child_run_id: None,
+                                finished: false,
+                            },
+                        )
+                        .is_some()
+                {
+                    return corrupt(path, "delegation reservation ownership is invalid");
+                }
+            }
+            EventPayload::DelegationStarted {
+                invocation_id,
+                child_session_id,
+            } => {
+                let Some(delegation) = delegations.get_mut(invocation_id) else {
+                    return corrupt(path, "delegation start appeared before its reservation");
+                };
+                if record.run_id != Some(delegation.parent_run_id)
+                    || *child_session_id != delegation.child_session_id
+                    || delegation.started
+                    || delegation.finished
+                {
+                    return corrupt(path, "delegation start ownership is invalid");
+                }
+                delegation.started = true;
+            }
+            EventPayload::DelegationRunStarted {
+                invocation_id,
+                child_run_id,
+            }
+            | EventPayload::DelegationRunAttached {
+                invocation_id,
+                child_run_id,
+            } => {
+                let attached =
+                    matches!(&record.payload, EventPayload::DelegationRunAttached { .. });
+                let Some(delegation) = delegations.get_mut(invocation_id) else {
+                    return corrupt(path, "delegation run appeared before its reservation");
+                };
+                if record.run_id != Some(delegation.parent_run_id)
+                    || delegation.child_run_id.is_some()
+                    || delegation.finished
+                    || (attached && !delegation.resume)
+                {
+                    return corrupt(path, "delegation run ownership is invalid");
+                }
+                delegation.child_run_id = Some(*child_run_id);
+            }
+            EventPayload::DelegationFinished {
+                invocation_id,
+                child_session_id,
+                child_run_id,
+                ..
+            } => {
+                let Some(delegation) = delegations.get_mut(invocation_id) else {
+                    return corrupt(path, "delegation finish appeared before its reservation");
+                };
+                if record.run_id != Some(delegation.parent_run_id)
+                    || *child_session_id != delegation.child_session_id
+                    || *child_run_id != delegation.child_run_id
+                    || delegation.finished
+                {
+                    return corrupt(path, "delegation finish ownership is invalid");
+                }
+                if taint.delegation_unrepaired_before(*invocation_id, record.seq) {
+                    taint.delegation_repairs.insert(*invocation_id, record.seq);
+                }
+                delegation.finished = true;
             }
             EventPayload::SkillLoaded { .. } | EventPayload::SkillInvocationNoted { .. } => {
                 if record.run_id.is_some() {
@@ -1504,7 +1721,7 @@ fn validate_records(
             active_run = None;
         }
     }
-    Ok(())
+    Ok(taint)
 }
 
 struct LoadedEvents {
@@ -1881,7 +2098,7 @@ fn validate_approval_owner(
     Ok(())
 }
 
-fn corrupt(path: &Path, message: impl Into<String>) -> Result<(), EventLogError> {
+fn corrupt<T>(path: &Path, message: impl Into<String>) -> Result<T, EventLogError> {
     Err(EventLogError::Corrupt {
         path: path.to_owned(),
         message: message.into(),
@@ -2182,15 +2399,17 @@ mod tests {
 
     use cookie_agent_protocol::{
         AgentId, AgentMode, AgentRevision, ApprovalReasonCode, ApprovalTrigger, ArtifactReference,
-        AssistantToolCallRef, AttemptId, CatalogRevision, ClientRunId, CwdIdentity, EventPayload,
-        FrozenModelBinding, InternalAgentBackend, InternalAgentFailure, InternalAgentInvocationId,
-        InternalAgentKind, InternalAgentRunId, ModelCallId, ModelErrorKind, ModelErrorStage,
+        AssistantToolCallRef, AttemptId, CatalogRevision, ClientRunId, CwdIdentity,
+        DelegateRequestPayload, DelegationReservation, EventPayload, FrozenModelBinding,
+        InternalAgentBackend, InternalAgentFailure, InternalAgentInvocationId, InternalAgentKind,
+        InternalAgentRunId, InvocationId, ModelCallId, ModelErrorKind, ModelErrorStage,
         ModelErrorSummary, ModelFinishReason, ModelKey, ModelRevision, OutputStream,
         PermissionAction, PermissionEffect, PersistedAssistantPart, PersistedModelTurn,
         ProviderStateRevision, RecipeRegistryRevision, RunId, RunSelection, RuntimeRevision,
         SafeCode, SafeDisplayText, SafeErrorMessage, SafeInternalAgentCall, SafeToolError,
-        SessionId, SessionOrigin, Sha256Digest, StoredEvent, ToolCallId, ToolCallPresentation,
-        ToolCallStart, ToolCallTermination, ToolTerminationOutcome, Usage, VariantId,
+        SessionId, SessionOrigin, SessionStatus, SessionTitle, Sha256Digest, StoredEvent,
+        ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination,
+        ToolTerminationOutcome, Usage, VariantId,
     };
     use serde_json::Value;
     use tempfile::tempdir;
@@ -2460,6 +2679,135 @@ mod tests {
             &suffix,
             &prompt_fingerprint,
             (5, 5, 2, 0),
+        );
+        records
+    }
+
+    fn current_delegation_records() -> Vec<StoredEvent> {
+        let mut records = attribution_records();
+        records.truncate(2);
+        let session_id = records[0].session_id;
+        let parent_run_id = records[1].run_id.expect("parent run");
+        let EventPayload::RunStarted {
+            agent,
+            selected_suffix,
+            ..
+        } = &records[1].payload
+        else {
+            unreachable!("second fixture event starts the run");
+        };
+        let child_agent = agent.as_ref().clone();
+        let selected_suffix = selected_suffix.clone();
+        let append_lifecycle = |records: &mut Vec<StoredEvent>,
+                                invocation_id: InvocationId,
+                                child_session_id: SessionId,
+                                child_run_id: RunId,
+                                request: DelegateRequestPayload,
+                                attached: bool| {
+            let request_fingerprint = crate::delegation_events::delegation_request_fingerprint(
+                &child_agent,
+                &selected_suffix,
+                &request,
+            )
+            .expect("delegation fingerprint");
+            let reservation = DelegationReservation {
+                invocation_id,
+                parent_session_id: session_id,
+                parent_run_id,
+                parent_tool_call_id: ToolCallId(Uuid::from_u128(invocation_id.0.as_u128() + 10)),
+                child_session_id,
+            };
+            push_run_event(
+                records,
+                session_id,
+                parent_run_id,
+                EventPayload::DelegationReserved {
+                    reservation,
+                    child_agent: Box::new(child_agent.clone()),
+                    manifest_revision: selected_suffix[0].manifest_revision.clone(),
+                    runtime_revision: runtime_revision(),
+                    catalog_revision: catalog_revision(),
+                    provider_state_revision: provider_revision(),
+                    model_revision: model_revision(),
+                    agent_revision: agent_revision(),
+                    recipe_registry_revision: registry_revision(),
+                    selected_suffix: selected_suffix.clone(),
+                    request_fingerprint,
+                    request,
+                },
+            );
+            push_run_event(
+                records,
+                session_id,
+                parent_run_id,
+                EventPayload::DelegationStarted {
+                    invocation_id,
+                    child_session_id,
+                },
+            );
+            push_run_event(
+                records,
+                session_id,
+                parent_run_id,
+                if attached {
+                    EventPayload::DelegationRunAttached {
+                        invocation_id,
+                        child_run_id,
+                    }
+                } else {
+                    EventPayload::DelegationRunStarted {
+                        invocation_id,
+                        child_run_id,
+                    }
+                },
+            );
+            push_run_event(
+                records,
+                session_id,
+                parent_run_id,
+                EventPayload::DelegationFinished {
+                    invocation_id,
+                    child_session_id,
+                    child_run_id: Some(child_run_id),
+                    status: SessionStatus::Completed,
+                    reason: None,
+                },
+            );
+        };
+        let child_session_id = SessionId(Uuid::from_u128(300));
+        append_lifecycle(
+            &mut records,
+            InvocationId(Uuid::from_u128(301)),
+            child_session_id,
+            RunId(Uuid::from_u128(302)),
+            DelegateRequestPayload {
+                description: "Golden child".into(),
+                prompt: "Inspect the current event format".into(),
+                title: SessionTitle::new("Golden child").expect("title"),
+                resume_session_id: None,
+                inherit_context: false,
+                seeded_context: Vec::new(),
+                background: true,
+                staged_skill: None,
+            },
+            false,
+        );
+        append_lifecycle(
+            &mut records,
+            InvocationId(Uuid::from_u128(303)),
+            child_session_id,
+            RunId(Uuid::from_u128(304)),
+            DelegateRequestPayload {
+                description: "Golden resumed child".into(),
+                prompt: "Resume using the current event format".into(),
+                title: SessionTitle::new("Golden child").expect("title"),
+                resume_session_id: Some(child_session_id),
+                inherit_context: false,
+                seeded_context: Vec::new(),
+                background: false,
+                staged_skill: None,
+            },
+            true,
         );
         records
     }
@@ -3194,6 +3542,34 @@ mod tests {
             assert_eq!(projected.meta.last_event_seq, 1);
             assert_eq!(projected.creation_agent.schema.value(), 6);
         }
+    }
+
+    #[test]
+    fn current_delegation_event_fixture_is_stable_and_readable() {
+        let records = current_delegation_records();
+        let bytes = records
+            .iter()
+            .flat_map(|event| {
+                let mut line = serde_json::to_vec(event).expect("serialize event");
+                line.push(b'\n');
+                line
+            })
+            .collect::<Vec<_>>();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/events-current-delegation.jsonl");
+        if std::env::var_os("COOKIE_UPDATE_EVENT_FIXTURE").is_some() {
+            fs::write(&fixture, &bytes).expect("update current delegation fixture");
+        }
+        assert_eq!(
+            fs::read(&fixture).expect("current delegation fixture"),
+            bytes
+        );
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        fs::copy(fixture, &path).expect("copy current fixture");
+        let log = EventLog::open(path, records[0].session_id).expect("open current fixture");
+        assert!(log.diagnostics().is_empty());
+        assert_eq!(log.events().len(), records.len());
     }
 
     #[test]

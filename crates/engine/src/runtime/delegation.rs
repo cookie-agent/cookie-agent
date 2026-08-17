@@ -1,9 +1,9 @@
 use std::sync::{Arc, atomic::Ordering};
 
 use cookie_agent_protocol::{
-    DelegatedContextRole, DelegatedContextTurn, InvocationId, PersistedToolResult as ToolResult,
-    RunId, RunStartParams, SafeToolError, SessionId, SessionOrigin, SessionStatus, ToolCallId,
-    ToolCallTermination, ToolTerminationOutcome,
+    DelegateRequestPayload, DelegatedContextRole, DelegatedContextTurn, InvocationId,
+    PersistedToolResult as ToolResult, RunId, RunStartParams, SafeToolError, SessionId,
+    SessionOrigin, SessionStatus, ToolCallId, ToolCallTermination, ToolTerminationOutcome,
 };
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -17,7 +17,7 @@ use super::{
 use crate::{
     EngineHistoryView,
     delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation},
-    journal::{self, JournalError},
+    delegation_events::{self, DelegationEventError},
     policy::{self, FrozenRunPolicy, freeze_delegated_agent_policy, resolve_agent},
     session,
 };
@@ -60,7 +60,7 @@ impl Engine {
                 parent_session_id: owner,
                 ..
             } if owner == parent_session_id
-        ) && self.inner.journal.entries().iter().any(|entry| {
+        ) && self.inner.delegation_events.entries().iter().any(|entry| {
             entry.reservation.parent_session_id == parent_session_id
                 && entry.reservation.child_session_id == resume_session_id
         });
@@ -272,7 +272,7 @@ impl Engine {
                 "resume_session_id and inherit_context cannot both be set".into(),
             ));
         }
-        if let Some(existing) = self.journal_get(invocation_id).await?
+        if let Some(existing) = self.delegation_event_get(invocation_id).await?
             && existing.child_run_id.is_some()
         {
             validate_redelivery_mode(existing.request.background, invocation.background)?;
@@ -311,7 +311,7 @@ impl Engine {
             .runs
             .get(&invocation.parent_run_id)
             .is_some_and(|run| run.status == SessionStatus::Interrupted)
-            && self.journal_get(invocation_id).await?.is_none()
+            && self.delegation_event_get(invocation_id).await?.is_none()
         {
             return Err(EngineError::MissingTool(
                 "delegate parent run is interrupted; use recovery".into(),
@@ -412,17 +412,17 @@ impl Engine {
             .as_ref()
             .and_then(|child| child.meta.title.clone())
             .unwrap_or(proposed_title);
-        let request = journal::DelegateRequestPayload {
+        let request = DelegateRequestPayload {
             description: invocation.description,
             prompt: invocation.prompt,
             title,
             resume_session_id: invocation.resume_session_id,
             inherit_context: invocation.inherit_context,
             seeded_context,
-            background: Some(invocation.background),
+            background: invocation.background,
             staged_skill,
         };
-        let fingerprint = journal::delegation_request_fingerprint(
+        let fingerprint = delegation_events::delegation_request_fingerprint(
             &child_policy.agent,
             &child_policy.selected_suffix,
             &request,
@@ -498,8 +498,9 @@ impl Engine {
         {
             Ok(child) => child,
             Err(error) => {
-                if is_journal_append_failure(&error) {
-                    let result = delegate_failure_result(None, "delegate journal append failed");
+                if is_delegation_event_append_failure(&error) {
+                    let result =
+                        delegate_failure_result(None, "delegate reservation event append failed");
                     self.resolve_delegate_failure_if_pending(
                         invocation.parent_session_id,
                         invocation.parent_run_id,
@@ -514,7 +515,7 @@ impl Engine {
         self.transfer_pending_skill_fork(invocation.parent_tool_call_id, child.session_id);
         self.publish_admission_child(invocation_id, generation, child.session_id)?;
         let entry = self
-            .journal_get(invocation_id)
+            .delegation_event_get(invocation_id)
             .await?
             .ok_or_else(|| EngineError::MissingTool("delegate reservation disappeared".into()))?;
         #[cfg(test)]
@@ -556,9 +557,9 @@ impl Engine {
                     child_run_id: Some(child_run_id),
                 });
             }
-            let journal = self.inner.journal.clone();
+            let delegation_events = self.inner.delegation_events.clone();
             self.spawn_admission_blocking(move || {
-                journal.mark_run_attached(invocation_id, child_run_id)
+                delegation_events.mark_run_attached(invocation_id, child_run_id)
             })
             .await?;
             #[cfg(test)]
@@ -571,9 +572,9 @@ impl Engine {
                 child_run_id,
                 previous_record,
             ) {
-                let journal = self.inner.journal.clone();
+                let delegation_events = self.inner.delegation_events.clone();
                 self.spawn_admission_blocking(move || {
-                    journal.mark_terminated(invocation_id, SessionStatus::Cancelled)
+                    delegation_events.mark_finished(invocation_id, SessionStatus::Cancelled)
                 })
                 .await?;
                 return Err(error);
@@ -587,9 +588,9 @@ impl Engine {
                 match self.spawn_background_monitor_gated(handle) {
                     Ok(release) => Some(release),
                     Err(error) => {
-                        let journal = self.inner.journal.clone();
+                        let delegation_events = self.inner.delegation_events.clone();
                         self.spawn_admission_blocking(move || {
-                            journal.mark_terminated(invocation_id, SessionStatus::Cancelled)
+                            delegation_events.mark_finished(invocation_id, SessionStatus::Cancelled)
                         })
                         .await?;
                         return Err(error);
@@ -628,18 +629,18 @@ impl Engine {
             {
                 Ok(admission) => admission,
                 Err(error) => {
-                    let journal = self.inner.journal.clone();
+                    let delegation_events = self.inner.delegation_events.clone();
                     self.spawn_admission_blocking(move || {
-                        journal.mark_terminated(invocation_id, SessionStatus::Cancelled)
+                        delegation_events.mark_finished(invocation_id, SessionStatus::Cancelled)
                     })
                     .await?;
                     return Err(error);
                 }
             };
             if !admission.accepted {
-                let journal = self.inner.journal.clone();
+                let delegation_events = self.inner.delegation_events.clone();
                 self.spawn_admission_blocking(move || {
-                    journal.mark_terminated(invocation_id, SessionStatus::Cancelled)
+                    delegation_events.mark_finished(invocation_id, SessionStatus::Cancelled)
                 })
                 .await?;
                 return Err(EngineError::MissingTool(
@@ -647,9 +648,9 @@ impl Engine {
                 ));
             }
             let Some(admission_seq) = admission.admission_seq else {
-                let journal = self.inner.journal.clone();
+                let delegation_events = self.inner.delegation_events.clone();
                 self.spawn_admission_blocking(move || {
-                    journal.mark_terminated(invocation_id, SessionStatus::Cancelled)
+                    delegation_events.mark_finished(invocation_id, SessionStatus::Cancelled)
                 })
                 .await?;
                 let _ = self.cancel_run_durably(
@@ -808,10 +809,10 @@ impl Engine {
                     .lock()
                     .map_err(|_| EngineError::ActorStopped)?
                     .retain(|session_id| *session_id != child.session_id);
-                let journal = self.inner.journal.clone();
+                let delegation_events = self.inner.delegation_events.clone();
                 let _ = self
                     .spawn_admission_blocking(move || {
-                        journal.mark_terminated(invocation_id, SessionStatus::Failed)
+                        delegation_events.mark_finished(invocation_id, SessionStatus::Failed)
                     })
                     .await;
                 let terminalized = self
@@ -851,10 +852,10 @@ impl Engine {
         {
             Ok(run_id) => run_id,
             Err(error) => {
-                if is_journal_append_failure(&error) {
+                if is_delegation_event_append_failure(&error) {
                     let result = delegate_failure_result(
                         Some(entry.reservation.child_session_id),
-                        "delegate journal run confirmation failed",
+                        "delegate run event confirmation failed",
                     );
                     let _ = self
                         .resolve_delegate_failure_if_pending(
@@ -865,10 +866,10 @@ impl Engine {
                         )
                         .await;
                 }
-                let journal = self.inner.journal.clone();
+                let delegation_events = self.inner.delegation_events.clone();
                 let _ = self
                     .spawn_admission_blocking(move || {
-                        journal.mark_terminated(invocation_id, SessionStatus::Failed)
+                        delegation_events.mark_finished(invocation_id, SessionStatus::Failed)
                     })
                     .await;
                 let terminalized = self
@@ -985,6 +986,11 @@ impl Engine {
                 | SessionStatus::Cancelled
                 | SessionStatus::Failed
                 | SessionStatus::Interrupted => {
+                    let delegation_events = self.inner.delegation_events.clone();
+                    self.spawn_admission_blocking(move || {
+                        delegation_events.mark_finished(handle.invocation_id, status)
+                    })
+                    .await?;
                     let result = terminal_delegate_result(&child, handle.child_run_id, status);
                     let mut records = self
                         .inner
@@ -1027,13 +1033,15 @@ impl Engine {
         self.await_delegate(handle).await
     }
 
-    pub(super) async fn journal_get(
+    pub(super) async fn delegation_event_get(
         &self,
         invocation_id: InvocationId,
-    ) -> Result<Option<journal::JournalEntry>, EngineError> {
-        let journal = self.inner.journal.clone();
-        self.spawn_admission_blocking(move || Ok::<_, EngineError>(journal.get(invocation_id)))
-            .await
+    ) -> Result<Option<delegation_events::DelegationEntry>, EngineError> {
+        let delegation_events = self.inner.delegation_events.clone();
+        self.spawn_admission_blocking(move || {
+            Ok::<_, EngineError>(delegation_events.get(invocation_id))
+        })
+        .await
     }
 
     pub(super) fn clear_delegate_admissions(&self, invocation_id: InvocationId) {
@@ -1137,7 +1145,7 @@ impl Engine {
 
     pub(super) async fn ensure_delegate_run(
         &self,
-        entry: &journal::JournalEntry,
+        entry: &delegation_events::DelegationEntry,
         admission: Option<(InvocationId, u64)>,
     ) -> Result<RunId, EngineError> {
         if entry.terminal_status.is_some() {
@@ -1167,7 +1175,7 @@ impl Engine {
         }
         let child = self.inner.store.get(entry.reservation.child_session_id)?;
         if let Some(staged_skill) = &entry.request.staged_skill {
-            self.stage_child_skill_from_journal(entry.reservation.child_session_id, staged_skill);
+            self.stage_child_skill_from_event(entry.reservation.child_session_id, staged_skill);
         }
         if let Some((invocation_id, generation)) = admission {
             self.mark_admission_starting(invocation_id, generation)?;
@@ -1255,18 +1263,19 @@ impl Engine {
             let _ = hook.reached.send(());
             hook.release.wait().await;
         }
-        let journal = self.inner.journal.clone();
+        let delegation_events = self.inner.delegation_events.clone();
         let invocation_id = entry.reservation.invocation_id;
         let confirmation = self
-            .spawn_admission_blocking(move || journal.mark_run_started(invocation_id, run_id))
+            .spawn_admission_blocking(move || {
+                delegation_events.mark_run_started(invocation_id, run_id)
+            })
             .await;
         if let Err(error) = confirmation {
-            // A failed confirmation may have poisoned the sole journal writer.
             // The child already has an active run, so terminally cancel it before
             // the caller resolves the parent through its actor.
             let _ = self.cancel_run_durably(
                 run_id,
-                Some("delegate journal run confirmation failed".into()),
+                Some("delegate run event confirmation failed".into()),
             );
             return Err(error);
         }
@@ -1427,9 +1436,11 @@ impl Engine {
             })
             .await
             .unwrap_or(false);
-        let journal = self.inner.journal.clone();
-        self.spawn_admission_blocking(move || journal.mark_terminated(invocation_id, status))
-            .await?;
+        let delegation_events = self.inner.delegation_events.clone();
+        self.spawn_admission_blocking(move || {
+            delegation_events.mark_finished(invocation_id, status)
+        })
+        .await?;
         if let Ok(mut records) = self.inner.delegations_by_session.lock()
             && records
                 .get(&child_session_id)
@@ -1509,12 +1520,14 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let child = self.inner.store.get(child_session_id)?;
         let entry = self
-            .journal_get(invocation_id)
+            .delegation_event_get(invocation_id)
             .await?
-            .ok_or_else(|| EngineError::MissingTool("delegate journal entry is missing".into()))?;
+            .ok_or_else(|| {
+                EngineError::MissingTool("delegate reservation event is missing".into())
+            })?;
         if entry.reservation.child_session_id != child_session_id {
             return Err(EngineError::MissingTool(
-                "delegate journal child does not match completion monitor".into(),
+                "delegate reservation child does not match completion monitor".into(),
             ));
         }
         let parent_session_id = entry.reservation.parent_session_id;
@@ -1798,9 +1811,12 @@ impl Engine {
             .ok_or_else(|| {
                 EngineError::MissingTool("queued subagent registry entry is missing".into())
             })?;
-        let entry = self.journal_get(invocation_id).await?.ok_or_else(|| {
-            EngineError::MissingTool("queued subagent reservation is missing".into())
-        })?;
+        let entry = self
+            .delegation_event_get(invocation_id)
+            .await?
+            .ok_or_else(|| {
+                EngineError::MissingTool("queued subagent reservation is missing".into())
+            })?;
         let child_run_id = self.ensure_delegate_run(&entry, None).await?;
         let removed = {
             let mut records = self
@@ -1918,7 +1934,7 @@ impl Engine {
             .and_then(|record| record.child_run_id)
             .or_else(|| {
                 self.inner
-                    .journal
+                    .delegation_events
                     .get(invocation_id)
                     .and_then(|entry| entry.child_run_id)
             });
@@ -2094,9 +2110,9 @@ impl Engine {
             let cancellation_reason = reason
                 .as_deref()
                 .unwrap_or("queued subagent cancelled before startup");
-            let journal = self.inner.journal.clone();
+            let delegation_events = self.inner.delegation_events.clone();
             self.spawn_admission_blocking(move || {
-                journal.mark_terminated(record.invocation_id, SessionStatus::Cancelled)
+                delegation_events.mark_finished(record.invocation_id, SessionStatus::Cancelled)
             })
             .await?;
             self.void_runless_pending_inputs(child_session_id).await?;
@@ -2130,7 +2146,7 @@ impl Engine {
             .or(handle.child_run_id)
             .or_else(|| {
                 self.inner
-                    .journal
+                    .delegation_events
                     .get(handle.invocation_id)
                     .and_then(|entry| entry.child_run_id)
             })
@@ -2225,6 +2241,24 @@ impl Engine {
     }
 
     #[cfg(test)]
+    pub(crate) fn install_delegation_reservation_hook(
+        &self,
+    ) -> (oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
+        let (reached, receiver) = oneshot::channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        *self
+            .inner
+            .delegation_reservation_hook
+            .lock()
+            .expect("delegation reservation hook lock poisoned") =
+            Some(Arc::new(super::PagingRaceHook {
+                reached: std::sync::Mutex::new(Some(reached)),
+                release: Arc::clone(&release),
+            }));
+        (receiver, release)
+    }
+
+    #[cfg(test)]
     pub(crate) fn install_resume_attachment_hook(
         &self,
     ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
@@ -2294,7 +2328,7 @@ impl Engine {
 
     pub(super) fn rebuild_delegation_registry(
         &self,
-        entries: &[journal::JournalEntry],
+        entries: &[delegation_events::DelegationEntry],
     ) -> Result<(), EngineError> {
         let mut queued_roots = Vec::new();
         for entry in entries {
@@ -2562,7 +2596,7 @@ pub(super) fn delegate_client_run_id(
         .expect("bounded delegate client run id")
 }
 
-pub(super) fn render_delegate_input(request: &journal::DelegateRequestPayload) -> String {
+pub(super) fn render_delegate_input(request: &DelegateRequestPayload) -> String {
     request.prompt.clone()
 }
 
@@ -2790,15 +2824,9 @@ pub(super) fn delegate_failure_result(
 }
 
 fn validate_redelivery_mode(
-    durable_background: Option<bool>,
+    durable_background: bool,
     redelivery_background: bool,
 ) -> Result<(), EngineError> {
-    let Some(durable_background) = durable_background else {
-        return Err(EngineError::MissingTool(
-            "delegate redelivery execution mode is unavailable in this legacy journal; start a new delegation"
-                .into(),
-        ));
-    };
     if durable_background != redelivery_background {
         let durable = if durable_background {
             "background"
@@ -2817,12 +2845,12 @@ fn validate_redelivery_mode(
     Ok(())
 }
 
-pub(super) fn is_journal_append_failure(error: &EngineError) -> bool {
+pub(super) fn is_delegation_event_append_failure(error: &EngineError) -> bool {
     matches!(
         error,
-        EngineError::Journal(
-            JournalError::Event(_) | JournalError::Poisoned | JournalError::Stopped
-        ) | EngineError::ActorStopped
+        EngineError::DelegationEvents(DelegationEventError::Session(
+            crate::session::SessionError::Event(_)
+        )) | EngineError::ActorStopped
     )
 }
 
@@ -2842,14 +2870,14 @@ mod concurrency_tests {
 
     #[test]
     fn redelivery_execution_mode_must_match_in_both_directions() {
-        assert!(validate_redelivery_mode(Some(false), false).is_ok());
-        assert!(validate_redelivery_mode(Some(true), true).is_ok());
-        let foreground_to_background = validate_redelivery_mode(Some(false), true)
+        assert!(validate_redelivery_mode(false, false).is_ok());
+        assert!(validate_redelivery_mode(true, true).is_ok());
+        let foreground_to_background = validate_redelivery_mode(false, true)
             .expect_err("foreground to background must fail")
             .to_string();
         assert!(foreground_to_background.contains("durable invocation is foreground"));
         assert!(foreground_to_background.contains("requested background"));
-        let background_to_foreground = validate_redelivery_mode(Some(true), false)
+        let background_to_foreground = validate_redelivery_mode(true, false)
             .expect_err("background to foreground must fail")
             .to_string();
         assert!(background_to_foreground.contains("durable invocation is background"));

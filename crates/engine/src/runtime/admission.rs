@@ -4,8 +4,9 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    AgentId, DelegatedContextTurn, InvocationId, RunId, RunSelection, SessionId, SessionMeta,
-    SessionOrigin, SessionStatus, SessionTitle, SessionTitleChange, Sha256Digest, ToolCallId,
+    AgentId, DelegateRequestPayload, DelegatedContextTurn, InvocationId, RunId, RunSelection,
+    SessionId, SessionMeta, SessionOrigin, SessionStatus, SessionTitle, SessionTitleChange,
+    Sha256Digest, ToolCallId,
 };
 use tokio::sync::oneshot;
 
@@ -14,7 +15,7 @@ use super::{
     delegation::{DelegationRecord, cancelled_delegate_result_with_reason},
     helpers::{invocation_id, session_depth},
 };
-use crate::{journal, policy::FrozenRunPolicy};
+use crate::{delegation_events, policy::FrozenRunPolicy};
 
 impl Engine {
     pub(crate) fn spawn_admission_task<F>(&self, runtime: &tokio::runtime::Handle, task: F) -> bool
@@ -81,7 +82,7 @@ impl Engine {
         agent: &AgentId,
         child_policy: FrozenRunPolicy,
         request_fingerprint: Sha256Digest,
-        request: journal::DelegateRequestPayload,
+        request: DelegateRequestPayload,
         admission: Option<(InvocationId, u64)>,
     ) -> Result<SessionMeta, EngineError> {
         let child_runtime = Arc::clone(&child_policy.runtime);
@@ -143,12 +144,12 @@ impl Engine {
             return Err(EngineError::MissingTool("delegate admission denied".into()));
         }
         let invocation_id = invocation_id(parent_session_id, parent_run_id, parent_tool_call_id);
-        let journal = self.inner.journal.clone();
-        let journal_agent = child_policy.agent.clone();
-        let journal_suffix = child_policy.selected_suffix.clone();
+        let delegation_events = self.inner.delegation_events.clone();
+        let reserved_agent = child_policy.agent.clone();
+        let reserved_suffix = child_policy.selected_suffix.clone();
         let snapshot = &child_runtime.result.snapshot;
-        let journal_revisions = journal::DelegationRuntimeRevisions {
-            manifest_revision: journal_suffix
+        let reserved_revisions = delegation_events::DelegationRuntimeRevisions {
+            manifest_revision: reserved_suffix
                 .first()
                 .ok_or(EngineError::NoRunnableModel)?
                 .manifest_revision
@@ -162,19 +163,38 @@ impl Engine {
         };
         let entry = self
             .spawn_admission_blocking(move || {
-                journal.reserve(
+                delegation_events.reserve(
                     invocation_id,
                     parent_session_id,
                     parent_run_id,
                     parent_tool_call_id,
-                    journal_agent,
-                    journal_revisions,
-                    journal_suffix,
+                    reserved_agent,
+                    reserved_revisions,
+                    reserved_suffix,
                     request_fingerprint,
                     request,
                 )
             })
             .await?;
+        #[cfg(test)]
+        let reservation_hook = self
+            .inner
+            .delegation_reservation_hook
+            .lock()
+            .expect("delegation reservation hook lock poisoned")
+            .take();
+        #[cfg(test)]
+        if let Some(hook) = reservation_hook {
+            if let Some(reached) = hook
+                .reached
+                .lock()
+                .expect("delegation reservation reached lock poisoned")
+                .take()
+            {
+                let _ = reached.send(());
+            }
+            hook.release.notified().await;
+        }
         if admission.is_some_and(|(invocation_id, generation)| {
             !self.admission_generation_live(invocation_id, generation)
         }) {
@@ -212,8 +232,8 @@ impl Engine {
                 )
                 .await?;
             }
-            let journal = self.inner.journal.clone();
-            self.spawn_admission_blocking(move || journal.mark_linked(invocation_id))
+            let delegation_events = self.inner.delegation_events.clone();
+            self.spawn_admission_blocking(move || delegation_events.mark_started(invocation_id))
                 .await?;
             return Ok(existing.metadata());
         }
@@ -288,8 +308,8 @@ impl Engine {
             )
             .await?;
         }
-        let journal = self.inner.journal.clone();
-        self.spawn_admission_blocking(move || journal.mark_linked(invocation_id))
+        let delegation_events = self.inner.delegation_events.clone();
+        self.spawn_admission_blocking(move || delegation_events.mark_started(invocation_id))
             .await?;
         Ok(self.inner.store.get(child_session_id)?.metadata())
     }

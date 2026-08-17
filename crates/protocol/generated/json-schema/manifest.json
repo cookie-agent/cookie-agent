@@ -1,5 +1,4 @@
 {
-  "delegation_journal_schema_version": 15,
   "protocol_version": 9,
   "schemas": [
     "ClientHello.schema.json",
@@ -91,7 +90,6 @@
     "ProviderDisconnectParams.schema.json",
     "ProviderDisconnectResult.schema.json",
     "ProviderDisconnectError.schema.json",
-    "ModelSnapshotManifestV1.schema.json",
-    "StoredDelegationJournalRecord.schema.json"
+    "ModelSnapshotManifestV1.schema.json"
   ]
 }

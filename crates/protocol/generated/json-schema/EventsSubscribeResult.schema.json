@@ -780,6 +780,64 @@
         "precedence_reason"
       ]
     },
+    "DelegateRequestPayload": {
+      "type": "object",
+      "properties": {
+        "background": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "inherit_context": {
+          "type": "boolean"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "resume_session_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "seeded_context": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DelegatedContextTurn"
+          },
+          "maxItems": 65536
+        },
+        "staged_skill": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StagedSkillPayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "description": "Nonblank control-free UTF-8 session title.",
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "prompt",
+        "title",
+        "resume_session_id",
+        "inherit_context",
+        "seeded_context",
+        "background",
+        "staged_skill"
+      ]
+    },
     "DelegatedContextRole": {
       "type": "string",
       "enum": [
@@ -801,6 +859,39 @@
       "required": [
         "role",
         "text"
+      ]
+    },
+    "DelegationReservation": {
+      "type": "object",
+      "properties": {
+        "child_session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "invocation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "parent_run_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "parent_session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "parent_tool_call_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "invocation_id",
+        "parent_session_id",
+        "parent_run_id",
+        "parent_tool_call_id",
+        "child_session_id"
       ]
     },
     "EventPayload": {
@@ -1695,6 +1786,206 @@
             "type",
             "tool_call_id",
             "child_session_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "agent_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "catalog_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "child_agent": {
+              "$ref": "#/$defs/AgentSnapshot"
+            },
+            "manifest_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "model_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "provider_state_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "recipe_registry_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "request": {
+              "$ref": "#/$defs/DelegateRequestPayload"
+            },
+            "request_fingerprint": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "reservation": {
+              "$ref": "#/$defs/DelegationReservation"
+            },
+            "runtime_revision": {
+              "type": "string",
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "selected_suffix": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/FrozenModelBinding"
+              },
+              "maxItems": 256,
+              "minItems": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "delegation_reserved"
+            }
+          },
+          "required": [
+            "type",
+            "reservation",
+            "child_agent",
+            "manifest_revision",
+            "runtime_revision",
+            "catalog_revision",
+            "provider_state_revision",
+            "model_revision",
+            "agent_revision",
+            "recipe_registry_revision",
+            "selected_suffix",
+            "request_fingerprint",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "child_session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "delegation_started"
+            }
+          },
+          "required": [
+            "type",
+            "invocation_id",
+            "child_session_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "child_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "delegation_run_started"
+            }
+          },
+          "required": [
+            "type",
+            "invocation_id",
+            "child_run_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "child_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "delegation_run_attached"
+            }
+          },
+          "required": [
+            "type",
+            "invocation_id",
+            "child_run_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "child_run_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            },
+            "child_session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "reason": {
+              "description": "Control-free bounded safe error text.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "status": {
+              "$ref": "#/$defs/SessionStatus"
+            },
+            "type": {
+              "type": "string",
+              "const": "delegation_finished"
+            }
+          },
+          "required": [
+            "type",
+            "invocation_id",
+            "child_session_id",
+            "child_run_id",
+            "status",
+            "reason"
           ]
         },
         {
@@ -5057,6 +5348,70 @@
             "title"
           ]
         }
+      ]
+    },
+    "StagedSkillPayload": {
+      "type": "object",
+      "properties": {
+        "args": {
+          "type": "string"
+        },
+        "base_dir": {
+          "type": "string"
+        },
+        "grants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PermissionRule"
+          },
+          "maxItems": 256
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/StagedSkillProvenance"
+        },
+        "rendered_body": {
+          "type": "string"
+        },
+        "source_path": {
+          "type": "string"
+        },
+        "supporting_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "provenance",
+        "name",
+        "args",
+        "rendered_body",
+        "source_path",
+        "base_dir",
+        "supporting_files",
+        "grants",
+        "model"
+      ]
+    },
+    "StagedSkillProvenance": {
+      "type": "string",
+      "enum": [
+        "skill_fork"
       ]
     },
     "StoredEvent": {

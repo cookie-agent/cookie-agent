@@ -41,9 +41,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     actor::SessionActor,
+    delegation_events::{DelegationEventError, DelegationEventStore},
     events::{self, EventLogError, OutputHub},
     grant_journal::{GrantInvalidationJournal, GrantJournalError},
-    journal::{DelegationJournal, JournalError},
     model_history,
     model_snapshots::{prepare_runtime_manifest, validate_referenced_binding},
     permissions::{ApprovalStore, PermissionPipeline},
@@ -100,7 +100,7 @@ pub enum EngineError {
     #[error(transparent)]
     Session(#[from] SessionError),
     #[error(transparent)]
-    Journal(#[from] JournalError),
+    DelegationEvents(#[from] DelegationEventError),
     #[error(transparent)]
     Event(#[from] EventLogError),
     #[error(transparent)]
@@ -721,7 +721,7 @@ pub(crate) struct Inner {
     pub(crate) artifacts: Arc<ArtifactStore>,
     mutation_locks: Mutex<HashMap<PreparedSerializationKey, Arc<tokio::sync::Mutex<()>>>>,
     pub(crate) store: Arc<SessionStore>,
-    pub(crate) journal: Arc<DelegationJournal>,
+    pub(crate) delegation_events: Arc<DelegationEventStore>,
     pub(crate) grant_journal: Arc<GrantInvalidationJournal>,
     pub(crate) model_manager: Arc<ModelManager>,
     published_runtime: ArcSwap<PublishedRuntime>,
@@ -784,6 +784,8 @@ pub(crate) struct Inner {
     #[cfg(test)]
     skill_fork_reservation_hook: Mutex<Option<Arc<PagingRaceHook>>>,
     #[cfg(test)]
+    delegation_reservation_hook: Mutex<Option<Arc<PagingRaceHook>>>,
+    #[cfg(test)]
     resume_rollback_hook: Mutex<Option<Arc<ResumeAdmissionHook>>>,
     #[cfg(test)]
     admission_blocking_hook: Mutex<Option<AdmissionBlockingHook>>,
@@ -838,7 +840,7 @@ impl Engine {
         }
         let mut tools = options.tools;
         tools.push(mcp.clone());
-        let journal = DelegationJournal::open(store.project_dir_path().join("delegations.jsonl"))?;
+        let delegation_events = DelegationEventStore::open(Arc::clone(&store))?;
         let grant_journal = GrantInvalidationJournal::open(
             store.project_dir_path().join("grant-invalidations.jsonl"),
         )?;
@@ -857,7 +859,7 @@ impl Engine {
                 artifacts,
                 mutation_locks: Mutex::new(HashMap::new()),
                 store,
-                journal,
+                delegation_events,
                 grant_journal,
                 model_manager: options.model_manager,
                 published_runtime: ArcSwap::from(published_runtime),
@@ -919,6 +921,8 @@ impl Engine {
                 resume_attachment_hook: Mutex::new(None),
                 #[cfg(test)]
                 skill_fork_reservation_hook: Mutex::new(None),
+                #[cfg(test)]
+                delegation_reservation_hook: Mutex::new(None),
                 #[cfg(test)]
                 resume_rollback_hook: Mutex::new(None),
                 #[cfg(test)]
@@ -1296,7 +1300,7 @@ impl Engine {
                 }
             }
         }
-        for entry in self.inner.journal.entries() {
+        for entry in self.inner.delegation_events.entries() {
             let manifest = runtime
                 .manifests
                 .require(&entry.revisions.manifest_revision)?;
@@ -1375,8 +1379,8 @@ impl Engine {
         self.inner.mcp.statuses()
     }
 
-    /// Stops new session mailbox traffic, cancels active work, and joins the
-    /// journal worker. Existing client clones may keep a session mailbox alive.
+    /// Stops new session mailbox traffic and cancels active work. Existing
+    /// client clones may keep a session mailbox alive.
     pub async fn shutdown(&self) {
         self.inner
             .admission_tasks_closing
@@ -1433,7 +1437,6 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
-        self.inner.journal.shutdown();
     }
 }
 

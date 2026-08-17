@@ -236,7 +236,7 @@ impl Engine {
     pub fn children(&self, id: SessionId) -> Vec<cookie_agent_protocol::ChildSummary> {
         let known: HashSet<_> = self
             .inner
-            .journal
+            .delegation_events
             .entries()
             .into_iter()
             .map(|entry| {

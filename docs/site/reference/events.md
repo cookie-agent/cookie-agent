@@ -33,6 +33,7 @@ the generated `EventPayload` schema with the committed additive baseline.
 | Run | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_interrupted` |
 | Model | `model_attempt_started`, `text_delta`, `reasoning_delta`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback` |
 | Tools | `tool_call_started`, `tool_call_progress`, `tool_call_terminated`, `tool_output_elided`, `tool_stdin_submitted`, `tool_call_linked`, `delegate_queued`, `delegate_finished`, `delegate_finished_v2`, `delegate_child_terminated` |
+| Delegation durability | `delegation_reserved`, `delegation_started`, `delegation_run_started`, `delegation_run_attached`, `delegation_finished` |
 | Approvals | `approval_requested`, `approval_evaluated`, `approval_escalated`, `approval_user_decision_recorded`, `approval_finalized`, `approval_cancelled`, `approval_doom_loop_detected`, `tree_approval_grant_committed` |
 | Internal agents | `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_completed`, `internal_agent_failed`, `internal_agent_cancelled`, `internal_agent_interrupted`, `internal_agent_fallback` |
 | Compaction | `context_checkpoint_committed`, `context_rehydrated`, `context_compaction_auto_disabled` |
@@ -53,6 +54,27 @@ child's first run and deterministically rebuilds the same initial model history
 after restart. `delegate_finished_v2` adds the delegation `invocation_id` to the
 same completion payload so repeated resumes of one child each receive exactly
 one teaser. Current engines emit the V2 completion form.
+
+The `delegation_*` lifecycle records are durable control events on the parent
+session. `delegation_reserved` contains the complete current delegate request,
+child agent snapshot, selected model suffix, runtime revisions, request
+fingerprint, and optional typed staged-skill provenance.
+`delegation_started` records publication of the child session;
+`delegation_run_started` and `delegation_run_attached` distinguish a new child
+run from attachment to an already-running resumed child. `delegation_finished`
+records the terminal status, optional recovery reason, and child session/run
+references. The existing
+`delegate_queued` and `delegate_finished_v2` events remain the model-visible
+queue and result-summary records.
+
+Engine startup projects delegation state while opening session logs. A reserved
+or started delegation without a terminal event resumes or rolls back according
+to its child and parent state. Recovery recomputes the reservation fingerprint;
+a mismatch rejects the reservation. If best-effort reading skips a corrupt
+delegation event, that delegation is not recovered, the parent session records
+the diagnostic, and unrelated delegations remain recoverable. Legacy
+`delegations.jsonl` files are ignored, so pre-release in-flight journal entries
+do not cross this upgrade.
 
 The runless `session_permission_overlay_set` event's `overlay`
 contains the complete, validated set of unique `(action, resource)` rules for

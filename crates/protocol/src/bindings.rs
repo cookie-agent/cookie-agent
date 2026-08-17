@@ -136,8 +136,7 @@ macro_rules! protocol_roots {
             ProviderDisconnectParams,
             ProviderDisconnectResult,
             ProviderDisconnectError,
-            ModelSnapshotManifestV1,
-            StoredDelegationJournalRecord
+            ModelSnapshotManifestV1
         )
     };
 }
@@ -170,7 +169,6 @@ pub fn export_json_schema_set(output: &Path) -> Result<(), BindingExportError> {
         output.join("manifest.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
             "protocol_version": PROTOCOL_VERSION,
-            "delegation_journal_schema_version": DELEGATION_JOURNAL_SCHEMA_VERSION,
             "schemas": filenames,
         }))?,
     )?;

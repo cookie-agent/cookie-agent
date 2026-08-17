@@ -91,6 +91,105 @@ pub enum SessionStatus {
     Interrupted,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DelegationReservation {
+    pub invocation_id: InvocationId,
+    pub parent_session_id: SessionId,
+    pub parent_run_id: RunId,
+    pub parent_tool_call_id: ToolCallId,
+    pub child_session_id: SessionId,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegatedContextRole {
+    User,
+    Assistant,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DelegatedContextTurn {
+    pub role: DelegatedContextRole,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum StagedSkillProvenance {
+    SkillFork,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct StagedSkillPayload {
+    pub provenance: StagedSkillProvenance,
+    pub name: String,
+    pub args: String,
+    pub rendered_body: String,
+    pub source_path: String,
+    pub base_dir: String,
+    #[schemars(length(max = 10))]
+    pub supporting_files: Vec<String>,
+    #[schemars(length(max = 256))]
+    pub grants: Vec<PermissionRule>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<ModelKey>", required)]
+    #[ts(type = "ModelKey | null")]
+    pub model: Option<ModelKey>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DelegateRequestPayload {
+    pub description: String,
+    pub prompt: String,
+    pub title: SessionTitle,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<SessionId>", required)]
+    pub resume_session_id: Option<SessionId>,
+    pub inherit_context: bool,
+    #[schemars(length(max = 65536))]
+    pub seeded_context: Vec<DelegatedContextTurn>,
+    pub background: bool,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<StagedSkillPayload>", required)]
+    pub staged_skill: Option<StagedSkillPayload>,
+}
+impl DelegateRequestPayload {
+    fn validate(&self) -> Result<(), EventSchemaError> {
+        if self.description.is_empty()
+            || self.prompt.is_empty()
+            || (self.resume_session_id.is_some() && self.inherit_context)
+            || (!self.inherit_context && !self.seeded_context.is_empty())
+            || self.seeded_context.len() > 65_536
+            || self.seeded_context.iter().any(|turn| turn.text.is_empty())
+            || self
+                .seeded_context
+                .iter()
+                .map(|turn| turn.text.len())
+                .sum::<usize>()
+                > 65_536
+        {
+            return Err(EventSchemaError::InvalidDelegationLifecycle);
+        }
+        if self.staged_skill.as_ref().is_some_and(|skill| {
+            skill.provenance != StagedSkillProvenance::SkillFork
+                || skill.name.is_empty()
+                || skill.rendered_body.is_empty()
+                || skill.source_path.is_empty()
+                || skill.base_dir.is_empty()
+                || skill.supporting_files.len() > 10
+                || skill.grants.len() > 256
+                || self.resume_session_id.is_some()
+        }) {
+            return Err(EventSchemaError::InvalidDelegationLifecycle);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
 pub struct SessionMeta {
     pub session_id: SessionId,
@@ -1573,6 +1672,51 @@ pub enum EventPayload {
         tool_call_id: ToolCallId,
         child_session_id: SessionId,
     },
+    DelegationReserved {
+        reservation: DelegationReservation,
+        child_agent: Box<AgentSnapshot>,
+        #[ts(type = "ModelSnapshotRevision")]
+        manifest_revision: ModelSnapshotRevision,
+        #[ts(type = "RuntimeRevision")]
+        runtime_revision: RuntimeRevision,
+        #[ts(type = "CatalogRevision")]
+        catalog_revision: CatalogRevision,
+        #[ts(type = "ProviderStateRevision")]
+        provider_state_revision: ProviderStateRevision,
+        #[ts(type = "ModelRevision")]
+        model_revision: ModelRevision,
+        #[ts(type = "AgentRevision")]
+        agent_revision: AgentRevision,
+        #[ts(type = "RecipeRegistryRevision")]
+        recipe_registry_revision: RecipeRegistryRevision,
+        #[schemars(length(min = 1, max = 256))]
+        selected_suffix: Vec<FrozenModelBinding>,
+        request_fingerprint: Sha256Digest,
+        request: DelegateRequestPayload,
+    },
+    DelegationStarted {
+        invocation_id: InvocationId,
+        child_session_id: SessionId,
+    },
+    DelegationRunStarted {
+        invocation_id: InvocationId,
+        child_run_id: RunId,
+    },
+    DelegationRunAttached {
+        invocation_id: InvocationId,
+        child_run_id: RunId,
+    },
+    DelegationFinished {
+        invocation_id: InvocationId,
+        child_session_id: SessionId,
+        #[serde(deserialize_with = "deserialize_required_option")]
+        #[schemars(with = "crate::NullableSchema<RunId>", required)]
+        child_run_id: Option<RunId>,
+        status: SessionStatus,
+        #[serde(deserialize_with = "deserialize_required_option")]
+        #[schemars(with = "crate::NullableSchema<SafeErrorMessage>", required)]
+        reason: Option<SafeErrorMessage>,
+    },
     DelegateQueued {
         session_id: SessionId,
         #[serde(deserialize_with = "deserialize_required_option")]
@@ -1855,6 +1999,38 @@ impl EventPayload {
                 }
             }
             Self::ToolCallTerminated { termination } => termination.validate()?,
+            Self::DelegationReserved {
+                child_agent,
+                selected_suffix,
+                request,
+                ..
+            } => {
+                request.validate()?;
+                child_agent
+                    .validate_selected_suffix(
+                        &RunSelection {
+                            agent: child_agent.agent.clone(),
+                            model: selected_suffix
+                                .first()
+                                .ok_or(EventSchemaError::InvalidDelegationLifecycle)?
+                                .selection
+                                .clone(),
+                        },
+                        selected_suffix,
+                    )
+                    .map_err(|_| EventSchemaError::InvalidDelegationLifecycle)?;
+            }
+            Self::DelegationFinished { status, .. }
+                if !matches!(
+                    status,
+                    SessionStatus::Completed
+                        | SessionStatus::Failed
+                        | SessionStatus::Interrupted
+                        | SessionStatus::Cancelled
+                ) =>
+            {
+                return Err(EventSchemaError::InvalidDelegationLifecycle);
+            }
             Self::DelegatedContextSeeded { turns, .. } => {
                 if turns.is_empty()
                     || turns.len() > 65_536
@@ -2349,6 +2525,7 @@ pub enum EventSchemaError {
     ZeroModelTurnSequence,
     InvalidToolTermination,
     InvalidDelegateFinished,
+    InvalidDelegationLifecycle,
     InvalidDelegatedContext,
     TooManyModelParts,
     ModelTurnTooLarge,
@@ -2396,6 +2573,7 @@ impl fmt::Display for EventSchemaError {
                 "tool termination outcome/result/error combination is invalid"
             }
             Self::InvalidDelegateFinished => "delegate completion payload is invalid",
+            Self::InvalidDelegationLifecycle => "delegation lifecycle payload is invalid",
             Self::InvalidDelegatedContext => "delegated context seed is invalid",
             Self::TooManyModelParts => "persisted model turn exceeds 4096 parts",
             Self::ModelTurnTooLarge => "persisted model turn exceeds 8 MiB",

@@ -1828,6 +1828,11 @@ fn reduce_event(
             state.created_at = Some(timestamp);
         }
         EventPayload::DelegatedContextSeeded { .. }
+        | EventPayload::DelegationReserved { .. }
+        | EventPayload::DelegationStarted { .. }
+        | EventPayload::DelegationRunStarted { .. }
+        | EventPayload::DelegationRunAttached { .. }
+        | EventPayload::DelegationFinished { .. }
         | EventPayload::ModelUsageRecorded { .. }
         | EventPayload::InternalAgentUsageRecorded { .. }
         | EventPayload::ToolStdinSubmitted { .. }

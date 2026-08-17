@@ -3,9 +3,9 @@
 pub mod actor;
 mod config_store;
 mod delegation_api;
+pub mod delegation_events;
 pub mod events;
 pub mod grant_journal;
-pub mod journal;
 mod mcp;
 mod media;
 mod model_bridge;
