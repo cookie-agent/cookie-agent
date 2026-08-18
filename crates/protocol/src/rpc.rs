@@ -7,6 +7,9 @@ use ts_rs::TS;
 
 use crate::*;
 
+pub const SESSION_TREE_USAGE_MISSING_SESSION_CODE: i32 = -32030;
+pub const SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE: i32 = -32031;
+
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
 #[ts(type = "\"2.0\"")]
 pub struct JsonRpcVersion(());
@@ -280,6 +283,14 @@ pub struct SessionUsageParams {
 pub struct SessionUsageResult {
     pub session_id: SessionId,
     pub usage: UsageRollup,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionTreeUsageResult {
+    pub session_id: SessionId,
+    pub usage: UsageRollup,
+    pub session_count: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]

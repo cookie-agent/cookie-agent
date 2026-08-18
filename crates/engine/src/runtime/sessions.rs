@@ -1,12 +1,13 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
 
 use cookie_agent_protocol::{
-    AgentId, AgentUsageResult, ChildSummary, GlobalUsageResult, PermissionMode, RunSelection,
-    SessionForkResult, SessionId, SessionMeta, SessionOrigin, SessionRenameChange,
-    SessionRenameParams, SessionRenameResult, SessionRevertResult, SessionUsageResult, UsageRollup,
+    AgentId, AgentUsageResult, ChildSummary, GlobalUsageResult, InvocationId, PermissionMode,
+    RunSelection, SessionForkResult, SessionId, SessionMeta, SessionOrigin, SessionRenameChange,
+    SessionRenameParams, SessionRenameResult, SessionRevertResult, SessionTreeUsageResult,
+    SessionUsageResult, UsageRollup,
 };
 
 use super::{
@@ -176,6 +177,46 @@ impl Engine {
                 &self.catalog_pricing(),
             ),
         }
+    }
+    pub fn session_tree_usage(&self, id: SessionId) -> Result<SessionTreeUsageResult, EngineError> {
+        self.inner.store.summary(id)?;
+        let summaries = self.inner.store.all_summaries();
+        let known: HashSet<_> = self
+            .inner
+            .delegation_events
+            .entries()
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry.reservation.invocation_id,
+                    entry.reservation.parent_session_id,
+                    entry.reservation.child_session_id,
+                )
+            })
+            .collect();
+        let mut children: HashMap<SessionId, Vec<(SessionId, InvocationId)>> = HashMap::new();
+        let mut rollups = HashMap::new();
+        for summary in summaries {
+            let session_id = summary.meta.session_id;
+            if let Some((parent_session_id, edge)) =
+                validated_tree_usage_edge(&summary.meta.origin, session_id, &known)
+            {
+                children.entry(parent_session_id).or_default().push(edge);
+            }
+            rollups.insert(session_id, summary.usage_rollup);
+        }
+
+        let mut usage = UsageRollup::default();
+        let session_count = merge_session_tree_usage(id, &children, &rollups, &mut usage)?;
+        Ok(SessionTreeUsageResult {
+            session_id: id,
+            usage: crate::usage::with_pricing(
+                usage,
+                &self.inner.config.runtime.pricing,
+                &self.catalog_pricing(),
+            ),
+            session_count,
+        })
     }
     pub(super) fn catalog_pricing(
         &self,
@@ -469,5 +510,107 @@ impl Engine {
             result.session = self.inner.store.get(session_id)?.metadata();
         }
         Ok(result)
+    }
+}
+
+fn validated_tree_usage_edge(
+    origin: &SessionOrigin,
+    child_session_id: SessionId,
+    known: &HashSet<(InvocationId, SessionId, SessionId)>,
+) -> Option<(SessionId, (SessionId, InvocationId))> {
+    match origin {
+        SessionOrigin::Delegated {
+            parent_session_id,
+            invocation_id,
+            ..
+        } if known.contains(&(*invocation_id, *parent_session_id, child_session_id)) => {
+            Some((*parent_session_id, (child_session_id, *invocation_id)))
+        }
+        _ => None,
+    }
+}
+
+fn merge_session_tree_usage(
+    session_id: SessionId,
+    children: &HashMap<SessionId, Vec<(SessionId, InvocationId)>>,
+    rollups: &HashMap<SessionId, UsageRollup>,
+    usage: &mut UsageRollup,
+) -> Result<u64, EngineError> {
+    let mut visited = HashSet::new();
+    let mut pending = vec![(session_id, None)];
+    let mut session_count = 0_u64;
+    while let Some((current_id, incoming_invocation)) = pending.pop() {
+        if !visited.insert(current_id) {
+            let invocation_id = incoming_invocation.expect("only descendants can repeat");
+            return Err(
+                crate::delegation_events::DelegationEventError::Corrupt(invocation_id).into(),
+            );
+        }
+        if let Some(rollup) = rollups.get(&current_id) {
+            crate::usage::merge(usage, rollup);
+            session_count = session_count.saturating_add(1);
+        }
+        if let Some(descendants) = children.get(&current_id) {
+            pending.extend(
+                descendants
+                    .iter()
+                    .map(|(child_id, invocation_id)| (*child_id, Some(*invocation_id))),
+            );
+        }
+    }
+    Ok(session_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_usage_tree_cycle_is_reported_as_delegation_corruption() {
+        let first = SessionId::new_v7();
+        let second = SessionId::new_v7();
+        let first_to_second = InvocationId::new_v7();
+        let second_to_first = InvocationId::new_v7();
+        let first_run = cookie_agent_protocol::RunId::new_v7();
+        let second_run = cookie_agent_protocol::RunId::new_v7();
+        let first_origin = SessionOrigin::Delegated {
+            root_session_id: first,
+            parent_session_id: second,
+            parent_run_id: second_run,
+            parent_tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
+            invocation_id: second_to_first,
+            depth: 2,
+        };
+        let second_origin = SessionOrigin::Delegated {
+            root_session_id: first,
+            parent_session_id: first,
+            parent_run_id: first_run,
+            parent_tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
+            invocation_id: first_to_second,
+            depth: 1,
+        };
+        let known = HashSet::from([
+            (first_to_second, first, second),
+            (second_to_first, second, first),
+        ]);
+        let mut children: HashMap<SessionId, Vec<(SessionId, InvocationId)>> = HashMap::new();
+        for (session_id, origin) in [(first, first_origin), (second, second_origin)] {
+            let (parent_id, edge) = validated_tree_usage_edge(&origin, session_id, &known)
+                .expect("matching origin and reservation triple");
+            children.entry(parent_id).or_default().push(edge);
+        }
+        let rollups = HashMap::from([
+            (first, UsageRollup::default()),
+            (second, UsageRollup::default()),
+        ]);
+        let error =
+            merge_session_tree_usage(first, &children, &rollups, &mut UsageRollup::default())
+                .expect_err("cycle must fail");
+        assert!(matches!(
+            error,
+            EngineError::DelegationEvents(
+                crate::delegation_events::DelegationEventError::Corrupt(invocation_id)
+            ) if invocation_id == second_to_first
+        ));
     }
 }

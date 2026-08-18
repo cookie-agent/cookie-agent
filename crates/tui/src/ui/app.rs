@@ -14,17 +14,18 @@ use cookie_agent_protocol::{
     AgentDescriptor, AgentId, ApprovalListParams, ApprovalListResult, ApprovalRespondError,
     ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision,
     AvailableModelDescriptor, ClientConnectId, ClientRequestId, ClientResponseId, ClientRunId,
-    EventPayload, GlobalUsageResult, McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams,
-    McpServerAddParams, McpServerEditParams, McpServerInfo, McpServerNameParams,
-    McpServerPersistParams, McpServerSetEnabledParams, McpServerState, ModelKey, ModelSelection,
-    PermissionAction, PermissionEffect, PermissionMode, PermissionRuleSource,
-    ProviderConnectParams, ProviderDescriptor, ProviderDisconnectParams, RunCancelParams,
-    RunRecallSteerParams, RunSelection, RunStartParams, RunSteerParams, RunToolStdinParams,
-    SafeDisplayText, SessionCompactParams, SessionCreateParams, SessionForkParams, SessionId,
-    SessionListParams, SessionMeta, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionSetParams, SessionRevertParams,
-    SessionSetPermissionModeParams, SessionStatus, SessionTitle, SessionTitleChange, SessionTree,
-    SessionTreeParams, SessionUsageParams, SessionUsageResult, StoredEvent, VariantId,
+    EventPayload, McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams, McpServerAddParams,
+    McpServerEditParams, McpServerInfo, McpServerNameParams, McpServerPersistParams,
+    McpServerSetEnabledParams, McpServerState, ModelKey, ModelSelection, PermissionAction,
+    PermissionEffect, PermissionMode, PermissionRuleSource, ProviderConnectParams,
+    ProviderDescriptor, ProviderDisconnectParams, RunCancelParams, RunRecallSteerParams,
+    RunSelection, RunStartParams, RunSteerParams, RunToolStdinParams,
+    SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE, SafeDisplayText, SessionCompactParams,
+    SessionCreateParams, SessionForkParams, SessionId, SessionListParams, SessionMeta,
+    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
+    SessionPermissionSetParams, SessionRevertParams, SessionSetPermissionModeParams, SessionStatus,
+    SessionTitle, SessionTitleChange, SessionTree, SessionTreeParams, SessionTreeUsageResult,
+    SessionUsageParams, SessionUsageResult, StoredEvent, VariantId,
 };
 use crossterm::{
     event::{
@@ -458,6 +459,7 @@ pub struct App {
     pub(super) permission_panel: PermissionPanel,
     pub(super) skill_panel: SkillPanel,
     pub(super) usage_panel: UsagePanel,
+    pub(super) usage_load_generation: u64,
     pub(super) cost_refreshes: HashMap<SessionId, SessionCostRefresh>,
     pub(super) next_cost_refresh_request_id: u64,
     pub(super) conversation_scroll: ConversationScroll,
@@ -605,9 +607,10 @@ pub(super) enum RpcUpdate {
         result: Result<cookie_agent_protocol::SkillsListResult, String>,
     },
     UsageLoaded {
+        generation: u64,
         session_id: Option<SessionId>,
         session: Result<Option<SessionUsageResult>, String>,
-        global: Result<GlobalUsageResult, String>,
+        tree: Result<Option<SessionTreeUsageResult>, ClientError>,
     },
     SessionCostLoaded {
         session_id: SessionId,
@@ -812,6 +815,7 @@ impl App {
             permission_panel: PermissionPanel::default(),
             skill_panel: SkillPanel::default(),
             usage_panel: UsagePanel::default(),
+            usage_load_generation: 0,
             cost_refreshes: HashMap::new(),
             next_cost_refresh_request_id: 0,
             conversation_scroll: ConversationScroll::default(),
@@ -2022,27 +2026,29 @@ impl App {
                 }
             }
             RpcUpdate::UsageLoaded {
+                generation,
                 session_id,
                 session,
-                global,
+                tree,
             } => {
+                if generation != self.usage_load_generation {
+                    return;
+                }
                 self.usage_panel.loading = false;
                 if self.selected == session_id {
                     match session {
-                        Ok(result) => {
-                            if let Some(result) = &result
-                                && let Some(state) = self.store.sessions.get_mut(&result.session_id)
-                            {
-                                state.estimated_cost_usd = result.usage.estimated_cost_usd;
-                            }
-                            self.usage_panel.session = result;
-                        }
+                        Ok(result) => self.usage_panel.session = result,
                         Err(error) => self.status = format!("session usage failed: {error}"),
                     }
-                }
-                match global {
-                    Ok(result) => self.usage_panel.global = Some(result),
-                    Err(error) => self.status = format!("global usage failed: {error}"),
+                    match tree {
+                        Ok(result) => self.usage_panel.tree = result,
+                        Err(ClientError::Rpc(error))
+                            if error.code == SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE =>
+                        {
+                            self.usage_panel.tree_corrupt = true;
+                        }
+                        Err(error) => self.status = format!("session tree usage failed: {error}"),
+                    }
                 }
             }
             RpcUpdate::SessionCostLoaded {
@@ -2526,6 +2532,11 @@ impl App {
 
     fn load_usage(&mut self) {
         let session_id = self.selected;
+        self.usage_load_generation = self
+            .usage_load_generation
+            .checked_add(1)
+            .expect("usage load generation exhausted");
+        let generation = self.usage_load_generation;
         self.usage_panel.begin_load();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
@@ -2540,17 +2551,21 @@ impl App {
                     None => Ok(None),
                 }
             };
-            let global = async {
-                client
-                    .global_usage()
-                    .await
-                    .map_err(|error| error.to_string())
+            let tree = async {
+                match session_id {
+                    Some(session_id) => client
+                        .session_tree_usage(SessionUsageParams { session_id })
+                        .await
+                        .map(Some),
+                    None => Ok(None),
+                }
             };
-            let (session, global) = tokio::join!(session, global);
+            let (session, tree) = tokio::join!(session, tree);
             let _ = updates.send(RpcUpdate::UsageLoaded {
+                generation,
                 session_id,
                 session,
-                global,
+                tree,
             });
         });
     }
@@ -3007,11 +3022,14 @@ impl App {
                 ),
                 _ => {}
             },
-            Modal::Usage => {
-                if key.code == KeyCode::Esc {
-                    self.modal = Modal::None;
-                }
-            }
+            Modal::Usage => match key.code {
+                KeyCode::Esc => self.modal = Modal::None,
+                KeyCode::Up => self.usage_panel.scroll_up(1),
+                KeyCode::Down => self.usage_panel.scroll_down(1),
+                KeyCode::PageUp => self.usage_panel.page_up(),
+                KeyCode::PageDown => self.usage_panel.page_down(),
+                _ => {}
+            },
             Modal::None
                 if self.current_approval().is_none()
                     && !self.command_palette_visible()
@@ -4043,6 +4061,14 @@ impl App {
             return;
         }
         if self.modal != Modal::None {
+            if self.modal == Modal::Usage {
+                if up {
+                    self.usage_panel.scroll_up(3);
+                } else {
+                    self.usage_panel.scroll_down(3);
+                }
+                return;
+            }
             if self
                 .hit_map
                 .picker
@@ -6217,7 +6243,7 @@ impl App {
                 super::management::render_usage(
                     frame,
                     centered(frame.area(), 86, 78),
-                    &self.usage_panel,
+                    &mut self.usage_panel,
                     &self.theme,
                 );
             }

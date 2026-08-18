@@ -12,8 +12,8 @@ use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_config::{
     ApprovalConfig, ContextCompactionConfig, LoadedConfiguration, LoadedMcpServer, McpServerConfig,
-    McpServerSource, PluginConfig, RuntimeConfig, ServerConfig, SessionTitleConfig,
-    ToolOutputConfig, load_from_roots,
+    McpServerSource, ModelPricing, PicoUsdPerMillion, PluginConfig, RuntimeConfig, ServerConfig,
+    SessionTitleConfig, ToolOutputConfig, load_from_roots,
 };
 use cookie_agent_models::{
     ModelManager,
@@ -3474,6 +3474,58 @@ fn scripted_tool_body(id: &str, name: &str, arguments: serde_json::Value) -> Str
     format!(
         "data: {}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n",
         serde_json::json!({"choices":[{"delta":{"tool_calls":[call]},"finish_reason":null}]})
+    )
+}
+
+fn scripted_text_usage_body(
+    text: &str,
+    input: u64,
+    output: Option<u64>,
+    cache_read: u64,
+) -> String {
+    let mut usage = serde_json::json!({
+        "prompt_tokens": input,
+        "prompt_tokens_details": {"cached_tokens": cache_read},
+        "total_tokens": input + output.unwrap_or_default(),
+    });
+    if let Some(output) = output {
+        usage["completion_tokens"] = serde_json::json!(output);
+    }
+    format!(
+        "data: {}\n\ndata: {}\n\n",
+        serde_json::json!({"choices":[{"delta":{"content":text},"finish_reason":null}]}),
+        serde_json::json!({"choices":[{"delta":{},"finish_reason":"stop"}],"usage":usage}),
+    )
+}
+
+fn scripted_tool_usage_body(
+    id: &str,
+    arguments: serde_json::Value,
+    input: u64,
+    output: u64,
+    cache_read: u64,
+) -> String {
+    let call = serde_json::json!({
+        "index": 0,
+        "id": id,
+        "type": "function",
+        "function": {
+            "name": "delegate_subagent",
+            "arguments": arguments.to_string(),
+        }
+    });
+    format!(
+        "data: {}\n\ndata: {}\n\n",
+        serde_json::json!({"choices":[{"delta":{"tool_calls":[call]},"finish_reason":null}]}),
+        serde_json::json!({
+            "choices":[{"delta":{},"finish_reason":"tool_calls"}],
+            "usage": {
+                "prompt_tokens": input,
+                "prompt_tokens_details": {"cached_tokens": cache_read},
+                "completion_tokens": output,
+                "total_tokens": input + output,
+            }
+        }),
     )
 }
 
@@ -9614,6 +9666,204 @@ async fn registered_external_tool_must_declare_resource_and_cannot_bypass_deny()
     )));
     assert_eq!(captured.await.expect("resource-bound server").len(), 2);
     fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn session_tree_usage_aggregates_nested_mixed_provenance_and_evicted_children() {
+    let bodies = vec![
+        scripted_tool_usage_body(
+            "tree-root-child",
+            serde_json::json!({
+                "agent_type": "worker",
+                "description": "Tree child",
+                "prompt": "delegate one level deeper"
+            }),
+            10,
+            1,
+            1,
+        ),
+        scripted_tool_usage_body(
+            "tree-child-grandchild",
+            serde_json::json!({
+                "agent_type": "worker",
+                "description": "Tree grandchild",
+                "prompt": "finish the nested task"
+            }),
+            20,
+            2,
+            10,
+        ),
+        scripted_text_usage_body("grandchild complete", 30, None, 15),
+        scripted_text_usage_body("child complete", 40, Some(4), 0),
+        scripted_text_usage_body("root complete", 50, Some(5), 25),
+        scripted_text_usage_body("unrelated complete", 60, Some(6), 60),
+    ];
+    let (endpoint, captured, _reached, _release) =
+        scripted_server_with_delayed_response(bodies, usize::MAX).await;
+    let primary = "---\ndescription: Tree usage root\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nBuild a usage tree.\n";
+    let worker = "---\ndescription: Tree usage worker\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nContinue a usage tree.\n";
+    let (mut fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+            &endpoint,
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            Some(worker),
+        );
+    fixture.engine.shutdown().await;
+    fixture.config.runtime.delegation.max_depth = 2;
+    fixture.config.runtime.pricing.models.insert(
+        "custom.test/group/model".parse().expect("priced model"),
+        ModelPricing {
+            input_per_million_usd: Some(PicoUsdPerMillion::from_decimal_str("1").unwrap()),
+            output_per_million_usd: Some(PicoUsdPerMillion::from_decimal_str("2").unwrap()),
+            cache_read_per_million_usd: Some(PicoUsdPerMillion::from_decimal_str("0.5").unwrap()),
+            ..ModelPricing::default()
+        },
+    );
+    fixture.engine = Engine::open(EngineOptions {
+        data_dir: fixture._directory.path().join("data"),
+        cwd: fixture._directory.path().to_owned(),
+        config: fixture.config.clone(),
+        model_manager: Arc::clone(&fixture.manager),
+        tools: Vec::new(),
+    })
+    .expect("tree usage engine");
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+
+    let root = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("tree root");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: root.session_id,
+            client_run_id: ClientRunId::new("tree-usage-root").unwrap(),
+            selection: selection.clone(),
+            input: "build nested tree".into(),
+        })
+        .await
+        .expect("tree root run");
+    wait_for_session_not_running(&fixture.engine, root.session_id).await;
+    let child_id = fixture.engine.children(root.session_id)[0].session_id;
+    let grandchild_id = fixture.engine.children(child_id)[0].session_id;
+
+    let unrelated = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("unrelated root");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: unrelated.session_id,
+            client_run_id: ClientRunId::new("tree-usage-unrelated").unwrap(),
+            selection,
+            input: "not part of the tree".into(),
+        })
+        .await
+        .expect("unrelated run");
+    wait_for_session_not_running(&fixture.engine, unrelated.session_id).await;
+    assert_eq!(captured.await.expect("tree usage requests").len(), 6);
+
+    let root_events = fixture
+        .engine
+        .inner
+        .store
+        .get(root.session_id)
+        .expect("root projection")
+        .log
+        .path()
+        .to_owned();
+    fixture.engine.shutdown().await;
+    let mut made_legacy = false;
+    let rewritten = fs::read_to_string(&root_events)
+        .expect("root events")
+        .lines()
+        .map(|line| {
+            let mut value: serde_json::Value = serde_json::from_str(line).expect("event JSON");
+            if !made_legacy && value["payload"]["type"] == "model_usage_recorded" {
+                value["payload"]
+                    .as_object_mut()
+                    .expect("usage payload")
+                    .remove("estimated_cost_pico_usd");
+                made_legacy = true;
+            }
+            serde_json::to_string(&value).expect("rewritten event")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert!(made_legacy);
+    fs::write(root_events, rewritten).expect("write legacy root event");
+
+    let reopened = reopen_engine(&fixture);
+    let model: cookie_agent_protocol::ModelKey =
+        "custom.test/group/model".parse().expect("model key");
+    let provenances = [root.session_id, child_id, grandchild_id]
+        .into_iter()
+        .flat_map(|session_id| {
+            reopened
+                .inner
+                .store
+                .summary(session_id)
+                .expect("tree summary")
+                .usage_rollup
+                .by_model
+                .remove(&model)
+                .expect("model rollup")
+                .cost_provenance
+        })
+        .collect::<Vec<_>>();
+    assert!(provenances.contains(&cookie_agent_protocol::UsageCostProvenance::Legacy));
+    assert!(provenances.iter().any(|provenance| matches!(
+        provenance,
+        cookie_agent_protocol::UsageCostProvenance::Stamped(_)
+    )));
+    assert!(reopened.inner.store.evict(child_id).expect("evict child"));
+    assert!(!reopened.inner.store.is_resident(child_id));
+
+    let individual = [root.session_id, child_id, grandchild_id]
+        .map(|session_id| reopened.session_usage(session_id).unwrap().usage);
+    let expected_requests = individual
+        .iter()
+        .map(|usage| usage.request_count)
+        .sum::<u64>();
+    let expected_input = individual
+        .iter()
+        .map(|usage| usage.input_tokens)
+        .sum::<u64>();
+    let expected_output = individual
+        .iter()
+        .map(|usage| usage.output_tokens)
+        .sum::<u64>();
+    let tree = reopened
+        .session_tree_usage(root.session_id)
+        .expect("tree usage");
+    assert_eq!(tree.session_count, 3);
+    assert_eq!(tree.usage.request_count, expected_requests);
+    assert_eq!(tree.usage.input_tokens, expected_input);
+    assert_eq!(tree.usage.output_tokens, expected_output);
+    assert_eq!(tree.usage.cache_read_tokens, 51);
+    assert_eq!(tree.usage.cache_hit_rate, Some(51.0 / 150.0));
+    assert_eq!(tree.usage.estimated_cost_usd, None);
+    let unrelated_usage = reopened
+        .session_usage(unrelated.session_id)
+        .expect("unrelated usage")
+        .usage;
+    assert_ne!(
+        tree.usage.input_tokens,
+        expected_input + unrelated_usage.input_tokens
+    );
+    reopened.shutdown().await;
 }
 
 #[tokio::test]

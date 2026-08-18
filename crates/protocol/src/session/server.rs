@@ -29,9 +29,9 @@ use crate::{
     SessionRenameChange, SessionRenameError, SessionRenameErrorCode, SessionRenameParams,
     SessionRenameResult, SessionResumeParams, SessionResumeResult, SessionRevertParams,
     SessionRevertResult, SessionSetPermissionModeParams, SessionSetPermissionModeResult,
-    SessionTitle, SessionTreeParams, SessionTreeResult, SessionUsageParams, SessionUsageResult,
-    SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult, SuccessResponse,
-    Transport, TransportError,
+    SessionTitle, SessionTreeParams, SessionTreeResult, SessionTreeUsageResult, SessionUsageParams,
+    SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult,
+    SuccessResponse, Transport, TransportError,
 };
 
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
@@ -118,6 +118,10 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: SessionUsageParams,
     ) -> Result<SessionUsageResult, ServerFault>;
+    async fn session_tree_usage(
+        &self,
+        params: SessionUsageParams,
+    ) -> Result<SessionTreeUsageResult, ServerFault>;
     async fn agent_usage(&self, params: AgentUsageParams) -> Result<AgentUsageResult, ServerFault>;
     async fn global_usage(
         &self,
@@ -380,6 +384,7 @@ async fn dispatch<S: ServerProtocol>(
         "session.list" => value(server.list_sessions(decode_default(params)?).await?),
         "session.get" => value(server.get_session(decode(params)?).await?),
         "session.usage" => value(server.session_usage(decode(params)?).await?),
+        "session.tree_usage" => value(server.session_tree_usage(decode(params)?).await?),
         "agent.usage" => value(server.agent_usage(decode(params)?).await?),
         "usage.global" => value(server.global_usage(decode_default(params)?).await?),
         "session.children" => value(server.session_children(decode(params)?).await?),

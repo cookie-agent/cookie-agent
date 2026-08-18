@@ -8,14 +8,22 @@ reads. Providers that omit a field leave it unknown rather than estimating it.
 
 The event log is the source of truth. Session rollups and their per-model rows
 are rebuilt on restart and obey revert/fork visibility. Agent rollups use the
-agent that owned each model turn, while the global rollup covers every session
-in the current project.
+agent that owned each model turn. Session-tree rollups combine the selected
+session with all of its delegated descendants, including descendants that have
+been evicted from memory.
 
-Open `/usage` in the TUI to compare the selected session with global totals.
-Programmatic clients can call `session.usage`, `agent.usage`, and
-`usage.global`. Cache hit rate is cache-read tokens divided by inclusive input
-tokens. It is unavailable unless every included request reports both fields;
-an explicitly reported zero remains a 0% hit rate.
+Open `/usage` in the TUI to compare the selected session with its session-tree
+totals. Programmatic clients can call `session.usage`, `session.tree_usage`,
+`agent.usage`, and `usage.global`. Cache hit rate is cache-read tokens divided
+by inclusive input tokens. It is unavailable unless every included request
+reports both fields; an explicitly reported zero remains a 0% hit rate.
+
+Each TUI section shows formatted totals and a per-model table. Models are
+sorted by descending estimated cost, with unpriced models last, then by input
+tokens and model name. Token counts use thousands separators, cache hit rates
+use one decimal place, and costs use two decimal places at or above one cent
+and four below it. Use the arrow keys, Page Up, Page Down, or the mouse wheel
+when the panel content exceeds its viewport.
 
 When a request is priced, the assistant block's closing footer includes its
 estimated cost after generation speed and context usage. The bottom bar shows

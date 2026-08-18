@@ -1,20 +1,26 @@
 use std::collections::BTreeMap;
 
 use cookie_agent_protocol::{
-    GlobalUsageResult, McpConfigTarget, McpServerDefinition, McpServerInfo, McpServerState,
+    McpConfigTarget, McpServerDefinition, McpServerInfo, McpServerState, ModelUsageRollup,
     PermissionAction, PermissionEffect, PermissionRuleSource, SessionPermissionGetResult,
-    SessionUsageResult, SkillsListResult, UsageRollup,
+    SessionTreeUsageResult, SessionUsageResult, SkillsListResult, UsageRollup,
 };
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
+    },
 };
 
 use crate::theme::Theme;
 
-use super::{app::paint_panel, input::InputState};
+use super::{
+    app::{format_cost_usd, paint_panel, truncate_with_ellipsis},
+    input::InputState,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum McpTransport {
@@ -404,15 +410,38 @@ impl SkillPanel {
 #[derive(Default)]
 pub(super) struct UsagePanel {
     pub(super) session: Option<SessionUsageResult>,
-    pub(super) global: Option<GlobalUsageResult>,
+    pub(super) tree: Option<SessionTreeUsageResult>,
+    pub(super) tree_corrupt: bool,
     pub(super) loading: bool,
+    pub(super) scroll: u16,
+    max_scroll: u16,
+    page_size: u16,
 }
 
 impl UsagePanel {
     pub(super) fn begin_load(&mut self) {
         self.session = None;
-        self.global = None;
+        self.tree = None;
+        self.tree_corrupt = false;
         self.loading = true;
+        self.scroll = 0;
+        self.max_scroll = 0;
+    }
+
+    pub(super) fn scroll_up(&mut self, lines: u16) {
+        self.scroll = self.scroll.saturating_sub(lines);
+    }
+
+    pub(super) fn scroll_down(&mut self, lines: u16) {
+        self.scroll = self.scroll.saturating_add(lines).min(self.max_scroll);
+    }
+
+    pub(super) fn page_up(&mut self) {
+        self.scroll_up(self.page_size.max(1));
+    }
+
+    pub(super) fn page_down(&mut self) {
+        self.scroll_down(self.page_size.max(1));
     }
 }
 
@@ -733,100 +762,462 @@ pub(super) fn render_skills(frame: &mut Frame, area: Rect, panel: &mut SkillPane
     );
 }
 
-pub(super) fn render_usage(frame: &mut Frame, area: Rect, panel: &UsagePanel, theme: &Theme) {
+pub(super) fn render_usage(frame: &mut Frame, area: Rect, panel: &mut UsagePanel, theme: &Theme) {
     paint_panel(frame, area, theme);
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-    render_usage_section(
-        frame,
-        chunks[0],
-        "Session usage",
-        panel.session.as_ref().map(|result| &result.usage),
-        panel.loading,
-        theme,
-    );
-    render_usage_section(
-        frame,
-        chunks[1],
-        "Global usage",
-        panel.global.as_ref().map(|result| &result.usage),
-        panel.loading,
-        theme,
-    );
-}
+    let base_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.panel_border())
+        .title(Line::from(Span::styled("Usage", theme.heading())));
+    let inner = base_block.inner(area);
+    let mut content_width = usize::from(inner.width);
+    let mut lines = usage_panel_lines(panel, content_width, theme);
+    let mut scrollable = lines.len() > usize::from(inner.height);
+    if scrollable {
+        content_width = content_width.saturating_sub(2);
+        lines = usage_panel_lines(panel, content_width, theme);
+        scrollable = lines.len() > usize::from(inner.height);
+    }
+    let content_length = lines.len();
+    panel.page_size = inner.height;
+    panel.max_scroll =
+        u16::try_from(content_length.saturating_sub(usize::from(inner.height))).unwrap_or(u16::MAX);
+    panel.scroll = panel.scroll.min(panel.max_scroll);
 
-fn render_usage_section(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    usage: Option<&UsageRollup>,
-    loading: bool,
-    theme: &Theme,
-) {
-    let lines = usage.map_or_else(
-        || {
-            vec![Line::from(if loading {
-                "Loading usage..."
-            } else {
-                "No usage available."
-            })]
-        },
-        usage_lines,
-    );
+    let hint = if scrollable {
+        "arrows scroll | esc close"
+    } else {
+        "esc close"
+    };
+    let block =
+        base_block.title_bottom(Line::from(Span::styled(hint, theme.internal())).right_aligned());
+    frame.render_widget(block, area);
+
+    let paragraph_area = Rect {
+        width: inner.width.saturating_sub(if scrollable { 2 } else { 0 }),
+        ..inner
+    };
     frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme.panel_border())
-                .title(title)
-                .title_bottom(
-                    Line::from(Span::styled("esc close", theme.internal())).right_aligned(),
-                ),
-        ),
-        area,
+        Paragraph::new(lines)
+            .style(theme.body())
+            .scroll((panel.scroll, 0)),
+        paragraph_area,
     );
+    if scrollable {
+        let mut state = ScrollbarState::new(content_length)
+            .position(usize::from(panel.scroll))
+            .viewport_content_length(usize::from(inner.height));
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_symbol(Some("│"))
+                .track_style(theme.panel_border())
+                .thumb_symbol("█")
+                .thumb_style(theme.muted()),
+            inner,
+            &mut state,
+        );
+    }
 }
 
-fn usage_lines(usage: &UsageRollup) -> Vec<Line<'static>> {
-    let hit_rate = usage
-        .cache_hit_rate
-        .map_or_else(|| "n/a".to_owned(), |rate| format!("{:.1}%", rate * 100.0));
-    let cost = usage
-        .estimated_cost_usd
-        .map_or_else(|| "unpriced".to_owned(), |cost| format!("${cost:.6}"));
-    let mut lines = vec![
-        Line::from(format!("Requests: {}", usage.request_count)),
-        Line::from(format!(
-            "Input: {}  Output: {}  Reasoning: {}",
-            usage.input_tokens, usage.output_tokens, usage.reasoning_tokens
-        )),
-        Line::from(format!(
-            "Cache read: {}  write: {}  hit: {hit_rate}",
-            usage.cache_read_tokens, usage.cache_write_tokens
-        )),
-        Line::from(format!("Estimated cost: {cost}")),
+fn usage_panel_lines(panel: &UsagePanel, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    if panel.loading {
+        return vec![Line::from(Span::styled("Loading usage...", theme.body()))];
+    }
+
+    let usages = [
+        panel.session.as_ref().map(|result| &result.usage),
+        panel.tree.as_ref().map(|result| &result.usage),
     ];
-    for (model, model_usage) in &usage.by_model {
-        let model_hit = model_usage
-            .cache_hit_rate
-            .map_or_else(|| "n/a".to_owned(), |rate| format!("{:.1}%", rate * 100.0));
-        let model_cost = model_usage
-            .estimated_cost_usd
-            .map_or_else(|| "unpriced".to_owned(), |cost| format!("${cost:.6}"));
-        lines.push(Line::from(format!(
-            "{}  req {}  in {}  out {}  reasoning {}  cache {}  {}",
-            model,
-            model_usage.request_count,
-            model_usage.input_tokens,
-            model_usage.output_tokens,
-            model_usage.reasoning_tokens,
-            model_hit,
-            model_cost
+    let stats = StatsWidths::from_usages(usages);
+    let table = TableWidths::from_usages(usages);
+    let mut lines = usage_section_lines(
+        "This session",
+        None,
+        false,
+        None,
+        usages[0],
+        width,
+        &stats,
+        &table,
+        theme,
+    );
+    lines.push(Line::default());
+    let tree_session_count = panel.tree.as_ref().map(|result| result.session_count);
+    let qualifier = tree_session_count.map(|count| format!("· {} sessions", format_count(count)));
+    lines.extend(usage_section_lines(
+        "Session tree",
+        qualifier.as_deref(),
+        tree_session_count == Some(1),
+        panel
+            .tree_corrupt
+            .then_some("Tree usage unavailable: corrupted delegation record"),
+        usages[1],
+        width,
+        &stats,
+        &table,
+        theme,
+    ));
+    lines
+}
+
+#[allow(clippy::too_many_arguments)]
+fn usage_section_lines(
+    title: &str,
+    qualifier: Option<&str>,
+    degenerate_tree: bool,
+    unavailable_message: Option<&'static str>,
+    usage: Option<&UsageRollup>,
+    width: usize,
+    stats: &StatsWidths,
+    table: &TableWidths,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![section_header(title, qualifier, width, theme)];
+    if let Some(message) = unavailable_message {
+        lines.push(Line::from(Span::styled(message, theme.muted())));
+        return lines;
+    }
+    let Some(usage) = usage else {
+        lines.push(Line::from(Span::styled(
+            "No usage available.",
+            theme.muted(),
         )));
+        return lines;
+    };
+    if degenerate_tree {
+        lines.push(Line::from(Span::styled(
+            "No delegated sessions — totals match this session.",
+            theme.muted(),
+        )));
+        return lines;
+    }
+    if usage.request_count == 0 {
+        lines.push(Line::from(Span::styled(
+            "No usage recorded yet.",
+            theme.muted(),
+        )));
+        return lines;
+    }
+    lines.extend(stats.lines(usage, width, theme));
+    if !usage.by_model.is_empty() {
+        lines.push(Line::default());
+        lines.extend(table.lines(usage, width, theme));
     }
     lines
+}
+
+fn section_header(
+    title: &str,
+    qualifier: Option<&str>,
+    width: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let mut spans = vec![Span::styled(title.to_owned(), theme.heading())];
+    let mut used = title.len();
+    if let Some(qualifier) = qualifier {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(qualifier.to_owned(), theme.muted()));
+        used += qualifier.len() + 1;
+    }
+    let dashes = width.saturating_sub(used + 1);
+    if dashes >= 4 {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled("─".repeat(dashes), theme.panel_border()));
+    }
+    Line::from(spans)
+}
+
+#[derive(Default)]
+struct StatsWidths {
+    values: [usize; 3],
+    stacked_value: usize,
+}
+
+impl StatsWidths {
+    fn from_usages(usages: [Option<&UsageRollup>; 2]) -> Self {
+        let mut widths = Self::default();
+        for usage in usages.into_iter().flatten() {
+            let values = stats_values(usage);
+            for (index, value) in values.iter().enumerate() {
+                let column = match index {
+                    2 | 5 => 1,
+                    3 | 6 => 2,
+                    _ => 0,
+                };
+                widths.values[column] = widths.values[column].max(value.len());
+                widths.stacked_value = widths.stacked_value.max(value.len());
+            }
+        }
+        widths
+    }
+
+    fn lines(&self, usage: &UsageRollup, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        let values = stats_values(usage);
+        let grid_width =
+            (10 + 1 + self.values[0]) + 3 + (6 + 1 + self.values[1]) + 3 + (9 + 1 + self.values[2]);
+        if grid_width > width {
+            return [
+                "Requests",
+                "Input",
+                "Output",
+                "Reasoning",
+                "Cache read",
+                "Cache write",
+                "Cache hit",
+                "Cost",
+            ]
+            .into_iter()
+            .zip(values)
+            .map(|(label, value)| stat_line(&[(label, 11, value, self.stacked_value)], theme))
+            .collect();
+        }
+        vec![
+            stat_line(
+                &[("Requests", 10, values[0].clone(), self.values[0])],
+                theme,
+            ),
+            stat_line(
+                &[
+                    ("Input", 10, values[1].clone(), self.values[0]),
+                    ("Output", 6, values[2].clone(), self.values[1]),
+                    ("Reasoning", 9, values[3].clone(), self.values[2]),
+                ],
+                theme,
+            ),
+            stat_line(
+                &[
+                    ("Cache read", 10, values[4].clone(), self.values[0]),
+                    ("Write", 6, values[5].clone(), self.values[1]),
+                    ("Hit", 9, values[6].clone(), self.values[2]),
+                ],
+                theme,
+            ),
+            stat_line(&[("Cost", 10, values[7].clone(), self.values[0])], theme),
+        ]
+    }
+}
+
+fn stats_values(usage: &UsageRollup) -> [String; 8] {
+    [
+        format_count(usage.request_count),
+        format_count(usage.input_tokens),
+        format_count(usage.output_tokens),
+        format_count(usage.reasoning_tokens),
+        format_count(usage.cache_read_tokens),
+        format_count(usage.cache_write_tokens),
+        format_hit_rate(usage.cache_hit_rate),
+        format_cost(usage.estimated_cost_usd),
+    ]
+}
+
+fn stat_line(cells: &[(&str, usize, String, usize)], theme: &Theme) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (index, (label, label_width, value, value_width)) in cells.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw("   "));
+        }
+        spans.push(Span::styled(
+            format!("{label:<label_width$} "),
+            theme.muted(),
+        ));
+        let style = if value == "unpriced" || value == "n/a" {
+            theme.muted()
+        } else {
+            theme.body()
+        };
+        spans.push(Span::styled(format!("{value:>value_width$}"), style));
+    }
+    Line::from(spans)
+}
+
+#[derive(Default)]
+struct TableWidths {
+    req: usize,
+    input: usize,
+    output: usize,
+    reasoning: usize,
+    hit: usize,
+    cost: usize,
+}
+
+impl TableWidths {
+    fn from_usages(usages: [Option<&UsageRollup>; 2]) -> Self {
+        let mut widths = Self {
+            req: 3,
+            input: 5,
+            output: 6,
+            reasoning: 9,
+            hit: 3,
+            cost: 4,
+        };
+        for usage in usages.into_iter().flatten() {
+            for model in usage.by_model.values() {
+                widths.req = widths.req.max(format_count(model.request_count).len());
+                widths.input = widths.input.max(format_count(model.input_tokens).len());
+                widths.output = widths.output.max(format_count(model.output_tokens).len());
+                widths.reasoning = widths
+                    .reasoning
+                    .max(format_count(model.reasoning_tokens).len());
+                widths.hit = widths.hit.max(format_hit_rate(model.cache_hit_rate).len());
+                widths.cost = widths.cost.max(format_cost(model.estimated_cost_usd).len());
+            }
+        }
+        widths
+    }
+
+    fn lines(&self, usage: &UsageRollup, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        let columns = self.columns(width);
+        let mut lines = vec![self.header_line(&columns, theme)];
+        let mut models = usage.by_model.iter().collect::<Vec<_>>();
+        models.sort_by(|(name_a, usage_a), (name_b, usage_b)| {
+            match (usage_a.estimated_cost_usd, usage_b.estimated_cost_usd) {
+                (Some(a), Some(b)) => b.total_cmp(&a),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+            .then_with(|| usage_b.input_tokens.cmp(&usage_a.input_tokens))
+            .then_with(|| name_a.cmp(name_b))
+        });
+        lines.extend(
+            models
+                .into_iter()
+                .map(|(name, model)| self.model_line(name.to_string(), model, &columns, theme)),
+        );
+        lines
+    }
+
+    fn columns(&self, width: usize) -> TableColumns {
+        let mut visible = [true; 5];
+        let column_widths = [self.req, self.input, self.output, self.reasoning, self.hit];
+        let model_width = |visible: &[bool; 5]| {
+            let fixed = 2
+                + 2
+                + self.cost
+                + visible
+                    .iter()
+                    .zip(column_widths)
+                    .filter_map(|(visible, width)| visible.then_some(2 + width))
+                    .sum::<usize>();
+            width.saturating_sub(fixed)
+        };
+        for drop in [3, 4, 2, 0, 1] {
+            if model_width(&visible) >= 16 {
+                break;
+            }
+            visible[drop] = false;
+        }
+        TableColumns {
+            visible,
+            model: model_width(&visible).max(8),
+        }
+    }
+
+    fn header_line(&self, columns: &TableColumns, theme: &Theme) -> Line<'static> {
+        let mut text = format!("  {:<width$}", "MODEL", width = columns.model);
+        self.push_columns(
+            &mut text,
+            columns,
+            ["REQ", "INPUT", "OUTPUT", "REASONING", "HIT"],
+            "COST",
+        );
+        Line::from(Span::styled(text, theme.muted()))
+    }
+
+    fn model_line(
+        &self,
+        name: String,
+        model: &ModelUsageRollup,
+        columns: &TableColumns,
+        theme: &Theme,
+    ) -> Line<'static> {
+        let name = truncate_with_ellipsis(&name, columns.model);
+        let values = [
+            format_count(model.request_count),
+            format_count(model.input_tokens),
+            format_count(model.output_tokens),
+            format_count(model.reasoning_tokens),
+            format_hit_rate(model.cache_hit_rate),
+        ];
+        let mut spans = vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("{name:<width$}", width = columns.model),
+                theme.body(),
+            ),
+        ];
+        let widths = [self.req, self.input, self.output, self.reasoning, self.hit];
+        for (index, value) in values.into_iter().enumerate() {
+            if columns.visible[index] {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    format!("{value:>width$}", width = widths[index]),
+                    if value == "n/a" {
+                        theme.muted()
+                    } else {
+                        theme.body()
+                    },
+                ));
+            }
+        }
+        let cost = format_cost(model.estimated_cost_usd);
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("{cost:>width$}", width = self.cost),
+            if cost == "unpriced" {
+                theme.muted()
+            } else {
+                theme.body()
+            },
+        ));
+        Line::from(spans)
+    }
+
+    fn push_columns(
+        &self,
+        text: &mut String,
+        columns: &TableColumns,
+        values: [&str; 5],
+        cost: &str,
+    ) {
+        let widths = [self.req, self.input, self.output, self.reasoning, self.hit];
+        for (index, value) in values.into_iter().enumerate() {
+            if columns.visible[index] {
+                text.push_str(&format!("  {value:>width$}", width = widths[index]));
+            }
+        }
+        text.push_str(&format!("  {cost:>width$}", width = self.cost));
+    }
+}
+
+struct TableColumns {
+    visible: [bool; 5],
+    model: usize,
+}
+
+fn format_count(count: u64) -> String {
+    let digits = count.to_string();
+    let first = digits.len() % 3;
+    let mut output = String::with_capacity(digits.len() + digits.len() / 3);
+    if first > 0 {
+        output.push_str(&digits[..first]);
+    }
+    for chunk in digits.as_bytes()[first..].chunks(3) {
+        if !output.is_empty() {
+            output.push(',');
+        }
+        output.push_str(std::str::from_utf8(chunk).expect("decimal digits are UTF-8"));
+    }
+    output
+}
+
+fn format_hit_rate(rate: Option<f64>) -> String {
+    rate.map_or_else(|| "n/a".to_owned(), |rate| format!("{:.1}%", rate * 100.0))
+}
+
+fn format_cost(cost: Option<f64>) -> String {
+    cost.map_or_else(|| "unpriced".to_owned(), format_cost_usd)
 }
 
 fn definition_display(definition: &McpServerDefinition) -> String {
@@ -904,9 +1295,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use cookie_agent_protocol::{
-        EffectivePermissionAction, GlobalUsageResult, McpConfigSource, McpOAuthDefinition,
-        McpServerDefinition, McpServerInfo, McpServerState, ModelUsageRollup, PermissionAction,
-        PermissionEffect, PermissionRuleSource, SessionId, SessionPermissionGetResult,
+        EffectivePermissionAction, McpConfigSource, McpOAuthDefinition, McpServerDefinition,
+        McpServerInfo, McpServerState, ModelUsageRollup, PermissionAction, PermissionEffect,
+        PermissionRuleSource, SessionId, SessionPermissionGetResult, SessionTreeUsageResult,
         SessionUsageResult, SkillDescriptor, SkillSource, SkillsListResult, UsageRollup,
     };
     use ratatui::{Terminal, backend::TestBackend};
@@ -1150,8 +1541,9 @@ mod tests {
     }
 
     #[test]
-    fn usage_panel_renders_session_global_models_and_unpriced_costs() {
-        let usage = UsageRollup {
+    fn usage_panel_renders_both_sections_sorted_models_and_unpriced_values() {
+        let session_id = SessionId::new_v7();
+        let session_usage = UsageRollup {
             input_tokens: 1_000,
             output_tokens: 200,
             reasoning_tokens: 50,
@@ -1160,8 +1552,51 @@ mod tests {
             request_count: 3,
             cache_hit_rate: Some(0.5),
             estimated_cost_usd: None,
+            by_model: BTreeMap::from([
+                (
+                    "test/unpriced".parse().unwrap(),
+                    ModelUsageRollup {
+                        input_tokens: 2_000,
+                        request_count: 1,
+                        cache_hit_rate: None,
+                        estimated_cost_usd: None,
+                        ..ModelUsageRollup::default()
+                    },
+                ),
+                (
+                    "test/expensive".parse().unwrap(),
+                    ModelUsageRollup {
+                        input_tokens: 100,
+                        request_count: 1,
+                        cache_hit_rate: Some(0.0),
+                        estimated_cost_usd: Some(0.2),
+                        ..ModelUsageRollup::default()
+                    },
+                ),
+                (
+                    "test/cheap".parse().unwrap(),
+                    ModelUsageRollup {
+                        input_tokens: 3_000,
+                        request_count: 1,
+                        cache_hit_rate: Some(0.5),
+                        estimated_cost_usd: Some(0.01),
+                        ..ModelUsageRollup::default()
+                    },
+                ),
+            ]),
+            ..UsageRollup::default()
+        };
+        let tree_usage = UsageRollup {
+            input_tokens: 4_000,
+            output_tokens: 800,
+            reasoning_tokens: 100,
+            cache_read_tokens: 1_500,
+            cache_write_tokens: 200,
+            request_count: 6,
+            cache_hit_rate: Some(0.375),
+            estimated_cost_usd: Some(0.21),
             by_model: BTreeMap::from([(
-                "test/model".parse().unwrap(),
+                "test/tree".parse().unwrap(),
                 ModelUsageRollup {
                     input_tokens: 1_000,
                     output_tokens: 200,
@@ -1170,7 +1605,7 @@ mod tests {
                     cache_write_tokens: 100,
                     request_count: 3,
                     cache_hit_rate: Some(0.5),
-                    estimated_cost_usd: None,
+                    estimated_cost_usd: Some(0.21),
                     ..ModelUsageRollup::default()
                 },
             )]),
@@ -1178,31 +1613,252 @@ mod tests {
         };
         let panel = super::UsagePanel {
             session: Some(SessionUsageResult {
-                session_id: SessionId::new_v7(),
+                session_id,
+                usage: session_usage,
+            }),
+            tree: Some(SessionTreeUsageResult {
+                session_id,
+                usage: tree_usage,
+                session_count: 3,
+            }),
+            loading: false,
+            ..super::UsagePanel::default()
+        };
+        let lines = super::usage_panel_lines(&panel, 100, &crate::theme::Theme::default());
+        let text = lines
+            .iter()
+            .map(ratatui::text::Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("This session"), "{text}");
+        assert!(text.contains("Session tree · 3 sessions"), "{text}");
+        assert!(text.contains("1,000"), "{text}");
+        assert!(text.contains("n/a"), "{text}");
+        assert!(text.contains("unpriced"), "{text}");
+        let expensive = text.find("test/expensive").expect("expensive model");
+        let cheap = text.find("test/cheap").expect("cheap model");
+        let unpriced = text.find("test/unpriced").expect("unpriced model");
+        assert!(expensive < cheap && cheap < unpriced, "{text}");
+    }
+
+    #[test]
+    fn usage_counts_are_grouped_before_widths_are_computed() {
+        let session_id = SessionId::new_v7();
+        let usage = UsageRollup {
+            request_count: 12_345,
+            by_model: BTreeMap::from([(
+                "test/counts".parse().unwrap(),
+                ModelUsageRollup {
+                    request_count: 1_234_567,
+                    ..ModelUsageRollup::default()
+                },
+            )]),
+            ..UsageRollup::default()
+        };
+        let panel = super::UsagePanel {
+            session: Some(SessionUsageResult {
+                session_id,
                 usage: usage.clone(),
             }),
-            global: Some(GlobalUsageResult { usage }),
-            loading: false,
+            tree: Some(SessionTreeUsageResult {
+                session_id,
+                usage: usage.clone(),
+                session_count: 12_345,
+            }),
+            ..super::UsagePanel::default()
         };
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
+        let text = super::usage_panel_lines(&panel, 100, &crate::theme::Theme::default())
+            .iter()
+            .map(ratatui::text::Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("· 12,345 sessions"), "{text}");
+        assert!(text.contains("12,345"), "{text}");
+        assert!(text.contains("1,234,567"), "{text}");
+        let widths = super::TableWidths::from_usages([Some(&usage), None]);
+        assert_eq!(widths.req, "1,234,567".len());
+    }
+
+    #[test]
+    fn usage_model_sort_ties_use_input_then_name() {
+        let model = |input_tokens| ModelUsageRollup {
+            input_tokens,
+            request_count: 1,
+            estimated_cost_usd: Some(1.0),
+            ..ModelUsageRollup::default()
+        };
+        let usage = UsageRollup {
+            request_count: 3,
+            by_model: BTreeMap::from([
+                ("test/zeta".parse().unwrap(), model(200)),
+                ("test/alpha".parse().unwrap(), model(200)),
+                ("test/middle".parse().unwrap(), model(300)),
+            ]),
+            ..UsageRollup::default()
+        };
+        let text = super::TableWidths::from_usages([Some(&usage), None])
+            .lines(&usage, 100, &crate::theme::Theme::default())
+            .iter()
+            .map(ratatui::text::Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let middle = text.find("test/middle").unwrap();
+        let alpha = text.find("test/alpha").unwrap();
+        let zeta = text.find("test/zeta").unwrap();
+        assert!(middle < alpha && alpha < zeta, "{text}");
+    }
+
+    #[test]
+    fn usage_panel_degenerate_tree_replaces_totals_with_note() {
+        let session_id = SessionId::new_v7();
+        let usage = UsageRollup {
+            request_count: 1,
+            ..UsageRollup::default()
+        };
+        let panel = super::UsagePanel {
+            session: Some(SessionUsageResult {
+                session_id,
+                usage: usage.clone(),
+            }),
+            tree: Some(SessionTreeUsageResult {
+                session_id,
+                usage,
+                session_count: 1,
+            }),
+            ..super::UsagePanel::default()
+        };
+        let text = super::usage_panel_lines(&panel, 80, &crate::theme::Theme::default())
+            .iter()
+            .map(ratatui::text::Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Session tree · 1 sessions"), "{text}");
+        assert!(
+            text.contains("No delegated sessions — totals match this session."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn usage_table_drops_every_column_in_the_locked_narrow_order() {
+        let usage = UsageRollup {
+            request_count: 1,
+            by_model: BTreeMap::from([(
+                "test/a-model-name".parse().unwrap(),
+                ModelUsageRollup {
+                    request_count: 12_345,
+                    input_tokens: 1_000,
+                    output_tokens: 2_000,
+                    reasoning_tokens: 3_000,
+                    cache_hit_rate: Some(0.5),
+                    estimated_cost_usd: None,
+                    ..ModelUsageRollup::default()
+                },
+            )]),
+            ..UsageRollup::default()
+        };
+        let widths = super::TableWidths::from_usages([Some(&usage), None]);
+        let column_widths = [
+            widths.req,
+            widths.input,
+            widths.output,
+            widths.reasoning,
+            widths.hit,
+        ];
+        let fixed_width = |visible: [bool; 5]| {
+            2 + 2
+                + widths.cost
+                + visible
+                    .into_iter()
+                    .zip(column_widths)
+                    .filter_map(|(visible, width)| visible.then_some(2 + width))
+                    .sum::<usize>()
+        };
+        let transitions = [
+            [true, true, true, true, true],
+            [true, true, true, false, true],
+            [true, true, true, false, false],
+            [true, true, false, false, false],
+            [false, true, false, false, false],
+            [false, false, false, false, false],
+        ];
+        for expected in transitions {
+            let columns = widths.columns(fixed_width(expected) + 16);
+            assert_eq!(columns.visible, expected);
+            assert_eq!(columns.model, 16);
+        }
+        let floor = widths.columns(fixed_width([false; 5]) + 8);
+        assert_eq!(floor.visible, [false; 5]);
+        assert_eq!(floor.model, 8);
+    }
+
+    #[test]
+    fn usage_panel_footer_switches_when_content_scrolls() {
+        let session_id = SessionId::new_v7();
+        let usage = UsageRollup {
+            request_count: 1,
+            ..UsageRollup::default()
+        };
+        let mut fitting = super::UsagePanel {
+            tree: Some(SessionTreeUsageResult {
+                session_id,
+                usage: usage.clone(),
+                session_count: 1,
+            }),
+            session: Some(SessionUsageResult { session_id, usage }),
+            ..super::UsagePanel::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
         terminal
             .draw(|frame| {
-                super::render_usage(frame, frame.area(), &panel, &crate::theme::Theme::default());
+                super::render_usage(
+                    frame,
+                    frame.area(),
+                    &mut fitting,
+                    &crate::theme::Theme::default(),
+                );
             })
-            .expect("render usage panel");
-        let text = terminal
+            .expect("render fitting usage");
+        let fitting_text = terminal
             .backend()
             .buffer()
             .content()
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(text.contains("Session usage"), "{text}");
-        assert!(text.contains("Global usage"), "{text}");
-        assert!(text.contains("test/model"), "{text}");
-        assert!(text.contains("hit: 50.0%"), "{text}");
-        assert!(text.contains("Reasoning: 50"), "{text}");
-        assert!(text.contains("reasoning 50"), "{text}");
-        assert!(text.contains("Estimated cost: unpriced"), "{text}");
+        assert!(fitting_text.contains("esc close"), "{fitting_text}");
+        assert!(!fitting_text.contains("arrows scroll"), "{fitting_text}");
+
+        let mut terminal = Terminal::new(TestBackend::new(50, 8)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                super::render_usage(
+                    frame,
+                    frame.area(),
+                    &mut fitting,
+                    &crate::theme::Theme::default(),
+                );
+            })
+            .expect("render scrolling usage");
+        let scrolling_text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            scrolling_text.contains("arrows scroll | esc close"),
+            "{scrolling_text}"
+        );
+        let buffer = terminal.backend().buffer();
+        for y in 1..7 {
+            assert_eq!(buffer[(47, y)].symbol(), " ", "reserved gutter at row {y}");
+            assert!(
+                matches!(buffer[(48, y)].symbol(), "│" | "█"),
+                "scrollbar at row {y}: {}",
+                buffer[(48, y)].symbol()
+            );
+        }
     }
 }

@@ -57,6 +57,7 @@
     "SessionGetResult.schema.json",
     "SessionUsageParams.schema.json",
     "SessionUsageResult.schema.json",
+    "SessionTreeUsageResult.schema.json",
     "AgentUsageParams.schema.json",
     "AgentUsageResult.schema.json",
     "GlobalUsageParams.schema.json",

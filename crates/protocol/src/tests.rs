@@ -247,6 +247,25 @@ fn usage_rpc_shapes_are_additive_and_nullable_when_unpriced() {
 }
 
 #[test]
+fn session_tree_usage_result_round_trips() {
+    let result = SessionTreeUsageResult {
+        session_id: SessionId::new_v7(),
+        usage: UsageRollup {
+            input_tokens: 42,
+            request_count: 2,
+            ..UsageRollup::default()
+        },
+        session_count: 3,
+    };
+    let value = serde_json::to_value(&result).unwrap();
+    assert_eq!(value["session_count"], 3);
+    assert_eq!(
+        serde_json::from_value::<SessionTreeUsageResult>(value).unwrap(),
+        result
+    );
+}
+
+#[test]
 fn prior_agent_snapshots_upconvert_exactly_and_write_schema_six() {
     let current = serde_json::to_value(child_agent(frozen_binding())).unwrap();
     let mut previous = current.clone();

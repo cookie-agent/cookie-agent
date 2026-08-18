@@ -31,9 +31,9 @@ use crate::{
     SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionSetParams,
     SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
     SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
-    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, SessionUsageParams,
-    SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult,
-    StoredEvent, ToolCallId, Transport, TransportError,
+    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, SessionTreeUsageResult,
+    SessionUsageParams, SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams,
+    SkillsListResult, StoredEvent, ToolCallId, Transport, TransportError,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -106,6 +106,10 @@ pub trait ClientProtocol: Send + Sync {
         &self,
         params: SessionUsageParams,
     ) -> Result<SessionUsageResult, ClientError>;
+    async fn session_tree_usage(
+        &self,
+        params: SessionUsageParams,
+    ) -> Result<SessionTreeUsageResult, ClientError>;
     async fn agent_usage(&self, params: AgentUsageParams) -> Result<AgentUsageResult, ClientError>;
     async fn global_usage(&self) -> Result<GlobalUsageResult, ClientError>;
     async fn session_children(
@@ -544,6 +548,13 @@ impl Client {
         self.call("session.usage", &params).await
     }
 
+    pub async fn session_tree_usage(
+        &self,
+        params: SessionUsageParams,
+    ) -> Result<SessionTreeUsageResult, ClientError> {
+        self.call("session.tree_usage", &params).await
+    }
+
     pub async fn agent_usage(
         &self,
         params: AgentUsageParams,
@@ -869,6 +880,12 @@ impl ClientProtocol for Client {
     ) -> Result<SessionUsageResult, ClientError> {
         Client::session_usage(self, params).await
     }
+    async fn session_tree_usage(
+        &self,
+        params: SessionUsageParams,
+    ) -> Result<SessionTreeUsageResult, ClientError> {
+        Client::session_tree_usage(self, params).await
+    }
     async fn agent_usage(&self, params: AgentUsageParams) -> Result<AgentUsageResult, ClientError> {
         Client::agent_usage(self, params).await
     }
@@ -1091,6 +1108,12 @@ where
         params: SessionUsageParams,
     ) -> Result<SessionUsageResult, ClientError> {
         self.deref().session_usage(params).await
+    }
+    async fn session_tree_usage(
+        &self,
+        params: SessionUsageParams,
+    ) -> Result<SessionTreeUsageResult, ClientError> {
+        self.deref().session_tree_usage(params).await
     }
     async fn agent_usage(&self, params: AgentUsageParams) -> Result<AgentUsageResult, ClientError> {
         self.deref().agent_usage(params).await

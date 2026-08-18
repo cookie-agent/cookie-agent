@@ -18,8 +18,9 @@ use cookie_agent_protocol::{
     SessionPermissionMutationResult, SessionPermissionSetParams, SessionRenameErrorCode,
     SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
     SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
-    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, SessionUsageParams,
-    SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult,
+    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, SessionTreeUsageResult,
+    SessionUsageParams, SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams,
+    SkillsListResult,
 };
 
 use super::Server;
@@ -67,6 +68,15 @@ impl ServerProtocol for Server {
         self.engine
             .session_usage(params.session_id)
             .map_err(protocol_fault)
+    }
+
+    async fn session_tree_usage(
+        &self,
+        params: SessionUsageParams,
+    ) -> Result<SessionTreeUsageResult> {
+        self.engine
+            .session_tree_usage(params.session_id)
+            .map_err(|error| RpcFault::session_tree_usage(error).into())
     }
 
     async fn agent_usage(&self, params: AgentUsageParams) -> Result<AgentUsageResult> {

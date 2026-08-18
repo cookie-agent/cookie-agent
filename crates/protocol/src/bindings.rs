@@ -103,6 +103,7 @@ macro_rules! protocol_roots {
             SessionGetResult,
             SessionUsageParams,
             SessionUsageResult,
+            SessionTreeUsageResult,
             AgentUsageParams,
             AgentUsageResult,
             GlobalUsageParams,

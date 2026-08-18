@@ -3370,6 +3370,313 @@ mod tests {
         assert!(app.usage_panel.loading);
     }
 
+    async fn open_usage_from_bottom_bar(app: &mut App) {
+        rendered_frame(app, 80, 24);
+        let hit = app.hit_map.session_cost.expect("session cost hit");
+        app.handle_click(hit.x, hit.y).await;
+        assert_eq!(app.modal, Modal::Usage);
+    }
+
+    fn usage_loaded_update(
+        generation: u64,
+        session_id: SessionId,
+        request_count: u64,
+    ) -> RpcUpdate {
+        RpcUpdate::UsageLoaded {
+            generation,
+            session_id: Some(session_id),
+            session: Ok(Some(cookie_agent_protocol::SessionUsageResult {
+                session_id,
+                usage: cookie_agent_protocol::UsageRollup {
+                    request_count,
+                    ..cookie_agent_protocol::UsageRollup::default()
+                },
+            })),
+            tree: Ok(Some(cookie_agent_protocol::SessionTreeUsageResult {
+                session_id,
+                usage: cookie_agent_protocol::UsageRollup {
+                    request_count,
+                    ..cookie_agent_protocol::UsageRollup::default()
+                },
+                session_count: 1,
+            })),
+        }
+    }
+
+    fn failed_tree_usage_update(
+        generation: u64,
+        session_id: SessionId,
+        code: i32,
+        message: &str,
+    ) -> RpcUpdate {
+        RpcUpdate::UsageLoaded {
+            generation,
+            session_id: Some(session_id),
+            session: Ok(None),
+            tree: Err(crate::client::ClientError::Rpc(
+                cookie_agent_protocol::JsonRpcError {
+                    code,
+                    message: message.into(),
+                    data: None,
+                },
+            )),
+        }
+    }
+
+    #[tokio::test]
+    async fn tree_usage_corruption_has_a_distinct_panel_state_from_missing_session() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        app.selected = Some(session);
+        app.modal = Modal::Usage;
+        app.usage_load_generation = 1;
+        app.usage_panel.begin_load();
+        app.handle_rpc_update(failed_tree_usage_update(
+            1,
+            session,
+            cookie_agent_protocol::SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE,
+            "session tree usage corrupted delegation record",
+        ));
+        let corrupt = rendered_frame(&mut app, 100, 24);
+        assert!(
+            corrupt.contains("Tree usage unavailable: corrupted delegation record"),
+            "{corrupt}"
+        );
+
+        app.usage_load_generation = 2;
+        app.usage_panel.begin_load();
+        app.handle_rpc_update(failed_tree_usage_update(
+            2,
+            session,
+            cookie_agent_protocol::SESSION_TREE_USAGE_MISSING_SESSION_CODE,
+            "session tree usage session not found",
+        ));
+        let missing = rendered_frame(&mut app, 100, 24);
+        assert!(
+            !missing.contains("corrupted delegation record"),
+            "{missing}"
+        );
+        assert!(missing.contains("No usage available."), "{missing}");
+    }
+
+    #[tokio::test]
+    async fn stale_usage_load_cannot_clobber_reopen_for_a_different_session() {
+        let (client, _requests) = recording_client();
+        let mut app = App::new(client).await.expect("test app");
+        let first = SessionId::new_v7();
+        let second = SessionId::new_v7();
+        app.sessions = vec![session_meta(first), session_meta(second)];
+        for session_id in [first, second] {
+            app.store.sessions.insert(
+                session_id,
+                SessionState {
+                    estimated_cost_usd: Some(0.18),
+                    ..SessionState::default()
+                },
+            );
+        }
+
+        app.selected = Some(first);
+        open_usage_from_bottom_bar(&mut app).await;
+        let stale_generation = app.usage_load_generation;
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        app.selected = Some(second);
+        open_usage_from_bottom_bar(&mut app).await;
+        let current_generation = app.usage_load_generation;
+        assert!(current_generation > stale_generation);
+
+        app.handle_rpc_update(usage_loaded_update(stale_generation, first, 99));
+        assert!(app.usage_panel.loading);
+        assert!(app.usage_panel.session.is_none());
+        assert!(app.usage_panel.tree.is_none());
+        app.handle_rpc_update(usage_loaded_update(current_generation, second, 2));
+        assert!(!app.usage_panel.loading);
+        assert_eq!(
+            app.usage_panel
+                .session
+                .as_ref()
+                .map(|result| (result.session_id, result.usage.request_count)),
+            Some((second, 2))
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_usage_load_cannot_clobber_reopen_for_the_same_session() {
+        let (client, _requests) = recording_client();
+        let mut app = App::new(client).await.expect("test app");
+        let session = SessionId::new_v7();
+        app.selected = Some(session);
+        app.sessions = vec![session_meta(session)];
+        app.store.sessions.insert(
+            session,
+            SessionState {
+                estimated_cost_usd: Some(0.18),
+                ..SessionState::default()
+            },
+        );
+
+        open_usage_from_bottom_bar(&mut app).await;
+        let stale_generation = app.usage_load_generation;
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        open_usage_from_bottom_bar(&mut app).await;
+        let current_generation = app.usage_load_generation;
+
+        app.handle_rpc_update(usage_loaded_update(stale_generation, session, 99));
+        assert!(app.usage_panel.loading);
+        assert!(app.usage_panel.session.is_none());
+        app.handle_rpc_update(usage_loaded_update(current_generation, session, 1));
+        assert_eq!(
+            app.usage_panel
+                .session
+                .as_ref()
+                .map(|result| result.usage.request_count),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_panel_loads_session_and_tree_without_refreshing_bottom_bar_cost() {
+        let (startup_client, _startup) = recording_client();
+        let mut app = App::new(startup_client).await.expect("test app");
+        let (client, recorded, incoming) = live_recording_client();
+        app.client = client;
+        let session = SessionId::new_v7();
+        app.selected = Some(session);
+        app.sessions = vec![session_meta(session)];
+        app.store.sessions.insert(
+            session,
+            SessionState {
+                estimated_cost_usd: Some(0.18),
+                ..SessionState::default()
+            },
+        );
+        rendered_frame(&mut app, 80, 24);
+        let hit = app.hit_map.session_cost.expect("session cost hit");
+        app.handle_click(hit.x, hit.y).await;
+
+        let session_request = wait_for_recorded_request(&recorded, "session.usage", 1).await;
+        let tree_request = wait_for_recorded_request(&recorded, "session.tree_usage", 1).await;
+        assert_eq!(recorded_method_count(&recorded, "usage.global"), 0);
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": session_request,
+                "result": cookie_agent_protocol::SessionUsageResult {
+                    session_id: session,
+                    usage: cookie_agent_protocol::UsageRollup {
+                        request_count: 1,
+                        estimated_cost_usd: Some(99.0),
+                        ..cookie_agent_protocol::UsageRollup::default()
+                    }
+                }
+            })))
+            .expect("session usage response");
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": tree_request,
+                "result": cookie_agent_protocol::SessionTreeUsageResult {
+                    session_id: session,
+                    usage: cookie_agent_protocol::UsageRollup {
+                        request_count: 3,
+                        estimated_cost_usd: Some(0.42),
+                        ..cookie_agent_protocol::UsageRollup::default()
+                    },
+                    session_count: 3,
+                }
+            })))
+            .expect("tree usage response");
+        let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
+            .await
+            .expect("usage panel update timeout")
+            .expect("usage panel update");
+        app.handle_rpc_update(update);
+
+        assert_eq!(
+            app.usage_panel
+                .session
+                .as_ref()
+                .map(|result| result.usage.request_count),
+            Some(1)
+        );
+        assert_eq!(
+            app.usage_panel
+                .tree
+                .as_ref()
+                .map(|result| (result.usage.request_count, result.session_count)),
+            Some((3, 3))
+        );
+        assert_eq!(app.store.sessions[&session].estimated_cost_usd, Some(0.18));
+    }
+
+    #[tokio::test]
+    async fn usage_modal_owns_keyboard_and_wheel_scrolling() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        let by_model = (0..8)
+            .map(|index| {
+                (
+                    format!("test/model-{index}").parse().unwrap(),
+                    cookie_agent_protocol::ModelUsageRollup {
+                        request_count: 1,
+                        input_tokens: 1_000,
+                        estimated_cost_usd: Some(f64::from(index) / 100.0),
+                        ..cookie_agent_protocol::ModelUsageRollup::default()
+                    },
+                )
+            })
+            .collect();
+        let usage = cookie_agent_protocol::UsageRollup {
+            request_count: 8,
+            by_model,
+            ..cookie_agent_protocol::UsageRollup::default()
+        };
+        app.usage_panel.session = Some(cookie_agent_protocol::SessionUsageResult {
+            session_id: session,
+            usage: usage.clone(),
+        });
+        app.usage_panel.tree = Some(cookie_agent_protocol::SessionTreeUsageResult {
+            session_id: session,
+            usage,
+            session_count: 2,
+        });
+        app.modal = Modal::Usage;
+        rendered_frame(&mut app, 80, 16);
+        app.conversation_scroll.offset = 17;
+        app.conversation_scroll.following = false;
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.usage_panel.scroll, 1);
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        })
+        .await;
+        assert_eq!(app.usage_panel.scroll, 4);
+        app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE))
+            .await;
+        assert!(app.usage_panel.scroll > 4);
+        for _ in 0..100 {
+            app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE))
+                .await;
+        }
+        let max_scroll = app.usage_panel.scroll;
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.usage_panel.scroll, max_scroll);
+        assert_eq!(app.conversation_scroll.offset, 17);
+        assert!(!app.conversation_scroll.following);
+        app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
+            .await;
+        assert!(app.usage_panel.scroll < max_scroll);
+        assert_eq!(app.conversation_scroll.offset, 17);
+    }
+
     #[tokio::test]
     async fn usage_events_refresh_session_cost_single_flight() {
         let (startup_client, _startup) = recording_client();

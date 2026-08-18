@@ -16,7 +16,7 @@ Ctrl-P opens the command palette. The available commands are:
 | `/sessions` | Choose a session |
 | `/skills` | List discovered skills, sources, precedence, and permission effects |
 | `/<skill-name> [args]` | Invoke a user-invocable skill |
-| `/usage` | Show selected-session and global usage |
+| `/usage` | Show selected-session and session-tree usage |
 | `/cancel` | Cancel the active run |
 | `/compact [focus]` | Compact the selected idle session |
 | `/approve once\|all\|reject\|cancel` | Answer the current approval |
@@ -93,10 +93,19 @@ open the `/usage` dashboard. Unpriced sessions omit the segment.
 
 ## Usage dashboard
 
-`/usage` opens a read-only view with the selected session and project-wide
-rollups. Each section shows request count, input and output tokens, cache reads
+`/usage` opens a read-only view with the selected session first and its complete
+delegation tree second. The tree count includes the selected session. Each
+section shows request count, input, output, and reasoning tokens, cache reads
 and writes, cache hit percentage, estimated cost when configured, and a
-per-model breakdown. `unpriced` means the active configuration does not provide
-all rates needed for the observed token categories. Press Esc to close.
+per-model breakdown. Models are sorted by descending estimated cost, with
+unpriced models last; ties use input tokens and then model name. Token counts
+use thousands separators, hit rates use one decimal place, and costs use the
+same formatting as the bottom bar. `unpriced` means the active configuration
+does not provide all rates needed for the observed token categories, while
+`n/a` means a hit rate cannot be computed.
+
+Use Up/Down, Page Up/Page Down, or the mouse wheel to scroll when needed, and
+Esc to close. Clicking the selected session cost in the bottom bar still opens
+this panel.
 
 See [Usage and cost](usage.md) for recording and pricing semantics.

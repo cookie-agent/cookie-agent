@@ -309,6 +309,7 @@ export * from "./SessionTitleChange.js";
 export * from "./SessionTree.js";
 export * from "./SessionTreeParams.js";
 export * from "./SessionTreeResult.js";
+export * from "./SessionTreeUsageResult.js";
 export * from "./SessionUsageParams.js";
 export * from "./SessionUsageResult.js";
 export * from "./SetupFieldDescriptor.js";

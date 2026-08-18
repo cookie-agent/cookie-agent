@@ -1,9 +1,14 @@
-use cookie_agent_engine::{ApprovalRespondFailure, EngineError};
+use cookie_agent_engine::{
+    ApprovalRespondFailure, EngineError, delegation_events::DelegationEventError,
+    session::SessionError,
+};
 use cookie_agent_protocol::{
     ApprovalRespondError, ApprovalRespondErrorCode, ApprovalRespondParams, ClientResponseId,
     ProviderConnectError, ProviderConnectErrorCode, ProviderConnectParams, ProviderDisconnectError,
     ProviderDisconnectErrorCode, ProviderDisconnectParams, RunStartConflict, RunStartConflictCode,
-    RunStartParams, SessionRenameError, SessionRenameErrorCode, SessionRenameParams,
+    RunStartParams, SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE,
+    SESSION_TREE_USAGE_MISSING_SESSION_CODE, SessionRenameError, SessionRenameErrorCode,
+    SessionRenameParams,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -159,6 +164,22 @@ impl RpcFault {
             }),
         }
     }
+
+    pub(crate) fn session_tree_usage(error: EngineError) -> Self {
+        match error {
+            EngineError::Session(SessionError::Missing(_)) => Self {
+                code: SESSION_TREE_USAGE_MISSING_SESSION_CODE,
+                message: "session tree usage session not found",
+                data: None,
+            },
+            EngineError::DelegationEvents(DelegationEventError::Corrupt(_)) => Self {
+                code: SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE,
+                message: "session tree usage corrupted delegation record",
+                data: None,
+            },
+            error => engine_fault(error),
+        }
+    }
 }
 
 impl From<RpcFault> for cookie_agent_protocol::ServerFault {
@@ -187,5 +208,33 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
             data: Some(json!({ "code": "provider_store_reload_failed" })),
         },
         _ => RpcFault::engine(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cookie_agent_protocol::{InvocationId, SessionId};
+
+    use super::*;
+
+    #[test]
+    fn session_tree_usage_faults_distinguish_missing_and_corruption() {
+        let missing: cookie_agent_protocol::ServerFault = RpcFault::session_tree_usage(
+            EngineError::Session(SessionError::Missing(SessionId::new_v7())),
+        )
+        .into();
+        let corrupt: cookie_agent_protocol::ServerFault = RpcFault::session_tree_usage(
+            EngineError::DelegationEvents(DelegationEventError::Corrupt(InvocationId::new_v7())),
+        )
+        .into();
+
+        assert_eq!(missing.code, SESSION_TREE_USAGE_MISSING_SESSION_CODE);
+        assert_eq!(missing.message, "session tree usage session not found");
+        assert_eq!(corrupt.code, SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE);
+        assert_eq!(
+            corrupt.message,
+            "session tree usage corrupted delegation record"
+        );
+        assert_ne!(missing.code, corrupt.code);
     }
 }
