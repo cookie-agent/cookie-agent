@@ -446,20 +446,29 @@
 <a href=#446 id=446 data-nosnippet>446</a>            .insert(session_id, mode);
 <a href=#447 id=447 data-nosnippet>447</a>        <span class="prelude-val">Ok</span>(())
 <a href=#448 id=448 data-nosnippet>448</a>    }
-<a href=#449 id=449 data-nosnippet>449</a>    <span class="kw">pub async fn </span>rename_session(
-<a href=#450 id=450 data-nosnippet>450</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#451 id=451 data-nosnippet>451</a>        params: SessionRenameParams,
-<a href=#452 id=452 data-nosnippet>452</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;SessionRenameResult, EngineError&gt; {
-<a href=#453 id=453 data-nosnippet>453</a>        <span class="kw">let </span>session_id = params.session_id;
-<a href=#454 id=454 data-nosnippet>454</a>        <span class="kw">let </span>reset = <span class="macro">matches!</span>(params.change, SessionRenameChange::Reset);
-<a href=#455 id=455 data-nosnippet>455</a>        <span class="kw">let </span><span class="kw-2">mut </span>result = <span class="self">self
-<a href=#456 id=456 data-nosnippet>456</a>            </span>.request(session_id, |reply| SessionCommand::Rename { params, reply })
-<a href=#457 id=457 data-nosnippet>457</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#458 id=458 data-nosnippet>458</a>        <span class="kw">if </span>reset {
-<a href=#459 id=459 data-nosnippet>459</a>            <span class="self">self</span>.generate_title_after_reset(session_id).<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#460 id=460 data-nosnippet>460</a>            result.session = <span class="self">self</span>.inner.store.get(session_id)<span class="question-mark">?</span>.metadata();
-<a href=#461 id=461 data-nosnippet>461</a>        }
-<a href=#462 id=462 data-nosnippet>462</a>        <span class="prelude-val">Ok</span>(result)
-<a href=#463 id=463 data-nosnippet>463</a>    }
-<a href=#464 id=464 data-nosnippet>464</a>}
+<a href=#449 id=449 data-nosnippet>449</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>permission_mode(<span class="kw-2">&amp;</span><span class="self">self</span>, session_id: SessionId) -&gt; PermissionMode {
+<a href=#450 id=450 data-nosnippet>450</a>        <span class="self">self</span>.inner
+<a href=#451 id=451 data-nosnippet>451</a>            .permission_modes
+<a href=#452 id=452 data-nosnippet>452</a>            .lock()
+<a href=#453 id=453 data-nosnippet>453</a>            .unwrap_or_else(|poisoned| poisoned.into_inner())
+<a href=#454 id=454 data-nosnippet>454</a>            .get(<span class="kw-2">&amp;</span>session_id)
+<a href=#455 id=455 data-nosnippet>455</a>            .copied()
+<a href=#456 id=456 data-nosnippet>456</a>            .unwrap_or_default()
+<a href=#457 id=457 data-nosnippet>457</a>    }
+<a href=#458 id=458 data-nosnippet>458</a>    <span class="kw">pub async fn </span>rename_session(
+<a href=#459 id=459 data-nosnippet>459</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#460 id=460 data-nosnippet>460</a>        params: SessionRenameParams,
+<a href=#461 id=461 data-nosnippet>461</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;SessionRenameResult, EngineError&gt; {
+<a href=#462 id=462 data-nosnippet>462</a>        <span class="kw">let </span>session_id = params.session_id;
+<a href=#463 id=463 data-nosnippet>463</a>        <span class="kw">let </span>reset = <span class="macro">matches!</span>(params.change, SessionRenameChange::Reset);
+<a href=#464 id=464 data-nosnippet>464</a>        <span class="kw">let </span><span class="kw-2">mut </span>result = <span class="self">self
+<a href=#465 id=465 data-nosnippet>465</a>            </span>.request(session_id, |reply| SessionCommand::Rename { params, reply })
+<a href=#466 id=466 data-nosnippet>466</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#467 id=467 data-nosnippet>467</a>        <span class="kw">if </span>reset {
+<a href=#468 id=468 data-nosnippet>468</a>            <span class="self">self</span>.generate_title_after_reset(session_id).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#469 id=469 data-nosnippet>469</a>            result.session = <span class="self">self</span>.inner.store.get(session_id)<span class="question-mark">?</span>.metadata();
+<a href=#470 id=470 data-nosnippet>470</a>        }
+<a href=#471 id=471 data-nosnippet>471</a>        <span class="prelude-val">Ok</span>(result)
+<a href=#472 id=472 data-nosnippet>472</a>    }
+<a href=#473 id=473 data-nosnippet>473</a>}
 </code></pre></div></section></main></body></html>

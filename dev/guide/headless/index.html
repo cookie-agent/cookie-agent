@@ -1146,10 +1146,13 @@ positive guards and default to 100 root model turns and 600 seconds. Reaching
 either guard cancels the run and waits for its terminal event. <code>SIGINT</code> follows
 the same cancellation path.</p>
 <h2 id="permissions">Permissions<a class="headerlink" href="#permissions" title="Permanent link">&para;</a></h2>
-<p><code>--permission-mode</code> accepts <code>auto-approve</code>, <code>ask</code>, or <code>yolo</code>. Headless runs
-never wait for approval input. When an approval escalates anywhere in the
-session tree, the runner rejects it, cancels the root run, and waits for the
-matching terminal event.</p>
+<p><code>--permission-mode</code> accepts <code>auto-approve</code> (<code>auto_approve</code>), <code>auto-approve-n</code>
+(<code>auto_approve_n</code>), <code>auto-approve-y</code> (<code>auto_approve_y</code>), <code>ask</code>, or <code>yolo</code>.
+Headless runs never wait for approval input. In <code>auto-approve-n</code>, a classifier
+escalation is rejected and cancels the root run with exit code <code>3</code>. In
+<code>auto-approve-y</code>, an escalation is approved once and the run continues
+automatically. Other escalations anywhere in the session tree are rejected;
+the runner cancels the root run and waits for the matching terminal event.</p>
 <p><code>--allowed-tools</code> may be repeated or comma-delimited and accepts <code>read</code>,
 <code>write</code>, <code>bash</code>, <code>delegate</code>, <code>mcp</code>, and <code>skill:&lt;name&gt;</code>. It adds an <code>allow</code> overlay for each
 listed permission action. It does not deny omitted actions or replace existing
