@@ -937,10 +937,10 @@ mod tests {
         let (focused_border, focused_title, focused_text) = rendered_styles(true);
         let (unfocused_border, unfocused_title, unfocused_text) = rendered_styles(false);
 
-        // Focus carries the warm user accent in bold; the resting box falls
-        // back to a dim crust border. Weight — not color alone — still
+        // Focus carries the honey highlight in bold; the resting box falls
+        // back to a dim mustard border. Weight — not color alone — still
         // distinguishes the states when color is unavailable.
-        assert_eq!(focused_border.fg, theme.user().fg);
+        assert_eq!(focused_border.fg, theme.input_border(true).fg);
         assert_eq!(unfocused_border.fg, theme.panel_border().fg);
         assert!(focused_border.add_modifier.contains(Modifier::BOLD));
         assert!(!focused_border.add_modifier.contains(Modifier::DIM));
@@ -953,7 +953,7 @@ mod tests {
             None | Some(ratatui::style::Color::Reset)
         ));
         // Titles pick up the border accent of their state.
-        assert_eq!(focused_title.fg, theme.user().fg);
+        assert_eq!(focused_title.fg, theme.input_border(true).fg);
         assert_eq!(unfocused_title.fg, theme.panel_border().fg);
     }
 

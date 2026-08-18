@@ -42,15 +42,19 @@ pub enum DecisionTone {
 // --- The bakery palette (true color) ---------------------------------------
 //
 // Surfaces: a single cream base, parchment code blocks, toasted selection,
-// glaze hover, crust borders. Text: espresso body with cocoa and latte
-// derivatives. Accents: caramel, sage, cinnamon, cranberry, honey, maple,
-// slate, plum, terracotta.
+// glaze hover, mustard borders. Text: espresso body with cocoa and latte
+// derivatives. Accents: honey focus, caramel, sage, cinnamon, cranberry,
+// maple, slate, plum, terracotta.
 
 const CREAM: (u8, u8, u8) = (0xFB, 0xF4, 0xE6);
 const PARCHMENT: (u8, u8, u8) = (0xF2, 0xE5, 0xCC);
 const TOASTED: (u8, u8, u8) = (0xEA, 0xD7, 0xB4);
 const GLAZE: (u8, u8, u8) = (0xF0, 0xDF, 0xC0);
 const CRUST: (u8, u8, u8) = (0xC9, 0xAE, 0x85);
+// Pane chrome (conversation, tree, pickers, unfocused input) sits one step
+// darker and yellower than the crust selection wash: a muted mustard that
+// reads clearly against the cream surface without turning reddish.
+const BORDER: (u8, u8, u8) = (0xAE, 0x8C, 0x5A);
 const ESPRESSO: (u8, u8, u8) = (0x46, 0x30, 0x1F);
 const COCOA: (u8, u8, u8) = (0x6E, 0x4E, 0x38);
 const LATTE: (u8, u8, u8) = (0x86, 0x69, 0x4F);
@@ -82,6 +86,9 @@ const PARCHMENT_256: u8 = 230; // (255, 255, 215)
 const GLAZE_256: u8 = 223; // (255, 215, 175)
 const TOASTED_256: u8 = 222; // (255, 215, 135)
 const CRUST_256: u8 = 180; // (215, 175, 135)
+// Hand-picked border cell: the naive RGB→cube quantization of BORDER lands
+// on a grayish (175, 175, 135) and loses the yellow entirely.
+const BORDER_256: u8 = 137; // (175, 135, 95)
 
 #[derive(Clone, Debug)]
 pub struct Theme {
@@ -192,9 +199,18 @@ impl Theme {
             .map_or_else(Style::default, |background| Style::default().bg(background))
     }
 
-    /// Subdued crust border for pane chrome (conversation, tree, pickers).
+    /// Mustard border for pane chrome (conversation, tree, pickers):
+    /// darker and yellower than the pale crust wash so the frame stays
+    /// visible on the cream surface.
     pub fn panel_border(&self) -> Style {
-        self.semantic(CRUST, Color::DarkGray, Color::White, Modifier::DIM)
+        let style = self.semantic(BORDER, Color::DarkGray, Color::White, Modifier::DIM);
+        if self.key.kind == ThemeKind::Default && self.key.colors == ColorLevel::Ansi256 {
+            // Foregrounds normally trust the quantizer, but it grays out
+            // this warm yellow — use the hand-picked cell.
+            style.fg(Color::Indexed(BORDER_256))
+        } else {
+            style
+        }
     }
 
     /// Keyboard-selected row in pickers, palettes, and the session tree: a
@@ -428,7 +444,9 @@ impl Theme {
 
     pub fn input_border(&self, focused: bool) -> Style {
         if focused {
-            self.user()
+            // The theme's highlight is honey yellow, not the reddish caramel
+            // of user identity — focus reads as warmth, not as an error-adjacent red.
+            self.semantic(HONEY, Color::Yellow, Color::LightYellow, Modifier::BOLD)
         } else {
             self.panel_border()
         }
@@ -717,6 +735,15 @@ mono.hover: fg=None bg=None bold=false italic=false underline=true dim=false rev
         assert_eq!(theme.hover().bg, Some(Color::Indexed(223)));
         assert_eq!(theme.hover_fill().bg, Some(Color::Indexed(223)));
         assert_eq!(theme.selected().bg, Some(Color::Indexed(222)));
+        // Pane chrome keeps its yellow on ANSI-256 too: the quantizer would
+        // gray BORDER out, so the border names its hand-picked cell.
+        assert_eq!(theme.panel_border().fg, Some(Color::Indexed(137)));
+        assert_eq!(
+            Theme::new(ThemeKind::Default, ColorLevel::TrueColor)
+                .panel_border()
+                .fg,
+            Some(Color::Rgb(0xAE, 0x8C, 0x5A))
+        );
         // The default theme's hover on a capable terminal is the quiet
         // background alone — no underline, no foreground shift.
         assert!(!theme.hover().add_modifier.contains(Modifier::UNDERLINED));

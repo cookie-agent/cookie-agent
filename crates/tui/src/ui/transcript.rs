@@ -6484,7 +6484,7 @@ mod tests {
             1,
         );
 
-        // The focused composer's border is bold caramel; only the agent
+        // The focused composer's border is bold honey; only the agent
         // name keeps that weight. Everything in the title shares the border
         // accent color — bold is the emphasis, never a color marker.
         for x in agent.x..agent.x.saturating_add(agent.width) {
@@ -6493,7 +6493,11 @@ mod tests {
                 cell.add_modifier.contains(Modifier::BOLD),
                 "agent name is bold: {cell:?}"
             );
-            assert_eq!(cell.fg, app.theme.user().fg, "border accent: {cell:?}");
+            assert_eq!(
+                cell.fg,
+                app.theme.input_border(true).fg,
+                "border accent: {cell:?}"
+            );
         }
         for rect in [bullet, model, variant] {
             for x in rect.x..rect.x.saturating_add(rect.width) {
@@ -6502,7 +6506,11 @@ mod tests {
                     !cell.add_modifier.contains(Modifier::BOLD),
                     "segment stays regular: {cell:?}"
                 );
-                assert_eq!(cell.fg, app.theme.user().fg, "shared color: {cell:?}");
+                assert_eq!(
+                    cell.fg,
+                    app.theme.input_border(true).fg,
+                    "shared color: {cell:?}"
+                );
             }
         }
     }
