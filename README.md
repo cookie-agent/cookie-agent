@@ -18,7 +18,8 @@ and observability are all built in.
 - **MCP servers** — attach local or remote MCP tool servers, including
   streamable HTTP servers with OAuth.
 - **Plugins** — run out-of-process JSON-RPC extensions that add tools, observe
-  events, and intercept tool calls, agent starts, and compaction. An official
+  events, and intercept decisions across the run lifecycle: user input, model
+  requests, tool calls, agent starts, compaction, forks, and more. An official
   Rust SDK (`cookie_agent_plugin_sdk`) handles the protocol for you.
 - **Permissions** — every capability is opt-in. Agents see only the tools
   their permission map allows, with resource-pattern rules and ask/allow/deny
