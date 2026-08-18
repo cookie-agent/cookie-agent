@@ -52,7 +52,7 @@ and the CLI share one implementation of the protocol mechanics.
 | `session.tree` | Session ID | Recursive session tree |
 | `session.resume` | Session ID | Resumed session metadata with skipped-event diagnostics |
 | `session.rename` | Session ID, client rename ID, set/clear/reset change | Session metadata and client ID |
-| `session.set_permission_mode` | Session ID, `auto_approve`/`ask`/`yolo` | Empty object |
+| `session.set_permission_mode` | Session ID, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo` | Empty object |
 | `skills.list` | Session ID | Discovered skills with source, precedence, visibility, and permission effect |
 | `skills.get` | Session ID, skill name, arguments | Permission-checked rendered preview and descriptor |
 | `session.compact` | Session ID, required nullable focus | Whether a checkpoint was committed |

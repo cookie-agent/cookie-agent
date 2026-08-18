@@ -453,6 +453,7 @@ pub struct App {
     pub(super) collapsed_sessions: HashSet<SessionId>,
     pub(super) expanded_blocks: HashMap<SessionId, HashSet<BlockId>>,
     pub(super) permission_modes: HashMap<SessionId, PermissionMode>,
+    permission_mode_generations: HashMap<SessionId, u64>,
     pub(super) mcp_panel: McpPanel,
     pub(super) permission_panel: PermissionPanel,
     pub(super) skill_panel: SkillPanel,
@@ -573,11 +574,15 @@ pub(super) enum RpcUpdate {
         request_id: u64,
         result: Result<ApprovalListResult, String>,
     },
-    PermissionModeFailed {
+    PermissionModeMutationFinished {
         session_id: SessionId,
-        previous: PermissionMode,
-        attempted: PermissionMode,
-        error: String,
+        generation: u64,
+        result: Result<(), String>,
+    },
+    PermissionModeLoaded {
+        session_id: SessionId,
+        generation: u64,
+        result: Result<Option<PermissionMode>, String>,
     },
     McpRefreshed {
         result: Result<cookie_agent_protocol::McpServerListResult, String>,
@@ -802,6 +807,7 @@ impl App {
             collapsed_sessions: HashSet::new(),
             expanded_blocks: HashMap::new(),
             permission_modes: HashMap::new(),
+            permission_mode_generations: HashMap::new(),
             mcp_panel: McpPanel::default(),
             permission_panel: PermissionPanel::default(),
             skill_panel: SkillPanel::default(),
@@ -1514,16 +1520,28 @@ impl App {
             .unwrap_or_default()
     }
 
+    fn next_permission_mode_generation(&mut self, session_id: SessionId) -> u64 {
+        let generation = self
+            .permission_mode_generations
+            .entry(session_id)
+            .or_default();
+        *generation = generation.wrapping_add(1);
+        *generation
+    }
+
     fn cycle_permission_mode(&mut self) {
         let Some(session_id) = self.selected else {
             return;
         };
         let previous = self.permission_mode(session_id);
         let mode = match previous {
-            PermissionMode::AutoApprove => PermissionMode::Ask,
+            PermissionMode::AutoApprove => PermissionMode::AutoApproveN,
+            PermissionMode::AutoApproveN => PermissionMode::AutoApproveY,
+            PermissionMode::AutoApproveY => PermissionMode::Ask,
             PermissionMode::Ask => PermissionMode::Yolo,
             PermissionMode::Yolo => PermissionMode::AutoApprove,
         };
+        let generation = self.next_permission_mode_generation(session_id);
         self.permission_modes.insert(session_id, mode);
         self.status = format!(
             "Permission mode: {} — applies to subsequent approvals in this session",
@@ -1532,17 +1550,16 @@ impl App {
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
-            if let Err(error) = client
+            let result = client
                 .set_permission_mode(SessionSetPermissionModeParams { session_id, mode })
                 .await
-            {
-                let _ = updates.send(RpcUpdate::PermissionModeFailed {
-                    session_id,
-                    previous,
-                    attempted: mode,
-                    error: error.to_string(),
-                });
-            }
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::PermissionModeMutationFinished {
+                session_id,
+                generation,
+                result,
+            });
         });
     }
 
@@ -1905,22 +1922,35 @@ impl App {
                 }
             }
             RpcUpdate::ApprovalList { .. } => {}
-            RpcUpdate::PermissionModeFailed {
+            RpcUpdate::PermissionModeMutationFinished {
                 session_id,
-                previous,
-                attempted,
-                error,
+                generation,
+                result,
             } => {
-                if self
-                    .permission_modes
-                    .get(&session_id)
-                    .copied()
-                    .unwrap_or_default()
-                    == attempted
-                {
-                    self.permission_modes.insert(session_id, previous);
+                if self.permission_mode_generations.get(&session_id).copied() != Some(generation) {
+                    return;
                 }
-                self.status = format!("permission mode update failed: {error}");
+                if let Err(error) = result {
+                    self.permission_modes.remove(&session_id);
+                    self.status = format!("permission mode update failed: {error}");
+                    self.refresh_permission_mode_for_session(session_id);
+                }
+            }
+            RpcUpdate::PermissionModeLoaded {
+                session_id,
+                generation,
+                result,
+            } => {
+                if self.permission_mode_generations.get(&session_id).copied() != Some(generation) {
+                    return;
+                }
+                match result {
+                    Ok(Some(mode)) => {
+                        self.permission_modes.insert(session_id, mode);
+                    }
+                    Ok(None) => {}
+                    Err(error) => self.status = format!("permission mode load failed: {error}"),
+                }
             }
             RpcUpdate::McpRefreshed { result } => {
                 self.mcp_panel.refresh_in_flight = false;
@@ -2172,6 +2202,8 @@ impl App {
         }
         self.selected = Some(session_id);
         if changed {
+            self.permission_modes.remove(&session_id);
+            self.refresh_permission_mode_for_session(session_id);
             self.load_skills_for_session(session_id);
         }
         self.rebind_draft_to_selected_session();
@@ -2445,6 +2477,24 @@ impl App {
                 .await
                 .map_err(|error| error.to_string());
             let _ = updates.send(RpcUpdate::PermissionsLoaded { session_id, result });
+        });
+    }
+
+    fn refresh_permission_mode_for_session(&mut self, session_id: SessionId) {
+        let generation = self.next_permission_mode_generation(session_id);
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .get_session_permissions(SessionPermissionGetParams { session_id })
+                .await
+                .map(|result| result.current_mode)
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::PermissionModeLoaded {
+                session_id,
+                generation,
+                result,
+            });
         });
     }
 
@@ -2888,6 +2938,7 @@ impl App {
                 .await
                 .map(|result| SessionPermissionGetResult {
                     permissions: result.permissions,
+                    current_mode: None,
                 })
                 .map_err(|error| error.to_string());
             let _ = updates.send(RpcUpdate::PermissionsLoaded { session_id, result });
@@ -2913,6 +2964,7 @@ impl App {
                 .await
                 .map(|result| SessionPermissionGetResult {
                     permissions: result.permissions,
+                    current_mode: None,
                 })
                 .map_err(|error| error.to_string());
             let _ = updates.send(RpcUpdate::PermissionsLoaded { session_id, result });
@@ -7117,6 +7169,8 @@ pub(super) fn format_cost_usd(cost: f64) -> String {
 const fn permission_mode_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::AutoApprove => "auto-approve",
+        PermissionMode::AutoApproveN => "auto-n",
+        PermissionMode::AutoApproveY => "auto-y",
         PermissionMode::Ask => "ask",
         PermissionMode::Yolo => "yolo",
     }

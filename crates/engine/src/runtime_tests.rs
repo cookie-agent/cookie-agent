@@ -607,6 +607,34 @@ fn test_turn_context() -> Arc<TurnAgentContext> {
 }
 
 #[tokio::test]
+async fn permission_query_reports_the_current_session_mode() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture.engine.create_session(selection).expect("session");
+    assert_eq!(
+        fixture
+            .engine
+            .get_session_permissions(session.session_id)
+            .expect("default permission query")
+            .current_mode,
+        Some(PermissionMode::AutoApprove)
+    );
+
+    fixture
+        .engine
+        .set_permission_mode(session.session_id, PermissionMode::AutoApproveY)
+        .expect("set permission mode");
+    assert_eq!(
+        fixture
+            .engine
+            .get_session_permissions(session.session_id)
+            .expect("updated permission query")
+            .current_mode,
+        Some(PermissionMode::AutoApproveY)
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn session_permission_overlay_is_durable_and_evaluated_after_restart() {
     let (fixture, selection) = custom_fixture();
     let session = fixture.engine.create_session(selection).expect("session");
@@ -4356,7 +4384,9 @@ async fn scripted_repeated_write_server(
     (format!("http://{address}/v1"), task)
 }
 
-async fn scripted_two_approved_writes_server() -> (String, tokio::task::JoinHandle<Vec<String>>) {
+async fn scripted_two_evaluated_writes_server(
+    internal_output: &str,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -4368,7 +4398,15 @@ async fn scripted_two_approved_writes_server() -> (String, tokio::task::JoinHand
             "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"persistent-write-{index}\",\"type\":\"function\",\"function\":{{\"name\":\"write\",\"arguments\":\"{{}}\"}}}}]}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n"
         )
     };
-    let approval = "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"decision\\\":\\\"allow\\\"}\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned();
+    let internal_delta = serde_json::json!({
+        "choices": [{
+            "delta": {"content": internal_output},
+            "finish_reason": null
+        }]
+    });
+    let approval = format!(
+        "data: {internal_delta}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n"
+    );
     let bodies = [
         tool_call(1),
         approval.clone(),
@@ -7151,7 +7189,8 @@ async fn steer_during_start_prediction_survives_initial_submission_and_reaches_m
 
 #[tokio::test]
 async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix() {
-    let (endpoint, captured) = scripted_two_approved_writes_server().await;
+    let (endpoint, captured) =
+        scripted_two_evaluated_writes_server(r#"{"decision":"allow"}"#).await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
         "---\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
@@ -7367,6 +7406,304 @@ async fn yolo_permission_mode_durably_approves_and_executes_without_escalation()
     )));
     captured.abort();
     fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn auto_approve_n_rejects_classifier_escalation_with_feedback_without_prompting() {
+    let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
+    let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+    let executed = Arc::new(AtomicBool::new(false));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    fixture
+        .engine
+        .set_permission_mode(session.session_id, PermissionMode::AutoApproveN)
+        .expect("auto-n mode");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("auto-n-mode").expect("run ID"),
+            selection,
+            input: "request the write tool".into(),
+        })
+        .await
+        .expect("run");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection")
+        .log
+        .events();
+    assert!(!executed.load(Ordering::Acquire));
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ApprovalEvaluated { decision, .. }
+            if decision.decision == ApprovalInternalDecisionKind::Escalate
+                && decision.source == ApprovalDecisionSource::InternalAgent
+                && decision.reason_code == ApprovalReasonCode::Escalated
+    )));
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ApprovalFinalized { decision, .. }
+            if decision.outcome == ApprovalFinalOutcome::Rejected
+                && decision.source == ApprovalDecisionSource::PermissionMode
+                && decision.reason_code == ApprovalReasonCode::AutoApproveNRejected
+                && decision.feedback.as_ref().is_some_and(|feedback| {
+                    feedback.message.as_str() == "rejected by auto-approve(N) mode"
+                })
+                && decision.tree_grant_id.is_none()
+    )));
+    assert!(!events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ApprovalEscalated { .. } | EventPayload::TreeApprovalGrantCommitted { .. }
+    )));
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolCallTerminated { termination }
+            if termination.error.as_ref().is_some_and(|error| {
+                error.message.as_str().contains("rejected by auto-approve(N) mode")
+            })
+    )));
+    assert!(
+        fixture
+            .engine
+            .inner
+            .pending_approvals
+            .lock()
+            .expect("pending approvals lock")
+            .is_empty()
+    );
+    let requests = captured.await.expect("approval server task");
+    assert!(requests[2].contains("rejected by auto-approve(N) mode"));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn auto_approve_y_approves_classifier_escalation_once_without_prompting() {
+    let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
+    let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+    let executed = Arc::new(AtomicBool::new(false));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    fixture
+        .engine
+        .set_permission_mode(session.session_id, PermissionMode::AutoApproveY)
+        .expect("auto-y mode");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("auto-y-mode").expect("run ID"),
+            selection,
+            input: "request the write tool".into(),
+        })
+        .await
+        .expect("run");
+    wait_for_tool_execution(&executed).await;
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection")
+        .log
+        .events();
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ApprovalFinalized { decision, .. }
+            if decision.outcome == ApprovalFinalOutcome::Approved
+                && decision.source == ApprovalDecisionSource::PermissionMode
+                && decision.reason_code == ApprovalReasonCode::AutoApproveYApproved
+                && decision.feedback.is_none()
+                && decision.tree_grant_id.is_none()
+    )));
+    assert!(!events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ApprovalEscalated { .. } | EventPayload::TreeApprovalGrantCommitted { .. }
+    )));
+    assert!(
+        fixture
+            .engine
+            .inner
+            .pending_approvals
+            .lock()
+            .expect("pending approvals lock")
+            .is_empty()
+    );
+    assert_eq!(captured.await.expect("approval server task").len(), 3);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn auto_approve_y_rechecks_identical_calls_without_creating_a_tree_grant() {
+    let (endpoint, captured) = scripted_two_evaluated_writes_server(r#"{"decision":"ask"}"#).await;
+    let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+    let executed = Arc::new(AtomicBool::new(false));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    fixture
+        .engine
+        .set_permission_mode(session.session_id, PermissionMode::AutoApproveY)
+        .expect("auto-y mode");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("auto-y-identical-calls").expect("run ID"),
+            selection,
+            input: "request two identical writes".into(),
+        })
+        .await
+        .expect("run");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection")
+        .log
+        .events();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                &event.payload,
+                EventPayload::ApprovalEvaluated { decision, .. }
+                    if decision.source == ApprovalDecisionSource::InternalAgent
+            ))
+            .count(),
+        2
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                &event.payload,
+                EventPayload::ToolCallTerminated { termination }
+                    if termination.outcome == ToolTerminationOutcome::Completed
+            ))
+            .count(),
+        2
+    );
+    assert!(!events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::TreeApprovalGrantCommitted { .. }
+    )));
+    assert_eq!(captured.await.expect("approval server task").len(), 5);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn auto_approve_n_and_y_preserve_classifier_allow_and_deny() {
+    for (mode, internal_output, should_execute, expected_reason) in [
+        (
+            PermissionMode::AutoApproveN,
+            r#"{"decision":"allow"}"#,
+            true,
+            ApprovalReasonCode::InternalAgentAllowed,
+        ),
+        (
+            PermissionMode::AutoApproveN,
+            r#"{"decision":"deny"}"#,
+            false,
+            ApprovalReasonCode::InternalAgentDenied,
+        ),
+        (
+            PermissionMode::AutoApproveY,
+            r#"{"decision":"allow"}"#,
+            true,
+            ApprovalReasonCode::InternalAgentAllowed,
+        ),
+        (
+            PermissionMode::AutoApproveY,
+            r#"{"decision":"deny"}"#,
+            false,
+            ApprovalReasonCode::InternalAgentDenied,
+        ),
+    ] {
+        let (endpoint, captured) = scripted_approval_server(internal_output).await;
+        let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+        let executed = Arc::new(AtomicBool::new(false));
+        fixture
+            .engine
+            .register_tool_provider(Arc::new(TestWriteProvider {
+                executed: Arc::clone(&executed),
+            }));
+        let session = fixture
+            .engine
+            .create_session(selection.clone())
+            .expect("session");
+        fixture
+            .engine
+            .set_permission_mode(session.session_id, mode)
+            .expect("permission mode");
+        fixture
+            .engine
+            .start_run(RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new(format!("mode-agent-{mode:?}-{should_execute}"))
+                    .expect("run ID"),
+                selection,
+                input: "request the write tool".into(),
+            })
+            .await
+            .expect("run");
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+        assert_eq!(executed.load(Ordering::Acquire), should_execute);
+        let events = fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("projection")
+            .log
+            .events();
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::ApprovalFinalized { decision, .. }
+                if decision.source == ApprovalDecisionSource::InternalAgent
+                    && decision.reason_code == expected_reason
+                    && (decision.outcome == ApprovalFinalOutcome::Approved) == should_execute
+        )));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event.payload, EventPayload::ApprovalEscalated { .. }))
+        );
+        assert_eq!(captured.await.expect("approval server task").len(), 3);
+        fixture.engine.shutdown().await;
+    }
 }
 
 #[tokio::test]

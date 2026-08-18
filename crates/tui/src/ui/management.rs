@@ -920,6 +920,7 @@ mod tests {
                 source: PermissionRuleSource::SessionOverlay,
                 patterns: Vec::new(),
             }],
+            current_mode: None,
         };
         assert_eq!(
             super::permission_rows(&result),
@@ -1063,6 +1064,7 @@ mod tests {
                 source: PermissionRuleSource::SessionOverlay,
                 patterns: Vec::new(),
             }],
+            current_mode: None,
         });
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).expect("terminal");
         terminal
@@ -1137,6 +1139,7 @@ mod tests {
                 source: PermissionRuleSource::SessionOverlay,
                 patterns: Vec::new(),
             }],
+            current_mode: None,
         });
         assert!(!panel.rows().is_empty());
 

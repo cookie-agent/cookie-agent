@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
 use cookie_agent_protocol::{
-    ApprovalDecisionSource, ApprovalFinalDecision, ApprovalFinalOutcome, ApprovalId,
-    ApprovalInternalDecision, ApprovalInternalDecisionKind, ApprovalReasonCode, ApprovalRecord,
-    ApprovalRequest, ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalRespondResult,
-    ApprovalStatus, ApprovalUserDecision, OperationFingerprint, RunId, SessionId, StoredEvent,
-    ToolCallId, ToolTerminationOutcome, TreeApprovalGrant,
+    ApprovalDecisionSource, ApprovalFeedback, ApprovalFinalDecision, ApprovalFinalOutcome,
+    ApprovalId, ApprovalInternalDecision, ApprovalInternalDecisionKind, ApprovalReasonCode,
+    ApprovalRecord, ApprovalRequest, ApprovalRespondErrorCode, ApprovalRespondParams,
+    ApprovalRespondResult, ApprovalStatus, ApprovalUserDecision, OperationFingerprint,
+    PermissionMode, RunId, SafeErrorMessage, SessionId, StoredEvent, ToolCallId,
+    ToolTerminationOutcome, TreeApprovalGrant,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,6 +20,8 @@ use super::{
 };
 use crate::tool_api::PreparedExecutorCell;
 
+const AUTO_APPROVE_N_REJECTION_FEEDBACK: &str = "rejected by auto-approve(N) mode";
+
 impl Engine {
     pub(super) fn approval_evaluation_complete_direct(
         &self,
@@ -26,9 +29,10 @@ impl Engine {
         run: RunId,
         request: ApprovalRequest,
         executor: PreparedExecutorCell,
-        decision: ApprovalInternalDecisionKind,
+        mode_decision: (PermissionMode, ApprovalInternalDecisionKind),
         cancelled: bool,
     ) -> Result<ApprovalEvaluationTransition, EngineError> {
+        let (permission_mode, decision) = mode_decision;
         let approval_id = request.approval_id();
         let events = self.inner.store.get(session)?.log.events();
         let Some(record) = approval_records(session, &events).remove(&approval_id) else {
@@ -114,6 +118,44 @@ impl Engine {
             return Ok(ApprovalEvaluationTransition::Resolved(ApprovalOutcome {
                 approved,
                 feedback: None,
+            }));
+        }
+
+        let mode_resolution = match permission_mode {
+            PermissionMode::AutoApproveN => Some((
+                ApprovalFinalOutcome::Rejected,
+                ApprovalReasonCode::AutoApproveNRejected,
+                Some(AUTO_APPROVE_N_REJECTION_FEEDBACK),
+            )),
+            PermissionMode::AutoApproveY => Some((
+                ApprovalFinalOutcome::Approved,
+                ApprovalReasonCode::AutoApproveYApproved,
+                None,
+            )),
+            PermissionMode::AutoApprove | PermissionMode::Ask => None,
+            PermissionMode::Yolo => unreachable!("yolo approvals resolve before evaluation"),
+        };
+        if let Some((outcome, reason_code, feedback)) = mode_resolution {
+            self.append_direct(
+                session,
+                Some(run),
+                Event::ApprovalFinalized {
+                    approval_id,
+                    decision: ApprovalFinalDecision {
+                        outcome,
+                        source: ApprovalDecisionSource::PermissionMode,
+                        reason_code,
+                        feedback: feedback.map(|message| ApprovalFeedback {
+                            message: SafeErrorMessage::new(message)
+                                .expect("static permission mode feedback is safe"),
+                        }),
+                        tree_grant_id: None,
+                    },
+                },
+            )?;
+            return Ok(ApprovalEvaluationTransition::Resolved(ApprovalOutcome {
+                approved: outcome == ApprovalFinalOutcome::Approved,
+                feedback: feedback.map(str::to_owned),
             }));
         }
 

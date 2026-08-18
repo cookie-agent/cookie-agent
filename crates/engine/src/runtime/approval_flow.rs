@@ -241,7 +241,9 @@ impl Engine {
 
         let internal_kind = match permission_mode {
             PermissionMode::Ask => ApprovalInternalDecisionKind::Ask,
-            PermissionMode::AutoApprove => {
+            PermissionMode::AutoApprove
+            | PermissionMode::AutoApproveN
+            | PermissionMode::AutoApproveY => {
                 #[cfg(test)]
                 let hook = {
                     self.inner
@@ -276,6 +278,7 @@ impl Engine {
                     request: request.clone(),
                     executor: executor.clone(),
                     decision: internal_kind,
+                    permission_mode,
                     cancelled: active.cancellation.is_cancelled(),
                     reply,
                 }

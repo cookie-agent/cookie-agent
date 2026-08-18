@@ -3473,7 +3473,7 @@ mod tests {
         app.handle_click(hit.x, hit.y).await;
         assert_eq!(
             app.permission_modes[&first],
-            cookie_agent_protocol::PermissionMode::Ask
+            cookie_agent_protocol::PermissionMode::AutoApproveN
         );
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
@@ -3484,7 +3484,7 @@ mod tests {
                     .any(|request| {
                         request["method"] == "session.set_permission_mode"
                             && request["params"]["session_id"] == serde_json::json!(first)
-                            && request["params"]["mode"] == "ask"
+                            && request["params"]["mode"] == "auto_approve_n"
                     })
                 {
                     break;
@@ -3502,7 +3502,7 @@ mod tests {
                 .any(|request| {
                     request["method"] == "session.set_permission_mode"
                         && request["params"]["session_id"] == serde_json::json!(first)
-                        && request["params"]["mode"] == "ask"
+                        && request["params"]["mode"] == "auto_approve_n"
                 })
         );
 
@@ -3515,6 +3515,148 @@ mod tests {
             app.permission_modes[&second],
             cookie_agent_protocol::PermissionMode::AutoApprove
         );
+
+        app.selected = Some(first);
+        for (expected_mode, expected_label) in [
+            (
+                cookie_agent_protocol::PermissionMode::AutoApproveY,
+                "auto-y",
+            ),
+            (cookie_agent_protocol::PermissionMode::Ask, "ask"),
+            (cookie_agent_protocol::PermissionMode::Yolo, "yolo"),
+            (
+                cookie_agent_protocol::PermissionMode::AutoApprove,
+                "auto-approve",
+            ),
+        ] {
+            rendered_row(&mut app, 80, 24, 23);
+            let hit = app.hit_map.permission_mode.expect("permission mode hit");
+            app.handle_click(hit.x, hit.y).await;
+            assert_eq!(app.permission_modes[&first], expected_mode);
+            assert!(
+                rendered_row(&mut app, 80, 24, 23).contains(expected_label),
+                "missing permission mode label {expected_label}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn selecting_a_session_loads_its_permission_mode_for_the_bottom_bar() {
+        let (startup_client, _startup) = recording_client();
+        let mut app = App::new(startup_client).await.expect("test app");
+        let (client, recorded, incoming) = live_recording_client();
+        app.client = client;
+        let session = SessionId::new_v7();
+        app.sessions = vec![session_meta(session)];
+        app.store.sessions.insert(session, SessionState::default());
+
+        app.set_selected_session(session);
+        let id = wait_for_recorded_request(&recorded, "session.permission.get", 1).await;
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "permissions": [],
+                    "current_mode": "auto_approve_y"
+                }
+            })))
+            .expect("script permission mode response");
+        let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
+            .await
+            .expect("permission mode update timeout")
+            .expect("permission mode update");
+        app.handle_rpc_update(update);
+
+        assert_eq!(
+            app.permission_modes[&session],
+            cookie_agent_protocol::PermissionMode::AutoApproveY
+        );
+        assert!(rendered_row(&mut app, 80, 24, 23).contains("auto-y"));
+    }
+
+    #[tokio::test]
+    async fn failed_mode_click_reloads_authoritative_state_after_stale_hydration() {
+        let (startup_client, _startup) = recording_client();
+        let mut app = App::new(startup_client).await.expect("test app");
+        let (client, recorded, incoming) = live_recording_client();
+        app.client = client;
+        let session = SessionId::new_v7();
+        app.sessions = vec![session_meta(session)];
+        app.store.sessions.insert(session, SessionState::default());
+
+        app.set_selected_session(session);
+        let hydration_id = wait_for_recorded_request(&recorded, "session.permission.get", 1).await;
+        rendered_row(&mut app, 80, 24, 23);
+        let hit = app.hit_map.permission_mode.expect("permission mode hit");
+        app.handle_click(hit.x, hit.y).await;
+        assert_eq!(
+            app.permission_modes[&session],
+            cookie_agent_protocol::PermissionMode::AutoApproveN
+        );
+        let mutation_id =
+            wait_for_recorded_request(&recorded, "session.set_permission_mode", 1).await;
+
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": hydration_id,
+                "result": {
+                    "permissions": [],
+                    "current_mode": "auto_approve_y"
+                }
+            })))
+            .expect("script stale hydration response");
+        let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
+            .await
+            .expect("stale hydration update timeout")
+            .expect("stale hydration update");
+        app.handle_rpc_update(update);
+        assert_eq!(
+            app.permission_modes[&session],
+            cookie_agent_protocol::PermissionMode::AutoApproveN
+        );
+
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": mutation_id,
+                "error": {
+                    "code": -32000,
+                    "message": "set mode failed",
+                    "data": null
+                }
+            })))
+            .expect("script failed mutation response");
+        let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
+            .await
+            .expect("mutation failure update timeout")
+            .expect("mutation failure update");
+        app.handle_rpc_update(update);
+        assert!(!app.permission_modes.contains_key(&session));
+
+        let retry_id = wait_for_recorded_request(&recorded, "session.permission.get", 2).await;
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": retry_id,
+                "result": {
+                    "permissions": [],
+                    "current_mode": "auto_approve_y"
+                }
+            })))
+            .expect("script authoritative hydration response");
+        let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
+            .await
+            .expect("authoritative hydration update timeout")
+            .expect("authoritative hydration update");
+        app.handle_rpc_update(update);
+
+        assert_eq!(
+            app.permission_modes[&session],
+            cookie_agent_protocol::PermissionMode::AutoApproveY
+        );
+        assert!(rendered_row(&mut app, 80, 24, 23).contains("auto-y"));
     }
 
     #[tokio::test]

@@ -35,10 +35,13 @@ the same cancellation path.
 
 ## Permissions
 
-`--permission-mode` accepts `auto-approve`, `ask`, or `yolo`. Headless runs
-never wait for approval input. When an approval escalates anywhere in the
-session tree, the runner rejects it, cancels the root run, and waits for the
-matching terminal event.
+`--permission-mode` accepts `auto-approve` (`auto_approve`), `auto-approve-n`
+(`auto_approve_n`), `auto-approve-y` (`auto_approve_y`), `ask`, or `yolo`.
+Headless runs never wait for approval input. In `auto-approve-n`, a classifier
+escalation is rejected and cancels the root run with exit code `3`. In
+`auto-approve-y`, an escalation is approved once and the run continues
+automatically. Other escalations anywhere in the session tree are rejected;
+the runner cancels the root run and waits for the matching terminal event.
 
 `--allowed-tools` may be repeated or comma-delimited and accepts `read`,
 `write`, `bash`, `delegate`, `mcp`, and `skill:<name>`. It adds an `allow` overlay for each

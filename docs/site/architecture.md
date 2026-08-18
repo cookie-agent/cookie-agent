@@ -194,8 +194,10 @@ session and drive the run loop:
   permission pipeline is stateless; approvals and tree grants live in an
   in-memory `ApprovalStore` rebuilt from durable events.
 - **Approvals.** A stateless approval evaluator (the `approval` internal agent)
-  classifies asks in `auto_approve` mode. `ask` skips the classifier, and `yolo`
-  approves immediately. A doom-loop guard rejects repeated identical approvals.
+  classifies asks in the three `auto_approve` modes; classifier escalations go
+  to the user, reject automatically, or approve once automatically according to
+  the mode. `ask` skips the classifier, and `yolo` approves immediately. A
+  doom-loop guard rejects repeated identical approvals.
 - **Delegation.** The `delegate_subagent` tool reserves a child session by
   appending lifecycle events to the parent session, then runs the target
   subagent with an inherited model suffix. Depth and concurrency limits come

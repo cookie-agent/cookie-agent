@@ -3,6 +3,16 @@
   "title": "SessionPermissionGetResult",
   "type": "object",
   "properties": {
+    "current_mode": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PermissionMode"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "permissions": {
       "type": "array",
       "items": {
@@ -84,6 +94,16 @@
         "allow",
         "ask",
         "deny"
+      ]
+    },
+    "PermissionMode": {
+      "type": "string",
+      "enum": [
+        "auto_approve",
+        "auto_approve_n",
+        "auto_approve_y",
+        "ask",
+        "yolo"
       ]
     },
     "PermissionRuleSource": {

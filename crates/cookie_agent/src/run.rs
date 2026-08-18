@@ -38,6 +38,10 @@ pub enum PermissionModeArg {
     #[default]
     #[value(alias = "auto_approve")]
     AutoApprove,
+    #[value(alias = "auto_approve_n")]
+    AutoApproveN,
+    #[value(alias = "auto_approve_y")]
+    AutoApproveY,
     Ask,
     Yolo,
 }
@@ -46,6 +50,8 @@ impl From<PermissionModeArg> for PermissionMode {
     fn from(value: PermissionModeArg) -> Self {
         match value {
             PermissionModeArg::AutoApprove => Self::AutoApprove,
+            PermissionModeArg::AutoApproveN => Self::AutoApproveN,
+            PermissionModeArg::AutoApproveY => Self::AutoApproveY,
             PermissionModeArg::Ask => Self::Ask,
             PermissionModeArg::Yolo => Self::Yolo,
         }
@@ -800,6 +806,19 @@ async fn process_event(
                 progress(display.args, stderr, "turn limit reached; cancelling run");
                 request_cancel(engine, active_run_id, CancellationCause::User, state).await?;
             }
+        }
+        EventPayload::ApprovalFinalized { decision, .. }
+            if decision.reason_code
+                == cookie_agent_protocol::ApprovalReasonCode::AutoApproveNRejected
+                && !state.cancellation_requested =>
+        {
+            state.approval_rejections = state.approval_rejections.saturating_add(1);
+            progress(
+                display.args,
+                stderr,
+                "auto-approve(N) rejection; cancelling run",
+            );
+            request_cancel(engine, active_run_id, CancellationCause::Permission, state).await?;
         }
         EventPayload::RunCompleted { final_text } => {
             return Ok(Some(TerminalOutcome {

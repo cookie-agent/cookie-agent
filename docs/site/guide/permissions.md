@@ -129,6 +129,11 @@ Each session starts in `auto_approve` unless changed:
 
 - `auto_approve` runs the stateless approval classifier and asks the user when
   it escalates or fails safely.
+- `auto_approve_n` runs the same classifier but rejects an escalation on the
+  user's behalf without showing a prompt.
+- `auto_approve_y` runs the same classifier but approves an escalation on the
+  user's behalf without showing a prompt. This is an approve-once decision and
+  does not create a lasting session-tree grant.
 - `ask` skips the classifier and routes policy asks and model-requested
   approvals to the user.
 - `yolo` approves asks immediately.
@@ -136,6 +141,11 @@ Each session starts in `auto_approve` unless changed:
 Hard denies, the doom-loop guard, and existing tree grants are evaluated before
 the mode shortcut. Changing a mode does not alter an already pending approval
 and does not cascade to delegated sessions.
+
+Mode-decided escalations use the `permission_mode` decision source in the audit
+trail. Their final reason codes are `auto_approve_n_rejected` and
+`auto_approve_y_approved`; the classifier's preceding evaluation remains an
+internal-agent escalation.
 
 ## Session permission overlays
 

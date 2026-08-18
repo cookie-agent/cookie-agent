@@ -446,6 +446,15 @@ impl Engine {
             .insert(session_id, mode);
         Ok(())
     }
+    pub(crate) fn permission_mode(&self, session_id: SessionId) -> PermissionMode {
+        self.inner
+            .permission_modes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session_id)
+            .copied()
+            .unwrap_or_default()
+    }
     pub async fn rename_session(
         &self,
         params: SessionRenameParams,

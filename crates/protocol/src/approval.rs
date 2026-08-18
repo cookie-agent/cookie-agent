@@ -218,6 +218,8 @@ pub enum ApprovalTrigger {
 pub enum PermissionMode {
     #[default]
     AutoApprove,
+    AutoApproveN,
+    AutoApproveY,
     Ask,
     Yolo,
 }
@@ -366,6 +368,8 @@ pub enum ApprovalReasonCode {
     ModelRequested,
     InternalAgentAllowed,
     InternalAgentDenied,
+    AutoApproveNRejected,
+    AutoApproveYApproved,
     YoloApproved,
     TreeGrantMatched,
     UserApprovedOnce,
@@ -389,6 +393,7 @@ pub enum ApprovalDecisionSource {
     Policy,
     Model,
     InternalAgent,
+    PermissionMode,
     TreeGrant,
     User,
     DoomLoopGuard,
@@ -482,6 +487,7 @@ impl ApprovalInternalDecision {
                 self.source,
                 ApprovalDecisionSource::TreeGrant
                     | ApprovalDecisionSource::User
+                    | ApprovalDecisionSource::PermissionMode
                     | ApprovalDecisionSource::DoomLoopGuard
             ),
             _ => self.source == ApprovalDecisionSource::System,
@@ -553,6 +559,7 @@ impl ApprovalFinalDecision {
                 self.reason_code,
                 ApprovalReasonCode::PolicyAllowed
                     | ApprovalReasonCode::InternalAgentAllowed
+                    | ApprovalReasonCode::AutoApproveYApproved
                     | ApprovalReasonCode::YoloApproved
                     | ApprovalReasonCode::TreeGrantMatched
                     | ApprovalReasonCode::UserApprovedOnce
@@ -562,6 +569,7 @@ impl ApprovalFinalDecision {
                 self.reason_code,
                 ApprovalReasonCode::PolicyDenied
                     | ApprovalReasonCode::InternalAgentDenied
+                    | ApprovalReasonCode::AutoApproveNRejected
                     | ApprovalReasonCode::UserRejected
                     | ApprovalReasonCode::DoomLoopDetected
                     | ApprovalReasonCode::ConstraintViolation
@@ -590,6 +598,9 @@ impl ApprovalFinalDecision {
             | ApprovalReasonCode::YoloApproved => self.source == ApprovalDecisionSource::Policy,
             ApprovalReasonCode::InternalAgentAllowed | ApprovalReasonCode::InternalAgentDenied => {
                 self.source == ApprovalDecisionSource::InternalAgent
+            }
+            ApprovalReasonCode::AutoApproveNRejected | ApprovalReasonCode::AutoApproveYApproved => {
+                self.source == ApprovalDecisionSource::PermissionMode
             }
             ApprovalReasonCode::TreeGrantMatched => {
                 self.source == ApprovalDecisionSource::TreeGrant
@@ -919,6 +930,16 @@ impl ApprovalRecord {
                         )
                     )
                 })
+            }
+            Some(final_decision)
+                if final_decision.source == ApprovalDecisionSource::PermissionMode =>
+            {
+                self.user_decision.is_none()
+                    && self.internal_decision.as_ref().is_some_and(|internal| {
+                        internal.decision == ApprovalInternalDecisionKind::Escalate
+                            && internal.source == ApprovalDecisionSource::InternalAgent
+                            && internal.reason_code == ApprovalReasonCode::Escalated
+                    })
             }
             Some(final_decision)
                 if matches!(

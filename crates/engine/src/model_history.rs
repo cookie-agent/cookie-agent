@@ -501,6 +501,7 @@ fn assemble_history_with_replay(
                                 ApprovalDecisionSource::Policy => "policy".into(),
                                 ApprovalDecisionSource::Model => "model".into(),
                                 ApprovalDecisionSource::InternalAgent => "internal_agent".into(),
+                                ApprovalDecisionSource::PermissionMode => "permission_mode".into(),
                                 ApprovalDecisionSource::TreeGrant => "tree_grant".into(),
                                 ApprovalDecisionSource::User => "user".into(),
                                 ApprovalDecisionSource::DoomLoopGuard => "doom_loop_guard".into(),

@@ -736,6 +736,7 @@ impl crate::Engine {
         let policy = governing_agent(&session);
         Ok(SessionPermissionGetResult {
             permissions: effective_permission_view(&policy, &session.permission_overlay),
+            current_mode: Some(self.permission_mode(session_id)),
         })
     }
 

@@ -821,6 +821,14 @@ fn permission_mode_uses_snake_case_wire_values() {
         json!("auto_approve")
     );
     assert_eq!(
+        serde_json::to_value(PermissionMode::AutoApproveN).unwrap(),
+        json!("auto_approve_n")
+    );
+    assert_eq!(
+        serde_json::to_value(PermissionMode::AutoApproveY).unwrap(),
+        json!("auto_approve_y")
+    );
+    assert_eq!(
         serde_json::to_value(PermissionMode::Ask).unwrap(),
         json!("ask")
     );
@@ -829,9 +837,50 @@ fn permission_mode_uses_snake_case_wire_values() {
         json!("yolo")
     );
     assert_eq!(
+        serde_json::from_value::<PermissionMode>(json!("auto_approve_n")).unwrap(),
+        PermissionMode::AutoApproveN
+    );
+    assert_eq!(
+        serde_json::from_value::<PermissionMode>(json!("auto_approve_y")).unwrap(),
+        PermissionMode::AutoApproveY
+    );
+    assert_eq!(
         serde_json::from_value::<PermissionMode>(json!("auto_approve")).unwrap(),
         PermissionMode::AutoApprove
     );
+}
+
+#[test]
+fn permission_mode_reason_codes_and_source_round_trip() {
+    for (outcome, reason_code, feedback) in [
+        (
+            ApprovalFinalOutcome::Rejected,
+            ApprovalReasonCode::AutoApproveNRejected,
+            Some(ApprovalFeedback {
+                message: SafeErrorMessage::new("rejected by auto-approve(N) mode").unwrap(),
+            }),
+        ),
+        (
+            ApprovalFinalOutcome::Approved,
+            ApprovalReasonCode::AutoApproveYApproved,
+            None,
+        ),
+    ] {
+        let decision = ApprovalFinalDecision {
+            outcome,
+            source: ApprovalDecisionSource::PermissionMode,
+            reason_code,
+            feedback,
+            tree_grant_id: None,
+        };
+        assert!(decision.validate().is_ok());
+        let wire = serde_json::to_value(&decision).unwrap();
+        assert_eq!(wire["source"], json!("permission_mode"));
+        assert_eq!(
+            serde_json::from_value::<ApprovalFinalDecision>(wire).unwrap(),
+            decision
+        );
+    }
 }
 
 #[test]

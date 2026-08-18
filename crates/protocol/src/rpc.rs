@@ -416,6 +416,8 @@ pub struct SessionPermissionGetParams {
 #[serde(deny_unknown_fields)]
 pub struct SessionPermissionGetResult {
     pub permissions: Vec<EffectivePermissionAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_mode: Option<PermissionMode>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]

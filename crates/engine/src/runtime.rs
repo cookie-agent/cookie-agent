@@ -888,6 +888,7 @@ enum SessionCommand {
         request: ApprovalRequest,
         executor: PreparedExecutorCell,
         decision: ApprovalInternalDecisionKind,
+        permission_mode: PermissionMode,
         cancelled: bool,
         reply: oneshot::Sender<Result<ApprovalEvaluationTransition, EngineError>>,
     },

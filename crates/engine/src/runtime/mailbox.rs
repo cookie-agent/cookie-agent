@@ -1286,11 +1286,17 @@ impl Engine {
                 request,
                 executor,
                 decision,
+                permission_mode,
                 cancelled,
                 reply,
             } => {
                 let _ = reply.send(self.approval_evaluation_complete_direct(
-                    session, run, request, executor, decision, cancelled,
+                    session,
+                    run,
+                    request,
+                    executor,
+                    (permission_mode, decision),
+                    cancelled,
                 ));
             }
             SessionCommand::ApprovalTerminal {

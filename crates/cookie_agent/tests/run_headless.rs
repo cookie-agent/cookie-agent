@@ -840,6 +840,46 @@ async fn terminal_events_determine_failure_permission_and_cancellation_codes() {
         "bash",
         r#"{"command":"true"}"#,
     )));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response(r#"{"decision":"ask"}"#)));
+    let mut auto_n_args = run_args("auto-n permission prompt");
+    auto_n_args.permission_mode = PermissionModeArg::AutoApproveN;
+    auto_n_args.output = Some(OutputMode::Json);
+    let auto_n = fixture.run(auto_n_args, "").await;
+    assert_eq!(auto_n.code, 3, "{}", auto_n.stderr);
+    let auto_n_summary = parse_json_lines(&auto_n.stdout)
+        .pop()
+        .expect("auto-n permission summary");
+    assert_eq!(auto_n_summary["status"], "cancelled");
+    assert_eq!(auto_n_summary["cancellation"], "permission");
+
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "bash",
+        r#"{"command":"true"}"#,
+    )));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response(r#"{"decision":"ask"}"#)));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("auto-y continued")));
+    let mut auto_y_args = run_args("auto-y permission prompt");
+    auto_y_args.permission_mode = PermissionModeArg::AutoApproveY;
+    auto_y_args.output = Some(OutputMode::Json);
+    let auto_y = fixture.run(auto_y_args, "").await;
+    assert_eq!(auto_y.code, 0, "{}", auto_y.stderr);
+    let auto_y_summary = parse_json_lines(&auto_y.stdout)
+        .pop()
+        .expect("auto-y completion summary");
+    assert_eq!(auto_y_summary["status"], "completed");
+    assert!(auto_y_summary["cancellation"].is_null());
+    assert_eq!(auto_y_summary["final_text"], "auto-y continued");
+
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "bash",
+        r#"{"command":"true"}"#,
+    )));
     let mut turns_args = run_args("turn cap prompt");
     turns_args.max_turns = 1;
     turns_args.allowed_tools = vec![AllowedTool::Bash];
