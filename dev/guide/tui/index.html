@@ -1175,7 +1175,7 @@ line, while Ctrl-Home and Ctrl-End move to the start or end of the whole draft.<
 </tr>
 <tr>
 <td><code>/usage</code></td>
-<td>Show selected-session and global usage</td>
+<td>Show selected-session and session-tree usage</td>
 </tr>
 <tr>
 <td><code>/cancel</code></td>
@@ -1256,11 +1256,19 @@ rejection still win in every mode. See <a href="../permissions/">Permissions</a>
 estimated cost between the permission mode and context usage. Click the cost to
 open the <code>/usage</code> dashboard. Unpriced sessions omit the segment.</p>
 <h2 id="usage-dashboard">Usage dashboard<a class="headerlink" href="#usage-dashboard" title="Permanent link">&para;</a></h2>
-<p><code>/usage</code> opens a read-only view with the selected session and project-wide
-rollups. Each section shows request count, input and output tokens, cache reads
+<p><code>/usage</code> opens a read-only view with the selected session first and its complete
+delegation tree second. The tree count includes the selected session. Each
+section shows request count, input, output, and reasoning tokens, cache reads
 and writes, cache hit percentage, estimated cost when configured, and a
-per-model breakdown. <code>unpriced</code> means the active configuration does not provide
-all rates needed for the observed token categories. Press Esc to close.</p>
+per-model breakdown. Models are sorted by descending estimated cost, with
+unpriced models last; ties use input tokens and then model name. Token counts
+use thousands separators, hit rates use one decimal place, and costs use the
+same formatting as the bottom bar. <code>unpriced</code> means the active configuration
+does not provide all rates needed for the observed token categories, while
+<code>n/a</code> means a hit rate cannot be computed.</p>
+<p>Use Up/Down, Page Up/Page Down, or the mouse wheel to scroll when needed, and
+Esc to close. Clicking the selected session cost in the bottom bar still opens
+this panel.</p>
 <p>See <a href="../usage/">Usage and cost</a> for recording and pricing semantics.</p>
 
 
