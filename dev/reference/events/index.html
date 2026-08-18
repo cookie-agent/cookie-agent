@@ -1169,7 +1169,13 @@ sidecar file.</p>
 contains the positive <code>model_turn_seq</code>, agent ID, resolved model identity, and
 Oven's normalized usage fields: inclusive input/output totals plus optional
 uncached input, cache-read input, cache-write input, text output, and reasoning
-output counts. Event-log validation requires its run, agent, model, and turn to
+output counts. The optional <code>estimated_cost_pico_usd</code> stamps the engine-selected
+price for that request: a number is priced, present <code>null</code> is unpriced, and an
+absent field identifies an older event.
+Usage rollups preserve stamped prices exactly and apply the current pricing
+configuration or catalog only to legacy records where the field is absent. A
+present <code>null</code> stamp is durably unpriced and is never recomputed.
+Event-log validation requires its run, agent, model, and turn to
 match and rejects duplicate records for one turn. Session, agent, and global
 usage projections rebuild from these events after restart, revert, and fork.</p>
 <p><code>model_request_prepared</code> follows request assembly and all accepted model/provider request hooks.
@@ -1189,7 +1195,8 @@ the later terminal command even if persistence has not completed yet. Cleanup
 deadline diagnostics count only progress records that never entered that mailbox.</p>
 <p><code>internal_agent_usage_recorded</code> attributes each completed
 internal model request to its internal run, internal agent ID, kind, and resolved
-model. The same session, agent, and global projections include these records.</p>
+model. It carries the same optional <code>estimated_cost_pico_usd</code> stamp. The same
+session, agent, and global projections include these records.</p>
 <p><code>skill_loaded</code> and <code>skill_invocation_noted</code> persist skill use. <code>skill_loaded</code>
 stores the rendered body, skill name, source path, arguments, base directory,
 and at most ten supporting-file paths. It is pinned across context checkpoints.

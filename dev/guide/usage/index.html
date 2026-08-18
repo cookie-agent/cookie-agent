@@ -987,6 +987,10 @@ Programmatic clients can call <code>session.usage</code>, <code>agent.usage</cod
 <code>usage.global</code>. Cache hit rate is cache-read tokens divided by inclusive input
 tokens. It is unavailable unless every included request reports both fields;
 an explicitly reported zero remains a 0% hit rate.</p>
+<p>When a request is priced, the assistant block's closing footer includes its
+estimated cost after generation speed and context usage. The bottom bar shows
+the selected session total; clicking it opens <code>/usage</code>. Unpriced costs are
+omitted from both locations.</p>
 <p>Cost is always optional. Managed models use the selected models.dev catalog
 price tier for each request's reported input-token context size. Model-specific entries under <code>[pricing.models."provider/model"]</code> supply
 prices for custom models or override catalog prices, as described in the
@@ -994,6 +998,14 @@ prices for custom models or override catalog prices, as described in the
 The precedence is config override, catalog, then no cost. An aggregate remains
 unpriced when any used model lacks a required rate or when a provider omits a
 usage split needed to apply a distinct cache or reasoning price.</p>
+<p>New usage events stamp the request price selected when the request completes.
+Footers and rollups preserve those stamps, so later pricing changes do not
+rewrite already stamped costs. An explicit unpriced stamp also remains
+unpriced after configuration or catalog changes. Legacy events without the
+field are priced from
+the current configuration or catalog when a rollup is requested; mixed
+rollups therefore combine durable historical prices with best-effort current
+pricing for legacy records.</p>
 <p>To evaluate prompt caching, compare equivalent workloads before and after
 enabling <code>[prompt_caching]</code>. Track <code>cache_hit_rate</code> after the first turn and
 <code>estimated_cost_usd</code> over the whole session. A healthy multi-turn workload
