@@ -199,6 +199,15 @@ impl Engine {
             }
             match result {
                 Ok(completed) => {
+                    let usage =
+                        crate::model_history::persist_usage(completed.turn.finish.usage.clone());
+                    let resolved_model = wire_model(binding);
+                    let estimated_cost_pico_usd = crate::usage::estimated_cost_pico_usd(
+                        &resolved_model,
+                        &usage,
+                        &self.inner.config.runtime.pricing,
+                        &self.catalog_pricing(),
+                    );
                     self.append_internal_agent_event(
                         session,
                         parent_run,
@@ -206,10 +215,9 @@ impl Engine {
                             internal_run_id,
                             kind,
                             agent_id: policy.agent.agent.clone(),
-                            resolved_model: wire_model(binding),
-                            usage: crate::model_history::persist_usage(
-                                completed.turn.finish.usage.clone(),
-                            ),
+                            resolved_model,
+                            usage,
+                            estimated_cost_pico_usd,
                         },
                         execution.actor_direct,
                     )
@@ -519,10 +527,15 @@ pub(super) fn internal_history_tokens(
 }
 
 fn invalid_internal_output(parts: &[oven_sdk::AssistantPart], reject_non_text: bool) -> bool {
+    // Reasoning parts are visible assistant text, not executable output; only
+    // parts that would need execution or attachment handling are invalid.
     reject_non_text
-        && parts
-            .iter()
-            .any(|part| !matches!(part, oven_sdk::AssistantPart::Text(_)))
+        && parts.iter().any(|part| {
+            !matches!(
+                part,
+                oven_sdk::AssistantPart::Text(_) | oven_sdk::AssistantPart::Reasoning(_)
+            )
+        })
 }
 
 pub(super) fn parse_internal_approval(value: &str) -> Option<ApprovalInternalDecisionKind> {
@@ -578,6 +591,18 @@ mod tests {
             )),
         ];
         assert!(invalid_internal_output(&parts, true));
+    }
+
+    #[test]
+    fn reasoning_parts_are_not_rejected_as_non_text() {
+        // Thinking-capable models emit visible reasoning alongside the text
+        // decision; reasoning is not executable output and must not fail the
+        // approval agent.
+        let parts = vec![
+            oven_sdk::AssistantPart::Reasoning(oven_sdk::ReasoningPart::new("weighing risk")),
+            oven_sdk::AssistantPart::Text(oven_sdk::TextPart::new(r#"{"decision":"allow"}"#)),
+        ];
+        assert!(!invalid_internal_output(&parts, true));
     }
 
     #[test]
