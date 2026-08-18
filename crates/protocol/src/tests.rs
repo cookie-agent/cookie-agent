@@ -16,6 +16,60 @@ where
     ))
 }
 
+#[test]
+fn usage_event_cost_round_trips_and_remains_optional() {
+    let resolved_model: ResolvedModelRef = serde_json::from_value(json!({
+        "selection": {"model": "openai/gpt-5.6-sol", "variant": null},
+        "provider_id": "openai",
+        "model_id": "gpt-5.6-sol",
+        "adapter_id": "openai-responses",
+        "selection_fingerprint": "a".repeat(64),
+    }))
+    .unwrap();
+    let payload = EventPayload::ModelUsageRecorded {
+        model_turn_seq: 1,
+        agent_id: AgentId::new("primary").unwrap(),
+        resolved_model,
+        usage: Usage::default(),
+        estimated_cost_pico_usd: Some(3_100_000_000),
+    };
+    let encoded = serde_json::to_value(&payload).unwrap();
+    assert_eq!(encoded["estimated_cost_pico_usd"], json!(3_100_000_000_u64));
+    assert_eq!(
+        serde_json::from_value::<EventPayload>(encoded).unwrap(),
+        payload
+    );
+
+    let mut legacy = serde_json::to_value(payload).unwrap();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("estimated_cost_pico_usd");
+    assert!(matches!(
+        serde_json::from_value::<EventPayload>(legacy).unwrap(),
+        EventPayload::ModelUsageRecorded {
+            estimated_cost_pico_usd: None,
+            ..
+        }
+    ));
+
+    let unpriced = EventPayload::ModelUsageRecorded {
+        model_turn_seq: 1,
+        agent_id: AgentId::new("primary").unwrap(),
+        resolved_model: serde_json::from_value(json!({
+            "selection": {"model": "openai/gpt-5.6-sol", "variant": null},
+            "provider_id": "openai",
+            "model_id": "gpt-5.6-sol",
+            "adapter_id": "openai-responses",
+            "selection_fingerprint": "a".repeat(64),
+        }))
+        .unwrap(),
+        usage: Usage::default(),
+        estimated_cost_pico_usd: None,
+    };
+    assert!(serde_json::to_value(unpriced).unwrap()["estimated_cost_pico_usd"].is_null());
+}
+
 trait TryFromRevision: Sized {
     fn from_revision(value: String) -> Self;
 }

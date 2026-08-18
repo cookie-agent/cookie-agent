@@ -1512,6 +1512,12 @@ impl Engine {
                             }
                         }
                         let resolved_model = wire_model(binding);
+                        let estimated_cost_pico_usd = crate::usage::estimated_cost_pico_usd(
+                            &resolved_model,
+                            &turn.usage,
+                            &self.inner.config.runtime.pricing,
+                            &self.catalog_pricing(),
+                        );
                         let model_turn_seq = self.next_model_turn_seq(session)?;
                         self.append(
                             session,
@@ -1534,6 +1540,7 @@ impl Engine {
                                 agent_id: policy.agent.agent.clone(),
                                 resolved_model: wire_model(binding),
                                 usage: turn.usage.clone(),
+                                estimated_cost_pico_usd,
                             },
                         )
                         .await?;

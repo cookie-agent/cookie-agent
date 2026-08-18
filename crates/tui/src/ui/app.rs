@@ -305,6 +305,7 @@ pub(super) enum HoverTarget {
     ApprovalAction(ApprovalUserDecision),
     TitleSegment(TitleSegment),
     PermissionMode,
+    SessionCost,
     EventLevelFilter,
     TreeRow(SessionId),
     QueueEntry(usize),
@@ -339,6 +340,7 @@ pub(super) struct UiHitMap {
     /// Visible user-message rows that open the copy/revert/fork menu.
     pub(super) user_messages: Vec<UserMessageHit>,
     pub(super) permission_mode: Option<Rect>,
+    pub(super) session_cost: Option<Rect>,
     pub(super) event_level_filter: Option<Rect>,
     pub(super) provider_fields: Vec<ProviderFieldHit>,
     pub(super) provider_submit: Option<Rect>,
@@ -347,6 +349,16 @@ pub(super) struct UiHitMap {
 struct BottomBarRender {
     line: Line<'static>,
     mode_span: Option<usize>,
+    cost_span: Option<usize>,
+}
+
+#[derive(Default)]
+pub(super) struct SessionCostRefresh {
+    debounce_generation: u64,
+    request_id: u64,
+    scheduled: bool,
+    in_flight: bool,
+    dirty: bool,
 }
 
 fn is_printable_key(key: KeyEvent) -> bool {
@@ -445,6 +457,8 @@ pub struct App {
     pub(super) permission_panel: PermissionPanel,
     pub(super) skill_panel: SkillPanel,
     pub(super) usage_panel: UsagePanel,
+    pub(super) cost_refreshes: HashMap<SessionId, SessionCostRefresh>,
+    pub(super) next_cost_refresh_request_id: u64,
     pub(super) conversation_scroll: ConversationScroll,
     pub(super) scrollbar_geometry: Option<ScrollbarGeometry>,
     pub(super) scrollbar_drag: Option<ScrollbarDrag>,
@@ -590,6 +604,15 @@ pub(super) enum RpcUpdate {
         session: Result<Option<SessionUsageResult>, String>,
         global: Result<GlobalUsageResult, String>,
     },
+    SessionCostLoaded {
+        session_id: SessionId,
+        request_id: u64,
+        result: Result<SessionUsageResult, String>,
+    },
+    SessionCostDebounceElapsed {
+        session_id: SessionId,
+        generation: u64,
+    },
 }
 
 /// An approval response captured at click time and currently in flight.
@@ -661,6 +684,7 @@ const MAX_TRANSIENT_NOTICES: usize = 4;
 const TREE_REFRESH_TIMEOUT: Duration = Duration::from_secs(2);
 const TREE_SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(6);
 const STDIN_RPC_TIMEOUT: Duration = Duration::from_secs(1);
+const SESSION_COST_DEBOUNCE: Duration = Duration::from_millis(250);
 impl App {
     #[cfg(test)]
     pub(crate) async fn wait_for_skill_refresh_for_test(&mut self) {
@@ -782,6 +806,8 @@ impl App {
             permission_panel: PermissionPanel::default(),
             skill_panel: SkillPanel::default(),
             usage_panel: UsagePanel::default(),
+            cost_refreshes: HashMap::new(),
+            next_cost_refresh_request_id: 0,
             conversation_scroll: ConversationScroll::default(),
             scrollbar_geometry: None,
             scrollbar_drag: None,
@@ -1973,13 +1999,60 @@ impl App {
                 self.usage_panel.loading = false;
                 if self.selected == session_id {
                     match session {
-                        Ok(result) => self.usage_panel.session = result,
+                        Ok(result) => {
+                            if let Some(result) = &result
+                                && let Some(state) = self.store.sessions.get_mut(&result.session_id)
+                            {
+                                state.estimated_cost_usd = result.usage.estimated_cost_usd;
+                            }
+                            self.usage_panel.session = result;
+                        }
                         Err(error) => self.status = format!("session usage failed: {error}"),
                     }
                 }
                 match global {
                     Ok(result) => self.usage_panel.global = Some(result),
                     Err(error) => self.status = format!("global usage failed: {error}"),
+                }
+            }
+            RpcUpdate::SessionCostLoaded {
+                session_id,
+                request_id,
+                result,
+            } => {
+                let Some(refresh) = self.cost_refreshes.get_mut(&session_id) else {
+                    return;
+                };
+                if !refresh.in_flight || refresh.request_id != request_id {
+                    return;
+                }
+                refresh.in_flight = false;
+                let dirty = std::mem::take(&mut refresh.dirty);
+                if let Ok(result) = result
+                    && let Some(state) = self.store.sessions.get_mut(&session_id)
+                {
+                    state.estimated_cost_usd = result.usage.estimated_cost_usd;
+                }
+                if dirty {
+                    self.schedule_session_cost_refresh(session_id);
+                }
+            }
+            RpcUpdate::SessionCostDebounceElapsed {
+                session_id,
+                generation,
+            } => {
+                let launch = self
+                    .cost_refreshes
+                    .get_mut(&session_id)
+                    .is_some_and(|refresh| {
+                        if !refresh.scheduled || refresh.debounce_generation != generation {
+                            return false;
+                        }
+                        refresh.scheduled = false;
+                        true
+                    });
+                if launch {
+                    self.start_session_cost_refresh(session_id);
                 }
             }
         }
@@ -2213,6 +2286,14 @@ impl App {
                 ))
             .then(|| event.clone())
         });
+        let refresh_cost = event.and_then(|event| {
+            matches!(
+                event.payload,
+                EventPayload::ModelUsageRecorded { .. }
+                    | EventPayload::InternalAgentUsageRecorded { .. }
+            )
+            .then_some(event.session_id)
+        });
         if let Some((session_id, title, seq)) = title_change {
             self.apply_title_patch(session_id, title, seq);
         }
@@ -2249,6 +2330,9 @@ impl App {
             self.restore_voided_inputs();
             if let Some(event) = &refresh_skills {
                 self.refresh_skills_for_event(event);
+            }
+            if let Some(session_id) = refresh_cost {
+                self.refresh_session_cost(session_id);
             }
         }
         match outcome {
@@ -2419,6 +2503,72 @@ impl App {
                 global,
             });
         });
+    }
+
+    fn refresh_session_cost(&mut self, session_id: SessionId) {
+        let refresh = self.cost_refreshes.entry(session_id).or_default();
+        if refresh.in_flight {
+            refresh.dirty = true;
+            return;
+        }
+        if refresh.scheduled {
+            self.schedule_session_cost_refresh(session_id);
+            return;
+        }
+        self.start_session_cost_refresh(session_id);
+    }
+
+    fn schedule_session_cost_refresh(&mut self, session_id: SessionId) {
+        let refresh = self.cost_refreshes.entry(session_id).or_default();
+        refresh.debounce_generation = refresh.debounce_generation.wrapping_add(1);
+        refresh.scheduled = true;
+        let generation = refresh.debounce_generation;
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            tokio::time::sleep(SESSION_COST_DEBOUNCE).await;
+            let _ = updates.send(RpcUpdate::SessionCostDebounceElapsed {
+                session_id,
+                generation,
+            });
+        });
+    }
+
+    fn start_session_cost_refresh(&mut self, session_id: SessionId) {
+        self.next_cost_refresh_request_id = self.next_cost_refresh_request_id.wrapping_add(1);
+        let request_id = self.next_cost_refresh_request_id;
+        let refresh = self.cost_refreshes.entry(session_id).or_default();
+        refresh.scheduled = false;
+        refresh.in_flight = true;
+        refresh.dirty = false;
+        refresh.request_id = request_id;
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .session_usage(SessionUsageParams { session_id })
+                .await
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::SessionCostLoaded {
+                session_id,
+                request_id,
+                result,
+            });
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn session_cost_refresh_idle_for_test(&self, session_id: SessionId) -> bool {
+        self.cost_refreshes
+            .get(&session_id)
+            .is_some_and(|refresh| !refresh.scheduled && !refresh.in_flight && !refresh.dirty)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn session_cost_request_id_for_test(&self, session_id: SessionId) -> Option<u64> {
+        self.cost_refreshes
+            .get(&session_id)
+            .filter(|refresh| refresh.in_flight)
+            .map(|refresh| refresh.request_id)
     }
 
     async fn handle_mcp_key(&mut self, key: KeyEvent) {
@@ -3312,6 +3462,9 @@ impl App {
         if self.hit_map.permission_mode.is_some_and(over) {
             return Some(HoverTarget::PermissionMode);
         }
+        if self.hit_map.session_cost.is_some_and(over) {
+            return Some(HoverTarget::SessionCost);
+        }
         if self.hit_map.event_level_filter.is_some_and(over) {
             return Some(HoverTarget::EventLevelFilter);
         }
@@ -3463,6 +3616,11 @@ impl App {
             }
             HoverTarget::PermissionMode => {
                 if let Some(rect) = self.hit_map.permission_mode {
+                    patch(frame, rect, text_style);
+                }
+            }
+            HoverTarget::SessionCost => {
+                if let Some(rect) = self.hit_map.session_cost {
                     patch(frame, rect, text_style);
                 }
             }
@@ -3640,6 +3798,15 @@ impl App {
             .is_some_and(|rect| contains(rect, column, row))
         {
             self.cycle_permission_mode();
+            return;
+        }
+        if self
+            .hit_map
+            .session_cost
+            .is_some_and(|rect| contains(rect, column, row))
+        {
+            self.modal = Modal::Usage;
+            self.load_usage();
             return;
         }
         if self
@@ -5799,12 +5966,12 @@ impl App {
             layout.status,
         );
         let bottom_bar = self.bottom_bar_line(layout.bar.width);
-        self.hit_map.permission_mode = bottom_bar.mode_span.and_then(|mode_span| {
+        let span_rect = |target_span| {
             let mut column = layout.bar.x;
             for (index, span) in bottom_bar.line.spans.iter().enumerate() {
                 let width =
                     UnicodeWidthStr::width(span.content.as_ref()).min(usize::from(u16::MAX)) as u16;
-                if index == mode_span {
+                if index == target_span {
                     let visible = layout
                         .bar
                         .x
@@ -5816,7 +5983,9 @@ impl App {
                 column = column.saturating_add(width);
             }
             None
-        });
+        };
+        self.hit_map.permission_mode = bottom_bar.mode_span.and_then(span_rect);
+        self.hit_map.session_cost = bottom_bar.cost_span.and_then(span_rect);
         frame.render_widget(
             Paragraph::new(bottom_bar.line).style(self.theme.panel()),
             layout.bar,
@@ -6019,6 +6188,7 @@ impl App {
             return BottomBarRender {
                 line: Line::default(),
                 mode_span: None,
+                cost_span: None,
             };
         }
 
@@ -6060,51 +6230,103 @@ impl App {
             }
             _ => context.clone(),
         };
+        let cost = state
+            .and_then(|state| state.estimated_cost_usd)
+            .map(format_cost_usd);
         let mode = self
             .selected
             .map(|session_id| self.permission_mode(session_id))
             .unwrap_or_default();
         let mode = permission_mode_label(mode);
         let hint = "`ctrl+p` commands";
+        #[derive(Clone, Copy)]
+        struct Candidate<'a> {
+            cost: Option<&'a str>,
+            context: Option<&'a str>,
+            hint: bool,
+        }
+        let render_candidate = |candidate: Candidate<'_>| {
+            let mut rendered = mode.to_owned();
+            if let Some(cost) = candidate.cost {
+                rendered.push_str("    ");
+                rendered.push_str(cost);
+            }
+            if let Some(context) = candidate.context {
+                rendered.push_str("    ");
+                rendered.push_str(context);
+            }
+            if candidate.hint {
+                rendered.push_str("    ");
+                rendered.push_str(hint);
+            }
+            rendered
+        };
         let mut candidates = Vec::with_capacity(5);
-        if let Some(context) = &context_with_percentage {
-            candidates.push(format!("{mode}    {context}    {hint}"));
-            candidates.push(format!("{mode}    {context}"));
+        candidates.push(Candidate {
+            cost: cost.as_deref(),
+            context: context_with_percentage.as_deref(),
+            hint: true,
+        });
+        candidates.push(Candidate {
+            cost: cost.as_deref(),
+            context: context_with_percentage.as_deref(),
+            hint: false,
+        });
+        if cost.is_some() && context_with_percentage.is_some() {
+            candidates.push(Candidate {
+                cost: None,
+                context: context_with_percentage.as_deref(),
+                hint: false,
+            });
         }
-        if let Some(context) = &context
-            && context_with_percentage.as_ref() != Some(context)
-        {
-            candidates.push(format!("{mode}    {context}"));
+        if context_with_percentage != context {
+            candidates.push(Candidate {
+                cost: None,
+                context: context.as_deref(),
+                hint: false,
+            });
         }
-        candidates.push(format!("{mode}    {hint}"));
-        candidates.push(mode.to_owned());
-        let right = candidates
-            .into_iter()
-            .find(|candidate| UnicodeWidthStr::width(candidate.as_str()) <= width)
-            .unwrap_or_else(|| truncate_with_ellipsis(mode, width));
+        candidates.push(Candidate {
+            cost: None,
+            context: None,
+            hint: false,
+        });
+        let selected = candidates.into_iter().find(|candidate| {
+            UnicodeWidthStr::width(render_candidate(*candidate).as_str()) <= width
+        });
+        let right = selected.map_or_else(|| truncate_with_ellipsis(mode, width), render_candidate);
         let right_width = UnicodeWidthStr::width(right.as_str()).min(width);
         let right_start = width.saturating_sub(right_width);
         let left_width = right_start.saturating_sub(4);
         let left = truncate_with_ellipsis(&cwd, left_width);
         let padding = right_start.saturating_sub(UnicodeWidthStr::width(left.as_str()));
-        let full_mode_visible = right.starts_with(mode);
-        let (mode_text, suffix) = if full_mode_visible {
-            (mode.to_owned(), right[mode.len()..].to_owned())
-        } else {
-            (right, String::new())
-        };
         let mut spans = vec![Span::styled(
             format!("{left}{}", " ".repeat(padding)),
             self.theme.muted(),
         )];
+        let mode_text = selected.map_or(right.as_str(), |_| mode);
         let mode_span = (!mode_text.is_empty()).then_some(spans.len());
-        spans.push(Span::styled(mode_text, self.theme.link()));
-        if !suffix.is_empty() {
-            spans.push(Span::styled(suffix, self.theme.muted()));
+        spans.push(Span::styled(mode_text.to_owned(), self.theme.link()));
+        let mut cost_span = None;
+        if let Some(candidate) = selected {
+            if let Some(cost) = candidate.cost {
+                spans.push(Span::styled("    ", self.theme.muted()));
+                cost_span = Some(spans.len());
+                spans.push(Span::styled(cost.to_owned(), self.theme.muted()));
+            }
+            if let Some(context) = candidate.context {
+                spans.push(Span::styled("    ", self.theme.muted()));
+                spans.push(Span::styled(context.to_owned(), self.theme.muted()));
+            }
+            if candidate.hint {
+                spans.push(Span::styled("    ", self.theme.muted()));
+                spans.push(Span::styled(hint, self.theme.muted()));
+            }
         }
         BottomBarRender {
             line: Line::from(spans),
             mode_span,
+            cost_span,
         }
     }
 
@@ -6881,6 +7103,14 @@ pub(super) fn format_token_count(tokens: u64) -> String {
         tokens.to_string()
     } else {
         format!("{:.1}K", tokens as f64 / 1_000.0)
+    }
+}
+
+pub(super) fn format_cost_usd(cost: f64) -> String {
+    if cost >= 0.01 {
+        format!("${cost:.2}")
+    } else {
+        format!("${cost:.4}")
     }
 }
 

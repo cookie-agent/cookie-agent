@@ -94,7 +94,13 @@ sidecar file.
 contains the positive `model_turn_seq`, agent ID, resolved model identity, and
 Oven's normalized usage fields: inclusive input/output totals plus optional
 uncached input, cache-read input, cache-write input, text output, and reasoning
-output counts. Event-log validation requires its run, agent, model, and turn to
+output counts. The optional `estimated_cost_pico_usd` stamps the engine-selected
+price for that request: a number is priced, present `null` is unpriced, and an
+absent field identifies an older event.
+Usage rollups preserve stamped prices exactly and apply the current pricing
+configuration or catalog only to legacy records where the field is absent. A
+present `null` stamp is durably unpriced and is never recomputed.
+Event-log validation requires its run, agent, model, and turn to
 match and rejects duplicate records for one turn. Session, agent, and global
 usage projections rebuild from these events after restart, revert, and fork.
 
@@ -118,7 +124,8 @@ deadline diagnostics count only progress records that never entered that mailbox
 
 `internal_agent_usage_recorded` attributes each completed
 internal model request to its internal run, internal agent ID, kind, and resolved
-model. The same session, agent, and global projections include these records.
+model. It carries the same optional `estimated_cost_pico_usd` stamp. The same
+session, agent, and global projections include these records.
 
 `skill_loaded` and `skill_invocation_noted` persist skill use. `skill_loaded`
 stores the rendered body, skill name, source path, arguments, base directory,

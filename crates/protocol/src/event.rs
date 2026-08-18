@@ -1660,6 +1660,9 @@ pub enum EventPayload {
         agent_id: AgentId,
         resolved_model: ResolvedModelRef,
         usage: Usage,
+        #[serde(default)]
+        #[ts(optional = nullable)]
+        estimated_cost_pico_usd: Option<u64>,
     },
     ModelFallback {
         from: ResolvedModelRef,
@@ -1677,7 +1680,7 @@ pub enum EventPayload {
     ToolCallProgress {
         tool_call_id: ToolCallId,
         message: SafeDisplayText,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         #[ts(optional = nullable)]
         output_chunk: Option<SafeDisplayText>,
     },
@@ -1826,6 +1829,9 @@ pub enum EventPayload {
         agent_id: AgentId,
         resolved_model: ResolvedModelRef,
         usage: Usage,
+        #[serde(default)]
+        #[ts(optional = nullable)]
+        estimated_cost_pico_usd: Option<u64>,
     },
     InternalAgentFailed {
         invocation_id: InternalAgentInvocationId,

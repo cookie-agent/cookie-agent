@@ -87,6 +87,10 @@ The permission mode appears in the bottom bar. Click it to cycle
 the selected session. Hard policy denies and doom-loop rejection still win in
 every mode. See [Permissions](permissions.md).
 
+When pricing is available, the bottom bar also shows the selected session's
+estimated cost between the permission mode and context usage. Click the cost to
+open the `/usage` dashboard. Unpriced sessions omit the segment.
+
 ## Usage dashboard
 
 `/usage` opens a read-only view with the selected session and project-wide

@@ -1692,6 +1692,15 @@
               "minLength": 1,
               "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
             },
+            "estimated_cost_pico_usd": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "default": null,
+              "minimum": 0
+            },
             "model_turn_seq": {
               "type": "integer",
               "format": "uint64",
@@ -1803,6 +1812,7 @@
                 "string",
                 "null"
               ],
+              "default": null,
               "maxLength": 1024,
               "minLength": 1,
               "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
@@ -2518,6 +2528,15 @@
               "maxLength": 64,
               "minLength": 1,
               "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+            },
+            "estimated_cost_pico_usd": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "default": null,
+              "minimum": 0
             },
             "internal_run_id": {
               "type": "string",

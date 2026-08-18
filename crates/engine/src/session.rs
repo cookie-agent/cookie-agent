@@ -17,7 +17,7 @@ use cookie_agent_protocol::{
     AgentId, AgentSnapshot, ChildSummary, ClientRenameId, ClientRunId, EventPayload, RunId,
     RunSelection, SessionId, SessionMeta, SessionOrigin, SessionPermissionOverlay,
     SessionRenameRecord, SessionStatus, SessionTitle, SessionTitleChange, SessionTree, ToolCallId,
-    Usage, UsageRollup,
+    Usage, UsageCostProvenance, UsageRollup,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -436,7 +436,11 @@ impl SessionStore {
             {
                 let mut copied = event.clone();
                 copied.session_id = session_id;
-                crate::events::append_jsonl(&log_path, &copied)?;
+                crate::events::append_copied_event_jsonl(
+                    &log_path,
+                    &copied,
+                    source.log.usage_cost_is_stamped(event.seq),
+                )?;
             }
             fs::set_permissions(&log_path, fs::Permissions::from_mode(0o600)).map_err(
                 |source| SessionError::Io {
@@ -578,6 +582,22 @@ impl SessionStore {
             .get(&id)
             .cloned()
             .ok_or(SessionError::Missing(id))
+    }
+
+    pub fn session_usage(
+        &self,
+        id: SessionId,
+        pricing: &cookie_agent_config::PricingConfig,
+        catalog: &BTreeMap<
+            cookie_agent_protocol::ModelKey,
+            cookie_agent_models::catalog::CatalogModelCost,
+        >,
+    ) -> Result<cookie_agent_protocol::SessionUsageResult, SessionError> {
+        let usage = self.summary(id)?.usage_rollup;
+        Ok(cookie_agent_protocol::SessionUsageResult {
+            session_id: id,
+            usage: crate::usage::with_pricing(usage, pricing, catalog),
+        })
     }
 
     #[must_use]
@@ -899,26 +919,50 @@ pub(crate) fn projection(log: Arc<EventLog>) -> Result<SessionProjection, Sessio
                 agent_id,
                 resolved_model,
                 usage: reported,
+                estimated_cost_pico_usd,
                 ..
             } => {
-                crate::usage::record(&mut usage_rollup, resolved_model, reported);
-                crate::usage::record(
+                let provenance = if log.usage_cost_is_stamped(envelope.seq) {
+                    UsageCostProvenance::Stamped(*estimated_cost_pico_usd)
+                } else {
+                    UsageCostProvenance::Legacy
+                };
+                crate::usage::record_with_provenance(
+                    &mut usage_rollup,
+                    resolved_model,
+                    reported,
+                    provenance,
+                );
+                crate::usage::record_with_provenance(
                     agent_usage.entry(agent_id.clone()).or_default(),
                     resolved_model,
                     reported,
+                    provenance,
                 );
             }
             EventPayload::InternalAgentUsageRecorded {
                 agent_id,
                 resolved_model,
                 usage: reported,
+                estimated_cost_pico_usd,
                 ..
             } => {
-                crate::usage::record(&mut usage_rollup, resolved_model, reported);
-                crate::usage::record(
+                let provenance = if log.usage_cost_is_stamped(envelope.seq) {
+                    UsageCostProvenance::Stamped(*estimated_cost_pico_usd)
+                } else {
+                    UsageCostProvenance::Legacy
+                };
+                crate::usage::record_with_provenance(
+                    &mut usage_rollup,
+                    resolved_model,
+                    reported,
+                    provenance,
+                );
+                crate::usage::record_with_provenance(
                     agent_usage.entry(agent_id.clone()).or_default(),
                     resolved_model,
                     reported,
+                    provenance,
                 );
             }
             _ => {}
@@ -1055,6 +1099,7 @@ mod tests {
         path::Path,
     };
 
+    use cookie_agent_config::{ModelPricing, PicoUsdPerMillion, PricingConfig};
     use cookie_agent_protocol::{
         AgentId, AgentMode, AgentRevision, AttemptId, CatalogRevision, ClientRunId, EventPayload,
         InternalAgentBackend, InternalAgentFailure, InternalAgentInvocationId, InternalAgentKind,
@@ -1196,7 +1241,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_event_survives_log_reopen_and_rebuilds_rollup() {
+    fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
         let temp = tempfile::tempdir().expect("temp");
         let path = temp.path().join("events.jsonl");
         let session_id = SessionId::new_v7();
@@ -1206,6 +1251,7 @@ mod tests {
         let selection = crate::test_support::run_selection("test");
         let binding = agent.fallback_chain[0].clone();
         let resolved_model = crate::model_history::wire_model(&binding);
+        let model_key = resolved_model.selection.model.clone();
         let runtime_revision = RuntimeRevision::new(format!("sha256:{}", "1".repeat(64))).unwrap();
         let catalog_revision = CatalogRevision::new(format!("sha256:{}", "2".repeat(64))).unwrap();
         let provider_state_revision =
@@ -1252,6 +1298,13 @@ mod tests {
         .unwrap();
         log.append(
             Some(run_id),
+            EventPayload::UserInputSubmitted {
+                input: "question".into(),
+            },
+        )
+        .unwrap();
+        log.append(
+            Some(run_id),
             EventPayload::ModelAttemptStarted {
                 attempt_id,
                 attempt_ordinal: 1,
@@ -1290,19 +1343,64 @@ mod tests {
             },
         )
         .unwrap();
-        log.append(
-            Some(run_id),
-            EventPayload::ModelUsageRecorded {
-                model_turn_seq: 1,
-                agent_id: agent.agent.clone(),
-                resolved_model,
-                usage,
-            },
-        )
-        .unwrap();
+        let usage_event = log
+            .append(
+                Some(run_id),
+                EventPayload::ModelUsageRecorded {
+                    model_turn_seq: 1,
+                    agent_id: agent.agent.clone(),
+                    resolved_model,
+                    usage,
+                    estimated_cost_pico_usd: Some(123_456_789_000),
+                },
+            )
+            .unwrap();
+        let through_seq = usage_event.seq;
         drop(log);
 
+        let source_json = fs::read_to_string(&path).unwrap();
+        let rewrite = |session_id: SessionId, stamp: Option<Option<u64>>| {
+            source_json
+                .lines()
+                .map(|line| {
+                    let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+                    value["session_id"] = serde_json::json!(session_id);
+                    if value["payload"]["type"] == "model_usage_recorded" {
+                        let payload = value["payload"].as_object_mut().unwrap();
+                        match stamp {
+                            Some(cost) => {
+                                payload.insert(
+                                    "estimated_cost_pico_usd".into(),
+                                    serde_json::to_value(cost).unwrap(),
+                                );
+                            }
+                            None => {
+                                payload.remove("estimated_cost_pico_usd");
+                            }
+                        }
+                    }
+                    serde_json::to_string(&value).unwrap()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"
+        };
+        let legacy_path = temp.path().join("legacy-events.jsonl");
+        fs::write(&legacy_path, rewrite(session_id, None)).unwrap();
+
         let reopened = crate::events::EventLog::open(path, session_id).unwrap();
+        // The TUI footer reducer sums these same durable pico-USD stamps.
+        let footer_pico_usd = reopened
+            .events()
+            .iter()
+            .filter_map(|event| match event.payload {
+                EventPayload::ModelUsageRecorded {
+                    estimated_cost_pico_usd,
+                    ..
+                } => estimated_cost_pico_usd,
+                _ => None,
+            })
+            .sum::<u64>();
         let rebuilt = projection(reopened).unwrap();
         assert_eq!(rebuilt.usage_rollup.request_count, 1);
         assert_eq!(rebuilt.usage_rollup.input_tokens, 120);
@@ -1310,6 +1408,81 @@ mod tests {
         assert_eq!(rebuilt.usage_rollup.cache_read_tokens, 40);
         assert_eq!(rebuilt.usage_rollup.cache_write_tokens, 10);
         assert_eq!(rebuilt.agent_usage[&agent.agent].request_count, 1);
+        let changed_pricing = PricingConfig {
+            models: BTreeMap::from([(
+                model_key.clone(),
+                ModelPricing {
+                    input_per_million_usd: Some(
+                        PicoUsdPerMillion::from_decimal_str("999").unwrap(),
+                    ),
+                    output_per_million_usd: Some(
+                        PicoUsdPerMillion::from_decimal_str("999").unwrap(),
+                    ),
+                    ..ModelPricing::default()
+                },
+            )]),
+        };
+        let expected = Some(footer_pico_usd as f64 / 1_000_000_000_000.0);
+        assert_eq!(
+            crate::usage::with_pricing(
+                rebuilt.usage_rollup.clone(),
+                &PricingConfig::default(),
+                &BTreeMap::new(),
+            )
+            .estimated_cost_usd,
+            expected
+        );
+
+        let legacy =
+            projection(crate::events::EventLog::open(legacy_path, session_id).unwrap()).unwrap();
+        assert_eq!(
+            crate::usage::with_pricing(legacy.usage_rollup, &changed_pricing, &BTreeMap::new(),)
+                .estimated_cost_usd,
+            Some(0.149_85)
+        );
+
+        let cwd = temp.path().join("fork-cwd");
+        let data = temp.path().join("fork-data");
+        fs::create_dir(&cwd).unwrap();
+        let seed = SessionStore::open(&data, &cwd).unwrap();
+        let sessions_dir = seed.sessions_dir.clone();
+        drop(seed);
+        let legacy_source = SessionId::new_v7();
+        let unpriced_source = SessionId::new_v7();
+        for (source_id, contents) in [
+            (legacy_source, rewrite(legacy_source, None)),
+            (unpriced_source, rewrite(unpriced_source, Some(None))),
+        ] {
+            let directory = sessions_dir.join(source_id.to_string());
+            fs::create_dir(&directory).unwrap();
+            fs::write(directory.join("events.jsonl"), contents).unwrap();
+        }
+        let store = SessionStore::open(&data, &cwd).unwrap();
+        let legacy_fork = store.fork(legacy_source, through_seq).unwrap();
+        let unpriced_fork = store.fork(unpriced_source, through_seq).unwrap();
+        assert_eq!(
+            crate::usage::with_pricing(
+                store.get(legacy_fork).unwrap().usage_rollup,
+                &changed_pricing,
+                &BTreeMap::new(),
+            )
+            .estimated_cost_usd,
+            Some(0.149_85)
+        );
+        assert_eq!(
+            crate::usage::with_pricing(
+                store.get(unpriced_fork).unwrap().usage_rollup,
+                &changed_pricing,
+                &BTreeMap::new(),
+            )
+            .estimated_cost_usd,
+            None
+        );
+        assert_eq!(
+            crate::usage::with_pricing(rebuilt.usage_rollup, &changed_pricing, &BTreeMap::new(),)
+                .estimated_cost_usd,
+            expected
+        );
     }
 
     #[test]
@@ -1419,6 +1592,7 @@ mod tests {
                     agent_id: agent_id.clone(),
                     resolved_model: resolved_model.clone(),
                     usage: usage.clone(),
+                    estimated_cost_pico_usd: None,
                 },
             )
             .unwrap();
@@ -1432,6 +1606,7 @@ mod tests {
                             agent_id: agent_id.clone(),
                             resolved_model: resolved_model.clone(),
                             usage: usage.clone(),
+                            estimated_cost_pico_usd: None,
                         },
                     )
                     .is_err()
@@ -1467,6 +1642,7 @@ mod tests {
                         agent_id: agent_id.clone(),
                         resolved_model: fallback_model.clone(),
                         usage: usage.clone(),
+                        estimated_cost_pico_usd: None,
                     },
                 )
                 .unwrap();
@@ -1495,6 +1671,7 @@ mod tests {
                         agent_id: agent_id.clone(),
                         resolved_model: resolved_model.clone(),
                         usage,
+                        estimated_cost_pico_usd: None,
                     },
                 )
                 .unwrap();
@@ -1515,6 +1692,17 @@ mod tests {
         }
         drop(log);
 
+        let raw = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            raw.lines()
+                .filter(|line| {
+                    let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                    value["payload"]["type"] == "internal_agent_usage_recorded"
+                        && value["payload"]["estimated_cost_pico_usd"].is_null()
+                })
+                .count(),
+            5
+        );
         let reopened = crate::events::EventLog::open(path, session_id).unwrap();
         let rebuilt = projection(reopened).unwrap();
         assert_eq!(rebuilt.usage_rollup.request_count, 5);
@@ -1529,5 +1717,31 @@ mod tests {
                 }
             );
         }
+        let rate = PicoUsdPerMillion::from_decimal_str("1").unwrap();
+        let pricing = PricingConfig {
+            models: BTreeMap::from([
+                (
+                    resolved_model.selection.model,
+                    ModelPricing {
+                        input_per_million_usd: Some(rate),
+                        output_per_million_usd: Some(rate),
+                        ..ModelPricing::default()
+                    },
+                ),
+                (
+                    fallback_model.selection.model,
+                    ModelPricing {
+                        input_per_million_usd: Some(rate),
+                        output_per_million_usd: Some(rate),
+                        ..ModelPricing::default()
+                    },
+                ),
+            ]),
+        };
+        assert_eq!(
+            crate::usage::with_pricing(rebuilt.usage_rollup, &pricing, &BTreeMap::new())
+                .estimated_cost_usd,
+            None
+        );
     }
 }

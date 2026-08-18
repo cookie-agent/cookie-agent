@@ -2,16 +2,42 @@ use std::collections::BTreeMap;
 
 use cookie_agent_config::{ModelPricing, PicoUsdPerMillion, PricingConfig};
 use cookie_agent_models::catalog::{CatalogModelCost, CatalogModelCostRates};
-use cookie_agent_protocol::{ModelKey, ModelUsageRollup, ResolvedModelRef, Usage, UsageRollup};
+use cookie_agent_protocol::{
+    ModelKey, ModelUsageRollup, ResolvedModelRef, Usage, UsageCostProvenance, UsageRollup,
+};
 
 const PICO_USD_PER_USD: u128 = 1_000_000_000_000;
 const TOKENS_PER_MILLION: u128 = 1_000_000;
 
 pub(crate) fn record(rollup: &mut UsageRollup, model: &ResolvedModelRef, usage: &Usage) {
+    record_with_provenance(rollup, model, usage, UsageCostProvenance::Legacy);
+}
+
+#[cfg(test)]
+pub(crate) fn record_stamped(
+    rollup: &mut UsageRollup,
+    model: &ResolvedModelRef,
+    usage: &Usage,
+    estimated_cost_pico_usd: Option<u64>,
+) {
+    record_with_provenance(
+        rollup,
+        model,
+        usage,
+        UsageCostProvenance::Stamped(estimated_cost_pico_usd),
+    );
+}
+
+pub(crate) fn record_with_provenance(
+    rollup: &mut UsageRollup,
+    model: &ResolvedModelRef,
+    usage: &Usage,
+    cost_provenance: UsageCostProvenance,
+) {
     let model_key = ModelKey::new(model.provider_id.clone(), model.model_id.clone())
         .expect("resolved model identity is valid");
     let model_rollup = rollup.by_model.entry(model_key).or_default();
-    record_model(model_rollup, usage);
+    record_model(model_rollup, usage, cost_provenance);
     add_observed(
         &mut rollup.input_tokens,
         usage.input_tokens,
@@ -44,8 +70,13 @@ pub(crate) fn record(rollup: &mut UsageRollup, model: &ResolvedModelRef, usage: 
     );
 }
 
-fn record_model(rollup: &mut ModelUsageRollup, usage: &Usage) {
+fn record_model(
+    rollup: &mut ModelUsageRollup,
+    usage: &Usage,
+    cost_provenance: UsageCostProvenance,
+) {
     rollup.observations.push(usage.clone());
+    rollup.cost_provenance.push(cost_provenance);
     add_observed(
         &mut rollup.input_tokens,
         usage.input_tokens,
@@ -130,6 +161,9 @@ pub(crate) fn merge(target: &mut UsageRollup, source: &UsageRollup) {
         target_model
             .observations
             .extend(source_model.observations.iter().cloned());
+        target_model
+            .cost_provenance
+            .extend(source_model.cost_provenance.iter().copied());
         checked_increment(
             &mut target_model.input_tokens,
             source_model.input_tokens,
@@ -187,17 +221,18 @@ pub(crate) fn with_pricing(
         let cost = if usage.arithmetic_overflow
             || usage.observations.len()
                 != usize::try_from(usage.request_count).unwrap_or(usize::MAX)
+            || usage.cost_provenance.len() != usage.observations.len()
         {
             None
-        } else if let Some(rates) = pricing.models.get(model) {
-            observations_cost(&usage.observations, |_| Some(*rates))
-        } else if let Some(schedule) = catalog.get(model) {
-            observations_cost(&usage.observations, |reported| {
+        } else {
+            observations_cost(&usage.observations, &usage.cost_provenance, |reported| {
+                if let Some(rates) = pricing.models.get(model) {
+                    return Some(*rates);
+                }
+                let schedule = catalog.get(model)?;
                 let input = reported.input_tokens?;
                 Some(catalog_rates(schedule.rates_for_input(input)))
             })
-        } else {
-            None
         };
         usage.estimated_cost_usd = cost.map(cost_numerator_to_usd);
         if let Some(cost) = cost {
@@ -212,6 +247,26 @@ pub(crate) fn with_pricing(
     }
     rollup.estimated_cost_usd = all_priced.then(|| cost_numerator_to_usd(total_cost_numerator));
     rollup
+}
+
+pub(crate) fn estimated_cost_pico_usd(
+    model: &ResolvedModelRef,
+    usage: &Usage,
+    pricing: &PricingConfig,
+    catalog: &BTreeMap<ModelKey, CatalogModelCost>,
+) -> Option<u64> {
+    let model_key = ModelKey::new(model.provider_id.clone(), model.model_id.clone()).ok()?;
+    let rates = if let Some(rates) = pricing.models.get(&model_key) {
+        *rates
+    } else {
+        let input_tokens = usage.input_tokens?;
+        catalog_rates(catalog.get(&model_key)?.rates_for_input(input_tokens))
+    };
+    let numerator = request_cost(usage, rates)?;
+    let rounded_pico_usd = numerator
+        .checked_add(TOKENS_PER_MILLION / 2)?
+        .checked_div(TOKENS_PER_MILLION)?;
+    u64::try_from(rounded_pico_usd).ok()
 }
 
 fn hit_rate<'a>(observations: impl Iterator<Item = &'a Usage>) -> Option<f64> {
@@ -234,11 +289,19 @@ fn hit_rate<'a>(observations: impl Iterator<Item = &'a Usage>) -> Option<f64> {
 
 fn observations_cost(
     observations: &[Usage],
+    cost_provenance: &[UsageCostProvenance],
     rates: impl Fn(&Usage) -> Option<ModelPricing>,
 ) -> Option<u128> {
     let mut total = 0_u128;
-    for usage in observations {
-        total = total.checked_add(request_cost(usage, rates(usage)?)?)?;
+    for (usage, provenance) in observations.iter().zip(cost_provenance) {
+        let cost = match provenance {
+            UsageCostProvenance::Legacy => request_cost(usage, rates(usage)?)?,
+            UsageCostProvenance::Stamped(Some(pico_usd)) => {
+                u128::from(*pico_usd).checked_mul(TOKENS_PER_MILLION)?
+            }
+            UsageCostProvenance::Stamped(None) => return None,
+        };
+        total = total.checked_add(cost)?;
     }
     Some(total)
 }
@@ -456,6 +519,77 @@ mod tests {
         );
         let priced = super::with_pricing(rollup, &PricingConfig::default(), &catalog);
         assert_eq!(priced.estimated_cost_usd, Some(0.800005));
+
+        let stamped = super::estimated_cost_pico_usd(
+            &model("fallback-zero"),
+            &reported(Some(200_000), Some(1), Some(0)),
+            &PricingConfig::default(),
+            &catalog,
+        );
+        assert_eq!(stamped, Some(600_004_000_000));
+        assert_eq!(
+            super::estimated_cost_pico_usd(
+                &model("fallback-zero"),
+                &reported(Some(200_000), Some(1), Some(0)),
+                &PricingConfig::default(),
+                &BTreeMap::new(),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn stamped_costs_override_current_pricing_and_legacy_costs_are_recomputed() {
+        let mut fully_stamped = UsageRollup::default();
+        for cost in [500_000_000_000, 250_000_000_000] {
+            super::record_stamped(
+                &mut fully_stamped,
+                &model("fallback-zero"),
+                &reported(Some(100), Some(10), Some(0)),
+                Some(cost),
+            );
+        }
+        assert_eq!(
+            super::with_pricing(fully_stamped, &PricingConfig::default(), &BTreeMap::new(),)
+                .estimated_cost_usd,
+            Some(0.75)
+        );
+
+        let key = "custom.test/fallback-zero".parse::<ModelKey>().unwrap();
+        let pricing = PricingConfig {
+            models: BTreeMap::from([(key, flat_rates("1", "2"))]),
+        };
+        let mut stamped_unpriced = UsageRollup::default();
+        super::record_stamped(
+            &mut stamped_unpriced,
+            &model("fallback-zero"),
+            &reported(Some(1_000_000), Some(0), Some(0)),
+            None,
+        );
+        assert_eq!(
+            super::with_pricing(stamped_unpriced, &pricing, &BTreeMap::new()).estimated_cost_usd,
+            None
+        );
+
+        let mut rollup = UsageRollup::default();
+        super::record_stamped(
+            &mut rollup,
+            &model("fallback-zero"),
+            &reported(Some(100), Some(10), Some(0)),
+            Some(500_000_000_000),
+        );
+        super::record(
+            &mut rollup,
+            &model("fallback-zero"),
+            &reported(Some(1_000_000), Some(0), Some(0)),
+        );
+
+        let priced = super::with_pricing(rollup, &pricing, &BTreeMap::new());
+        assert_eq!(priced.estimated_cost_usd, Some(1.5));
+        assert_eq!(
+            priced.by_model[&"custom.test/fallback-zero".parse().unwrap()].estimated_cost_usd,
+            Some(1.5)
+        );
     }
 
     #[test]

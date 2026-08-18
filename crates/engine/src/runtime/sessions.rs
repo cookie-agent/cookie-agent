@@ -142,12 +142,11 @@ impl Engine {
         (receiver, release)
     }
     pub fn session_usage(&self, id: SessionId) -> Result<SessionUsageResult, EngineError> {
-        let usage = self.inner.store.summary(id)?.usage_rollup;
         let catalog = self.catalog_pricing();
-        Ok(SessionUsageResult {
-            session_id: id,
-            usage: crate::usage::with_pricing(usage, &self.inner.config.runtime.pricing, &catalog),
-        })
+        Ok(self
+            .inner
+            .store
+            .session_usage(id, &self.inner.config.runtime.pricing, &catalog)?)
     }
     pub fn agent_usage(&self, agent_id: AgentId) -> AgentUsageResult {
         let mut usage = UsageRollup::default();
@@ -178,7 +177,7 @@ impl Engine {
             ),
         }
     }
-    fn catalog_pricing(
+    pub(super) fn catalog_pricing(
         &self,
     ) -> BTreeMap<cookie_agent_protocol::ModelKey, cookie_agent_models::catalog::CatalogModelCost>
     {

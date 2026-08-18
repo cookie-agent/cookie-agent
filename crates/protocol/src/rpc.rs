@@ -254,7 +254,19 @@ pub struct ModelUsageRollup {
     #[serde(skip)]
     #[schemars(skip)]
     #[ts(skip)]
+    pub cost_provenance: Vec<UsageCostProvenance>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
     pub arithmetic_overflow: bool,
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum UsageCostProvenance {
+    #[default]
+    Legacy,
+    Stamped(Option<u64>),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]

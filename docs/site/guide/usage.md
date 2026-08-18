@@ -17,6 +17,11 @@ Programmatic clients can call `session.usage`, `agent.usage`, and
 tokens. It is unavailable unless every included request reports both fields;
 an explicitly reported zero remains a 0% hit rate.
 
+When a request is priced, the assistant block's closing footer includes its
+estimated cost after generation speed and context usage. The bottom bar shows
+the selected session total; clicking it opens `/usage`. Unpriced costs are
+omitted from both locations.
+
 Cost is always optional. Managed models use the selected models.dev catalog
 price tier for each request's reported input-token context size. Model-specific entries under `[pricing.models."provider/model"]` supply
 prices for custom models or override catalog prices, as described in the
@@ -24,6 +29,15 @@ prices for custom models or override catalog prices, as described in the
 The precedence is config override, catalog, then no cost. An aggregate remains
 unpriced when any used model lacks a required rate or when a provider omits a
 usage split needed to apply a distinct cache or reasoning price.
+
+New usage events stamp the request price selected when the request completes.
+Footers and rollups preserve those stamps, so later pricing changes do not
+rewrite already stamped costs. An explicit unpriced stamp also remains
+unpriced after configuration or catalog changes. Legacy events without the
+field are priced from
+the current configuration or catalog when a rollup is requested; mixed
+rollups therefore combine durable historical prices with best-effort current
+pricing for legacy records.
 
 To evaluate prompt caching, compare equivalent workloads before and after
 enabling `[prompt_caching]`. Track `cache_hit_rate` after the first turn and

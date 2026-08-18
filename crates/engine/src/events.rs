@@ -48,6 +48,7 @@ pub struct EventLog {
     path: PathBuf,
     session_id: SessionId,
     events: Mutex<Vec<StoredEvent>>,
+    usage_cost_stamped: Mutex<HashSet<u64>>,
     diagnostics: Vec<EventLoadDiagnostic>,
     validation_taint: ValidationTaint,
     next_seq: AtomicU64,
@@ -72,6 +73,7 @@ impl EventLog {
             path,
             session_id,
             events: Mutex::new(Vec::new()),
+            usage_cost_stamped: Mutex::new(HashSet::new()),
             diagnostics: Vec::new(),
             validation_taint: ValidationTaint::default(),
             next_seq: AtomicU64::new(1),
@@ -93,6 +95,7 @@ impl EventLog {
             path,
             session_id,
             events: Mutex::new(Vec::new()),
+            usage_cost_stamped: Mutex::new(HashSet::new()),
             diagnostics: Vec::new(),
             validation_taint: ValidationTaint::default(),
             next_seq: AtomicU64::new(1),
@@ -120,6 +123,7 @@ impl EventLog {
             path,
             session_id,
             events: Mutex::new(records),
+            usage_cost_stamped: Mutex::new(loaded.usage_cost_stamped),
             diagnostics: loaded.diagnostics,
             validation_taint,
             next_seq: AtomicU64::new(loaded.next_seq),
@@ -140,6 +144,11 @@ impl EventLog {
         run_id: Option<RunId>,
         payload: EventPayload,
     ) -> Result<StoredEvent, EventLogError> {
+        let usage_cost_stamped = matches!(
+            payload,
+            EventPayload::ModelUsageRecorded { .. }
+                | EventPayload::InternalAgentUsageRecorded { .. }
+        );
         let mut events = self
             .events
             .lock()
@@ -168,6 +177,12 @@ impl EventLog {
         if self.persisted.load(Ordering::Acquire) {
             append_jsonl(&self.path, &event)?;
         }
+        if usage_cost_stamped {
+            self.usage_cost_stamped
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(event.seq);
+        }
         events.push(event.clone());
         self.next_seq.store(event.seq + 1, Ordering::Release);
         Ok(event)
@@ -186,6 +201,13 @@ impl EventLog {
             .iter()
             .cloned()
             .collect()
+    }
+
+    pub(crate) fn usage_cost_is_stamped(&self, seq: u64) -> bool {
+        self.usage_cost_stamped
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&seq)
     }
 
     #[must_use]
@@ -1738,6 +1760,7 @@ fn validate_records(
 
 struct LoadedEvents {
     records: Vec<StoredEvent>,
+    usage_cost_stamped: HashSet<u64>,
     diagnostics: Vec<EventLoadDiagnostic>,
     validation_taint: ValidationTaint,
     next_seq: u64,
@@ -1746,6 +1769,7 @@ struct LoadedEvents {
 fn load_event_jsonl(path: &Path) -> Result<LoadedEvents, EventLogError> {
     let bytes = read_complete_jsonl(path)?;
     let mut records = Vec::new();
+    let mut usage_cost_stamped = HashSet::new();
     let mut diagnostics = Vec::new();
     let mut validation_taint = ValidationTaint::default();
     let mut last_observed_seq = 0_u64;
@@ -1884,6 +1908,9 @@ fn load_event_jsonl(path: &Path) -> Result<LoadedEvents, EventLogError> {
             validation_taint.mark_broad(seq, seq);
             continue;
         };
+        let cost_stamp_present = payload_value
+            .as_object()
+            .is_some_and(|payload| payload.contains_key("estimated_cost_pico_usd"));
         match deserialize_event_payload_best_effort(payload_value.clone()) {
             Ok(read) => {
                 degraded.extend(
@@ -1929,6 +1956,9 @@ fn load_event_jsonl(path: &Path) -> Result<LoadedEvents, EventLogError> {
                         skipped: false,
                     });
                 }
+                if cost_stamp_present {
+                    usage_cost_stamped.insert(event.seq);
+                }
                 records.push(event);
             }
             Err(error) => {
@@ -1967,6 +1997,7 @@ fn load_event_jsonl(path: &Path) -> Result<LoadedEvents, EventLogError> {
     );
     Ok(LoadedEvents {
         records,
+        usage_cost_stamped,
         diagnostics,
         validation_taint,
         next_seq: observed_tip.saturating_add(1).max(1),
@@ -2202,6 +2233,27 @@ pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<(), EventLog
         fsync_directory(parent)?;
     }
     Ok(())
+}
+
+pub(crate) fn append_copied_event_jsonl(
+    path: &Path,
+    event: &StoredEvent,
+    usage_cost_stamped: bool,
+) -> Result<(), EventLogError> {
+    if usage_cost_stamped {
+        return append_jsonl(path, event);
+    }
+    let mut value = serde_json::to_value(event).expect("stored event serializes");
+    if matches!(
+        event.payload,
+        EventPayload::ModelUsageRecorded { .. } | EventPayload::InternalAgentUsageRecorded { .. }
+    ) {
+        value["payload"]
+            .as_object_mut()
+            .expect("event payload serializes as an object")
+            .remove("estimated_cost_pico_usd");
+    }
+    append_jsonl(path, &value)
 }
 
 pub fn fsync_directory(path: &Path) -> Result<(), EventLogError> {
@@ -3062,6 +3114,7 @@ mod tests {
                 agent_id: cookie_agent_protocol::AgentId::new("test").expect("agent id"),
                 resolved_model: wire_resolved(&fallback_binding("fallback-zero")),
                 usage: Usage::default(),
+                estimated_cost_pico_usd: None,
             },
         );
         let directory = tempdir().expect("temporary directory");
@@ -3219,6 +3272,7 @@ mod tests {
                 .expect("agent id"),
             resolved_model,
             usage: Usage::default(),
+            estimated_cost_pico_usd: None,
         };
         let second_fallback = event(
             session,

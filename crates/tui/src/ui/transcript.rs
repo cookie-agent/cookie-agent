@@ -1369,7 +1369,8 @@ fn attribution_line(
     )
 }
 
-/// The assistant block's closing footer: `╰─ ⚡ 42.1 tps · 12.5K ctx` in
+/// The assistant block's closing footer:
+/// `╰─ ⚡ 42.1 tps · 12.5K ctx · $0.0040` in
 /// muted styling — visually subordinate to the body, closing the block's
 /// gutter tree. The rate is committed output tokens over generation wall
 /// time measured between durable event timestamps, so a replayed log yields
@@ -1389,13 +1390,17 @@ fn assistant_footer_line(
         return None;
     }
     let tps = metrics.timed_output_tokens as f64 / metrics.generation.as_secs_f64();
+    let cost = metrics
+        .estimated_cost_pico_usd
+        .map(|cost| super::app::format_cost_usd(cost as f64 / 1_000_000_000_000.0));
+    let cost = cost.map_or_else(String::new, |cost| format!(" · {cost}"));
     let prefix = (width >= 4).then(|| vec![Span::styled("╰─ ", theme.muted())]);
     Some(repeated_prefixed_wrapped_line(
         prefix.unwrap_or_default(),
         Line::from(Span::styled(
             format!(
-                "⚡ {tps:.1} tps · {} ctx",
-                super::app::format_token_count(context_tokens)
+                "⚡ {tps:.1} tps · {} ctx{cost}",
+                super::app::format_token_count(context_tokens),
             ),
             theme.muted(),
         )),
@@ -2479,6 +2484,27 @@ mod tests {
         )
     }
 
+    fn usage_recorded(
+        session_id: SessionId,
+        seq: u64,
+        run: RunId,
+        model_turn_seq: u64,
+        estimated_cost_pico_usd: Option<u64>,
+    ) -> StoredEvent {
+        event(
+            session_id,
+            seq,
+            run,
+            EventPayload::ModelUsageRecorded {
+                model_turn_seq,
+                agent_id: agent_id(),
+                resolved_model: resolved_model(None),
+                usage: Usage::default(),
+                estimated_cost_pico_usd,
+            },
+        )
+    }
+
     #[test]
     fn model_turn_committed_updates_latest_context_tokens() {
         let session = SessionId::new_v7();
@@ -3260,6 +3286,7 @@ mod tests {
             session,
             SessionState {
                 context_tokens: Some(48_200),
+                estimated_cost_usd: Some(0.18),
                 ..SessionState::default()
             },
         );
@@ -3276,11 +3303,18 @@ mod tests {
 
         let wide = rendered_row(&mut app, 100, 24, 23);
         assert!(wide.contains("/workspace"));
-        assert!(wide.contains("auto-approve    ctx 48.2K (24%)    `ctrl+p` commands"));
+        assert!(wide.contains("auto-approve    $0.18    ctx 48.2K (24%)    `ctrl+p` commands"));
 
-        let without_hint = rendered_row(&mut app, 40, 24, 23);
-        assert!(without_hint.contains("auto-approve    ctx 48.2K (24%)"));
+        let without_hint = rendered_row(&mut app, 55, 24, 23);
+        assert!(without_hint.contains("auto-approve    $0.18    ctx 48.2K (24%)"));
         assert!(!without_hint.contains("ctrl+p"));
+
+        let without_cost = rendered_row(&mut app, 39, 24, 23);
+        assert!(
+            without_cost.contains("auto-approve    ctx 48.2K (24%)"),
+            "{without_cost}"
+        );
+        assert!(!without_cost.contains("$0.18"));
 
         let without_percentage = rendered_row(&mut app, 30, 24, 23);
         assert!(without_percentage.contains("auto-approve    ctx 48.2K"));
@@ -3289,6 +3323,131 @@ mod tests {
         let mode_only = rendered_row(&mut app, 18, 24, 23);
         assert!(mode_only.contains("auto-approve"));
         assert!(!mode_only.contains("ctx"));
+
+        app.store
+            .sessions
+            .get_mut(&session)
+            .expect("session")
+            .context_tokens = Some(u64::MAX);
+        let no_reintroduced_hint = rendered_row(&mut app, 33, 24, 23);
+        assert!(no_reintroduced_hint.contains("auto-approve"));
+        assert!(!no_reintroduced_hint.contains("ctrl+p"));
+        assert!(!no_reintroduced_hint.contains("ctx"));
+
+        app.store
+            .sessions
+            .get_mut(&session)
+            .expect("session")
+            .estimated_cost_usd = Some(0.0031);
+        let compact = rendered_row(&mut app, 100, 24, 23);
+        assert!(compact.contains("$0.0031"), "{compact}");
+        app.store
+            .sessions
+            .get_mut(&session)
+            .expect("session")
+            .estimated_cost_usd = None;
+        let unpriced = rendered_row(&mut app, 100, 24, 23);
+        assert!(!unpriced.contains('$'), "{unpriced}");
+    }
+
+    #[tokio::test]
+    async fn clicking_bottom_bar_cost_opens_usage_panel() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        app.selected = Some(session);
+        app.sessions = vec![session_meta(session)];
+        app.store.sessions.insert(
+            session,
+            SessionState {
+                estimated_cost_usd: Some(0.18),
+                ..SessionState::default()
+            },
+        );
+        rendered_frame(&mut app, 80, 24);
+        let hit = app.hit_map.session_cost.expect("session cost hit");
+        app.handle_click(hit.x, hit.y).await;
+        assert_eq!(app.modal, Modal::Usage);
+        assert!(app.usage_panel.loading);
+    }
+
+    #[tokio::test]
+    async fn usage_events_refresh_session_cost_single_flight() {
+        let (startup_client, _startup) = recording_client();
+        let mut app = App::new(startup_client).await.expect("test app");
+        let (client, recorded, incoming) = live_recording_client();
+        app.client = client;
+        let session = SessionId::new_v7();
+        let run = run_id();
+        app.selected = Some(session);
+        app.store.sessions.insert(session, SessionState::default());
+
+        app.handle_delivery(live_event(usage_recorded(session, 1, run, 1, Some(1))))
+            .await;
+        // Leading-edge refresh starts without waiting for a debounce update
+        // to be driven through the app loop.
+        let id = wait_for_recorded_request(&recorded, "session.usage", 1).await;
+        assert_eq!(recorded_method_count(&recorded, "session.usage"), 1);
+        // This commit arrives after the first request was captured, so its
+        // authoritative total requires one trailing refresh.
+        app.handle_delivery(live_event(usage_recorded(session, 2, run, 2, Some(1))))
+            .await;
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": cookie_agent_protocol::SessionUsageResult {
+                    session_id: session,
+                    usage: cookie_agent_protocol::UsageRollup {
+                        estimated_cost_usd: Some(0.10),
+                        ..cookie_agent_protocol::UsageRollup::default()
+                    }
+                }
+            })))
+            .expect("script usage response");
+        let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
+            .await
+            .expect("usage update timeout")
+            .expect("usage update");
+        app.handle_rpc_update(update);
+
+        let id = drive_until_recorded_request(&mut app, &recorded, "session.usage", 2).await;
+        assert_eq!(recorded_method_count(&recorded, "session.usage"), 2);
+        let current_request_id = app
+            .session_cost_request_id_for_test(session)
+            .expect("trailing request id");
+        app.handle_rpc_update(RpcUpdate::SessionCostLoaded {
+            session_id: session,
+            request_id: current_request_id.wrapping_sub(1),
+            result: Ok(cookie_agent_protocol::SessionUsageResult {
+                session_id: session,
+                usage: cookie_agent_protocol::UsageRollup {
+                    estimated_cost_usd: Some(99.0),
+                    ..cookie_agent_protocol::UsageRollup::default()
+                },
+            }),
+        });
+        assert_eq!(app.store.sessions[&session].estimated_cost_usd, Some(0.10));
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": cookie_agent_protocol::SessionUsageResult {
+                    session_id: session,
+                    usage: cookie_agent_protocol::UsageRollup {
+                        estimated_cost_usd: Some(0.18),
+                        ..cookie_agent_protocol::UsageRollup::default()
+                    }
+                }
+            })))
+            .expect("script trailing usage response");
+        let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
+            .await
+            .expect("trailing usage update timeout")
+            .expect("trailing usage update");
+        app.handle_rpc_update(update);
+
+        assert!(app.session_cost_refresh_idle_for_test(session));
+        assert_eq!(app.store.sessions[&session].estimated_cost_usd, Some(0.18));
     }
 
     #[tokio::test]
@@ -3688,6 +3847,227 @@ mod tests {
             .map(|row| row as u16)
             .expect("footer row");
         assert_eq!(app.hover_target_at(2, footer_row), None);
+    }
+
+    #[tokio::test]
+    async fn assistant_footer_shows_priced_cost_and_omits_unpriced_cost() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let mut events = footer_event_log(session, run, attempt, Some((12_400, 84)), 2);
+        events.push(usage_recorded(session, 5, run, 1, Some(3_100_000_000)));
+        let mut app = app_with_footer_log(events, session).await;
+        let rendered = frame_rows(&mut app, 100, 30).join("\n");
+        assert!(rendered.contains("12.5K ctx · $0.0031"), "{rendered}");
+
+        let attempt = AttemptId::new_v7();
+        let mut events = footer_event_log(session, run, attempt, Some((12_400, 84)), 2);
+        events.push(usage_recorded(session, 5, run, 1, None));
+        let mut app = app_with_footer_log(events, session).await;
+        let rendered = frame_rows(&mut app, 100, 30).join("\n");
+        assert!(rendered.contains("12.5K ctx"), "{rendered}");
+        assert!(!rendered.contains('$'), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn replayed_footer_cost_matches_engine_session_usage() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let base: Timestamp = "2026-08-06T12:00:00Z".parse().unwrap();
+        let at = |seconds: i64| {
+            base.checked_add(jiff::SignedDuration::from_secs(seconds))
+                .unwrap()
+        };
+        let stamp = |stored: StoredEvent, seconds: i64| StoredEvent {
+            timestamp: at(seconds),
+            ..stored
+        };
+        let reported = Usage {
+            input_tokens: Some(12_400),
+            input_tokens_cache_read: Some(0),
+            output_tokens: Some(84),
+            output_tokens_reasoning: Some(0),
+            ..Usage::default()
+        };
+        let mut resolved = resolved_model(None);
+        resolved.adapter_id = cookie_agent_protocol::AdaptorId::OpenaiResponses;
+        let mut binding = frozen_binding(resolved.clone());
+        binding.protocol_recipe =
+            cookie_agent_protocol::ProtocolRecipeId::new("oven.openai.responses").unwrap();
+        binding.descriptor = serde_json::from_value(serde_json::json!({
+            "identity": {"provider_id": "gateway", "model_id": "arbitrary-model"},
+            "adapter_id": "openai-responses",
+            "capabilities": {
+                "features": [],
+                "limits": {"context": 8192, "input": null, "output": 2048},
+                "modalities": {"input": ["text"], "output": ["text"]},
+                "media": {"input": {}},
+                "cancellation": "local_only",
+                "compaction": "unsupported",
+                "replay": {"policy": "never", "capability": "unsupported", "reasoning": false}
+            },
+            "provider_metadata": {}
+        }))
+        .unwrap();
+        binding.options = cookie_agent_protocol::ProviderOptions::OpenAiResponses {
+            organization: None,
+            project: None,
+            store: None,
+        };
+        let selection = RunSelection {
+            agent: agent_id(),
+            model: resolved.selection.clone(),
+        };
+        let created =
+            session_created_from_bindings(session, 1, selection.clone(), vec![binding.clone()], 0);
+        let EventPayload::SessionCreated {
+            creation_agent,
+            runtime_revision,
+            catalog_revision,
+            provider_state_revision,
+            model_revision,
+            agent_revision,
+            recipe_registry_revision,
+            manifest_revision,
+            ..
+        } = &created.payload
+        else {
+            unreachable!()
+        };
+        let run_started = event(
+            session,
+            2,
+            run,
+            EventPayload::RunStarted {
+                client_run_id: cookie_agent_protocol::ClientRunId::new("cost-invariant").unwrap(),
+                selection,
+                agent: creation_agent.clone(),
+                runtime_revision: runtime_revision.clone(),
+                catalog_revision: catalog_revision.clone(),
+                provider_state_revision: provider_state_revision.clone(),
+                model_revision: model_revision.clone(),
+                agent_revision: agent_revision.clone(),
+                recipe_registry_revision: recipe_registry_revision.clone(),
+                manifest_revision: manifest_revision.clone(),
+                selected_suffix: vec![binding],
+                input_through_seq: 1,
+            },
+        );
+        let mut commit = turn_committed(
+            session,
+            5,
+            run,
+            attempt,
+            1,
+            vec![text_part("the answer")],
+            Vec::new(),
+            None,
+        );
+        let EventPayload::ModelTurnCommitted {
+            input_through_seq,
+            resolved_model: committed_model,
+            turn,
+            ..
+        } = &mut commit.payload
+        else {
+            unreachable!()
+        };
+        *input_through_seq = 3;
+        *committed_model = resolved.clone();
+        turn.usage = reported.clone();
+        let mut usage = usage_recorded(session, 6, run, 1, Some(3_100_000_000));
+        let EventPayload::ModelUsageRecorded {
+            resolved_model,
+            usage: event_usage,
+            ..
+        } = &mut usage.payload
+        else {
+            unreachable!()
+        };
+        *resolved_model = resolved.clone();
+        *event_usage = reported;
+        let attempt_started = event(
+            session,
+            4,
+            run,
+            EventPayload::ModelAttemptStarted {
+                attempt_id: attempt,
+                attempt_ordinal: 1,
+                fallback_index: 0,
+                retry_ordinal: 0,
+                resolved_model: resolved,
+                prompt_fingerprint: creation_agent.prompt_fingerprint.clone(),
+            },
+        );
+        let events = [
+            stamp(created, 0),
+            stamp(run_started, 0),
+            stamp(
+                event(
+                    session,
+                    3,
+                    run,
+                    EventPayload::UserInputSubmitted {
+                        input: "question".into(),
+                    },
+                ),
+                0,
+            ),
+            stamp(attempt_started, 0),
+            stamp(commit, 2),
+            stamp(usage, 2),
+        ];
+
+        let mut tui_store = StateStore::default();
+        for event in events.iter().cloned() {
+            assert!(tui_store.apply_event(event));
+        }
+        let state = &tui_store.sessions[&session];
+        let item_id = state
+            .transcript
+            .iter()
+            .find_map(|item| matches!(item, TranscriptItem::Assistant { .. }).then(|| item.id()))
+            .expect("assistant item");
+        let footer = assistant_footer_line(state, item_id, 100, &Theme::default())
+            .expect("assistant footer")
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let footer_cost = footer.rsplit(" · ").next().expect("footer cost");
+
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let data_dir = directory.path().join("data");
+        let session_dir =
+            cookie_agent_engine::session::SessionStore::project_dir(&data_dir, directory.path())
+                .join("sessions")
+                .join(session.to_string());
+        fs::create_dir_all(&session_dir).unwrap();
+        let jsonl = events
+            .iter()
+            .map(|event| serde_json::to_string(event).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(session_dir.join("events.jsonl"), jsonl).unwrap();
+        let engine_sessions =
+            cookie_agent_engine::session::SessionStore::open(&data_dir, directory.path()).unwrap();
+        let session_cost = format_cost_usd(
+            engine_sessions
+                .session_usage(
+                    session,
+                    &cookie_agent_config::PricingConfig::default(),
+                    &BTreeMap::new(),
+                )
+                .unwrap()
+                .usage
+                .estimated_cost_usd
+                .expect("session cost"),
+        );
+        assert_eq!(footer_cost, session_cost);
     }
 
     #[tokio::test]
@@ -7097,6 +7477,36 @@ mod tests {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("recorded request timeout");
+        recorded
+            .lock()
+            .expect("recorded")
+            .iter()
+            .rfind(|value| value["method"].as_str() == Some(method))
+            .and_then(|value| value["id"].as_i64())
+            .expect("request id")
+    }
+
+    async fn drive_until_recorded_request(
+        app: &mut App,
+        recorded: &Arc<Mutex<Vec<Value>>>,
+        method: &str,
+        count: usize,
+    ) -> i64 {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if recorded_method_count(recorded, method) >= count {
+                    break;
+                }
+                tokio::select! {
+                    update = app.rpc_updates_rx.recv() => {
+                        app.handle_rpc_update(update.expect("RPC update channel"));
+                    }
+                    () = tokio::time::sleep(Duration::from_millis(10)) => {}
+                }
             }
         })
         .await

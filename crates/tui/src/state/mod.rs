@@ -328,6 +328,25 @@ pub(crate) struct AssistantTurnMetrics {
     pub(crate) generation: Duration,
     pub(crate) timed_turns: u32,
     pub(crate) context_tokens: Option<u64>,
+    pub(crate) estimated_cost_pico_usd: Option<u64>,
+    cost_unpriced: bool,
+}
+
+impl AssistantTurnMetrics {
+    fn record_cost(&mut self, cost: Option<u64>) {
+        if self.cost_unpriced {
+            return;
+        }
+        let Some(cost) = cost else {
+            self.estimated_cost_pico_usd = None;
+            self.cost_unpriced = true;
+            return;
+        };
+        self.estimated_cost_pico_usd = self.estimated_cost_pico_usd.unwrap_or(0).checked_add(cost);
+        if self.estimated_cost_pico_usd.is_none() {
+            self.cost_unpriced = true;
+        }
+    }
 }
 
 /// A tool start buffered until its committed placeholder exists, linked by
@@ -381,6 +400,10 @@ pub struct SessionState {
     /// (`input_tokens + output_tokens`); `None` when the turn reported no
     /// usage, so the bottom bar hides its context segment.
     pub context_tokens: Option<u64>,
+    /// Latest authoritative session usage cost fetched from the engine.
+    /// `None` covers both not-yet-fetched and unpriced usage; both hide the
+    /// bottom-bar segment.
+    pub estimated_cost_usd: Option<f64>,
     /// Frozen producing agent of the latest accepted `RunStarted`.
     pub run_agent: Option<AgentId>,
     /// The complete frozen creation snapshot from `SessionCreated`,
@@ -1858,6 +1881,19 @@ fn reduce_event(
             state.creation_agent = Some(creation_agent);
             state.created_at = Some(timestamp);
         }
+        EventPayload::ModelUsageRecorded {
+            model_turn_seq,
+            estimated_cost_pico_usd,
+            ..
+        } => {
+            if let Some(item_id) = state.turn_items.get(&model_turn_seq).copied() {
+                state
+                    .assistant_metrics
+                    .entry(item_id)
+                    .or_default()
+                    .record_cost(estimated_cost_pico_usd);
+            }
+        }
         EventPayload::DelegatedContextSeeded { .. }
         | EventPayload::MessageInjected { .. }
         | EventPayload::UserInputTransformed { .. }
@@ -1867,7 +1903,6 @@ fn reduce_event(
         | EventPayload::DelegationRunAttached { .. }
         | EventPayload::DelegationFinished { .. }
         | EventPayload::ModelRequestPrepared { .. }
-        | EventPayload::ModelUsageRecorded { .. }
         | EventPayload::InternalAgentUsageRecorded { .. }
         | EventPayload::ToolStdinSubmitted { .. }
         | EventPayload::ToolCallLinked { .. }
