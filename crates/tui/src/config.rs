@@ -23,9 +23,30 @@ pub struct TuiConfig {
     /// threshold stay in the session projection and reappear when the level
     /// is lowered at runtime.
     pub minimum_event_level: EventLevel,
-    /// Optional theme override; `None` keeps environment detection
-    /// (`COOKIE_THEME`, `NO_COLOR`, `TERM`, `COLORTERM`).
-    pub theme: Option<ThemeKind>,
+    /// Optional theme preference; `None` and `Auto` use terminal/environment
+    /// detection (`COOKIE_THEME`, OSC 11, `COLORFGBG`).
+    pub theme: Option<ThemePreference>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThemePreference {
+    Auto,
+    Default,
+    Dark,
+    Mono,
+    HighContrast,
+}
+
+impl ThemePreference {
+    pub const fn explicit_kind(self) -> Option<ThemeKind> {
+        match self {
+            Self::Auto => None,
+            Self::Default => Some(ThemeKind::Default),
+            Self::Dark => Some(ThemeKind::Dark),
+            Self::Mono => Some(ThemeKind::Mono),
+            Self::HighContrast => Some(ThemeKind::HighContrast),
+        }
+    }
 }
 
 impl Default for TuiConfig {
@@ -78,6 +99,7 @@ enum LevelName {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 enum ThemeName {
+    Auto,
     Default,
     Dark,
     Mono,
@@ -95,9 +117,10 @@ impl From<LevelName> for EventLevel {
     }
 }
 
-impl From<ThemeName> for ThemeKind {
+impl From<ThemeName> for ThemePreference {
     fn from(theme: ThemeName) -> Self {
         match theme {
+            ThemeName::Auto => Self::Auto,
             ThemeName::Default => Self::Default,
             ThemeName::Dark => Self::Dark,
             ThemeName::Mono => Self::Mono,
@@ -142,7 +165,7 @@ pub fn parse(text: &str, path: &Path) -> Result<TuiConfig, TuiConfigError> {
             .minimum_event_level
             .map(EventLevel::from)
             .unwrap_or(defaults.minimum_event_level),
-        theme: file.theme.map(ThemeKind::from),
+        theme: file.theme.map(ThemePreference::from),
     })
 }
 
@@ -197,7 +220,7 @@ fn sanitize_toml_error(text: &str, error: &toml::de::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{EventLevel, ThemeKind, TuiConfig, config_path_from, load_from, parse};
+    use super::{EventLevel, ThemePreference, TuiConfig, config_path_from, load_from, parse};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -232,15 +255,19 @@ mod tests {
         )
         .expect("full config");
         assert_eq!(config.minimum_event_level, EventLevel::Debug);
-        assert_eq!(config.theme, Some(ThemeKind::HighContrast));
+        assert_eq!(config.theme, Some(ThemePreference::HighContrast));
         assert_eq!(parse("", path).expect("empty"), TuiConfig::default());
         assert_eq!(
             parse("theme = \"mono\"\n", path).expect("theme only").theme,
-            Some(ThemeKind::Mono)
+            Some(ThemePreference::Mono)
         );
         assert_eq!(
             parse("theme = \"dark\"\n", path).expect("dark theme").theme,
-            Some(ThemeKind::Dark)
+            Some(ThemePreference::Dark)
+        );
+        assert_eq!(
+            parse("theme = \"auto\"\n", path).expect("auto theme").theme,
+            Some(ThemePreference::Auto)
         );
     }
 

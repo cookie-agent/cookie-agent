@@ -2,11 +2,17 @@
 
 ## Themes
 
-The default theme uses the light bakery palette. Set `theme = "dark"` in
-`tui.toml`, or set `COOKIE_THEME=dark`, for the bakery palette's dark roast.
-Dark is a curated palette with its own surfaces and accents; HighContrast uses
-terminal-driven bright ANSI colors on the terminal's own background. `NO_COLOR`
-and `TERM=dumb` force monochrome for every configured theme.
+With no theme setting, the TUI automatically chooses the light or Dark Roast
+bakery palette. It first queries the terminal background with OSC 11, then falls
+back to the last `COLORFGBG` field, and finally uses the light palette when
+neither signal is available. Set `theme = "auto"` or `COOKIE_THEME=auto` to
+request the same detection explicitly.
+
+Set `theme = "default"` for the light palette or `theme = "dark"` for the bakery
+palette's dark roast. Dark is a curated palette with its own surfaces and
+accents; HighContrast uses terminal-driven bright ANSI colors on the terminal's
+own background. `NO_COLOR` and `TERM=dumb` force monochrome after selection for
+every configured theme.
 
 ## Composer
 

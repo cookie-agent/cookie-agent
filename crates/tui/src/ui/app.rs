@@ -759,19 +759,23 @@ impl App {
         client: Client,
         create_new_session: bool,
     ) -> Result<Self, crate::config::TuiConfigError> {
+        let tui_config = crate::config::load(None)?;
+        let theme = crate::terminal_detect::theme_without_terminal_detection(tui_config.theme);
+        Self::new_with_config(client, create_new_session, tui_config, theme).await
+    }
+
+    async fn new_with_config(
+        client: Client,
+        create_new_session: bool,
+        tui_config: TuiConfig,
+        theme: Theme,
+    ) -> Result<Self, crate::config::TuiConfigError> {
         // Subscribe before issuing events.subscribe so its replay and a live
         // tail racing App construction share the same retained receiver.
         let deliveries = client
             .subscribe_deliveries()
             .expect("app delivery receiver already attached");
         let (rpc_updates_tx, rpc_updates_rx) = tokio::sync::mpsc::unbounded_channel();
-        let tui_config = crate::config::load(None)?;
-        // Precedence: tui.toml `theme` > COOKIE_THEME/env detection;
-        // NO_COLOR/TERM=dumb always force mono inside the theme layer.
-        let theme = tui_config
-            .theme
-            .map(Theme::with_kind_from_env)
-            .unwrap_or_else(Theme::from_env);
         let mut app = Self {
             client,
             deliveries: Some(deliveries),
@@ -7246,12 +7250,18 @@ pub async fn run_with_new_session(client: Client) -> anyhow::Result<()> {
 }
 
 async fn run_terminal(client: Client, create_new_session: bool) -> anyhow::Result<()> {
-    let mut app = if create_new_session {
-        App::new_with_new_session(client).await
-    } else {
-        App::new(client).await
-    }
-    .context("load TUI configuration")?;
+    let tui_config = crate::config::load(None).context("load TUI configuration")?;
+    let detection = crate::terminal_detect::detect_startup_theme(tui_config.theme);
+    let theme = Theme::with_kind_from_env(detection.kind);
+    tracing::info!(
+        theme = ?theme.key().kind,
+        color_level = ?theme.key().colors,
+        detection_source = %detection.source,
+        "TUI theme selected"
+    );
+    let mut app = App::new_with_config(client, create_new_session, tui_config, theme)
+        .await
+        .context("initialize TUI")?;
     let mut restore = TerminalRestore::default();
     enable_raw_mode().context("enable terminal raw mode")?;
     restore.raw_mode = true;

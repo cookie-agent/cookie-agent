@@ -4,6 +4,7 @@ pub mod client;
 pub mod config;
 pub mod markdown;
 pub mod state;
+pub mod terminal_detect;
 pub mod theme;
 pub mod ui;
 

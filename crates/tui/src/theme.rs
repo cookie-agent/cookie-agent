@@ -202,25 +202,29 @@ impl Theme {
     /// Apply a theme kind chosen by the TUI config file while still honoring
     /// `NO_COLOR`/`TERM=dumb` and detected terminal color capability.
     pub fn with_kind_from_env(kind: ThemeKind) -> Self {
-        let requested = match kind {
-            ThemeKind::Default => "default",
-            ThemeKind::Dark => "dark",
-            ThemeKind::Mono => "mono",
-            ThemeKind::HighContrast => "high-contrast",
-        };
         let no_color = std::env::var_os("NO_COLOR").is_some();
         let term = std::env::var("TERM").unwrap_or_default();
         let colorterm = std::env::var("COLORTERM").unwrap_or_default();
-        Self::from_environment(requested, no_color, &term, &colorterm)
+        Self::from_kind_environment(kind, no_color, &term, &colorterm)
     }
 
     pub fn from_environment(requested: &str, no_color: bool, term: &str, colorterm: &str) -> Self {
         let requested_kind = match requested.to_ascii_lowercase().as_str() {
+            "auto" => ThemeKind::Default,
             "dark" | "dark-roast" | "darkroast" => ThemeKind::Dark,
             "mono" | "monochrome" => ThemeKind::Mono,
             "high-contrast" | "high_contrast" | "contrast" => ThemeKind::HighContrast,
             _ => ThemeKind::Default,
         };
+        Self::from_kind_environment(requested_kind, no_color, term, colorterm)
+    }
+
+    pub fn from_kind_environment(
+        requested_kind: ThemeKind,
+        no_color: bool,
+        term: &str,
+        colorterm: &str,
+    ) -> Self {
         let colors =
             if requested_kind == ThemeKind::Mono || no_color || term.eq_ignore_ascii_case("dumb") {
                 ColorLevel::None

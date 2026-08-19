@@ -15,7 +15,8 @@
 # this file is never rewritten).
 minimum_event_level = "warning"
 
-# Theme override. One of: "default" | "dark" | "mono" | "high-contrast".
+# Theme override. One of: "auto" | "default" | "dark" | "mono" | "high-contrast".
 # Precedence: this key > COOKIE_THEME > terminal detection.
+# Unset and "auto" query OSC 11, then COLORFGBG, then use the light default.
 # NO_COLOR and TERM=dumb always force monochrome regardless of this key.
-# theme = "default"
+# theme = "auto"

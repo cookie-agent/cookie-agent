@@ -168,9 +168,11 @@ key.
 
 ```toml
 minimum_event_level = "warning"   # debug | info | warning | error
-theme = "default"                 # default | dark | mono | high-contrast
+theme = "auto"                    # auto | default | dark | mono | high-contrast
 ```
 
 `theme` takes precedence over `COOKIE_THEME` and terminal detection, but
-`NO_COLOR` and `TERM=dumb` always force monochrome. See
+leaving it unset is equivalent to `"auto"`. Automatic selection queries the
+terminal background with OSC 11, then checks `COLORFGBG`, then falls back to the
+light `default` theme. `NO_COLOR` and `TERM=dumb` always force monochrome. See
 `docs/tui.toml.example` for the fully commented example.
