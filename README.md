@@ -37,7 +37,15 @@ and observability are all built in.
 
 ## Quick start
 
-Requires Rust 1.88 or newer. Build from source:
+Install the latest release with the generated shell installer:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/cookie-agent/cookie-agent/releases/latest/download/cookie_agent-installer.sh | sh
+```
+
+See the [installation guide](https://cookie-agent.github.io/cookie-agent/install/)
+for direct binary downloads, nightly builds, and building from source. Building
+requires Rust 1.88 or newer:
 
 ```sh
 cargo build --locked -p cookie_agent

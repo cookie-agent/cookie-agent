@@ -1,6 +1,6 @@
 [package]
 name = "cookie_agent_config"
-version = "0.1.0"
+version = "0.2.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
@@ -10,9 +10,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-cookie_agent_identity = { version = "=0.1.0", path = "../identity" }
-cookie_agent_models = { version = "=0.1.0", path = "../models" }
-cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
+cookie_agent_identity = { version = "=0.2.0", path = "../identity" }
+cookie_agent_models = { version = "=0.2.0", path = "../models" }
+cookie_agent_protocol = { version = "=0.2.0", path = "../protocol" }
 indexmap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

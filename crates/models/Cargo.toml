@@ -1,6 +1,6 @@
 [package]
 name = "cookie_agent_models"
-version = "0.1.0"
+version = "0.2.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
@@ -14,8 +14,8 @@ test-support = []
 
 [dependencies]
 arc-swap.workspace = true
-cookie_agent_identity = { version = "=0.1.0", path = "../identity" }
-cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
+cookie_agent_identity = { version = "=0.2.0", path = "../identity" }
+cookie_agent_protocol = { version = "=0.2.0", path = "../protocol" }
 http.workspace = true
 jiff.workspace = true
 futures-util.workspace = true

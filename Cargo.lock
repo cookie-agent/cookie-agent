@@ -578,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -602,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cookie_agent_identity",
  "cookie_agent_models",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_identity"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "schemars",
  "serde",
@@ -679,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_models"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "cookie_agent_identity",
@@ -713,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_plugin_sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cookie_agent_protocol",
  "jsonschema",
@@ -725,7 +725,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "cookie_agent_identity",
@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "cookie_agent_config",
@@ -798,7 +798,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",

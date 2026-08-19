@@ -1,14 +1,18 @@
 [package]
 name = "cookie_agent"
-version = "0.1.0"
+version = "0.2.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "cookie"
 path = "src/main.rs"
+
+[package.metadata.dist]
+dist = true
 
 [lints]
 workspace = true
@@ -20,13 +24,13 @@ tui = ["dep:cookie_agent_tui"]
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-cookie_agent_config = { version = "=0.1.0", path = "../config" }
-cookie_agent_engine = { version = "=0.1.0", path = "../engine" }
-cookie_agent_models = { version = "=0.1.0", path = "../models" }
-cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
-cookie_agent_server = { version = "=0.1.0", path = "../server" }
-cookie_agent_tools = { version = "=0.1.0", path = "../tools" }
-cookie_agent_tui = { version = "=0.1.0", path = "../tui", optional = true }
+cookie_agent_config = { version = "=0.2.0", path = "../config" }
+cookie_agent_engine = { version = "=0.2.0", path = "../engine" }
+cookie_agent_models = { version = "=0.2.0", path = "../models" }
+cookie_agent_protocol = { version = "=0.2.0", path = "../protocol" }
+cookie_agent_server = { version = "=0.2.0", path = "../server" }
+cookie_agent_tools = { version = "=0.2.0", path = "../tools" }
+cookie_agent_tui = { version = "=0.2.0", path = "../tui", optional = true }
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true

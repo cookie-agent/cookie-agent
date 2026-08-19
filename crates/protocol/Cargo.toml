@@ -1,10 +1,12 @@
 [package]
 name = "cookie_agent_protocol"
-version = "0.1.0"
-publish = false
+version = "0.2.0"
+description = "Protocol types and transports for cookie agent"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage = "https://cookie-agent.github.io/cookie-agent/"
 
 [features]
 test-support = []
@@ -14,7 +16,7 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
-cookie_agent_identity = { version = "=0.1.0", path = "../identity" }
+cookie_agent_identity = { version = "=0.2.0", path = "../identity" }
 jiff.workspace = true
 oven-sdk.workspace = true
 schemars.workspace = true

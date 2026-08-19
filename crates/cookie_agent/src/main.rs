@@ -82,7 +82,7 @@ fn run_catalog_transport() -> anyhow::Result<RunCatalogTransport> {
 static SECRET_VALUES_WIPED: TestAtomicUsize = TestAtomicUsize::new(0);
 
 #[derive(Debug, Parser)]
-#[command(name = "cookie")]
+#[command(name = "cookie", version = env!("COOKIE_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,

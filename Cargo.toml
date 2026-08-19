@@ -17,6 +17,7 @@ resolver = "2"
 [workspace.package]
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/cookie-agent/cookie-agent"
 rust-version = "1.88"
 
 [workspace.lints.clippy]
@@ -79,3 +80,7 @@ rmcp = { version = "=3.1.2", default-features = false, features = ["auth", "clie
 
 [patch.crates-io]
 syntect = { path = "vendor/syntect" }
+
+[profile.dist]
+inherits = "release"
+lto = "thin"

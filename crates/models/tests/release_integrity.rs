@@ -62,6 +62,11 @@ const PHASE1_MANIFESTS: &[&str] = &[
     "crates/config/Cargo.toml",
     "crates/models/Cargo.toml",
 ];
+const PUBLISHED_CRATES: &[&str] = &[
+    "cookie_agent_identity",
+    "cookie_agent_plugin_sdk",
+    "cookie_agent_protocol",
+];
 
 fn cargo_metadata() -> serde_json::Value {
     let output = Command::new(env!("CARGO"))
@@ -346,7 +351,7 @@ fn every_internal_path_dependency_has_its_exact_package_version() {
 }
 
 #[test]
-fn workspace_metadata_marks_every_cookie_crate_nonpublishable_and_uses_vendored_syntect() {
+fn workspace_metadata_limits_publishing_and_uses_vendored_syntect() {
     let metadata = cargo_metadata();
     let members = metadata["workspace_members"]
         .as_array()
@@ -361,7 +366,16 @@ fn workspace_metadata_marks_every_cookie_crate_nonpublishable_and_uses_vendored_
         .collect::<Vec<_>>();
     assert_eq!(workspace_packages.len(), WORKSPACE_MANIFESTS.len());
     for package in &workspace_packages {
-        assert_eq!(package["publish"].as_array().map(Vec::len), Some(0));
+        let name = package["name"].as_str().unwrap();
+        if PUBLISHED_CRATES.contains(&name) {
+            assert!(package["publish"].is_null(), "{name} must be publishable");
+        } else {
+            assert_eq!(
+                package["publish"].as_array().map(Vec::len),
+                Some(0),
+                "{name} must remain nonpublishable"
+            );
+        }
     }
     assert_eq!(
         workspace_packages

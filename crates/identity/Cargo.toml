@@ -1,10 +1,12 @@
 [package]
 name = "cookie_agent_identity"
-version = "0.1.0"
-publish = false
+version = "0.2.0"
+description = "Identity and identifier types for cookie agent"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage = "https://cookie-agent.github.io/cookie-agent/"
 
 [lints]
 workspace = true

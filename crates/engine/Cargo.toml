@@ -1,6 +1,6 @@
 [package]
 name = "cookie_agent_engine"
-version = "0.1.0"
+version = "0.2.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
@@ -17,10 +17,10 @@ arc-swap.workspace = true
 async-trait.workspace = true
 base64 = "0.22"
 bytes.workspace = true
-cookie_agent_config = { version = "=0.1.0", path = "../config" }
-cookie_agent_identity = { version = "=0.1.0", path = "../identity" }
-cookie_agent_models = { version = "=0.1.0", path = "../models" }
-cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
+cookie_agent_config = { version = "=0.2.0", path = "../config" }
+cookie_agent_identity = { version = "=0.2.0", path = "../identity" }
+cookie_agent_models = { version = "=0.2.0", path = "../models" }
+cookie_agent_protocol = { version = "=0.2.0", path = "../protocol" }
 crc32fast.workspace = true
 fs2.workspace = true
 futures-util.workspace = true
@@ -49,7 +49,7 @@ url.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-cookie_agent_models = { version = "=0.1.0", path = "../models", features = ["test-support"] }
+cookie_agent_models = { version = "=0.2.0", path = "../models", features = ["test-support"] }
 flate2.workspace = true
 insta.workspace = true
 tempfile.workspace = true

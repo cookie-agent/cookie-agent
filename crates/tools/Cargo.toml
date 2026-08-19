@@ -1,6 +1,6 @@
 [package]
 name = "cookie_agent_tools"
-version = "0.1.0"
+version = "0.2.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
@@ -11,9 +11,9 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
-cookie_agent_engine = { version = "=0.1.0", path = "../engine" }
-cookie_agent_config = { version = "=0.1.0", path = "../config" }
-cookie_agent_protocol = { version = "=0.1.0", path = "../protocol" }
+cookie_agent_engine = { version = "=0.2.0", path = "../engine" }
+cookie_agent_config = { version = "=0.2.0", path = "../config" }
+cookie_agent_protocol = { version = "=0.2.0", path = "../protocol" }
 libc = "0.2"
 rustix.workspace = true
 schemars.workspace = true
@@ -23,5 +23,5 @@ tokio.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
-cookie_agent_models = { version = "=0.1.0", path = "../models" }
+cookie_agent_models = { version = "=0.2.0", path = "../models" }
 tempfile.workspace = true
