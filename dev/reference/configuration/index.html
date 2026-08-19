@@ -2458,8 +2458,8 @@ defaults; unknown keys and malformed values are rejected naming the path and key
 <tr>
 <td><code>theme</code></td>
 <td>string</td>
-<td><em>(env detection)</em></td>
-<td><code>"default"</code>, <code>"dark"</code> (the bakery palette's dark roast), <code>"mono"</code>, or <code>"high-contrast"</code>. Dark is curated; HighContrast uses terminal-driven bright ANSI colors. Precedence: this key, then <code>COOKIE_THEME</code>, then terminal detection. <code>NO_COLOR</code> and <code>TERM=dumb</code> always force monochrome regardless of this key.</td>
+<td><code>"auto"</code></td>
+<td><code>"auto"</code>, <code>"default"</code>, <code>"dark"</code> (the bakery palette's dark roast), <code>"mono"</code>, or <code>"high-contrast"</code>. Unset and <code>"auto"</code> query the terminal background with OSC 11, then check the last <code>COLORFGBG</code> field, then fall back to <code>"default"</code>. Dark is curated; HighContrast uses terminal-driven bright ANSI colors. Precedence: this key, then <code>COOKIE_THEME</code>, then automatic detection. <code>NO_COLOR</code> and <code>TERM=dumb</code> always force monochrome after selection.</td>
 </tr>
 </tbody>
 </table>

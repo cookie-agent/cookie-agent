@@ -1158,11 +1158,16 @@
 
 <h1 id="terminal-ui">Terminal UI<a class="headerlink" href="#terminal-ui" title="Permanent link">&para;</a></h1>
 <h2 id="themes">Themes<a class="headerlink" href="#themes" title="Permanent link">&para;</a></h2>
-<p>The default theme uses the light bakery palette. Set <code>theme = "dark"</code> in
-<code>tui.toml</code>, or set <code>COOKIE_THEME=dark</code>, for the bakery palette's dark roast.
-Dark is a curated palette with its own surfaces and accents; HighContrast uses
-terminal-driven bright ANSI colors on the terminal's own background. <code>NO_COLOR</code>
-and <code>TERM=dumb</code> force monochrome for every configured theme.</p>
+<p>With no theme setting, the TUI automatically chooses the light or Dark Roast
+bakery palette. It first queries the terminal background with OSC 11, then falls
+back to the last <code>COLORFGBG</code> field, and finally uses the light palette when
+neither signal is available. Set <code>theme = "auto"</code> or <code>COOKIE_THEME=auto</code> to
+request the same detection explicitly.</p>
+<p>Set <code>theme = "default"</code> for the light palette or <code>theme = "dark"</code> for the bakery
+palette's dark roast. Dark is a curated palette with its own surfaces and
+accents; HighContrast uses terminal-driven bright ANSI colors on the terminal's
+own background. <code>NO_COLOR</code> and <code>TERM=dumb</code> force monochrome after selection for
+every configured theme.</p>
 <h2 id="composer">Composer<a class="headerlink" href="#composer" title="Permanent link">&para;</a></h2>
 <p>Enter submits the composer. Use Ctrl-J or modified Enter to insert a newline.
 Arrow keys move by character or visual line; Ctrl-Left and Ctrl-Right move by

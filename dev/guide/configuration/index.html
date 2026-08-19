@@ -1287,10 +1287,12 @@ there is no workspace layer and no environment-variable override. A missing file
 uses defaults; unknown keys or malformed values are rejected naming the path and
 key.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">minimum_event_level</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"warning"</span><span class="w">   </span><span class="c1"># debug | info | warning | error</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">theme</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"default"</span><span class="w">                 </span><span class="c1"># default | dark | mono | high-contrast</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">theme</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"auto"</span><span class="w">                    </span><span class="c1"># auto | default | dark | mono | high-contrast</span>
 </code></pre></div>
 <p><code>theme</code> takes precedence over <code>COOKIE_THEME</code> and terminal detection, but
-<code>NO_COLOR</code> and <code>TERM=dumb</code> always force monochrome. See
+leaving it unset is equivalent to <code>"auto"</code>. Automatic selection queries the
+terminal background with OSC 11, then checks <code>COLORFGBG</code>, then falls back to the
+light <code>default</code> theme. <code>NO_COLOR</code> and <code>TERM=dumb</code> always force monochrome. See
 <code>docs/tui.toml.example</code> for the fully commented example.</p>
 
 

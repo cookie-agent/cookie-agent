@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ClientDelivery","ClientError"],"fn":["read_daemon_token","validate_websocket_url"],"mod":["client","config","markdown","state","theme","ui"],"struct":["Client"],"trait":["ClientProtocol"]};
+window.SIDEBAR_ITEMS = {"enum":["ClientDelivery","ClientError"],"fn":["read_daemon_token","validate_websocket_url"],"mod":["client","config","markdown","state","terminal_detect","theme","ui"],"struct":["Client"],"trait":["ClientProtocol"]};

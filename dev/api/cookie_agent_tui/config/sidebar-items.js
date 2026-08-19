@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["CONFIG_FILE_NAME"],"enum":["TuiConfigError"],"fn":["config_path","load","load_from","parse"],"struct":["TuiConfig"]};
+window.SIDEBAR_ITEMS = {"constant":["CONFIG_FILE_NAME"],"enum":["ThemePreference","TuiConfigError"],"fn":["config_path","load","load_from","parse"],"struct":["TuiConfig"]};
