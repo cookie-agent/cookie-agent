@@ -79,6 +79,7 @@ enum LevelName {
 #[serde(rename_all = "kebab-case")]
 enum ThemeName {
     Default,
+    Dark,
     Mono,
     HighContrast,
 }
@@ -98,6 +99,7 @@ impl From<ThemeName> for ThemeKind {
     fn from(theme: ThemeName) -> Self {
         match theme {
             ThemeName::Default => Self::Default,
+            ThemeName::Dark => Self::Dark,
             ThemeName::Mono => Self::Mono,
             ThemeName::HighContrast => Self::HighContrast,
         }
@@ -235,6 +237,10 @@ mod tests {
         assert_eq!(
             parse("theme = \"mono\"\n", path).expect("theme only").theme,
             Some(ThemeKind::Mono)
+        );
+        assert_eq!(
+            parse("theme = \"dark\"\n", path).expect("dark theme").theme,
+            Some(ThemeKind::Dark)
         );
     }
 

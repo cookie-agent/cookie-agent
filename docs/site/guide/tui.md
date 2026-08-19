@@ -1,5 +1,13 @@
 # Terminal UI
 
+## Themes
+
+The default theme uses the light bakery palette. Set `theme = "dark"` in
+`tui.toml`, or set `COOKIE_THEME=dark`, for the bakery palette's dark roast.
+Dark is a curated palette with its own surfaces and accents; HighContrast uses
+terminal-driven bright ANSI colors on the terminal's own background. `NO_COLOR`
+and `TERM=dumb` force monochrome for every configured theme.
+
 ## Composer
 
 Enter submits the composer. Use Ctrl-J or modified Enter to insert a newline.

@@ -459,6 +459,6 @@ defaults; unknown keys and malformed values are rejected naming the path and key
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `minimum_event_level` | string | `"warning"` | Minimum diagnostic event level rendered in the conversation pane. One of `"debug"`, `"info"`, `"warning"`, `"error"`. Rows below the threshold stay in the session projection and reappear when the level is lowered with `/events` at runtime (view-only; the file is never rewritten). |
-| `theme` | string | *(env detection)* | `"default"`, `"mono"`, or `"high-contrast"`. Precedence: this key, then `COOKIE_THEME`, then terminal detection. `NO_COLOR` and `TERM=dumb` always force monochrome regardless of this key. |
+| `theme` | string | *(env detection)* | `"default"`, `"dark"` (the bakery palette's dark roast), `"mono"`, or `"high-contrast"`. Dark is curated; HighContrast uses terminal-driven bright ANSI colors. Precedence: this key, then `COOKIE_THEME`, then terminal detection. `NO_COLOR` and `TERM=dumb` always force monochrome regardless of this key. |
 
 See `docs/tui.toml.example` in the repository for a fully commented example.

@@ -358,10 +358,10 @@ impl Highlighter for SyntectHighlighter {
         else {
             return self.plain.highlight(&language, code, theme);
         };
-        // The default UI theme is a warm light palette, so code highlights
-        // come from a light syntect theme; colors quantize away in mono.
+        // Match syntax highlighting to the curated surface; colors quantize
+        // away in mono.
         let theme_name = match theme.key().kind {
-            ThemeKind::HighContrast => "base16-eighties.dark",
+            ThemeKind::Dark | ThemeKind::HighContrast => "base16-eighties.dark",
             ThemeKind::Default | ThemeKind::Mono => "InspiredGitHub",
         };
         let Some(syntax_theme) = self.themes.themes.get(theme_name) else {

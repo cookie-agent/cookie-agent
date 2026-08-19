@@ -168,7 +168,7 @@ key.
 
 ```toml
 minimum_event_level = "warning"   # debug | info | warning | error
-theme = "default"                 # default | mono | high-contrast
+theme = "default"                 # default | dark | mono | high-contrast
 ```
 
 `theme` takes precedence over `COOKIE_THEME` and terminal detection, but
