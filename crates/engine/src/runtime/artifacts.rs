@@ -574,6 +574,13 @@ pub(super) fn ensure_same_object(
     Ok(())
 }
 
+#[cfg(unix)]
+#[allow(clippy::unnecessary_cast)]
+fn stat_identity(stat: &rustix::fs::Stat) -> (u64, u64) {
+    // Darwin's native dev_t is narrower than MetadataExt's u64 representation.
+    (stat.st_dev as u64, stat.st_ino as u64)
+}
+
 pub(super) fn ensure_stat_same_object(
     opened: &fs::Metadata,
     path: &rustix::fs::Stat,
@@ -582,7 +589,8 @@ pub(super) fn ensure_stat_same_object(
     {
         use std::os::unix::fs::MetadataExt;
 
-        if opened.dev() != path.st_dev || opened.ino() != path.st_ino {
+        let (device, inode) = stat_identity(path);
+        if opened.dev() != device || opened.ino() != inode {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "artifact object changed during validation",

@@ -89,6 +89,12 @@ mod unix {
         }
     }
 
+    #[allow(clippy::unnecessary_cast)]
+    fn stat_identity(stat: &rustix::fs::Stat) -> (u64, u64) {
+        // rustix exposes native widths; Darwin's dev_t is narrower than MetadataExt's.
+        (stat.st_dev as u64, stat.st_ino as u64)
+    }
+
     pub(super) struct ChainNode {
         pub(super) parent: File,
         pub(super) name: OsString,
@@ -300,7 +306,8 @@ mod unix {
                 .map_err(|_| {
                     ToolError::operation_changed("prepared target disappeared or changed")
                 })?;
-            if stat.st_dev != self.identity.device || stat.st_ino != self.identity.inode {
+            let (device, inode) = stat_identity(&stat);
+            if device != self.identity.device || inode != self.identity.inode {
                 return Err(ToolError::operation_changed(
                     "prepared target identity changed",
                 ));
@@ -589,7 +596,8 @@ mod unix {
         for node in chain {
             let stat = rustix::fs::statat(&node.parent, &node.name, AtFlags::SYMLINK_NOFOLLOW)
                 .map_err(|_| ToolError::operation_changed("prepared ancestor changed"))?;
-            if stat.st_dev != node.identity.device || stat.st_ino != node.identity.inode {
+            let (device, inode) = stat_identity(&stat);
+            if device != node.identity.device || inode != node.identity.inode {
                 return Err(ToolError::operation_changed(
                     "prepared ancestor identity changed",
                 ));
@@ -744,7 +752,8 @@ mod unix {
 
     #[cfg(target_os = "linux")]
     fn rename_exchange(parent: &File, old: &OsStr, new: &OsStr) -> Result<(), ToolError> {
-        renameat2(parent, old, parent, new, libc::RENAME_EXCHANGE).map_err(super::io_error)
+        rustix::fs::renameat_with(parent, old, parent, new, rustix::fs::RenameFlags::EXCHANGE)
+            .map_err(super::io_error)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -756,13 +765,14 @@ mod unix {
 
     #[cfg(target_os = "linux")]
     fn rename_noreplace(parent: &File, old: &OsStr, new: &OsStr) -> Result<(), ToolError> {
-        renameat2(parent, old, parent, new, libc::RENAME_NOREPLACE).map_err(|error| {
-            if error.raw_os_error() == Some(libc::EEXIST) {
-                ToolError::operation_changed("prepared absent path was inserted before commit")
-            } else {
-                super::io_error(error)
-            }
-        })
+        rustix::fs::renameat_with(parent, old, parent, new, rustix::fs::RenameFlags::NOREPLACE)
+            .map_err(|error| {
+                if error == rustix::io::Errno::EXIST {
+                    ToolError::operation_changed("prepared absent path was inserted before commit")
+                } else {
+                    super::io_error(error)
+                }
+            })
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -770,33 +780,6 @@ mod unix {
         Err(ToolError::unsupported_platform(
             "atomic no-replace is unsupported on this Unix platform",
         ))
-    }
-
-    #[cfg(target_os = "linux")]
-    fn renameat2(
-        old_parent: &File,
-        old: &OsStr,
-        new_parent: &File,
-        new: &OsStr,
-        flags: u32,
-    ) -> std::io::Result<()> {
-        use std::os::unix::ffi::OsStrExt;
-        let old = std::ffi::CString::new(old.as_bytes())?;
-        let new = std::ffi::CString::new(new.as_bytes())?;
-        let result = unsafe {
-            libc::renameat2(
-                old_parent.as_raw_fd(),
-                old.as_ptr(),
-                new_parent.as_raw_fd(),
-                new.as_ptr(),
-                flags,
-            )
-        };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error())
-        }
     }
 
     #[cfg(test)]
