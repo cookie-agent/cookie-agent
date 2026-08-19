@@ -358,10 +358,10 @@
 <a href=#358 id=358 data-nosnippet>358</a>        <span class="kw">else </span>{
 <a href=#359 id=359 data-nosnippet>359</a>            <span class="kw">return </span><span class="self">self</span>.plain.highlight(<span class="kw-2">&amp;</span>language, code, theme);
 <a href=#360 id=360 data-nosnippet>360</a>        };
-<a href=#361 id=361 data-nosnippet>361</a>        <span class="comment">// The default UI theme is a warm light palette, so code highlights
-<a href=#362 id=362 data-nosnippet>362</a>        // come from a light syntect theme; colors quantize away in mono.
+<a href=#361 id=361 data-nosnippet>361</a>        <span class="comment">// Match syntax highlighting to the curated surface; colors quantize
+<a href=#362 id=362 data-nosnippet>362</a>        // away in mono.
 <a href=#363 id=363 data-nosnippet>363</a>        </span><span class="kw">let </span>theme_name = <span class="kw">match </span>theme.key().kind {
-<a href=#364 id=364 data-nosnippet>364</a>            ThemeKind::HighContrast =&gt; <span class="string">"base16-eighties.dark"</span>,
+<a href=#364 id=364 data-nosnippet>364</a>            ThemeKind::Dark | ThemeKind::HighContrast =&gt; <span class="string">"base16-eighties.dark"</span>,
 <a href=#365 id=365 data-nosnippet>365</a>            ThemeKind::Default | ThemeKind::Mono =&gt; <span class="string">"InspiredGitHub"</span>,
 <a href=#366 id=366 data-nosnippet>366</a>        };
 <a href=#367 id=367 data-nosnippet>367</a>        <span class="kw">let </span><span class="prelude-val">Some</span>(syntax_theme) = <span class="self">self</span>.themes.themes.get(theme_name) <span class="kw">else </span>{
