@@ -937,10 +937,10 @@
 <a href=#937 id=937 data-nosnippet>937</a>        <span class="kw">let </span>(focused_border, focused_title, focused_text) = rendered_styles(<span class="bool-val">true</span>);
 <a href=#938 id=938 data-nosnippet>938</a>        <span class="kw">let </span>(unfocused_border, unfocused_title, unfocused_text) = rendered_styles(<span class="bool-val">false</span>);
 <a href=#939 id=939 data-nosnippet>939</a>
-<a href=#940 id=940 data-nosnippet>940</a>        <span class="comment">// Focus carries the warm user accent in bold; the resting box falls
-<a href=#941 id=941 data-nosnippet>941</a>        // back to a dim crust border. Weight — not color alone — still
+<a href=#940 id=940 data-nosnippet>940</a>        <span class="comment">// Focus carries the honey highlight in bold; the resting box falls
+<a href=#941 id=941 data-nosnippet>941</a>        // back to a dim mustard border. Weight — not color alone — still
 <a href=#942 id=942 data-nosnippet>942</a>        // distinguishes the states when color is unavailable.
-<a href=#943 id=943 data-nosnippet>943</a>        </span><span class="macro">assert_eq!</span>(focused_border.fg, theme.user().fg);
+<a href=#943 id=943 data-nosnippet>943</a>        </span><span class="macro">assert_eq!</span>(focused_border.fg, theme.input_border(<span class="bool-val">true</span>).fg);
 <a href=#944 id=944 data-nosnippet>944</a>        <span class="macro">assert_eq!</span>(unfocused_border.fg, theme.panel_border().fg);
 <a href=#945 id=945 data-nosnippet>945</a>        <span class="macro">assert!</span>(focused_border.add_modifier.contains(Modifier::BOLD));
 <a href=#946 id=946 data-nosnippet>946</a>        <span class="macro">assert!</span>(!focused_border.add_modifier.contains(Modifier::DIM));
@@ -953,7 +953,7 @@
 <a href=#953 id=953 data-nosnippet>953</a>            <span class="prelude-val">None </span>| <span class="prelude-val">Some</span>(ratatui::style::Color::Reset)
 <a href=#954 id=954 data-nosnippet>954</a>        ));
 <a href=#955 id=955 data-nosnippet>955</a>        <span class="comment">// Titles pick up the border accent of their state.
-<a href=#956 id=956 data-nosnippet>956</a>        </span><span class="macro">assert_eq!</span>(focused_title.fg, theme.user().fg);
+<a href=#956 id=956 data-nosnippet>956</a>        </span><span class="macro">assert_eq!</span>(focused_title.fg, theme.input_border(<span class="bool-val">true</span>).fg);
 <a href=#957 id=957 data-nosnippet>957</a>        <span class="macro">assert_eq!</span>(unfocused_title.fg, theme.panel_border().fg);
 <a href=#958 id=958 data-nosnippet>958</a>    }
 <a href=#959 id=959 data-nosnippet>959</a>
