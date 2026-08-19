@@ -937,14 +937,14 @@ mod tests {
         let (focused_border, focused_title, focused_text) = rendered_styles(true);
         let (unfocused_border, unfocused_title, unfocused_text) = rendered_styles(false);
 
-        // Focus carries the honey highlight in bold; the resting box falls
-        // back to a dim mustard border. Weight — not color alone — still
-        // distinguishes the states when color is unavailable.
+        // Focus carries the honey highlight in bold; the resting box uses
+        // the plain walnut border. Weight still distinguishes the states
+        // when color is unavailable.
         assert_eq!(focused_border.fg, theme.input_border(true).fg);
         assert_eq!(unfocused_border.fg, theme.panel_border().fg);
         assert!(focused_border.add_modifier.contains(Modifier::BOLD));
         assert!(!focused_border.add_modifier.contains(Modifier::DIM));
-        assert!(unfocused_border.add_modifier.contains(Modifier::DIM));
+        assert!(!unfocused_border.add_modifier.contains(Modifier::DIM));
         assert!(!unfocused_border.add_modifier.contains(Modifier::BOLD));
         // The focused composer interior is filled with the panel surface.
         assert_eq!(focused_text.bg, theme.panel().bg);

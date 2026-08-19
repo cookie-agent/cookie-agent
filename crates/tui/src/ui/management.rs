@@ -813,7 +813,7 @@ pub(super) fn render_usage(frame: &mut Frame, area: Rect, panel: &mut UsagePanel
                 .track_symbol(Some("│"))
                 .track_style(theme.panel_border())
                 .thumb_symbol("█")
-                .thumb_style(theme.muted()),
+                .thumb_style(theme.scrollbar_thumb()),
             inner,
             &mut state,
         );

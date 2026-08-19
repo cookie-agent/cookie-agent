@@ -2,11 +2,11 @@
 //!
 //! The default theme is a warm, light "cookie" palette: one cream surface
 //! across the whole frame, espresso-brown text, and caramel/cinnamon/sage
-//! accents. Every foreground is chosen for WCAG-AA-or-better contrast
-//! against the cream surface; state is never conveyed by color alone
-//! (bold/italic/underline and text markers accompany every semantic color).
-//! `Mono` drops all color, `HighContrast` keeps bright ANSI colors on the
-//! terminal's own background.
+//! accents. Every TrueColor foreground is chosen for WCAG-AA-or-better
+//! contrast against the cream surface; ANSI-256 and ANSI-16 are hue-faithful
+//! degradations. State is never conveyed by color alone (bold/italic/underline
+//! and text markers accompany every semantic color). `Mono` drops all color,
+//! `HighContrast` keeps bright ANSI colors on the terminal's own background.
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -42,54 +42,67 @@ pub enum DecisionTone {
 // --- The bakery palette (true color) ---------------------------------------
 //
 // Surfaces: a single cream base, parchment code blocks, toasted selection,
-// glaze hover, mustard borders. Text: espresso body with cocoa and latte
-// derivatives. Accents: honey focus, caramel, sage, cinnamon, cranberry,
-// maple, slate, plum, terracotta.
+// glaze hover, walnut borders. Text: espresso body with cocoa, latte, and
+// oven-ash derivatives. Accents: honey focus, caramel, sage, emerald basil,
+// cinnamon, cranberry, maple, slate, plum, terracotta.
 
 const CREAM: (u8, u8, u8) = (0xFB, 0xF4, 0xE6);
 const PARCHMENT: (u8, u8, u8) = (0xF2, 0xE5, 0xCC);
-const TOASTED: (u8, u8, u8) = (0xEA, 0xD7, 0xB4);
-const GLAZE: (u8, u8, u8) = (0xF0, 0xDF, 0xC0);
+const TOASTED: (u8, u8, u8) = (0xE6, 0xCE, 0x9E);
+const GLAZE: (u8, u8, u8) = (0xEB, 0xD8, 0xAE);
 const CRUST: (u8, u8, u8) = (0xC9, 0xAE, 0x85);
-// Pane chrome (conversation, tree, pickers, unfocused input) sits one step
-// darker and yellower than the crust selection wash: a muted mustard that
-// reads clearly against the cream surface without turning reddish.
-const BORDER: (u8, u8, u8) = (0x8B, 0x70, 0x48);
+// Pane chrome (conversation, tree, pickers, unfocused input) uses a walnut
+// border that reads clearly against the cream surface.
+const BORDER: (u8, u8, u8) = (0x6B, 0x4F, 0x2C);
 const ESPRESSO: (u8, u8, u8) = (0x46, 0x30, 0x1F);
 const COCOA: (u8, u8, u8) = (0x6E, 0x4E, 0x38);
-const LATTE: (u8, u8, u8) = (0x86, 0x69, 0x4F);
-const FAWN: (u8, u8, u8) = (0x93, 0x76, 0x5B);
+const LATTE: (u8, u8, u8) = (0x7A, 0x59, 0x41);
+const ASH: (u8, u8, u8) = (0x62, 0x5E, 0x66);
 const CARAMEL: (u8, u8, u8) = (0x9C, 0x5A, 0x10);
 const SAGE: (u8, u8, u8) = (0x4E, 0x7A, 0x34);
-const OLIVE: (u8, u8, u8) = (0x3F, 0x6B, 0x2A);
-const CINNAMON: (u8, u8, u8) = (0xA8, 0x5B, 0x17);
+const BASIL: (u8, u8, u8) = (0x2F, 0x6B, 0x38);
+const CINNAMON: (u8, u8, u8) = (0x9C, 0x4A, 0x12);
 const CRANBERRY: (u8, u8, u8) = (0xAE, 0x33, 0x27);
-const HONEY: (u8, u8, u8) = (0x8F, 0x64, 0x08);
+const HONEY: (u8, u8, u8) = (0x7A, 0x52, 0x06);
 const MAPLE: (u8, u8, u8) = (0x8A, 0x4A, 0x0B);
 const SLATE: (u8, u8, u8) = (0x3D, 0x6A, 0x8C);
 const PLUM: (u8, u8, u8) = (0x8A, 0x55, 0x70);
-const TAN: (u8, u8, u8) = (0x8A, 0x6B, 0x45);
-const TERRACOTTA: (u8, u8, u8) = (0xA0, 0x3A, 0x20);
-const QUOTE: (u8, u8, u8) = (0x84, 0x70, 0x5C);
+const TAN: (u8, u8, u8) = (0x71, 0x54, 0x30);
+const TERRACOTTA: (u8, u8, u8) = (0xA8, 0x47, 0x1C);
+const QUOTE: (u8, u8, u8) = (0x6F, 0x62, 0x50);
 const ALLOW_TINT: (u8, u8, u8) = (0xDE, 0xE7, 0xC6);
 const DENY_TINT: (u8, u8, u8) = (0xF3, 0xD5, 0xC9);
 const NEUTRAL_TINT: (u8, u8, u8) = (0xE6, 0xDC, 0xC6);
 
-// --- xterm-256 background bands --------------------------------------------
+// --- Hand-picked xterm-256 palette cells -----------------------------------
 //
-// The naive RGB→cube quantizer drags every warm beige into the pink
-// (255, 215, 215) cell 224, so each light band names its cube index by hand.
-// The ladder steps from light to deep: cream surface, parchment code band,
-// glaze hover, toasted selection.
+// These cells preserve the palette's visual hierarchy and hue more faithfully
+// than naive RGB-to-cube rounding. Non-palette colors still use that fallback.
 const CREAM_256: u8 = 231; // (255, 255, 255)
 const PARCHMENT_256: u8 = 230; // (255, 255, 215)
 const GLAZE_256: u8 = 223; // (255, 215, 175)
 const TOASTED_256: u8 = 222; // (255, 215, 135)
 const CRUST_256: u8 = 180; // (215, 175, 135)
-// Hand-picked border cell: the nearest-cube match for BORDER is the
-// pinkish (135, 95, 95), so the border keeps the closest cell that stays
-// warm yellow even though it runs lighter than the true-color original.
-const BORDER_256: u8 = 137; // (175, 135, 95)
+const BORDER_256: u8 = 240; // (88, 88, 88)
+const ESPRESSO_256: u8 = 236; // (48, 48, 48)
+const COCOA_256: u8 = 239; // (78, 78, 78)
+const LATTE_256: u8 = 95; // (135, 95, 95)
+const ASH_256: u8 = 241; // (98, 98, 98)
+const CARAMEL_256: u8 = 130; // (175, 95, 0)
+const SAGE_256: u8 = 65; // (95, 135, 95)
+const BASIL_256: u8 = 29; // (0, 135, 95)
+const CINNAMON_256: u8 = 131; // (175, 95, 95)
+const CRANBERRY_256: u8 = 88; // (135, 0, 0)
+const HONEY_256: u8 = 94; // (135, 95, 0)
+const MAPLE_256: u8 = 58; // (95, 95, 0)
+const SLATE_256: u8 = 24; // (0, 95, 135)
+const PLUM_256: u8 = 96; // (135, 95, 135)
+const TAN_256: u8 = 240; // (88, 88, 88)
+const TERRACOTTA_256: u8 = 124; // (175, 0, 0)
+const QUOTE_256: u8 = 243; // (118, 118, 118)
+const ALLOW_TINT_256: u8 = 194; // (215, 255, 215)
+const DENY_TINT_256: u8 = 224; // (255, 215, 215)
+const NEUTRAL_TINT_256: u8 = 187; // (215, 215, 175)
 
 #[derive(Clone, Debug)]
 pub struct Theme {
@@ -200,18 +213,10 @@ impl Theme {
             .map_or_else(Style::default, |background| Style::default().bg(background))
     }
 
-    /// Mustard border for pane chrome (conversation, tree, pickers):
-    /// darker and yellower than the pale crust wash so the frame stays
-    /// visible on the cream surface.
+    /// Walnut border for pane chrome (conversation, tree, pickers), dark
+    /// enough to keep the frame visible on the cream surface.
     pub fn panel_border(&self) -> Style {
-        let style = self.semantic(BORDER, Color::DarkGray, Color::White, Modifier::DIM);
-        if self.key.kind == ThemeKind::Default && self.key.colors == ColorLevel::Ansi256 {
-            // Foregrounds normally trust the quantizer, but it grays out
-            // this warm yellow — use the hand-picked cell.
-            style.fg(Color::Indexed(BORDER_256))
-        } else {
-            style
-        }
+        self.semantic(BORDER, Color::DarkGray, Color::White, Modifier::DIM)
     }
 
     /// Keyboard-selected row in pickers, palettes, and the session tree: a
@@ -340,7 +345,7 @@ impl Theme {
             return Style::default().fg(foreground).add_modifier(Modifier::BOLD);
         }
         let (foreground, tint) = match tone {
-            DecisionTone::Allow => (OLIVE, ALLOW_TINT),
+            DecisionTone::Allow => (BASIL, ALLOW_TINT),
             DecisionTone::Deny => (CRANBERRY, DENY_TINT),
             DecisionTone::Neutral => (COCOA, NEUTRAL_TINT),
         };
@@ -383,7 +388,7 @@ impl Theme {
     }
 
     pub fn tool_success(&self) -> Style {
-        self.semantic(OLIVE, Color::Green, Color::LightGreen, Modifier::BOLD)
+        self.semantic(BASIL, Color::Green, Color::LightGreen, Modifier::BOLD)
     }
 
     pub fn tool_failure(&self) -> Style {
@@ -400,11 +405,11 @@ impl Theme {
     }
 
     pub fn internal(&self) -> Style {
-        self.semantic(FAWN, Color::Gray, Color::Gray, Modifier::DIM)
+        self.semantic(ASH, Color::DarkGray, Color::Gray, Modifier::DIM)
     }
 
     pub fn heading(&self) -> Style {
-        let style = self.semantic(MAPLE, Color::Yellow, Color::White, Modifier::BOLD);
+        let style = self.semantic(MAPLE, Color::Black, Color::White, Modifier::BOLD);
         if self.key.kind == ThemeKind::HighContrast && self.key.colors != ColorLevel::None {
             style.add_modifier(Modifier::UNDERLINED)
         } else {
@@ -436,11 +441,20 @@ impl Theme {
     }
 
     pub fn code_border(&self) -> Style {
-        self.semantic(TAN, Color::Yellow, Color::White, Modifier::DIM)
+        self.semantic(TAN, Color::DarkGray, Color::White, Modifier::DIM)
     }
 
     pub fn quote(&self) -> Style {
-        self.semantic(QUOTE, Color::Gray, Color::LightMagenta, Modifier::ITALIC)
+        self.semantic(
+            QUOTE,
+            Color::DarkGray,
+            Color::LightMagenta,
+            Modifier::ITALIC,
+        )
+    }
+
+    pub fn scrollbar_thumb(&self) -> Style {
+        self.semantic(ESPRESSO, Color::Black, Color::White, Modifier::DIM)
     }
 
     pub fn input_border(&self, focused: bool) -> Style {
@@ -460,7 +474,10 @@ impl Theme {
                 Some(nearest_high_contrast(red, green, blue))
             }
             ColorLevel::TrueColor => Some(Color::Rgb(red, green, blue)),
-            ColorLevel::Ansi256 => Some(Color::Indexed(rgb_to_ansi256(red, green, blue))),
+            ColorLevel::Ansi256 => Some(Color::Indexed(
+                palette_ansi256((red, green, blue))
+                    .unwrap_or_else(|| rgb_to_ansi256(red, green, blue)),
+            )),
             ColorLevel::Ansi16 => Some(nearest_ansi16(red, green, blue)),
         }
     }
@@ -492,10 +509,13 @@ impl Theme {
         high_contrast: Color,
         modifier: Modifier,
     ) -> Style {
-        let modifier = match self.key.kind {
+        let mut modifier = match self.key.kind {
             ThemeKind::HighContrast => modifier | Modifier::BOLD,
             ThemeKind::Default | ThemeKind::Mono => modifier,
         };
+        if self.key.kind == ThemeKind::Default && self.key.colors != ColorLevel::None {
+            modifier.remove(Modifier::DIM);
+        }
         let color = match self.key.colors {
             ColorLevel::None => None,
             _ if self.key.kind == ThemeKind::HighContrast => Some(high_contrast),
@@ -506,6 +526,37 @@ impl Theme {
             || Style::default().add_modifier(modifier),
             |color| Style::default().fg(color).add_modifier(modifier),
         )
+    }
+}
+
+fn palette_ansi256(rgb: (u8, u8, u8)) -> Option<u8> {
+    match rgb {
+        CREAM => Some(CREAM_256),
+        PARCHMENT => Some(PARCHMENT_256),
+        GLAZE => Some(GLAZE_256),
+        TOASTED => Some(TOASTED_256),
+        CRUST => Some(CRUST_256),
+        BORDER => Some(BORDER_256),
+        ESPRESSO => Some(ESPRESSO_256),
+        COCOA => Some(COCOA_256),
+        LATTE => Some(LATTE_256),
+        ASH => Some(ASH_256),
+        CARAMEL => Some(CARAMEL_256),
+        SAGE => Some(SAGE_256),
+        BASIL => Some(BASIL_256),
+        CINNAMON => Some(CINNAMON_256),
+        CRANBERRY => Some(CRANBERRY_256),
+        HONEY => Some(HONEY_256),
+        MAPLE => Some(MAPLE_256),
+        SLATE => Some(SLATE_256),
+        PLUM => Some(PLUM_256),
+        TAN => Some(TAN_256),
+        TERRACOTTA => Some(TERRACOTTA_256),
+        QUOTE => Some(QUOTE_256),
+        ALLOW_TINT => Some(ALLOW_TINT_256),
+        DENY_TINT => Some(DENY_TINT_256),
+        NEUTRAL_TINT => Some(NEUTRAL_TINT_256),
+        _ => None,
     }
 }
 
@@ -663,23 +714,23 @@ default.surface: fg=Some(Rgb(70, 48, 31)) bg=Some(Rgb(251, 244, 230)) bold=false
 default.panel: fg=None bg=Some(Rgb(251, 244, 230)) bold=false italic=false underline=false dim=false reverse=false
 default.user: fg=Some(Rgb(156, 90, 16)) bg=None bold=true italic=false underline=false dim=false reverse=false
 default.assistant: fg=Some(Rgb(78, 122, 52)) bg=None bold=true italic=false underline=false dim=false reverse=false
-default.tool_running: fg=Some(Rgb(168, 91, 23)) bg=None bold=true italic=false underline=false dim=false reverse=false
-default.tool_success: fg=Some(Rgb(63, 107, 42)) bg=None bold=true italic=false underline=false dim=false reverse=false
+default.tool_running: fg=Some(Rgb(156, 74, 18)) bg=None bold=true italic=false underline=false dim=false reverse=false
+default.tool_success: fg=Some(Rgb(47, 107, 56)) bg=None bold=true italic=false underline=false dim=false reverse=false
 default.tool_failure: fg=Some(Rgb(174, 51, 39)) bg=None bold=true italic=false underline=false dim=false reverse=false
-default.selected: fg=Some(Rgb(70, 48, 31)) bg=Some(Rgb(234, 215, 180)) bold=true italic=false underline=false dim=false reverse=false
-default.hover: fg=None bg=Some(Rgb(240, 223, 192)) bold=false italic=false underline=false dim=false reverse=false
-default.decision.allow: fg=Some(Rgb(63, 107, 42)) bg=None bold=true italic=false underline=false dim=false reverse=false
+default.selected: fg=Some(Rgb(70, 48, 31)) bg=Some(Rgb(230, 206, 158)) bold=true italic=false underline=false dim=false reverse=false
+default.hover: fg=None bg=Some(Rgb(235, 216, 174)) bold=false italic=false underline=false dim=false reverse=false
+default.decision.allow: fg=Some(Rgb(47, 107, 56)) bg=None bold=true italic=false underline=false dim=false reverse=false
 default.decision.deny.active: fg=Some(Rgb(174, 51, 39)) bg=Some(Rgb(243, 213, 201)) bold=true italic=false underline=false dim=false reverse=false
 contrast.user: fg=Some(LightCyan) bg=None bold=true italic=false underline=false dim=false reverse=false
 contrast.assistant: fg=Some(White) bg=None bold=true italic=false underline=false dim=false reverse=false
 contrast.tool_success: fg=Some(LightGreen) bg=None bold=true italic=false underline=false dim=false reverse=false
 contrast.error: fg=Some(LightRed) bg=None bold=true italic=false underline=false dim=false reverse=false
 contrast.selected: fg=Some(Black) bg=Some(LightYellow) bold=true italic=false underline=false dim=false reverse=false
-default.warning: fg=Some(Rgb(143, 100, 8)) bg=None bold=true italic=false underline=false dim=false reverse=false
+default.warning: fg=Some(Rgb(122, 82, 6)) bg=None bold=true italic=false underline=false dim=false reverse=false
 contrast.warning: fg=Some(LightYellow) bg=None bold=true italic=false underline=false dim=false reverse=false
 mono.warning: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
 contrast.heading: fg=Some(White) bg=None bold=true italic=false underline=true dim=false reverse=false
-default.inline_code: fg=Some(Rgb(160, 58, 32)) bg=None bold=true italic=false underline=false dim=false reverse=false
+default.inline_code: fg=Some(Rgb(168, 71, 28)) bg=None bold=true italic=false underline=false dim=false reverse=false
 contrast.inline_code: fg=Some(Black) bg=Some(LightYellow) bold=true italic=false underline=false dim=false reverse=false
 mono.link: fg=None bg=None bold=true italic=false underline=true dim=false reverse=false
 mono.inline_code: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
@@ -724,11 +775,9 @@ mono.hover: fg=None bg=None bold=false italic=false underline=true dim=false rev
 
     #[test]
     fn warm_background_bands_hand_pick_ansi256_cells() {
-        // The computed RGB→cube quantization lands every warm beige on the
-        // pink (255, 215, 215) cell 224. Each light band names its cube
-        // index explicitly instead, and the ladder steps from light to
-        // deep: cream surface, parchment code band, glaze hover, toasted
-        // selection.
+        // Each light band names its cell explicitly, and the ladder steps
+        // from light to deep: cream surface, parchment code band, glaze
+        // hover, toasted selection.
         let theme = Theme::new(ThemeKind::Default, ColorLevel::Ansi256);
         assert_eq!(theme.surface().bg, Some(Color::Indexed(231)));
         assert_eq!(theme.panel().bg, Some(Color::Indexed(231)));
@@ -736,14 +785,21 @@ mono.hover: fg=None bg=None bold=false italic=false underline=true dim=false rev
         assert_eq!(theme.hover().bg, Some(Color::Indexed(223)));
         assert_eq!(theme.hover_fill().bg, Some(Color::Indexed(223)));
         assert_eq!(theme.selected().bg, Some(Color::Indexed(222)));
-        // Pane chrome keeps its yellow on ANSI-256 too: the quantizer would
-        // gray BORDER out, so the border names its hand-picked cell.
-        assert_eq!(theme.panel_border().fg, Some(Color::Indexed(137)));
+        assert_eq!(
+            theme.quantize_rgb(0xEB, 0xD8, 0xAE),
+            Some(Color::Indexed(223))
+        );
+        assert_eq!(
+            theme.quantize_rgb(0xE6, 0xCE, 0x9E),
+            Some(Color::Indexed(222))
+        );
+        // Pane chrome uses the hand-picked walnut cell.
+        assert_eq!(theme.panel_border().fg, Some(Color::Indexed(240)));
         assert_eq!(
             Theme::new(ThemeKind::Default, ColorLevel::TrueColor)
                 .panel_border()
                 .fg,
-            Some(Color::Rgb(0x8B, 0x70, 0x48))
+            Some(Color::Rgb(0x6B, 0x4F, 0x2C))
         );
         // The default theme's hover on a capable terminal is the quiet
         // background alone — no underline, no foreground shift.
@@ -756,6 +812,94 @@ mono.hover: fg=None bg=None bold=false italic=false underline=true dim=false rev
                 .add_modifier
                 .contains(Modifier::UNDERLINED)
         );
+    }
+
+    #[test]
+    fn palette_colors_use_hand_picked_ansi256_cells() {
+        let theme = Theme::new(ThemeKind::Default, ColorLevel::Ansi256);
+        for (rgb, cell) in [
+            (super::CREAM, 231),
+            (super::PARCHMENT, 230),
+            (super::GLAZE, 223),
+            (super::TOASTED, 222),
+            (super::CRUST, 180),
+            (super::BORDER, 240),
+            (super::TAN, 240),
+            (super::HONEY, 94),
+            (super::ESPRESSO, 236),
+            (super::COCOA, 239),
+            (super::LATTE, 95),
+            (super::ASH, 241),
+            (super::QUOTE, 243),
+            (super::CARAMEL, 130),
+            (super::CINNAMON, 131),
+            (super::CRANBERRY, 88),
+            (super::MAPLE, 58),
+            (super::SAGE, 65),
+            (super::BASIL, 29),
+            (super::SLATE, 24),
+            (super::PLUM, 96),
+            (super::TERRACOTTA, 124),
+            (super::ALLOW_TINT, 194),
+            (super::DENY_TINT, 224),
+            (super::NEUTRAL_TINT, 187),
+        ] {
+            assert_eq!(
+                theme.quantize_rgb(rgb.0, rgb.1, rgb.2),
+                Some(Color::Indexed(cell)),
+                "palette color {rgb:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_quiet_roles_use_values_without_dim() {
+        let truecolor = Theme::new(ThemeKind::Default, ColorLevel::TrueColor);
+        for style in [
+            truecolor.panel_border(),
+            truecolor.code_border(),
+            truecolor.muted(),
+            truecolor.internal(),
+        ] {
+            assert!(!style.add_modifier.contains(Modifier::DIM));
+        }
+        assert_eq!(
+            truecolor.input_border(true).fg,
+            Some(Color::Rgb(0x7A, 0x52, 0x06))
+        );
+        assert!(
+            truecolor
+                .input_border(true)
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert!(
+            !truecolor
+                .input_border(true)
+                .add_modifier
+                .contains(Modifier::DIM)
+        );
+
+        let mono = Theme::new(ThemeKind::Mono, ColorLevel::None);
+        assert!(mono.panel_border().add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn default_ansi16_uses_revised_quiet_roles() {
+        let theme = Theme::new(ThemeKind::Default, ColorLevel::Ansi16);
+        for style in [
+            theme.panel_border(),
+            theme.code_border(),
+            theme.internal(),
+            theme.muted(),
+        ] {
+            assert_eq!(style.fg, Some(Color::DarkGray));
+            assert!(!style.add_modifier.contains(Modifier::DIM));
+        }
+        assert_eq!(theme.quote().fg, Some(Color::DarkGray));
+        assert!(theme.quote().add_modifier.contains(Modifier::ITALIC));
+        assert_eq!(theme.heading().fg, Some(Color::Black));
+        assert!(theme.heading().add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
