@@ -298,18 +298,6 @@ fn read_token(file: &mut fs::File) -> Result<String, TokenError> {
 
 fn generate_token() -> Result<String, TokenError> {
     let mut bytes = [0_u8; TOKEN_BYTES];
-    let mut filled = 0;
-    while filled < bytes.len() {
-        let initialized =
-            rustix::rand::getrandom(&mut bytes[filled..], rustix::rand::GetRandomFlags::empty())
-                .map_err(|error| TokenError::Io(error.into()))?;
-        if initialized == 0 {
-            return Err(TokenError::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "secure random source returned no bytes",
-            )));
-        }
-        filled += initialized;
-    }
+    getrandom::getrandom(&mut bytes).map_err(|error| TokenError::Io(error.into()))?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }

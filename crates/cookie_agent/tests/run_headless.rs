@@ -12,9 +12,10 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        mpsc as std_mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use cookie_agent::run::{AllowedTool, OutputMode, PermissionModeArg, RunArgs, execute_with_io};
@@ -29,7 +30,8 @@ use cookie_agent_models::{
     provider_store::ProviderStore,
 };
 use cookie_agent_protocol::{
-    ClientRunId, PermissionAction, PermissionEffect, RunSelection, RunStartParams, SessionId,
+    ClientRunId, EventPayload, EventSubscriptionMessage, PermissionAction, PermissionEffect,
+    RunSelection, RunStartParams, SessionId, StoredEvent,
 };
 use cookie_agent_tools::{BuiltinTools, delegate::DelegateToolProvider, skill::SkillTool};
 use tempfile::TempDir;
@@ -41,6 +43,11 @@ const PLUGIN_FIXTURE: &str = concat!(
 
 enum MockResponse {
     Sse(String),
+    GatedSse {
+        body: String,
+        start: std_mpsc::Receiver<()>,
+        deadline: Instant,
+    },
     Status(u16),
     Delay(Duration),
 }
@@ -84,6 +91,21 @@ impl MockModelServer {
                         };
                         match response {
                             MockResponse::Sse(body) => write_sse(&mut stream, &body),
+                            MockResponse::GatedSse {
+                                body,
+                                start,
+                                deadline,
+                            } => {
+                                start
+                                    .recv_timeout(deadline_remaining(
+                                        deadline,
+                                        "mock server waiting for the output gate",
+                                    ))
+                                    .unwrap_or_else(|error| {
+                                        panic!("output gate did not open before deadline: {error}")
+                                    });
+                                write_sse(&mut stream, &body);
+                            }
                             MockResponse::Status(status) => write_status(&mut stream, status),
                             MockResponse::Delay(duration) => thread::sleep(duration),
                         }
@@ -308,6 +330,116 @@ impl std::io::Write for SlowLineWriter {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+struct GatedLineWriter {
+    bytes: Vec<u8>,
+    start: Option<std_mpsc::SyncSender<()>>,
+    terminal: Option<std_mpsc::Receiver<Result<(), String>>>,
+    deadline: Instant,
+}
+
+impl GatedLineWriter {
+    fn new(
+        start: std_mpsc::SyncSender<()>,
+        terminal: std_mpsc::Receiver<Result<(), String>>,
+        deadline: Instant,
+    ) -> Self {
+        Self {
+            bytes: Vec::new(),
+            start: Some(start),
+            terminal: Some(terminal),
+            deadline,
+        }
+    }
+}
+
+impl std::io::Write for GatedLineWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        if buffer == b"\n"
+            && let Some(start) = self.start.take()
+        {
+            start
+                .try_send(())
+                .expect("mock server dropped the output gate before it opened");
+            let terminal = self
+                .terminal
+                .take()
+                .expect("terminal monitor missing when output gate opened");
+            terminal
+                .recv_timeout(deadline_remaining(
+                    self.deadline,
+                    "output writer waiting for the terminal event",
+                ))
+                .unwrap_or_else(|error| {
+                    panic!("terminal event was not observed before deadline: {error}")
+                })
+                .unwrap_or_else(|error| panic!("terminal event monitor failed: {error}"));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn terminal_signal(
+    engine: &Engine,
+    session_id: SessionId,
+    deadline: Instant,
+) -> std_mpsc::Receiver<Result<(), String>> {
+    let engine = engine.clone();
+    let (sender, receiver) = std_mpsc::sync_channel(1);
+    tokio::spawn(async move {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .unwrap_or_default();
+        let result =
+            tokio::time::timeout(remaining, wait_for_session_terminal(&engine, session_id))
+                .await
+                .unwrap_or_else(|_| Err("timed out waiting for a terminal session event".into()));
+        let _ = sender.try_send(result);
+    });
+    receiver
+}
+
+fn deadline_remaining(deadline: Instant, wait: &str) -> Duration {
+    deadline
+        .checked_duration_since(Instant::now())
+        .unwrap_or_else(|| panic!("{wait} exceeded the coordination deadline"))
+}
+
+async fn wait_for_session_terminal(engine: &Engine, session_id: SessionId) -> Result<(), String> {
+    let mut cursor = None;
+    loop {
+        let (replay, mut receiver) = engine
+            .subscribe(session_id, cursor)
+            .await
+            .map_err(|error| error.to_string())?;
+        for event in replay.events {
+            if observe_terminal(&event, &mut cursor) {
+                return Ok(());
+            }
+        }
+        while let Some(EventSubscriptionMessage::Event { event }) = receiver.recv().await {
+            if observe_terminal(&event, &mut cursor) {
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn observe_terminal(event: &StoredEvent, cursor: &mut Option<u64>) -> bool {
+    *cursor = Some(event.seq);
+    matches!(
+        event.payload,
+        EventPayload::RunCompleted { .. }
+            | EventPayload::RunFailed { .. }
+            | EventPayload::RunCancelled { .. }
+            | EventPayload::RunInterrupted { .. }
+    )
 }
 
 #[tokio::test]
@@ -927,13 +1059,36 @@ async fn environment_gap_recovery_and_delegated_approval_are_hermetic() {
     assert_eq!(invalid_selection.code, 5);
     assert!(invalid_selection.stderr.contains("is not available"));
 
-    fixture
-        .server
-        .enqueue(MockResponse::Sse(burst_response(1500)));
+    let gap_session = fixture
+        .engine
+        .create_session(RunSelection {
+            agent: "primary".parse().expect("agent"),
+            model: cookie_agent_protocol::ModelSelection {
+                model: "custom.local/test".parse().expect("model"),
+                variant: None,
+            },
+        })
+        .expect("gap session");
+    let coordination_deadline = Instant::now() + Duration::from_secs(30);
+    let (start_burst, await_burst) = std_mpsc::sync_channel(1);
+    fixture.server.enqueue(MockResponse::GatedSse {
+        body: burst_response(1500),
+        start: await_burst,
+        deadline: coordination_deadline,
+    });
     let mut gap_args = run_args("gap prompt");
     gap_args.output = Some(OutputMode::Json);
+    gap_args.resume_session = Some(gap_session.session_id);
     let mut input = Cursor::new(Vec::<u8>::new());
-    let mut gap_output = SlowLineWriter::default();
+    let mut gap_output = GatedLineWriter::new(
+        start_burst,
+        terminal_signal(
+            &fixture.engine,
+            gap_session.session_id,
+            coordination_deadline,
+        ),
+        coordination_deadline,
+    );
     let mut gap_stderr = Vec::new();
     let gap_code = execute_with_io(
         &fixture.engine,

@@ -758,6 +758,7 @@ dependencies = [
  "cookie_agent_models",
  "cookie_agent_protocol",
  "futures-util",
+ "getrandom 0.2.17",
  "jiff",
  "libc",
  "oven-sdk",

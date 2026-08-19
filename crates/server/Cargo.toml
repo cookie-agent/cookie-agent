@@ -19,8 +19,9 @@ cookie_agent_engine = { version = "=0.2.0", path = "../engine" }
 cookie_agent_models = { version = "=0.2.0", path = "../models" }
 cookie_agent_protocol = { version = "=0.2.0", path = "../protocol" }
 futures-util.workspace = true
+getrandom.workspace = true
 libc.workspace = true
-rustix = { workspace = true, features = ["rand"] }
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 subtle = "2.6"
