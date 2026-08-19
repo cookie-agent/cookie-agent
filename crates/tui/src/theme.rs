@@ -54,7 +54,7 @@ const CRUST: (u8, u8, u8) = (0xC9, 0xAE, 0x85);
 // Pane chrome (conversation, tree, pickers, unfocused input) sits one step
 // darker and yellower than the crust selection wash: a muted mustard that
 // reads clearly against the cream surface without turning reddish.
-const BORDER: (u8, u8, u8) = (0xAE, 0x8C, 0x5A);
+const BORDER: (u8, u8, u8) = (0x8B, 0x70, 0x48);
 const ESPRESSO: (u8, u8, u8) = (0x46, 0x30, 0x1F);
 const COCOA: (u8, u8, u8) = (0x6E, 0x4E, 0x38);
 const LATTE: (u8, u8, u8) = (0x86, 0x69, 0x4F);
@@ -86,8 +86,9 @@ const PARCHMENT_256: u8 = 230; // (255, 255, 215)
 const GLAZE_256: u8 = 223; // (255, 215, 175)
 const TOASTED_256: u8 = 222; // (255, 215, 135)
 const CRUST_256: u8 = 180; // (215, 175, 135)
-// Hand-picked border cell: the naive RGB→cube quantization of BORDER lands
-// on a grayish (175, 175, 135) and loses the yellow entirely.
+// Hand-picked border cell: the nearest-cube match for BORDER is the
+// pinkish (135, 95, 95), so the border keeps the closest cell that stays
+// warm yellow even though it runs lighter than the true-color original.
 const BORDER_256: u8 = 137; // (175, 135, 95)
 
 #[derive(Clone, Debug)]
@@ -742,7 +743,7 @@ mono.hover: fg=None bg=None bold=false italic=false underline=true dim=false rev
             Theme::new(ThemeKind::Default, ColorLevel::TrueColor)
                 .panel_border()
                 .fg,
-            Some(Color::Rgb(0xAE, 0x8C, 0x5A))
+            Some(Color::Rgb(0x8B, 0x70, 0x48))
         );
         // The default theme's hover on a capable terminal is the quiet
         // background alone — no underline, no foreground shift.
