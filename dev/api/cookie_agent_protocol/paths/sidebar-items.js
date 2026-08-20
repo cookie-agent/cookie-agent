@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["PathError"],"fn":["home_dir","user_data_root"]};

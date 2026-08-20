@@ -1191,23 +1191,23 @@
 <tbody>
 <tr>
 <td>Runtime, providers, MCP servers, and plugins</td>
-<td><code>~/.config/cookie_agent/config.toml</code> and <code>&lt;cwd&gt;/.cookie-agent/config.toml</code></td>
+<td><code>~/.cookie_agent/config.toml</code> and <code>&lt;cwd&gt;/.cookie-agent/config.toml</code></td>
 </tr>
 <tr>
 <td>Agents</td>
-<td><code>~/.config/cookie_agent/agents/&lt;agent-id&gt;.md</code> and <code>&lt;cwd&gt;/.cookie-agent/agents/&lt;agent-id&gt;.md</code></td>
+<td><code>~/.cookie_agent/agents/&lt;agent-id&gt;.md</code> and <code>&lt;cwd&gt;/.cookie-agent/agents/&lt;agent-id&gt;.md</code></td>
 </tr>
 <tr>
 <td>TUI</td>
-<td><code>$XDG_CONFIG_HOME/cookie_agent/tui.toml</code> or <code>~/.config/cookie_agent/tui.toml</code></td>
+<td><code>~/.cookie_agent/tui.toml</code></td>
 </tr>
 </tbody>
 </table>
 <p>This page covers where configuration lives and how it behaves. For the complete
 key-by-key reference, see <a href="../../reference/configuration/">Configuration Reference</a>.</p>
 <h2 id="locations-and-layering">Locations and layering<a class="headerlink" href="#locations-and-layering" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>~/.config/cookie_agent/config.toml
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>~/.config/cookie_agent/agents/&lt;agent-id&gt;.md
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>~/.cookie_agent/config.toml
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>~/.cookie_agent/agents/&lt;agent-id&gt;.md
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>&lt;exact-cwd&gt;/.cookie-agent/config.toml
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>&lt;exact-cwd&gt;/.cookie-agent/agents/&lt;agent-id&gt;.md
 </code></pre></div>
@@ -1322,11 +1322,10 @@ documents replace them through normal layering, and only internal agents may use
 <p>See <a href="../agents/">Agents</a> for the full frontmatter reference and the built-in
 internal agents.</p>
 <h2 id="tui-configuration">TUI configuration<a class="headerlink" href="#tui-configuration" title="Permanent link">&para;</a></h2>
-<p>The TUI reads <code>tui.toml</code> from <code>$XDG_CONFIG_HOME/cookie_agent/</code> when XDG is set,
-otherwise <code>~/.config/cookie_agent/</code>. It is independent of the runtime config:
-there is no workspace layer and no environment-variable override. A missing file
-uses defaults; unknown keys or malformed values are rejected naming the path and
-key.</p>
+<p>The TUI reads <code>~/.cookie_agent/tui.toml</code>. It is independent of the runtime
+config: there is no workspace layer and no environment-variable override. A
+missing file uses defaults; unknown keys or malformed values are rejected naming
+the path and key.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">minimum_event_level</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"warning"</span><span class="w">   </span><span class="c1"># debug | info | warning | error</span>
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">theme</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"auto"</span><span class="w">                    </span><span class="c1"># auto | default | dark | mono | high-contrast</span>
 </code></pre></div>
