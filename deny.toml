@@ -18,6 +18,8 @@ allow = [
     "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
+    # MIT without the attribution clause; OSI-approved.
+    "MIT-0",
     "Unicode-3.0",
     "Unlicense",
     "Zlib",
