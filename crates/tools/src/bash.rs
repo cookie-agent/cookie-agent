@@ -941,58 +941,65 @@ mod tests {
 
     #[tokio::test]
     async fn real_bash_timeout_drains_progress_before_terminal_completion() {
-        let root = tempfile::tempdir().expect("root");
-        let call_id = ToolCallId::new_v7();
-        let executable_path = resolve_executable("bash").expect("bash executable");
-        let executor = BashExecutor {
-            tool_call_id: call_id,
-            args: BashArgs {
-                command: "printf 'ready\\n'; sleep 1".into(),
-                timeout: 100,
-                interactive: false,
-            },
-            cwd: crate::fs_cap::prepare_existing(Path::new("/"), root.path())
-                .expect("prepared cwd"),
-            executable: crate::fs_cap::prepare_existing(Path::new("/"), &executable_path)
-                .expect("prepared executable"),
-        };
-        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
-        let progress = ProgressSink::new(progress_tx, OutputHub::new(call_id, 64 * 1024));
-        let execute =
-            executor.execute_process(progress, tokio_util::sync::CancellationToken::new(), None);
-        tokio::pin!(execute);
-        let mut event_order = Vec::new();
-        let mut progress_open = true;
-        let error = loop {
-            tokio::select! {
-                progress = progress_rx.recv(), if progress_open => {
-                    if let Some(progress) = progress {
-                        if let Some(chunk) = progress.output_chunk {
-                            event_order.push(("progress", chunk));
-                        }
-                    } else {
-                        progress_open = false;
-                    }
-                }
-                result = &mut execute => {
-                    while let Ok(progress) = progress_rx.try_recv() {
-                        if let Some(chunk) = progress.output_chunk {
-                            event_order.push(("progress", chunk));
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let root = tempfile::tempdir().expect("root");
+            let call_id = ToolCallId::new_v7();
+            let executable_path = resolve_executable("bash").expect("bash executable");
+            let executor = BashExecutor {
+                tool_call_id: call_id,
+                args: BashArgs {
+                    command: "printf 'ready\\n'; sleep 10".into(),
+                    timeout: 2_000,
+                    interactive: false,
+                },
+                cwd: crate::fs_cap::prepare_existing(Path::new("/"), root.path())
+                    .expect("prepared cwd"),
+                executable: crate::fs_cap::prepare_existing(Path::new("/"), &executable_path)
+                    .expect("prepared executable"),
+            };
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+            let progress = ProgressSink::new(progress_tx, OutputHub::new(call_id, 64 * 1024));
+            let execute = executor.execute_process(
+                progress,
+                tokio_util::sync::CancellationToken::new(),
+                None,
+            );
+            tokio::pin!(execute);
+            let mut event_order = Vec::new();
+            let mut progress_open = true;
+            let error = loop {
+                tokio::select! {
+                    progress = progress_rx.recv(), if progress_open => {
+                        if let Some(progress) = progress {
+                            if let Some(chunk) = progress.output_chunk {
+                                event_order.push(("progress", chunk));
+                            }
+                        } else {
+                            progress_open = false;
                         }
                     }
-                    event_order.push(("terminal", String::new()));
-                    break result.expect_err("bash must time out");
+                    result = &mut execute => {
+                        while let Ok(progress) = progress_rx.try_recv() {
+                            if let Some(chunk) = progress.output_chunk {
+                                event_order.push(("progress", chunk));
+                            }
+                        }
+                        event_order.push(("terminal", String::new()));
+                        break result.expect_err("bash must time out");
+                    }
                 }
-            }
-        };
+            };
 
-        assert!(error.to_string().contains("bash timed out"));
-        assert_eq!(event_order.last().map(|event| event.0), Some("terminal"));
-        assert!(
-            event_order[..event_order.len() - 1]
-                .iter()
-                .any(|(kind, chunk)| *kind == "progress" && chunk.contains("ready"))
-        );
+            assert!(error.to_string().contains("bash timed out"));
+            assert_eq!(event_order.last().map(|event| event.0), Some("terminal"));
+            assert!(
+                event_order[..event_order.len() - 1]
+                    .iter()
+                    .any(|(kind, chunk)| *kind == "progress" && chunk.contains("ready"))
+            );
+        })
+        .await
+        .expect("bash timeout progress test exceeded 30 seconds");
     }
 
     #[tokio::test]
