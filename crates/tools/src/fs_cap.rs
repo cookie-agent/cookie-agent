@@ -14,7 +14,7 @@ mod unix {
 
     use cookie_agent_engine::ToolError;
     use cookie_agent_protocol::Sha256Digest;
-    use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags};
+    use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, RawMode};
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
     static PREPARED_WEIGHT: AtomicUsize = AtomicUsize::new(0);
@@ -93,6 +93,12 @@ mod unix {
     fn stat_identity(stat: &rustix::fs::Stat) -> (u64, u64) {
         // rustix exposes native widths; Darwin's dev_t is narrower than MetadataExt's.
         (stat.st_dev as u64, stat.st_ino as u64)
+    }
+
+    #[allow(clippy::unnecessary_cast)]
+    fn permission_mode(mode: u32) -> Mode {
+        // RawMode is u32 on Linux but Darwin's libc mode_t is u16.
+        Mode::from_raw_mode((mode & 0o777) as RawMode)
     }
 
     pub(super) struct ChainNode {
@@ -739,7 +745,7 @@ mod unix {
             parent,
             &name,
             OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC,
-            Mode::from_raw_mode(mode & 0o777),
+            permission_mode(mode),
         )
         .map_err(super::io_error)?;
         let mut file = File::from(fd);
