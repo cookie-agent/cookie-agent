@@ -405,7 +405,7 @@ impl BashExecutor {
         }
         let mut command = Command::new(self.executable.proc_fd_path());
         command
-            .arg("-lc")
+            .arg("-c")
             .arg(&self.args.command)
             .current_dir(self.cwd.proc_fd_path())
             .stdin(if self.args.interactive {
