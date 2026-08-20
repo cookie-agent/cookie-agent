@@ -1,10 +1,11 @@
 //! Reusable fail-closed Unix storage primitives.
 
 use std::{
-    env, fs, io,
+    fs, io,
     path::{Component, Path, PathBuf},
 };
 
+use cookie_agent_protocol::paths;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -19,28 +20,22 @@ pub struct SecureDirectory {
 }
 
 impl SecureDirectory {
-    /// Opens `~/.local/share/cookie_agent/<relative>`, creating private components.
+    /// Opens `~/.cookie_agent/<relative>`, creating private components.
     pub fn user_data(relative: impl AsRef<Path>) -> Result<Self, SecureStoreError> {
-        let home = env::var_os("HOME").ok_or(SecureStoreError::HomeUnavailable)?;
-        let home = PathBuf::from(home);
+        let root = paths::user_data_root().map_err(|_| SecureStoreError::HomeUnavailable)?;
         #[cfg(unix)]
         {
-            let home_directory = open_absolute_directory(&home, DirectoryPolicy::SafeAnchor)?;
-            let local = open_or_create_directory(
-                &home_directory,
-                Path::new(".local"),
-                DirectoryPolicy::SafeAnchor,
-            )?;
-            let share =
-                open_or_create_directory(&local, Path::new("share"), DirectoryPolicy::SafeAnchor)?;
-            let relative = Path::new("cookie_agent").join(relative);
-            let mut directory = Self::open_private_in(&share, &relative)?;
-            directory.path = home.join(".local/share").join(relative);
+            let home = root.parent().ok_or(SecureStoreError::UnsafePath)?;
+            let root_name = root.file_name().ok_or(SecureStoreError::UnsafePath)?;
+            let home_directory = open_absolute_directory(home, DirectoryPolicy::SafeAnchor)?;
+            let relative = Path::new(root_name).join(relative);
+            let mut directory = Self::open_private_in(&home_directory, &relative)?;
+            directory.path = home.join(relative);
             Ok(directory)
         }
         #[cfg(not(unix))]
         {
-            let _ = (home, relative);
+            let _ = (root, relative);
             Err(SecureStoreError::UnsupportedPlatform)
         }
     }

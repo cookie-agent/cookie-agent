@@ -20,7 +20,7 @@ use cookie_agent_protocol::{
     AuthMethodDescriptor, ClientConnectId, ClientRequestId, EffectiveAuthState, McpAuthBeginParams,
     McpServerState, ProviderConfigurationState, ProviderConnectResult, ProviderDescriptor,
     ProviderDisconnectParams, ProviderDisconnectResult, ProviderId, ProviderSupportState,
-    RuntimeSnapshotResult, SafeCode, SafeSetupValue, parse_setup_value, setup_value_text,
+    RuntimeSnapshotResult, SafeCode, SafeSetupValue, parse_setup_value, paths, setup_value_text,
 };
 use cookie_agent_server::{
     Client, ClientProtocol, Server, in_process_pair, validate_websocket_url,
@@ -416,8 +416,7 @@ fn catalog_publication_changed(
 }
 
 fn data_dir() -> anyhow::Result<PathBuf> {
-    let home = env::var_os("HOME").context("determine home directory for cookie agent data")?;
-    Ok(PathBuf::from(home).join(".local/share/cookie_agent"))
+    paths::user_data_root().context("determine home directory for cookie agent data")
 }
 
 #[cfg(feature = "tui")]

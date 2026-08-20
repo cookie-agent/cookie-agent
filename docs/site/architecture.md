@@ -20,7 +20,7 @@ four subcommands plus a default mode:
 | `disconnect [provider_id]` | Interactive durable managed-provider disconnection (TTY only) |
 
 The daemon binds only to the configured port and authenticates every WebSocket
-with a bearer token stored at `~/.local/share/cookie_agent/daemon/token-v1`.
+with a bearer token stored at `~/.cookie_agent/daemon/token-v1`.
 `attach`, `connect`, and `disconnect` accept only loopback `ws`/`wss` URLs whose
 path is exactly `/ws`. All three use the same shared protocol client as the TUI,
 so the CLI keeps working even when built without the `tui` feature.
@@ -133,8 +133,8 @@ through the `ClientProtocol` trait.
 The `config` crate reads two optional authored layers:
 
 ```text
-~/.config/cookie_agent/config.toml          # user layer
-~/.config/cookie_agent/agents/<agent-id>.md
+~/.cookie_agent/config.toml                 # user layer
+~/.cookie_agent/agents/<agent-id>.md
 <exact-cwd>/.cookie-agent/config.toml       # workspace layer
 <exact-cwd>/.cookie-agent/agents/<agent-id>.md
 ```
@@ -143,8 +143,7 @@ There is no upward workspace search. A workspace setting replaces the
 corresponding user setting; a same-ID workspace provider or agent replaces the
 complete user definition. Unknown keys, leftover schema/version fields, wrong
 types, and malformed values are rejected without migration or silent ignores.
-The TUI additionally reads an independent
-`~/.config/cookie_agent/tui.toml` (or `$XDG_CONFIG_HOME/cookie_agent/tui.toml`).
+The TUI additionally reads an independent `~/.cookie_agent/tui.toml`.
 
 See [Configuration](guide/configuration.md) and the
 [configuration reference](reference/configuration.md) for every key.
@@ -172,7 +171,7 @@ See [Configuration](guide/configuration.md) and the
    implementations. The `models` crate selects the adapter for each compiled
    model and freezes it into project manifests.
 5. **Provider store.** Managed connections live in a global per-user provider
-   store (`~/.local/share/cookie_agent/providers/store-v3.json`) and are shared
+   store (`~/.cookie_agent/providers/store-v3.json`) and are shared
    across workspaces. Credentials are checked on first use, not at connect time.
 
 Each accepted run freezes its model selection into a project manifest under
@@ -219,7 +218,7 @@ Session data lives under the user data directory keyed by a hash of the
 canonical working directory:
 
 ```text
-~/.local/share/cookie_agent/
+~/.cookie_agent/
   daemon/token-v1                  # daemon bearer token
   providers/store-v3.json          # durable managed connections
   catalog/                         # validated models.dev cache

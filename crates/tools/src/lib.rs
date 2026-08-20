@@ -191,8 +191,8 @@ pub(crate) fn abbreviated_display_path(path: &str, workspace: &Path) -> String {
     if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(workspace)) {
         return relative;
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = normalized_path(Path::new(&home));
+    if let Ok(home) = cookie_agent_protocol::paths::home_dir() {
+        let home = normalized_path(&home);
         if let Some(relative) = strip_absolute_prefix(&path, &home) {
             return if relative == "." {
                 "~".into()
@@ -455,9 +455,12 @@ mod tests {
             super::abbreviated_display_path("/workspace", std::path::Path::new("/workspace")),
             "."
         );
-        let home = std::env::var("HOME").expect("HOME");
+        let home = cookie_agent_protocol::paths::home_dir().expect("home directory");
         assert_eq!(
-            super::abbreviated_display_path(&home, std::path::Path::new("/workspace")),
+            super::abbreviated_display_path(
+                &home.to_string_lossy(),
+                std::path::Path::new("/workspace")
+            ),
             "~"
         );
     }

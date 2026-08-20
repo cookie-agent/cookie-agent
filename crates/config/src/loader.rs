@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeMap,
-    env,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -8,6 +7,7 @@ use std::{
 use cookie_agent_identity::AgentId;
 use cookie_agent_identity::ProviderId;
 use cookie_agent_models::ProviderDefinition;
+use cookie_agent_protocol::paths;
 use indexmap::IndexMap;
 use serde::Deserialize as _;
 
@@ -397,7 +397,5 @@ fn key_line(text: &str, key: &str) -> Option<usize> {
 }
 
 fn user_root() -> Option<PathBuf> {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join(".config/cookie_agent"))
+    paths::user_data_root().ok()
 }

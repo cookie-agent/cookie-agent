@@ -1,10 +1,11 @@
 use std::{
-    env, fs,
+    fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use cookie_agent_protocol::paths;
 use thiserror::Error;
 
 const TOKEN_FILE: &str = "token-v1";
@@ -12,8 +13,9 @@ const TOKEN_BYTES: usize = 32;
 pub(crate) const TOKEN_ENCODED_BYTES: usize = 43;
 
 pub(crate) fn standard_token_path() -> Option<PathBuf> {
-    env::var_os("HOME")
-        .map(|home| PathBuf::from(home).join(".local/share/cookie_agent/daemon/token-v1"))
+    paths::user_data_root()
+        .ok()
+        .map(|root| root.join("daemon").join(TOKEN_FILE))
 }
 
 /// Loads the same private bearer token used by the localhost WebSocket daemon.
@@ -53,20 +55,21 @@ fn load_or_create_token_unix(path: &Path) -> Result<String, TokenError> {
     {
         return Err(TokenError::UnsafePath);
     }
-    let home = env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or(TokenError::HomeUnavailable)?;
-    let expected = home.join(".local/share/cookie_agent/daemon/token-v1");
+    let root = paths::user_data_root().map_err(|_| TokenError::HomeUnavailable)?;
+    let home = root.parent().ok_or(TokenError::UnsafePath)?;
+    let root_name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(TokenError::UnsafePath)?;
+    let expected = root.join("daemon").join(TOKEN_FILE);
     #[cfg(not(test))]
     if path != expected {
         return Err(TokenError::UnsafePath);
     }
     let parent = if path == expected {
-        let home = open_trusted_token_anchor(&home)?;
-        let local = open_or_create_safe_anchor_dir(&home, ".local")?;
-        let share = open_or_create_safe_anchor_dir(&local, "share")?;
-        let cookie_agent = open_or_create_private_dir(&share, "cookie_agent")?;
-        open_or_create_private_dir(&cookie_agent, "daemon")?
+        let home = open_trusted_token_anchor(home)?;
+        let root = open_or_create_private_dir(&home, root_name)?;
+        open_or_create_private_dir(&root, "daemon")?
     } else {
         #[cfg(test)]
         {
@@ -146,24 +149,6 @@ fn open_trusted_token_anchor(path: &Path) -> Result<fs::File, TokenError> {
     }
     validate_safe_anchor(&current.metadata().map_err(TokenError::Io)?)?;
     Ok(current)
-}
-
-#[cfg(unix)]
-fn open_or_create_safe_anchor_dir(parent: &fs::File, name: &str) -> Result<fs::File, TokenError> {
-    match open_directory_at(parent, name) {
-        Ok(directory) => {
-            validate_safe_anchor(&directory.metadata().map_err(TokenError::Io)?)?;
-            Ok(directory)
-        }
-        Err(TokenError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
-            rustix::fs::mkdirat(parent, name, rustix::fs::Mode::RWXU)
-                .map_err(|error| TokenError::Io(error.into()))?;
-            let directory = open_directory_at(parent, name)?;
-            validate_private_directory(&directory.metadata().map_err(TokenError::Io)?)?;
-            Ok(directory)
-        }
-        Err(error) => Err(error),
-    }
 }
 
 #[cfg(unix)]

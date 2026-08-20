@@ -7164,7 +7164,7 @@ fn latest_resolved_model_key(state: &crate::state::SessionState) -> Option<&Mode
 }
 
 fn shorten_home(cwd: &str) -> String {
-    let Some(home) = std::env::var_os("HOME") else {
+    let Ok(home) = cookie_agent_protocol::paths::home_dir() else {
         return cwd.to_owned();
     };
     let home = home.to_string_lossy();

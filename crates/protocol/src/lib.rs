@@ -96,6 +96,7 @@ mod extension;
 mod identity;
 mod manifest;
 mod model;
+pub mod paths;
 mod provider;
 mod rpc;
 mod runtime;

@@ -235,11 +235,11 @@ mod tests {
             .expect("workspace"),
             "out.txt"
         );
-        let home = std::env::var("HOME").expect("HOME");
+        let home = cookie_agent_protocol::paths::home_dir().expect("home directory");
         assert_eq!(
             tool.get_display_argument(
                 "write",
-                &serde_json::json!({"filePath": format!("{home}/notes.txt"),"content":"x"})
+                &serde_json::json!({"filePath": home.join("notes.txt"),"content":"x"})
             )
             .expect("home"),
             "~/notes.txt"

@@ -1,14 +1,14 @@
 //! Strict, independent TUI configuration (`tui.toml`).
 //!
-//! Resolution order: `$XDG_CONFIG_HOME/cookie_agent/tui.toml` when XDG is set,
-//! otherwise `~/.config/cookie_agent/tui.toml`. There is no workspace layer,
-//! no environment variable override, and no engine/protocol involvement. A
-//! missing file yields defaults; a malformed file or any unknown key fails
-//! with an actionable path/key error. Error messages quote the file's
-//! location and the offending key or TOML parse context, never file contents.
+//! The file lives at `~/.cookie_agent/tui.toml`. There is no workspace layer or
+//! environment variable override. A missing file yields defaults; a malformed
+//! file or any unknown key fails with an actionable path/key error. Error
+//! messages quote the file's location and the offending key or TOML parse
+//! context, never file contents.
 
 use std::path::{Path, PathBuf};
 
+use cookie_agent_protocol::paths;
 use serde::Deserialize;
 
 use crate::state::EventLevel;
@@ -131,24 +131,9 @@ impl From<ThemeName> for ThemePreference {
 
 /// The platform config path for this process environment.
 pub fn config_path() -> Option<PathBuf> {
-    config_path_from(
-        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
-        std::env::var_os("HOME").map(PathBuf::from),
-    )
-}
-
-fn config_path_from(xdg: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
-    if let Some(mut xdg) = xdg.filter(|path| !path.as_os_str().is_empty()) {
-        xdg.push("cookie_agent");
-        xdg.push(CONFIG_FILE_NAME);
-        return Some(xdg);
-    }
-    home.map(|mut home| {
-        home.push(".config");
-        home.push("cookie_agent");
-        home.push(CONFIG_FILE_NAME);
-        home
-    })
+    paths::user_data_root()
+        .ok()
+        .map(|root| root.join(CONFIG_FILE_NAME))
 }
 
 /// Parse TOML text strictly. Unknown keys, wrong types, and invalid enum
@@ -220,30 +205,14 @@ fn sanitize_toml_error(text: &str, error: &toml::de::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{EventLevel, ThemePreference, TuiConfig, config_path_from, load_from, parse};
-    use std::path::{Path, PathBuf};
+    use super::{EventLevel, ThemePreference, TuiConfig, load_from, parse};
+    use std::path::Path;
 
     #[test]
     fn defaults_hide_debug_and_info_diagnostics() {
         let config = TuiConfig::default();
         assert_eq!(config.minimum_event_level, EventLevel::Warning);
         assert_eq!(config.theme, None);
-    }
-
-    #[test]
-    fn xdg_path_takes_precedence_over_home_fallback() {
-        let xdg = config_path_from(Some(PathBuf::from("/xdg")), Some(PathBuf::from("/home/u")));
-        assert_eq!(xdg, Some(PathBuf::from("/xdg/cookie_agent/tui.toml")));
-        let home = config_path_from(None, Some(PathBuf::from("/home/u")));
-        assert_eq!(
-            home,
-            Some(PathBuf::from("/home/u/.config/cookie_agent/tui.toml"))
-        );
-        assert_eq!(
-            config_path_from(Some(PathBuf::from("")), Some(PathBuf::from("/home/u"))),
-            home
-        );
-        assert_eq!(config_path_from(None, None), None);
     }
 
     #[test]

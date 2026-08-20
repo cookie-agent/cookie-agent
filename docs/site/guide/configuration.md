@@ -4,9 +4,9 @@ cookie agent reads three independent configuration surfaces:
 
 | Surface | Location |
 |---|---|
-| Runtime, providers, MCP servers, and plugins | `~/.config/cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` |
-| Agents | `~/.config/cookie_agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` |
-| TUI | `$XDG_CONFIG_HOME/cookie_agent/tui.toml` or `~/.config/cookie_agent/tui.toml` |
+| Runtime, providers, MCP servers, and plugins | `~/.cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` |
+| Agents | `~/.cookie_agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` |
+| TUI | `~/.cookie_agent/tui.toml` |
 
 This page covers where configuration lives and how it behaves. For the complete
 key-by-key reference, see [Configuration Reference](../reference/configuration.md).
@@ -14,8 +14,8 @@ key-by-key reference, see [Configuration Reference](../reference/configuration.m
 ## Locations and layering
 
 ```text
-~/.config/cookie_agent/config.toml
-~/.config/cookie_agent/agents/<agent-id>.md
+~/.cookie_agent/config.toml
+~/.cookie_agent/agents/<agent-id>.md
 <exact-cwd>/.cookie-agent/config.toml
 <exact-cwd>/.cookie-agent/agents/<agent-id>.md
 ```
@@ -160,11 +160,10 @@ internal agents.
 
 ## TUI configuration
 
-The TUI reads `tui.toml` from `$XDG_CONFIG_HOME/cookie_agent/` when XDG is set,
-otherwise `~/.config/cookie_agent/`. It is independent of the runtime config:
-there is no workspace layer and no environment-variable override. A missing file
-uses defaults; unknown keys or malformed values are rejected naming the path and
-key.
+The TUI reads `~/.cookie_agent/tui.toml`. It is independent of the runtime
+config: there is no workspace layer and no environment-variable override. A
+missing file uses defaults; unknown keys or malformed values are rejected naming
+the path and key.
 
 ```toml
 minimum_event_level = "warning"   # debug | info | warning | error

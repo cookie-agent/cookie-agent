@@ -248,12 +248,12 @@ mod tests {
             tool.get_display_argument("edit", &args).expect("workspace"),
             "value.txt"
         );
-        let home = std::env::var("HOME").expect("HOME");
+        let home = cookie_agent_protocol::paths::home_dir().expect("home directory");
         assert_eq!(
             tool.get_display_argument(
                 "edit",
                 &serde_json::json!({
-                    "filePath": format!("{home}/value.txt"),
+                    "filePath": home.join("value.txt"),
                     "oldString":"a",
                     "newString":"b"
                 })

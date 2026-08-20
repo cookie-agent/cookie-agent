@@ -30,9 +30,9 @@ before narrower field limits.
 On Unix, cache files are fixed at:
 
 ```text
-~/.local/share/cookie_agent/catalog/models-dev-v2.json
-~/.local/share/cookie_agent/catalog/models-dev-v2.meta.json
-~/.local/share/cookie_agent/catalog/models-dev-v2.lock
+~/.cookie_agent/catalog/models-dev-v2.json
+~/.cookie_agent/catalog/models-dev-v2.meta.json
+~/.cookie_agent/catalog/models-dev-v2.lock
 ```
 
 Directories are current-user-owned mode `0700`. Body, metadata, lock, and

@@ -8,10 +8,10 @@ Three independent configuration surfaces exist:
 
 | Surface | Location |
 |---|---|
-| Runtime, providers, MCP servers, and plugins | `~/.config/cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` |
-| Agents | `~/.config/cookie_agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` |
-| Skills | `~/.config/cookie-agent/skills/<name>/SKILL.md` and `.cookie-agent/skills/<name>/SKILL.md` from cwd to worktree root |
-| TUI | `$XDG_CONFIG_HOME/cookie_agent/tui.toml` or `~/.config/cookie_agent/tui.toml` |
+| Runtime, providers, MCP servers, and plugins | `~/.cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` |
+| Agents | `~/.cookie_agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` |
+| Skills | `~/.cookie_agent/skills/<name>/SKILL.md` and `.cookie-agent/skills/<name>/SKILL.md` from cwd to worktree root |
+| TUI | `~/.cookie_agent/tui.toml` |
 
 ## Layering and strictness
 

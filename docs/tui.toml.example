@@ -1,7 +1,6 @@
 # Cookie Agent TUI configuration
 #
-# Location: $XDG_CONFIG_HOME/cookie_agent/tui.toml
-# Fallback: ~/.config/cookie_agent/tui.toml
+# Location: ~/.cookie_agent/tui.toml
 #
 # This file is independent from engine/workspace config. There is no
 # workspace layer and no environment-variable override for these keys; a

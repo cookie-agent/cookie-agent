@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cookie_agent_protocol::{ModelKey, PermissionAction, SkillSource, WildcardPattern};
+use cookie_agent_protocol::{ModelKey, PermissionAction, SkillSource, WildcardPattern, paths};
 use serde::{Deserialize, Serialize};
 
 use crate::ConfigError;
@@ -328,12 +328,7 @@ pub fn load_skill_roots(
 }
 
 fn user_skill_root() -> Option<PathBuf> {
-    user_skill_root_from_home(std::env::var_os("HOME"))
-}
-
-fn user_skill_root_from_home(home: Option<std::ffi::OsString>) -> Option<PathBuf> {
-    home.map(PathBuf::from)
-        .map(|home| home.join(".config/cookie-agent/skills"))
+    paths::user_data_root().ok().map(|root| root.join("skills"))
 }
 
 fn project_skill_roots(cwd: &Path) -> Vec<PathBuf> {
@@ -597,10 +592,7 @@ mod tests {
 
     use cookie_agent_protocol::PermissionAction;
 
-    use super::{
-        load_skill_roots, parse_allowed_tools, render_available_skills, user_skill_root_from_home,
-        validate_name,
-    };
+    use super::{load_skill_roots, parse_allowed_tools, render_available_skills, validate_name};
     use crate::simple_wildcard_match;
 
     #[test]
@@ -689,15 +681,6 @@ mod tests {
                 .to_string()
                 .contains("invalid skill model `not-a-model-key`"),
             "{error}"
-        );
-    }
-
-    #[test]
-    fn user_skill_root_is_home_config_even_when_xdg_differs() {
-        let root = user_skill_root_from_home(Some("/home/author".into())).expect("HOME root");
-        assert_eq!(
-            root,
-            std::path::Path::new("/home/author/.config/cookie-agent/skills")
         );
     }
 

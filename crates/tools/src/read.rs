@@ -326,11 +326,11 @@ mod tests {
             .expect("workspace"),
             "src/lib.rs [offset=0, limit=100]"
         );
-        let home = std::env::var("HOME").expect("HOME");
+        let home = cookie_agent_protocol::paths::home_dir().expect("home directory");
         assert_eq!(
             tool.get_display_argument(
                 "read",
-                &serde_json::json!({"filePath": format!("{home}/.bashrc"),"offset":4})
+                &serde_json::json!({"filePath": home.join(".bashrc"),"offset":4})
             )
             .expect("home"),
             "~/.bashrc [offset=4]"

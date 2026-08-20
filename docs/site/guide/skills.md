@@ -9,12 +9,11 @@ directory are available as scripts, references, or assets.
 
 Cookie Agent discovers skills from:
 
-- `~/.config/cookie-agent/skills/<name>/SKILL.md`
+- `~/.cookie_agent/skills/<name>/SKILL.md`
 - `.cookie-agent/skills/<name>/SKILL.md` from the working directory upward to
   the worktree root
 
-The user location is resolved strictly from `HOME`; `XDG_CONFIG_HOME` does not
-relocate the skills directory.
+The user location is resolved from the standard home directory.
 
 Project skills override same-named user skills. The shadowed user skill remains
 visible in `skills.list` and `/skills` diagnostics, but cannot be invoked. Skill
