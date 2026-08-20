@@ -405,7 +405,7 @@
 <a href=#405 id=405 data-nosnippet>405</a>        }
 <a href=#406 id=406 data-nosnippet>406</a>        <span class="kw">let </span><span class="kw-2">mut </span>command = Command::new(<span class="self">self</span>.executable.proc_fd_path());
 <a href=#407 id=407 data-nosnippet>407</a>        command
-<a href=#408 id=408 data-nosnippet>408</a>            .arg(<span class="string">"-lc"</span>)
+<a href=#408 id=408 data-nosnippet>408</a>            .arg(<span class="string">"-c"</span>)
 <a href=#409 id=409 data-nosnippet>409</a>            .arg(<span class="kw-2">&amp;</span><span class="self">self</span>.args.command)
 <a href=#410 id=410 data-nosnippet>410</a>            .current_dir(<span class="self">self</span>.cwd.proc_fd_path())
 <a href=#411 id=411 data-nosnippet>411</a>            .stdin(<span class="kw">if </span><span class="self">self</span>.args.interactive {
