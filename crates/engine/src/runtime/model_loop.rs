@@ -665,7 +665,7 @@ impl Engine {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn has_active_run_for_test(&self, run_id: RunId) -> bool {
         self.inner
             .active
@@ -674,7 +674,7 @@ impl Engine {
             .contains_key(&run_id)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) async fn retry_run_setup_terminalization_for_test(
         &self,
         run_id: RunId,

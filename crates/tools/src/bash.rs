@@ -1,28 +1,36 @@
 use std::{
     env,
     ffi::OsString,
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
+};
+
+#[cfg(unix)]
+use std::{
+    os::unix::fs::MetadataExt,
     process::Stdio,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use async_trait::async_trait;
+#[cfg(unix)]
+use cookie_agent_engine::ToolProgress;
 use cookie_agent_engine::{
     PreparedExecutor, PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError,
-    ToolExecutionContext, ToolPreparationContext, ToolProgress, ToolProvider, ToolSpec, ToolStdin,
+    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec, ToolStdin,
 };
 use cookie_agent_protocol::PersistedToolResult as ToolResult;
-use cookie_agent_protocol::{
-    ApprovalResourceSource, OutputStream, PermissionAction, PreparedBindingLifetime,
-    SafeDisplayText, ToolCallId,
-};
+use cookie_agent_protocol::{ApprovalResourceSource, PermissionAction, PreparedBindingLifetime};
+#[cfg(unix)]
+use cookie_agent_protocol::{OutputStream, SafeDisplayText, ToolCallId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use tokio::process::Command;
+#[cfg(unix)]
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    process::{Child, Command},
+    process::Child,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -47,29 +55,38 @@ fn default_timeout() -> u64 {
 }
 
 struct BashExecutor {
+    #[cfg(unix)]
     tool_call_id: ToolCallId,
+    #[cfg(unix)]
     args: BashArgs,
     cwd: fs_cap::PreparedExisting,
     executable: fs_cap::PreparedExisting,
 }
 
+#[cfg(unix)]
 pub const OUTPUT_CHUNK_FLUSH_BYTES: usize = 4 * 1024;
+#[cfg(unix)]
 pub const OUTPUT_CHUNK_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
+#[cfg(unix)]
 pub const OUTPUT_CHUNK_CUMULATIVE_CAP: usize = 1024 * 1024;
+#[cfg(unix)]
 const OUTPUT_CHUNK_TRUNCATED_MESSAGE: &str =
     "Live bash output truncated after 1 MiB; the terminal result remains authoritative";
 
+#[cfg(unix)]
 #[derive(Debug, Default)]
 struct OutputPreviewState {
     emitted: usize,
     stopped: bool,
 }
 
+#[cfg(unix)]
 #[derive(Debug, Default)]
 struct OutputPreviewBudget {
     state: Mutex<OutputPreviewState>,
 }
 
+#[cfg(unix)]
 impl OutputPreviewBudget {
     fn retain(&self, chunk: &str) -> (Option<String>, bool) {
         let mut state = self
@@ -100,6 +117,7 @@ impl OutputPreviewBudget {
     }
 }
 
+#[cfg(unix)]
 fn sanitized_chunks(bytes: &[u8]) -> Vec<String> {
     let text = String::from_utf8_lossy(bytes);
     let mut chunks = Vec::new();
@@ -121,6 +139,7 @@ fn sanitized_chunks(bytes: &[u8]) -> Vec<String> {
     chunks
 }
 
+#[cfg(unix)]
 async fn emit_preview(
     progress: &ProgressSink,
     tool_call_id: ToolCallId,
@@ -157,6 +176,7 @@ async fn emit_preview(
     Ok(())
 }
 
+#[cfg(unix)]
 async fn read_output<R>(
     mut reader: R,
     stream: OutputStream,
@@ -225,12 +245,14 @@ where
     }
 }
 
+#[cfg(unix)]
 struct ProcessGroupChild {
     child: Option<Child>,
     process_group: i32,
     complete: bool,
 }
 
+#[cfg(unix)]
 impl ProcessGroupChild {
     fn kill_group(&mut self) {
         unsafe {
@@ -250,6 +272,7 @@ impl ProcessGroupChild {
     }
 }
 
+#[cfg(unix)]
 impl Drop for ProcessGroupChild {
     fn drop(&mut self) {
         if !self.complete {
@@ -377,7 +400,9 @@ impl ToolProvider for BashTool {
             normalized_arguments,
             None,
             Box::new(BashExecutor {
+                #[cfg(unix)]
                 tool_call_id: call.id,
+                #[cfg(unix)]
                 args,
                 cwd,
                 executable,
@@ -392,6 +417,7 @@ fn compact_command_line(command: &str) -> String {
 }
 
 impl BashExecutor {
+    #[cfg(unix)]
     async fn execute_process(
         self,
         progress: ProgressSink,
@@ -550,6 +576,19 @@ impl BashExecutor {
             attachments: Vec::new(),
         })
     }
+
+    #[cfg(windows)]
+    async fn execute_process(
+        self,
+        _progress: ProgressSink,
+        _cancellation: CancellationToken,
+        _stdin: Option<ToolStdin>,
+    ) -> Result<ToolResult, ToolError> {
+        // TODO(M2): real Windows backend
+        Err(ToolError::unsupported_platform(
+            "bash process execution is not yet supported on this platform",
+        ))
+    }
 }
 
 #[async_trait]
@@ -580,8 +619,7 @@ fn resolve_executable_in_path(name: &str, path: &std::ffi::OsStr) -> Result<Path
         let Ok(metadata) = std::fs::symlink_metadata(&candidate) else {
             continue;
         };
-        if !metadata.file_type().is_symlink() && metadata.is_file() && metadata.mode() & 0o111 != 0
-        {
+        if executable_metadata_is_supported(&metadata) {
             return candidate
                 .canonicalize()
                 .map_err(|error| ToolError::execution(error.to_string()));
@@ -590,6 +628,17 @@ fn resolve_executable_in_path(name: &str, path: &std::ffi::OsStr) -> Result<Path
     Err(ToolError::execution(format!(
         "unable to resolve executable `{name}` from PATH during preparation"
     )))
+}
+
+#[cfg(unix)]
+fn executable_metadata_is_supported(metadata: &std::fs::Metadata) -> bool {
+    !metadata.file_type().is_symlink() && metadata.is_file() && metadata.mode() & 0o111 != 0
+}
+
+#[cfg(windows)]
+fn executable_metadata_is_supported(metadata: &std::fs::Metadata) -> bool {
+    // TODO(M3): discover and validate git-bash instead of accepting any file
+    metadata.is_file()
 }
 
 #[cfg(all(test, unix))]

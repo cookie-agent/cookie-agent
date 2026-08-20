@@ -18,5 +18,5 @@ pub use service::{RunningServer, Server, ServerError};
 pub use transport::{InProcessStream, WebSocketTransport, in_process_pair};
 pub use websocket_url::{WebSocketUrlError, validate_websocket_url};
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;

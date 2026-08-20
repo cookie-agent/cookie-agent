@@ -2,14 +2,20 @@
 
 use std::{
     fs, io,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
+
+#[cfg(unix)]
+use std::path::Component;
 
 use cookie_agent_protocol::paths;
 use thiserror::Error;
+#[cfg(unix)]
 use uuid::Uuid;
 
+#[cfg(unix)]
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
+#[cfg(unix)]
 const PRIVATE_FILE_MODE: u32 = 0o600;
 
 /// A held, descriptor-relative private directory.
@@ -33,9 +39,10 @@ impl SecureDirectory {
             directory.path = home.join(relative);
             Ok(directory)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
             let _ = (root, relative);
+            // TODO(M2): real Windows backend
             Err(SecureStoreError::UnsupportedPlatform)
         }
     }
@@ -53,9 +60,10 @@ impl SecureDirectory {
             directory.path = anchor_path.join(relative.as_ref());
             Ok(directory)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
             let _ = (anchor, relative);
+            // TODO(M2): real Windows backend
             Err(SecureStoreError::UnsupportedPlatform)
         }
     }
@@ -80,9 +88,10 @@ impl SecureDirectory {
             directory.path = anchor_path.join(relative.as_ref());
             Ok(directory)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
             let _ = (anchor, relative);
+            // TODO(M2): real Windows backend
             Err(SecureStoreError::UnsupportedPlatform)
         }
     }
@@ -123,9 +132,10 @@ impl SecureDirectory {
                 _lock: lock,
             })
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
             let _ = name;
+            // TODO(M2): real Windows backend
             Err(SecureStoreError::UnsupportedPlatform)
         }
     }
@@ -180,9 +190,10 @@ impl SecureDirectoryLock<'_> {
             self.verify_lock()?;
             Ok(bytes)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
             let _ = limit;
+            // TODO(M2): real Windows backend
             Err(SecureStoreError::UnsupportedPlatform)
         }
     }
@@ -205,9 +216,10 @@ impl SecureDirectoryLock<'_> {
             self.verify_lock()?;
             Ok(())
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
             let _ = (bytes, limit);
+            // TODO(M2): real Windows backend
             Err(SecureStoreError::UnsupportedPlatform)
         }
     }
@@ -222,8 +234,9 @@ impl SecureDirectoryLock<'_> {
             self.verify_lock()?;
             Ok(())
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
+            // TODO(M2): real Windows backend
             Err(SecureStoreError::UnsupportedPlatform)
         }
     }
@@ -289,9 +302,10 @@ impl SecureDirectoryLock<'_> {
             }
             result
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
             let _ = (name, bytes);
+            // TODO(M2): real Windows backend
             Err(SecureStoreError::UnsupportedPlatform)
         }
     }
@@ -320,9 +334,10 @@ impl SecureDirectoryLock<'_> {
             self.verify_lock()?;
             Ok(())
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
             let _ = name;
+            // TODO(M2): real Windows backend
             Err(SecureStoreError::UnsupportedPlatform)
         }
     }
@@ -330,6 +345,12 @@ impl SecureDirectoryLock<'_> {
     #[cfg(unix)]
     fn verify_lock(&self) -> Result<(), SecureStoreError> {
         verify_current_entry(&self.directory.directory, &self.lock_name, &self._lock)
+    }
+
+    #[cfg(windows)]
+    fn verify_lock(&self) -> Result<(), SecureStoreError> {
+        // TODO(M2): real Windows backend
+        Err(SecureStoreError::UnsupportedPlatform)
     }
 }
 
@@ -348,6 +369,7 @@ pub enum SecureStoreError {
     Io(#[source] io::Error),
 }
 
+#[cfg(unix)]
 #[derive(Clone, Copy)]
 enum DirectoryPolicy {
     SafeAnchor,
@@ -468,6 +490,16 @@ fn read_file(
         return Err(SecureStoreError::TooLarge);
     }
     Ok(Some(bytes))
+}
+
+#[cfg(windows)]
+fn read_file(
+    _directory: &fs::File,
+    _name: &str,
+    _limit: u64,
+) -> Result<Option<Vec<u8>>, SecureStoreError> {
+    // TODO(M2): real Windows backend
+    Err(SecureStoreError::UnsupportedPlatform)
 }
 
 #[cfg(unix)]

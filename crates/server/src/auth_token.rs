@@ -1,15 +1,23 @@
 use std::{
-    fs,
-    io::{self, Read, Write},
+    io,
     path::{Path, PathBuf},
 };
 
+#[cfg(unix)]
+use std::{
+    fs,
+    io::{Read, Write},
+};
+
+#[cfg(unix)]
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use cookie_agent_protocol::paths;
 use thiserror::Error;
 
 const TOKEN_FILE: &str = "token-v1";
+#[cfg(unix)]
 const TOKEN_BYTES: usize = 32;
+#[cfg(unix)]
 pub(crate) const TOKEN_ENCODED_BYTES: usize = 43;
 
 pub(crate) fn standard_token_path() -> Option<PathBuf> {
@@ -34,6 +42,8 @@ pub enum TokenError {
     InvalidToken,
     #[error("token storage failed")]
     Io(#[source] io::Error),
+    #[error("token storage is not yet supported on this platform")]
+    UnsupportedPlatform,
 }
 
 pub(crate) fn load_or_create_token(path: &Path) -> Result<String, TokenError> {
@@ -41,10 +51,11 @@ pub(crate) fn load_or_create_token(path: &Path) -> Result<String, TokenError> {
     {
         load_or_create_token_unix(path)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
         let _ = path;
-        Err(TokenError::UnsafePath)
+        // TODO(M2): real Windows backend
+        Err(TokenError::UnsupportedPlatform)
     }
 }
 
@@ -267,6 +278,7 @@ fn token_path_error(error: rustix::io::Errno) -> TokenError {
     }
 }
 
+#[cfg(unix)]
 fn read_token(file: &mut fs::File) -> Result<String, TokenError> {
     let mut token = String::new();
     file.take((TOKEN_ENCODED_BYTES + 1) as u64)
@@ -281,6 +293,7 @@ fn read_token(file: &mut fs::File) -> Result<String, TokenError> {
     Ok(token)
 }
 
+#[cfg(unix)]
 fn generate_token() -> Result<String, TokenError> {
     let mut bytes = [0_u8; TOKEN_BYTES];
     getrandom::getrandom(&mut bytes).map_err(|error| TokenError::Io(error.into()))?;

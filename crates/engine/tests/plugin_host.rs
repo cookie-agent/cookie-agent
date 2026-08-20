@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::{collections::BTreeMap, fs, sync::Arc, time::Duration};
 
 use cookie_agent_config::load_from_roots;

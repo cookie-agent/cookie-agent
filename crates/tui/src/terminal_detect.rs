@@ -7,10 +7,15 @@ use crate::{
     theme::{Theme, ThemeKind},
 };
 
+#[cfg(unix)]
 const OSC11_QUERY: &[u8] = b"\x1b]11;?\x1b\\";
+#[cfg(unix)]
 const OSC11_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(75);
+#[cfg(unix)]
 const OSC11_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(20);
+#[cfg(unix)]
 const OSC11_RESPONSE_CAP: usize = 512;
+#[cfg(unix)]
 const OSC11_DRAIN_CAP: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,7 +64,10 @@ impl Osc11Query for SystemOsc11Query {
 /// nor `COOKIE_THEME` chooses an explicit theme.
 pub fn detect_startup_theme(preference: Option<ThemePreference>) -> ThemeDetection {
     let cookie_theme = env::var("COOKIE_THEME").ok();
+    #[cfg(unix)]
     let colorfgbg = env::var("COLORFGBG").ok();
+    #[cfg(windows)]
+    let colorfgbg: Option<String> = None;
     detect_with_query(
         preference,
         cookie_theme.as_deref(),
@@ -322,8 +330,9 @@ fn query_osc11() -> Option<Vec<u8>> {
     query_osc11_io(&mut input, &mut output, OSC11_TIMEOUT, OSC11_DRAIN_TIMEOUT)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn query_osc11() -> Option<Vec<u8>> {
+    // TODO(M3): query OSC 11 through the Windows terminal backend
     None
 }
 

@@ -851,8 +851,8 @@ mod unix {
 #[cfg(unix)]
 pub use unix::*;
 
-#[cfg(not(unix))]
-mod unsupported {
+#[cfg(windows)]
+mod windows {
     use std::path::{Path, PathBuf};
 
     use cookie_agent_engine::ToolError;
@@ -945,15 +945,17 @@ mod unsupported {
         unsupported()
     }
     fn unsupported<T>() -> Result<T, ToolError> {
+        // TODO(M2): real Windows backend
         Err(ToolError::unsupported_platform(
-            "prepared filesystem security is unsupported on non-Unix platforms",
+            "prepared filesystem security is not yet supported on this platform",
         ))
     }
 }
 
-#[cfg(not(unix))]
-pub use unsupported::*;
+#[cfg(windows)]
+pub use windows::*;
 
+#[cfg(unix)]
 fn io_error(error: impl std::fmt::Display) -> cookie_agent_engine::ToolError {
     cookie_agent_engine::ToolError::execution(error.to_string())
 }

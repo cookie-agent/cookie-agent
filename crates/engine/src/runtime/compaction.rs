@@ -684,7 +684,7 @@ impl Engine {
         files
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) async fn rehydrated_files_for_test(
         &self,
         session: SessionId,

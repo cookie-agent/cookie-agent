@@ -17,7 +17,7 @@ mod plugin;
 mod policy;
 mod runtime;
 mod runtime_snapshot;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod runtime_tests;
 pub mod session;
 #[cfg(test)]

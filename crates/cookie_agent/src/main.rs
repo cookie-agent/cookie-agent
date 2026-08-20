@@ -31,9 +31,9 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use cookie_agent_protocol::{SetupFieldDescriptor, SetupFieldType};
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use std::sync::atomic::{AtomicUsize as TestAtomicUsize, Ordering as TestOrdering};
 
 const DEFAULT_WEBSOCKET_URL: &str = "ws://127.0.0.1:7419/ws";
@@ -78,7 +78,7 @@ fn run_catalog_transport() -> anyhow::Result<RunCatalogTransport> {
         .map(RunCatalogTransport::Http)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 static SECRET_VALUES_WIPED: TestAtomicUsize = TestAtomicUsize::new(0);
 
 #[derive(Debug, Parser)]
@@ -171,7 +171,7 @@ impl Drop for SecretValues {
         for value in self.0.values_mut() {
             value.zeroize();
         }
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         SECRET_VALUES_WIPED.fetch_add(1, TestOrdering::SeqCst);
     }
 }
@@ -878,9 +878,10 @@ fn read_secret_line(prompt: &str) -> anyhow::Result<Zeroizing<String>> {
     Ok(Zeroizing::new(value))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn read_secret_line(_: &str) -> anyhow::Result<Zeroizing<String>> {
-    anyhow::bail!("secure no-echo credential input is unavailable on this platform")
+    // TODO(M2): real Windows backend
+    anyhow::bail!("secure no-echo credential input is not yet supported on this platform")
 }
 
 async fn run_daemon(mut runtime: Runtime) -> anyhow::Result<()> {
@@ -905,7 +906,7 @@ async fn run_daemon(mut runtime: Runtime) -> anyhow::Result<()> {
     signal.context("wait for daemon shutdown signal")
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use std::{
         collections::VecDeque,

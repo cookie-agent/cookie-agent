@@ -2,15 +2,20 @@
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    fs::{self, OpenOptions},
+    fs,
     hash::{Hash, Hasher},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+
+#[cfg(unix)]
+use std::{
+    fs::OpenOptions,
     io::Write,
     os::unix::{
         ffi::OsStrExt,
         fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     },
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex},
 };
 
 use cookie_agent_protocol::{
@@ -20,10 +25,12 @@ use cookie_agent_protocol::{
     Usage, UsageCostProvenance, UsageRollup,
 };
 use thiserror::Error;
+#[cfg(unix)]
 use uuid::Uuid;
 
 use crate::events::{EventLog, EventLogError, fsync_directory};
 
+#[cfg(unix)]
 const PROJECT_CWD_FILE: &str = "cwd";
 
 #[derive(Debug, Error)]
@@ -51,6 +58,8 @@ pub enum SessionError {
     },
     #[error("invalid fork title: {0}")]
     InvalidForkTitle(String),
+    #[error("session persistence is not yet supported on this platform")]
+    UnsupportedPlatform,
 }
 
 #[derive(Clone, Debug)]
@@ -129,53 +138,62 @@ impl SessionStore {
     }
 
     pub fn open(data_root: &Path, cwd: &Path) -> Result<Arc<Self>, SessionError> {
-        let project_dir = Self::project_dir(data_root, cwd);
-        let sessions_dir = project_dir.join("sessions");
-        fs::create_dir_all(&sessions_dir).map_err(|source| SessionError::Io {
-            path: sessions_dir.clone(),
-            source,
-        })?;
-        write_project_cwd(&project_dir, cwd)?;
-        let store = Arc::new(Self {
-            project_dir,
-            sessions_dir: sessions_dir.clone(),
-            cwd: cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned()),
-            residency: Mutex::new(SessionResidency::default()),
-            mutation: Mutex::new(()),
-            #[cfg(test)]
-            eviction_transition_hook: Mutex::new(None),
-        });
-        for entry in fs::read_dir(&sessions_dir).map_err(|source| SessionError::Io {
-            path: sessions_dir.clone(),
-            source,
-        })? {
-            let entry = entry.map_err(|source| SessionError::Io {
+        #[cfg(windows)]
+        {
+            let _ = (data_root, cwd);
+            // TODO(M2): real Windows backend
+            Err(SessionError::UnsupportedPlatform)
+        }
+        #[cfg(unix)]
+        {
+            let project_dir = Self::project_dir(data_root, cwd);
+            let sessions_dir = project_dir.join("sessions");
+            fs::create_dir_all(&sessions_dir).map_err(|source| SessionError::Io {
                 path: sessions_dir.clone(),
                 source,
             })?;
-            if !entry
-                .file_type()
-                .map_err(|source| SessionError::Io {
-                    path: entry.path(),
+            write_project_cwd(&project_dir, cwd)?;
+            let store = Arc::new(Self {
+                project_dir,
+                sessions_dir: sessions_dir.clone(),
+                cwd: cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned()),
+                residency: Mutex::new(SessionResidency::default()),
+                mutation: Mutex::new(()),
+                #[cfg(test)]
+                eviction_transition_hook: Mutex::new(None),
+            });
+            for entry in fs::read_dir(&sessions_dir).map_err(|source| SessionError::Io {
+                path: sessions_dir.clone(),
+                source,
+            })? {
+                let entry = entry.map_err(|source| SessionError::Io {
+                    path: sessions_dir.clone(),
                     source,
-                })?
-                .is_dir()
-            {
-                continue;
+                })?;
+                if !entry
+                    .file_type()
+                    .map_err(|source| SessionError::Io {
+                        path: entry.path(),
+                        source,
+                    })?
+                    .is_dir()
+                {
+                    continue;
+                }
+                let Ok(id) = entry.file_name().to_string_lossy().parse::<SessionId>() else {
+                    continue;
+                };
+                let log = EventLog::open(entry.path().join("events.jsonl"), id)?;
+                let projection = projection(log)?;
+                store
+                    .residency
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .resident
+                    .insert(id, projection);
             }
-            let Ok(id) = entry.file_name().to_string_lossy().parse::<SessionId>() else {
-                continue;
-            };
-            let log = EventLog::open(entry.path().join("events.jsonl"), id)?;
-            let projection = projection(log)?;
-            store
-                .residency
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .resident
-                .insert(id, projection);
+            Ok(store)
         }
-        Ok(store)
     }
 
     pub fn create(
@@ -325,7 +343,7 @@ impl SessionStore {
         Ok(true)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn install_eviction_transition_hook_for_test(
         &self,
     ) -> (
@@ -422,6 +440,7 @@ impl SessionStore {
             path: temporary.clone(),
             source,
         })?;
+        #[cfg(unix)]
         fs::set_permissions(&temporary, fs::Permissions::from_mode(0o700)).map_err(|source| {
             SessionError::Io {
                 path: temporary.clone(),
@@ -442,6 +461,7 @@ impl SessionStore {
                     source.log.usage_cost_is_stamped(event.seq),
                 )?;
             }
+            #[cfg(unix)]
             fs::set_permissions(&log_path, fs::Permissions::from_mode(0o600)).map_err(
                 |source| SessionError::Io {
                     path: log_path.clone(),
@@ -1047,6 +1067,7 @@ fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
         })
 }
 
+#[cfg(unix)]
 fn write_project_cwd(project_dir: &Path, cwd: &Path) -> Result<(), SessionError> {
     let Ok(canonical) = cwd.canonicalize() else {
         return Ok(());
@@ -1077,6 +1098,7 @@ fn write_project_cwd(project_dir: &Path, cwd: &Path) -> Result<(), SessionError>
     result.map_err(|source| SessionError::Io { path, source })
 }
 
+#[cfg(unix)]
 fn project_cwd_is_current(path: &Path, expected: &[u8]) -> bool {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return false;
@@ -1086,7 +1108,7 @@ fn project_cwd_is_current(path: &Path, expected: &[u8]) -> bool {
         && fs::read(path).is_ok_and(|bytes| bytes == expected)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use std::{
         collections::BTreeMap,

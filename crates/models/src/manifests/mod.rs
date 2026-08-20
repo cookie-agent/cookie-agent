@@ -791,6 +791,7 @@ fn decode_and_verify(name: &str, bytes: &[u8]) -> Result<ModelSnapshotManifestV1
     Ok(manifest)
 }
 
+#[cfg(unix)]
 fn direct_manifest_names(directory: &SecureDirectory) -> Result<Vec<String>, ManifestError> {
     let clone = directory
         .directory
@@ -816,6 +817,14 @@ fn direct_manifest_names(directory: &SecureDirectory) -> Result<Vec<String>, Man
         }
     }
     Ok(names)
+}
+
+#[cfg(windows)]
+fn direct_manifest_names(_directory: &SecureDirectory) -> Result<Vec<String>, ManifestError> {
+    // TODO(M2): real Windows backend
+    Err(ManifestError::Storage(
+        SecureStoreError::UnsupportedPlatform,
+    ))
 }
 
 fn manifest_filename_digest(name: &str) -> Option<&str> {

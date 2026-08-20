@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt as _};
+use std::collections::BTreeMap;
+
+#[cfg(unix)]
+use std::{fs, os::unix::fs::PermissionsExt as _};
 
 use cookie_agent_models::{
     CompiledModelRuntime, ModelManager, ProviderDefinition,
@@ -23,6 +26,7 @@ fn binding_fixture(
     Option<FrozenModelBinding>,
 ) {
     let temporary = TempDir::new().expect("test model directory");
+    #[cfg(unix)]
     fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700))
         .expect("private test model directory");
     let mut provider: ProviderDefinition = toml::from_str(
