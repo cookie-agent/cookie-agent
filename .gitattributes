@@ -1,3 +1,5 @@
+* text=auto eol=lf
+
 # Vendored upstream sources are preserved byte-for-byte, including whitespace.
 vendor/** -whitespace
 

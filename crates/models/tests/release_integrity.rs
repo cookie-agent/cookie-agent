@@ -393,10 +393,8 @@ fn workspace_metadata_limits_publishing_and_uses_vendored_syntect() {
         .unwrap();
     assert!(syntect_package["source"].is_null());
     assert!(
-        syntect_package["manifest_path"]
-            .as_str()
-            .unwrap()
-            .ends_with("/vendor/syntect/Cargo.toml")
+        Path::new(syntect_package["manifest_path"].as_str().unwrap())
+            .ends_with(Path::new("vendor").join("syntect").join("Cargo.toml"))
     );
     let bincode_package = packages
         .iter()
