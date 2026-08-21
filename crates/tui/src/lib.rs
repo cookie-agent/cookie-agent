@@ -611,7 +611,7 @@ mod tests {
             .expect("subscribe events");
         let runner = Client::connect_in_process(server);
         runner.handshake().await.expect("runner handshake");
-        let started = runner
+        let started = match runner
             .start_run(cookie_agent_protocol::RunStartParams {
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new(format!(
@@ -623,7 +623,22 @@ mod tests {
                 input: cookie_agent_protocol::encode_skill_submission("fresh-skill", "value"),
             })
             .await
-            .expect("start direct skill run");
+        {
+            Ok(started) => started,
+            Err(crate::ClientError::Rpc(error)) => {
+                let debug_code = error
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("debug_code"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("missing_debug_code");
+                panic!(
+                    "start direct skill run failed: rpc_code={}, debug_code={debug_code}",
+                    error.code
+                );
+            }
+            Err(_) => panic!("start direct skill run failed with a non-RPC client error"),
+        };
 
         let request = tokio::time::timeout(STAGE_TIMEOUT, async {
             let mut request = None;
