@@ -7,15 +7,15 @@ use crate::{
     theme::{Theme, ThemeKind},
 };
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const OSC11_QUERY: &[u8] = b"\x1b]11;?\x1b\\";
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const OSC11_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(75);
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const OSC11_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(20);
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const OSC11_RESPONSE_CAP: usize = 512;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const OSC11_DRAIN_CAP: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,11 +129,21 @@ fn detect_with_query(
                 };
             }
             ThemeDetection {
-                kind: ThemeKind::Default,
+                kind: platform_fallback_theme(),
                 source: ThemeDetectionSource::Fallback,
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn platform_fallback_theme() -> ThemeKind {
+    ThemeKind::Default
+}
+
+#[cfg(windows)]
+fn platform_fallback_theme() -> ThemeKind {
+    ThemeKind::Dark
 }
 
 enum RequestedTheme {
@@ -241,7 +251,7 @@ fn terminal_is_eligible() -> bool {
     io::stdout().is_terminal() && io::stdin().is_terminal()
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn query_osc11_io(
     input: &mut impl io::Read,
     output: &mut impl io::Write,
@@ -332,8 +342,61 @@ fn query_osc11() -> Option<Vec<u8>> {
 
 #[cfg(windows)]
 fn query_osc11() -> Option<Vec<u8>> {
-    // TODO(M3): query OSC 11 through the Windows terminal backend
-    None
+    use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+    use windows_sys::Win32::{
+        Foundation::{INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Storage::FileSystem::ReadFile,
+        System::{
+            Console::{GetStdHandle, STD_INPUT_HANDLE},
+            Threading::WaitForSingleObject,
+        },
+    };
+
+    struct RawModeGuard;
+    impl Drop for RawModeGuard {
+        fn drop(&mut self) {
+            let _ = disable_raw_mode();
+        }
+    }
+
+    struct PolledStdin(windows_sys::Win32::Foundation::HANDLE);
+    impl io::Read for PolledStdin {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let wait = unsafe { WaitForSingleObject(self.0, 0) };
+            match wait {
+                WAIT_TIMEOUT => return Err(io::ErrorKind::WouldBlock.into()),
+                WAIT_FAILED => return Err(io::Error::last_os_error()),
+                WAIT_OBJECT_0 => {}
+                _ => return Err(io::Error::other("unexpected stdin wait result")),
+            }
+            let length = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
+            let mut read = 0;
+            let success = unsafe {
+                ReadFile(
+                    self.0,
+                    buffer.as_mut_ptr(),
+                    length,
+                    &mut read,
+                    std::ptr::null_mut(),
+                )
+            };
+            if success == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(read as usize)
+            }
+        }
+    }
+
+    enable_raw_mode().ok()?;
+    let _raw_mode = RawModeGuard;
+    let input_handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if input_handle.is_null() || input_handle == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut input = PolledStdin(input_handle);
+    let mut output = io::stdout().lock();
+    query_osc11_io(&mut input, &mut output, OSC11_TIMEOUT, OSC11_DRAIN_TIMEOUT)
 }
 
 #[cfg(test)]
@@ -558,7 +621,7 @@ mod tests {
         assert_eq!(
             detect_with_query(None, Some("auto"), Some("default"), &mut absent),
             ThemeDetection {
-                kind: ThemeKind::Default,
+                kind: platform_fallback_theme(),
                 source: ThemeDetectionSource::Fallback,
             }
         );
@@ -575,5 +638,18 @@ mod tests {
         let theme =
             Theme::from_kind_environment(detection.kind, true, "xterm-256color", "truecolor");
         assert_eq!(theme.key().kind, ThemeKind::Mono);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unavailable_automatic_detection_falls_back_to_dark() {
+        let mut query = CannedQuery::default();
+        assert_eq!(
+            detect_with_query(None, None, None, &mut query),
+            ThemeDetection {
+                kind: ThemeKind::Dark,
+                source: ThemeDetectionSource::Fallback,
+            }
+        );
     }
 }
