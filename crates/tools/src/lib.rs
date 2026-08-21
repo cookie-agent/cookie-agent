@@ -168,8 +168,22 @@ pub(crate) fn prepared_path_resources(
 }
 
 fn normalized_path(path: &Path) -> String {
-    let value = path.to_string_lossy().replace('\\', "/");
+    let value = readable_path(path.to_string_lossy().replace('\\', "/"));
     if value.is_empty() { ".".into() } else { value }
+}
+
+#[cfg(windows)]
+fn readable_path(value: String) -> String {
+    if let Some(path) = value.strip_prefix("//?/UNC/") {
+        format!("//{path}")
+    } else {
+        value.strip_prefix("//?/").unwrap_or(&value).to_owned()
+    }
+}
+
+#[cfg(not(windows))]
+fn readable_path(value: String) -> String {
+    value
 }
 
 pub(crate) fn permission_path_label(path: &str, workspace: &Path) -> String {
@@ -501,6 +515,19 @@ mod tests {
         assert_eq!(
             super::abbreviated_display_path(&home.to_string_lossy(), workspace.path()),
             "~"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_display_paths_hide_verbatim_prefixes() {
+        assert_eq!(
+            super::normalized_path(std::path::Path::new(r"\\?\C:\Users\runneradmin\file.txt")),
+            "C:/Users/runneradmin/file.txt"
+        );
+        assert_eq!(
+            super::normalized_path(std::path::Path::new(r"\\?\UNC\server\share\file.txt")),
+            "//server/share/file.txt"
         );
     }
 

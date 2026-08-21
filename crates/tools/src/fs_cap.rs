@@ -1081,7 +1081,7 @@ mod windows {
     }
     pub fn prepare_target(cwd: &Path, requested: &Path) -> Result<PreparedTarget, ToolError> {
         let original_path = absolute_requested(cwd, requested)?;
-        let sandbox_root = sandbox_root(cwd, &original_path)?;
+        let sandbox_root = sandbox_root(cwd, &original_path, requested.is_absolute())?;
         validate_path_chain(&original_path, true)?;
         let requested_absolute = canonicalize_target(&original_path)?;
         let target_exists = requested_absolute.exists();
@@ -1162,8 +1162,12 @@ mod windows {
         normalize_absolute(&path)
     }
 
-    fn sandbox_root(cwd: &Path, requested: &Path) -> Result<PathBuf, ToolError> {
-        if cwd == Path::new("/") {
+    fn sandbox_root(
+        cwd: &Path,
+        requested: &Path,
+        absolute_request: bool,
+    ) -> Result<PathBuf, ToolError> {
+        if cwd == Path::new("/") || absolute_request {
             let mut root = PathBuf::new();
             for component in requested.components() {
                 match component {
@@ -1410,8 +1414,16 @@ mod windows {
         let mut current = PathBuf::new();
         for component in parent.components() {
             current.push(component.as_os_str());
+            if !matches!(component, Component::Normal(_)) {
+                continue;
+            }
             if !current.exists() {
-                fs::create_dir(&current).map_err(super::io_error)?;
+                fs::create_dir(&current).map_err(|error| {
+                    super::io_error(format!(
+                        "create_dir failed for {}: {error}",
+                        current.display()
+                    ))
+                })?;
             }
             if opened_path_is_reparse(&current)? {
                 return Err(ToolError::unsupported_security(
@@ -1439,26 +1451,36 @@ mod windows {
             .write(true)
             .create_new(true)
             .open(&temporary)
-            .map_err(super::io_error)?;
+            .map_err(|error| {
+                super::io_error(format!(
+                    "CreateFileW failed for staging file {}: {error}",
+                    temporary.display()
+                ))
+            })?;
         if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
             let _ = fs::remove_file(&temporary);
-            return Err(super::io_error(error));
+            return Err(super::io_error(format!(
+                "write or flush failed for staging file {}: {error}",
+                temporary.display()
+            )));
         }
         Ok(temporary)
     }
 
     fn move_file(source: &Path, target: &Path, replace: bool) -> Result<(), ToolError> {
-        let source = wide_path(source)?;
-        let target = wide_path(target)?;
+        let source_wide = wide_path(source)?;
+        let target_wide = wide_path(target)?;
         let flags = MOVEFILE_WRITE_THROUGH
             | if replace {
                 MOVEFILE_REPLACE_EXISTING
             } else {
                 0
             };
-        if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), flags) } == 0 {
+        if unsafe { MoveFileExW(source_wide.as_ptr(), target_wide.as_ptr(), flags) } == 0 {
             Err(ToolError::operation_changed(format!(
-                "atomic Windows publish failed: {}",
+                "MoveFileExW failed from {} to {}: {}",
+                source.display(),
+                target.display(),
                 std::io::Error::last_os_error()
             )))
         } else {

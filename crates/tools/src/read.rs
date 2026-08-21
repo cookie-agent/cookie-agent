@@ -476,7 +476,12 @@ mod tests {
             .get("filePath")
             .and_then(serde_json::Value::as_str)
             .expect("canonical file path");
-        assert_eq!(Path::new(canonical), root.path().join(".env"));
+        let expected = root
+            .path()
+            .join(".env")
+            .canonicalize()
+            .expect("canonical fixture path");
+        assert_eq!(Path::new(canonical), expected);
         assert!(
             !prepared
                 .normalized_arguments()
@@ -513,20 +518,25 @@ mod tests {
             )
             .await
             .expect("prepare external read");
+        let expected_label = external
+            .path()
+            .canonicalize()
+            .expect("canonical external path")
+            .to_string_lossy()
+            .replace('\\', "/")
+            .trim_start_matches("//?/")
+            .to_owned();
         assert_eq!(prepared.operation().capabilities().len(), 1);
         assert_eq!(
             prepared.operation().resources()[0].capability,
             PermissionAction::Read
         );
-        assert_eq!(
-            prepared.policy_labels(),
-            [Some(external.path().display().to_string())]
-        );
+        assert_eq!(prepared.policy_labels(), [Some(expected_label.clone())]);
         assert_eq!(
             ReadTool::new(workspace.path())
                 .get_permission_resource("read", prepared.normalized_arguments())
                 .expect("resource from prepared args"),
-            ("read", Some(external.path().display().to_string()))
+            ("read", Some(expected_label))
         );
     }
 
