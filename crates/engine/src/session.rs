@@ -453,6 +453,8 @@ impl SessionStore {
         })?;
         let result = (|| {
             let log_path = temporary.join("events.jsonl");
+            #[cfg(windows)]
+            create_windows_session_file(&log_path)?;
             for event in source_events
                 .iter()
                 .filter(|event| event.seq <= through_seq)
@@ -465,8 +467,6 @@ impl SessionStore {
                     source.log.usage_cost_is_stamped(event.seq),
                 )?;
             }
-            #[cfg(windows)]
-            finalize_windows_session_file(&log_path)?;
             #[cfg(unix)]
             fs::set_permissions(&log_path, fs::Permissions::from_mode(0o600)).map_err(
                 |source| SessionError::Io {
@@ -530,11 +530,11 @@ impl SessionStore {
         create_windows_session_directory(&temporary)?;
         let result = (|| {
             let log_path = temporary.join("events.jsonl");
+            #[cfg(windows)]
+            create_windows_session_file(&log_path)?;
             for event in projection.log.all_events() {
                 crate::events::append_jsonl(&log_path, &event)?;
             }
-            #[cfg(windows)]
-            finalize_windows_session_file(&log_path)?;
             write_cache(&temporary.join("meta.json"), &projection.meta)?;
             fsync_directory(&temporary)?;
             fs::rename(&temporary, &final_dir).map_err(|source| SessionError::Io {
@@ -1066,26 +1066,49 @@ fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
         path: path.to_owned(),
         source,
     })?;
-    #[cfg(windows)]
-    let existed = path.exists();
-    #[cfg(windows)]
-    if existed {
-        validate_windows_session_path(path)?;
-    }
-    fs::write(path, bytes).map_err(|source| SessionError::Io {
-        path: path.to_owned(),
-        source,
-    })?;
-    #[cfg(windows)]
-    if !existed {
-        finalize_windows_session_file(path)?;
-    }
-    fs::File::open(path)
-        .and_then(|file| file.sync_all())
-        .map_err(|source| SessionError::Io {
+    #[cfg(unix)]
+    {
+        fs::write(path, bytes).map_err(|source| SessionError::Io {
             path: path.to_owned(),
             source,
-        })
+        })?;
+        fs::File::open(path)
+            .and_then(|file| file.sync_all())
+            .map_err(|source| SessionError::Io {
+                path: path.to_owned(),
+                source,
+            })
+    }
+    #[cfg(windows)]
+    {
+        let mut file = if path.exists() {
+            validate_windows_session_path(path)?;
+            fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(path)
+                .map_err(|source| SessionError::Io {
+                    path: path.to_owned(),
+                    source,
+                })?
+        } else {
+            cookie_agent_models::secure_store::create_windows_private_file(path).map_err(
+                |source| SessionError::Io {
+                    path: path.to_owned(),
+                    source,
+                },
+            )?
+        };
+        file.write_all(&bytes).map_err(|source| SessionError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        file.sync_all().map_err(|source| SessionError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        Ok(())
+    }
 }
 
 #[cfg(unix)]
@@ -1203,13 +1226,13 @@ fn validate_windows_session_path(path: &Path) -> Result<(), SessionError> {
 }
 
 #[cfg(windows)]
-fn finalize_windows_session_file(path: &Path) -> Result<(), SessionError> {
-    cookie_agent_models::secure_store::protect_windows_path(path).map_err(|source| {
-        SessionError::Io {
+fn create_windows_session_file(path: &Path) -> Result<(), SessionError> {
+    cookie_agent_models::secure_store::create_windows_private_file(path)
+        .map(drop)
+        .map_err(|source| SessionError::Io {
             path: path.to_owned(),
             source,
-        }
-    })
+        })
 }
 
 #[cfg(all(test, unix))]
@@ -1874,7 +1897,16 @@ mod tests {
 
 #[cfg(all(test, windows))]
 mod windows_tests {
+    use cookie_agent_protocol::{
+        AgentMode, AgentRevision, CatalogRevision, CwdIdentity, EventPayload, ModelRevision,
+        ProviderStateRevision, RecipeRegistryRevision, RuntimeRevision, SessionId, SessionOrigin,
+    };
+
     use super::{PROJECT_CWD_FILE, SessionStore};
+
+    fn revision(label: char) -> String {
+        format!("sha256:{}", label.to_string().repeat(64))
+    }
 
     #[test]
     fn windows_session_store_applies_private_acls_before_use() {
@@ -1906,5 +1938,59 @@ mod windows_tests {
         let project = SessionStore::project_dir(&data, &cwd);
         std::fs::create_dir_all(project.join("sessions")).expect("ordinary project");
         assert!(SessionStore::open(&data, &cwd).is_err());
+    }
+
+    #[test]
+    fn windows_buffered_session_persists_private_files_before_writing() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let cwd = temporary.path().join("workspace");
+        std::fs::create_dir(&cwd).expect("workspace");
+        let data = temporary.path().join("data");
+        let store = SessionStore::open(&data, &cwd).expect("session store");
+        let session_id = SessionId::new_v7();
+        let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
+        let selection = crate::test_support::run_selection("test");
+        let binding = agent.fallback_chain[0].clone();
+        store
+            .create(
+                session_id,
+                EventPayload::SessionCreated {
+                    origin: SessionOrigin::Root,
+                    cwd_identity: CwdIdentity::new("workspace:test").unwrap(),
+                    creation_selection: selection,
+                    creation_agent: Box::new(agent),
+                    runtime_revision: RuntimeRevision::new(revision('1')).unwrap(),
+                    catalog_revision: CatalogRevision::new(revision('2')).unwrap(),
+                    provider_state_revision: ProviderStateRevision::new(revision('3')).unwrap(),
+                    model_revision: ModelRevision::new(revision('4')).unwrap(),
+                    agent_revision: AgentRevision::new(revision('5')).unwrap(),
+                    recipe_registry_revision: RecipeRegistryRevision::new(revision('6')).unwrap(),
+                    manifest_revision: binding.manifest_revision,
+                },
+            )
+            .expect("buffered session");
+        store
+            .append(
+                session_id,
+                None,
+                EventPayload::UserInputSubmitted {
+                    input: "persist me".into(),
+                },
+            )
+            .expect("persist first input");
+
+        let session_dir = store
+            .project_dir_path()
+            .join("sessions")
+            .join(session_id.to_string());
+        for path in [
+            session_dir.clone(),
+            session_dir.join("events.jsonl"),
+            session_dir.join("meta.json"),
+        ] {
+            cookie_agent_models::secure_store::validate_windows_path_acl(&path).unwrap_or_else(
+                |error| panic!("private ACL validation failed for {path:?}: {error}"),
+            );
+        }
     }
 }
