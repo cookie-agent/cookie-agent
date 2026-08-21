@@ -40,7 +40,9 @@ Tool providers publish a static permission name and an optional resource label:
 
 The `edit` tool uses the `write` permission action. Bash is not parsed into file
 operations: `cat .env` is controlled by `bash`, not `read`, and a pattern such
-as `git *` also matches a longer command beginning with `git`.
+as `git *` also matches a longer command beginning with `git`. See
+[Security guarantees](security.md) for the platform-specific filesystem and
+process boundaries behind these tools.
 
 MCP checks are always scoped. A rule such as `"github_*": allow` covers every
 tool from that generated server prefix, while a more-specific deny can override
