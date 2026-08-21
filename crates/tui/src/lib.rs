@@ -546,7 +546,14 @@ mod tests {
                 .any(|label| label.contains("/fresh-skill <value>"))
         );
         app.submit_text_for_test("/fresh-skill value").await;
-        let loaded = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let command_timeout = if cfg!(windows) {
+            // Windows persists each approval/skill transition through ACL-validated,
+            // flushed session storage; parallel CI and Defender can exceed 2 seconds.
+            std::time::Duration::from_secs(10)
+        } else {
+            std::time::Duration::from_secs(2)
+        };
+        let loaded = tokio::time::timeout(command_timeout, async {
             let mut run_id = None;
             let mut approval = None;
             loop {
