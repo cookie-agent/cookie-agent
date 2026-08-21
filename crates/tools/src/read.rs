@@ -312,7 +312,8 @@ mod tests {
 
     #[test]
     fn display_argument_abbreviates_paths_and_includes_explicit_window() {
-        let tool = ReadTool::new("/workspace");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let tool = ReadTool::new(workspace.path());
         assert_eq!(
             tool.get_display_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
                 .expect("relative"),
@@ -321,7 +322,7 @@ mod tests {
         assert_eq!(
             tool.get_display_argument(
                 "read",
-                &serde_json::json!({"filePath":"/workspace/src/lib.rs","offset":0,"limit":100})
+                &serde_json::json!({"filePath":workspace.path().join("src/lib.rs"),"offset":0,"limit":100})
             )
             .expect("workspace"),
             "src/lib.rs [offset=0, limit=100]"
@@ -350,7 +351,7 @@ mod tests {
         let presentation = tool.presentation(&ToolCall {
             id: ToolCallId::new_v7(),
             name: "read".into(),
-            arguments: serde_json::json!({"filePath":"/workspace/src/lib.rs"}),
+            arguments: serde_json::json!({"filePath":workspace.path().join("src/lib.rs")}),
         });
         assert_eq!(presentation.title.as_str(), "read");
         assert_eq!(

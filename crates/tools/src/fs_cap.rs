@@ -1116,6 +1116,9 @@ mod windows {
         let mut current = PathBuf::new();
         for component in path.components() {
             current.push(component.as_os_str());
+            if !matches!(component, Component::Normal(_)) {
+                continue;
+            }
             match fs::symlink_metadata(&current) {
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(current),
@@ -1244,6 +1247,9 @@ mod windows {
         let mut current = PathBuf::new();
         for component in path.components() {
             current.push(component.as_os_str());
+            if !matches!(component, Component::Normal(_)) {
+                continue;
+            }
             match fs::symlink_metadata(&current) {
                 Ok(_) => {
                     if opened_path_is_reparse(&current)? {
@@ -1261,7 +1267,10 @@ mod windows {
                     ));
                 }
                 Err(error) => {
-                    return Err(super::io_error(error));
+                    return Err(super::io_error(format!(
+                        "symlink_metadata failed for {}: {error}",
+                        current.display()
+                    )));
                 }
             }
         }
@@ -1321,7 +1330,11 @@ mod windows {
         let mut information = BY_HANDLE_FILE_INFORMATION::default();
         let handle = file.as_raw_handle() as HANDLE;
         if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
-            return Err(super::io_error(std::io::Error::last_os_error()));
+            return Err(super::io_error(format!(
+                "GetFileInformationByHandle failed during reparse check for {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            )));
         }
         Ok(information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0)
     }
@@ -1332,7 +1345,12 @@ mod windows {
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)
-            .map_err(super::io_error)
+            .map_err(|error| {
+                super::io_error(format!(
+                    "CreateFileW failed for {}: {error}",
+                    path.display()
+                ))
+            })
     }
 
     fn identity(file: &fs::File) -> Result<ObjectIdentity, ToolError> {

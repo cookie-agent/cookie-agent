@@ -481,27 +481,25 @@ mod tests {
 
     #[test]
     fn abbreviated_display_path_prefers_workspace_then_home() {
+        let workspace = tempfile::tempdir().expect("workspace");
         assert_eq!(
-            super::abbreviated_display_path("src/lib.rs", std::path::Path::new("/workspace")),
+            super::abbreviated_display_path("src/lib.rs", workspace.path()),
             "src/lib.rs"
         );
         assert_eq!(
             super::abbreviated_display_path(
-                "/workspace/src/lib.rs",
-                std::path::Path::new("/workspace")
+                &workspace.path().join("src/lib.rs").to_string_lossy(),
+                workspace.path()
             ),
             "src/lib.rs"
         );
         assert_eq!(
-            super::abbreviated_display_path("/workspace", std::path::Path::new("/workspace")),
+            super::abbreviated_display_path(&workspace.path().to_string_lossy(), workspace.path()),
             "."
         );
         let home = cookie_agent_protocol::paths::home_dir().expect("home directory");
         assert_eq!(
-            super::abbreviated_display_path(
-                &home.to_string_lossy(),
-                std::path::Path::new("/workspace")
-            ),
+            super::abbreviated_display_path(&home.to_string_lossy(), workspace.path()),
             "~"
         );
     }

@@ -218,7 +218,8 @@ mod tests {
 
     #[test]
     fn display_argument_abbreviates_workspace_and_home_paths() {
-        let tool = WriteTool::new("/workspace");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let tool = WriteTool::new(workspace.path());
         assert_eq!(
             tool.get_display_argument(
                 "write",
@@ -230,7 +231,7 @@ mod tests {
         assert_eq!(
             tool.get_display_argument(
                 "write",
-                &serde_json::json!({"filePath":"/workspace/out.txt","content":"x"})
+                &serde_json::json!({"filePath":workspace.path().join("out.txt"),"content":"x"})
             )
             .expect("workspace"),
             "out.txt"
