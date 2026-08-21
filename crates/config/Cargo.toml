@@ -24,6 +24,9 @@ toml_edit.workspace = true
 url.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 insta.workspace = true
 oven-sdk.workspace = true

@@ -597,6 +597,17 @@ fn create_file(path: &Path) -> Result<fs::File, SecureStoreError> {
     Ok(file)
 }
 
+/// Atomically creates a new private file with its final owner and protected DACL.
+pub fn create_private_file(path: &Path) -> io::Result<fs::File> {
+    create_file(path).map_err(|error| match error {
+        SecureStoreError::Io(error) => error,
+        SecureStoreError::UnsafePath => unsafe_path_error(),
+        SecureStoreError::HomeUnavailable | SecureStoreError::TooLarge => {
+            io::Error::other("private file creation failed")
+        }
+    })
+}
+
 fn open_or_create(path: &Path) -> Result<fs::File, SecureStoreError> {
     if let Some(file) = open_existing(path, true)? {
         return Ok(file);

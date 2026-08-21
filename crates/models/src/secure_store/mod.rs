@@ -5,7 +5,8 @@ mod windows;
 
 #[cfg(windows)]
 pub use windows::{
-    create_private_dir_all as create_windows_private_dir_all, protect_path as protect_windows_path,
+    create_private_dir_all as create_windows_private_dir_all,
+    create_private_file as create_windows_private_file, protect_path as protect_windows_path,
     replace_path as replace_windows_path, validate_path_acl as validate_windows_path_acl,
 };
 

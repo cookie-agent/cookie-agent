@@ -2278,7 +2278,11 @@ pub fn fsync_directory(path: &Path) -> Result<(), EventLogError> {
         .read(true)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)
-        .and_then(|directory| directory.sync_all())
+        .and_then(|directory| match directory.sync_all() {
+            Ok(()) => Ok(()),
+            Err(error) if matches!(error.raw_os_error(), Some(1 | 5 | 6 | 50)) => Ok(()),
+            Err(error) => Err(error),
+        })
         .map_err(|source| EventLogError::Io {
             path: path.to_owned(),
             source,
