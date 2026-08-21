@@ -37,7 +37,10 @@ fn tree_sha256(root: &Path, excluded: &[&str]) -> (usize, String) {
 
     let mut tree = Sha256::new();
     for relative in &files {
-        tree.update(relative.to_string_lossy().as_bytes());
+        // Feed forward-slash paths so the tree hash is platform-stable
+        // (Windows Path rendering uses backslashes).
+        let normalized = relative.to_string_lossy().replace('\\', "/");
+        tree.update(normalized.as_bytes());
         tree.update([0]);
         tree.update(fs::read(root.join(relative)).unwrap());
         tree.update([0]);
