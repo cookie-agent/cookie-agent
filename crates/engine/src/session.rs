@@ -1131,15 +1131,11 @@ fn write_project_cwd(project_dir: &Path, cwd: &Path) -> Result<(), SessionError>
     }
     let temporary = project_dir.join(format!(".{PROJECT_CWD_FILE}.{}.tmp", Uuid::now_v7()));
     let result = (|| -> Result<(), SessionError> {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
+        let mut file = cookie_agent_models::secure_store::create_windows_private_file(&temporary)
             .map_err(|source| SessionError::Io {
-                path: temporary.clone(),
-                source,
-            })?;
-        finalize_windows_session_file(&temporary)?;
+            path: temporary.clone(),
+            source,
+        })?;
         file.write_all(bytes).map_err(|source| SessionError::Io {
             path: temporary.clone(),
             source,
