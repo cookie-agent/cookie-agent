@@ -597,6 +597,7 @@ dependencies = [
  "tokio-util",
  "tracing-subscriber",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -708,6 +709,7 @@ dependencies = [
  "toml",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -788,6 +790,7 @@ dependencies = [
  "cookie_agent_models",
  "cookie_agent_protocol",
  "libc",
+ "process-wrap",
  "rustix",
  "schemars",
  "serde",
@@ -795,6 +798,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

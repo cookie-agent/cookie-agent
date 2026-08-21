@@ -2,18 +2,15 @@ use std::{
     env,
     ffi::OsString,
     path::{Path, PathBuf},
-};
-
-#[cfg(unix)]
-use std::{
-    os::unix::fs::MetadataExt,
     process::Stdio,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use async_trait::async_trait;
 #[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
+use async_trait::async_trait;
 use cookie_agent_engine::ToolProgress;
 use cookie_agent_engine::{
     PreparedExecutor, PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError,
@@ -21,16 +18,16 @@ use cookie_agent_engine::{
 };
 use cookie_agent_protocol::PersistedToolResult as ToolResult;
 use cookie_agent_protocol::{ApprovalResourceSource, PermissionAction, PreparedBindingLifetime};
-#[cfg(unix)]
 use cookie_agent_protocol::{OutputStream, SafeDisplayText, ToolCallId};
+#[cfg(windows)]
+use process_wrap::tokio::{CommandWrap, JobObject as ProcessJobObject, KillOnDrop};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
-use tokio::process::Command;
-#[cfg(unix)]
+use tokio::process::Child;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    process::Child,
+    process::Command,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -55,38 +52,29 @@ fn default_timeout() -> u64 {
 }
 
 struct BashExecutor {
-    #[cfg(unix)]
     tool_call_id: ToolCallId,
-    #[cfg(unix)]
     args: BashArgs,
     cwd: fs_cap::PreparedExisting,
     executable: fs_cap::PreparedExisting,
 }
 
-#[cfg(unix)]
 pub const OUTPUT_CHUNK_FLUSH_BYTES: usize = 4 * 1024;
-#[cfg(unix)]
 pub const OUTPUT_CHUNK_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
-#[cfg(unix)]
 pub const OUTPUT_CHUNK_CUMULATIVE_CAP: usize = 1024 * 1024;
-#[cfg(unix)]
 const OUTPUT_CHUNK_TRUNCATED_MESSAGE: &str =
     "Live bash output truncated after 1 MiB; the terminal result remains authoritative";
 
-#[cfg(unix)]
 #[derive(Debug, Default)]
 struct OutputPreviewState {
     emitted: usize,
     stopped: bool,
 }
 
-#[cfg(unix)]
 #[derive(Debug, Default)]
 struct OutputPreviewBudget {
     state: Mutex<OutputPreviewState>,
 }
 
-#[cfg(unix)]
 impl OutputPreviewBudget {
     fn retain(&self, chunk: &str) -> (Option<String>, bool) {
         let mut state = self
@@ -117,7 +105,6 @@ impl OutputPreviewBudget {
     }
 }
 
-#[cfg(unix)]
 fn sanitized_chunks(bytes: &[u8]) -> Vec<String> {
     let text = String::from_utf8_lossy(bytes);
     let mut chunks = Vec::new();
@@ -139,7 +126,6 @@ fn sanitized_chunks(bytes: &[u8]) -> Vec<String> {
     chunks
 }
 
-#[cfg(unix)]
 async fn emit_preview(
     progress: &ProgressSink,
     tool_call_id: ToolCallId,
@@ -176,7 +162,6 @@ async fn emit_preview(
     Ok(())
 }
 
-#[cfg(unix)]
 async fn read_output<R>(
     mut reader: R,
     stream: OutputStream,
@@ -274,6 +259,45 @@ impl ProcessGroupChild {
 
 #[cfg(unix)]
 impl Drop for ProcessGroupChild {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.kill_group();
+            if let Some(mut child) = self.child.take()
+                && let Ok(runtime) = tokio::runtime::Handle::try_current()
+            {
+                runtime.spawn(async move {
+                    let _ = child.wait().await;
+                });
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+struct JobChild {
+    child: Option<Box<dyn process_wrap::tokio::ChildWrapper>>,
+    complete: bool,
+}
+
+#[cfg(windows)]
+impl JobChild {
+    fn kill_group(&mut self) {
+        if let Some(child) = &mut self.child {
+            let _ = child.start_kill();
+        }
+    }
+
+    async fn kill_and_reap(&mut self) {
+        self.kill_group();
+        if let Some(child) = &mut self.child {
+            let _ = child.wait().await;
+        }
+        self.complete = true;
+    }
+}
+
+#[cfg(windows)]
+impl Drop for JobChild {
     fn drop(&mut self) {
         if !self.complete {
             self.kill_group();
@@ -400,9 +424,7 @@ impl ToolProvider for BashTool {
             normalized_arguments,
             None,
             Box::new(BashExecutor {
-                #[cfg(unix)]
                 tool_call_id: call.id,
-                #[cfg(unix)]
                 args,
                 cwd,
                 executable,
@@ -580,14 +602,149 @@ impl BashExecutor {
     #[cfg(windows)]
     async fn execute_process(
         self,
-        _progress: ProgressSink,
-        _cancellation: CancellationToken,
-        _stdin: Option<ToolStdin>,
+        progress: ProgressSink,
+        cancellation: CancellationToken,
+        stdin: Option<ToolStdin>,
     ) -> Result<ToolResult, ToolError> {
-        // TODO(M2): real Windows backend
-        Err(ToolError::unsupported_platform(
-            "bash process execution is not yet supported on this platform",
-        ))
+        self.cwd.revalidate()?;
+        self.executable.revalidate()?;
+        if cancellation.is_cancelled() {
+            return Err(ToolError::execution("prepared bash cancelled"));
+        }
+        let mut command = Command::new(self.executable.proc_fd_path());
+        command
+            .arg("-c")
+            .arg(&self.args.command)
+            .current_dir(self.cwd.proc_fd_path())
+            .stdin(if self.args.interactive {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut wrapped = CommandWrap::from(command);
+        wrapped.wrap(ProcessJobObject).wrap(KillOnDrop);
+        // ProcessJobObject adds CREATE_SUSPENDED, assigns the process to the
+        // job, and only then resumes its threads, so descendants cannot escape.
+        let mut child = wrapped
+            .spawn()
+            .map_err(|error| ToolError::execution(error.to_string()))?;
+        let stdout = child
+            .stdout()
+            .take()
+            .ok_or_else(|| ToolError::execution("bash stdout pipe missing"))?;
+        let stderr = child
+            .stderr()
+            .take()
+            .ok_or_else(|| ToolError::execution("bash stderr pipe missing"))?;
+        let budget = Arc::new(OutputPreviewBudget::default());
+        let truncation_emitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stdout_task = tokio::spawn(read_output(
+            stdout,
+            OutputStream::Stdout,
+            progress.clone(),
+            self.tool_call_id,
+            Arc::clone(&budget),
+            Arc::clone(&truncation_emitted),
+        ));
+        let stderr_task = tokio::spawn(read_output(
+            stderr,
+            OutputStream::Stderr,
+            progress,
+            self.tool_call_id,
+            budget,
+            truncation_emitted,
+        ));
+        let stdin_task = if self.args.interactive {
+            let mut child_stdin = child
+                .stdin()
+                .take()
+                .ok_or_else(|| ToolError::execution("bash stdin pipe missing"))?;
+            let mut writes = stdin
+                .ok_or_else(|| ToolError::execution("interactive bash stdin channel missing"))?;
+            Some(tokio::spawn(async move {
+                while let Some(write) = writes.recv().await {
+                    child_stdin.write_all(&write.data).await?;
+                    child_stdin.flush().await?;
+                    if write.eof {
+                        child_stdin.shutdown().await?;
+                        break;
+                    }
+                }
+                Ok::<(), std::io::Error>(())
+            }))
+        } else {
+            None
+        };
+        let mut grouped = JobChild {
+            child: Some(child),
+            complete: false,
+        };
+        enum WaitOutcome {
+            Finished(std::io::Result<std::process::ExitStatus>),
+            TimedOut,
+            Cancelled,
+        }
+        let outcome = {
+            let wrapped_child = grouped.child.as_mut().expect("prepared child exists");
+            // SAFETY: only the raw parent's wait state is observed. The wrapper
+            // remains owned by JobChild and retains all job/kill state and pipes.
+            let wait = unsafe { wrapped_child.inner_child_mut() }.wait();
+            tokio::pin!(wait);
+            tokio::select! {
+                result = tokio::time::timeout(Duration::from_millis(self.args.timeout), &mut wait) => {
+                    match result {
+                        Ok(result) => WaitOutcome::Finished(result),
+                        Err(_) => WaitOutcome::TimedOut,
+                    }
+                }
+                _ = cancellation.cancelled() => WaitOutcome::Cancelled,
+            }
+        };
+        let status = match outcome {
+            WaitOutcome::Finished(result) => {
+                result.map_err(|error| ToolError::execution(error.to_string()))?
+            }
+            WaitOutcome::TimedOut => {
+                grouped.kill_and_reap().await;
+                if let Some(task) = &stdin_task {
+                    task.abort();
+                }
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
+                return Err(ToolError::execution("bash timed out"));
+            }
+            WaitOutcome::Cancelled => {
+                grouped.kill_and_reap().await;
+                if let Some(task) = &stdin_task {
+                    task.abort();
+                }
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
+                return Err(ToolError::execution("prepared bash cancelled"));
+            }
+        };
+        if let Some(task) = &stdin_task {
+            task.abort();
+        }
+        grouped.kill_and_reap().await;
+        let stdout = stdout_task
+            .await
+            .map_err(|error| ToolError::execution(error.to_string()))??;
+        let stderr = stderr_task
+            .await
+            .map_err(|error| ToolError::execution(error.to_string()))??;
+        let stdout = String::from_utf8_lossy(&stdout);
+        let stderr = String::from_utf8_lossy(&stderr);
+        Ok(ToolResult {
+            title: crate::safe_title("Bash"),
+            output: format!("{stdout}{stderr}"),
+            metadata: serde_json::json!({"status":status.code(),"success":status.success()}),
+            truncation: None,
+            attachments: Vec::new(),
+        })
     }
 }
 
@@ -1105,5 +1262,98 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         panic!("descendant process survived process-group cancellation");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::time::Duration;
+
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, WAIT_OBJECT_0},
+        System::Threading::{OpenProcess, WaitForSingleObject},
+    };
+
+    use super::{CommandWrap, KillOnDrop, ProcessJobObject};
+
+    const TEST_NAME: &str = "bash::windows_tests::job_object_kills_spawned_process_tree";
+
+    #[tokio::test]
+    async fn job_object_kills_spawned_process_tree() {
+        if std::env::var_os("COOKIE_JOB_LEAF").is_some() {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            return;
+        }
+        if let Some(pid_file) = std::env::var_os("COOKIE_JOB_PARENT") {
+            let mut leaves = Vec::new();
+            for _ in 0..8 {
+                leaves.push(
+                    tokio::process::Command::new(std::env::current_exe().unwrap())
+                        .args(["--exact", TEST_NAME, "--nocapture"])
+                        .env("COOKIE_JOB_LEAF", "1")
+                        .spawn()
+                        .expect("spawn leaf"),
+                );
+            }
+            std::fs::write(
+                pid_file,
+                leaves
+                    .iter()
+                    .map(|leaf| leaf.id().expect("leaf pid").to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+            .expect("pid file");
+            drop(leaves);
+            return;
+        }
+
+        let directory = tempfile::tempdir().expect("temporary root");
+        let pid_file = directory.path().join("leaf.pid");
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", TEST_NAME, "--nocapture"])
+            .env("COOKIE_JOB_PARENT", &pid_file);
+        let mut wrapped = CommandWrap::from(command);
+        wrapped.wrap(ProcessJobObject).wrap(KillOnDrop);
+        let mut parent = wrapped.spawn().expect("spawn suspended job parent");
+        let leaf_pids = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(pids) = std::fs::read_to_string(&pid_file) {
+                    break pids
+                        .split(',')
+                        .map(|pid| pid.parse::<u32>().expect("leaf pid"))
+                        .collect::<Vec<_>>();
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("leaves started");
+        let parent_status = tokio::time::timeout(Duration::from_secs(2), async {
+            // SAFETY: the wrapper remains alive and only parent wait state changes.
+            unsafe { parent.inner_child_mut() }.wait().await
+        })
+        .await
+        .expect("parent prompt return was delayed by descendants")
+        .expect("parent wait");
+        assert!(parent_status.success());
+        parent.start_kill().expect("terminate job");
+        tokio::time::timeout(Duration::from_secs(5), parent.wait())
+            .await
+            .expect("parent terminated")
+            .expect("parent wait");
+
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        for leaf_pid in leaf_pids {
+            let leaf = unsafe { OpenProcess(SYNCHRONIZE, 0, leaf_pid) };
+            if !leaf.is_null() {
+                let waited = unsafe { WaitForSingleObject(leaf, 5_000) };
+                unsafe {
+                    CloseHandle(leaf);
+                }
+                assert_eq!(waited, WAIT_OBJECT_0, "leaf survived job termination");
+            }
+        }
     }
 }

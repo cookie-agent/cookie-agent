@@ -879,9 +879,56 @@ fn read_secret_line(prompt: &str) -> anyhow::Result<Zeroizing<String>> {
 }
 
 #[cfg(windows)]
-fn read_secret_line(_: &str) -> anyhow::Result<Zeroizing<String>> {
-    // TODO(M2): real Windows backend
-    anyhow::bail!("secure no-echo credential input is not yet supported on this platform")
+fn read_secret_line(prompt: &str) -> anyhow::Result<Zeroizing<String>> {
+    use windows_sys::Win32::{
+        Foundation::{HANDLE, INVALID_HANDLE_VALUE},
+        System::Console::{
+            ENABLE_ECHO_INPUT, GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE, SetConsoleMode,
+        },
+    };
+
+    struct ConsoleModeGuard {
+        handle: HANDLE,
+        mode: u32,
+    }
+    impl Drop for ConsoleModeGuard {
+        fn drop(&mut self) {
+            // SAFETY: the console handle and original mode remain valid for this process.
+            unsafe {
+                SetConsoleMode(self.handle, self.mode);
+            }
+        }
+    }
+
+    print!("{prompt}");
+    io::stdout().flush().context("flush credential prompt")?;
+    // SAFETY: GetStdHandle requires no caller-owned pointers.
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error()).context("open credential console");
+    }
+    let mut original = 0;
+    // SAFETY: original points to writable mode storage.
+    if unsafe { GetConsoleMode(handle, &mut original) } == 0 {
+        return Err(io::Error::last_os_error()).context("read credential console mode");
+    }
+    // SAFETY: handle is a console input handle and the mode only disables echo.
+    if unsafe { SetConsoleMode(handle, original & !ENABLE_ECHO_INPUT) } == 0 {
+        return Err(io::Error::last_os_error()).context("disable credential echo");
+    }
+    let guard = ConsoleModeGuard {
+        handle,
+        mode: original,
+    };
+    let mut value = String::new();
+    let read = io::stdin().read_line(&mut value).context("read credential");
+    drop(guard);
+    println!();
+    read?;
+    while matches!(value.as_bytes().last(), Some(b'\n' | b'\r')) {
+        value.pop();
+    }
+    Ok(Zeroizing::new(value))
 }
 
 async fn run_daemon(mut runtime: Runtime) -> anyhow::Result<()> {

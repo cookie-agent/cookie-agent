@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
     hash::{Hash, Hasher},
+    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -11,7 +12,6 @@ use std::{
 #[cfg(unix)]
 use std::{
     fs::OpenOptions,
-    io::Write,
     os::unix::{
         ffi::OsStrExt,
         fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -25,12 +25,10 @@ use cookie_agent_protocol::{
     Usage, UsageCostProvenance, UsageRollup,
 };
 use thiserror::Error;
-#[cfg(unix)]
 use uuid::Uuid;
 
 use crate::events::{EventLog, EventLogError, fsync_directory};
 
-#[cfg(unix)]
 const PROJECT_CWD_FILE: &str = "cwd";
 
 #[derive(Debug, Error)]
@@ -58,8 +56,6 @@ pub enum SessionError {
     },
     #[error("invalid fork title: {0}")]
     InvalidForkTitle(String),
-    #[error("session persistence is not yet supported on this platform")]
-    UnsupportedPlatform,
 }
 
 #[derive(Clone, Debug)]
@@ -138,62 +134,67 @@ impl SessionStore {
     }
 
     pub fn open(data_root: &Path, cwd: &Path) -> Result<Arc<Self>, SessionError> {
-        #[cfg(windows)]
-        {
-            let _ = (data_root, cwd);
-            // TODO(M2): real Windows backend
-            Err(SessionError::UnsupportedPlatform)
-        }
+        let project_dir = Self::project_dir(data_root, cwd);
+        let sessions_dir = project_dir.join("sessions");
         #[cfg(unix)]
-        {
-            let project_dir = Self::project_dir(data_root, cwd);
-            let sessions_dir = project_dir.join("sessions");
-            fs::create_dir_all(&sessions_dir).map_err(|source| SessionError::Io {
+        fs::create_dir_all(&sessions_dir).map_err(|source| SessionError::Io {
+            path: sessions_dir.clone(),
+            source,
+        })?;
+        #[cfg(windows)]
+        for path in [
+            data_root.join("projects"),
+            project_dir.clone(),
+            sessions_dir.clone(),
+        ] {
+            create_windows_session_directory(&path)?;
+        }
+        write_project_cwd(&project_dir, cwd)?;
+        let store = Arc::new(Self {
+            project_dir,
+            sessions_dir: sessions_dir.clone(),
+            cwd: cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned()),
+            residency: Mutex::new(SessionResidency::default()),
+            mutation: Mutex::new(()),
+            #[cfg(test)]
+            eviction_transition_hook: Mutex::new(None),
+        });
+        for entry in fs::read_dir(&sessions_dir).map_err(|source| SessionError::Io {
+            path: sessions_dir.clone(),
+            source,
+        })? {
+            let entry = entry.map_err(|source| SessionError::Io {
                 path: sessions_dir.clone(),
                 source,
             })?;
-            write_project_cwd(&project_dir, cwd)?;
-            let store = Arc::new(Self {
-                project_dir,
-                sessions_dir: sessions_dir.clone(),
-                cwd: cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned()),
-                residency: Mutex::new(SessionResidency::default()),
-                mutation: Mutex::new(()),
-                #[cfg(test)]
-                eviction_transition_hook: Mutex::new(None),
-            });
-            for entry in fs::read_dir(&sessions_dir).map_err(|source| SessionError::Io {
-                path: sessions_dir.clone(),
-                source,
-            })? {
-                let entry = entry.map_err(|source| SessionError::Io {
-                    path: sessions_dir.clone(),
+            if !entry
+                .file_type()
+                .map_err(|source| SessionError::Io {
+                    path: entry.path(),
                     source,
-                })?;
-                if !entry
-                    .file_type()
-                    .map_err(|source| SessionError::Io {
-                        path: entry.path(),
-                        source,
-                    })?
-                    .is_dir()
-                {
-                    continue;
-                }
-                let Ok(id) = entry.file_name().to_string_lossy().parse::<SessionId>() else {
-                    continue;
-                };
-                let log = EventLog::open(entry.path().join("events.jsonl"), id)?;
-                let projection = projection(log)?;
-                store
-                    .residency
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .resident
-                    .insert(id, projection);
+                })?
+                .is_dir()
+            {
+                continue;
             }
-            Ok(store)
+            let Ok(id) = entry.file_name().to_string_lossy().parse::<SessionId>() else {
+                continue;
+            };
+            #[cfg(windows)]
+            {
+                validate_windows_session_path(&entry.path())?;
+                validate_windows_session_path(&entry.path().join("events.jsonl"))?;
+            }
+            let log = EventLog::open(entry.path().join("events.jsonl"), id)?;
+            let projection = projection(log)?;
+            store
+                .residency
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .resident
+                .insert(id, projection);
         }
+        Ok(store)
     }
 
     pub fn create(
@@ -436,10 +437,13 @@ impl SessionStore {
         let temporary = self
             .sessions_dir
             .join(format!(".{session_id}.{}.tmp", SessionId::new_v7()));
+        #[cfg(unix)]
         fs::create_dir(&temporary).map_err(|source| SessionError::Io {
             path: temporary.clone(),
             source,
         })?;
+        #[cfg(windows)]
+        create_windows_session_directory(&temporary)?;
         #[cfg(unix)]
         fs::set_permissions(&temporary, fs::Permissions::from_mode(0o700)).map_err(|source| {
             SessionError::Io {
@@ -461,6 +465,8 @@ impl SessionStore {
                     source.log.usage_cost_is_stamped(event.seq),
                 )?;
             }
+            #[cfg(windows)]
+            finalize_windows_session_file(&log_path)?;
             #[cfg(unix)]
             fs::set_permissions(&log_path, fs::Permissions::from_mode(0o600)).map_err(
                 |source| SessionError::Io {
@@ -515,15 +521,20 @@ impl SessionStore {
         let temporary = self
             .sessions_dir
             .join(format!(".{session_id}.{}.tmp", SessionId::new_v7()));
+        #[cfg(unix)]
         fs::create_dir_all(&temporary).map_err(|source| SessionError::Io {
             path: temporary.clone(),
             source,
         })?;
+        #[cfg(windows)]
+        create_windows_session_directory(&temporary)?;
         let result = (|| {
             let log_path = temporary.join("events.jsonl");
             for event in projection.log.all_events() {
                 crate::events::append_jsonl(&log_path, &event)?;
             }
+            #[cfg(windows)]
+            finalize_windows_session_file(&log_path)?;
             write_cache(&temporary.join("meta.json"), &projection.meta)?;
             fsync_directory(&temporary)?;
             fs::rename(&temporary, &final_dir).map_err(|source| SessionError::Io {
@@ -1055,10 +1066,20 @@ fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
         path: path.to_owned(),
         source,
     })?;
+    #[cfg(windows)]
+    let existed = path.exists();
+    #[cfg(windows)]
+    if existed {
+        validate_windows_session_path(path)?;
+    }
     fs::write(path, bytes).map_err(|source| SessionError::Io {
         path: path.to_owned(),
         source,
     })?;
+    #[cfg(windows)]
+    if !existed {
+        finalize_windows_session_file(path)?;
+    }
     fs::File::open(path)
         .and_then(|file| file.sync_all())
         .map_err(|source| SessionError::Io {
@@ -1098,6 +1119,50 @@ fn write_project_cwd(project_dir: &Path, cwd: &Path) -> Result<(), SessionError>
     result.map_err(|source| SessionError::Io { path, source })
 }
 
+#[cfg(windows)]
+fn write_project_cwd(project_dir: &Path, cwd: &Path) -> Result<(), SessionError> {
+    let Ok(canonical) = cwd.canonicalize() else {
+        return Ok(());
+    };
+    let bytes = canonical.as_os_str().as_encoded_bytes();
+    let path = project_dir.join(PROJECT_CWD_FILE);
+    if project_cwd_is_current(&path, bytes) {
+        return Ok(());
+    }
+    let temporary = project_dir.join(format!(".{PROJECT_CWD_FILE}.{}.tmp", Uuid::now_v7()));
+    let result = (|| -> Result<(), SessionError> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|source| SessionError::Io {
+                path: temporary.clone(),
+                source,
+            })?;
+        finalize_windows_session_file(&temporary)?;
+        file.write_all(bytes).map_err(|source| SessionError::Io {
+            path: temporary.clone(),
+            source,
+        })?;
+        file.sync_all().map_err(|source| SessionError::Io {
+            path: temporary.clone(),
+            source,
+        })?;
+        drop(file);
+        cookie_agent_models::secure_store::replace_windows_path(&temporary, &path).map_err(
+            |source| SessionError::Io {
+                path: path.clone(),
+                source,
+            },
+        )?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 #[cfg(unix)]
 fn project_cwd_is_current(path: &Path, expected: &[u8]) -> bool {
     let Ok(metadata) = fs::symlink_metadata(path) else {
@@ -1106,6 +1171,43 @@ fn project_cwd_is_current(path: &Path, expected: &[u8]) -> bool {
     metadata.is_file()
         && metadata.mode() & 0o7777 == 0o600
         && fs::read(path).is_ok_and(|bytes| bytes == expected)
+}
+
+#[cfg(windows)]
+fn project_cwd_is_current(path: &Path, expected: &[u8]) -> bool {
+    fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
+        && cookie_agent_models::secure_store::validate_windows_path_acl(path).is_ok()
+        && fs::read(path).is_ok_and(|bytes| bytes == expected)
+}
+
+#[cfg(windows)]
+fn create_windows_session_directory(path: &Path) -> Result<(), SessionError> {
+    cookie_agent_models::secure_store::create_windows_private_dir_all(path).map_err(|source| {
+        SessionError::Io {
+            path: path.to_owned(),
+            source,
+        }
+    })
+}
+
+#[cfg(windows)]
+fn validate_windows_session_path(path: &Path) -> Result<(), SessionError> {
+    cookie_agent_models::secure_store::validate_windows_path_acl(path).map_err(|source| {
+        SessionError::Io {
+            path: path.to_owned(),
+            source,
+        }
+    })
+}
+
+#[cfg(windows)]
+fn finalize_windows_session_file(path: &Path) -> Result<(), SessionError> {
+    cookie_agent_models::secure_store::protect_windows_path(path).map_err(|source| {
+        SessionError::Io {
+            path: path.to_owned(),
+            source,
+        }
+    })
 }
 
 #[cfg(all(test, unix))]
@@ -1765,5 +1867,39 @@ mod tests {
                 .estimated_cost_usd,
             None
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::{PROJECT_CWD_FILE, SessionStore};
+
+    #[test]
+    fn windows_session_store_applies_private_acls_before_use() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let cwd = temporary.path().join("workspace");
+        std::fs::create_dir(&cwd).expect("workspace");
+        let data = temporary.path().join("data");
+        let store = SessionStore::open(&data, &cwd).expect("session store");
+        let project = store.project_dir_path();
+        for path in [
+            project.to_owned(),
+            project.join("sessions"),
+            project.join(PROJECT_CWD_FILE),
+        ] {
+            cookie_agent_models::secure_store::validate_windows_path_acl(&path)
+                .expect("private ACL");
+        }
+    }
+
+    #[test]
+    fn windows_session_store_rejects_preexisting_untrusted_project_acl() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let cwd = temporary.path().join("workspace");
+        std::fs::create_dir(&cwd).expect("workspace");
+        let data = temporary.path().join("data");
+        let project = SessionStore::project_dir(&data, &cwd);
+        std::fs::create_dir_all(project.join("sessions")).expect("ordinary project");
+        assert!(SessionStore::open(&data, &cwd).is_err());
     }
 }

@@ -19,6 +19,8 @@ use std::{
 use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::{LoadedMcpServer, McpOAuthSettings, McpServerConfig};
+#[cfg(windows)]
+use cookie_agent_models::secure_store::SecureDirectory;
 use cookie_agent_protocol::{
     ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, PermissionAction,
     PersistedToolResult as ToolResult, PreparedApprovalResource, PreparedBindingLifetime,
@@ -73,7 +75,6 @@ const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_millis(200);
 #[cfg(any(unix, test))]
 const OAUTH_STORE_FILE: &str = "mcp-oauth.json";
-#[cfg(unix)]
 const OAUTH_STORE_LOCK_FILE: &str = "mcp-oauth.lock";
 const OAUTH_CALLBACK_MAX_BYTES: usize = 16 * 1024;
 const OAUTH_STORE_MAX_BYTES: u64 = 1024 * 1024;
@@ -197,7 +198,6 @@ struct OAuthCredentialFile {
 
 struct OAuthCredentialFileInner {
     path: PathBuf,
-    #[cfg(unix)]
     transaction: Mutex<()>,
 }
 
@@ -537,11 +537,13 @@ impl OAuthCredentialFile {
     fn open(path: PathBuf) -> Result<Self, ToolError> {
         #[cfg(windows)]
         {
-            let _ = path;
-            // TODO(M2): real Windows backend
-            Err(ToolError::unsupported_platform(
-                "MCP OAuth credential storage is not yet supported on this platform",
-            ))
+            load_oauth_store_windows(&path).map_err(|()| oauth_store_startup_error(&path))?;
+            Ok(Self {
+                inner: Arc::new(OAuthCredentialFileInner {
+                    path,
+                    transaction: Mutex::new(()),
+                }),
+            })
         }
         #[cfg(unix)]
         {
@@ -577,9 +579,17 @@ impl OAuthCredentialFile {
     ) -> Result<(), ()> {
         #[cfg(windows)]
         {
-            let _ = update;
-            // TODO(M2): real Windows backend
-            Err(())
+            let _transaction = self
+                .inner
+                .transaction
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (directory, name) = oauth_store_directory_windows(&self.inner.path)?;
+            let lock = directory.lock(OAUTH_STORE_LOCK_FILE).map_err(|_| ())?;
+            let mut candidate = load_oauth_store_from_lock_windows(&lock, &name)?;
+            update(&mut candidate);
+            let bytes = serde_json::to_vec(&candidate).map_err(|_| ())?;
+            lock.atomic_replace(&name, &bytes).map_err(|_| ())
         }
         #[cfg(unix)]
         {
@@ -599,9 +609,16 @@ impl OAuthCredentialFile {
     fn get(&self, key: &str) -> Result<Option<PersistedOAuthCredential>, ()> {
         #[cfg(windows)]
         {
-            let _ = key;
-            // TODO(M2): real Windows backend
-            Err(())
+            let _transaction = self
+                .inner
+                .transaction
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (directory, name) = oauth_store_directory_windows(&self.inner.path)?;
+            let lock = directory.lock(OAUTH_STORE_LOCK_FILE).map_err(|_| ())?;
+            Ok(load_oauth_store_from_lock_windows(&lock, &name)?
+                .get(key)
+                .cloned())
         }
         #[cfg(unix)]
         {
@@ -854,12 +871,41 @@ fn redacted_oauth_error_body(status: reqwest::StatusCode, body: &[u8]) -> Vec<u8
     serde_json::to_vec(&serde_json::json!({ "error": code })).unwrap_or_default()
 }
 
-#[cfg(unix)]
 fn oauth_store_startup_error(path: &Path) -> ToolError {
     ToolError::execution(format!(
         "invalid MCP OAuth credential store `{}`; fix its permissions and contents or remove the file to reset user MCP OAuth credentials",
         path.display()
     ))
+}
+
+#[cfg(windows)]
+fn oauth_store_directory_windows(path: &Path) -> Result<(SecureDirectory, String), ()> {
+    let parent = path.parent().ok_or(())?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(())?
+        .to_owned();
+    let directory = SecureDirectory::open(parent).map_err(|_| ())?;
+    Ok((directory, name))
+}
+
+#[cfg(windows)]
+fn load_oauth_store_windows(path: &Path) -> Result<BTreeMap<String, PersistedOAuthCredential>, ()> {
+    let (directory, name) = oauth_store_directory_windows(path)?;
+    let lock = directory.lock(OAUTH_STORE_LOCK_FILE).map_err(|_| ())?;
+    load_oauth_store_from_lock_windows(&lock, &name)
+}
+
+#[cfg(windows)]
+fn load_oauth_store_from_lock_windows(
+    lock: &cookie_agent_models::secure_store::SecureDirectoryLock<'_>,
+    name: &str,
+) -> Result<BTreeMap<String, PersistedOAuthCredential>, ()> {
+    let Some(bytes) = lock.read(name, OAUTH_STORE_MAX_BYTES).map_err(|_| ())? else {
+        return Ok(BTreeMap::new());
+    };
+    serde_json::from_slice(&bytes).map_err(|_| ())
 }
 
 fn oauth_store_runtime_error(path: &Path) -> ToolError {
@@ -3636,3 +3682,21 @@ for line in sys.stdin:
 #[cfg(unix)]
 #[path = "mcp/oauth_tests.rs"]
 mod oauth_tests;
+
+#[cfg(all(test, windows))]
+mod windows_oauth_tests {
+    use super::OAuthCredentialFile;
+
+    #[test]
+    fn oauth_store_is_acl_protected_on_windows() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let path = temporary.path().join("oauth").join("mcp-oauth.json");
+        let store = OAuthCredentialFile::open(path.clone()).expect("OAuth store");
+        store.update(|_| {}).expect("persist empty store");
+        cookie_agent_models::secure_store::validate_windows_path_acl(&path).expect("store ACL");
+        cookie_agent_models::secure_store::validate_windows_path_acl(
+            &path.parent().unwrap().join("mcp-oauth.lock"),
+        )
+        .expect("lock ACL");
+    }
+}

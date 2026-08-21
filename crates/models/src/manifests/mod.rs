@@ -820,11 +820,29 @@ fn direct_manifest_names(directory: &SecureDirectory) -> Result<Vec<String>, Man
 }
 
 #[cfg(windows)]
-fn direct_manifest_names(_directory: &SecureDirectory) -> Result<Vec<String>, ManifestError> {
-    // TODO(M2): real Windows backend
-    Err(ManifestError::Storage(
-        SecureStoreError::UnsupportedPlatform,
-    ))
+fn direct_manifest_names(directory: &SecureDirectory) -> Result<Vec<String>, ManifestError> {
+    cookie_agent_models_secure_directory_names(directory)
+}
+
+#[cfg(windows)]
+fn cookie_agent_models_secure_directory_names(
+    directory: &SecureDirectory,
+) -> Result<Vec<String>, ManifestError> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(directory.path()).map_err(SecureStoreError::Io)? {
+        let entry = entry.map_err(SecureStoreError::Io)?;
+        let metadata = entry.metadata().map_err(SecureStoreError::Io)?;
+        if !metadata.is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if manifest_filename_digest(&name).is_some() {
+            names.push(name);
+        }
+    }
+    Ok(names)
 }
 
 fn manifest_filename_digest(name: &str) -> Option<&str> {

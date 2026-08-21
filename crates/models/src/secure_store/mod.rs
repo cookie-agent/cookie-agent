@@ -1,4 +1,13 @@
-//! Reusable fail-closed Unix storage primitives.
+//! Reusable fail-closed private storage primitives.
+
+#[cfg(windows)]
+mod windows;
+
+#[cfg(windows)]
+pub use windows::{
+    create_private_dir_all as create_windows_private_dir_all, protect_path as protect_windows_path,
+    replace_path as replace_windows_path, validate_path_acl as validate_windows_path_acl,
+};
 
 use std::{
     fs, io,
@@ -41,9 +50,9 @@ impl SecureDirectory {
         }
         #[cfg(windows)]
         {
-            let _ = (root, relative);
-            // TODO(M2): real Windows backend
-            Err(SecureStoreError::UnsupportedPlatform)
+            let home = root.parent().ok_or(SecureStoreError::UnsafePath)?;
+            let root_name = root.file_name().ok_or(SecureStoreError::UnsafePath)?;
+            windows::open_private(home, &Path::new(root_name).join(relative))
         }
     }
 
@@ -62,9 +71,7 @@ impl SecureDirectory {
         }
         #[cfg(windows)]
         {
-            let _ = (anchor, relative);
-            // TODO(M2): real Windows backend
-            Err(SecureStoreError::UnsupportedPlatform)
+            windows::open_private(anchor.as_ref(), relative.as_ref())
         }
     }
 
@@ -90,18 +97,23 @@ impl SecureDirectory {
         }
         #[cfg(windows)]
         {
-            let _ = (anchor, relative);
-            // TODO(M2): real Windows backend
-            Err(SecureStoreError::UnsupportedPlatform)
+            windows::open_private(anchor.as_ref(), relative.as_ref())
         }
     }
 
     /// Opens or creates an absolute private directory.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SecureStoreError> {
         let path = path.as_ref();
-        let parent = path.parent().ok_or(SecureStoreError::UnsafePath)?;
-        let name = path.file_name().ok_or(SecureStoreError::UnsafePath)?;
-        Self::open_in(parent, Path::new(name))
+        #[cfg(unix)]
+        {
+            let parent = path.parent().ok_or(SecureStoreError::UnsafePath)?;
+            let name = path.file_name().ok_or(SecureStoreError::UnsafePath)?;
+            Self::open_in(parent, Path::new(name))
+        }
+        #[cfg(windows)]
+        {
+            windows::open_absolute_private(path)
+        }
     }
 
     /// Returns the diagnostic path. Security decisions never use this path.
@@ -113,7 +125,15 @@ impl SecureDirectory {
     /// Reads an optional private file from its held descriptor with a hard cap.
     pub fn read(&self, name: &str, limit: u64) -> Result<Option<Vec<u8>>, SecureStoreError> {
         validate_name(name)?;
-        read_file(&self.directory, name, limit)
+        #[cfg(unix)]
+        {
+            read_file(&self.directory, name, limit)
+        }
+        #[cfg(windows)]
+        {
+            windows::validate_leaf_name(name)?;
+            windows::read_file(self, name, limit)
+        }
     }
 
     /// Acquires and verifies a cross-process exclusive lock file.
@@ -134,9 +154,8 @@ impl SecureDirectory {
         }
         #[cfg(windows)]
         {
-            let _ = name;
-            // TODO(M2): real Windows backend
-            Err(SecureStoreError::UnsupportedPlatform)
+            windows::validate_leaf_name(name)?;
+            windows::lock(self, name)
         }
     }
 
@@ -192,9 +211,7 @@ impl SecureDirectoryLock<'_> {
         }
         #[cfg(windows)]
         {
-            let _ = limit;
-            // TODO(M2): real Windows backend
-            Err(SecureStoreError::UnsupportedPlatform)
+            windows::read_journal(self, limit)
         }
     }
 
@@ -218,9 +235,7 @@ impl SecureDirectoryLock<'_> {
         }
         #[cfg(windows)]
         {
-            let _ = (bytes, limit);
-            // TODO(M2): real Windows backend
-            Err(SecureStoreError::UnsupportedPlatform)
+            windows::append_journal(self, bytes, limit)
         }
     }
 
@@ -236,8 +251,7 @@ impl SecureDirectoryLock<'_> {
         }
         #[cfg(windows)]
         {
-            // TODO(M2): real Windows backend
-            Err(SecureStoreError::UnsupportedPlatform)
+            windows::clear_journal(self)
         }
     }
 
@@ -304,9 +318,8 @@ impl SecureDirectoryLock<'_> {
         }
         #[cfg(windows)]
         {
-            let _ = (name, bytes);
-            // TODO(M2): real Windows backend
-            Err(SecureStoreError::UnsupportedPlatform)
+            windows::validate_leaf_name(name)?;
+            windows::atomic_replace(self, name, bytes)
         }
     }
 
@@ -336,9 +349,8 @@ impl SecureDirectoryLock<'_> {
         }
         #[cfg(windows)]
         {
-            let _ = name;
-            // TODO(M2): real Windows backend
-            Err(SecureStoreError::UnsupportedPlatform)
+            windows::validate_leaf_name(name)?;
+            windows::remove(self, name)
         }
     }
 
@@ -349,8 +361,14 @@ impl SecureDirectoryLock<'_> {
 
     #[cfg(windows)]
     fn verify_lock(&self) -> Result<(), SecureStoreError> {
-        // TODO(M2): real Windows backend
-        Err(SecureStoreError::UnsupportedPlatform)
+        windows::verify_current_entry(self.directory, &self.lock_name, &self._lock)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for SecureDirectoryLock<'_> {
+    fn drop(&mut self) {
+        windows::unlock(&self._lock);
     }
 }
 
@@ -359,8 +377,6 @@ impl SecureDirectoryLock<'_> {
 pub enum SecureStoreError {
     #[error("could not determine the home directory")]
     HomeUnavailable,
-    #[error("secure storage is unsupported on this platform")]
-    UnsupportedPlatform,
     #[error("secure storage path is unsafe")]
     UnsafePath,
     #[error("secure storage object exceeds its byte limit")]
@@ -490,16 +506,6 @@ fn read_file(
         return Err(SecureStoreError::TooLarge);
     }
     Ok(Some(bytes))
-}
-
-#[cfg(windows)]
-fn read_file(
-    _directory: &fs::File,
-    _name: &str,
-    _limit: u64,
-) -> Result<Option<Vec<u8>>, SecureStoreError> {
-    // TODO(M2): real Windows backend
-    Err(SecureStoreError::UnsupportedPlatform)
 }
 
 #[cfg(unix)]

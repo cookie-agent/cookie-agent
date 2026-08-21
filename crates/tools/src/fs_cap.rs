@@ -853,10 +853,33 @@ pub use unix::*;
 
 #[cfg(windows)]
 mod windows {
-    use std::path::{Path, PathBuf};
+    //! Windows path-based filesystem capabilities.
+    //!
+    //! Documented gaps versus the Unix descriptor backend: Windows validation
+    //! cannot provide TOCTOU immunity between revalidation and mutation, and
+    //! Windows has no atomic two-file exchange for expected-target rollback.
+
+    use std::{
+        fs,
+        io::Write,
+        os::windows::{ffi::OsStrExt, fs::OpenOptionsExt as _, io::AsRawHandle as _},
+        path::{Component, Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     use cookie_agent_engine::ToolError;
     use cookie_agent_protocol::Sha256Digest;
+    use windows_sys::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            GetFileInformationByHandle, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+            MoveFileExW,
+        },
+    };
+
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct ObjectIdentity {
@@ -867,7 +890,12 @@ mod windows {
     }
     impl ObjectIdentity {
         pub fn canonical_bytes(&self) -> Vec<u8> {
-            Vec::new()
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&self.device.to_be_bytes());
+            bytes.extend_from_slice(&self.inode.to_be_bytes());
+            bytes.extend_from_slice(&self.mode.to_be_bytes());
+            bytes.extend_from_slice(&self.size.to_be_bytes());
+            bytes
         }
     }
     pub struct PreparedExisting {
@@ -875,9 +903,15 @@ mod windows {
         pub identity: ObjectIdentity,
         pub content_digest: Sha256Digest,
         pub directory: bool,
+        original_path: PathBuf,
+        canonical_path: PathBuf,
+        sandbox_root: PathBuf,
     }
     pub struct PreparedAbsent {
         pub display_path: PathBuf,
+        original_path: PathBuf,
+        first_missing: PathBuf,
+        sandbox_root: PathBuf,
     }
     #[derive(Clone, Debug, Default, Eq, PartialEq)]
     pub struct AtomicWriteOutcome {
@@ -889,73 +923,532 @@ mod windows {
     }
     impl PreparedTarget {
         pub fn revalidate(&self) -> Result<(), ToolError> {
-            unsupported()
+            match self {
+                Self::Existing(target) => target.revalidate(),
+                Self::Absent(target) => target.revalidate(),
+            }
         }
         pub fn serialization_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            unsupported()
+            self.manifest_bytes()
         }
         pub fn manifest_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            unsupported()
+            match self {
+                Self::Existing(target) => target.manifest_bytes(),
+                Self::Absent(target) => target.manifest_bytes(),
+            }
         }
     }
     impl PreparedExisting {
         pub fn manifest_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            unsupported()
+            let mut bytes = b"windows-existing\0".to_vec();
+            append_path(&mut bytes, &self.sandbox_root);
+            append_path(&mut bytes, &self.canonical_path);
+            bytes.extend_from_slice(&self.identity.canonical_bytes());
+            bytes.extend_from_slice(self.content_digest.as_str().as_bytes());
+            Ok(bytes)
         }
         pub fn read_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            unsupported()
+            if self.directory {
+                return Err(ToolError::execution("prepared target is a directory"));
+            }
+            fs::read(&self.canonical_path).map_err(super::io_error)
         }
         pub fn verified_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            unsupported()
+            self.revalidate()?;
+            let bytes = self.read_bytes()?;
+            if Sha256Digest::of_bytes(&bytes) != self.content_digest {
+                return Err(ToolError::operation_changed(
+                    "prepared target content changed",
+                ));
+            }
+            Ok(bytes)
         }
         pub fn directory_entries(&self) -> Result<Vec<(String, bool)>, ToolError> {
-            unsupported()
+            if !self.directory {
+                return Err(ToolError::execution("prepared target is not a directory"));
+            }
+            directory_entries(&self.canonical_path)
         }
         pub fn revalidate(&self) -> Result<(), ToolError> {
-            unsupported()
+            validate_contained_path(&self.sandbox_root, &self.original_path, false)?;
+            let canonical = self.original_path.canonicalize().map_err(super::io_error)?;
+            if !paths_equal(&canonical, &self.canonical_path) {
+                return Err(ToolError::operation_changed(
+                    "prepared target resolved to another path",
+                ));
+            }
+            validate_contained_path(&self.sandbox_root, &self.canonical_path, false)?;
+            let file = open_for_identity(&self.canonical_path)?;
+            let identity = identity(&file)?;
+            if identity.device != self.identity.device
+                || identity.inode != self.identity.inode
+                || identity.mode != self.identity.mode
+            {
+                return Err(ToolError::operation_changed(
+                    "prepared target identity changed",
+                ));
+            }
+            let digest = content_digest(&self.canonical_path, self.directory)?;
+            if digest != self.content_digest {
+                return Err(ToolError::operation_changed(
+                    "prepared target content changed",
+                ));
+            }
+            Ok(())
         }
-        pub fn replace_atomically(&self, _: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
-            unsupported()
+        pub fn replace_atomically(&self, bytes: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
+            if self.directory {
+                return Err(ToolError::unsupported_security(
+                    "cannot replace a directory with file content",
+                ));
+            }
+            self.revalidate()?;
+            let temporary = stage_sibling(&self.canonical_path, bytes)?;
+            if let Err(error) = move_file(&temporary, &self.canonical_path, true) {
+                let _ = fs::remove_file(&temporary);
+                return Err(error);
+            }
+            Ok(AtomicWriteOutcome::default())
         }
         pub fn proc_fd_path(&self) -> PathBuf {
-            PathBuf::new()
+            self.canonical_path.clone()
         }
     }
     impl PreparedAbsent {
         pub fn revalidate(&self) -> Result<(), ToolError> {
-            unsupported()
+            validate_contained_path(&self.sandbox_root, &self.original_path, true)?;
+            match fs::symlink_metadata(&self.first_missing) {
+                Ok(_) => {
+                    return Err(ToolError::operation_changed(
+                        "an originally missing path component was inserted",
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(super::io_error(error)),
+            }
+            let canonical = canonicalize_target(&self.original_path)?;
+            if !paths_equal(&canonical, &self.display_path) {
+                return Err(ToolError::operation_changed(
+                    "prepared absent target resolved to another path",
+                ));
+            }
+            if self.display_path.exists() {
+                return Err(ToolError::operation_changed(
+                    "a prepared absent path was inserted",
+                ));
+            }
+            Ok(())
         }
         pub fn manifest_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            unsupported()
+            let mut bytes = b"windows-absent\0".to_vec();
+            append_path(&mut bytes, &self.sandbox_root);
+            append_path(&mut bytes, &self.display_path);
+            append_path(&mut bytes, &self.first_missing);
+            Ok(bytes)
         }
-        pub fn create_atomically(&self, _: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
-            unsupported()
+        pub fn create_atomically(&self, bytes: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
+            self.revalidate()?;
+            let parent = self
+                .display_path
+                .parent()
+                .ok_or_else(|| ToolError::unsupported_security("target has no parent"))?;
+            create_private_parents(&self.sandbox_root, parent)?;
+            let temporary = stage_sibling(&self.display_path, bytes)?;
+            if let Err(error) = move_file(&temporary, &self.display_path, false) {
+                let _ = fs::remove_file(&temporary);
+                return Err(error);
+            }
+            Ok(AtomicWriteOutcome::default())
         }
     }
-    pub fn cwd_context_bytes(_: &Path) -> Result<Vec<u8>, ToolError> {
-        unsupported()
+    pub fn cwd_context_bytes(cwd: &Path) -> Result<Vec<u8>, ToolError> {
+        let canonical = cwd.canonicalize().map_err(super::io_error)?;
+        validate_no_reparse(&canonical)?;
+        Ok(identity(&open_for_identity(&canonical)?)?.canonical_bytes())
     }
     pub fn ensure_atomic_write_supported() -> Result<(), ToolError> {
-        unsupported()
+        Ok(())
     }
-    pub fn prepare_existing(_: &Path, _: &Path) -> Result<PreparedExisting, ToolError> {
-        unsupported()
+    pub fn prepare_existing(cwd: &Path, requested: &Path) -> Result<PreparedExisting, ToolError> {
+        match prepare_target(cwd, requested)? {
+            PreparedTarget::Existing(existing) => Ok(existing),
+            PreparedTarget::Absent(_) => {
+                Err(ToolError::execution("prepared target does not exist"))
+            }
+        }
     }
-    pub fn prepare_target(_: &Path, _: &Path) -> Result<PreparedTarget, ToolError> {
-        unsupported()
+    pub fn prepare_target(cwd: &Path, requested: &Path) -> Result<PreparedTarget, ToolError> {
+        let original_path = absolute_requested(cwd, requested)?;
+        let sandbox_root = sandbox_root(cwd, &original_path)?;
+        validate_contained_path(&sandbox_root, &original_path, true)?;
+        let requested_absolute = canonicalize_target(&original_path)?;
+        if requested_absolute.exists() {
+            let canonical_path = requested_absolute;
+            validate_contained_path(&sandbox_root, &canonical_path, false)?;
+            let file = open_for_identity(&canonical_path)?;
+            let identity = identity(&file)?;
+            let directory = file.metadata().map_err(super::io_error)?.is_dir();
+            let content_digest = content_digest(&canonical_path, directory)?;
+            Ok(PreparedTarget::Existing(PreparedExisting {
+                display_path: canonical_path.clone(),
+                identity,
+                content_digest,
+                directory,
+                original_path,
+                canonical_path,
+                sandbox_root,
+            }))
+        } else {
+            let first_missing = first_missing_component(&original_path)?;
+            Ok(PreparedTarget::Absent(PreparedAbsent {
+                display_path: requested_absolute,
+                original_path,
+                first_missing,
+                sandbox_root,
+            }))
+        }
     }
-    fn unsupported<T>() -> Result<T, ToolError> {
-        // TODO(M2): real Windows backend
-        Err(ToolError::unsupported_platform(
-            "prepared filesystem security is not yet supported on this platform",
+
+    fn first_missing_component(path: &Path) -> Result<PathBuf, ToolError> {
+        let mut current = PathBuf::new();
+        for component in path.components() {
+            current.push(component.as_os_str());
+            match fs::symlink_metadata(&current) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(current),
+                Err(error) => return Err(super::io_error(error)),
+            }
+        }
+        Err(ToolError::execution(
+            "prepared absent path has no missing component",
         ))
+    }
+
+    fn canonicalize_target(path: &Path) -> Result<PathBuf, ToolError> {
+        if path.exists() {
+            return path.canonicalize().map_err(super::io_error);
+        }
+        let mut existing = path.to_owned();
+        let mut missing = Vec::new();
+        while !existing.exists() {
+            let name = existing
+                .file_name()
+                .ok_or_else(|| ToolError::unsupported_security("target has no existing anchor"))?;
+            missing.push(name.to_owned());
+            existing = existing
+                .parent()
+                .ok_or_else(|| ToolError::unsupported_security("target has no existing anchor"))?
+                .to_owned();
+        }
+        let mut canonical = existing.canonicalize().map_err(super::io_error)?;
+        for component in missing.into_iter().rev() {
+            canonical.push(component);
+        }
+        Ok(canonical)
+    }
+
+    fn absolute_requested(cwd: &Path, requested: &Path) -> Result<PathBuf, ToolError> {
+        let path = if requested.is_absolute() {
+            requested.to_owned()
+        } else {
+            cwd.join(requested)
+        };
+        normalize_absolute(&path)
+    }
+
+    fn sandbox_root(cwd: &Path, requested: &Path) -> Result<PathBuf, ToolError> {
+        if cwd == Path::new("/") {
+            let mut root = PathBuf::new();
+            for component in requested.components() {
+                match component {
+                    Component::Prefix(prefix) => root.push(prefix.as_os_str()),
+                    Component::RootDir => {
+                        root.push(Path::new("\\"));
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+            return root.canonicalize().map_err(super::io_error);
+        }
+        cwd.canonicalize().map_err(super::io_error)
+    }
+
+    fn normalize_absolute(path: &Path) -> Result<PathBuf, ToolError> {
+        if !path.is_absolute() {
+            return Err(ToolError::unsupported_security(
+                "filesystem path is not absolute",
+            ));
+        }
+        let mut normalized = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+                Component::RootDir => normalized.push(Path::new("\\")),
+                Component::CurDir => {}
+                Component::Normal(name) => {
+                    validate_windows_component(name)?;
+                    normalized.push(name);
+                }
+                Component::ParentDir => {
+                    if !normalized.pop() {
+                        return Err(ToolError::unsupported_security(
+                            "filesystem path traverses above its root",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(normalized)
+    }
+
+    fn validate_windows_component(name: &std::ffi::OsStr) -> Result<(), ToolError> {
+        let name = name.to_string_lossy();
+        if name.is_empty()
+            || name.ends_with('.')
+            || name.ends_with(' ')
+            || name.chars().any(|character| {
+                matches!(
+                    character,
+                    '\0' | '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*'
+                )
+            })
+        {
+            Err(ToolError::unsupported_security(
+                "filesystem path contains an unsafe Windows component",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_contained_path(
+        root: &Path,
+        path: &Path,
+        allow_missing: bool,
+    ) -> Result<(), ToolError> {
+        if !components_start_with(path, root) {
+            return Err(ToolError::unsupported_security(
+                "filesystem target escapes the prepared sandbox",
+            ));
+        }
+        let mut current = PathBuf::new();
+        for component in path.components() {
+            current.push(component.as_os_str());
+            match fs::symlink_metadata(&current) {
+                Ok(_) => {
+                    if opened_path_is_reparse(&current)? {
+                        return Err(ToolError::unsupported_security(
+                            "prepared path contains a symlink or junction",
+                        ));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound && allow_missing => {
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(ToolError::operation_changed(
+                        "prepared filesystem object disappeared",
+                    ));
+                }
+                Err(error) => {
+                    return Err(super::io_error(error));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_no_reparse(path: &Path) -> Result<(), ToolError> {
+        validate_contained_path(path, path, false)
+    }
+
+    fn components_start_with(path: &Path, root: &Path) -> bool {
+        let mut path = path.components();
+        for root_component in root.components() {
+            let Some(path_component) = path.next() else {
+                return false;
+            };
+            if !component_equal(path_component.as_os_str(), root_component.as_os_str()) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn component_equal(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
+        let normalize = |value: &std::ffi::OsStr| {
+            value
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_ascii_lowercase()
+        };
+        normalize(left) == normalize(right)
+    }
+
+    fn paths_equal(left: &Path, right: &Path) -> bool {
+        let left = left.components().collect::<Vec<_>>();
+        let right = right.components().collect::<Vec<_>>();
+        left.len() == right.len()
+            && left
+                .iter()
+                .zip(&right)
+                .all(|(left, right)| component_equal(left.as_os_str(), right.as_os_str()))
+    }
+
+    fn wide_path(path: &Path) -> Result<Vec<u16>, ToolError> {
+        let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+        if wide.contains(&0) {
+            return Err(ToolError::unsupported_security(
+                "filesystem path contains an invalid character",
+            ));
+        }
+        wide.push(0);
+        Ok(wide)
+    }
+
+    fn opened_path_is_reparse(path: &Path) -> Result<bool, ToolError> {
+        let file = open_for_identity(path)?;
+        let mut information = BY_HANDLE_FILE_INFORMATION::default();
+        let handle = file.as_raw_handle() as HANDLE;
+        if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
+            return Err(super::io_error(std::io::Error::last_os_error()));
+        }
+        Ok(information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+    }
+
+    fn open_for_identity(path: &Path) -> Result<fs::File, ToolError> {
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(super::io_error)
+    }
+
+    fn identity(file: &fs::File) -> Result<ObjectIdentity, ToolError> {
+        let metadata = file.metadata().map_err(super::io_error)?;
+        let mut information = BY_HANDLE_FILE_INFORMATION::default();
+        let handle = file.as_raw_handle() as HANDLE;
+        if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
+            return Err(super::io_error(std::io::Error::last_os_error()));
+        }
+        Ok(ObjectIdentity {
+            device: u64::from(information.dwVolumeSerialNumber),
+            inode: (u64::from(information.nFileIndexHigh) << 32)
+                | u64::from(information.nFileIndexLow),
+            mode: if metadata.is_dir() {
+                0o040755
+            } else {
+                0o100755
+            },
+            size: metadata.len(),
+        })
+    }
+
+    fn content_digest(path: &Path, directory: bool) -> Result<Sha256Digest, ToolError> {
+        if directory {
+            serde_json::to_vec(&directory_entries(path)?)
+                .map(|bytes| Sha256Digest::of_bytes(&bytes))
+                .map_err(super::io_error)
+        } else {
+            fs::read(path)
+                .map(|bytes| Sha256Digest::of_bytes(&bytes))
+                .map_err(super::io_error)
+        }
+    }
+
+    fn directory_entries(path: &Path) -> Result<Vec<(String, bool)>, ToolError> {
+        let mut entries = fs::read_dir(path)
+            .map_err(super::io_error)?
+            .map(|entry| {
+                let entry = entry.map_err(super::io_error)?;
+                let file_type = entry.file_type().map_err(super::io_error)?;
+                Ok((
+                    entry.file_name().to_string_lossy().into_owned(),
+                    file_type.is_dir(),
+                ))
+            })
+            .collect::<Result<Vec<_>, ToolError>>()?;
+        entries.sort();
+        Ok(entries)
+    }
+
+    fn create_private_parents(root: &Path, parent: &Path) -> Result<(), ToolError> {
+        if !components_start_with(parent, root) {
+            return Err(ToolError::unsupported_security(
+                "filesystem target escapes the prepared sandbox",
+            ));
+        }
+        let mut current = PathBuf::new();
+        for component in parent.components() {
+            current.push(component.as_os_str());
+            if !current.exists() {
+                fs::create_dir(&current).map_err(super::io_error)?;
+            }
+            if opened_path_is_reparse(&current)? {
+                return Err(ToolError::unsupported_security(
+                    "prepared path contains a symlink or junction",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn stage_sibling(target: &Path, bytes: &[u8]) -> Result<PathBuf, ToolError> {
+        let parent = target
+            .parent()
+            .ok_or_else(|| ToolError::unsupported_security("target has no parent"))?;
+        let name = target
+            .file_name()
+            .ok_or_else(|| ToolError::unsupported_security("target has no basename"))?;
+        let temporary = parent.join(format!(
+            ".{}.cookie-stage-{}-{}",
+            name.to_string_lossy(),
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(super::io_error)?;
+        if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+            let _ = fs::remove_file(&temporary);
+            return Err(super::io_error(error));
+        }
+        Ok(temporary)
+    }
+
+    fn move_file(source: &Path, target: &Path, replace: bool) -> Result<(), ToolError> {
+        let source = wide_path(source)?;
+        let target = wide_path(target)?;
+        let flags = MOVEFILE_WRITE_THROUGH
+            | if replace {
+                MOVEFILE_REPLACE_EXISTING
+            } else {
+                0
+            };
+        if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), flags) } == 0 {
+            Err(ToolError::operation_changed(format!(
+                "atomic Windows publish failed: {}",
+                std::io::Error::last_os_error()
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn append_path(bytes: &mut Vec<u8>, path: &Path) {
+        let encoded = path.as_os_str().to_string_lossy();
+        bytes.extend_from_slice(&(encoded.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(encoded.as_bytes());
     }
 }
 
 #[cfg(windows)]
 pub use windows::*;
 
-#[cfg(unix)]
 fn io_error(error: impl std::fmt::Display) -> cookie_agent_engine::ToolError {
     cookie_agent_engine::ToolError::execution(error.to_string())
 }
@@ -1337,5 +1830,101 @@ mod tests {
             "attacker"
         );
         assert!(!root.path().join("one/two/target").exists());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::fs;
+
+    use cookie_agent_engine::ToolError;
+
+    use super::{PreparedTarget, prepare_existing, prepare_target};
+
+    #[test]
+    fn windows_capability_enforces_prefix_and_publishes_atomically() {
+        let root = tempfile::tempdir().expect("sandbox");
+        let outside = tempfile::tempdir().expect("outside");
+        fs::write(root.path().join("existing.txt"), "old").expect("existing");
+        let existing = prepare_existing(root.path(), std::path::Path::new("existing.txt"))
+            .expect("prepare existing");
+        existing.replace_atomically(b"new").expect("replace");
+        assert_eq!(fs::read(root.path().join("existing.txt")).unwrap(), b"new");
+
+        let PreparedTarget::Absent(absent) =
+            prepare_target(root.path(), std::path::Path::new("nested/new.txt"))
+                .expect("prepare absent")
+        else {
+            panic!("absent target")
+        };
+        absent.create_atomically(b"created").expect("create");
+        assert_eq!(
+            fs::read(root.path().join("nested/new.txt")).unwrap(),
+            b"created"
+        );
+
+        assert!(matches!(
+            prepare_target(root.path(), &outside.path().join("escape.txt")),
+            Err(ToolError::UnsupportedSecurity(_))
+        ));
+    }
+
+    #[test]
+    fn windows_capability_rejects_reparse_components() {
+        let root = tempfile::tempdir().expect("sandbox");
+        let target = root.path().join("target");
+        fs::create_dir(&target).expect("target");
+        let link = root.path().join("link");
+        if let Err(error) = std::os::windows::fs::symlink_dir(&target, &link) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("create symlink: {error}");
+        }
+        assert!(matches!(
+            prepare_target(root.path(), std::path::Path::new("link/file.txt")),
+            Err(ToolError::UnsupportedSecurity(_))
+        ));
+    }
+
+    #[test]
+    fn windows_absent_leaf_insertion_is_operation_changed() {
+        let root = tempfile::tempdir().expect("sandbox");
+        let PreparedTarget::Absent(absent) =
+            prepare_target(root.path(), std::path::Path::new("target.txt")).expect("prepare")
+        else {
+            panic!("absent target")
+        };
+        fs::write(root.path().join("target.txt"), "attacker").expect("insert target");
+        assert!(matches!(
+            absent.create_atomically(b"new"),
+            Err(ToolError::OperationChanged(_))
+        ));
+        assert_eq!(
+            fs::read_to_string(root.path().join("target.txt")).unwrap(),
+            "attacker"
+        );
+    }
+
+    #[test]
+    fn windows_missing_subtree_insertion_is_operation_changed() {
+        let root = tempfile::tempdir().expect("sandbox");
+        let PreparedTarget::Absent(absent) =
+            prepare_target(root.path(), std::path::Path::new("one/two/target.txt"))
+                .expect("prepare")
+        else {
+            panic!("absent target")
+        };
+        fs::create_dir(root.path().join("one")).expect("insert subtree");
+        fs::write(root.path().join("one/attacker"), "attacker").expect("attacker");
+        assert!(matches!(
+            absent.create_atomically(b"new"),
+            Err(ToolError::OperationChanged(_))
+        ));
+        assert!(!root.path().join("one/two/target.txt").exists());
+        assert_eq!(
+            fs::read_to_string(root.path().join("one/attacker")).unwrap(),
+            "attacker"
+        );
     }
 }

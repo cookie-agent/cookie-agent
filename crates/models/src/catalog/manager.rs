@@ -947,7 +947,6 @@ impl CatalogError {
     fn from_store(error: SecureStoreError) -> Self {
         let code = match error {
             SecureStoreError::HomeUnavailable => "catalog_cache_home_unavailable",
-            SecureStoreError::UnsupportedPlatform => "catalog_cache_unsupported_platform",
             SecureStoreError::UnsafePath => "catalog_cache_unsafe_path",
             SecureStoreError::TooLarge => "catalog_cache_too_large",
             SecureStoreError::Io(_) => "catalog_cache_io_failed",

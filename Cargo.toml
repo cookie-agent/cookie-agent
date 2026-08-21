@@ -67,6 +67,7 @@ insta = { version = "1.48.0", features = ["json", "redactions"] }
 tempfile = "3.27.0"
 http = "1.4.0"
 url = "2.5.7"
+windows-sys = "0.61.2"
 oven-sdk = "=0.5.0"
 oven-sdk-anthropic = "=0.6.0"
 oven-sdk-openai = "=0.5.0"
