@@ -53,14 +53,46 @@ use crate::{
 
 const PLUGIN_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
 
-fn protect_test_path(path: &std::path::Path) {
+fn private_tempdir() -> TempDir {
+    let directory = TempDir::new().expect("temp directory");
+    #[cfg(unix)]
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+        .expect("private temp directory");
+    #[cfg(windows)]
+    {
+        fs::remove_dir(directory.path()).expect("remove ordinary temp directory");
+        cookie_agent_models::secure_store::SecureDirectory::open(directory.path())
+            .expect("private temp directory");
+    }
+    directory
+}
+
+fn create_private_test_dir(path: &std::path::Path) {
     #[cfg(unix)]
     {
-        let mode = if path.is_dir() { 0o700 } else { 0o600 };
-        fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("private test path");
+        fs::create_dir(path).expect("private test directory");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .expect("private test directory");
     }
     #[cfg(windows)]
-    cookie_agent_models::secure_store::protect_windows_path(path).expect("private test path");
+    cookie_agent_models::secure_store::SecureDirectory::open(path).expect("private test directory");
+}
+
+fn write_private_test_file(path: &std::path::Path, contents: impl AsRef<[u8]>) {
+    #[cfg(unix)]
+    {
+        fs::write(path, contents).expect("private test file");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("private test file");
+    }
+    #[cfg(windows)]
+    {
+        use std::io::Write as _;
+
+        let mut file = cookie_agent_models::secure_store::create_windows_private_file(path)
+            .expect("private test file");
+        file.write_all(contents.as_ref())
+            .expect("write private test file");
+    }
 }
 
 fn python_command() -> &'static str {
@@ -1617,14 +1649,11 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    let directory = TempDir::new().expect("temp directory");
-    protect_test_path(directory.path());
+    let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
-    fs::create_dir(&project).expect("project directory");
-    protect_test_path(&project);
+    create_private_test_dir(&project);
     let provider_store = directory.path().join("provider-store");
-    fs::create_dir(&provider_store).expect("provider store directory");
-    protect_test_path(&provider_store);
+    create_private_test_dir(&provider_store);
     let now = Timestamp::now();
     let catalog = Arc::new(CatalogSnapshot {
         revision: CatalogRevision::new(format!("sha256:{}", "0".repeat(64)))
@@ -1773,22 +1802,16 @@ fn bedrock_catalog() -> Arc<CatalogSnapshot> {
 }
 
 fn empty_provider_workspace(path: &std::path::Path) -> LoadedConfiguration {
-    fs::create_dir(path).expect("workspace");
-    protect_test_path(path);
+    create_private_test_dir(path);
     let project = path.join(".cookie-agent");
-    fs::create_dir(&project).expect("project");
-    protect_test_path(&project);
-    fs::write(project.join("config.toml"), "").expect("empty provider config");
-    protect_test_path(&project.join("config.toml"));
+    create_private_test_dir(&project);
+    write_private_test_file(&project.join("config.toml"), "");
     let agents = project.join("agents");
-    fs::create_dir(&agents).expect("agents");
-    protect_test_path(&agents);
-    fs::write(
-        agents.join("primary.md"),
+    create_private_test_dir(&agents);
+    write_private_test_file(
+        &agents.join("primary.md"),
         "---\ndescription: Bedrock test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0\", variant: base }]\npermissions: {}\n---\nUse Bedrock.\n",
-    )
-    .expect("agent");
-    protect_test_path(&agents.join("primary.md"));
+    );
     load_from_roots(None, Some(&project)).expect("workspace config")
 }
 
@@ -1823,13 +1846,11 @@ fn custom_fixture() -> (Fixture, RunSelection) {
 }
 
 fn managed_openai_compaction_fixture(endpoint: &str) -> (Fixture, RunSelection) {
-    let directory = TempDir::new().expect("temp directory");
-    protect_test_path(directory.path());
+    let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
-    fs::create_dir(&project).expect("project directory");
-    protect_test_path(&project);
-    fs::write(
-        project.join("config.toml"),
+    create_private_test_dir(&project);
+    write_private_test_file(
+        &project.join("config.toml"),
         r#"
 [providers.openai]
 source = "models_dev"
@@ -1839,18 +1860,13 @@ shape = "responses"
 [providers.openai.model_overrides."gpt-test"]
 compaction = "openai-responses-compact"
 "#,
-    )
-    .expect("config");
-    protect_test_path(&project.join("config.toml"));
+    );
     let agents = project.join("agents");
-    fs::create_dir(&agents).expect("agents directory");
-    protect_test_path(&agents);
-    fs::write(
-        agents.join("primary.md"),
+    create_private_test_dir(&agents);
+    write_private_test_file(
+        &agents.join("primary.md"),
         "---\ndescription: Native compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"openai/gpt-test\", variant: base }]\npermissions: {}\n---\nTest native compaction.\n",
-    )
-    .expect("agent");
-    protect_test_path(&agents.join("primary.md"));
+    );
     let mut config = load_from_roots(None, Some(&project)).expect("loaded config");
     config.runtime.session_title.generate_on_first_turn = false;
     let provider_id = ProviderId::new("openai").expect("provider ID");
@@ -1926,8 +1942,7 @@ compaction = "openai-responses-compact"
         quarantine: Vec::new(),
     });
     let provider_store = directory.path().join("provider-store");
-    fs::create_dir(&provider_store).expect("provider store");
-    protect_test_path(&provider_store);
+    create_private_test_dir(&provider_store);
     let manager = Arc::new(
         ModelManager::new(
             config.runtime.providers.clone(),
@@ -2392,11 +2407,9 @@ fn custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor
     worker_agent: Option<&str>,
     adaptor: &str,
 ) -> (Fixture, RunSelection) {
-    let directory = TempDir::new().expect("temp directory");
-    protect_test_path(directory.path());
+    let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
-    fs::create_dir(&project).expect("project directory");
-    protect_test_path(&project);
+    create_private_test_dir(&project);
     let config_text = r#"
 [delegation]
 max_depth = 1
@@ -2449,24 +2462,18 @@ media = {}
             &format!("[delegation]\nmax_depth = 1\nmax_concurrency = {max_concurrency}"),
         )
     });
-    fs::write(project.join("config.toml"), config_text).expect("config");
-    protect_test_path(&project.join("config.toml"));
+    write_private_test_file(&project.join("config.toml"), config_text);
     let agents = project.join("agents");
-    fs::create_dir(&agents).expect("agents directory");
-    protect_test_path(&agents);
-    fs::write(agents.join("primary.md"), primary_agent).expect("agent");
-    protect_test_path(&agents.join("primary.md"));
-    fs::write(
-        agents.join("worker.md"),
+    create_private_test_dir(&agents);
+    write_private_test_file(&agents.join("primary.md"), primary_agent);
+    write_private_test_file(
+        &agents.join("worker.md"),
         worker_agent.unwrap_or(
             "---\ndescription: Worker test agent\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nWorker prompt.\n",
         ),
-    )
-    .expect("worker agent");
-    protect_test_path(&agents.join("worker.md"));
+    );
     if let Some((name, document)) = internal {
-        fs::write(agents.join(name), document).expect("internal agent");
-        protect_test_path(&agents.join(name));
+        write_private_test_file(&agents.join(name), document);
     }
     let mut config = load_from_roots(None, Some(&project)).expect("loaded config");
     if let Some(server) = mcp_server {
@@ -2478,8 +2485,7 @@ media = {}
             cookie_agent_config::ContextCompactionTrigger::BufferTokens { buffer_tokens };
     }
     let provider_store = directory.path().join("provider-store");
-    fs::create_dir(&provider_store).expect("provider store directory");
-    protect_test_path(&provider_store);
+    create_private_test_dir(&provider_store);
     let now = Timestamp::now();
     let catalog = Arc::new(CatalogSnapshot {
         revision: CatalogRevision::new(format!("sha256:{}", "1".repeat(64)))
@@ -2964,11 +2970,9 @@ fn synthetic_default_fixture_with_config(
     endpoint: &str,
     extra_config: &str,
 ) -> Fixture {
-    let directory = TempDir::new().expect("temp directory");
-    protect_test_path(directory.path());
+    let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
-    fs::create_dir(&project).expect("project directory");
-    protect_test_path(&project);
+    create_private_test_dir(&project);
     let base_config = r#"
 [providers."custom.test"]
 source = "custom"
@@ -2988,19 +2992,15 @@ default_variant = "precise"
 "#;
     let mut config_text = base_config.replace("http://127.0.0.1:9/v1", endpoint);
     config_text.push_str(extra_config);
-    fs::write(project.join("config.toml"), config_text).expect("config");
-    protect_test_path(&project.join("config.toml"));
+    write_private_test_file(&project.join("config.toml"), config_text);
     if let Some(agent) = authored_agent {
         let agents = project.join("agents");
-        fs::create_dir(&agents).expect("agents directory");
-        protect_test_path(&agents);
-        fs::write(agents.join("primary.md"), agent).expect("agent");
-        protect_test_path(&agents.join("primary.md"));
+        create_private_test_dir(&agents);
+        write_private_test_file(&agents.join("primary.md"), agent);
     }
     let config = load_from_roots(None, Some(&project)).expect("loaded config");
     let provider_store = directory.path().join("provider-store");
-    fs::create_dir(&provider_store).expect("provider store directory");
-    protect_test_path(&provider_store);
+    create_private_test_dir(&provider_store);
     let now = Timestamp::now();
     let catalog = Arc::new(CatalogSnapshot {
         revision: CatalogRevision::new(format!("sha256:{}", "2".repeat(64)))
@@ -5478,8 +5478,7 @@ fn disconnect_replay_survives_a_clean_engine_restart() {
 
 #[tokio::test]
 async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_preserves_frozen_run() {
-    let temporary = TempDir::new().expect("temporary root");
-    protect_test_path(temporary.path());
+    let temporary = private_tempdir();
     let workspace_one = temporary.path().join("workspace-one");
     let workspace_two = temporary.path().join("workspace-two");
     let config_one = empty_provider_workspace(&workspace_one);
@@ -10060,14 +10059,17 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
 #[tokio::test]
 async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool() {
     fn copy_tree(source: &std::path::Path, target: &std::path::Path) {
-        fs::create_dir_all(target).expect("snapshot directory");
+        create_private_test_dir(target);
         for entry in fs::read_dir(source).expect("snapshot source") {
             let entry = entry.expect("snapshot entry");
             let destination = target.join(entry.file_name());
             if entry.file_type().expect("snapshot type").is_dir() {
                 copy_tree(&entry.path(), &destination);
             } else {
-                fs::copy(entry.path(), destination).expect("snapshot file");
+                write_private_test_file(
+                    &destination,
+                    fs::read(entry.path()).expect("snapshot file"),
+                );
             }
         }
     }
@@ -10128,7 +10130,7 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
             .is_err()
     );
 
-    let snapshot = tempfile::tempdir().expect("crash snapshot");
+    let snapshot = private_tempdir();
     copy_tree(
         &fixture._directory.path().join("data"),
         &snapshot.path().join("data"),
@@ -10197,14 +10199,17 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
 #[tokio::test]
 async fn staged_skill_child_recovers_after_reservation_before_install_restart() {
     fn copy_tree(source: &std::path::Path, target: &std::path::Path) {
-        fs::create_dir_all(target).expect("snapshot directory");
+        create_private_test_dir(target);
         for entry in fs::read_dir(source).expect("snapshot source") {
             let entry = entry.expect("snapshot entry");
             let destination = target.join(entry.file_name());
             if entry.file_type().expect("snapshot type").is_dir() {
                 copy_tree(&entry.path(), &destination);
             } else {
-                fs::copy(entry.path(), destination).expect("snapshot file");
+                write_private_test_file(
+                    &destination,
+                    fs::read(entry.path()).expect("snapshot file"),
+                );
             }
         }
     }
@@ -10256,7 +10261,7 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
             .any(|event| { matches!(event.payload, EventPayload::SkillLoaded { .. }) })
     );
 
-    let snapshot = tempfile::tempdir().expect("crash snapshot");
+    let snapshot = private_tempdir();
     copy_tree(
         &fixture._directory.path().join("data"),
         &snapshot.path().join("data"),

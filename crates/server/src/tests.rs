@@ -40,14 +40,29 @@ struct Harness {
     server: Arc<Server>,
 }
 
-fn protect_test_path(path: &std::path::Path) {
+fn private_tempdir() -> TempDir {
+    let directory = TempDir::new().expect("temp directory");
+    #[cfg(unix)]
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+        .expect("private temp directory");
+    #[cfg(windows)]
+    {
+        fs::remove_dir(directory.path()).expect("remove ordinary temp directory");
+        cookie_agent_models::secure_store::SecureDirectory::open(directory.path())
+            .expect("private temp directory");
+    }
+    directory
+}
+
+fn create_private_test_dir(path: &std::path::Path) {
     #[cfg(unix)]
     {
-        let mode = if path.is_dir() { 0o700 } else { 0o600 };
-        fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("private test path");
+        fs::create_dir(path).expect("private test directory");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .expect("private test directory");
     }
     #[cfg(windows)]
-    cookie_agent_models::secure_store::protect_windows_path(path).expect("private test path");
+    cookie_agent_models::secure_store::SecureDirectory::open(path).expect("private test directory");
 }
 
 #[tokio::test]
@@ -92,14 +107,11 @@ fn harness() -> Harness {
 }
 
 fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
-    let directory = TempDir::new().expect("temp directory");
-    protect_test_path(directory.path());
+    let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
-    fs::create_dir(&project).expect("project runtime directory");
-    protect_test_path(&project);
+    create_private_test_dir(&project);
     let provider_store = directory.path().join("provider-store");
-    fs::create_dir(&provider_store).expect("provider store directory");
-    protect_test_path(&provider_store);
+    create_private_test_dir(&provider_store);
 
     let revision =
         CatalogRevision::new(format!("sha256:{}", "0".repeat(64))).expect("catalog revision");
@@ -342,14 +354,11 @@ fn harness_with_catalog(
     catalog: Arc<CatalogSnapshot>,
     prepare_store: impl FnOnce(&ProviderStore),
 ) -> Harness {
-    let directory = TempDir::new().expect("temp directory");
-    protect_test_path(directory.path());
+    let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
-    fs::create_dir(&project).expect("project runtime directory");
-    protect_test_path(&project);
+    create_private_test_dir(&project);
     let provider_store_path = directory.path().join("provider-store");
-    fs::create_dir(&provider_store_path).expect("provider store directory");
-    protect_test_path(&provider_store_path);
+    create_private_test_dir(&provider_store_path);
     let store = ProviderStore::open(&provider_store_path).expect("provider store");
     prepare_store(&store);
     let manager =

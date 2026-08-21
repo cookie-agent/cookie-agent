@@ -50,14 +50,50 @@ fn mcp_table(name: &str, lazy: bool) -> String {
     )
 }
 
-fn protect_test_path(path: &std::path::Path) {
+fn private_tempdir() -> tempfile::TempDir {
+    let directory = tempfile::tempdir().expect("workspace");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).expect("private test path");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private workspace");
     }
     #[cfg(windows)]
-    cookie_agent_models::secure_store::protect_windows_path(path).expect("private test path");
+    {
+        fs::remove_dir(directory.path()).expect("remove ordinary temp directory");
+        cookie_agent_models::secure_store::SecureDirectory::open(directory.path())
+            .expect("private workspace");
+    }
+    directory
+}
+
+fn create_private_test_dir(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::create_dir(path).expect("private test directory");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .expect("private test directory");
+    }
+    #[cfg(windows)]
+    cookie_agent_models::secure_store::SecureDirectory::open(path).expect("private test directory");
+}
+
+fn write_private_test_file(path: &std::path::Path, contents: &[u8]) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::write(path, contents).expect("private test file");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("private test file");
+    }
+    #[cfg(windows)]
+    {
+        use std::io::Write as _;
+
+        let mut file = cookie_agent_models::secure_store::create_windows_private_file(path)
+            .expect("private test file");
+        file.write_all(contents).expect("write private test file");
+    }
 }
 
 struct Harness {
@@ -66,15 +102,13 @@ struct Harness {
 }
 
 fn open_engine(config_text: &str) -> Harness {
-    let directory = tempfile::tempdir().expect("workspace");
-    protect_test_path(directory.path());
+    let directory = private_tempdir();
     let config_root = directory.path().join("config");
-    fs::create_dir(&config_root).expect("config root");
-    fs::write(config_root.join("config.toml"), config_text).expect("config");
+    create_private_test_dir(&config_root);
+    write_private_test_file(&config_root.join("config.toml"), config_text.as_bytes());
     let config = load_from_roots(None, Some(&config_root)).expect("loaded config");
     let provider_store = directory.path().join("provider-store");
-    fs::create_dir(&provider_store).expect("provider store directory");
-    protect_test_path(&provider_store);
+    create_private_test_dir(&provider_store);
     let now = Timestamp::now();
     let catalog = Arc::new(CatalogSnapshot {
         revision: CatalogRevision::new(format!("sha256:{}", "0".repeat(64)))

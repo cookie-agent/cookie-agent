@@ -1244,7 +1244,7 @@ mod tests {
         ffi::OsString,
         os::unix::{
             ffi::{OsStrExt, OsStringExt},
-            fs::{MetadataExt, PermissionsExt, symlink},
+            fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink},
         },
     };
 
@@ -1265,12 +1265,57 @@ mod tests {
         SessionStore::project_dir(data_root, cwd).join(PROJECT_CWD_FILE)
     }
 
+    fn private_tempdir() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().expect("temporary root");
+        #[cfg(unix)]
+        {
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+                .expect("private temporary root");
+        }
+        #[cfg(windows)]
+        {
+            fs::remove_dir(directory.path()).expect("remove ordinary temp directory");
+            cookie_agent_models::secure_store::SecureDirectory::open(directory.path())
+                .expect("private temporary root");
+        }
+        directory
+    }
+
     fn create_private_test_dir_all(path: &Path) {
         #[cfg(unix)]
-        fs::create_dir_all(path).expect("private test directory");
+        {
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true).mode(0o700);
+            builder.create(path).expect("private test directory");
+        }
         #[cfg(windows)]
         cookie_agent_models::secure_store::create_windows_private_dir_all(path)
             .expect("private test directory");
+    }
+
+    fn write_private_test_file(path: &Path, contents: impl AsRef<[u8]>) {
+        #[cfg(unix)]
+        {
+            use std::io::Write as _;
+
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(path)
+                .expect("private test file");
+            file.write_all(contents.as_ref())
+                .expect("write private test file");
+        }
+        #[cfg(windows)]
+        {
+            use std::io::Write as _;
+
+            let mut file = cookie_agent_models::secure_store::create_windows_private_file(path)
+                .expect("private test file");
+            file.write_all(contents.as_ref())
+                .expect("write private test file");
+        }
     }
 
     // Requires Unix symlink semantics and exact raw path bytes.
@@ -1388,7 +1433,7 @@ mod tests {
 
     #[test]
     fn existing_project_folder_gains_cwd_file_without_moving_children() {
-        let temp = tempfile::tempdir().expect("temp");
+        let temp = private_tempdir();
         let data = temp.path().join("data");
         let project = SessionStore::project_dir(&data, temp.path());
         assert_eq!(
@@ -1410,7 +1455,7 @@ mod tests {
 
     #[test]
     fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
-        let temp = tempfile::tempdir().expect("temp");
+        let temp = private_tempdir();
         let path = temp.path().join("events.jsonl");
         let session_id = SessionId::new_v7();
         let run_id = RunId::new_v7();
@@ -1554,7 +1599,7 @@ mod tests {
                 + "\n"
         };
         let legacy_path = temp.path().join("legacy-events.jsonl");
-        fs::write(&legacy_path, rewrite(session_id, None)).unwrap();
+        write_private_test_file(&legacy_path, rewrite(session_id, None));
 
         let reopened = crate::events::EventLog::open(path, session_id).unwrap();
         // The TUI footer reducer sums these same durable pico-USD stamps.
@@ -1611,7 +1656,7 @@ mod tests {
 
         let cwd = temp.path().join("fork-cwd");
         let data = temp.path().join("fork-data");
-        fs::create_dir(&cwd).unwrap();
+        create_private_test_dir_all(&cwd);
         let seed = SessionStore::open(&data, &cwd).unwrap();
         let sessions_dir = seed.sessions_dir.clone();
         drop(seed);
@@ -1622,8 +1667,8 @@ mod tests {
             (unpriced_source, rewrite(unpriced_source, Some(None))),
         ] {
             let directory = sessions_dir.join(source_id.to_string());
-            fs::create_dir(&directory).unwrap();
-            fs::write(directory.join("events.jsonl"), contents).unwrap();
+            create_private_test_dir_all(&directory);
+            write_private_test_file(&directory.join("events.jsonl"), contents);
         }
         let store = SessionStore::open(&data, &cwd).unwrap();
         let legacy_fork = store.fork(legacy_source, through_seq).unwrap();
@@ -1655,7 +1700,7 @@ mod tests {
 
     #[test]
     fn internal_usage_is_once_per_fallback_phase_and_all_kinds_survive_reopen() {
-        let temp = tempfile::tempdir().expect("temp");
+        let temp = private_tempdir();
         let path = temp.path().join("internal-usage-events.jsonl");
         let session_id = SessionId::new_v7();
         let run_id = RunId::new_v7();
