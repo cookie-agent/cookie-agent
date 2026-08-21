@@ -1929,9 +1929,23 @@ mod windows_tests {
             b"created"
         );
 
-        assert!(matches!(
-            prepare_target(root.path(), &outside.path().join("escape.txt")),
-            Err(ToolError::UnsupportedSecurity(_))
+        let outside_path = outside.path().join("external.txt");
+        fs::write(&outside_path, "external").expect("outside fixture");
+        let outside_from_root =
+            prepare_existing(root.path(), &outside_path).expect("prepare absolute outside target");
+        let outside_direct = prepare_existing(outside.path(), std::path::Path::new("external.txt"))
+            .expect("prepare direct outside target");
+        let canonical_outside = outside_path
+            .canonicalize()
+            .expect("canonical outside target");
+        assert!(paths_equal(
+            &outside_from_root.display_path,
+            &canonical_outside
+        ));
+        assert_eq!(outside_from_root.identity, outside_direct.identity);
+        assert!(!components_start_with(
+            &outside_from_root.display_path,
+            &root.path().canonicalize().expect("canonical sandbox")
         ));
     }
 
