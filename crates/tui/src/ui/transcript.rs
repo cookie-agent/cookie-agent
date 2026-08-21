@@ -11626,6 +11626,7 @@ mod tests {
     /// checked against exact `through_seq` values.
     async fn app_with_user_messages() -> (App, SessionId, Arc<Mutex<Vec<String>>>) {
         let mut app = test_app().await;
+        app.theme = Theme::new(ThemeKind::Default, ColorLevel::TrueColor);
         let session = SessionId::new_v7();
         let run = run_id();
         let copied = Arc::new(Mutex::new(Vec::new()));
