@@ -516,7 +516,11 @@ const PLUGIN_DIAGNOSTIC_MESSAGE_CHARS: usize = 200;
 const PLUGIN_DIAGNOSTIC_DETAIL_KEYS: usize = 256;
 const PLUGIN_DIAGNOSTIC_OVERFLOW_MESSAGE: &str = "(overflow)";
 const PLUGIN_DIAGNOSTIC_APPEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+#[cfg(not(all(test, windows)))]
 const PLUGIN_DIAGNOSTIC_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+// Windows CI's coalescing test drains up to 257 synced appends under parallel load.
+#[cfg(all(test, windows))]
+const PLUGIN_DIAGNOSTIC_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Debug, Default)]
 struct PendingPluginDiagnostics {

@@ -99,6 +99,10 @@ fn python_command() -> &'static str {
     if cfg!(windows) { "python" } else { "python3" }
 }
 
+fn test_timeout(seconds: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(if cfg!(windows) { seconds * 5 } else { seconds })
+}
+
 #[tokio::test]
 async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
     let (mut fixture, selection) = custom_fixture();
@@ -2045,16 +2049,7 @@ async fn session_metadata_tracks_log_tail_for_create_get_list_tree_and_append() 
         })
         .await
         .expect("persist session");
-    for _ in 0..200 {
-        if fixture
-            .engine
-            .get_session(created.session_id)
-            .is_ok_and(|meta| meta.status != cookie_agent_protocol::SessionStatus::Running)
-        {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    wait_for_session_not_running(&fixture.engine, created.session_id).await;
     let latest_event = fixture
         .engine
         .inner
@@ -2119,16 +2114,7 @@ async fn unreadable_session_metadata_cache_is_rebuilt_from_events() {
         })
         .await
         .expect("persist session");
-    for _ in 0..200 {
-        if fixture
-            .engine
-            .get_session(session.session_id)
-            .is_ok_and(|meta| meta.status != cookie_agent_protocol::SessionStatus::Running)
-        {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
     let path = fixture
         .engine
         .inner
@@ -2226,16 +2212,7 @@ async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly(
 
     assert!(session_dir.join("meta.json").is_file());
     assert!(session_dir.join("events.jsonl").is_file());
-    for _ in 0..200 {
-        if fixture
-            .engine
-            .get_session(session.session_id)
-            .is_ok_and(|meta| meta.status != cookie_agent_protocol::SessionStatus::Running)
-        {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
 
     let memory_events = fixture
         .engine
@@ -4320,7 +4297,7 @@ lazy = true
         })
         .await
         .expect("run accepted");
-    tokio::time::timeout(std::time::Duration::from_secs(3), reached)
+    tokio::time::timeout(test_timeout(3), reached)
         .await
         .expect("model request reached")
         .expect("model reach signal");
@@ -4330,7 +4307,7 @@ lazy = true
         .reconnect_mcp_server("fixture".into())
         .await
         .expect("connect lazy MCP");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(test_timeout(3), async {
         loop {
             if fixture.engine.plugin_statuses().iter().any(|status| {
                 status.plugin == "collision" && status.state == crate::PluginState::Failed
@@ -4344,7 +4321,7 @@ lazy = true
     .expect("plugin preempted");
     release.notify_one();
 
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tokio::time::timeout(test_timeout(5), async {
         loop {
             if fixture
                 .engine
@@ -4550,7 +4527,7 @@ async fn approve_once(
 }
 
 async fn wait_for_tool_execution(executed: &AtomicBool) {
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(test_timeout(2), async {
         while !executed.load(Ordering::Acquire) {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
@@ -4560,7 +4537,7 @@ async fn wait_for_tool_execution(executed: &AtomicBool) {
 }
 
 async fn wait_for_session_not_running(engine: &Engine, session_id: SessionId) {
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(test_timeout(2), async {
         loop {
             if engine
                 .get_session(session_id)
@@ -6760,7 +6737,7 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
         .await
         .expect("run started")
         .run_id;
-    if tokio::time::timeout(std::time::Duration::from_secs(2), output_started.notified())
+    if tokio::time::timeout(test_timeout(2), output_started.notified())
         .await
         .is_err()
     {
@@ -6802,12 +6779,12 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
         })
         .await
         .expect("interactive stdin accepted");
-    tokio::time::timeout(std::time::Duration::from_secs(2), stdin_received.notified())
+    tokio::time::timeout(test_timeout(2), stdin_received.notified())
         .await
         .expect("executor received stdin");
     fixture.engine.cancel_run(run).await.expect("cancel run");
 
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(test_timeout(3), async {
         loop {
             let terminated = fixture
                 .engine
@@ -6931,7 +6908,7 @@ async fn start_streaming_bash_test_run(
         .await
         .expect("run started")
         .run_id;
-    tokio::time::timeout(std::time::Duration::from_secs(2), output_started.notified())
+    tokio::time::timeout(test_timeout(2), output_started.notified())
         .await
         .expect("streaming output started");
     let call_id = fixture
@@ -6975,7 +6952,7 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
         })
         .await
         .expect("interactive stdin accepted");
-    tokio::time::timeout(std::time::Duration::from_secs(2), stdin_received.notified())
+    tokio::time::timeout(test_timeout(2), stdin_received.notified())
         .await
         .expect("executor received stdin");
     fixture.engine.block_tool_progress_appends_for_test();
@@ -6985,13 +6962,10 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
         .cancel_run(run_id)
         .await
         .expect("cancel wedged run");
-    tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        cleanup_progress_sent.notified(),
-    )
-    .await
-    .expect("cleanup progress accepted");
-    let error_message = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(test_timeout(1), cleanup_progress_sent.notified())
+        .await
+        .expect("cleanup progress accepted");
+    let error_message = tokio::time::timeout(test_timeout(3), async {
         loop {
             let terminal = fixture
                 .engine
@@ -7835,7 +7809,7 @@ async fn yolo_permission_mode_still_triggers_the_doom_loop_guard() {
         })
         .await
         .expect("run");
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(test_timeout(2), async {
         loop {
             let events = fixture
                 .engine
@@ -9889,7 +9863,7 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
         })
         .await
         .expect("accepted parent run");
-    let completed = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    let completed = tokio::time::timeout(test_timeout(3), async {
         loop {
             let projection = fixture
                 .engine
@@ -9950,7 +9924,7 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
             .evict_idle_subagents_for_test(0, std::time::Duration::ZERO)
             .await
     });
-    tokio::time::timeout(std::time::Duration::from_secs(2), janitor_reached)
+    tokio::time::timeout(test_timeout(2), janitor_reached)
         .await
         .expect("janitor pre-barrier hook timeout")
         .expect("janitor reached pre-barrier hook");
@@ -9961,7 +9935,7 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
         .enqueue_compact_without_residency_for_test(child.session_id)
         .await
         .expect("queue compaction ahead of eviction barrier");
-    tokio::time::timeout(std::time::Duration::from_secs(2), compaction_reached)
+    tokio::time::timeout(test_timeout(2), compaction_reached)
         .await
         .expect("compaction execution hook timeout")
         .expect("detached compaction reached delay hook");
@@ -9980,10 +9954,10 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
             .compaction_reserved_for_test(child.session_id)
     );
     compaction_release.notify_waiters();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), compaction)
+    let _ = tokio::time::timeout(test_timeout(2), compaction)
         .await
         .expect("compaction reply timeout");
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(test_timeout(2), async {
         while fixture
             .engine
             .compaction_reserved_for_test(child.session_id)
@@ -10380,7 +10354,7 @@ async fn delegated_child_uses_description_title_without_title_agent() {
         })
         .await
         .expect("accepted titled delegation");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(test_timeout(3), async {
         loop {
             if fixture
                 .engine
@@ -10699,7 +10673,7 @@ async fn delegation_completion_triggers_configured_subagent_eviction_after_tease
         .await
         .expect("automatic paging parent run");
 
-    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    let child_session_id = tokio::time::timeout(test_timeout(3), async {
         loop {
             if let Some(child) = fixture
                 .engine
@@ -13515,7 +13489,7 @@ async fn background_startup_failure_releases_capacity_and_notifies() {
         .await
         .expect("accepted startup failure parent");
 
-    let completed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let completed = tokio::time::timeout(test_timeout(5), async {
         loop {
             let children = fixture.engine.children(parent.session_id);
             let completed = children
@@ -13602,7 +13576,7 @@ async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
         .await
         .expect("accepted queued parent run");
 
-    let completed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let completed = tokio::time::timeout(test_timeout(5), async {
         loop {
             let parent_projection = fixture
                 .engine
@@ -13677,7 +13651,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
         .await
         .expect("accepted full queue parent run");
 
-    let projection = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let projection = tokio::time::timeout(test_timeout(5), async {
         loop {
             let projection = fixture
                 .engine

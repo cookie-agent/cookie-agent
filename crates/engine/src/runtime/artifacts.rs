@@ -905,12 +905,7 @@ mod windows {
 
         fn create_file(&self, name: &str) -> std::io::Result<fs::File> {
             let path = self.directory.join(name);
-            let file = fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&path)?;
-            cookie_agent_models::secure_store::protect_windows_path(&path)?;
+            let file = cookie_agent_models::secure_store::create_windows_private_file(&path)?;
             validate_regular_file(&path, &file)?;
             Ok(file)
         }
