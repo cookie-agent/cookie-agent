@@ -1182,12 +1182,18 @@ fn project_cwd_is_current(path: &Path, expected: &[u8]) -> bool {
 
 #[cfg(windows)]
 fn create_windows_session_directory(path: &Path) -> Result<(), SessionError> {
-    cookie_agent_models::secure_store::create_windows_private_dir_all(path).map_err(|source| {
-        SessionError::Io {
-            path: path.to_owned(),
-            source,
-        }
-    })
+    cookie_agent_models::secure_store::SecureDirectory::open(path)
+        .map(|_| ())
+        .map_err(|error| match error {
+            cookie_agent_models::secure_store::SecureStoreError::Io(source) => SessionError::Io {
+                path: path.to_owned(),
+                source,
+            },
+            error => SessionError::Io {
+                path: path.to_owned(),
+                source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, error),
+            },
+        })
 }
 
 #[cfg(windows)]
@@ -1880,15 +1886,18 @@ mod windows_tests {
         let cwd = temporary.path().join("workspace");
         std::fs::create_dir(&cwd).expect("workspace");
         let data = temporary.path().join("data");
-        let store = SessionStore::open(&data, &cwd).expect("session store");
+        let store = SessionStore::open(&data, &cwd).unwrap_or_else(|error| {
+            panic!("Windows session store open failed for data={data:?}, cwd={cwd:?}: {error:?}")
+        });
         let project = store.project_dir_path();
         for path in [
             project.to_owned(),
             project.join("sessions"),
             project.join(PROJECT_CWD_FILE),
         ] {
-            cookie_agent_models::secure_store::validate_windows_path_acl(&path)
-                .expect("private ACL");
+            cookie_agent_models::secure_store::validate_windows_path_acl(&path).unwrap_or_else(
+                |error| panic!("private ACL validation failed for {path:?}: {error:?}"),
+            );
         }
     }
 

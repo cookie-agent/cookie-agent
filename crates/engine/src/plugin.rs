@@ -1245,7 +1245,7 @@ impl PluginRuntime {
         wrapped.wrap(KillOnDrop);
         let mut child = wrapped
             .spawn()
-            .map_err(|error| format!("spawn failure: {error}"))?;
+            .map_err(|error| format!("spawn failure for command `{command}`: {error}"))?;
         let result = self
             .supervise_spawned(&mut child, receiver, notifications)
             .await;
@@ -2091,6 +2091,15 @@ mod tests {
 
     const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
     const DECLARATION: &str = r#"[{"name":"fixture_echo","description":"Echo","parameters":{"type":"object","properties":{"text":{"type":"string"},"path":{"type":"string"}}},"permission_name":"fixture_echo","primary_resource_param":"path"}]"#;
+    #[cfg(unix)]
+    const PYTHON: &str = "python3";
+    #[cfg(windows)]
+    const PYTHON: &str = "python";
+
+    #[cfg(unix)]
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+    #[cfg(windows)]
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
     struct Harness {
         directory: tempfile::TempDir,
@@ -2100,13 +2109,22 @@ mod tests {
     async fn harness(extra_env: &[(&str, &str)], timeout_ms: u64) -> Harness {
         let directory = tempfile::tempdir().expect("plugin test directory");
         let mcp = Arc::new(
-            crate::McpRegistry::new(BTreeMap::new(), directory.path().join("oauth.json"))
-                .expect("MCP registry"),
+            crate::McpRegistry::new(
+                BTreeMap::new(),
+                directory.path().join("private-oauth").join("oauth.json"),
+            )
+            .expect("MCP registry"),
         );
         let mut env = BTreeMap::from([
             ("FIXTURE_NAME".into(), "fixture".into()),
             ("FIXTURE_TOOLS".into(), DECLARATION.into()),
         ]);
+        #[cfg(windows)]
+        for name in ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"] {
+            if let Ok(value) = std::env::var(name) {
+                env.insert(name.to_owned(), value);
+            }
+        }
         env.extend(
             extra_env
                 .iter()
@@ -2116,7 +2134,7 @@ mod tests {
             BTreeMap::from([(
                 "fixture".into(),
                 PluginConfig {
-                    command: Some("python3".into()),
+                    command: Some(PYTHON.into()),
                     args: vec![FIXTURE.into()],
                     env,
                     cwd: None,
@@ -2132,7 +2150,7 @@ mod tests {
             mcp,
         );
         registry.start_eager(&tokio::runtime::Handle::current());
-        tokio::time::timeout(Duration::from_secs(2), async {
+        let connected = tokio::time::timeout(CONNECT_TIMEOUT, async {
             loop {
                 if registry
                     .statuses()
@@ -2144,8 +2162,13 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
-        .await
-        .expect("plugin connected");
+        .await;
+        if connected.is_err() {
+            panic!(
+                "plugin failed to connect with interpreter `{PYTHON}` and fixture `{FIXTURE}`; statuses: {:?}",
+                registry.statuses()
+            );
+        }
         Harness {
             directory,
             registry,
@@ -2155,8 +2178,11 @@ mod tests {
     async fn multi_harness(plugins: &[(&str, &[(&str, &str)])]) -> Harness {
         let directory = tempfile::tempdir().expect("plugin test directory");
         let mcp = Arc::new(
-            crate::McpRegistry::new(BTreeMap::new(), directory.path().join("oauth.json"))
-                .expect("MCP registry"),
+            crate::McpRegistry::new(
+                BTreeMap::new(),
+                directory.path().join("private-oauth").join("oauth.json"),
+            )
+            .expect("MCP registry"),
         );
         let plugins: IndexMap<String, PluginConfig> = plugins
             .iter()
@@ -2170,6 +2196,12 @@ mod tests {
                         .iter()
                         .map(|(key, value)| ((*key).to_owned(), (*value).to_owned())),
                 );
+                #[cfg(windows)]
+                for name in ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"] {
+                    if let Ok(value) = std::env::var(name) {
+                        env.insert(name.to_owned(), value);
+                    }
+                }
                 let interception_timeout_ms = env
                     .remove("FIXTURE_HOST_INTERCEPTION_TIMEOUT_MS")
                     .and_then(|value| value.parse().ok())
@@ -2177,7 +2209,7 @@ mod tests {
                 (
                     (*name).to_owned(),
                     PluginConfig {
-                        command: Some("python3".into()),
+                        command: Some(PYTHON.into()),
                         args: vec![FIXTURE.into()],
                         env,
                         cwd: None,

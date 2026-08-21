@@ -2076,8 +2076,8 @@ impl ServerRuntime {
             wrapped.wrap(JobObject);
             let transport = TokioChildProcess::new(wrapped).map_err(|error| {
                 ToolError::execution(format!(
-                    "MCP server `{}` failed to spawn: {error}",
-                    self.name
+                    "MCP server `{}` failed to spawn command `{command}`: {error}",
+                    self.name,
                 ))
             })?;
             let cleanup = ChildCleanup::new();
@@ -2849,13 +2849,29 @@ mod tests {
         sanitize_name,
     };
 
+    #[cfg(unix)]
+    const PYTHON: &str = "python3";
+    #[cfg(windows)]
+    const PYTHON: &str = "python";
+
+    fn oauth_path(directory: &tempfile::TempDir) -> std::path::PathBuf {
+        directory
+            .path()
+            .join("private-oauth")
+            .join(OAUTH_STORE_FILE)
+    }
+
     fn fixture_config(lazy: bool) -> McpServerConfig {
         McpServerConfig {
-            command: Some("python3".into()),
-            args: vec![format!(
-                "{}/tests/fixtures/mcp_server.py",
-                env!("CARGO_MANIFEST_DIR")
-            )],
+            command: Some(PYTHON.into()),
+            args: vec![
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests")
+                    .join("fixtures")
+                    .join("mcp_server.py")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
             env: BTreeMap::new(),
             cwd: None,
             url: None,
@@ -2876,7 +2892,7 @@ mod tests {
                     config: fixture_config(lazy),
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(directory),
         )
         .expect("MCP registry")
     }
@@ -3122,7 +3138,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         let server = registry.server("fixture").expect("server");
@@ -3154,7 +3170,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         let server = registry.server("fixture").expect("server");
@@ -3198,7 +3214,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         let server = registry.server("fixture").expect("server");
@@ -3253,7 +3269,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         let server = registry.server("fixture").expect("server");
@@ -3375,7 +3391,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         let server = registry.server("fixture").expect("server");
@@ -3468,7 +3484,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         registry.start_eager(&tokio::runtime::Handle::current());
@@ -3510,7 +3526,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         let server = registry.server("fixture").expect("server");
@@ -3574,7 +3590,7 @@ for line in sys.stdin:
                     config: delayed,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         let old = registry.server("fixture").expect("old server");
@@ -3633,7 +3649,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
 
@@ -3671,7 +3687,7 @@ for line in sys.stdin:
                 },
             ),
         ]);
-        let error = McpRegistry::new(servers, directory.path().join(OAUTH_STORE_FILE))
+        let error = McpRegistry::new(servers, oauth_path(&directory))
             .expect_err("sanitized server collision");
         assert!(error.to_string().contains("git/hub"));
         assert!(error.to_string().contains("git hub"));

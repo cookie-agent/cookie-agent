@@ -3650,10 +3650,17 @@ mod tests {
         if std::env::var_os("COOKIE_UPDATE_EVENT_FIXTURE").is_some() {
             fs::write(&fixture, &bytes).expect("update current delegation fixture");
         }
-        assert_eq!(
-            fs::read(&fixture).expect("current delegation fixture"),
-            bytes
-        );
+        let fixture_bytes = fs::read(&fixture).expect("current delegation fixture");
+        #[cfg(unix)]
+        assert_eq!(fixture_bytes, bytes);
+        #[cfg(windows)]
+        {
+            let normalized = String::from_utf8(fixture_bytes)
+                .expect("delegation fixture is UTF-8")
+                .replace("\r\n", "\n")
+                .into_bytes();
+            assert_eq!(normalized, bytes, "delegation fixture content drifted");
+        }
         let directory = tempdir().expect("temporary directory");
         let path = directory.path().join("events.jsonl");
         fs::copy(fixture, &path).expect("copy current fixture");
