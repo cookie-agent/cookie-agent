@@ -1898,8 +1898,9 @@ mod tests {
 #[cfg(all(test, windows))]
 mod windows_tests {
     use cookie_agent_protocol::{
-        AgentMode, AgentRevision, CatalogRevision, CwdIdentity, EventPayload, ModelRevision,
-        ProviderStateRevision, RecipeRegistryRevision, RuntimeRevision, SessionId, SessionOrigin,
+        AgentMode, AgentRevision, CatalogRevision, ClientRunId, CwdIdentity, EventPayload,
+        ModelRevision, ProviderStateRevision, RecipeRegistryRevision, RunId, RuntimeRevision,
+        SessionId, SessionOrigin,
     };
 
     use super::{PROJECT_CWD_FILE, SessionStore};
@@ -1951,28 +1952,55 @@ mod windows_tests {
         let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
         let selection = crate::test_support::run_selection("test");
         let binding = agent.fallback_chain[0].clone();
+        let runtime_revision = RuntimeRevision::new(revision('1')).unwrap();
+        let catalog_revision = CatalogRevision::new(revision('2')).unwrap();
+        let provider_state_revision = ProviderStateRevision::new(revision('3')).unwrap();
+        let model_revision = ModelRevision::new(revision('4')).unwrap();
+        let agent_revision = AgentRevision::new(revision('5')).unwrap();
+        let recipe_registry_revision = RecipeRegistryRevision::new(revision('6')).unwrap();
         store
             .create(
                 session_id,
                 EventPayload::SessionCreated {
                     origin: SessionOrigin::Root,
                     cwd_identity: CwdIdentity::new("workspace:test").unwrap(),
-                    creation_selection: selection,
-                    creation_agent: Box::new(agent),
-                    runtime_revision: RuntimeRevision::new(revision('1')).unwrap(),
-                    catalog_revision: CatalogRevision::new(revision('2')).unwrap(),
-                    provider_state_revision: ProviderStateRevision::new(revision('3')).unwrap(),
-                    model_revision: ModelRevision::new(revision('4')).unwrap(),
-                    agent_revision: AgentRevision::new(revision('5')).unwrap(),
-                    recipe_registry_revision: RecipeRegistryRevision::new(revision('6')).unwrap(),
-                    manifest_revision: binding.manifest_revision,
+                    creation_selection: selection.clone(),
+                    creation_agent: Box::new(agent.clone()),
+                    runtime_revision: runtime_revision.clone(),
+                    catalog_revision: catalog_revision.clone(),
+                    provider_state_revision: provider_state_revision.clone(),
+                    model_revision: model_revision.clone(),
+                    agent_revision: agent_revision.clone(),
+                    recipe_registry_revision: recipe_registry_revision.clone(),
+                    manifest_revision: binding.manifest_revision.clone(),
                 },
             )
             .expect("buffered session");
+        let run_id = RunId::new_v7();
         store
             .append(
                 session_id,
-                None,
+                Some(run_id),
+                EventPayload::RunStarted {
+                    client_run_id: ClientRunId::new("windows-buffered-session").unwrap(),
+                    selection,
+                    agent: Box::new(agent),
+                    runtime_revision,
+                    catalog_revision,
+                    provider_state_revision,
+                    model_revision,
+                    agent_revision,
+                    recipe_registry_revision,
+                    manifest_revision: binding.manifest_revision.clone(),
+                    selected_suffix: vec![binding],
+                    input_through_seq: 1,
+                },
+            )
+            .expect("start buffered run");
+        store
+            .append(
+                session_id,
+                Some(run_id),
                 EventPayload::UserInputSubmitted {
                     input: "persist me".into(),
                 },
