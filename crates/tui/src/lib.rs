@@ -171,9 +171,14 @@ mod tests {
         }
         let providers = test_providers();
         let provider_store = directory.path().join("provider-store");
-        fs::create_dir(&provider_store).expect("provider store directory");
         #[cfg(unix)]
-        fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
+        {
+            fs::create_dir(&provider_store).expect("provider store directory");
+            fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
+                .expect("private provider store");
+        }
+        #[cfg(windows)]
+        cookie_agent_models::secure_store::SecureDirectory::open(&provider_store)
             .expect("private provider store");
         let revision =
             cookie_agent_protocol::CatalogRevision::new(format!("sha256:{}", "0".repeat(64)))
