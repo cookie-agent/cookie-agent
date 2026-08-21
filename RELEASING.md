@@ -1,10 +1,11 @@
 # Releasing cookie agent
 
-Stable releases are driven by manual `vX.Y.Z` tags. cargo-dist builds the five
-supported targets, creates tar archives and SHA256 checksums, generates the
-shell installer, and publishes those files to a GitHub release. The workflow
-also publishes the three public Rust crates when `CARGO_REGISTRY_TOKEN` is
-configured in the repository's Actions secrets.
+Stable releases are driven by manual `vX.Y.Z` tags. cargo-dist builds five Linux
+and macOS targets plus Windows x86_64 and ARM64 MSVC targets, creates tar or ZIP
+archives and SHA256 checksums, generates shell and PowerShell installers, and
+publishes those files to a GitHub release. The workflow also publishes the three
+public Rust crates when `CARGO_REGISTRY_TOKEN` is configured in the repository's
+Actions secrets.
 
 ## Stable release
 
@@ -28,7 +29,7 @@ the tag is `v0.2.0`.
 
 ## Nightly release
 
-Every push to `main` builds the same five targets and force-updates the rolling
-`nightly` GitHub prerelease. Each binary includes the source commit in
-`cookie --version`. A newer successful run replaces the previous nightly
+Every push to `main` builds the five Linux and macOS targets and force-updates
+the rolling `nightly` GitHub prerelease. Each binary includes the source commit
+in `cookie --version`. A newer successful run replaces the previous nightly
 assets; superseded in-progress runs are cancelled.
