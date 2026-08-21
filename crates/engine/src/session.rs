@@ -344,7 +344,7 @@ impl SessionStore {
         Ok(true)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn install_eviction_transition_hook_for_test(
         &self,
     ) -> (
@@ -1235,17 +1235,17 @@ fn create_windows_session_file(path: &Path) -> Result<(), SessionError> {
         })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
+    use std::{collections::BTreeMap, fs, path::Path};
+
+    #[cfg(unix)]
     use std::{
-        collections::BTreeMap,
         ffi::OsString,
-        fs,
         os::unix::{
             ffi::{OsStrExt, OsStringExt},
             fs::{MetadataExt, PermissionsExt, symlink},
         },
-        path::Path,
     };
 
     use cookie_agent_config::{ModelPricing, PicoUsdPerMillion, PricingConfig};
@@ -1260,10 +1260,21 @@ mod tests {
 
     use super::{PROJECT_CWD_FILE, SessionStore, projection};
 
+    #[cfg(unix)]
     fn cwd_file(data_root: &Path, cwd: &Path) -> std::path::PathBuf {
         SessionStore::project_dir(data_root, cwd).join(PROJECT_CWD_FILE)
     }
 
+    fn create_private_test_dir_all(path: &Path) {
+        #[cfg(unix)]
+        fs::create_dir_all(path).expect("private test directory");
+        #[cfg(windows)]
+        cookie_agent_models::secure_store::create_windows_private_dir_all(path)
+            .expect("private test directory");
+    }
+
+    // Requires Unix symlink semantics and exact raw path bytes.
+    #[cfg(unix)]
     #[test]
     fn canonical_aliases_share_the_existing_project_and_record_canonical_bytes() {
         let temp = tempfile::tempdir().expect("temp");
@@ -1288,6 +1299,8 @@ mod tests {
         );
     }
 
+    // Requires constructing and comparing non-UTF8 Unix path bytes.
+    #[cfg(unix)]
     #[test]
     fn non_utf8_cwd_round_trips_exact_bytes() {
         let temp = tempfile::tempdir().expect("temp");
@@ -1307,6 +1320,8 @@ mod tests {
         );
     }
 
+    // Verifies exact POSIX mode repair.
+    #[cfg(unix)]
     #[test]
     fn cwd_file_is_private_and_bad_mode_is_atomically_refreshed() {
         let temp = tempfile::tempdir().expect("temp");
@@ -1323,6 +1338,8 @@ mod tests {
         assert_eq!(fs::metadata(path).expect("metadata").mode() & 0o7777, 0o600);
     }
 
+    // Verifies atomic replacement using Unix inode identity and mode bits.
+    #[cfg(unix)]
     #[test]
     fn stale_cwd_file_is_replaced_atomically() {
         let temp = tempfile::tempdir().expect("temp");
@@ -1355,6 +1372,8 @@ mod tests {
         );
     }
 
+    // Verifies retention using Unix inode identity.
+    #[cfg(unix)]
     #[test]
     fn correct_cwd_file_is_retained_on_reopen() {
         let temp = tempfile::tempdir().expect("temp");
@@ -1376,7 +1395,7 @@ mod tests {
             project.file_name().expect("hash").to_string_lossy().len(),
             16
         );
-        fs::create_dir_all(project.join("sessions")).expect("existing project");
+        create_private_test_dir_all(&project.join("sessions"));
         fs::write(project.join("sentinel"), b"keep").expect("sentinel");
         assert!(!project.join(PROJECT_CWD_FILE).exists());
 

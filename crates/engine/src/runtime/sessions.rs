@@ -123,7 +123,7 @@ impl Engine {
         Ok(session.metadata())
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn install_read_only_reopen_hook_for_test(
         &self,
     ) -> (

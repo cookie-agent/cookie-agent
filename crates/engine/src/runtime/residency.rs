@@ -47,7 +47,7 @@ impl Engine {
         self.evict_idle_subagents_with(cap, idle_after).await
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) async fn evict_idle_subagents_for_test(
         &self,
         cap: usize,
@@ -56,7 +56,7 @@ impl Engine {
         self.evict_idle_subagents_with(cap, idle_after).await
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn set_delegation_queued_for_test(&self, session_id: SessionId, queued: bool) {
         if let Some(record) = self
             .inner
@@ -73,7 +73,7 @@ impl Engine {
         }
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn set_notification_sent_for_test(&self, session_id: SessionId, sent: bool) {
         if let Some(record) = self
             .inner
@@ -86,7 +86,7 @@ impl Engine {
         }
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn subagent_eviction_eligible_for_test(
         &self,
         session_id: SessionId,
@@ -101,7 +101,7 @@ impl Engine {
             })
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn delegation_finished_for_test(&self, session_id: SessionId) -> bool {
         self.inner
             .delegations_by_session
@@ -111,7 +111,7 @@ impl Engine {
             .is_some_and(|record| matches!(record.state, DelegationState::Finished(_)))
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn delegation_state_for_test(&self, session_id: SessionId) -> String {
         self.inner
             .delegations_by_session

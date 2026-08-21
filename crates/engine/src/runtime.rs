@@ -591,7 +591,7 @@ impl PluginDiagnosticAccumulator {
         pending.details.is_empty() && pending.overflow.is_empty()
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     fn key_count(&self) -> usize {
         let pending = self
             .pending
@@ -1706,7 +1706,7 @@ impl Engine {
         self.inner.plugins.statuses()
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn block_plugin_diagnostic_appends_for_test(&self) {
         *self
             .inner
@@ -1716,7 +1716,7 @@ impl Engine {
             Some(Arc::new(tokio::sync::Notify::new()));
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn block_tool_progress_appends_for_test(&self) {
         *self
             .inner
@@ -1726,7 +1726,7 @@ impl Engine {
             Some(Arc::new(tokio::sync::Notify::new()));
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn pending_plugin_diagnostic_keys_for_test(&self) -> usize {
         self.inner.plugin_diagnostics.key_count()
     }

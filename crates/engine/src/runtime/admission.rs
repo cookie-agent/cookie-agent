@@ -511,7 +511,7 @@ impl Engine {
             .is_some()
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn cancel_inflight_delegation_for_test(
         &self,
         invocation_id: InvocationId,

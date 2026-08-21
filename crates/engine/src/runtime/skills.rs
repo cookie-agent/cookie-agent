@@ -350,7 +350,7 @@ impl Engine {
             .contains(&call_id)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn stage_skill_fork_for_test(
         &self,
         call_id: ToolCallId,

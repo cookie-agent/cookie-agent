@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt as _, sync::Arc};
+use std::{collections::BTreeMap, fs, sync::Arc};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 
 use cookie_agent_config::{
     ApprovalConfig, ContextCompactionConfig, LoadedConfiguration, LoadedMcpServer, McpServerSource,
@@ -35,6 +38,16 @@ struct Harness {
     _directory: TempDir,
     engine: Engine,
     server: Arc<Server>,
+}
+
+fn protect_test_path(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        let mode = if path.is_dir() { 0o700 } else { 0o600 };
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("private test path");
+    }
+    #[cfg(windows)]
+    cookie_agent_models::secure_store::protect_windows_path(path).expect("private test path");
 }
 
 #[tokio::test]
@@ -80,15 +93,13 @@ fn harness() -> Harness {
 
 fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
     let directory = TempDir::new().expect("temp directory");
-    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-        .expect("private temp directory");
+    protect_test_path(directory.path());
     let project = directory.path().join(".cookie-agent");
     fs::create_dir(&project).expect("project runtime directory");
-    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
+    protect_test_path(&project);
     let provider_store = directory.path().join("provider-store");
     fs::create_dir(&provider_store).expect("provider store directory");
-    fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
-        .expect("private provider store");
+    protect_test_path(&provider_store);
 
     let revision =
         CatalogRevision::new(format!("sha256:{}", "0".repeat(64))).expect("catalog revision");
@@ -332,15 +343,13 @@ fn harness_with_catalog(
     prepare_store: impl FnOnce(&ProviderStore),
 ) -> Harness {
     let directory = TempDir::new().expect("temp directory");
-    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-        .expect("private temp directory");
+    protect_test_path(directory.path());
     let project = directory.path().join(".cookie-agent");
     fs::create_dir(&project).expect("project runtime directory");
-    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
+    protect_test_path(&project);
     let provider_store_path = directory.path().join("provider-store");
     fs::create_dir(&provider_store_path).expect("provider store directory");
-    fs::set_permissions(&provider_store_path, fs::Permissions::from_mode(0o700))
-        .expect("private provider store");
+    protect_test_path(&provider_store_path);
     let store = ProviderStore::open(&provider_store_path).expect("provider store");
     prepare_store(&store);
     let manager =

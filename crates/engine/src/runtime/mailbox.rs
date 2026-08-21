@@ -14,7 +14,7 @@ use cookie_agent_protocol::{
 };
 use tokio::sync::{mpsc, oneshot};
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 use super::PagingRaceHook;
 use super::ToolCallFailureCode;
 use super::{
@@ -490,7 +490,7 @@ impl Engine {
         Ok(events)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn compaction_reserved_for_test(&self, session: SessionId) -> bool {
         self.inner
             .compaction_in_progress
@@ -499,7 +499,7 @@ impl Engine {
             .contains(&session)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn run_active_for_test(&self, run: RunId) -> bool {
         self.inner
             .active
@@ -508,7 +508,7 @@ impl Engine {
             .contains_key(&run)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn actor_resident_for_test(&self, session: SessionId) -> bool {
         self.inner
             .actors
@@ -517,7 +517,7 @@ impl Engine {
             .contains_key(&session)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn install_compaction_execution_hook_for_test(
         &self,
     ) -> (oneshot::Receiver<()>, std::sync::Arc<tokio::sync::Notify>) {
@@ -535,7 +535,7 @@ impl Engine {
         (receiver, release)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) async fn enqueue_compact_without_residency_for_test(
         &self,
         session: SessionId,

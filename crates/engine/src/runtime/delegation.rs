@@ -2169,7 +2169,7 @@ impl Engine {
         }
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn delegation_queue_contains(
         &self,
         child_session_id: SessionId,
@@ -2182,7 +2182,7 @@ impl Engine {
             .contains(&child_session_id))
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn delegation_registry_snapshot(
         &self,
         child_session_id: SessionId,
@@ -2205,7 +2205,7 @@ impl Engine {
             .ok_or_else(|| EngineError::MissingTool("subagent registry entry is missing".into()))
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn install_resume_admission_hook(
         &self,
     ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
@@ -2223,7 +2223,7 @@ impl Engine {
         (receiver, release)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn install_skill_fork_reservation_hook(
         &self,
     ) -> (oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
@@ -2241,7 +2241,7 @@ impl Engine {
         (receiver, release)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn install_delegation_reservation_hook(
         &self,
     ) -> (oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
@@ -2259,21 +2259,21 @@ impl Engine {
         (receiver, release)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn install_resume_attachment_hook(
         &self,
     ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
         self.install_resume_test_hook(&self.inner.resume_attachment_hook)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn install_resume_rollback_hook(
         &self,
     ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
         self.install_resume_test_hook(&self.inner.resume_rollback_hook)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     fn install_resume_test_hook(
         &self,
         slot: &std::sync::Mutex<Option<Arc<super::ResumeAdmissionHook>>>,
@@ -2307,7 +2307,7 @@ impl Engine {
         }
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn set_delegation_slot_ownership(
         &self,
         child_session_id: SessionId,

@@ -1,5 +1,3 @@
-#![cfg(unix)]
-
 use std::{collections::BTreeMap, fs, sync::Arc, time::Duration};
 
 use cookie_agent_config::load_from_roots;
@@ -27,6 +25,10 @@ fn toml_string(value: &str) -> String {
     toml::Value::String(value.to_owned()).to_string()
 }
 
+fn python_command() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
+}
+
 fn plugin_table(name: &str, env: &[(&str, String)], extra: &str) -> String {
     let environment = env
         .iter()
@@ -34,16 +36,28 @@ fn plugin_table(name: &str, env: &[(&str, String)], extra: &str) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "[plugins.{name}]\ncommand = \"python3\"\nargs = [{}]\nenv = {{ {environment} }}\n{extra}\n",
+        "[plugins.{name}]\ncommand = {}\nargs = [{}]\nenv = {{ {environment} }}\n{extra}\n",
+        toml_string(python_command()),
         toml_string(FIXTURE)
     )
 }
 
 fn mcp_table(name: &str, lazy: bool) -> String {
     format!(
-        "[mcp.servers.{name}]\ncommand = \"python3\"\nargs = [{}]\nlazy = {lazy}\n",
+        "[mcp.servers.{name}]\ncommand = {}\nargs = [{}]\nlazy = {lazy}\n",
+        toml_string(python_command()),
         toml_string(MCP_FIXTURE)
     )
+}
+
+fn protect_test_path(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).expect("private test path");
+    }
+    #[cfg(windows)]
+    cookie_agent_models::secure_store::protect_windows_path(path).expect("private test path");
 }
 
 struct Harness {
@@ -53,24 +67,14 @@ struct Harness {
 
 fn open_engine(config_text: &str) -> Harness {
     let directory = tempfile::tempdir().expect("workspace");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-            .expect("private workspace");
-    }
+    protect_test_path(directory.path());
     let config_root = directory.path().join("config");
     fs::create_dir(&config_root).expect("config root");
     fs::write(config_root.join("config.toml"), config_text).expect("config");
     let config = load_from_roots(None, Some(&config_root)).expect("loaded config");
     let provider_store = directory.path().join("provider-store");
     fs::create_dir(&provider_store).expect("provider store directory");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
-            .expect("private provider store");
-    }
+    protect_test_path(&provider_store);
     let now = Timestamp::now();
     let catalog = Arc::new(CatalogSnapshot {
         revision: CatalogRevision::new(format!("sha256:{}", "0".repeat(64)))
@@ -155,6 +159,7 @@ async fn wait_for_mcp_connected(engine: &Engine, server: &str) {
     .expect("MCP state timeout");
 }
 
+// Process reaping is observed through Linux procfs.
 #[cfg(target_os = "linux")]
 async fn assert_process_reaped(pid_file: &std::path::Path) {
     let pid = fs::read_to_string(pid_file).expect("plugin pid");
@@ -192,6 +197,8 @@ async fn happy_path_discovers_claims_pings_and_shuts_down() {
     );
 }
 
+// This test specifically asserts Unix HOME sanitization in the child environment.
+#[cfg(unix)]
 #[tokio::test]
 async fn plugin_environment_contains_only_configured_values() {
     assert!(
@@ -418,6 +425,8 @@ async fn malformed_schema_and_unknown_primary_resource_fail_plugins() {
     harness.engine.shutdown().await;
 }
 
+// This test terminates the fixture with the Unix `kill -KILL` command.
+#[cfg(unix)]
 #[tokio::test]
 async fn crash_clears_claims_and_leaves_other_plugin_connected() {
     let pid_directory = tempfile::tempdir().expect("pid directory");

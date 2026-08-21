@@ -891,7 +891,7 @@ mod windows {
             Ok(bytes)
         }
 
-        fn open_existing(&self, name: &str) -> std::io::Result<Option<fs::File>> {
+        pub(crate) fn open_existing(&self, name: &str) -> std::io::Result<Option<fs::File>> {
             let path = self.directory.join(name);
             match fs::OpenOptions::new().read(true).write(true).open(&path) {
                 Ok(file) => {

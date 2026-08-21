@@ -1,12 +1,14 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    os::unix::fs::PermissionsExt as _,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -51,6 +53,20 @@ use crate::{
 
 const PLUGIN_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
 
+fn protect_test_path(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        let mode = if path.is_dir() { 0o700 } else { 0o600 };
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("private test path");
+    }
+    #[cfg(windows)]
+    cookie_agent_models::secure_store::protect_windows_path(path).expect("private test path");
+}
+
+fn python_command() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
+}
+
 #[tokio::test]
 async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
     let (mut fixture, selection) = custom_fixture();
@@ -72,7 +88,7 @@ async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
     fixture.config.plugins.insert(
         "fixture".into(),
         PluginConfig {
-            command: Some("python3".into()),
+            command: Some(python_command().into()),
             args: vec![PLUGIN_FIXTURE.into()],
             env: BTreeMap::from([
                 ("FIXTURE_NAME".into(), "fixture".into()),
@@ -329,7 +345,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
     fixture.config.plugins.insert(
         "fixture".into(),
         PluginConfig {
-            command: Some("python3".into()),
+            command: Some(python_command().into()),
             args: vec![PLUGIN_FIXTURE.into()],
             env: BTreeMap::from([
                 ("FIXTURE_NAME".into(), "fixture".into()),
@@ -1454,9 +1470,17 @@ impl ToolProvider for TestRehydrationReadProvider {
         };
         let expected = std::fs::read_link(&path).ok();
         if self.swap_after_prepare && expected.is_some() {
-            std::fs::remove_file(&path).map_err(|error| ToolError::execution(error.to_string()))?;
-            std::os::unix::fs::symlink("denied.txt", &path)
-                .map_err(|error| ToolError::execution(error.to_string()))?;
+            #[cfg(unix)]
+            {
+                std::fs::remove_file(&path)
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                std::os::unix::fs::symlink("denied.txt", &path)
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+            }
+            #[cfg(not(unix))]
+            return Err(ToolError::execution(
+                "symlink-swap rehydration fixture is Unix-only",
+            ));
         }
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(display.as_bytes()),
@@ -1594,15 +1618,13 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     let directory = TempDir::new().expect("temp directory");
-    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-        .expect("private temp directory");
+    protect_test_path(directory.path());
     let project = directory.path().join(".cookie-agent");
     fs::create_dir(&project).expect("project directory");
-    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
+    protect_test_path(&project);
     let provider_store = directory.path().join("provider-store");
     fs::create_dir(&provider_store).expect("provider store directory");
-    fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
-        .expect("private provider store");
+    protect_test_path(&provider_store);
     let now = Timestamp::now();
     let catalog = Arc::new(CatalogSnapshot {
         revision: CatalogRevision::new(format!("sha256:{}", "0".repeat(64)))
@@ -1752,26 +1774,21 @@ fn bedrock_catalog() -> Arc<CatalogSnapshot> {
 
 fn empty_provider_workspace(path: &std::path::Path) -> LoadedConfiguration {
     fs::create_dir(path).expect("workspace");
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).expect("private workspace");
+    protect_test_path(path);
     let project = path.join(".cookie-agent");
     fs::create_dir(&project).expect("project");
-    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
+    protect_test_path(&project);
     fs::write(project.join("config.toml"), "").expect("empty provider config");
-    fs::set_permissions(
-        project.join("config.toml"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .expect("private config");
+    protect_test_path(&project.join("config.toml"));
     let agents = project.join("agents");
     fs::create_dir(&agents).expect("agents");
-    fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
+    protect_test_path(&agents);
     fs::write(
         agents.join("primary.md"),
         "---\ndescription: Bedrock test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0\", variant: base }]\npermissions: {}\n---\nUse Bedrock.\n",
     )
     .expect("agent");
-    fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
-        .expect("private agent");
+    protect_test_path(&agents.join("primary.md"));
     load_from_roots(None, Some(&project)).expect("workspace config")
 }
 
@@ -1807,11 +1824,10 @@ fn custom_fixture() -> (Fixture, RunSelection) {
 
 fn managed_openai_compaction_fixture(endpoint: &str) -> (Fixture, RunSelection) {
     let directory = TempDir::new().expect("temp directory");
-    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-        .expect("private temp directory");
+    protect_test_path(directory.path());
     let project = directory.path().join(".cookie-agent");
     fs::create_dir(&project).expect("project directory");
-    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
+    protect_test_path(&project);
     fs::write(
         project.join("config.toml"),
         r#"
@@ -1825,21 +1841,16 @@ compaction = "openai-responses-compact"
 "#,
     )
     .expect("config");
-    fs::set_permissions(
-        project.join("config.toml"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .expect("private config");
+    protect_test_path(&project.join("config.toml"));
     let agents = project.join("agents");
     fs::create_dir(&agents).expect("agents directory");
-    fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
+    protect_test_path(&agents);
     fs::write(
         agents.join("primary.md"),
         "---\ndescription: Native compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"openai/gpt-test\", variant: base }]\npermissions: {}\n---\nTest native compaction.\n",
     )
     .expect("agent");
-    fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
-        .expect("private agent");
+    protect_test_path(&agents.join("primary.md"));
     let mut config = load_from_roots(None, Some(&project)).expect("loaded config");
     config.runtime.session_title.generate_on_first_turn = false;
     let provider_id = ProviderId::new("openai").expect("provider ID");
@@ -1916,8 +1927,7 @@ compaction = "openai-responses-compact"
     });
     let provider_store = directory.path().join("provider-store");
     fs::create_dir(&provider_store).expect("provider store");
-    fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
-        .expect("private provider store");
+    protect_test_path(&provider_store);
     let manager = Arc::new(
         ModelManager::new(
             config.runtime.providers.clone(),
@@ -2383,11 +2393,10 @@ fn custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor
     adaptor: &str,
 ) -> (Fixture, RunSelection) {
     let directory = TempDir::new().expect("temp directory");
-    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-        .expect("private temp directory");
+    protect_test_path(directory.path());
     let project = directory.path().join(".cookie-agent");
     fs::create_dir(&project).expect("project directory");
-    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
+    protect_test_path(&project);
     let config_text = r#"
 [delegation]
 max_depth = 1
@@ -2441,17 +2450,12 @@ media = {}
         )
     });
     fs::write(project.join("config.toml"), config_text).expect("config");
-    fs::set_permissions(
-        project.join("config.toml"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .expect("private config");
+    protect_test_path(&project.join("config.toml"));
     let agents = project.join("agents");
     fs::create_dir(&agents).expect("agents directory");
-    fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
+    protect_test_path(&agents);
     fs::write(agents.join("primary.md"), primary_agent).expect("agent");
-    fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
-        .expect("private agent");
+    protect_test_path(&agents.join("primary.md"));
     fs::write(
         agents.join("worker.md"),
         worker_agent.unwrap_or(
@@ -2459,12 +2463,10 @@ media = {}
         ),
     )
     .expect("worker agent");
-    fs::set_permissions(agents.join("worker.md"), fs::Permissions::from_mode(0o600))
-        .expect("private worker agent");
+    protect_test_path(&agents.join("worker.md"));
     if let Some((name, document)) = internal {
         fs::write(agents.join(name), document).expect("internal agent");
-        fs::set_permissions(agents.join(name), fs::Permissions::from_mode(0o600))
-            .expect("private internal agent");
+        protect_test_path(&agents.join(name));
     }
     let mut config = load_from_roots(None, Some(&project)).expect("loaded config");
     if let Some(server) = mcp_server {
@@ -2477,8 +2479,7 @@ media = {}
     }
     let provider_store = directory.path().join("provider-store");
     fs::create_dir(&provider_store).expect("provider store directory");
-    fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
-        .expect("private provider store");
+    protect_test_path(&provider_store);
     let now = Timestamp::now();
     let catalog = Arc::new(CatalogSnapshot {
         revision: CatalogRevision::new(format!("sha256:{}", "1".repeat(64)))
@@ -2670,6 +2671,8 @@ async fn rehydration_skips_reads_denied_by_the_frozen_permission_pipeline() {
     assert!(!executed.load(Ordering::Acquire));
 }
 
+// This regression requires replacing a Unix symlink after preparation.
+#[cfg(unix)]
 #[tokio::test]
 async fn rehydration_skips_a_symlink_swapped_after_capability_preparation() {
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
@@ -2962,11 +2965,10 @@ fn synthetic_default_fixture_with_config(
     extra_config: &str,
 ) -> Fixture {
     let directory = TempDir::new().expect("temp directory");
-    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-        .expect("private temp directory");
+    protect_test_path(directory.path());
     let project = directory.path().join(".cookie-agent");
     fs::create_dir(&project).expect("project directory");
-    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
+    protect_test_path(&project);
     let base_config = r#"
 [providers."custom.test"]
 source = "custom"
@@ -2987,24 +2989,18 @@ default_variant = "precise"
     let mut config_text = base_config.replace("http://127.0.0.1:9/v1", endpoint);
     config_text.push_str(extra_config);
     fs::write(project.join("config.toml"), config_text).expect("config");
-    fs::set_permissions(
-        project.join("config.toml"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .expect("private config");
+    protect_test_path(&project.join("config.toml"));
     if let Some(agent) = authored_agent {
         let agents = project.join("agents");
         fs::create_dir(&agents).expect("agents directory");
-        fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
+        protect_test_path(&agents);
         fs::write(agents.join("primary.md"), agent).expect("agent");
-        fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
-            .expect("private agent");
+        protect_test_path(&agents.join("primary.md"));
     }
     let config = load_from_roots(None, Some(&project)).expect("loaded config");
     let provider_store = directory.path().join("provider-store");
     fs::create_dir(&provider_store).expect("provider store directory");
-    fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
-        .expect("private provider store");
+    protect_test_path(&provider_store);
     let now = Timestamp::now();
     let catalog = Arc::new(CatalogSnapshot {
         revision: CatalogRevision::new(format!("sha256:{}", "2".repeat(64)))
@@ -4280,19 +4276,21 @@ async fn lazy_mcp_preemption_rejects_the_plugin_tool_published_to_the_model() {
     let extra_config = format!(
         r#"
 [plugins.collision]
-command = "python3"
+command = {}
 args = [{}]
 env = {{ FIXTURE_NAME = "collision", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {} }}
 
 [mcp.servers.fixture]
-command = "python3"
+command = {}
 args = [{}]
 env = {{ MCP_FIXTURE_CALL_FILE = {} }}
 lazy = true
 "#,
+        toml_string(python_command()),
         toml_string(PLUGIN_FIXTURE),
         toml_string(&declaration.to_string()),
         toml_string(&plugin_call.display().to_string()),
+        toml_string(python_command()),
         toml_string(MCP_FIXTURE),
         toml_string(&mcp_call.display().to_string()),
     );
@@ -4593,7 +4591,7 @@ fn interception_plugin(name: &str, extra_env: &[(&str, String)]) -> PluginConfig
             .map(|(key, value)| (key.into(), value)),
     );
     PluginConfig {
-        command: Some("python3".into()),
+        command: Some(python_command().into()),
         args: vec![PLUGIN_FIXTURE.into()],
         env,
         cwd: None,
@@ -5356,6 +5354,8 @@ fn synthetic_default_replaces_no_authored_agent_and_unrunnable_authored_agents_o
     );
 }
 
+// This regression asserts exact POSIX mode bits for a shared workspace.
+#[cfg(unix)]
 #[test]
 fn shared_project_cwd_creates_and_reopens_model_manifests() {
     let fixture = fixture();
@@ -5479,7 +5479,7 @@ fn disconnect_replay_survives_a_clean_engine_restart() {
 #[tokio::test]
 async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_preserves_frozen_run() {
     let temporary = TempDir::new().expect("temporary root");
-    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700)).expect("private root");
+    protect_test_path(temporary.path());
     let workspace_one = temporary.path().join("workspace-one");
     let workspace_two = temporary.path().join("workspace-two");
     let config_one = empty_provider_workspace(&workspace_one);
@@ -9037,7 +9037,7 @@ fn delayed_mcp_server(source: McpServerSource) -> LoadedMcpServer {
     LoadedMcpServer {
         source,
         config: McpServerConfig {
-            command: Some("python3".into()),
+            command: Some(python_command().into()),
             args: vec![format!(
                 "{}/tests/fixtures/mcp_server.py",
                 env!("CARGO_MANIFEST_DIR")
