@@ -177,7 +177,8 @@ pub(crate) fn permission_path_label(path: &str, workspace: &Path) -> String {
     let workspace = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_owned());
-    if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(&workspace)) {
+    let comparison_path = comparison_path(&path);
+    if let Some(relative) = strip_absolute_prefix(&comparison_path, &normalized_path(&workspace)) {
         return relative;
     }
     path
@@ -185,15 +186,16 @@ pub(crate) fn permission_path_label(path: &str, workspace: &Path) -> String {
 
 pub(crate) fn abbreviated_display_path(path: &str, workspace: &Path) -> String {
     let path = normalized_path(Path::new(path));
-    if !Path::new(&path).is_absolute() {
-        return path;
-    }
-    if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(workspace)) {
+    let comparison_path = comparison_path(&path);
+    let workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_owned());
+    if let Some(relative) = strip_absolute_prefix(&comparison_path, &normalized_path(&workspace)) {
         return relative;
     }
     if let Ok(home) = cookie_agent_protocol::paths::home_dir() {
-        let home = normalized_path(&home);
-        if let Some(relative) = strip_absolute_prefix(&path, &home) {
+        let home = home.canonicalize().unwrap_or(home);
+        if let Some(relative) = strip_absolute_prefix(&comparison_path, &normalized_path(&home)) {
             return if relative == "." {
                 "~".into()
             } else {
@@ -204,17 +206,56 @@ pub(crate) fn abbreviated_display_path(path: &str, workspace: &Path) -> String {
     path
 }
 
+#[cfg(windows)]
+fn comparison_path(path: &str) -> String {
+    let path = Path::new(path);
+    let mut existing = path.to_owned();
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let Some(name) = existing.file_name() else {
+            return normalized_path(path);
+        };
+        missing.push(name.to_owned());
+        let Some(parent) = existing.parent() else {
+            return normalized_path(path);
+        };
+        existing = parent.to_owned();
+    }
+    let Ok(mut canonical) = existing.canonicalize() else {
+        return normalized_path(path);
+    };
+    canonical.extend(missing.into_iter().rev());
+    normalized_path(&canonical)
+}
+
+#[cfg(not(windows))]
+fn comparison_path(path: &str) -> String {
+    path.to_owned()
+}
+
 fn strip_absolute_prefix(path: &str, prefix: &str) -> Option<String> {
     let prefix = prefix.trim_end_matches('/');
     if prefix.is_empty() {
         return None;
     }
-    if path == prefix {
+    if path_component_prefix(path, prefix) && path.len() == prefix.len() {
         return Some(".".into());
     }
-    path.strip_prefix(prefix)
+    path_component_prefix(path, prefix)
+        .then(|| &path[prefix.len()..])
         .and_then(|rest| rest.strip_prefix('/'))
         .map(str::to_owned)
+}
+
+#[cfg(windows)]
+fn path_component_prefix(path: &str, prefix: &str) -> bool {
+    path.get(..prefix.len())
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+}
+
+#[cfg(not(windows))]
+fn path_component_prefix(path: &str, prefix: &str) -> bool {
+    path.starts_with(prefix)
 }
 
 #[derive(Debug)]

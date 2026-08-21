@@ -498,11 +498,12 @@ mod tests {
         old_resource_kind: &str,
         old_binding: &[u8],
     ) {
+        let cwd = tempfile::tempdir().expect("cwd");
         let context = ToolPreparationContext {
             session: SessionId::new_v7(),
             run: RunId::new_v7(),
-            cwd: "/tmp".into(),
-            workspace_root: "/tmp".into(),
+            cwd: cwd.path().to_owned(),
+            workspace_root: cwd.path().to_owned(),
             turn_context: crate::test_turn_context(),
         };
         let current =

@@ -970,7 +970,7 @@ mod windows {
             directory_entries(&self.canonical_path)
         }
         pub fn revalidate(&self) -> Result<(), ToolError> {
-            validate_contained_path(&self.sandbox_root, &self.original_path, false)?;
+            validate_path_chain(&self.original_path, false)?;
             let canonical = self.original_path.canonicalize().map_err(super::io_error)?;
             if !paths_equal(&canonical, &self.canonical_path) {
                 return Err(ToolError::operation_changed(
@@ -1016,7 +1016,7 @@ mod windows {
     }
     impl PreparedAbsent {
         pub fn revalidate(&self) -> Result<(), ToolError> {
-            validate_contained_path(&self.sandbox_root, &self.original_path, true)?;
+            validate_path_chain(&self.original_path, true)?;
             match fs::symlink_metadata(&self.first_missing) {
                 Ok(_) => {
                     return Err(ToolError::operation_changed(
@@ -1032,6 +1032,7 @@ mod windows {
                     "prepared absent target resolved to another path",
                 ));
             }
+            validate_contained_path(&self.sandbox_root, &canonical, true)?;
             if self.display_path.exists() {
                 return Err(ToolError::operation_changed(
                     "a prepared absent path was inserted",
@@ -1062,6 +1063,7 @@ mod windows {
         }
     }
     pub fn cwd_context_bytes(cwd: &Path) -> Result<Vec<u8>, ToolError> {
+        validate_path_chain(cwd, false)?;
         let canonical = cwd.canonicalize().map_err(super::io_error)?;
         validate_no_reparse(&canonical)?;
         Ok(identity(&open_for_identity(&canonical)?)?.canonical_bytes())
@@ -1080,11 +1082,12 @@ mod windows {
     pub fn prepare_target(cwd: &Path, requested: &Path) -> Result<PreparedTarget, ToolError> {
         let original_path = absolute_requested(cwd, requested)?;
         let sandbox_root = sandbox_root(cwd, &original_path)?;
-        validate_contained_path(&sandbox_root, &original_path, true)?;
+        validate_path_chain(&original_path, true)?;
         let requested_absolute = canonicalize_target(&original_path)?;
-        if requested_absolute.exists() {
+        let target_exists = requested_absolute.exists();
+        validate_contained_path(&sandbox_root, &requested_absolute, !target_exists)?;
+        if target_exists {
             let canonical_path = requested_absolute;
-            validate_contained_path(&sandbox_root, &canonical_path, false)?;
             let file = open_for_identity(&canonical_path)?;
             let identity = identity(&file)?;
             let directory = file.metadata().map_err(super::io_error)?.is_dir();
@@ -1169,8 +1172,10 @@ mod windows {
                     _ => break,
                 }
             }
+            validate_path_chain(&root, false)?;
             return root.canonicalize().map_err(super::io_error);
         }
+        validate_path_chain(cwd, false)?;
         cwd.canonicalize().map_err(super::io_error)
     }
 
@@ -1232,6 +1237,10 @@ mod windows {
                 "filesystem target escapes the prepared sandbox",
             ));
         }
+        validate_path_chain(path, allow_missing)
+    }
+
+    fn validate_path_chain(path: &Path, allow_missing: bool) -> Result<(), ToolError> {
         let mut current = PathBuf::new();
         for component in path.components() {
             current.push(component.as_os_str());
@@ -1260,10 +1269,10 @@ mod windows {
     }
 
     fn validate_no_reparse(path: &Path) -> Result<(), ToolError> {
-        validate_contained_path(path, path, false)
+        validate_path_chain(path, false)
     }
 
-    fn components_start_with(path: &Path, root: &Path) -> bool {
+    pub(super) fn components_start_with(path: &Path, root: &Path) -> bool {
         let mut path = path.components();
         for root_component in root.components() {
             let Some(path_component) = path.next() else {
@@ -1286,7 +1295,7 @@ mod windows {
         normalize(left) == normalize(right)
     }
 
-    fn paths_equal(left: &Path, right: &Path) -> bool {
+    pub(super) fn paths_equal(left: &Path, right: &Path) -> bool {
         let left = left.components().collect::<Vec<_>>();
         let right = right.components().collect::<Vec<_>>();
         left.len() == right.len()
@@ -1839,7 +1848,24 @@ mod windows_tests {
 
     use cookie_agent_engine::ToolError;
 
-    use super::{PreparedTarget, prepare_existing, prepare_target};
+    use super::{
+        PreparedTarget, components_start_with, paths_equal, prepare_existing, prepare_target,
+    };
+
+    #[test]
+    fn windows_path_comparisons_are_case_insensitive_and_component_bounded() {
+        let root = std::path::Path::new(r"c:\users\runneradmin\work");
+        let target = std::path::Path::new(r"\\?\C:\Users\RUNNERADMIN\Work\nested\file.txt");
+        assert!(components_start_with(target, root));
+        assert!(paths_equal(
+            std::path::Path::new(r"C:\Users\RunnerAdmin\Work"),
+            root
+        ));
+        assert!(!components_start_with(
+            std::path::Path::new(r"C:\Users\runneradmin-other\file.txt"),
+            std::path::Path::new(r"C:\Users\runneradmin")
+        ));
+    }
 
     #[test]
     fn windows_capability_enforces_prefix_and_publishes_atomically() {
