@@ -149,6 +149,8 @@ fn open_engine(config_text: &str) -> Harness {
 }
 
 async fn wait_for_state(engine: &Engine, plugin: &str, expected: PluginState) {
+    // Plugin lifecycle state has no public subscription; integration tests can
+    // only observe the public status snapshot.
     let result = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             if engine
@@ -178,6 +180,7 @@ fn status(engine: &Engine, plugin: &str) -> cookie_agent_engine::PluginStatus {
 }
 
 async fn wait_for_mcp_connected(engine: &Engine, server: &str) {
+    // MCP lifecycle state likewise has no public transition subscription.
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             if engine.mcp_statuses().into_iter().any(|status| {
@@ -279,6 +282,8 @@ async fn ping_dispatches_interleaved_notifications_and_requests() {
     let harness = open_engine(&config);
     wait_for_state(&harness.engine, "fixture", PluginState::Connected).await;
     harness.engine.ping_plugin("fixture").await.expect("ping");
+    // The fixture reports this protocol response through an external marker
+    // file, so there is no in-process event to subscribe to.
     tokio::time::timeout(Duration::from_secs(1), async {
         while !rejected.exists()
             || fs::read_to_string(&rejected).is_ok_and(|contents| contents.is_empty())

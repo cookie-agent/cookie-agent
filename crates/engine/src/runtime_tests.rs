@@ -1,6 +1,7 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
+    ops::Deref,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -32,14 +33,14 @@ use cookie_agent_protocol::{
     ApprovalId, ApprovalInternalDecisionKind, ApprovalReasonCode, ApprovalResourceSource,
     ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision,
     CatalogRevision, ClientConnectId, ClientRenameId, ClientRequestId, ClientResponseId,
-    ClientRunId, EventPayload, InternalAgentKind, InvocationId, ModelSelection, PermissionAction,
-    PermissionEffect, PermissionMode, PermissionRuleSource, PreparedApprovalResource,
-    PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
-    PreparedResourceDigest, PreparedResourceIdentity, ProviderConnectParams,
-    ProviderCredentialValues, ProviderDisconnectParams, ProviderId, ProviderModelId, RunSelection,
-    RunStartParams, RunToolStdinParams, RuntimeChangeReason, SessionId, SessionStatus,
-    SessionTitle, SessionTitleChange, SetupFieldId, Sha256Digest, ToolCallId,
-    ToolTerminationOutcome, TreeApprovalGrant, TreeApprovalGrantId, WildcardPattern,
+    ClientRunId, EventPayload, EventSubscriptionMessage, InternalAgentKind, InvocationId,
+    ModelSelection, PermissionAction, PermissionEffect, PermissionMode, PermissionRuleSource,
+    PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
+    PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity,
+    ProviderConnectParams, ProviderCredentialValues, ProviderDisconnectParams, ProviderId,
+    ProviderModelId, RunSelection, RunStartParams, RunToolStdinParams, RuntimeChangeReason,
+    SessionId, SessionStatus, SessionTitle, SessionTitleChange, SetupFieldId, Sha256Digest,
+    ToolCallId, ToolTerminationOutcome, TreeApprovalGrant, TreeApprovalGrantId, WildcardPattern,
 };
 use jiff::Timestamp;
 use tempfile::TempDir;
@@ -53,7 +54,7 @@ use crate::{
 
 const PLUGIN_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
 
-fn private_tempdir() -> TempDir {
+fn private_tempdir() -> PanicResistantTempDir {
     let directory = TempDir::new().expect("temp directory");
     #[cfg(unix)]
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
@@ -64,7 +65,7 @@ fn private_tempdir() -> TempDir {
         cookie_agent_models::secure_store::SecureDirectory::open(directory.path())
             .expect("private temp directory");
     }
-    directory
+    PanicResistantTempDir(Some(directory))
 }
 
 fn create_private_test_dir(path: &std::path::Path) {
@@ -101,6 +102,165 @@ fn python_command() -> &'static str {
 
 fn test_timeout(seconds: u64) -> std::time::Duration {
     std::time::Duration::from_secs(if cfg!(windows) { seconds * 10 } else { seconds })
+}
+
+const EVENT_WATCHDOG_SECONDS: u64 = 60;
+
+async fn await_session_change<T>(
+    engine: &Engine,
+    session_id: SessionId,
+    description: &str,
+    mut check: impl FnMut() -> Option<T>,
+) -> T {
+    let mut last_seen = VecDeque::with_capacity(20);
+    let wait = async {
+        let mut cursor = None;
+        loop {
+            let (snapshot, mut live) = engine
+                .subscribe(session_id, cursor)
+                .await
+                .expect("test event subscription");
+            for event in snapshot.events {
+                if last_seen.len() == 20 {
+                    last_seen.pop_front();
+                }
+                last_seen.push_back(event);
+            }
+            if let Some(result) = check() {
+                return result;
+            }
+            loop {
+                match live.recv().await {
+                    Some(EventSubscriptionMessage::Event { event }) => {
+                        if last_seen.len() == 20 {
+                            last_seen.pop_front();
+                        }
+                        last_seen.push_back(*event);
+                        if let Some(result) = check() {
+                            return result;
+                        }
+                    }
+                    Some(EventSubscriptionMessage::Gap {
+                        last_delivered_seq, ..
+                    }) => {
+                        cursor = Some(last_delivered_seq);
+                        break;
+                    }
+                    None => panic!("event subscription closed while waiting for {description}"),
+                }
+            }
+        }
+    };
+    match tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), wait).await {
+        Ok(result) => result,
+        Err(_) => {
+            let projection = engine.inner.store.get(session_id).ok();
+            panic!(
+                "timed out waiting for {description}: status={:?}, last_seen={:#?}",
+                projection.as_ref().map(|projection| projection.status),
+                last_seen
+            );
+        }
+    }
+}
+
+async fn await_event(
+    engine: &Engine,
+    session_id: SessionId,
+    description: &str,
+    mut predicate: impl FnMut(&cookie_agent_protocol::StoredEvent) -> bool,
+) -> cookie_agent_protocol::StoredEvent {
+    await_session_change(engine, session_id, description, || {
+        engine
+            .inner
+            .store
+            .get(session_id)
+            .ok()?
+            .log
+            .events()
+            .iter()
+            .find(|event| predicate(event))
+            .cloned()
+    })
+    .await
+}
+
+async fn await_projection(
+    engine: &Engine,
+    session_id: SessionId,
+    description: &str,
+    predicate: impl Fn(&crate::session::SessionProjection) -> bool,
+) -> crate::session::SessionProjection {
+    await_session_change(engine, session_id, description, || {
+        engine.inner.store.get(session_id).ok().filter(&predicate)
+    })
+    .await
+}
+
+async fn await_child(
+    engine: &Engine,
+    parent_session_id: SessionId,
+    description: &str,
+    predicate: impl Fn(&cookie_agent_protocol::ChildSummary) -> bool,
+) -> cookie_agent_protocol::ChildSummary {
+    await_session_change(engine, parent_session_id, description, || {
+        engine
+            .children(parent_session_id)
+            .into_iter()
+            .find(&predicate)
+    })
+    .await
+}
+
+#[derive(Debug, Default)]
+struct TestFlag {
+    set: AtomicBool,
+    changed: tokio::sync::Notify,
+}
+
+impl TestFlag {
+    fn set(&self) {
+        self.set.store(true, Ordering::Release);
+        self.changed.notify_waiters();
+    }
+
+    fn is_set(&self) -> bool {
+        self.set.load(Ordering::Acquire)
+    }
+
+    async fn wait(&self) {
+        tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), async {
+            loop {
+                let changed = self.changed.notified();
+                if self.is_set() {
+                    break;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .expect("test flag notification");
+    }
+}
+
+struct PanicResistantTempDir(Option<TempDir>);
+
+impl Deref for PanicResistantTempDir {
+    type Target = TempDir;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("test directory")
+    }
+}
+
+impl Drop for PanicResistantTempDir {
+    fn drop(&mut self) {
+        if std::thread::panicking()
+            && let Some(directory) = self.0.take()
+        {
+            std::mem::forget(directory);
+        }
+    }
 }
 
 #[tokio::test]
@@ -158,17 +318,7 @@ async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
     other.env.insert("FIXTURE_NAME".into(), "other".into());
     fixture.config.plugins.insert("other".into(), other);
     let engine = reopen_engine(&fixture);
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while !engine
-            .plugin_statuses()
-            .iter()
-            .any(|status| status.state == crate::PluginState::Connected)
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("plugin connected");
+    engine.inner.plugins.await_eager_ready().await;
 
     let mut bus = engine.subscribe_engine_events();
     engine
@@ -194,27 +344,19 @@ async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
             if plugin == "fixture" && name == "fixture_notice" && payload["value"] == 7
     ));
 
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            let projection = engine
-                .inner
-                .store
-                .get(session.session_id)
-                .expect("projection");
-            if projection.log.events().iter().any(|event| {
-                matches!(
-                    &event.payload,
-                    EventPayload::PluginEventAdded { plugin, name, payload }
-                        if plugin == "fixture" && name == "fixture_notice" && payload["value"] == 7
-                )
-            }) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("durable plugin event");
+    await_event(
+        &engine,
+        session.session_id,
+        "durable plugin event",
+        |event| {
+            matches!(
+                &event.payload,
+                EventPayload::PluginEventAdded { plugin, name, payload }
+                    if plugin == "fixture" && name == "fixture_notice" && payload["value"] == 7
+            )
+        },
+    )
+    .await;
     let streamed = fs::read_to_string(&event_file).expect("streamed events");
     assert_eq!(
         streamed.lines().count(),
@@ -304,15 +446,12 @@ async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
         unaffected.bus,
         cookie_agent_protocol::ExtensionEmitStatus::Published
     );
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            let events = engine
-                .inner
-                .store
-                .get(session.session_id)
-                .expect("quota diagnostics")
-                .log
-                .events();
+    await_projection(
+        &engine,
+        session.session_id,
+        "aggregated quota diagnostic",
+        |projection| {
+            let events = projection.log.events();
             let rate_limited = events.iter().any(|event| {
                 matches!(
                     event.payload,
@@ -331,14 +470,10 @@ async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
                     }
                 )
             });
-            if rate_limited && context_mismatch {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("aggregated quota diagnostic");
+            rate_limited && context_mismatch
+        },
+    )
+    .await;
     engine.runtime_snapshot().expect("engine remains usable");
     engine.shutdown().await;
 
@@ -424,15 +559,12 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
             .await
             .expect("trigger event");
     }
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            let events = engine
-                .inner
-                .store
-                .get(session_a.session_id)
-                .expect("session A")
-                .log
-                .events();
+    await_projection(
+        &engine,
+        session_a.session_id,
+        "delayed session A emit",
+        |projection| {
+            let events = projection.log.events();
             let published = events
                 .iter()
                 .filter(|event| {
@@ -451,14 +583,10 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
                     }
                 )
             });
-            if published == 1 && replay_diagnosed {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("delayed session A emit");
+            published == 1 && replay_diagnosed
+        },
+    )
+    .await;
     assert!(
         engine
             .inner
@@ -491,6 +619,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
         unknown.durable,
         cookie_agent_protocol::ExtensionEmitStatus::Rejected
     );
+    // This negative assertion covers the plugin replay-token expiry window.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     assert!(
         engine
@@ -557,6 +686,37 @@ async fn plugin_diagnostic_coalescing_is_exact_and_shutdown_drains() {
         );
     }
     assert!(fixture.engine.pending_plugin_diagnostic_keys_for_test() <= 257);
+    await_projection(
+        &fixture.engine,
+        session.session_id,
+        "all coalesced plugin diagnostics",
+        |projection| {
+            let (dropped, distinct) =
+                projection
+                    .log
+                    .events()
+                    .iter()
+                    .fold((0, 0), |(dropped, distinct), event| match &event.payload {
+                        EventPayload::PluginDiagnostic {
+                            plugin,
+                            kind: cookie_agent_protocol::PluginDiagnosticKind::EventDrop,
+                            message,
+                            count,
+                        } if plugin == "lagging" && message == "buffer overflow" => {
+                            (dropped + count, distinct)
+                        }
+                        EventPayload::PluginDiagnostic {
+                            plugin,
+                            kind: cookie_agent_protocol::PluginDiagnosticKind::InvalidModification,
+                            count,
+                            ..
+                        } if plugin == "fixture" => (dropped, distinct + count),
+                        _ => (dropped, distinct),
+                    });
+            dropped == DROP_COUNT && distinct == DISTINCT_COUNT
+        },
+    )
+    .await;
     fixture.engine.shutdown().await;
 
     let events = fixture
@@ -1321,11 +1481,11 @@ impl PreparedExecutor for TestDelegateExecutor {
 
 #[derive(Clone)]
 struct TestWriteProvider {
-    executed: Arc<AtomicBool>,
+    executed: Arc<TestFlag>,
 }
 
 struct TestWriteExecutor {
-    executed: Arc<AtomicBool>,
+    executed: Arc<TestFlag>,
 }
 
 #[async_trait]
@@ -1418,7 +1578,7 @@ impl PreparedExecutor for TestWriteExecutor {
         self: Box<Self>,
         _context: ToolExecutionContext,
     ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
-        self.executed.store(true, Ordering::Release);
+        self.executed.set();
         Ok(cookie_agent_protocol::PersistedToolResult {
             title: cookie_agent_protocol::SafeDisplayText::new("approval test write")
                 .expect("result title"),
@@ -1432,12 +1592,12 @@ impl PreparedExecutor for TestWriteExecutor {
 
 #[derive(Clone)]
 struct TestRehydrationReadProvider {
-    executed: Arc<AtomicBool>,
+    executed: Arc<TestFlag>,
     swap_after_prepare: bool,
 }
 
 struct TestRehydrationReadExecutor {
-    executed: Arc<AtomicBool>,
+    executed: Arc<TestFlag>,
     path: std::path::PathBuf,
     expected: Option<std::path::PathBuf>,
 }
@@ -1567,7 +1727,7 @@ impl PreparedExecutor for TestRehydrationReadExecutor {
                 "read symlink changed after capability preparation",
             ));
         }
-        self.executed.store(true, Ordering::Release);
+        self.executed.set();
         let output = std::fs::read_to_string(&self.path)
             .map_err(|error| ToolError::execution(error.to_string()))?;
         Ok(cookie_agent_protocol::PersistedToolResult {
@@ -1646,7 +1806,7 @@ impl ToolProvider for TestToolDefinitionProvider {
 }
 
 struct Fixture {
-    _directory: TempDir,
+    _directory: PanicResistantTempDir,
     engine: Engine,
     config: LoadedConfiguration,
     manager: Arc<ModelManager>,
@@ -2628,7 +2788,7 @@ async fn rehydration_skips_reads_denied_by_the_frozen_permission_pipeline() {
         "http://127.0.0.1:9/v1",
         "---\ndescription: Rehydration deny test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: deny\n---\nTest denied rehydration.\n",
     );
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestRehydrationReadProvider {
@@ -2651,7 +2811,7 @@ async fn rehydration_skips_reads_denied_by_the_frozen_permission_pipeline() {
         )
         .await;
     assert!(files.is_empty());
-    assert!(!executed.load(Ordering::Acquire));
+    assert!(!executed.is_set());
 }
 
 // This regression requires replacing a Unix symlink after preparation.
@@ -2666,7 +2826,7 @@ async fn rehydration_skips_a_symlink_swapped_after_capability_preparation() {
     fs::write(fixture._directory.path().join("denied.txt"), "denied").expect("denied file");
     std::os::unix::fs::symlink("allowed.txt", fixture._directory.path().join("link.txt"))
         .expect("read symlink");
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestRehydrationReadProvider {
@@ -2689,7 +2849,7 @@ async fn rehydration_skips_a_symlink_swapped_after_capability_preparation() {
         )
         .await;
     assert!(files.is_empty());
-    assert!(!executed.load(Ordering::Acquire));
+    assert!(!executed.is_set());
 }
 
 #[test]
@@ -4307,6 +4467,8 @@ lazy = true
         .reconnect_mcp_server("fixture".into())
         .await
         .expect("connect lazy MCP");
+    // Plugin lifecycle changes are not session events; this is the only
+    // observation API available for asynchronous MCP/plugin preemption.
     tokio::time::timeout(test_timeout(3), async {
         loop {
             if fixture.engine.plugin_statuses().iter().any(|status| {
@@ -4321,20 +4483,7 @@ lazy = true
     .expect("plugin preempted");
     release.notify_one();
 
-    tokio::time::timeout(test_timeout(5), async {
-        loop {
-            if fixture
-                .engine
-                .get_session(session.session_id)
-                .is_ok_and(|session| session.status != SessionStatus::Running)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("run completed");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
     let requests = server.await.expect("model server");
     assert_eq!(requests.len(), 2);
     let projection = fixture
@@ -4479,26 +4628,25 @@ async fn wait_for_escalated_approval(
     engine: &Engine,
     session_id: SessionId,
 ) -> cookie_agent_protocol::ApprovalRecord {
-    tokio::time::timeout(test_timeout(2), async {
-        loop {
+    await_session_change(
+        engine,
+        session_id,
+        "user-visible escalated approval",
+        || {
             let mut approvals = engine
                 .list_approvals(session_id, Some(ApprovalStatus::Escalated))
                 .approvals;
-            if let Some(approval) = approvals.pop()
-                && engine
+            approvals.pop().filter(|approval| {
+                engine
                     .inner
                     .pending_approvals
                     .lock()
                     .expect("pending approvals lock")
                     .contains_key(&(session_id, approval.request.approval_id()))
-            {
-                return approval;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
+            })
+        },
+    )
     .await
-    .expect("user-visible escalated approval")
 }
 
 async fn approve_once(
@@ -4526,30 +4674,23 @@ async fn approve_once(
         .expect("approve once")
 }
 
-async fn wait_for_tool_execution(executed: &AtomicBool) {
-    tokio::time::timeout(test_timeout(2), async {
-        while !executed.load(Ordering::Acquire) {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+async fn wait_for_tool_execution(engine: &Engine, session_id: SessionId, executed: &TestFlag) {
+    executed.wait().await;
+    await_event(engine, session_id, "completed tool execution", |event| {
+        matches!(
+            &event.payload,
+            EventPayload::ToolCallTerminated { termination }
+                if termination.outcome == ToolTerminationOutcome::Completed
+        )
     })
-    .await
-    .expect("approved tool execution");
+    .await;
 }
 
 async fn wait_for_session_not_running(engine: &Engine, session_id: SessionId) {
-    tokio::time::timeout(test_timeout(2), async {
-        loop {
-            if engine
-                .get_session(session_id)
-                .is_ok_and(|meta| meta.status != SessionStatus::Running)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+    await_projection(engine, session_id, "session completion", |projection| {
+        projection.status != SessionStatus::Running
     })
-    .await
-    .expect("session completion");
+    .await;
 }
 
 fn interception_plugin(name: &str, extra_env: &[(&str, String)]) -> PluginConfig {
@@ -6190,7 +6331,7 @@ async fn accepted_root_run_keeps_its_exact_manifest_binding_after_runtime_change
 async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
@@ -6280,7 +6421,7 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
     )));
 
     approve_once(&fixture.engine, &approval, "ask-transaction-approval").await;
-    wait_for_tool_execution(&executed).await;
+    wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
     captured.abort();
     fixture.engine.shutdown().await;
 }
@@ -6292,7 +6433,7 @@ async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
-            executed: Arc::new(AtomicBool::new(false)),
+            executed: Arc::new(TestFlag::default()),
         }));
     let session = fixture
         .engine
@@ -6382,7 +6523,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         Some(500),
         false,
     );
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
@@ -6477,7 +6618,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         EventPayload::UserInputSubmitted { input } if input != "begin"
     )));
     approve_once(&fixture.engine, &approval, "steering-race-approval").await;
-    wait_for_tool_execution(&executed).await;
+    wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
     compaction_reached
         .await
         .expect("promotion compaction started");
@@ -6592,24 +6733,7 @@ async fn cancel_during_start_prediction_aborts_compaction_without_appending_inpu
         })
         .await
         .expect("first run started");
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            if fixture
-                .engine
-                .inner
-                .store
-                .get(session.session_id)
-                .expect("first run projection")
-                .status
-                != SessionStatus::Running
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("first run completed");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
 
     let start_engine = fixture.engine.clone();
     let second_selection = selection.clone();
@@ -6784,32 +6908,19 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
         .expect("executor received stdin");
     fixture.engine.cancel_run(run).await.expect("cancel run");
 
-    tokio::time::timeout(test_timeout(3), async {
-        loop {
-            let terminated = fixture
-                .engine
-                .inner
-                .store
-                .get(session.session_id)
-                .expect("cancelled projection")
-                .log
-                .events()
-                .iter()
-                .any(|event| {
-                    matches!(
-                        &event.payload,
-                        EventPayload::ToolCallTerminated { termination }
-                            if termination.tool_call_id == call_id
-                    )
-                });
-            if terminated {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("tool termination after cancellation cleanup");
+    await_event(
+        &fixture.engine,
+        session.session_id,
+        "tool termination after cancellation cleanup",
+        |event| {
+            matches!(
+                &event.payload,
+                EventPayload::ToolCallTerminated { termination }
+                    if termination.tool_call_id == call_id
+            )
+        },
+    )
+    .await;
     let events = fixture
         .engine
         .inner
@@ -6965,36 +7076,27 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
     tokio::time::timeout(test_timeout(1), cleanup_progress_sent.notified())
         .await
         .expect("cleanup progress accepted");
-    let error_message = tokio::time::timeout(test_timeout(3), async {
-        loop {
-            let terminal = fixture
-                .engine
-                .inner
-                .store
-                .get(session_id)
-                .expect("wedged projection")
-                .log
-                .events()
-                .iter()
-                .find_map(|event| match &event.payload {
-                    EventPayload::ToolCallTerminated { termination }
-                        if termination.tool_call_id == call_id =>
-                    {
-                        termination
-                            .error
-                            .as_ref()
-                            .map(|error| error.message.to_string())
-                    }
-                    _ => None,
-                });
-            if let Some(message) = terminal {
-                break message;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("bounded cancellation cleanup");
+    let terminal = await_event(
+        &fixture.engine,
+        session_id,
+        "bounded cancellation cleanup",
+        |event| {
+            matches!(
+                &event.payload,
+                EventPayload::ToolCallTerminated { termination }
+                    if termination.tool_call_id == call_id && termination.error.is_some()
+            )
+        },
+    )
+    .await;
+    let EventPayload::ToolCallTerminated { termination } = terminal.payload else {
+        unreachable!("awaited tool termination")
+    };
+    let error_message = termination
+        .error
+        .expect("termination error")
+        .message
+        .to_string();
     assert!(cancelled_at.elapsed() < std::time::Duration::from_secs(3));
     assert!(
         error_message.contains("cleanup deadline elapsed"),
@@ -7013,32 +7115,19 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
 async fn bash_internal_timeout_commits_all_chunks_before_terminal_event() {
     let (fixture, session_id, _run_id, call_id, _stdin_received, _cleanup_progress_sent, captured) =
         start_streaming_bash_test_run("timeout", false).await;
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            if fixture
-                .engine
-                .inner
-                .store
-                .get(session_id)
-                .expect("timeout projection")
-                .log
-                .events()
-                .iter()
-                .any(|event| {
-                    matches!(
-                        &event.payload,
-                        EventPayload::ToolCallTerminated { termination }
-                            if termination.tool_call_id == call_id
-                    )
-                })
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("bash timeout terminal event");
+    await_event(
+        &fixture.engine,
+        session_id,
+        "bash timeout terminal event",
+        |event| {
+            matches!(
+                &event.payload,
+                EventPayload::ToolCallTerminated { termination }
+                    if termination.tool_call_id == call_id
+            )
+        },
+    )
+    .await;
     let events = fixture
         .engine
         .inner
@@ -7226,7 +7315,7 @@ async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix()
         None,
         false,
     );
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
@@ -7248,37 +7337,14 @@ async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix()
         .await
         .expect("accepted persistent approval run");
 
-    let completed = tokio::time::timeout(test_timeout(5), async {
-        loop {
-            if fixture
-                .engine
-                .inner
-                .store
-                .get(session.session_id)
-                .expect("projection")
-                .status
-                == SessionStatus::Completed
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
+    await_projection(
+        &fixture.engine,
+        session.session_id,
+        "stateless approval completion",
+        |projection| projection.status == SessionStatus::Completed,
+    )
     .await;
-    if completed.is_err() {
-        let projection = fixture
-            .engine
-            .inner
-            .store
-            .get(session.session_id)
-            .expect("timed-out projection");
-        panic!(
-            "stateless approval completion timed out with status {:?} and events {:#?}",
-            projection.status,
-            projection.log.events()
-        );
-    }
-    assert!(executed.load(Ordering::Acquire));
+    assert!(executed.is_set());
 
     let events = fixture
         .engine
@@ -7302,7 +7368,7 @@ async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix()
 async fn ask_permission_mode_escalates_without_starting_internal_approval_agent() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"allow"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
@@ -7349,7 +7415,7 @@ async fn ask_permission_mode_escalates_without_starting_internal_approval_agent(
             .any(|event| matches!(event.payload, EventPayload::ApprovalEscalated { .. }))
     );
     approve_once(&fixture.engine, &approval, "ask-mode-approval").await;
-    wait_for_tool_execution(&executed).await;
+    wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
     captured.abort();
     fixture.engine.shutdown().await;
 }
@@ -7358,7 +7424,7 @@ async fn ask_permission_mode_escalates_without_starting_internal_approval_agent(
 async fn yolo_permission_mode_durably_approves_and_executes_without_escalation() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"deny"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
@@ -7382,7 +7448,7 @@ async fn yolo_permission_mode_durably_approves_and_executes_without_escalation()
         })
         .await
         .expect("run");
-    wait_for_tool_execution(&executed).await;
+    wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
 
     let events = fixture
         .engine
@@ -7437,7 +7503,7 @@ async fn yolo_permission_mode_durably_approves_and_executes_without_escalation()
 async fn auto_approve_n_rejects_classifier_escalation_with_feedback_without_prompting() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
@@ -7471,7 +7537,7 @@ async fn auto_approve_n_rejects_classifier_escalation_with_feedback_without_prom
         .expect("projection")
         .log
         .events();
-    assert!(!executed.load(Ordering::Acquire));
+    assert!(!executed.is_set());
     assert!(events.iter().any(|event| matches!(
         &event.payload,
         EventPayload::ApprovalEvaluated { decision, .. }
@@ -7519,7 +7585,7 @@ async fn auto_approve_n_rejects_classifier_escalation_with_feedback_without_prom
 async fn auto_approve_y_approves_classifier_escalation_once_without_prompting() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
@@ -7543,7 +7609,7 @@ async fn auto_approve_y_approves_classifier_escalation_once_without_prompting() 
         })
         .await
         .expect("run");
-    wait_for_tool_execution(&executed).await;
+    wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
 
     let events = fixture
@@ -7584,7 +7650,7 @@ async fn auto_approve_y_approves_classifier_escalation_once_without_prompting() 
 async fn auto_approve_y_rechecks_identical_calls_without_creating_a_tree_grant() {
     let (endpoint, captured) = scripted_two_evaluated_writes_server(r#"{"decision":"ask"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
@@ -7678,7 +7744,7 @@ async fn auto_approve_n_and_y_preserve_classifier_allow_and_deny() {
     ] {
         let (endpoint, captured) = scripted_approval_server(internal_output).await;
         let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
-        let executed = Arc::new(AtomicBool::new(false));
+        let executed = Arc::new(TestFlag::default());
         fixture
             .engine
             .register_tool_provider(Arc::new(TestWriteProvider {
@@ -7705,7 +7771,7 @@ async fn auto_approve_n_and_y_preserve_classifier_allow_and_deny() {
             .expect("run");
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
 
-        assert_eq!(executed.load(Ordering::Acquire), should_execute);
+        assert_eq!(executed.is_set(), should_execute);
         let events = fixture
             .engine
             .inner
@@ -7735,7 +7801,7 @@ async fn auto_approve_n_and_y_preserve_classifier_allow_and_deny() {
 async fn yolo_permission_mode_does_not_override_hard_deny_rules() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"allow"}"#).await;
     let (fixture, selection) = denied_approval_fixture_with_endpoint(&endpoint);
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
@@ -7769,7 +7835,7 @@ async fn yolo_permission_mode_does_not_override_hard_deny_rules() {
         .expect("projection")
         .log
         .events();
-    assert!(!executed.load(Ordering::Acquire));
+    assert!(!executed.is_set());
     assert!(!events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ApprovalRequested { .. }
@@ -7788,7 +7854,7 @@ async fn yolo_permission_mode_still_triggers_the_doom_loop_guard() {
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
-            executed: Arc::new(AtomicBool::new(false)),
+            executed: Arc::new(TestFlag::default()),
         }));
     let session = fixture
         .engine
@@ -7809,31 +7875,20 @@ async fn yolo_permission_mode_still_triggers_the_doom_loop_guard() {
         })
         .await
         .expect("run");
-    tokio::time::timeout(test_timeout(2), async {
-        loop {
-            let events = fixture
-                .engine
-                .inner
-                .store
-                .get(session.session_id)
-                .expect("projection")
-                .log
-                .events();
-            if events.iter().any(|event| {
-                matches!(
-                    &event.payload,
-                    EventPayload::ApprovalFinalized { decision, .. }
-                        if decision.outcome == ApprovalFinalOutcome::Rejected
-                            && decision.reason_code == ApprovalReasonCode::DoomLoopDetected
-                )
-            }) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("doom-loop rejection");
+    await_event(
+        &fixture.engine,
+        session.session_id,
+        "doom-loop rejection",
+        |event| {
+            matches!(
+                &event.payload,
+                EventPayload::ApprovalFinalized { decision, .. }
+                    if decision.outcome == ApprovalFinalOutcome::Rejected
+                        && decision.reason_code == ApprovalReasonCode::DoomLoopDetected
+            )
+        },
+    )
+    .await;
     let events = fixture
         .engine
         .inner
@@ -7856,7 +7911,7 @@ async fn yolo_permission_mode_still_triggers_the_doom_loop_guard() {
 async fn permission_mode_change_applies_to_the_next_operation_only() {
     let (endpoint, captured) = scripted_repeated_write_server(2).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
@@ -7896,31 +7951,20 @@ async fn permission_mode_change_applies_to_the_next_operation_only() {
         1
     );
     approve_once(&fixture.engine, &first, "live-mode-first").await;
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            let events = fixture
-                .engine
-                .inner
-                .store
-                .get(session.session_id)
-                .expect("projection")
-                .log
-                .events();
-            if events.iter().any(|event| {
-                matches!(
-                    &event.payload,
-                    EventPayload::ApprovalFinalized { decision, .. }
-                        if decision.reason_code == ApprovalReasonCode::YoloApproved
-                )
-            }) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("next operation uses yolo");
-    assert!(executed.load(Ordering::Acquire));
+    await_event(
+        &fixture.engine,
+        session.session_id,
+        "next operation uses yolo",
+        |event| {
+            matches!(
+                &event.payload,
+                EventPayload::ApprovalFinalized { decision, .. }
+                    if decision.reason_code == ApprovalReasonCode::YoloApproved
+            )
+        },
+    )
+    .await;
+    assert!(executed.is_set());
     let events = fixture
         .engine
         .inner
@@ -7944,7 +7988,7 @@ async fn permission_mode_change_applies_to_the_next_operation_only() {
 async fn malformed_internal_approval_output_falls_back_to_escalation_transaction() {
     let (endpoint, captured) = scripted_approval_server("not-json").await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
@@ -7989,7 +8033,7 @@ async fn malformed_internal_approval_output_falls_back_to_escalation_transaction
     )));
 
     approve_once(&fixture.engine, &approval, "malformed-approval-response").await;
-    wait_for_tool_execution(&executed).await;
+    wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
     captured.abort();
     fixture.engine.shutdown().await;
 }
@@ -7998,7 +8042,7 @@ async fn malformed_internal_approval_output_falls_back_to_escalation_transaction
 async fn internal_agent_ask_escalates_to_user_approval_then_executes_tool() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
@@ -8022,7 +8066,7 @@ async fn internal_agent_ask_escalates_to_user_approval_then_executes_tool() {
     let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
     let response = approve_once(&fixture.engine, &approval, "approval-e2e-response").await;
     assert_eq!(response.approval.status, ApprovalStatus::Approved);
-    wait_for_tool_execution(&executed).await;
+    wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
 
     let events = fixture
         .engine
@@ -8081,22 +8125,13 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
         })
         .await
         .expect("accepted run");
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            let projection = fixture
-                .engine
-                .inner
-                .store
-                .get(session.session_id)
-                .expect("projection");
-            if projection.status == cookie_agent_protocol::SessionStatus::Completed {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("scripted run completion");
+    await_projection(
+        &fixture.engine,
+        session.session_id,
+        "scripted run completion",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
     let request = captured.await.expect("scripted server task");
     assert!(request.starts_with("POST /v1/chat/completions? HTTP/1.1"));
     assert!(
@@ -8550,7 +8585,7 @@ async fn anthropic_prompt_caching_records_wire_markers_usage_and_rollup() {
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
-            executed: Arc::new(AtomicBool::new(false)),
+            executed: Arc::new(TestFlag::default()),
         }));
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     for index in 0..3 {
@@ -8724,7 +8759,7 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
-            executed: Arc::new(AtomicBool::new(false)),
+            executed: Arc::new(TestFlag::default()),
         }));
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
@@ -8753,16 +8788,12 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
     assert_eq!(last_content["cache_control"]["ttl"], "5m");
     assert_eq!(cache_marker_count(&body), 3);
 
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            let events = fixture
-                .engine
-                .inner
-                .store
-                .get(session.session_id)
-                .unwrap()
-                .log
-                .events();
+    await_projection(
+        &fixture.engine,
+        session.session_id,
+        "plugin diagnostics",
+        |projection| {
+            let events = projection.log.events();
             let invalid = events.iter().any(|event| {
                 matches!(
                     &event.payload,
@@ -8776,14 +8807,10 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
                 EventPayload::PluginDiagnostic { kind, .. }
                     if *kind == cookie_agent_protocol::PluginDiagnosticKind::UnsupportedCapability
             ));
-            if invalid && unsupported {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("plugin diagnostics");
+            invalid && unsupported
+        },
+    )
+    .await;
     let provider_calls = fs::read_to_string(provider_file).unwrap();
     let after = provider_calls
         .lines()
@@ -8821,7 +8848,7 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
-            executed: Arc::new(AtomicBool::new(false)),
+            executed: Arc::new(TestFlag::default()),
         }));
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
@@ -8864,7 +8891,7 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
     fixture.engine.shutdown().await;
     let reopened = reopen_engine(&fixture);
     reopened.register_tool_provider(Arc::new(TestWriteProvider {
-        executed: Arc::new(AtomicBool::new(false)),
+        executed: Arc::new(TestFlag::default()),
     }));
     reopened
         .start_run(RunStartParams {
@@ -9438,7 +9465,7 @@ async fn tool_before_hooks_run_only_after_permission_and_approval() {
     denied
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
-            executed: Arc::new(AtomicBool::new(false)),
+            executed: Arc::new(TestFlag::default()),
         }));
     let denied_session = denied
         .engine
@@ -9475,7 +9502,7 @@ async fn tool_before_hooks_run_only_after_permission_and_approval() {
             )],
         )
         .await;
-        let executed = Arc::new(AtomicBool::new(false));
+        let executed = Arc::new(TestFlag::default());
         fixture
             .engine
             .register_tool_provider(Arc::new(TestWriteProvider {
@@ -9499,7 +9526,7 @@ async fn tool_before_hooks_run_only_after_permission_and_approval() {
         assert!(!marker.exists(), "hook ran before approval decision");
         if decision {
             approve_once(&fixture.engine, &approval, "approve-hook").await;
-            wait_for_tool_execution(&executed).await;
+            wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
             assert!(marker.exists(), "approved call did not reach hook");
         } else {
             reject_approval(&fixture.engine, &approval, "reject-hook").await;
@@ -9542,7 +9569,7 @@ async fn validated_tool_modification_reprepares_before_the_next_hook() {
         ],
     )
     .await;
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
@@ -9562,7 +9589,7 @@ async fn validated_tool_modification_reprepares_before_the_next_hook() {
         })
         .await
         .expect("run");
-    wait_for_tool_execution(&executed).await;
+    wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
     let alpha: serde_json::Value = serde_json::from_str(
         fs::read_to_string(alpha_file)
             .expect("alpha hook")
@@ -9582,7 +9609,7 @@ async fn registered_external_tool_must_declare_resource_and_cannot_bypass_deny()
         &endpoint,
         "---\ndescription: Resource-bound test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: deny\n---\nReject denied tools.\n",
     );
-    let executed = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(TestFlag::default());
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
@@ -9603,24 +9630,15 @@ async fn registered_external_tool_must_declare_resource_and_cannot_bypass_deny()
         .await
         .expect("accepted run");
 
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            let projection = fixture
-                .engine
-                .inner
-                .store
-                .get(session.session_id)
-                .expect("resource-bound projection");
-            if projection.status == SessionStatus::Completed {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("zero-resource run completion");
+    await_projection(
+        &fixture.engine,
+        session.session_id,
+        "zero-resource run completion",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
 
-    assert!(!executed.load(Ordering::Acquire));
+    assert!(!executed.is_set());
     let events = fixture
         .engine
         .inner
@@ -9863,34 +9881,13 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
         })
         .await
         .expect("accepted parent run");
-    let completed = tokio::time::timeout(test_timeout(3), async {
-        loop {
-            let projection = fixture
-                .engine
-                .inner
-                .store
-                .get(parent.session_id)
-                .expect("parent projection");
-            if projection.status == cookie_agent_protocol::SessionStatus::Completed {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
+    await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "delegation completion",
+        |projection| projection.status == SessionStatus::Completed,
+    )
     .await;
-    if completed.is_err() {
-        let projection = fixture
-            .engine
-            .inner
-            .store
-            .get(parent.session_id)
-            .expect("timed out parent projection");
-        panic!(
-            "delegation completion timed out: status={:?} events={:#?}",
-            projection.status,
-            projection.log.events()
-        );
-    }
     let requests = captured.await.expect("delegation server task");
     assert_eq!(requests.len(), 3);
     let children = fixture.engine.children(parent.session_id);
@@ -9957,16 +9954,11 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
     let _ = tokio::time::timeout(test_timeout(2), compaction)
         .await
         .expect("compaction reply timeout");
-    tokio::time::timeout(test_timeout(2), async {
-        while fixture
+    assert!(
+        !fixture
             .engine
             .compaction_reserved_for_test(child.session_id)
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("compaction reservation release");
+    );
     let child_tip = fixture
         .engine
         .inner
@@ -10266,38 +10258,17 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
         .resume(parent.session_id)
         .await
         .expect("resume parent delegation recovery");
-    let recovered = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            let child = reopened
-                .inner
-                .store
-                .get(child_id)
-                .expect("recovered child");
-            if child.log.events().iter().any(|event| {
+    await_projection(
+        &reopened,
+        child_id,
+        "recovered child completion",
+        |child| {
+            child.log.events().iter().any(|event| {
                 matches!(event.payload, EventPayload::SkillLoaded { ref name, .. } if name == "restart-skill")
             }) && child.status == SessionStatus::Completed
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
+        },
+    )
     .await;
-    if recovered.is_err() {
-        let child = reopened.inner.store.get(child_id).expect("timed out child");
-        let parent_projection = reopened
-            .inner
-            .store
-            .get(parent.session_id)
-            .expect("timed out parent");
-        panic!(
-            "recovered child completion timed out: child_status={:?} child_events={:#?} parent_status={:?} delegation_events={:#?}",
-            child.status,
-            child.log.events(),
-            parent_projection.status,
-            reopened.inner.delegation_events.entries()
-        );
-    }
     let grants = reopened
         .skill_grants_for_session(child_id)
         .expect("reconstructed child grants");
@@ -10354,9 +10325,12 @@ async fn delegated_child_uses_description_title_without_title_agent() {
         })
         .await
         .expect("accepted titled delegation");
-    tokio::time::timeout(test_timeout(3), async {
-        loop {
-            if fixture
+    await_session_change(
+        &fixture.engine,
+        parent.session_id,
+        "titled child completion",
+        || {
+            (fixture
                 .engine
                 .children(parent.session_id)
                 .first()
@@ -10364,15 +10338,11 @@ async fn delegated_child_uses_description_title_without_title_agent() {
                 && fixture
                     .engine
                     .get_session(parent.session_id)
-                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("titled child completion");
+                    .is_ok_and(|parent| parent.status == SessionStatus::Completed))
+            .then_some(())
+        },
+    )
+    .await;
     let child_id = fixture.engine.children(parent.session_id)[0].session_id;
     let child = fixture
         .engine
@@ -10549,15 +10519,18 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
         .await
         .expect("accepted background parent run");
 
-    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
+    let child_session_id = await_session_change(
+        &fixture.engine,
+        parent.session_id,
+        "immediate background session result",
+        || {
             let projection = fixture
                 .engine
                 .inner
                 .store
                 .get(parent.session_id)
                 .expect("background parent projection");
-            if let Some(session_id) = projection.log.events().iter().find_map(|event| {
+            projection.log.events().iter().find_map(|event| {
                 let EventPayload::ToolCallTerminated { termination } = &event.payload else {
                     return None;
                 };
@@ -10568,43 +10541,30 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
                     .get("session_id")
                     .cloned()
                     .and_then(|value| serde_json::from_value(value).ok())
-            }) {
-                break session_id;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("immediate background session result");
+            })
+        },
+    )
+    .await;
 
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            let projection = fixture
-                .engine
-                .inner
-                .store
-                .get(parent.session_id)
-                .expect("background parent projection");
-            if projection.log.events().iter().any(|event| {
-                matches!(
-                    &event.payload,
-                    EventPayload::DelegateFinishedV2 {
-                        session_id,
-                        status: SessionStatus::Completed,
-                        preview,
-                        total_lines: 3,
-                        ..
-                    } if *session_id == child_session_id
-                        && preview == "first line\nsecond line\nthird line"
-                )
-            }) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("background completion notification");
+    await_event(
+        &fixture.engine,
+        parent.session_id,
+        "background completion notification",
+        |event| {
+            matches!(
+                &event.payload,
+                EventPayload::DelegateFinishedV2 {
+                    session_id,
+                    status: SessionStatus::Completed,
+                    preview,
+                    total_lines: 3,
+                    ..
+                } if *session_id == child_session_id
+                    && preview == "first line\nsecond line\nthird line"
+            )
+        },
+    )
+    .await;
 
     let page = fixture
         .engine
@@ -10673,6 +10633,8 @@ async fn delegation_completion_triggers_configured_subagent_eviction_after_tease
         .await
         .expect("automatic paging parent run");
 
+    // Residency eviction has no durable event after the store transition, so
+    // this test intentionally polls the residency cache itself.
     let child_session_id = tokio::time::timeout(test_timeout(3), async {
         loop {
             if let Some(child) = fixture
@@ -10774,9 +10736,12 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
         })
         .await
         .expect("first parent run");
-    tokio::time::timeout(test_timeout(3), async {
-        loop {
-            if fixture
+    await_session_change(
+        &fixture.engine,
+        parent.session_id,
+        "first child completion",
+        || {
+            (fixture
                 .engine
                 .children(parent.session_id)
                 .first()
@@ -10784,15 +10749,11 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
                 && fixture
                     .engine
                     .get_session(parent.session_id)
-                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("first child completion");
+                    .is_ok_and(|parent| parent.status == SessionStatus::Completed))
+            .then_some(())
+        },
+    )
+    .await;
     let child_session_id = fixture.engine.children(parent.session_id)[0].session_id;
     let original_title = fixture
         .engine
@@ -10870,20 +10831,18 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
         })
         .await
         .expect("second parent run");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
+    await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "resumed child completion and teaser",
+        |parent_projection| {
             let child = fixture
                 .engine
                 .inner
                 .store
                 .get(child_session_id)
                 .expect("resumed child");
-            let notifications = fixture
-                .engine
-                .inner
-                .store
-                .get(parent.session_id)
-                .expect("resume parent projection")
+            let notifications = parent_projection
                 .log
                 .events()
                 .iter()
@@ -10897,17 +10856,10 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
                     )
                 })
                 .count();
-            if child.status == SessionStatus::Completed
-                && child.runs.len() == 2
-                && notifications == 2
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("resumed child completion and teaser");
+            child.status == SessionStatus::Completed && child.runs.len() == 2 && notifications == 2
+        },
+    )
+    .await;
     assert_eq!(fixture.engine.children(parent.session_id).len(), 1);
     assert_eq!(
         fixture
@@ -11202,8 +11154,11 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
             })
             .await
             .expect("paging parent run");
-        let child_id = tokio::time::timeout(test_timeout(3), async {
-            loop {
+        let child_id = await_session_change(
+            &fixture.engine,
+            parent.session_id,
+            "paging child completion and teaser",
+            || {
                 let known = fixture.engine.children(parent.session_id);
                 if let Some(child) = known.iter().find(|child| {
                     child.status == SessionStatus::Completed
@@ -11230,14 +11185,13 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
                             )
                         });
                     if notified {
-                        break child.session_id;
+                        return Some(child.session_id);
                     }
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("paging child completion and teaser");
+                None
+            },
+        )
+        .await;
         children.push(child_id);
     }
 
@@ -11301,6 +11255,8 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
     list_started.expect("list call started");
     children_started.expect("children call started");
     tree_started.expect("tree call started");
+    // A short real-time window is intentional: these are negative assertions
+    // that the synchronous readers remain blocked by the transition lock.
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     assert!(!list_task.is_finished());
     assert!(!children_task.is_finished());
@@ -11711,28 +11667,19 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
         })
         .await
         .expect("paging resume parent run");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if fixture
-                .engine
-                .inner
-                .store
-                .get_resident(children[0])
-                .is_some_and(|child| {
-                    child.runs.len() == 2
-                        && child
-                            .runs
-                            .values()
-                            .any(|run| run.status == SessionStatus::Running)
-                })
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("resumed child running");
+    await_projection(
+        &fixture.engine,
+        children[0],
+        "resumed child running",
+        |child| {
+            child.runs.len() == 2
+                && child
+                    .runs
+                    .values()
+                    .any(|run| run.status == SessionStatus::Running)
+        },
+    )
+    .await;
     assert!(
         fixture
             .engine
@@ -11747,24 +11694,13 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
             scripted_text_body("resumed paging result"),
         ))
         .expect("release resumed child");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if fixture
-                .engine
-                .inner
-                .store
-                .get_resident(children[0])
-                .is_some_and(|child| {
-                    child.runs.len() == 2 && child.status == SessionStatus::Completed
-                })
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("resumed paging child completion");
+    await_projection(
+        &fixture.engine,
+        children[0],
+        "resumed paging child completion",
+        |child| child.runs.len() == 2 && child.status == SessionStatus::Completed,
+    )
+    .await;
     assert_eq!(server.await.expect("paging server").len(), 12);
     fixture.engine.shutdown().await;
 }
@@ -11800,22 +11736,26 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
         })
         .await
         .expect("queued resume first run");
-    let resumed_session_id = tokio::time::timeout(test_timeout(3), async {
-        loop {
-            if let Some(child) = fixture.engine.children(parent.session_id).first()
-                && child.status == SessionStatus::Completed
-                && fixture
-                    .engine
-                    .get_session(parent.session_id)
-                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
-            {
-                break child.session_id;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("terminal resume target");
+    let resumed_session_id = await_session_change(
+        &fixture.engine,
+        parent.session_id,
+        "terminal resume target",
+        || {
+            fixture
+                .engine
+                .children(parent.session_id)
+                .first()
+                .filter(|child| {
+                    child.status == SessionStatus::Completed
+                        && fixture
+                            .engine
+                            .get_session(parent.session_id)
+                            .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+                })
+                .map(|child| child.session_id)
+        },
+    )
+    .await;
     resume_id
         .send(resumed_session_id)
         .expect("send queued resume target");
@@ -11900,22 +11840,13 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
         .expect("steer queued terminal resume");
     assert_eq!(steered.metadata["status"], "queued");
     release.send(()).expect("release concurrency slot");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            let child = fixture
-                .engine
-                .inner
-                .store
-                .get(resumed_session_id)
-                .expect("started queued resume target");
-            if child.status == SessionStatus::Completed && child.runs.len() == 2 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("queued resume completion");
+    await_projection(
+        &fixture.engine,
+        resumed_session_id,
+        "queued resume completion",
+        |child| child.status == SessionStatus::Completed && child.runs.len() == 2,
+    )
+    .await;
     assert!(
         !fixture
             .engine
@@ -11979,22 +11910,26 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
         })
         .await
         .expect("queued cancel first run");
-    let resumed_session_id = tokio::time::timeout(test_timeout(3), async {
-        loop {
-            if let Some(child) = fixture.engine.children(parent.session_id).first()
-                && child.status == SessionStatus::Completed
-                && fixture
-                    .engine
-                    .get_session(parent.session_id)
-                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
-            {
-                break child.session_id;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("terminal cancellation target");
+    let resumed_session_id = await_session_change(
+        &fixture.engine,
+        parent.session_id,
+        "terminal cancellation target",
+        || {
+            fixture
+                .engine
+                .children(parent.session_id)
+                .first()
+                .filter(|child| {
+                    child.status == SessionStatus::Completed
+                        && fixture
+                            .engine
+                            .get_session(parent.session_id)
+                            .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+                })
+                .map(|child| child.session_id)
+        },
+    )
+    .await;
     resume_id
         .send(resumed_session_id)
         .expect("send cancellation resume target");
@@ -12115,7 +12050,7 @@ async fn inherited_context_is_event_backed_and_deterministic_after_restart() {
     fixture
         .engine
         .register_tool_provider(Arc::new(TestWriteProvider {
-            executed: Arc::new(AtomicBool::new(false)),
+            executed: Arc::new(TestFlag::default()),
         }));
     let parent = fixture
         .engine
@@ -12183,18 +12118,14 @@ async fn inherited_context_is_event_backed_and_deterministic_after_restart() {
         })
         .await
         .expect("inherit delegation run");
-    let child_session_id = tokio::time::timeout(test_timeout(3), async {
-        loop {
-            if let Some(child) = fixture.engine.children(parent.session_id).first()
-                && child.status == SessionStatus::Completed
-            {
-                break child.session_id;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
+    let child_session_id = await_child(
+        &fixture.engine,
+        parent.session_id,
+        "inherited child completion",
+        |child| child.status == SessionStatus::Completed,
+    )
     .await
-    .expect("inherited child completion");
+    .session_id;
     let child = fixture
         .engine
         .inner
@@ -12294,21 +12225,13 @@ async fn background_delegate_permission_approval_gates_child_admission() {
     let approval = wait_for_escalated_approval(&fixture.engine, parent.session_id).await;
     assert!(fixture.engine.children(parent.session_id).is_empty());
     approve_once(&fixture.engine, &approval, "background-delegate-approval").await;
-    tokio::time::timeout(test_timeout(3), async {
-        loop {
-            if fixture
-                .engine
-                .children(parent.session_id)
-                .first()
-                .is_some_and(|child| child.status == SessionStatus::Completed)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("approved background child completion");
+    await_child(
+        &fixture.engine,
+        parent.session_id,
+        "approved background child completion",
+        |child| child.status == SessionStatus::Completed,
+    )
+    .await;
     assert_eq!(captured.await.expect("approval-gated server").len(), 3);
     fixture.engine.shutdown().await;
 }
@@ -12337,18 +12260,14 @@ async fn running_subagent_result_is_empty_waits_and_cancel_is_session_addressed(
         .await
         .expect("accepted cancellable parent run");
 
-    let child_session_id = tokio::time::timeout(test_timeout(3), async {
-        loop {
-            if let Some(child) = fixture.engine.children(parent.session_id).first()
-                && child.status == SessionStatus::Running
-            {
-                break child.session_id;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
+    let child_session_id = await_child(
+        &fixture.engine,
+        parent.session_id,
+        "running child",
+        |child| child.status == SessionStatus::Running,
+    )
     .await
-    .expect("running child");
+    .session_id;
     let immediate = fixture
         .engine
         .get_subagent_result(
@@ -12427,18 +12346,14 @@ async fn running_subagent_steer_promotes_user_input_and_enforces_ownership_and_s
         .expect("accepted steer parent run");
     reached.await.expect("child request reached server");
 
-    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if let Some(child) = fixture.engine.children(parent.session_id).first()
-                && child.status == SessionStatus::Running
-            {
-                break child.session_id;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
+    let child_session_id = await_child(
+        &fixture.engine,
+        parent.session_id,
+        "running steer child",
+        |child| child.status == SessionStatus::Running,
+    )
     .await
-    .expect("running steer child");
+    .session_id;
     let steered = fixture
         .engine
         .steer_subagent(
@@ -12468,21 +12383,13 @@ async fn running_subagent_steer_promotes_user_input_and_enforces_ownership_and_s
     assert!(missing_error.to_string().contains(&missing_id.to_string()));
     release.send(()).expect("release child response");
 
-    tokio::time::timeout(test_timeout(3), async {
-        loop {
-            if fixture
-                .engine
-                .children(parent.session_id)
-                .first()
-                .is_some_and(|child| child.status == SessionStatus::Completed)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("steered child completion");
+    await_child(
+        &fixture.engine,
+        parent.session_id,
+        "steered child completion",
+        |child| child.status == SessionStatus::Completed,
+    )
+    .await;
     let child_events = fixture
         .engine
         .inner
@@ -12537,22 +12444,26 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         .await
         .expect("first resume parent run");
     ready.await.expect("first parent and child requests");
-    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if let Some(child) = fixture.engine.children(parent.session_id).first()
-                && child.status == SessionStatus::Running
-                && fixture
-                    .engine
-                    .get_session(parent.session_id)
-                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
-            {
-                break child.session_id;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("active child and completed first parent run");
+    let child_session_id = await_session_change(
+        &fixture.engine,
+        parent.session_id,
+        "active child and completed first parent run",
+        || {
+            fixture
+                .engine
+                .children(parent.session_id)
+                .first()
+                .filter(|child| {
+                    child.status == SessionStatus::Running
+                        && fixture
+                            .engine
+                            .get_session(parent.session_id)
+                            .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+                })
+                .map(|child| child.session_id)
+        },
+    )
+    .await;
     let original_run_id = fixture
         .engine
         .inner
@@ -12619,37 +12530,27 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         .expect("concurrent resume redelivery")
         .expect("redelivery task")
         .expect("redelivery handle");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            let prompt_admitted = fixture
-                .engine
-                .inner
-                .store
-                .get(child_session_id)
-                .expect("actively resumed child")
-                .log
-                .events()
-                .iter()
-                .any(|event| {
-                    matches!(
-                        &event.payload,
-                        EventPayload::UserInputAdmitted { input }
-                            if event.run_id == Some(original_run_id)
-                                && input == "resume active prompt"
-                    )
-                });
+    await_projection(
+        &fixture.engine,
+        child_session_id,
+        "running resume prompt admission",
+        |child| {
+            let prompt_admitted = child.log.events().iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    EventPayload::UserInputAdmitted { input }
+                        if event.run_id == Some(original_run_id)
+                            && input == "resume active prompt"
+                )
+            });
             let registry_handed_off = fixture
                 .engine
                 .delegation_registry_snapshot(child_session_id)
                 .is_ok_and(|(invocation_id, _, _)| invocation_id != original_invocation_id);
-            if prompt_admitted && registry_handed_off {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("running resume prompt admission");
+            prompt_admitted && registry_handed_off
+        },
+    )
+    .await;
     let (resumed_invocation_id, _, resumed_counts_slot) = fixture
         .engine
         .delegation_registry_snapshot(child_session_id)
@@ -12698,14 +12599,12 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         .count();
     assert_eq!(resume_admissions, 1);
     release.send(()).expect("release active child response");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            let notifications = fixture
-                .engine
-                .inner
-                .store
-                .get(parent.session_id)
-                .expect("running resume parent projection")
+    await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "running resumed child completion",
+        |parent_projection| {
+            let notifications = parent_projection
                 .log
                 .events()
                 .iter()
@@ -12719,19 +12618,14 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
                     )
                 })
                 .count();
-            if fixture
+            fixture
                 .engine
                 .get_session(child_session_id)
                 .is_ok_and(|child| child.status == SessionStatus::Completed)
                 && notifications == 2
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("running resumed child completion");
+        },
+    )
+    .await;
     let child = fixture
         .engine
         .inner
@@ -12832,22 +12726,26 @@ async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_te
         .await
         .expect("handoff race first run");
     ready.await.expect("race child active");
-    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if let Some(child) = fixture.engine.children(parent.session_id).first()
-                && child.status == SessionStatus::Running
-                && fixture
-                    .engine
-                    .get_session(parent.session_id)
-                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
-            {
-                break child.session_id;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("race child and first parent completion");
+    let child_session_id = await_session_change(
+        &fixture.engine,
+        parent.session_id,
+        "race child and first parent completion",
+        || {
+            fixture
+                .engine
+                .children(parent.session_id)
+                .first()
+                .filter(|child| {
+                    child.status == SessionStatus::Running
+                        && fixture
+                            .engine
+                            .get_session(parent.session_id)
+                            .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+                })
+                .map(|child| child.session_id)
+        },
+    )
+    .await;
     let (old_invocation_id, _, _) = fixture
         .engine
         .delegation_registry_snapshot(child_session_id)
@@ -12872,23 +12770,19 @@ async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_te
     release_child
         .send(())
         .expect("complete child before admission");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if fixture
-                .engine
-                .get_session(child_session_id)
-                .is_ok_and(|child| child.status == SessionStatus::Completed)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("child completed while resume admission paused");
+    await_projection(
+        &fixture.engine,
+        child_session_id,
+        "child completed while resume admission paused",
+        |child| child.status == SessionStatus::Completed,
+    )
+    .await;
     release_admission.notify_one();
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
+    await_session_change(
+        &fixture.engine,
+        parent.session_id,
+        "rejected resume rollback",
+        || {
             let entries = fixture.engine.inner.delegation_events.entries();
             let latest_cancelled = entries.last().is_some_and(|entry| {
                 entry.reservation.child_session_id == child_session_id
@@ -12901,14 +12795,10 @@ async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_te
                     invocation_id == old_invocation_id
                         && terminal_status == Some(SessionStatus::Completed)
                 });
-            if latest_cancelled && registry_terminal {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("rejected resume rolled back without a running registry leak");
+            (latest_cancelled && registry_terminal).then_some(())
+        },
+    )
+    .await;
     assert!(
         !fixture
             .engine
@@ -12944,22 +12834,26 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
         .await
         .expect("cancelled admission first run");
     ready.await.expect("cancelled admission child active");
-    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if let Some(child) = fixture.engine.children(parent.session_id).first()
-                && child.status == SessionStatus::Running
-                && fixture
-                    .engine
-                    .get_session(parent.session_id)
-                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
-            {
-                break child.session_id;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("cancelled admission running child");
+    let child_session_id = await_session_change(
+        &fixture.engine,
+        parent.session_id,
+        "cancelled admission running child",
+        || {
+            fixture
+                .engine
+                .children(parent.session_id)
+                .first()
+                .filter(|child| {
+                    child.status == SessionStatus::Running
+                        && fixture
+                            .engine
+                            .get_session(parent.session_id)
+                            .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+                })
+                .map(|child| child.session_id)
+        },
+    )
+    .await;
     let (old_invocation_id, _, _) = fixture
         .engine
         .delegation_registry_snapshot(child_session_id)
@@ -13010,14 +12904,11 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
         .cancel_inflight_delegation_for_test(resumed_invocation_id)
         .expect("cancel delegate future during resume admission");
     release_admission.notify_one();
-    tokio::time::timeout(test_timeout(3), async {
-        loop {
-            let child = fixture
-                .engine
-                .inner
-                .store
-                .get(child_session_id)
-                .expect("cancelled admission child projection");
+    await_projection(
+        &fixture.engine,
+        child_session_id,
+        "cancelled resume prompt recall",
+        |child| {
             let admitted = child
                 .log
                 .events()
@@ -13058,14 +12949,10 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
                     entry.reservation.child_session_id == child_session_id
                         && entry.terminal_status == Some(SessionStatus::Cancelled)
                 });
-            if recalled && steer_preserved && latest_cancelled {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("cancelled resume prompt recall");
+            recalled && steer_preserved && latest_cancelled
+        },
+    )
+    .await;
     let (registry_invocation, terminal_status, _) = fixture
         .engine
         .delegation_registry_snapshot(child_session_id)
@@ -13086,8 +12973,11 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
     release_child
         .send(())
         .expect("release original child response");
-    tokio::time::timeout(test_timeout(3), async {
-        loop {
+    await_session_change(
+        &fixture.engine,
+        parent.session_id,
+        "interleaved steer promotion and single old completion",
+        || {
             let child = fixture
                 .engine
                 .inner
@@ -13115,14 +13005,11 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
                     )
                 })
                 .count();
-            if steer_submitted && old_notifications == 1 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("interleaved steer promotion and single old completion");
+            (steer_submitted && old_notifications == 1).then_some(())
+        },
+    )
+    .await;
+    // This negative assertion ensures no duplicate completion is emitted later.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let old_notifications = fixture
         .engine
@@ -13171,22 +13058,26 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
         .await
         .expect("monitor failure first run");
     ready.await.expect("monitor failure child active");
-    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if let Some(child) = fixture.engine.children(parent.session_id).first()
-                && child.status == SessionStatus::Running
-                && fixture
-                    .engine
-                    .get_session(parent.session_id)
-                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
-            {
-                break child.session_id;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("monitor failure running child");
+    let child_session_id = await_session_change(
+        &fixture.engine,
+        parent.session_id,
+        "monitor failure running child",
+        || {
+            fixture
+                .engine
+                .children(parent.session_id)
+                .first()
+                .filter(|child| {
+                    child.status == SessionStatus::Running
+                        && fixture
+                            .engine
+                            .get_session(parent.session_id)
+                            .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+                })
+                .map(|child| child.session_id)
+        },
+    )
+    .await;
     let (old_invocation_id, _, _) = fixture
         .engine
         .delegation_registry_snapshot(child_session_id)
@@ -13209,9 +13100,12 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
         })
         .await
         .expect("monitor failure second run");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if fixture
+    await_session_change(
+        &fixture.engine,
+        parent.session_id,
+        "monitor failure terminal event state",
+        || {
+            fixture
                 .engine
                 .inner
                 .delegation_events
@@ -13222,14 +13116,10 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
                         && entry.child_run_id.is_some()
                         && entry.terminal_status == Some(SessionStatus::Cancelled)
                 })
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("monitor failure terminal event state");
+                .then_some(())
+        },
+    )
+    .await;
     let child = fixture
         .engine
         .inner
@@ -13275,22 +13165,26 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
         .await
         .expect("attachment cancellation first run");
     ready.await.expect("attachment cancellation child active");
-    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if let Some(child) = fixture.engine.children(parent.session_id).first()
-                && child.status == SessionStatus::Running
-                && fixture
-                    .engine
-                    .get_session(parent.session_id)
-                    .is_ok_and(|parent| parent.status == SessionStatus::Completed)
-            {
-                break child.session_id;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("attachment cancellation running child");
+    let child_session_id = await_session_change(
+        &fixture.engine,
+        parent.session_id,
+        "attachment cancellation running child",
+        || {
+            fixture
+                .engine
+                .children(parent.session_id)
+                .first()
+                .filter(|child| {
+                    child.status == SessionStatus::Running
+                        && fixture
+                            .engine
+                            .get_session(parent.session_id)
+                            .is_ok_and(|parent| parent.status == SessionStatus::Completed)
+                })
+                .map(|child| child.session_id)
+        },
+    )
+    .await;
     let (old_invocation_id, _, _) = fixture
         .engine
         .delegation_registry_snapshot(child_session_id)
@@ -13326,9 +13220,12 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
         .cancel_inflight_delegation_for_test(invocation_id)
         .expect("cancel attached resume admission");
     release_attachment.notify_one();
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if fixture
+    await_session_change(
+        &fixture.engine,
+        parent.session_id,
+        "attached resume terminalization",
+        || {
+            fixture
                 .engine
                 .inner
                 .delegation_events
@@ -13338,14 +13235,10 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
                         && entry.child_run_id.is_some()
                         && entry.terminal_status == Some(SessionStatus::Cancelled)
                 })
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("attached resume terminalization");
+                .then_some(())
+        },
+    )
+    .await;
     let child = fixture
         .engine
         .inner
@@ -13429,19 +13322,13 @@ async fn queued_subagent_steer_survives_restart_and_promotes_on_first_run() {
     fixture.engine.shutdown().await;
     release.send(()).expect("release stopped child sockets");
     let reopened = reopen_engine(&fixture);
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if reopened
-                .get_session(queued_id)
-                .is_ok_and(|child| child.status == SessionStatus::Completed)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("recovered queued steer completion");
+    await_projection(
+        &reopened,
+        queued_id,
+        "recovered queued steer completion",
+        |child| child.status == SessionStatus::Completed,
+    )
+    .await;
     let recovered_events = reopened
         .inner
         .store
@@ -13489,8 +13376,11 @@ async fn background_startup_failure_releases_capacity_and_notifies() {
         .await
         .expect("accepted startup failure parent");
 
-    let completed = tokio::time::timeout(test_timeout(5), async {
-        loop {
+    await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "startup failure completion",
+        |parent_projection| {
             let children = fixture.engine.children(parent.session_id);
             let completed = children
                 .iter()
@@ -13500,37 +13390,16 @@ async fn background_startup_failure_releases_capacity_and_notifies() {
                 .iter()
                 .filter(|child| child.status == SessionStatus::Failed)
                 .count();
-            let finished = fixture
-                .engine
-                .inner
-                .store
-                .get(parent.session_id)
-                .expect("startup failure parent projection")
+            let finished = parent_projection
                 .log
                 .events()
                 .iter()
                 .filter(|event| matches!(event.payload, EventPayload::DelegateFinishedV2 { .. }))
                 .count();
-            if completed == 4 && failed == 1 && finished == 5 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
+            completed == 4 && failed == 1 && finished == 5
+        },
+    )
     .await;
-    if completed.is_err() {
-        let projection = fixture
-            .engine
-            .inner
-            .store
-            .get(parent.session_id)
-            .expect("timed out startup failure parent");
-        panic!(
-            "startup failure timed out: children={:#?}, events={:#?}",
-            fixture.engine.children(parent.session_id),
-            projection.log.events()
-        );
-    }
     let failed = fixture
         .engine
         .children(parent.session_id)
@@ -13576,14 +13445,11 @@ async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
         .await
         .expect("accepted queued parent run");
 
-    let completed = tokio::time::timeout(test_timeout(5), async {
-        loop {
-            let parent_projection = fixture
-                .engine
-                .inner
-                .store
-                .get(parent.session_id)
-                .expect("queued parent projection");
+    await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "queued delegation completion",
+        |parent_projection| {
             let queued = parent_projection
                 .log
                 .events()
@@ -13601,27 +13467,10 @@ async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
                 .iter()
                 .filter(|child| child.status == SessionStatus::Completed)
                 .count();
-            if queued && finished == 5 && completed_children == 5 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
+            queued && finished == 5 && completed_children == 5
+        },
+    )
     .await;
-    if completed.is_err() {
-        let projection = fixture
-            .engine
-            .inner
-            .store
-            .get(parent.session_id)
-            .expect("timed out queued parent");
-        panic!(
-            "queued delegation timed out: parent={:?}, children={:#?}, events={:#?}",
-            projection.status,
-            fixture.engine.children(parent.session_id),
-            projection.log.events()
-        );
-    }
     assert_eq!(fixture.engine.children(parent.session_id).len(), 5);
     server.await.expect("queued delegation server");
     fixture.engine.shutdown().await;
@@ -13651,22 +13500,13 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
         .await
         .expect("accepted full queue parent run");
 
-    let projection = tokio::time::timeout(test_timeout(5), async {
-        loop {
-            let projection = fixture
-                .engine
-                .inner
-                .store
-                .get(parent.session_id)
-                .expect("full queue parent projection");
-            if projection.status == SessionStatus::Completed {
-                break projection;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("full queue parent completion");
+    let projection = await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "full queue parent completion",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
     assert_eq!(fixture.engine.children(parent.session_id).len(), 20);
     assert_eq!(
         projection
@@ -13791,6 +13631,11 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
         .inner
         .delegate_start_failures
         .store(100, Ordering::Release);
+    let failure_observed = fixture
+        .engine
+        .inner
+        .delegate_start_failure_observed
+        .notified();
     let running_id = fixture
         .engine
         .children(parent.session_id)
@@ -13803,22 +13648,9 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
         .cancel_subagent(parent.session_id, running_id, Some("free one slot".into()))
         .await
         .expect("cancel running child");
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            if fixture
-                .engine
-                .inner
-                .delegate_start_failures
-                .load(Ordering::Acquire)
-                < 100
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("queued startup failure injection");
+    tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), failure_observed)
+        .await
+        .expect("queued startup failure injection");
     assert!(
         fixture
             .engine
@@ -13834,9 +13666,12 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
         .inner
         .delegate_start_failures
         .store(0, Ordering::Release);
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if fixture
+    await_session_change(
+        &fixture.engine,
+        retry_id,
+        "queued child retained and retried",
+        || {
+            fixture
                 .engine
                 .inner
                 .delegation_events
@@ -13844,14 +13679,10 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
                 .iter()
                 .find(|entry| entry.reservation.child_session_id == retry_id)
                 .is_some_and(|entry| entry.child_run_id.is_some())
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("queued child retained and retried");
+                .then_some(())
+        },
+    )
+    .await;
     server.abort();
     fixture.engine.shutdown().await;
 }
@@ -14179,7 +14010,7 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
 #[test]
 fn test_providers_expose_permission_resources() {
     let write = TestWriteProvider {
-        executed: Arc::new(AtomicBool::new(false)),
+        executed: Arc::new(TestFlag::default()),
     };
     assert_eq!(
         write
@@ -14188,7 +14019,7 @@ fn test_providers_expose_permission_resources() {
         ("write", Some("approval-test.txt".into()))
     );
     let read = TestRehydrationReadProvider {
-        executed: Arc::new(AtomicBool::new(false)),
+        executed: Arc::new(TestFlag::default()),
         swap_after_prepare: false,
     };
     assert_eq!(

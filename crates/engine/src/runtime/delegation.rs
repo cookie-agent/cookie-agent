@@ -1162,6 +1162,7 @@ impl Engine {
             })
             .is_ok()
         {
+            self.inner.delegate_start_failure_observed.notify_one();
             return Err(EngineError::MissingTool(
                 "injected delegate startup failure".into(),
             ));

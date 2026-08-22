@@ -1063,6 +1063,8 @@ pub(crate) struct Inner {
     #[cfg(test)]
     pub(crate) delegate_start_failures: AtomicU64,
     #[cfg(test)]
+    pub(crate) delegate_start_failure_observed: tokio::sync::Notify,
+    #[cfg(test)]
     pub(crate) delegate_terminal_append_failures: AtomicU64,
     #[cfg(test)]
     pub(crate) run_setup_append_failures: AtomicU64,
@@ -1217,6 +1219,8 @@ impl Engine {
                 publication_failure: AtomicBool::new(false),
                 #[cfg(test)]
                 delegate_start_failures: AtomicU64::new(0),
+                #[cfg(test)]
+                delegate_start_failure_observed: tokio::sync::Notify::new(),
                 #[cfg(test)]
                 delegate_terminal_append_failures: AtomicU64::new(0),
                 #[cfg(test)]
