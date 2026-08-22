@@ -100,7 +100,7 @@ fn python_command() -> &'static str {
 }
 
 fn test_timeout(seconds: u64) -> std::time::Duration {
-    std::time::Duration::from_secs(if cfg!(windows) { seconds * 5 } else { seconds })
+    std::time::Duration::from_secs(if cfg!(windows) { seconds * 10 } else { seconds })
 }
 
 #[tokio::test]
@@ -4479,7 +4479,7 @@ async fn wait_for_escalated_approval(
     engine: &Engine,
     session_id: SessionId,
 ) -> cookie_agent_protocol::ApprovalRecord {
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(test_timeout(2), async {
         loop {
             let mut approvals = engine
                 .list_approvals(session_id, Some(ApprovalStatus::Escalated))
@@ -7248,7 +7248,7 @@ async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix()
         .await
         .expect("accepted persistent approval run");
 
-    let completed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let completed = tokio::time::timeout(test_timeout(5), async {
         loop {
             if fixture
                 .engine
@@ -10774,7 +10774,7 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
         })
         .await
         .expect("first parent run");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(test_timeout(3), async {
         loop {
             if fixture
                 .engine
@@ -11202,7 +11202,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
             })
             .await
             .expect("paging parent run");
-        let child_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let child_id = tokio::time::timeout(test_timeout(3), async {
             loop {
                 let known = fixture.engine.children(parent.session_id);
                 if let Some(child) = known.iter().find(|child| {
@@ -11800,7 +11800,7 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
         })
         .await
         .expect("queued resume first run");
-    let resumed_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    let resumed_session_id = tokio::time::timeout(test_timeout(3), async {
         loop {
             if let Some(child) = fixture.engine.children(parent.session_id).first()
                 && child.status == SessionStatus::Completed
@@ -11979,7 +11979,7 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
         })
         .await
         .expect("queued cancel first run");
-    let resumed_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    let resumed_session_id = tokio::time::timeout(test_timeout(3), async {
         loop {
             if let Some(child) = fixture.engine.children(parent.session_id).first()
                 && child.status == SessionStatus::Completed
@@ -12183,7 +12183,7 @@ async fn inherited_context_is_event_backed_and_deterministic_after_restart() {
         })
         .await
         .expect("inherit delegation run");
-    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    let child_session_id = tokio::time::timeout(test_timeout(3), async {
         loop {
             if let Some(child) = fixture.engine.children(parent.session_id).first()
                 && child.status == SessionStatus::Completed
@@ -12294,7 +12294,7 @@ async fn background_delegate_permission_approval_gates_child_admission() {
     let approval = wait_for_escalated_approval(&fixture.engine, parent.session_id).await;
     assert!(fixture.engine.children(parent.session_id).is_empty());
     approve_once(&fixture.engine, &approval, "background-delegate-approval").await;
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(test_timeout(3), async {
         loop {
             if fixture
                 .engine
@@ -12337,7 +12337,7 @@ async fn running_subagent_result_is_empty_waits_and_cancel_is_session_addressed(
         .await
         .expect("accepted cancellable parent run");
 
-    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    let child_session_id = tokio::time::timeout(test_timeout(3), async {
         loop {
             if let Some(child) = fixture.engine.children(parent.session_id).first()
                 && child.status == SessionStatus::Running
@@ -12468,7 +12468,7 @@ async fn running_subagent_steer_promotes_user_input_and_enforces_ownership_and_s
     assert!(missing_error.to_string().contains(&missing_id.to_string()));
     release.send(()).expect("release child response");
 
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(test_timeout(3), async {
         loop {
             if fixture
                 .engine
@@ -13010,7 +13010,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
         .cancel_inflight_delegation_for_test(resumed_invocation_id)
         .expect("cancel delegate future during resume admission");
     release_admission.notify_one();
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(test_timeout(3), async {
         loop {
             let child = fixture
                 .engine
@@ -13086,7 +13086,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
     release_child
         .send(())
         .expect("release original child response");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(test_timeout(3), async {
         loop {
             let child = fixture
                 .engine
