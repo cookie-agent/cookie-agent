@@ -4628,7 +4628,7 @@ async fn wait_for_escalated_approval(
     engine: &Engine,
     session_id: SessionId,
 ) -> cookie_agent_protocol::ApprovalRecord {
-    await_session_change(
+    let approval = await_session_change(
         engine,
         session_id,
         "user-visible escalated approval",
@@ -4636,17 +4636,28 @@ async fn wait_for_escalated_approval(
             let mut approvals = engine
                 .list_approvals(session_id, Some(ApprovalStatus::Escalated))
                 .approvals;
-            approvals.pop().filter(|approval| {
-                engine
-                    .inner
-                    .pending_approvals
-                    .lock()
-                    .expect("pending approvals lock")
-                    .contains_key(&(session_id, approval.request.approval_id()))
-            })
+            approvals.pop()
         },
     )
+    .await;
+    tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), async {
+        loop {
+            let ready = engine.inner.pending_approval_ready.notified();
+            if engine
+                .inner
+                .pending_approvals
+                .lock()
+                .expect("pending approvals lock")
+                .contains_key(&(session_id, approval.request.approval_id()))
+            {
+                break;
+            }
+            ready.await;
+        }
+    })
     .await
+    .expect("escalated approval responder readiness");
+    approval
 }
 
 async fn approve_once(

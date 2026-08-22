@@ -1037,6 +1037,8 @@ pub(crate) struct Inner {
     #[cfg(test)]
     approval_evaluation_hook: Mutex<Option<Arc<ApprovalEvaluationHook>>>,
     #[cfg(test)]
+    pub(crate) pending_approval_ready: tokio::sync::Notify,
+    #[cfg(test)]
     gap_send_hook: Mutex<Option<GapSendHook>>,
     #[cfg(test)]
     admission_confirmation_hook: Mutex<Option<Arc<AdmissionConfirmationHook>>>,
@@ -1193,6 +1195,8 @@ impl Engine {
                 read_only_reopen_hook: Mutex::new(None),
                 #[cfg(test)]
                 approval_evaluation_hook: Mutex::new(None),
+                #[cfg(test)]
+                pending_approval_ready: tokio::sync::Notify::new(),
                 #[cfg(test)]
                 gap_send_hook: Mutex::new(None),
                 #[cfg(test)]
