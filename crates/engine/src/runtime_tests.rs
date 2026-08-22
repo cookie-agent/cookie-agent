@@ -7825,7 +7825,13 @@ async fn yolo_permission_mode_does_not_override_hard_deny_rules() {
         })
         .await
         .expect("run");
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    await_event(
+        &fixture.engine,
+        session.session_id,
+        "denied tool termination",
+        |event| matches!(event.payload, EventPayload::ToolCallTerminated { .. }),
+    )
+    .await;
 
     let events = fixture
         .engine
