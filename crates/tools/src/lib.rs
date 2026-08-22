@@ -168,8 +168,22 @@ pub(crate) fn prepared_path_resources(
 }
 
 fn normalized_path(path: &Path) -> String {
-    let value = path.to_string_lossy().replace('\\', "/");
+    let value = readable_path(path.to_string_lossy().replace('\\', "/"));
     if value.is_empty() { ".".into() } else { value }
+}
+
+#[cfg(windows)]
+fn readable_path(value: String) -> String {
+    if let Some(path) = value.strip_prefix("//?/UNC/") {
+        format!("//{path}")
+    } else {
+        value.strip_prefix("//?/").unwrap_or(&value).to_owned()
+    }
+}
+
+#[cfg(not(windows))]
+fn readable_path(value: String) -> String {
+    value
 }
 
 pub(crate) fn permission_path_label(path: &str, workspace: &Path) -> String {
@@ -177,7 +191,8 @@ pub(crate) fn permission_path_label(path: &str, workspace: &Path) -> String {
     let workspace = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_owned());
-    if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(&workspace)) {
+    let comparison_path = comparison_path(&path);
+    if let Some(relative) = strip_absolute_prefix(&comparison_path, &normalized_path(&workspace)) {
         return relative;
     }
     path
@@ -188,20 +203,74 @@ pub(crate) fn abbreviated_display_path(path: &str, workspace: &Path) -> String {
     if !Path::new(&path).is_absolute() {
         return path;
     }
-    if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(workspace)) {
-        return relative;
-    }
-    if let Ok(home) = cookie_agent_protocol::paths::home_dir() {
-        let home = normalized_path(&home);
-        if let Some(relative) = strip_absolute_prefix(&path, &home) {
-            return if relative == "." {
-                "~".into()
-            } else {
-                format!("~/{relative}")
-            };
+    #[cfg(not(windows))]
+    {
+        if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(workspace)) {
+            return relative;
         }
+        if let Ok(home) = cookie_agent_protocol::paths::home_dir() {
+            let home = normalized_path(&home);
+            if let Some(relative) = strip_absolute_prefix(&path, &home) {
+                return if relative == "." {
+                    "~".into()
+                } else {
+                    format!("~/{relative}")
+                };
+            }
+        }
+        path
     }
-    path
+    #[cfg(windows)]
+    {
+        let comparison_path = comparison_path(&path);
+        let workspace = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_owned());
+        if let Some(relative) =
+            strip_absolute_prefix(&comparison_path, &normalized_path(&workspace))
+        {
+            return relative;
+        }
+        if let Ok(home) = cookie_agent_protocol::paths::home_dir() {
+            let home = home.canonicalize().unwrap_or(home);
+            if let Some(relative) = strip_absolute_prefix(&comparison_path, &normalized_path(&home))
+            {
+                return if relative == "." {
+                    "~".into()
+                } else {
+                    format!("~/{relative}")
+                };
+            }
+        }
+        path
+    }
+}
+
+#[cfg(windows)]
+fn comparison_path(path: &str) -> String {
+    let path = Path::new(path);
+    let mut existing = path.to_owned();
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let Some(name) = existing.file_name() else {
+            return normalized_path(path);
+        };
+        missing.push(name.to_owned());
+        let Some(parent) = existing.parent() else {
+            return normalized_path(path);
+        };
+        existing = parent.to_owned();
+    }
+    let Ok(mut canonical) = existing.canonicalize() else {
+        return normalized_path(path);
+    };
+    canonical.extend(missing.into_iter().rev());
+    normalized_path(&canonical)
+}
+
+#[cfg(not(windows))]
+fn comparison_path(path: &str) -> String {
+    path.to_owned()
 }
 
 fn strip_absolute_prefix(path: &str, prefix: &str) -> Option<String> {
@@ -209,12 +278,24 @@ fn strip_absolute_prefix(path: &str, prefix: &str) -> Option<String> {
     if prefix.is_empty() {
         return None;
     }
-    if path == prefix {
+    if path_component_prefix(path, prefix) && path.len() == prefix.len() {
         return Some(".".into());
     }
-    path.strip_prefix(prefix)
+    path_component_prefix(path, prefix)
+        .then(|| &path[prefix.len()..])
         .and_then(|rest| rest.strip_prefix('/'))
         .map(str::to_owned)
+}
+
+#[cfg(windows)]
+fn path_component_prefix(path: &str, prefix: &str) -> bool {
+    path.get(..prefix.len())
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+}
+
+#[cfg(not(windows))]
+fn path_component_prefix(path: &str, prefix: &str) -> bool {
+    path.starts_with(prefix)
 }
 
 #[derive(Debug)]
@@ -440,28 +521,73 @@ mod tests {
 
     #[test]
     fn abbreviated_display_path_prefers_workspace_then_home() {
+        let workspace = tempfile::tempdir().expect("workspace");
         assert_eq!(
-            super::abbreviated_display_path("src/lib.rs", std::path::Path::new("/workspace")),
+            super::abbreviated_display_path("src/lib.rs", workspace.path()),
             "src/lib.rs"
         );
         assert_eq!(
             super::abbreviated_display_path(
-                "/workspace/src/lib.rs",
-                std::path::Path::new("/workspace")
+                &workspace.path().join("src/lib.rs").to_string_lossy(),
+                workspace.path()
             ),
             "src/lib.rs"
         );
         assert_eq!(
-            super::abbreviated_display_path("/workspace", std::path::Path::new("/workspace")),
+            super::abbreviated_display_path(&workspace.path().to_string_lossy(), workspace.path()),
             "."
         );
         let home = cookie_agent_protocol::paths::home_dir().expect("home directory");
         assert_eq!(
-            super::abbreviated_display_path(
-                &home.to_string_lossy(),
-                std::path::Path::new("/workspace")
-            ),
+            super::abbreviated_display_path(&home.to_string_lossy(), workspace.path()),
             "~"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_display_path_comparison_remains_lexical_for_symlinked_workspaces() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("temporary root");
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace");
+        let alias = directory.path().join("workspace-alias");
+        symlink(&workspace, &alias).expect("workspace symlink");
+
+        let canonical_child = workspace.join("src/lib.rs");
+        assert_eq!(
+            super::abbreviated_display_path(&canonical_child.to_string_lossy(), &alias),
+            super::normalized_path(&canonical_child),
+        );
+        let lexical_child = alias.join("src/lib.rs");
+        assert_eq!(
+            super::abbreviated_display_path(&lexical_child.to_string_lossy(), &alias),
+            "src/lib.rs",
+        );
+    }
+
+    #[test]
+    fn relative_display_path_is_returned_before_workspace_comparison() {
+        assert_eq!(
+            super::abbreviated_display_path(
+                "workspace/src/lib.rs",
+                std::path::Path::new("workspace"),
+            ),
+            "workspace/src/lib.rs",
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_display_paths_hide_verbatim_prefixes() {
+        assert_eq!(
+            super::normalized_path(std::path::Path::new(r"\\?\C:\Users\runneradmin\file.txt")),
+            "C:/Users/runneradmin/file.txt"
+        );
+        assert_eq!(
+            super::normalized_path(std::path::Path::new(r"\\?\UNC\server\share\file.txt")),
+            "//server/share/file.txt"
         );
     }
 

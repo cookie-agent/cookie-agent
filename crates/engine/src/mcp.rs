@@ -2,8 +2,6 @@
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    fs::{self, OpenOptions},
-    io::{Read as _, Write as _},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, Weak,
@@ -12,9 +10,17 @@ use std::{
     time::Duration,
 };
 
+#[cfg(unix)]
+use std::{
+    fs::{self, OpenOptions},
+    io::{Read as _, Write as _},
+};
+
 use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::{LoadedMcpServer, McpOAuthSettings, McpServerConfig};
+#[cfg(windows)]
+use cookie_agent_models::secure_store::SecureDirectory;
 use cookie_agent_protocol::{
     ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, PermissionAction,
     PersistedToolResult as ToolResult, PreparedApprovalResource, PreparedBindingLifetime,
@@ -67,6 +73,7 @@ const TOOL_LIST_DEBOUNCE: Duration = Duration::from_millis(750);
 const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 #[cfg(test)]
 const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_millis(200);
+#[cfg(any(unix, test))]
 const OAUTH_STORE_FILE: &str = "mcp-oauth.json";
 const OAUTH_STORE_LOCK_FILE: &str = "mcp-oauth.lock";
 const OAUTH_CALLBACK_MAX_BYTES: usize = 16 * 1024;
@@ -194,6 +201,7 @@ struct OAuthCredentialFileInner {
     transaction: Mutex<()>,
 }
 
+#[cfg(unix)]
 struct OAuthStoreLock {
     file: fs::File,
 }
@@ -527,13 +535,26 @@ fn service_error_requires_auth(error: &rmcp::service::ServiceError) -> bool {
 
 impl OAuthCredentialFile {
     fn open(path: PathBuf) -> Result<Self, ToolError> {
-        load_oauth_store(&path).map_err(|()| oauth_store_startup_error(&path))?;
-        Ok(Self {
-            inner: Arc::new(OAuthCredentialFileInner {
-                path,
-                transaction: Mutex::new(()),
-            }),
-        })
+        #[cfg(windows)]
+        {
+            load_oauth_store_windows(&path).map_err(|()| oauth_store_startup_error(&path))?;
+            Ok(Self {
+                inner: Arc::new(OAuthCredentialFileInner {
+                    path,
+                    transaction: Mutex::new(()),
+                }),
+            })
+        }
+        #[cfg(unix)]
+        {
+            load_oauth_store(&path).map_err(|()| oauth_store_startup_error(&path))?;
+            Ok(Self {
+                inner: Arc::new(OAuthCredentialFileInner {
+                    path,
+                    transaction: Mutex::new(()),
+                }),
+            })
+        }
     }
 
     fn scoped(&self, server: &str, binding: OAuthCredentialBinding) -> ServerCredentialStore {
@@ -556,26 +577,59 @@ impl OAuthCredentialFile {
         &self,
         update: impl FnOnce(&mut BTreeMap<String, PersistedOAuthCredential>),
     ) -> Result<(), ()> {
-        let _transaction = self
-            .inner
-            .transaction
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _file_lock = OAuthStoreLock::acquire(&self.inner.path)?;
-        let mut candidate = load_oauth_store(&self.inner.path)?;
-        update(&mut candidate);
-        persist_oauth_store(&self.inner.path, &candidate)?;
-        Ok(())
+        #[cfg(windows)]
+        {
+            let _transaction = self
+                .inner
+                .transaction
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (directory, name) = oauth_store_directory_windows(&self.inner.path)?;
+            let lock = directory.lock(OAUTH_STORE_LOCK_FILE).map_err(|_| ())?;
+            let mut candidate = load_oauth_store_from_lock_windows(&lock, &name)?;
+            update(&mut candidate);
+            let bytes = serde_json::to_vec(&candidate).map_err(|_| ())?;
+            lock.atomic_replace(&name, &bytes).map_err(|_| ())
+        }
+        #[cfg(unix)]
+        {
+            let _transaction = self
+                .inner
+                .transaction
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _file_lock = OAuthStoreLock::acquire(&self.inner.path)?;
+            let mut candidate = load_oauth_store(&self.inner.path)?;
+            update(&mut candidate);
+            persist_oauth_store(&self.inner.path, &candidate)?;
+            Ok(())
+        }
     }
 
     fn get(&self, key: &str) -> Result<Option<PersistedOAuthCredential>, ()> {
-        let _transaction = self
-            .inner
-            .transaction
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _file_lock = OAuthStoreLock::acquire(&self.inner.path)?;
-        Ok(load_oauth_store(&self.inner.path)?.get(key).cloned())
+        #[cfg(windows)]
+        {
+            let _transaction = self
+                .inner
+                .transaction
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (directory, name) = oauth_store_directory_windows(&self.inner.path)?;
+            let lock = directory.lock(OAUTH_STORE_LOCK_FILE).map_err(|_| ())?;
+            Ok(load_oauth_store_from_lock_windows(&lock, &name)?
+                .get(key)
+                .cloned())
+        }
+        #[cfg(unix)]
+        {
+            let _transaction = self
+                .inner
+                .transaction
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _file_lock = OAuthStoreLock::acquire(&self.inner.path)?;
+            Ok(load_oauth_store(&self.inner.path)?.get(key).cloned())
+        }
     }
 }
 
@@ -824,6 +878,36 @@ fn oauth_store_startup_error(path: &Path) -> ToolError {
     ))
 }
 
+#[cfg(windows)]
+fn oauth_store_directory_windows(path: &Path) -> Result<(SecureDirectory, String), ()> {
+    let parent = path.parent().ok_or(())?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(())?
+        .to_owned();
+    let directory = SecureDirectory::open(parent).map_err(|_| ())?;
+    Ok((directory, name))
+}
+
+#[cfg(windows)]
+fn load_oauth_store_windows(path: &Path) -> Result<BTreeMap<String, PersistedOAuthCredential>, ()> {
+    let (directory, name) = oauth_store_directory_windows(path)?;
+    let lock = directory.lock(OAUTH_STORE_LOCK_FILE).map_err(|_| ())?;
+    load_oauth_store_from_lock_windows(&lock, &name)
+}
+
+#[cfg(windows)]
+fn load_oauth_store_from_lock_windows(
+    lock: &cookie_agent_models::secure_store::SecureDirectoryLock<'_>,
+    name: &str,
+) -> Result<BTreeMap<String, PersistedOAuthCredential>, ()> {
+    let Some(bytes) = lock.read(name, OAUTH_STORE_MAX_BYTES).map_err(|_| ())? else {
+        return Ok(BTreeMap::new());
+    };
+    serde_json::from_slice(&bytes).map_err(|_| ())
+}
+
 fn oauth_store_runtime_error(path: &Path) -> ToolError {
     ToolError::execution(format!(
         "MCP OAuth credential storage failed at `{}`",
@@ -835,6 +919,7 @@ fn oauth_store_auth_error() -> rmcp::transport::AuthError {
     rmcp::transport::AuthError::InternalError("OAuth credential storage failed".into())
 }
 
+#[cfg(unix)]
 impl OAuthStoreLock {
     fn acquire(store_path: &Path) -> Result<Self, ()> {
         let parent = store_path.parent().ok_or(())?;
@@ -857,15 +942,16 @@ impl OAuthStoreLock {
     }
 }
 
+#[cfg(unix)]
 impl Drop for OAuthStoreLock {
     fn drop(&mut self) {
         let _ = fs2::FileExt::unlock(&self.file);
     }
 }
 
+#[cfg(unix)]
 fn validate_oauth_lock_entry(path: &Path, file: &fs::File) -> Result<(), ()> {
     validate_oauth_file(file)?;
-    #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
         let current = fs::metadata(path).map_err(|_| ())?;
@@ -877,6 +963,7 @@ fn validate_oauth_lock_entry(path: &Path, file: &fs::File) -> Result<(), ()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn load_oauth_store(path: &Path) -> Result<BTreeMap<String, PersistedOAuthCredential>, ()> {
     let Some(mut file) = open_oauth_store(path)? else {
         return Ok(BTreeMap::new());
@@ -892,10 +979,10 @@ fn load_oauth_store(path: &Path) -> Result<BTreeMap<String, PersistedOAuthCreden
     serde_json::from_slice(&bytes).map_err(|_| ())
 }
 
+#[cfg(unix)]
 fn open_oauth_store(path: &Path) -> Result<Option<fs::File>, ()> {
     let mut options = OpenOptions::new();
     options.read(true);
-    #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
@@ -910,12 +997,12 @@ fn open_oauth_store(path: &Path) -> Result<Option<fs::File>, ()> {
     }
 }
 
+#[cfg(unix)]
 fn validate_oauth_file(file: &fs::File) -> Result<(), ()> {
     let metadata = file.metadata().map_err(|_| ())?;
     if !metadata.is_file() || metadata.len() > OAUTH_STORE_MAX_BYTES {
         return Err(());
     }
-    #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
         if metadata.uid() != rustix::process::getuid().as_raw()
@@ -928,6 +1015,7 @@ fn validate_oauth_file(file: &fs::File) -> Result<(), ()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn persist_oauth_store(
     path: &Path,
     credentials: &BTreeMap<String, PersistedOAuthCredential>,
@@ -938,7 +1026,6 @@ fn persist_oauth_store(
     let temporary = parent.join(format!(".{OAUTH_STORE_FILE}.{}.tmp", uuid::Uuid::now_v7()));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
-    #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
         options
@@ -946,7 +1033,6 @@ fn persist_oauth_store(
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
     }
     let mut file = options.open(&temporary).map_err(|_| ())?;
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         file.set_permissions(fs::Permissions::from_mode(0o600))
@@ -969,23 +1055,6 @@ fn persist_oauth_store(
 #[cfg(unix)]
 fn sync_oauth_directory(path: &Path) -> std::io::Result<()> {
     fs::File::open(path)?.sync_all()
-}
-
-#[cfg(windows)]
-fn sync_oauth_directory(path: &Path) -> std::io::Result<()> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)?
-        .sync_all()
-}
-
-#[cfg(not(any(unix, windows)))]
-fn sync_oauth_directory(_path: &Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 fn apply_oauth_settings(
@@ -2007,8 +2076,8 @@ impl ServerRuntime {
             wrapped.wrap(JobObject);
             let transport = TokioChildProcess::new(wrapped).map_err(|error| {
                 ToolError::execution(format!(
-                    "MCP server `{}` failed to spawn: {error}",
-                    self.name
+                    "MCP server `{}` failed to spawn command `{command}`: {error}",
+                    self.name,
                 ))
             })?;
             let cleanup = ChildCleanup::new();
@@ -2780,13 +2849,29 @@ mod tests {
         sanitize_name,
     };
 
+    #[cfg(unix)]
+    const PYTHON: &str = "python3";
+    #[cfg(windows)]
+    const PYTHON: &str = "python";
+
+    fn oauth_path(directory: &tempfile::TempDir) -> std::path::PathBuf {
+        directory
+            .path()
+            .join("private-oauth")
+            .join(OAUTH_STORE_FILE)
+    }
+
     fn fixture_config(lazy: bool) -> McpServerConfig {
         McpServerConfig {
-            command: Some("python3".into()),
-            args: vec![format!(
-                "{}/tests/fixtures/mcp_server.py",
-                env!("CARGO_MANIFEST_DIR")
-            )],
+            command: Some(PYTHON.into()),
+            args: vec![
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests")
+                    .join("fixtures")
+                    .join("mcp_server.py")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
             env: BTreeMap::new(),
             cwd: None,
             url: None,
@@ -2807,7 +2892,7 @@ mod tests {
                     config: fixture_config(lazy),
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(directory),
         )
         .expect("MCP registry")
     }
@@ -3053,7 +3138,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         let server = registry.server("fixture").expect("server");
@@ -3085,7 +3170,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         let server = registry.server("fixture").expect("server");
@@ -3129,7 +3214,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         let server = registry.server("fixture").expect("server");
@@ -3184,7 +3269,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         let server = registry.server("fixture").expect("server");
@@ -3306,7 +3391,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         let server = registry.server("fixture").expect("server");
@@ -3399,7 +3484,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         registry.start_eager(&tokio::runtime::Handle::current());
@@ -3441,7 +3526,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         let server = registry.server("fixture").expect("server");
@@ -3505,7 +3590,7 @@ for line in sys.stdin:
                     config: delayed,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
         let old = registry.server("fixture").expect("old server");
@@ -3564,7 +3649,7 @@ for line in sys.stdin:
                     config,
                 },
             )]),
-            directory.path().join(OAUTH_STORE_FILE),
+            oauth_path(&directory),
         )
         .expect("registry");
 
@@ -3602,7 +3687,7 @@ for line in sys.stdin:
                 },
             ),
         ]);
-        let error = McpRegistry::new(servers, directory.path().join(OAUTH_STORE_FILE))
+        let error = McpRegistry::new(servers, oauth_path(&directory))
             .expect_err("sanitized server collision");
         assert!(error.to_string().contains("git/hub"));
         assert!(error.to_string().contains("git hub"));
@@ -3610,5 +3695,24 @@ for line in sys.stdin:
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 #[path = "mcp/oauth_tests.rs"]
 mod oauth_tests;
+
+#[cfg(all(test, windows))]
+mod windows_oauth_tests {
+    use super::OAuthCredentialFile;
+
+    #[test]
+    fn oauth_store_is_acl_protected_on_windows() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let path = temporary.path().join("oauth").join("mcp-oauth.json");
+        let store = OAuthCredentialFile::open(path.clone()).expect("OAuth store");
+        store.update(|_| {}).expect("persist empty store");
+        cookie_agent_models::secure_store::validate_windows_path_acl(&path).expect("store ACL");
+        cookie_agent_models::secure_store::validate_windows_path_acl(
+            &path.parent().unwrap().join("mcp-oauth.lock"),
+        )
+        .expect("lock ACL");
+    }
+}

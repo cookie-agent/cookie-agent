@@ -1,10 +1,17 @@
 use std::{
-    fs,
-    io::{self, Read, Write},
+    io,
     path::{Path, PathBuf},
 };
 
+#[cfg(unix)]
+use std::{
+    fs,
+    io::{Read, Write},
+};
+
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+#[cfg(windows)]
+use cookie_agent_models::secure_store::{SecureDirectory, SecureStoreError};
 use cookie_agent_protocol::paths;
 use thiserror::Error;
 
@@ -41,11 +48,49 @@ pub(crate) fn load_or_create_token(path: &Path) -> Result<String, TokenError> {
     {
         load_or_create_token_unix(path)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = path;
-        Err(TokenError::UnsafePath)
+        load_or_create_token_windows(path)
     }
+}
+
+#[cfg(windows)]
+fn load_or_create_token_windows(path: &Path) -> Result<String, TokenError> {
+    if path.as_os_str().is_empty()
+        || path.file_name().and_then(|name| name.to_str()) != Some(TOKEN_FILE)
+    {
+        return Err(TokenError::UnsafePath);
+    }
+    let parent = path.parent().ok_or(TokenError::UnsafePath)?;
+    let directory = SecureDirectory::open(parent).map_err(token_store_error)?;
+    let lock = directory
+        .lock(".token-v1.lock")
+        .map_err(token_store_error)?;
+    if let Some(bytes) = lock
+        .read(TOKEN_FILE, (TOKEN_ENCODED_BYTES + 1) as u64)
+        .map_err(token_store_error)?
+    {
+        return decode_token(bytes);
+    }
+    let token = generate_token()?;
+    lock.atomic_replace(TOKEN_FILE, token.as_bytes())
+        .map_err(token_store_error)?;
+    Ok(token)
+}
+
+#[cfg(windows)]
+fn token_store_error(error: SecureStoreError) -> TokenError {
+    match error {
+        SecureStoreError::Io(error) => TokenError::Io(error),
+        SecureStoreError::TooLarge => TokenError::InvalidToken,
+        SecureStoreError::HomeUnavailable | SecureStoreError::UnsafePath => TokenError::UnsafePath,
+    }
+}
+
+#[cfg(windows)]
+fn decode_token(bytes: Vec<u8>) -> Result<String, TokenError> {
+    let token = String::from_utf8(bytes).map_err(|_| TokenError::InvalidToken)?;
+    validate_token(token)
 }
 
 #[cfg(unix)]
@@ -267,6 +312,7 @@ fn token_path_error(error: rustix::io::Errno) -> TokenError {
     }
 }
 
+#[cfg(unix)]
 fn read_token(file: &mut fs::File) -> Result<String, TokenError> {
     let mut token = String::new();
     file.take((TOKEN_ENCODED_BYTES + 1) as u64)
@@ -285,4 +331,30 @@ fn generate_token() -> Result<String, TokenError> {
     let mut bytes = [0_u8; TOKEN_BYTES];
     getrandom::getrandom(&mut bytes).map_err(|error| TokenError::Io(error.into()))?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+#[cfg(windows)]
+fn validate_token(token: String) -> Result<String, TokenError> {
+    let decoded = URL_SAFE_NO_PAD
+        .decode(token.as_bytes())
+        .map_err(|_| TokenError::InvalidToken)?;
+    if token.len() != TOKEN_ENCODED_BYTES || decoded.len() != TOKEN_BYTES {
+        return Err(TokenError::InvalidToken);
+    }
+    Ok(token)
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn token_storage_is_acl_protected_and_stable() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let path = temporary.path().join("daemon").join(TOKEN_FILE);
+        let first = load_or_create_token(&path).expect("first token");
+        let second = load_or_create_token(&path).expect("second token");
+        assert_eq!(first, second);
+        cookie_agent_models::secure_store::validate_windows_path_acl(&path).expect("token ACL");
+    }
 }

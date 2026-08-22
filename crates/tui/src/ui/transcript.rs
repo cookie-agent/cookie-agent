@@ -1897,11 +1897,12 @@ pub(super) fn extract_selection(
 mod tests {
     use std::{
         collections::BTreeMap,
-        fs,
         sync::{Arc, Mutex},
         time::Duration,
     };
 
+    #[cfg(unix)]
+    use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -1986,9 +1987,14 @@ mod tests {
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
             .expect("private test directory");
         let provider_store_path = directory.path().join("provider-store");
-        fs::create_dir(&provider_store_path).expect("provider store directory");
         #[cfg(unix)]
-        fs::set_permissions(&provider_store_path, fs::Permissions::from_mode(0o700))
+        {
+            fs::create_dir(&provider_store_path).expect("provider store directory");
+            fs::set_permissions(&provider_store_path, fs::Permissions::from_mode(0o700))
+                .expect("private provider store");
+        }
+        #[cfg(windows)]
+        cookie_agent_models::secure_store::SecureDirectory::open(&provider_store_path)
             .expect("private provider store");
         let store = ProviderStore::open(&provider_store_path).expect("provider store");
         prepare_store(&store);
@@ -4494,14 +4500,29 @@ mod tests {
             cookie_agent_engine::session::SessionStore::project_dir(&data_dir, directory.path())
                 .join("sessions")
                 .join(session.to_string());
+        #[cfg(unix)]
         fs::create_dir_all(&session_dir).unwrap();
+        #[cfg(windows)]
+        cookie_agent_models::secure_store::SecureDirectory::open(&session_dir)
+            .expect("private session directory");
         let jsonl = events
             .iter()
             .map(|event| serde_json::to_string(event).unwrap())
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
+        #[cfg(unix)]
         fs::write(session_dir.join("events.jsonl"), jsonl).unwrap();
+        #[cfg(windows)]
+        {
+            use std::io::Write as _;
+
+            let path = session_dir.join("events.jsonl");
+            let mut file = cookie_agent_models::secure_store::create_windows_private_file(&path)
+                .expect("private event log");
+            file.write_all(jsonl.as_bytes()).expect("write event log");
+            file.sync_all().expect("sync event log");
+        }
         let engine_sessions =
             cookie_agent_engine::session::SessionStore::open(&data_dir, directory.path()).unwrap();
         let session_cost = format_cost_usd(
@@ -11605,6 +11626,7 @@ mod tests {
     /// checked against exact `through_seq` values.
     async fn app_with_user_messages() -> (App, SessionId, Arc<Mutex<Vec<String>>>) {
         let mut app = test_app().await;
+        app.theme = Theme::new(ThemeKind::Default, ColorLevel::TrueColor);
         let session = SessionId::new_v7();
         let run = run_id();
         let copied = Arc::new(Mutex::new(Vec::new()));

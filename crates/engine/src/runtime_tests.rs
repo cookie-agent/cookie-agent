@@ -1,12 +1,14 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    os::unix::fs::PermissionsExt as _,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -51,6 +53,56 @@ use crate::{
 
 const PLUGIN_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
 
+fn private_tempdir() -> TempDir {
+    let directory = TempDir::new().expect("temp directory");
+    #[cfg(unix)]
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+        .expect("private temp directory");
+    #[cfg(windows)]
+    {
+        fs::remove_dir(directory.path()).expect("remove ordinary temp directory");
+        cookie_agent_models::secure_store::SecureDirectory::open(directory.path())
+            .expect("private temp directory");
+    }
+    directory
+}
+
+fn create_private_test_dir(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        fs::create_dir(path).expect("private test directory");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .expect("private test directory");
+    }
+    #[cfg(windows)]
+    cookie_agent_models::secure_store::SecureDirectory::open(path).expect("private test directory");
+}
+
+fn write_private_test_file(path: &std::path::Path, contents: impl AsRef<[u8]>) {
+    #[cfg(unix)]
+    {
+        fs::write(path, contents).expect("private test file");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("private test file");
+    }
+    #[cfg(windows)]
+    {
+        use std::io::Write as _;
+
+        let mut file = cookie_agent_models::secure_store::create_windows_private_file(path)
+            .expect("private test file");
+        file.write_all(contents.as_ref())
+            .expect("write private test file");
+    }
+}
+
+fn python_command() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
+}
+
+fn test_timeout(seconds: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(if cfg!(windows) { seconds * 5 } else { seconds })
+}
+
 #[tokio::test]
 async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
     let (mut fixture, selection) = custom_fixture();
@@ -72,7 +124,7 @@ async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
     fixture.config.plugins.insert(
         "fixture".into(),
         PluginConfig {
-            command: Some("python3".into()),
+            command: Some(python_command().into()),
             args: vec![PLUGIN_FIXTURE.into()],
             env: BTreeMap::from([
                 ("FIXTURE_NAME".into(), "fixture".into()),
@@ -329,7 +381,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
     fixture.config.plugins.insert(
         "fixture".into(),
         PluginConfig {
-            command: Some("python3".into()),
+            command: Some(python_command().into()),
             args: vec![PLUGIN_FIXTURE.into()],
             env: BTreeMap::from([
                 ("FIXTURE_NAME".into(), "fixture".into()),
@@ -1454,9 +1506,17 @@ impl ToolProvider for TestRehydrationReadProvider {
         };
         let expected = std::fs::read_link(&path).ok();
         if self.swap_after_prepare && expected.is_some() {
-            std::fs::remove_file(&path).map_err(|error| ToolError::execution(error.to_string()))?;
-            std::os::unix::fs::symlink("denied.txt", &path)
-                .map_err(|error| ToolError::execution(error.to_string()))?;
+            #[cfg(unix)]
+            {
+                std::fs::remove_file(&path)
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+                std::os::unix::fs::symlink("denied.txt", &path)
+                    .map_err(|error| ToolError::execution(error.to_string()))?;
+            }
+            #[cfg(not(unix))]
+            return Err(ToolError::execution(
+                "symlink-swap rehydration fixture is Unix-only",
+            ));
         }
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(display.as_bytes()),
@@ -1593,16 +1653,11 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    let directory = TempDir::new().expect("temp directory");
-    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-        .expect("private temp directory");
+    let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
-    fs::create_dir(&project).expect("project directory");
-    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
+    create_private_test_dir(&project);
     let provider_store = directory.path().join("provider-store");
-    fs::create_dir(&provider_store).expect("provider store directory");
-    fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
-        .expect("private provider store");
+    create_private_test_dir(&provider_store);
     let now = Timestamp::now();
     let catalog = Arc::new(CatalogSnapshot {
         revision: CatalogRevision::new(format!("sha256:{}", "0".repeat(64)))
@@ -1751,27 +1806,16 @@ fn bedrock_catalog() -> Arc<CatalogSnapshot> {
 }
 
 fn empty_provider_workspace(path: &std::path::Path) -> LoadedConfiguration {
-    fs::create_dir(path).expect("workspace");
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).expect("private workspace");
+    create_private_test_dir(path);
     let project = path.join(".cookie-agent");
-    fs::create_dir(&project).expect("project");
-    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
-    fs::write(project.join("config.toml"), "").expect("empty provider config");
-    fs::set_permissions(
-        project.join("config.toml"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .expect("private config");
+    create_private_test_dir(&project);
+    write_private_test_file(&project.join("config.toml"), "");
     let agents = project.join("agents");
-    fs::create_dir(&agents).expect("agents");
-    fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
-    fs::write(
-        agents.join("primary.md"),
+    create_private_test_dir(&agents);
+    write_private_test_file(
+        &agents.join("primary.md"),
         "---\ndescription: Bedrock test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0\", variant: base }]\npermissions: {}\n---\nUse Bedrock.\n",
-    )
-    .expect("agent");
-    fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
-        .expect("private agent");
+    );
     load_from_roots(None, Some(&project)).expect("workspace config")
 }
 
@@ -1806,14 +1850,11 @@ fn custom_fixture() -> (Fixture, RunSelection) {
 }
 
 fn managed_openai_compaction_fixture(endpoint: &str) -> (Fixture, RunSelection) {
-    let directory = TempDir::new().expect("temp directory");
-    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-        .expect("private temp directory");
+    let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
-    fs::create_dir(&project).expect("project directory");
-    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
-    fs::write(
-        project.join("config.toml"),
+    create_private_test_dir(&project);
+    write_private_test_file(
+        &project.join("config.toml"),
         r#"
 [providers.openai]
 source = "models_dev"
@@ -1823,23 +1864,13 @@ shape = "responses"
 [providers.openai.model_overrides."gpt-test"]
 compaction = "openai-responses-compact"
 "#,
-    )
-    .expect("config");
-    fs::set_permissions(
-        project.join("config.toml"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .expect("private config");
+    );
     let agents = project.join("agents");
-    fs::create_dir(&agents).expect("agents directory");
-    fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
-    fs::write(
-        agents.join("primary.md"),
+    create_private_test_dir(&agents);
+    write_private_test_file(
+        &agents.join("primary.md"),
         "---\ndescription: Native compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"openai/gpt-test\", variant: base }]\npermissions: {}\n---\nTest native compaction.\n",
-    )
-    .expect("agent");
-    fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
-        .expect("private agent");
+    );
     let mut config = load_from_roots(None, Some(&project)).expect("loaded config");
     config.runtime.session_title.generate_on_first_turn = false;
     let provider_id = ProviderId::new("openai").expect("provider ID");
@@ -1915,9 +1946,7 @@ compaction = "openai-responses-compact"
         quarantine: Vec::new(),
     });
     let provider_store = directory.path().join("provider-store");
-    fs::create_dir(&provider_store).expect("provider store");
-    fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
-        .expect("private provider store");
+    create_private_test_dir(&provider_store);
     let manager = Arc::new(
         ModelManager::new(
             config.runtime.providers.clone(),
@@ -2020,16 +2049,7 @@ async fn session_metadata_tracks_log_tail_for_create_get_list_tree_and_append() 
         })
         .await
         .expect("persist session");
-    for _ in 0..200 {
-        if fixture
-            .engine
-            .get_session(created.session_id)
-            .is_ok_and(|meta| meta.status != cookie_agent_protocol::SessionStatus::Running)
-        {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    wait_for_session_not_running(&fixture.engine, created.session_id).await;
     let latest_event = fixture
         .engine
         .inner
@@ -2094,16 +2114,7 @@ async fn unreadable_session_metadata_cache_is_rebuilt_from_events() {
         })
         .await
         .expect("persist session");
-    for _ in 0..200 {
-        if fixture
-            .engine
-            .get_session(session.session_id)
-            .is_ok_and(|meta| meta.status != cookie_agent_protocol::SessionStatus::Running)
-        {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
     let path = fixture
         .engine
         .inner
@@ -2201,16 +2212,7 @@ async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly(
 
     assert!(session_dir.join("meta.json").is_file());
     assert!(session_dir.join("events.jsonl").is_file());
-    for _ in 0..200 {
-        if fixture
-            .engine
-            .get_session(session.session_id)
-            .is_ok_and(|meta| meta.status != cookie_agent_protocol::SessionStatus::Running)
-        {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
 
     let memory_events = fixture
         .engine
@@ -2382,12 +2384,9 @@ fn custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor
     worker_agent: Option<&str>,
     adaptor: &str,
 ) -> (Fixture, RunSelection) {
-    let directory = TempDir::new().expect("temp directory");
-    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-        .expect("private temp directory");
+    let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
-    fs::create_dir(&project).expect("project directory");
-    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
+    create_private_test_dir(&project);
     let config_text = r#"
 [delegation]
 max_depth = 1
@@ -2440,31 +2439,18 @@ media = {}
             &format!("[delegation]\nmax_depth = 1\nmax_concurrency = {max_concurrency}"),
         )
     });
-    fs::write(project.join("config.toml"), config_text).expect("config");
-    fs::set_permissions(
-        project.join("config.toml"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .expect("private config");
+    write_private_test_file(&project.join("config.toml"), config_text);
     let agents = project.join("agents");
-    fs::create_dir(&agents).expect("agents directory");
-    fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
-    fs::write(agents.join("primary.md"), primary_agent).expect("agent");
-    fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
-        .expect("private agent");
-    fs::write(
-        agents.join("worker.md"),
+    create_private_test_dir(&agents);
+    write_private_test_file(&agents.join("primary.md"), primary_agent);
+    write_private_test_file(
+        &agents.join("worker.md"),
         worker_agent.unwrap_or(
             "---\ndescription: Worker test agent\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nWorker prompt.\n",
         ),
-    )
-    .expect("worker agent");
-    fs::set_permissions(agents.join("worker.md"), fs::Permissions::from_mode(0o600))
-        .expect("private worker agent");
+    );
     if let Some((name, document)) = internal {
-        fs::write(agents.join(name), document).expect("internal agent");
-        fs::set_permissions(agents.join(name), fs::Permissions::from_mode(0o600))
-            .expect("private internal agent");
+        write_private_test_file(&agents.join(name), document);
     }
     let mut config = load_from_roots(None, Some(&project)).expect("loaded config");
     if let Some(server) = mcp_server {
@@ -2476,9 +2462,7 @@ media = {}
             cookie_agent_config::ContextCompactionTrigger::BufferTokens { buffer_tokens };
     }
     let provider_store = directory.path().join("provider-store");
-    fs::create_dir(&provider_store).expect("provider store directory");
-    fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
-        .expect("private provider store");
+    create_private_test_dir(&provider_store);
     let now = Timestamp::now();
     let catalog = Arc::new(CatalogSnapshot {
         revision: CatalogRevision::new(format!("sha256:{}", "1".repeat(64)))
@@ -2670,6 +2654,8 @@ async fn rehydration_skips_reads_denied_by_the_frozen_permission_pipeline() {
     assert!(!executed.load(Ordering::Acquire));
 }
 
+// This regression requires replacing a Unix symlink after preparation.
+#[cfg(unix)]
 #[tokio::test]
 async fn rehydration_skips_a_symlink_swapped_after_capability_preparation() {
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
@@ -2961,12 +2947,9 @@ fn synthetic_default_fixture_with_config(
     endpoint: &str,
     extra_config: &str,
 ) -> Fixture {
-    let directory = TempDir::new().expect("temp directory");
-    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-        .expect("private temp directory");
+    let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
-    fs::create_dir(&project).expect("project directory");
-    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
+    create_private_test_dir(&project);
     let base_config = r#"
 [providers."custom.test"]
 source = "custom"
@@ -2986,25 +2969,15 @@ default_variant = "precise"
 "#;
     let mut config_text = base_config.replace("http://127.0.0.1:9/v1", endpoint);
     config_text.push_str(extra_config);
-    fs::write(project.join("config.toml"), config_text).expect("config");
-    fs::set_permissions(
-        project.join("config.toml"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .expect("private config");
+    write_private_test_file(&project.join("config.toml"), config_text);
     if let Some(agent) = authored_agent {
         let agents = project.join("agents");
-        fs::create_dir(&agents).expect("agents directory");
-        fs::set_permissions(&agents, fs::Permissions::from_mode(0o700)).expect("private agents");
-        fs::write(agents.join("primary.md"), agent).expect("agent");
-        fs::set_permissions(agents.join("primary.md"), fs::Permissions::from_mode(0o600))
-            .expect("private agent");
+        create_private_test_dir(&agents);
+        write_private_test_file(&agents.join("primary.md"), agent);
     }
     let config = load_from_roots(None, Some(&project)).expect("loaded config");
     let provider_store = directory.path().join("provider-store");
-    fs::create_dir(&provider_store).expect("provider store directory");
-    fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
-        .expect("private provider store");
+    create_private_test_dir(&provider_store);
     let now = Timestamp::now();
     let catalog = Arc::new(CatalogSnapshot {
         revision: CatalogRevision::new(format!("sha256:{}", "2".repeat(64)))
@@ -4280,19 +4253,21 @@ async fn lazy_mcp_preemption_rejects_the_plugin_tool_published_to_the_model() {
     let extra_config = format!(
         r#"
 [plugins.collision]
-command = "python3"
+command = {}
 args = [{}]
 env = {{ FIXTURE_NAME = "collision", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {} }}
 
 [mcp.servers.fixture]
-command = "python3"
+command = {}
 args = [{}]
 env = {{ MCP_FIXTURE_CALL_FILE = {} }}
 lazy = true
 "#,
+        toml_string(python_command()),
         toml_string(PLUGIN_FIXTURE),
         toml_string(&declaration.to_string()),
         toml_string(&plugin_call.display().to_string()),
+        toml_string(python_command()),
         toml_string(MCP_FIXTURE),
         toml_string(&mcp_call.display().to_string()),
     );
@@ -4322,7 +4297,7 @@ lazy = true
         })
         .await
         .expect("run accepted");
-    tokio::time::timeout(std::time::Duration::from_secs(3), reached)
+    tokio::time::timeout(test_timeout(3), reached)
         .await
         .expect("model request reached")
         .expect("model reach signal");
@@ -4332,7 +4307,7 @@ lazy = true
         .reconnect_mcp_server("fixture".into())
         .await
         .expect("connect lazy MCP");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(test_timeout(3), async {
         loop {
             if fixture.engine.plugin_statuses().iter().any(|status| {
                 status.plugin == "collision" && status.state == crate::PluginState::Failed
@@ -4346,7 +4321,7 @@ lazy = true
     .expect("plugin preempted");
     release.notify_one();
 
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tokio::time::timeout(test_timeout(5), async {
         loop {
             if fixture
                 .engine
@@ -4552,7 +4527,7 @@ async fn approve_once(
 }
 
 async fn wait_for_tool_execution(executed: &AtomicBool) {
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(test_timeout(2), async {
         while !executed.load(Ordering::Acquire) {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
@@ -4562,7 +4537,7 @@ async fn wait_for_tool_execution(executed: &AtomicBool) {
 }
 
 async fn wait_for_session_not_running(engine: &Engine, session_id: SessionId) {
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(test_timeout(2), async {
         loop {
             if engine
                 .get_session(session_id)
@@ -4593,7 +4568,7 @@ fn interception_plugin(name: &str, extra_env: &[(&str, String)]) -> PluginConfig
             .map(|(key, value)| (key.into(), value)),
     );
     PluginConfig {
-        command: Some("python3".into()),
+        command: Some(python_command().into()),
         args: vec![PLUGIN_FIXTURE.into()],
         env,
         cwd: None,
@@ -5356,6 +5331,8 @@ fn synthetic_default_replaces_no_authored_agent_and_unrunnable_authored_agents_o
     );
 }
 
+// This regression asserts exact POSIX mode bits for a shared workspace.
+#[cfg(unix)]
 #[test]
 fn shared_project_cwd_creates_and_reopens_model_manifests() {
     let fixture = fixture();
@@ -5478,8 +5455,7 @@ fn disconnect_replay_survives_a_clean_engine_restart() {
 
 #[tokio::test]
 async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_preserves_frozen_run() {
-    let temporary = TempDir::new().expect("temporary root");
-    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700)).expect("private root");
+    let temporary = private_tempdir();
     let workspace_one = temporary.path().join("workspace-one");
     let workspace_two = temporary.path().join("workspace-two");
     let config_one = empty_provider_workspace(&workspace_one);
@@ -6761,7 +6737,7 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
         .await
         .expect("run started")
         .run_id;
-    if tokio::time::timeout(std::time::Duration::from_secs(2), output_started.notified())
+    if tokio::time::timeout(test_timeout(2), output_started.notified())
         .await
         .is_err()
     {
@@ -6803,12 +6779,12 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
         })
         .await
         .expect("interactive stdin accepted");
-    tokio::time::timeout(std::time::Duration::from_secs(2), stdin_received.notified())
+    tokio::time::timeout(test_timeout(2), stdin_received.notified())
         .await
         .expect("executor received stdin");
     fixture.engine.cancel_run(run).await.expect("cancel run");
 
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(test_timeout(3), async {
         loop {
             let terminated = fixture
                 .engine
@@ -6932,7 +6908,7 @@ async fn start_streaming_bash_test_run(
         .await
         .expect("run started")
         .run_id;
-    tokio::time::timeout(std::time::Duration::from_secs(2), output_started.notified())
+    tokio::time::timeout(test_timeout(2), output_started.notified())
         .await
         .expect("streaming output started");
     let call_id = fixture
@@ -6976,7 +6952,7 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
         })
         .await
         .expect("interactive stdin accepted");
-    tokio::time::timeout(std::time::Duration::from_secs(2), stdin_received.notified())
+    tokio::time::timeout(test_timeout(2), stdin_received.notified())
         .await
         .expect("executor received stdin");
     fixture.engine.block_tool_progress_appends_for_test();
@@ -6986,13 +6962,10 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
         .cancel_run(run_id)
         .await
         .expect("cancel wedged run");
-    tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        cleanup_progress_sent.notified(),
-    )
-    .await
-    .expect("cleanup progress accepted");
-    let error_message = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(test_timeout(1), cleanup_progress_sent.notified())
+        .await
+        .expect("cleanup progress accepted");
+    let error_message = tokio::time::timeout(test_timeout(3), async {
         loop {
             let terminal = fixture
                 .engine
@@ -7836,7 +7809,7 @@ async fn yolo_permission_mode_still_triggers_the_doom_loop_guard() {
         })
         .await
         .expect("run");
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(test_timeout(2), async {
         loop {
             let events = fixture
                 .engine
@@ -9037,7 +9010,7 @@ fn delayed_mcp_server(source: McpServerSource) -> LoadedMcpServer {
     LoadedMcpServer {
         source,
         config: McpServerConfig {
-            command: Some("python3".into()),
+            command: Some(python_command().into()),
             args: vec![format!(
                 "{}/tests/fixtures/mcp_server.py",
                 env!("CARGO_MANIFEST_DIR")
@@ -9890,7 +9863,7 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
         })
         .await
         .expect("accepted parent run");
-    let completed = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    let completed = tokio::time::timeout(test_timeout(3), async {
         loop {
             let projection = fixture
                 .engine
@@ -9951,7 +9924,7 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
             .evict_idle_subagents_for_test(0, std::time::Duration::ZERO)
             .await
     });
-    tokio::time::timeout(std::time::Duration::from_secs(2), janitor_reached)
+    tokio::time::timeout(test_timeout(2), janitor_reached)
         .await
         .expect("janitor pre-barrier hook timeout")
         .expect("janitor reached pre-barrier hook");
@@ -9962,7 +9935,7 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
         .enqueue_compact_without_residency_for_test(child.session_id)
         .await
         .expect("queue compaction ahead of eviction barrier");
-    tokio::time::timeout(std::time::Duration::from_secs(2), compaction_reached)
+    tokio::time::timeout(test_timeout(2), compaction_reached)
         .await
         .expect("compaction execution hook timeout")
         .expect("detached compaction reached delay hook");
@@ -9981,10 +9954,10 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
             .compaction_reserved_for_test(child.session_id)
     );
     compaction_release.notify_waiters();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), compaction)
+    let _ = tokio::time::timeout(test_timeout(2), compaction)
         .await
         .expect("compaction reply timeout");
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(test_timeout(2), async {
         while fixture
             .engine
             .compaction_reserved_for_test(child.session_id)
@@ -10060,14 +10033,17 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
 #[tokio::test]
 async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool() {
     fn copy_tree(source: &std::path::Path, target: &std::path::Path) {
-        fs::create_dir_all(target).expect("snapshot directory");
+        create_private_test_dir(target);
         for entry in fs::read_dir(source).expect("snapshot source") {
             let entry = entry.expect("snapshot entry");
             let destination = target.join(entry.file_name());
             if entry.file_type().expect("snapshot type").is_dir() {
                 copy_tree(&entry.path(), &destination);
             } else {
-                fs::copy(entry.path(), destination).expect("snapshot file");
+                write_private_test_file(
+                    &destination,
+                    fs::read(entry.path()).expect("snapshot file"),
+                );
             }
         }
     }
@@ -10128,7 +10104,7 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
             .is_err()
     );
 
-    let snapshot = tempfile::tempdir().expect("crash snapshot");
+    let snapshot = private_tempdir();
     copy_tree(
         &fixture._directory.path().join("data"),
         &snapshot.path().join("data"),
@@ -10197,14 +10173,17 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
 #[tokio::test]
 async fn staged_skill_child_recovers_after_reservation_before_install_restart() {
     fn copy_tree(source: &std::path::Path, target: &std::path::Path) {
-        fs::create_dir_all(target).expect("snapshot directory");
+        create_private_test_dir(target);
         for entry in fs::read_dir(source).expect("snapshot source") {
             let entry = entry.expect("snapshot entry");
             let destination = target.join(entry.file_name());
             if entry.file_type().expect("snapshot type").is_dir() {
                 copy_tree(&entry.path(), &destination);
             } else {
-                fs::copy(entry.path(), destination).expect("snapshot file");
+                write_private_test_file(
+                    &destination,
+                    fs::read(entry.path()).expect("snapshot file"),
+                );
             }
         }
     }
@@ -10256,7 +10235,7 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
             .any(|event| { matches!(event.payload, EventPayload::SkillLoaded { .. }) })
     );
 
-    let snapshot = tempfile::tempdir().expect("crash snapshot");
+    let snapshot = private_tempdir();
     copy_tree(
         &fixture._directory.path().join("data"),
         &snapshot.path().join("data"),
@@ -10375,7 +10354,7 @@ async fn delegated_child_uses_description_title_without_title_agent() {
         })
         .await
         .expect("accepted titled delegation");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(test_timeout(3), async {
         loop {
             if fixture
                 .engine
@@ -10694,7 +10673,7 @@ async fn delegation_completion_triggers_configured_subagent_eviction_after_tease
         .await
         .expect("automatic paging parent run");
 
-    let child_session_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    let child_session_id = tokio::time::timeout(test_timeout(3), async {
         loop {
             if let Some(child) = fixture
                 .engine
@@ -13510,7 +13489,7 @@ async fn background_startup_failure_releases_capacity_and_notifies() {
         .await
         .expect("accepted startup failure parent");
 
-    let completed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let completed = tokio::time::timeout(test_timeout(5), async {
         loop {
             let children = fixture.engine.children(parent.session_id);
             let completed = children
@@ -13597,7 +13576,7 @@ async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
         .await
         .expect("accepted queued parent run");
 
-    let completed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let completed = tokio::time::timeout(test_timeout(5), async {
         loop {
             let parent_projection = fixture
                 .engine
@@ -13672,7 +13651,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
         .await
         .expect("accepted full queue parent run");
 
-    let projection = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let projection = tokio::time::timeout(test_timeout(5), async {
         loop {
             let projection = fixture
                 .engine

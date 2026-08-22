@@ -37,7 +37,10 @@ fn tree_sha256(root: &Path, excluded: &[&str]) -> (usize, String) {
 
     let mut tree = Sha256::new();
     for relative in &files {
-        tree.update(relative.to_string_lossy().as_bytes());
+        // Feed forward-slash paths so the tree hash is platform-stable
+        // (Windows Path rendering uses backslashes).
+        let normalized = relative.to_string_lossy().replace('\\', "/");
+        tree.update(normalized.as_bytes());
         tree.update([0]);
         tree.update(fs::read(root.join(relative)).unwrap());
         tree.update([0]);
@@ -393,10 +396,8 @@ fn workspace_metadata_limits_publishing_and_uses_vendored_syntect() {
         .unwrap();
     assert!(syntect_package["source"].is_null());
     assert!(
-        syntect_package["manifest_path"]
-            .as_str()
-            .unwrap()
-            .ends_with("/vendor/syntect/Cargo.toml")
+        Path::new(syntect_package["manifest_path"].as_str().unwrap())
+            .ends_with(Path::new("vendor").join("syntect").join("Cargo.toml"))
     );
     let bincode_package = packages
         .iter()

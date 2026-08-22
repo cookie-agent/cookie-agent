@@ -171,9 +171,14 @@ mod tests {
         }
         let providers = test_providers();
         let provider_store = directory.path().join("provider-store");
-        fs::create_dir(&provider_store).expect("provider store directory");
         #[cfg(unix)]
-        fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
+        {
+            fs::create_dir(&provider_store).expect("provider store directory");
+            fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
+                .expect("private provider store");
+        }
+        #[cfg(windows)]
+        cookie_agent_models::secure_store::SecureDirectory::open(&provider_store)
             .expect("private provider store");
         let revision =
             cookie_agent_protocol::CatalogRevision::new(format!("sha256:{}", "0".repeat(64)))
@@ -514,10 +519,10 @@ mod tests {
         setup
             .set_permission_mode(cookie_agent_protocol::SessionSetPermissionModeParams {
                 session_id: session.session_id,
-                mode: cookie_agent_protocol::PermissionMode::Ask,
+                mode: cookie_agent_protocol::PermissionMode::Yolo,
             })
             .await
-            .expect("ask mode");
+            .expect("yolo mode");
 
         let observer = Client::connect_in_process(server.clone());
         observer.handshake().await.expect("observer handshake");
@@ -543,7 +548,6 @@ mod tests {
         app.submit_text_for_test("/fresh-skill value").await;
         let loaded = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             let mut run_id = None;
-            let mut approval = None;
             loop {
                 let event = match deliveries.recv().await.expect("delivery") {
                     crate::ClientDelivery::Live { message, .. } => match message.as_ref() {
@@ -559,31 +563,6 @@ mod tests {
                 if matches!(event.payload, EventPayload::RunStarted { .. }) {
                     run_id = event.run_id;
                 }
-                if let EventPayload::ApprovalRequested { request } = &event.payload {
-                    approval = Some((event.session_id, request.clone()));
-                }
-                if matches!(event.payload, EventPayload::ApprovalEscalated { .. }) {
-                    let (session_id, request) = approval.take().expect("approval request");
-                    let request_revision = serde_json::to_value(&request)
-                        .expect("approval JSON")["revision"]
-                        .as_u64()
-                        .expect("approval revision");
-                    observer
-                        .respond_approval(cookie_agent_protocol::ApprovalRespondParams {
-                            session_id,
-                            approval_id: request.approval_id(),
-                            request_revision,
-                            operation_fingerprint: request.operation_fingerprint().clone(),
-                            client_response_id: cookie_agent_protocol::ClientResponseId::new(
-                                uuid::Uuid::now_v7().to_string(),
-                            )
-                            .expect("response ID"),
-                            decision: cookie_agent_protocol::ApprovalUserDecision::ApproveOnce,
-                            feedback: None,
-                        })
-                        .await
-                        .expect("approve direct skill");
-                }
                 if matches!(event.payload, EventPayload::SkillLoaded { ref name, .. } if name == "fresh-skill") {
                     break run_id;
                 }
@@ -595,6 +574,181 @@ mod tests {
             .expect("skill run ID");
         observer
             .cancel_run(cookie_agent_protocol::RunCancelParams { run_id })
+            .await
+            .expect("cancel test run");
+    }
+
+    #[tokio::test]
+    async fn same_connection_approval_response_and_finalization_run_end_to_end() {
+        const STAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+        let (_directory, server) = in_process_server_with_skills(true);
+        let setup = Client::connect_in_process(server.clone());
+        setup.handshake().await.expect("setup handshake");
+        let session = setup
+            .create_session(SessionCreateParams {
+                selection: test_run_selection(),
+            })
+            .await
+            .expect("session")
+            .session;
+        setup
+            .set_permission_mode(cookie_agent_protocol::SessionSetPermissionModeParams {
+                session_id: session.session_id,
+                mode: cookie_agent_protocol::PermissionMode::Ask,
+            })
+            .await
+            .expect("ask mode");
+
+        let observer = Client::connect_in_process(server.clone());
+        observer.handshake().await.expect("observer handshake");
+        let mut deliveries = observer
+            .subscribe_deliveries()
+            .expect("observer deliveries");
+        observer
+            .subscribe_events(session.session_id, Some(1))
+            .await
+            .expect("subscribe events");
+        let runner = Client::connect_in_process(server);
+        runner.handshake().await.expect("runner handshake");
+        let started = match runner
+            .start_run(cookie_agent_protocol::RunStartParams {
+                session_id: session.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new(format!(
+                    "approval-e2e-{}",
+                    uuid::Uuid::now_v7()
+                ))
+                .expect("client run ID"),
+                selection: test_run_selection(),
+                input: cookie_agent_protocol::encode_skill_submission("fresh-skill", "value"),
+            })
+            .await
+        {
+            Ok(started) => started,
+            Err(crate::ClientError::Rpc(error)) => {
+                let debug_code = error
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("debug_code"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("missing_debug_code");
+                panic!(
+                    "start direct skill run failed: rpc_code={}, debug_code={debug_code}",
+                    error.code
+                );
+            }
+            Err(_) => panic!("start direct skill run failed with a non-RPC client error"),
+        };
+
+        let request = tokio::time::timeout(STAGE_TIMEOUT, async {
+            let mut request = None;
+            loop {
+                let event = match deliveries.recv().await.expect("escalation delivery") {
+                    crate::ClientDelivery::Live { message, .. } => match message.as_ref() {
+                        cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
+                            Some(event.clone())
+                        }
+                        _ => None,
+                    },
+                    crate::ClientDelivery::ReplayEvent { event, .. } => Some(event),
+                    _ => None,
+                };
+                let Some(event) = event else { continue };
+                if let EventPayload::ApprovalRequested { request: approval } = &event.payload {
+                    request = Some(approval.clone());
+                }
+                if let EventPayload::ApprovalEscalated { approval_id, .. } = event.payload {
+                    let request = request.expect("escalation followed its approval request");
+                    assert_eq!(request.approval_id(), approval_id);
+                    break request;
+                }
+            }
+        })
+        .await
+        .expect("approval escalation event timed out");
+
+        let request_revision = serde_json::to_value(&request).expect("approval JSON")["revision"]
+            .as_u64()
+            .expect("approval revision");
+        // Production clones its subscribed client for the response RPC while
+        // the UI task keeps draining the original delivery receiver.
+        let approver = observer.clone();
+        let response_request = request.clone();
+        let response = tokio::spawn(async move {
+            approver
+                .respond_approval(cookie_agent_protocol::ApprovalRespondParams {
+                    session_id: session.session_id,
+                    approval_id: response_request.approval_id(),
+                    request_revision,
+                    operation_fingerprint: response_request.operation_fingerprint().clone(),
+                    client_response_id: cookie_agent_protocol::ClientResponseId::new(
+                        uuid::Uuid::now_v7().to_string(),
+                    )
+                    .expect("response ID"),
+                    decision: cookie_agent_protocol::ApprovalUserDecision::ApproveOnce,
+                    feedback: None,
+                })
+                .await
+        });
+        let response_stage = tokio::time::timeout(STAGE_TIMEOUT, response);
+        let finalization_stage = tokio::time::timeout(STAGE_TIMEOUT, async {
+            loop {
+                let event = match deliveries.recv().await.expect("finalization delivery") {
+                    crate::ClientDelivery::Live { message, .. } => match message.as_ref() {
+                        cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
+                            Some(event.clone())
+                        }
+                        _ => None,
+                    },
+                    crate::ClientDelivery::ReplayEvent { event, .. } => Some(event),
+                    _ => None,
+                };
+                let Some(event) = event else { continue };
+                if let EventPayload::ApprovalFinalized {
+                    approval_id,
+                    decision,
+                } = event.payload
+                    && approval_id == request.approval_id()
+                {
+                    assert_eq!(
+                        decision.outcome,
+                        cookie_agent_protocol::ApprovalFinalOutcome::Approved
+                    );
+                    break;
+                }
+            }
+        });
+        let (response, finalized) = tokio::join!(response_stage, finalization_stage);
+        response
+            .expect("same-connection approval response RPC timed out")
+            .expect("approval response task panicked")
+            .expect("approve direct skill");
+        finalized.expect("approval finalization event timed out");
+
+        tokio::time::timeout(STAGE_TIMEOUT, async {
+            loop {
+                let event = match deliveries.recv().await.expect("skill delivery") {
+                    crate::ClientDelivery::Live { message, .. } => match message.as_ref() {
+                        cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
+                            Some(event.clone())
+                        }
+                        _ => None,
+                    },
+                    crate::ClientDelivery::ReplayEvent { event, .. } => Some(event),
+                    _ => None,
+                };
+                let Some(event) = event else { continue };
+                if matches!(event.payload, EventPayload::SkillLoaded { ref name, .. } if name == "fresh-skill") {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("skill-loaded event timed out after approval");
+        runner
+            .cancel_run(cookie_agent_protocol::RunCancelParams {
+                run_id: started.run_id,
+            })
             .await
             .expect("cancel test run");
     }

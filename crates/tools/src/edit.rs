@@ -238,9 +238,10 @@ mod tests {
 
     #[test]
     fn display_argument_abbreviates_workspace_and_home_paths() {
-        let tool = EditTool::new("/workspace");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let tool = EditTool::new(workspace.path());
         let args = serde_json::json!({
-            "filePath":"/workspace/value.txt",
+            "filePath":workspace.path().join("value.txt"),
             "oldString":"a",
             "newString":"b"
         });

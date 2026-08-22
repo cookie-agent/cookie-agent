@@ -312,7 +312,8 @@ mod tests {
 
     #[test]
     fn display_argument_abbreviates_paths_and_includes_explicit_window() {
-        let tool = ReadTool::new("/workspace");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let tool = ReadTool::new(workspace.path());
         assert_eq!(
             tool.get_display_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
                 .expect("relative"),
@@ -321,7 +322,7 @@ mod tests {
         assert_eq!(
             tool.get_display_argument(
                 "read",
-                &serde_json::json!({"filePath":"/workspace/src/lib.rs","offset":0,"limit":100})
+                &serde_json::json!({"filePath":workspace.path().join("src/lib.rs"),"offset":0,"limit":100})
             )
             .expect("workspace"),
             "src/lib.rs [offset=0, limit=100]"
@@ -350,7 +351,7 @@ mod tests {
         let presentation = tool.presentation(&ToolCall {
             id: ToolCallId::new_v7(),
             name: "read".into(),
-            arguments: serde_json::json!({"filePath":"/workspace/src/lib.rs"}),
+            arguments: serde_json::json!({"filePath":workspace.path().join("src/lib.rs")}),
         });
         assert_eq!(presentation.title.as_str(), "read");
         assert_eq!(
@@ -475,7 +476,12 @@ mod tests {
             .get("filePath")
             .and_then(serde_json::Value::as_str)
             .expect("canonical file path");
-        assert_eq!(Path::new(canonical), root.path().join(".env"));
+        let expected = root
+            .path()
+            .join(".env")
+            .canonicalize()
+            .expect("canonical fixture path");
+        assert_eq!(Path::new(canonical), expected);
         assert!(
             !prepared
                 .normalized_arguments()
@@ -512,20 +518,25 @@ mod tests {
             )
             .await
             .expect("prepare external read");
+        let expected_label = external
+            .path()
+            .canonicalize()
+            .expect("canonical external path")
+            .to_string_lossy()
+            .replace('\\', "/")
+            .trim_start_matches("//?/")
+            .to_owned();
         assert_eq!(prepared.operation().capabilities().len(), 1);
         assert_eq!(
             prepared.operation().resources()[0].capability,
             PermissionAction::Read
         );
-        assert_eq!(
-            prepared.policy_labels(),
-            [Some(external.path().display().to_string())]
-        );
+        assert_eq!(prepared.policy_labels(), [Some(expected_label.clone())]);
         assert_eq!(
             ReadTool::new(workspace.path())
                 .get_permission_resource("read", prepared.normalized_arguments())
                 .expect("resource from prepared args"),
-            ("read", Some(external.path().display().to_string()))
+            ("read", Some(expected_label))
         );
     }
 

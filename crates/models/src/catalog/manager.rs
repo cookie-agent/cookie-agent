@@ -32,7 +32,7 @@ const META_BACKUP_FILE: &str = ".models-dev-v2.meta.json.backup";
 pub struct CatalogManager<T> {
     transport: Arc<T>,
     cache: Result<SecureDirectory, CatalogError>,
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     commit_failure: std::sync::Mutex<Option<CacheCommitPhase>>,
 }
 
@@ -42,7 +42,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
         Self {
             transport: Arc::new(transport),
             cache: SecureDirectory::user_data("catalog").map_err(CatalogError::from_store),
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             commit_failure: std::sync::Mutex::new(None),
         }
     }
@@ -53,7 +53,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
         Self {
             transport: Arc::new(transport),
             cache: Ok(cache),
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             commit_failure: std::sync::Mutex::new(None),
         }
     }
@@ -67,7 +67,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
         Self {
             transport: Arc::new(transport),
             cache: SecureDirectory::open_in(anchor, relative).map_err(CatalogError::from_store),
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             commit_failure: std::sync::Mutex::new(None),
         }
     }
@@ -389,12 +389,12 @@ impl<T: CatalogTransport> CatalogManager<T> {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn fail_commit_at(&self, phase: CacheCommitPhase) {
         *self.commit_failure.lock().expect("commit failure lock") = Some(phase);
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn commit_checkpoint(&self, phase: CacheCommitPhase) -> Result<(), CatalogError> {
         let mut failure = self.commit_failure.lock().expect("commit failure lock");
         if failure.as_ref() == Some(&phase) {
@@ -408,7 +408,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
         }
     }
 
-    #[cfg(not(test))]
+    #[cfg(not(all(test, unix)))]
     fn commit_checkpoint(&self, _phase: CacheCommitPhase) -> Result<(), CatalogError> {
         Ok(())
     }
@@ -947,7 +947,6 @@ impl CatalogError {
     fn from_store(error: SecureStoreError) -> Self {
         let code = match error {
             SecureStoreError::HomeUnavailable => "catalog_cache_home_unavailable",
-            SecureStoreError::UnsupportedPlatform => "catalog_cache_unsupported_platform",
             SecureStoreError::UnsafePath => "catalog_cache_unsafe_path",
             SecureStoreError::TooLarge => "catalog_cache_too_large",
             SecureStoreError::Io(_) => "catalog_cache_io_failed",

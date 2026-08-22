@@ -1,5 +1,7 @@
+* text=auto eol=lf
+
 # Vendored upstream sources are preserved byte-for-byte, including whitespace.
-vendor/** -whitespace
+vendor/** -text -whitespace
 
 # Generated protocol snapshots may contain serializer-preserved trailing spaces.
 crates/protocol/src/snapshots/*.snap -whitespace

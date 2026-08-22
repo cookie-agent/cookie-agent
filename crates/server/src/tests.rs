@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt as _, sync::Arc};
+use std::{collections::BTreeMap, fs, sync::Arc};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 
 use cookie_agent_config::{
     ApprovalConfig, ContextCompactionConfig, LoadedConfiguration, LoadedMcpServer, McpServerSource,
@@ -35,6 +38,31 @@ struct Harness {
     _directory: TempDir,
     engine: Engine,
     server: Arc<Server>,
+}
+
+fn private_tempdir() -> TempDir {
+    let directory = TempDir::new().expect("temp directory");
+    #[cfg(unix)]
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+        .expect("private temp directory");
+    #[cfg(windows)]
+    {
+        fs::remove_dir(directory.path()).expect("remove ordinary temp directory");
+        cookie_agent_models::secure_store::SecureDirectory::open(directory.path())
+            .expect("private temp directory");
+    }
+    directory
+}
+
+fn create_private_test_dir(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        fs::create_dir(path).expect("private test directory");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .expect("private test directory");
+    }
+    #[cfg(windows)]
+    cookie_agent_models::secure_store::SecureDirectory::open(path).expect("private test directory");
 }
 
 #[tokio::test]
@@ -79,16 +107,11 @@ fn harness() -> Harness {
 }
 
 fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
-    let directory = TempDir::new().expect("temp directory");
-    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-        .expect("private temp directory");
+    let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
-    fs::create_dir(&project).expect("project runtime directory");
-    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
+    create_private_test_dir(&project);
     let provider_store = directory.path().join("provider-store");
-    fs::create_dir(&provider_store).expect("provider store directory");
-    fs::set_permissions(&provider_store, fs::Permissions::from_mode(0o700))
-        .expect("private provider store");
+    create_private_test_dir(&provider_store);
 
     let revision =
         CatalogRevision::new(format!("sha256:{}", "0".repeat(64))).expect("catalog revision");
@@ -331,16 +354,11 @@ fn harness_with_catalog(
     catalog: Arc<CatalogSnapshot>,
     prepare_store: impl FnOnce(&ProviderStore),
 ) -> Harness {
-    let directory = TempDir::new().expect("temp directory");
-    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-        .expect("private temp directory");
+    let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
-    fs::create_dir(&project).expect("project runtime directory");
-    fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).expect("private project");
+    create_private_test_dir(&project);
     let provider_store_path = directory.path().join("provider-store");
-    fs::create_dir(&provider_store_path).expect("provider store directory");
-    fs::set_permissions(&provider_store_path, fs::Permissions::from_mode(0o700))
-        .expect("private provider store");
+    create_private_test_dir(&provider_store_path);
     let store = ProviderStore::open(&provider_store_path).expect("provider store");
     prepare_store(&store);
     let manager =

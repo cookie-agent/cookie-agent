@@ -55,6 +55,7 @@ nav:
       - Headless runs: guide/headless.md
       - Sessions: guide/sessions.md
       - Permissions: guide/permissions.md
+      - Security guarantees: guide/security.md
       - MCP servers: guide/mcp.md
       - Plugins: guide/plugins.md
       - Agents: guide/agents.md

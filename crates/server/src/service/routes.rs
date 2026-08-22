@@ -24,7 +24,7 @@ use cookie_agent_protocol::{
 };
 
 use super::Server;
-use crate::rpc::{RpcFault, engine_fault};
+use crate::rpc::{RpcFault, engine_fault, run_start_fault};
 
 type Result<T> = std::result::Result<T, ServerFault>;
 
@@ -204,7 +204,7 @@ impl ServerProtocol for Server {
             Err(EngineError::RunIdempotencyConflict) => {
                 Err(RpcFault::run_start_conflict(&params).into())
             }
-            Err(error) => Err(protocol_fault(error)),
+            Err(error) => Err(run_start_fault(error).into()),
         }
     }
 

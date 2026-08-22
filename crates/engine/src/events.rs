@@ -2,7 +2,7 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
     sync::{
@@ -10,6 +10,9 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
+
+#[cfg(unix)]
+use std::fs::File;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
@@ -2256,9 +2259,30 @@ pub(crate) fn append_copied_event_jsonl(
     append_jsonl(path, &value)
 }
 
+#[cfg(unix)]
 pub fn fsync_directory(path: &Path) -> Result<(), EventLogError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
+        .map_err(|source| EventLogError::Io {
+            path: path.to_owned(),
+            source,
+        })
+}
+
+#[cfg(windows)]
+pub fn fsync_directory(path: &Path) -> Result<(), EventLogError> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .and_then(|directory| match directory.sync_all() {
+            Ok(()) => Ok(()),
+            Err(error) if matches!(error.raw_os_error(), Some(1 | 5 | 6 | 50)) => Ok(()),
+            Err(error) => Err(error),
+        })
         .map_err(|source| EventLogError::Io {
             path: path.to_owned(),
             source,

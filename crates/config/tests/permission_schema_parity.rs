@@ -195,12 +195,12 @@ fn leftover_agent_schema_is_rejected_with_removal_guidance() {
     .unwrap();
 
     let error = load_from_roots(None, Some(&root)).unwrap_err();
-    assert!(matches!(
-        error,
-        ConfigError::AgentSchemaRemoved { line: 2, .. }
-    ));
+    let ConfigError::AgentSchemaRemoved { path, line } = &error else {
+        panic!("expected removed agent schema error")
+    };
+    assert_eq!(*line, 2);
+    assert_eq!(path, &root.join("agents").join("worker.md"));
     let message = error.to_string();
-    assert!(message.contains("agents/worker.md"), "{message}");
     assert!(message.contains("remove the schema field"), "{message}");
 }
 

@@ -203,9 +203,7 @@ impl PicoUsdPerMillion {
         if coefficient.is_empty() {
             return None;
         }
-        let (whole, fraction) = coefficient
-            .split_once('.')
-            .map_or((coefficient, ""), |parts| parts);
+        let (whole, fraction) = coefficient.split_once('.').unwrap_or((coefficient, ""));
         if (whole.is_empty() && fraction.is_empty())
             || !whole.bytes().all(|byte| byte.is_ascii_digit())
             || !fraction.bytes().all(|byte| byte.is_ascii_digit())

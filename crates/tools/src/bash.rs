@@ -1,28 +1,39 @@
 use std::{
     env,
-    ffi::OsString,
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
+#[cfg(any(unix, windows))]
+use std::ffi::OsString;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStringExt;
+#[cfg(windows)]
+use std::sync::OnceLock;
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
 use async_trait::async_trait;
+use cookie_agent_engine::ToolProgress;
 use cookie_agent_engine::{
     PreparedExecutor, PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError,
-    ToolExecutionContext, ToolPreparationContext, ToolProgress, ToolProvider, ToolSpec, ToolStdin,
+    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec, ToolStdin,
 };
 use cookie_agent_protocol::PersistedToolResult as ToolResult;
-use cookie_agent_protocol::{
-    ApprovalResourceSource, OutputStream, PermissionAction, PreparedBindingLifetime,
-    SafeDisplayText, ToolCallId,
-};
+use cookie_agent_protocol::{ApprovalResourceSource, PermissionAction, PreparedBindingLifetime};
+use cookie_agent_protocol::{OutputStream, SafeDisplayText, ToolCallId};
+#[cfg(windows)]
+use process_wrap::tokio::{CommandWrap, JobObject as ProcessJobObject, KillOnDrop};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use tokio::process::Child;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    process::{Child, Command},
+    process::Command,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -225,12 +236,14 @@ where
     }
 }
 
+#[cfg(unix)]
 struct ProcessGroupChild {
     child: Option<Child>,
     process_group: i32,
     complete: bool,
 }
 
+#[cfg(unix)]
 impl ProcessGroupChild {
     fn kill_group(&mut self) {
         unsafe {
@@ -250,7 +263,47 @@ impl ProcessGroupChild {
     }
 }
 
+#[cfg(unix)]
 impl Drop for ProcessGroupChild {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.kill_group();
+            if let Some(mut child) = self.child.take()
+                && let Ok(runtime) = tokio::runtime::Handle::try_current()
+            {
+                runtime.spawn(async move {
+                    let _ = child.wait().await;
+                });
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+struct JobChild {
+    child: Option<Box<dyn process_wrap::tokio::ChildWrapper>>,
+    complete: bool,
+}
+
+#[cfg(windows)]
+impl JobChild {
+    fn kill_group(&mut self) {
+        if let Some(child) = &mut self.child {
+            let _ = child.start_kill();
+        }
+    }
+
+    async fn kill_and_reap(&mut self) {
+        self.kill_group();
+        if let Some(child) = &mut self.child {
+            let _ = child.wait().await;
+        }
+        self.complete = true;
+    }
+}
+
+#[cfg(windows)]
+impl Drop for JobChild {
     fn drop(&mut self) {
         if !self.complete {
             self.kill_group();
@@ -285,7 +338,7 @@ impl ToolProvider for BashTool {
         Ok(vec![ToolSpec {
             name: "bash".into(),
             permission_name: Self::get_permission_name("bash")?.into(),
-            description: "Execute one prepared shell command.".into(),
+            description: bash_tool_description().into(),
             parameters: schema::<BashArgs>(),
         }])
     }
@@ -387,11 +440,22 @@ impl ToolProvider for BashTool {
     }
 }
 
+#[cfg(unix)]
+fn bash_tool_description() -> &'static str {
+    "Execute one prepared shell command."
+}
+
+#[cfg(windows)]
+fn bash_tool_description() -> &'static str {
+    "Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\\Users\\name\\file') or use C:/ paths."
+}
+
 fn compact_command_line(command: &str) -> String {
     command.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 impl BashExecutor {
+    #[cfg(unix)]
     async fn execute_process(
         self,
         progress: ProgressSink,
@@ -550,6 +614,154 @@ impl BashExecutor {
             attachments: Vec::new(),
         })
     }
+
+    #[cfg(windows)]
+    async fn execute_process(
+        self,
+        progress: ProgressSink,
+        cancellation: CancellationToken,
+        stdin: Option<ToolStdin>,
+    ) -> Result<ToolResult, ToolError> {
+        self.cwd.revalidate()?;
+        self.executable.revalidate()?;
+        if cancellation.is_cancelled() {
+            return Err(ToolError::execution("prepared bash cancelled"));
+        }
+        let mut command = Command::new(self.executable.proc_fd_path());
+        command
+            .arg("-c")
+            .arg(&self.args.command)
+            .current_dir(self.cwd.proc_fd_path())
+            .stdin(if self.args.interactive {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut wrapped = CommandWrap::from(command);
+        wrapped.wrap(ProcessJobObject).wrap(KillOnDrop);
+        // ProcessJobObject adds CREATE_SUSPENDED, assigns the process to the
+        // job, and only then resumes its threads, so descendants cannot escape.
+        let mut child = wrapped
+            .spawn()
+            .map_err(|error| ToolError::execution(error.to_string()))?;
+        let stdout = child
+            .stdout()
+            .take()
+            .ok_or_else(|| ToolError::execution("bash stdout pipe missing"))?;
+        let stderr = child
+            .stderr()
+            .take()
+            .ok_or_else(|| ToolError::execution("bash stderr pipe missing"))?;
+        let budget = Arc::new(OutputPreviewBudget::default());
+        let truncation_emitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stdout_task = tokio::spawn(read_output(
+            stdout,
+            OutputStream::Stdout,
+            progress.clone(),
+            self.tool_call_id,
+            Arc::clone(&budget),
+            Arc::clone(&truncation_emitted),
+        ));
+        let stderr_task = tokio::spawn(read_output(
+            stderr,
+            OutputStream::Stderr,
+            progress,
+            self.tool_call_id,
+            budget,
+            truncation_emitted,
+        ));
+        let stdin_task = if self.args.interactive {
+            let mut child_stdin = child
+                .stdin()
+                .take()
+                .ok_or_else(|| ToolError::execution("bash stdin pipe missing"))?;
+            let mut writes = stdin
+                .ok_or_else(|| ToolError::execution("interactive bash stdin channel missing"))?;
+            Some(tokio::spawn(async move {
+                while let Some(write) = writes.recv().await {
+                    child_stdin.write_all(&write.data).await?;
+                    child_stdin.flush().await?;
+                    if write.eof {
+                        child_stdin.shutdown().await?;
+                        break;
+                    }
+                }
+                Ok::<(), std::io::Error>(())
+            }))
+        } else {
+            None
+        };
+        let mut grouped = JobChild {
+            child: Some(child),
+            complete: false,
+        };
+        enum WaitOutcome {
+            Finished(std::io::Result<std::process::ExitStatus>),
+            TimedOut,
+            Cancelled,
+        }
+        let outcome = {
+            let wrapped_child = grouped.child.as_mut().expect("prepared child exists");
+            // SAFETY: only the raw parent's wait state is observed. The wrapper
+            // remains owned by JobChild and retains all job/kill state and pipes.
+            let wait = unsafe { wrapped_child.inner_child_mut() }.wait();
+            tokio::pin!(wait);
+            tokio::select! {
+                result = tokio::time::timeout(Duration::from_millis(self.args.timeout), &mut wait) => {
+                    match result {
+                        Ok(result) => WaitOutcome::Finished(result),
+                        Err(_) => WaitOutcome::TimedOut,
+                    }
+                }
+                _ = cancellation.cancelled() => WaitOutcome::Cancelled,
+            }
+        };
+        let status = match outcome {
+            WaitOutcome::Finished(result) => {
+                result.map_err(|error| ToolError::execution(error.to_string()))?
+            }
+            WaitOutcome::TimedOut => {
+                grouped.kill_and_reap().await;
+                if let Some(task) = &stdin_task {
+                    task.abort();
+                }
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
+                return Err(ToolError::execution("bash timed out"));
+            }
+            WaitOutcome::Cancelled => {
+                grouped.kill_and_reap().await;
+                if let Some(task) = &stdin_task {
+                    task.abort();
+                }
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
+                return Err(ToolError::execution("prepared bash cancelled"));
+            }
+        };
+        if let Some(task) = &stdin_task {
+            task.abort();
+        }
+        grouped.kill_and_reap().await;
+        let stdout = stdout_task
+            .await
+            .map_err(|error| ToolError::execution(error.to_string()))??;
+        let stderr = stderr_task
+            .await
+            .map_err(|error| ToolError::execution(error.to_string()))??;
+        let stdout = String::from_utf8_lossy(&stdout);
+        let stderr = String::from_utf8_lossy(&stderr);
+        Ok(ToolResult {
+            title: crate::safe_title("Bash"),
+            output: format!("{stdout}{stderr}"),
+            metadata: serde_json::json!({"status":status.code(),"success":status.success()}),
+            truncation: None,
+            attachments: Vec::new(),
+        })
+    }
 }
 
 #[async_trait]
@@ -568,20 +780,21 @@ impl PreparedExecutor for BashExecutor {
     }
 }
 
+#[cfg(unix)]
 fn resolve_executable(name: &str) -> Result<PathBuf, ToolError> {
     let path =
         env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/local/bin:/usr/bin:/bin"));
     resolve_executable_in_path(name, &path)
 }
 
+#[cfg(unix)]
 fn resolve_executable_in_path(name: &str, path: &std::ffi::OsStr) -> Result<PathBuf, ToolError> {
     for directory in env::split_paths(path) {
         let candidate = directory.join(name);
         let Ok(metadata) = std::fs::symlink_metadata(&candidate) else {
             continue;
         };
-        if !metadata.file_type().is_symlink() && metadata.is_file() && metadata.mode() & 0o111 != 0
-        {
+        if executable_metadata_is_supported(&metadata) {
             return candidate
                 .canonicalize()
                 .map_err(|error| ToolError::execution(error.to_string()));
@@ -590,6 +803,283 @@ fn resolve_executable_in_path(name: &str, path: &std::ffi::OsStr) -> Result<Path
     Err(ToolError::execution(format!(
         "unable to resolve executable `{name}` from PATH during preparation"
     )))
+}
+
+#[cfg(unix)]
+fn executable_metadata_is_supported(metadata: &std::fs::Metadata) -> bool {
+    !metadata.file_type().is_symlink() && metadata.is_file() && metadata.mode() & 0o111 != 0
+}
+
+#[cfg(windows)]
+fn resolve_executable(name: &str) -> Result<PathBuf, ToolError> {
+    static GIT_BASH: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+
+    if name != "bash" {
+        return Err(ToolError::execution(format!(
+            "Windows executable discovery does not support `{name}`"
+        )));
+    }
+    GIT_BASH
+        .get_or_init(discover_git_bash)
+        .clone()
+        .map_err(ToolError::execution)
+}
+
+#[cfg(windows)]
+fn discover_git_bash() -> Result<PathBuf, String> {
+    for candidate in where_executable("bash") {
+        if let Some(shell) = validate_git_bash(&candidate) {
+            return Ok(shell);
+        }
+    }
+
+    for variable in ["EXEPATH", "MSYSTEM"] {
+        let Some(value) = env::var_os(variable) else {
+            continue;
+        };
+        for hint in env::split_paths(&value) {
+            for candidate in git_bash_candidates_from_hint(&hint) {
+                if let Some(shell) = validate_git_bash(&candidate) {
+                    return Ok(shell);
+                }
+            }
+        }
+    }
+
+    for candidate in [
+        PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"),
+        PathBuf::from(r"C:\Program Files (x86)\Git\bin\bash.exe"),
+    ] {
+        if let Some(shell) = validate_git_bash(&candidate) {
+            return Ok(shell);
+        }
+    }
+
+    for git in where_executable("git") {
+        for candidate in git_bash_candidates_from_git(&git) {
+            if let Some(shell) = validate_git_bash(&candidate) {
+                return Ok(shell);
+            }
+        }
+    }
+
+    Err("git-bash not found; install Git for Windows and ensure its bin directory or git.exe is on PATH"
+        .to_owned())
+}
+
+#[cfg(windows)]
+fn where_executable(name: &str) -> Vec<PathBuf> {
+    let Ok(output) = std::process::Command::new("where.exe").arg(name).output() else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+#[cfg(windows)]
+fn git_bash_candidates_from_hint(hint: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![hint.to_owned()];
+    if hint
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("bin") || name.eq_ignore_ascii_case("cmd"))
+        && let Some(parent) = hint.parent()
+    {
+        roots.push(parent.to_owned());
+    }
+    roots
+        .into_iter()
+        .flat_map(|root| {
+            [
+                root.join("bash.exe"),
+                root.join("bin").join("bash.exe"),
+                root.join("usr").join("bin").join("bash.exe"),
+            ]
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn git_bash_candidates_from_git(git: &Path) -> Vec<PathBuf> {
+    let Some(directory) = git.parent() else {
+        return Vec::new();
+    };
+    let mut roots = vec![directory.to_owned()];
+    if directory
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("shims"))
+        && let Some(scoop) = directory.parent()
+    {
+        roots.push(scoop.join("apps").join("git").join("current"));
+    }
+    if let Some(parent) = directory.parent() {
+        roots.push(parent.to_owned());
+        if directory
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+            && let Some(grandparent) = parent.parent()
+        {
+            roots.push(grandparent.to_owned());
+        }
+    }
+    roots
+        .into_iter()
+        .flat_map(|root| {
+            [
+                root.join("bin").join("bash.exe"),
+                root.join("usr").join("bin").join("bash.exe"),
+            ]
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn validate_git_bash(candidate: &Path) -> Option<PathBuf> {
+    let canonical = candidate.canonicalize().ok()?;
+    if canonical
+        .file_name()
+        .is_none_or(|name| !name.eq_ignore_ascii_case("bash.exe"))
+        || is_system32_bash(&canonical)
+        || !canonical.metadata().ok()?.is_file()
+    {
+        return None;
+    }
+
+    let bin = canonical.parent()?;
+    let root = if bin
+        .parent()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name.eq_ignore_ascii_case("usr"))
+    {
+        bin.parent()?.parent()?
+    } else {
+        bin.parent()?
+    };
+    [
+        root.join("cmd").join("git.exe"),
+        root.join("bin").join("git.exe"),
+        root.join("mingw64").join("bin").join("git.exe"),
+        root.join("mingw32").join("bin").join("git.exe"),
+    ]
+    .iter()
+    .any(|git| git.is_file())
+    .then_some(canonical)
+}
+
+#[cfg(windows)]
+fn is_system32_bash(path: &Path) -> bool {
+    is_system32_bash_with_identity(path, canonical_system32_bash())
+}
+
+#[cfg(windows)]
+fn canonical_system32_bash() -> Option<&'static Path> {
+    static SYSTEM32_BASH: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+    SYSTEM32_BASH
+        .get_or_init(|| canonical_system32_bash_from_windows_directory(&windows_directory()?))
+        .as_deref()
+}
+
+#[cfg(windows)]
+fn windows_directory() -> Option<PathBuf> {
+    use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
+
+    let mut buffer = vec![0_u16; 260];
+    loop {
+        let length =
+            unsafe { GetWindowsDirectoryW(buffer.as_mut_ptr(), u32::try_from(buffer.len()).ok()?) };
+        if length == 0 {
+            break;
+        }
+        let length = usize::try_from(length).ok()?;
+        if length < buffer.len() {
+            return Some(PathBuf::from(OsString::from_wide(&buffer[..length])));
+        }
+        if length > 32_767 {
+            break;
+        }
+        buffer.resize(length + 1, 0);
+    }
+
+    select_windows_directory(
+        None,
+        env::var_os("SYSTEMROOT").map(PathBuf::from),
+        env::var_os("WINDIR").map(PathBuf::from),
+    )
+}
+
+#[cfg(windows)]
+fn select_windows_directory(
+    api: Option<PathBuf>,
+    system_root: Option<PathBuf>,
+    windir: Option<PathBuf>,
+) -> Option<PathBuf> {
+    api.or(system_root).or(windir)
+}
+
+#[cfg(windows)]
+fn canonical_system32_bash_from_windows_directory(windows: &Path) -> Option<PathBuf> {
+    windows
+        .join("System32")
+        .canonicalize()
+        .ok()
+        .map(|system32| system32.join("bash.exe"))
+}
+
+#[cfg(windows)]
+fn is_system32_bash_with_identity(path: &Path, system32_bash: Option<&Path>) -> bool {
+    is_system32_shaped_bash(path)
+        || system32_bash.is_some_and(|system32| windows_paths_eq(path, system32))
+}
+
+#[cfg(windows)]
+fn is_system32_shaped_bash(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("bash.exe"))
+        && path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name.eq_ignore_ascii_case("System32"))
+}
+
+#[cfg(windows)]
+fn windows_paths_eq(left: &Path, right: &Path) -> bool {
+    use std::path::{Component, Prefix};
+
+    fn drive_letter(prefix: Prefix<'_>) -> Option<u8> {
+        match prefix {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => Some(letter),
+            _ => None,
+        }
+    }
+
+    fn components_eq(left: Component<'_>, right: Component<'_>) -> bool {
+        match (left, right) {
+            (Component::Prefix(left), Component::Prefix(right)) => {
+                match (drive_letter(left.kind()), drive_letter(right.kind())) {
+                    (Some(left), Some(right)) => left.eq_ignore_ascii_case(&right),
+                    _ => left.as_os_str().eq_ignore_ascii_case(right.as_os_str()),
+                }
+            }
+            (left, right) => left.as_os_str().eq_ignore_ascii_case(right.as_os_str()),
+        }
+    }
+
+    let mut left = left.components();
+    let mut right = right.components();
+    loop {
+        match (left.next(), right.next()) {
+            (Some(left), Some(right)) if components_eq(left, right) => {}
+            (None, None) => return true,
+            _ => return false,
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -1056,5 +1546,245 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         panic!("descendant process survived process-group cancellation");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::{
+        ffi::OsString,
+        os::windows::ffi::{OsStrExt, OsStringExt},
+        path::{Path, PathBuf},
+        process::Command,
+        time::Duration,
+    };
+
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, WAIT_OBJECT_0},
+        Storage::FileSystem::GetShortPathNameW,
+        System::Threading::{OpenProcess, WaitForSingleObject},
+    };
+
+    use super::{
+        CommandWrap, KillOnDrop, ProcessJobObject, canonical_system32_bash,
+        canonical_system32_bash_from_windows_directory, git_bash_candidates_from_git,
+        is_system32_bash, is_system32_bash_with_identity, resolve_executable,
+        select_windows_directory, windows_paths_eq,
+    };
+
+    const TEST_NAME: &str = "bash::windows_tests::job_object_kills_spawned_process_tree";
+
+    fn single_quote_for_bash(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+
+    fn short_path(path: &Path) -> Option<PathBuf> {
+        let wide = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let required = unsafe { GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
+        if required == 0 {
+            return None;
+        }
+        let mut output = vec![0_u16; required as usize];
+        let written = unsafe { GetShortPathNameW(wide.as_ptr(), output.as_mut_ptr(), required) };
+        (written != 0 && written < required)
+            .then(|| PathBuf::from(OsString::from_wide(&output[..written as usize])))
+    }
+
+    #[test]
+    fn discovery_rejects_wsl_and_covers_scoop_git_shims() {
+        let system32 = Path::new(r"C:\Windows\System32\bash.exe");
+        assert!(windows_paths_eq(
+            Path::new(r"\\?\C:\Windows\System32\bash.exe"),
+            system32,
+        ));
+        assert!(windows_paths_eq(
+            Path::new(r"c:\WINDOWS\system32\BASH.EXE"),
+            system32,
+        ));
+        assert!(!windows_paths_eq(
+            Path::new(r"C:\Windows\System32-evil\bash.exe"),
+            system32,
+        ));
+
+        let candidates =
+            git_bash_candidates_from_git(Path::new(r"C:\Users\name\scoop\shims\git.exe"));
+        assert!(candidates.iter().any(|candidate| {
+            candidate
+                .to_string_lossy()
+                .eq_ignore_ascii_case(r"C:\Users\name\scoop\apps\git\current\bin\bash.exe")
+        }));
+    }
+
+    #[test]
+    fn system32_guard_fails_closed_without_trusted_identity() {
+        for candidate in [
+            r"C:\Windows\System32\bash.exe",
+            r"\\?\C:\Windows\System32\bash.exe",
+            r"c:\WINDOWS\system32\BASH.EXE",
+        ] {
+            assert!(is_system32_bash_with_identity(Path::new(candidate), None));
+        }
+        assert!(!is_system32_bash_with_identity(
+            Path::new(r"C:\Windows\System32-evil\bash.exe"),
+            None,
+        ));
+    }
+
+    #[test]
+    fn system32_guard_rejects_shape_with_mismatched_identity() {
+        let fake_identity = Path::new(r"\\?\D:\FakeWindows\System32\bash.exe");
+        assert!(is_system32_bash_with_identity(
+            Path::new(r"C:\Windows\System32\bash.exe"),
+            Some(fake_identity),
+        ));
+        assert!(!is_system32_bash_with_identity(
+            Path::new(r"C:\Windows\System32-evil\bash.exe"),
+            Some(fake_identity),
+        ));
+    }
+
+    #[test]
+    fn windows_directory_resolution_handles_missing_and_unusable_windir() {
+        let api = PathBuf::from(r"C:\Windows");
+        assert_eq!(
+            select_windows_directory(Some(api.clone()), None, None),
+            Some(api.clone())
+        );
+        assert_eq!(
+            select_windows_directory(None, Some(api.clone()), None),
+            Some(api)
+        );
+        assert_eq!(select_windows_directory(None, None, None), None);
+
+        let directory = tempfile::tempdir().expect("temporary root");
+        let unusable_windir = directory.path().join("missing-windows");
+        let selected = select_windows_directory(None, None, Some(unusable_windir))
+            .expect("WINDIR fallback selected");
+        let identity = canonical_system32_bash_from_windows_directory(&selected);
+        assert_eq!(identity, None);
+        assert!(is_system32_bash_with_identity(
+            Path::new(r"C:\Windows\System32\bash.exe"),
+            identity.as_deref(),
+        ));
+    }
+
+    #[test]
+    fn system32_short_name_is_rejected_when_available() {
+        let Some(system32) = canonical_system32_bash() else {
+            return;
+        };
+        let Some(short) = short_path(system32) else {
+            return;
+        };
+        if !windows_paths_eq(&short, system32) {
+            let canonical_short = short.canonicalize().expect("canonicalize 8.3 alias");
+            assert!(is_system32_bash(&canonical_short));
+        }
+    }
+
+    #[test]
+    fn discovered_git_bash_reads_native_windows_paths() {
+        let shell = resolve_executable("bash").expect("Git Bash on windows-latest");
+        let directory = tempfile::tempdir().expect("temporary root");
+        let file = directory.path().join("native path.txt");
+        std::fs::write(&file, b"native-path-round-trip").expect("write fixture");
+
+        let native = file.to_string_lossy();
+        let slash_form = native.replace('\\', "/");
+        for path in [native.as_ref(), slash_form.as_str()] {
+            let output = Command::new(&shell)
+                .args(["-c", &format!("cat -- {}", single_quote_for_bash(path))])
+                .output()
+                .expect("invoke discovered Git Bash");
+            assert!(
+                output.status.success(),
+                "Git Bash could not read {path:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout, b"native-path-round-trip");
+        }
+    }
+
+    #[tokio::test]
+    async fn job_object_kills_spawned_process_tree() {
+        if std::env::var_os("COOKIE_JOB_LEAF").is_some() {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            return;
+        }
+        if let Some(pid_file) = std::env::var_os("COOKIE_JOB_PARENT") {
+            let mut leaves = Vec::new();
+            for _ in 0..8 {
+                leaves.push(
+                    tokio::process::Command::new(std::env::current_exe().unwrap())
+                        .args(["--exact", TEST_NAME, "--nocapture"])
+                        .env("COOKIE_JOB_LEAF", "1")
+                        .spawn()
+                        .expect("spawn leaf"),
+                );
+            }
+            std::fs::write(
+                pid_file,
+                leaves
+                    .iter()
+                    .map(|leaf| leaf.id().expect("leaf pid").to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+            .expect("pid file");
+            drop(leaves);
+            return;
+        }
+
+        let directory = tempfile::tempdir().expect("temporary root");
+        let pid_file = directory.path().join("leaf.pid");
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", TEST_NAME, "--nocapture"])
+            .env("COOKIE_JOB_PARENT", &pid_file);
+        let mut wrapped = CommandWrap::from(command);
+        wrapped.wrap(ProcessJobObject).wrap(KillOnDrop);
+        let mut parent = wrapped.spawn().expect("spawn suspended job parent");
+        let leaf_pids = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(pids) = std::fs::read_to_string(&pid_file) {
+                    break pids
+                        .split(',')
+                        .map(|pid| pid.parse::<u32>().expect("leaf pid"))
+                        .collect::<Vec<_>>();
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("leaves started");
+        let parent_status = tokio::time::timeout(Duration::from_secs(2), async {
+            // SAFETY: the wrapper remains alive and only parent wait state changes.
+            unsafe { parent.inner_child_mut() }.wait().await
+        })
+        .await
+        .expect("parent prompt return was delayed by descendants")
+        .expect("parent wait");
+        assert!(parent_status.success());
+        parent.start_kill().expect("terminate job");
+        tokio::time::timeout(Duration::from_secs(5), parent.wait())
+            .await
+            .expect("parent terminated")
+            .expect("parent wait");
+
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        for leaf_pid in leaf_pids {
+            let leaf = unsafe { OpenProcess(SYNCHRONIZE, 0, leaf_pid) };
+            if !leaf.is_null() {
+                let waited = unsafe { WaitForSingleObject(leaf, 5_000) };
+                unsafe {
+                    CloseHandle(leaf);
+                }
+                assert_eq!(waited, WAIT_OBJECT_0, "leaf survived job termination");
+            }
+        }
     }
 }

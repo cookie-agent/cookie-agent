@@ -481,9 +481,11 @@ fn invalid_shadowed_provider_is_still_a_hard_error() {
     write_config(&workspace, &custom("https://workspace.example/v1"));
 
     let error = load_from_roots(Some(&user), Some(&workspace)).unwrap_err();
-    let message = error.to_string();
-    assert!(matches!(error, ConfigError::Toml(_)));
-    assert!(message.contains("user/config.toml"), "{message}");
+    let ConfigError::Toml(message) = error else {
+        panic!("expected TOML error for invalid user provider")
+    };
+    let expected_path = user.join("config.toml").display().to_string();
+    assert!(message.contains(&expected_path), "{message}");
     assert!(message.contains("unknown"), "{message}");
 }
 

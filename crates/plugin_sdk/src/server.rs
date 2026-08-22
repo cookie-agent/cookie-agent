@@ -1479,7 +1479,7 @@ mod tests {
         ToolCallId, extension_initialize_request, extension_shutdown_notification,
     };
     use serde_json::json;
-    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    use tokio::io::{AsyncBufReadExt as _, BufReader};
 
     use super::*;
     use crate::{allow, replace};
