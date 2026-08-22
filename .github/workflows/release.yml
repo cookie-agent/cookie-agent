@@ -140,6 +140,9 @@ jobs:
         run: |
           ${{ matrix.packages_install }}
       - name: Build artifacts
+        # Hand-maintained (allow-dirty = ["ci"]): bash on every runner — the
+        # cargo metadata pre-step below uses /dev/null, which pwsh misreads.
+        shell: bash
         run: |
           cargo metadata --locked --format-version=1 > /dev/null
           # Actually do builds and make zips and whatnot
