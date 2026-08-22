@@ -46,11 +46,16 @@ for your platform, verify its checksum, extract it, and place `cookie` or
 
 ## Nightly builds
 
-The rolling
-[`nightly` prerelease](https://github.com/cookie-agent/cookie-agent/releases/tag/nightly)
-contains the same five platform archives built from the latest successful push
-to `main`. Nightly builds are replaced in place and are intended for testing.
-Run `cookie --version` to see the source commit hash embedded in the binary.
+Every push to `main` creates a timestamped `v*-alpha.<timestamp>` prerelease with
+archives for all seven targets. Nightly prereleases are retained for about two
+weeks, with at least the newest three always kept. They are intended for
+testing; run `cookie --version` to see the source commit hash embedded in the
+binary.
+
+Open the [prerelease list](https://github.com/cookie-agent/cookie-agent/releases?q=prerelease%3Atrue)
+and select a nightly to download an archive or use its generated installer
+command. Each prerelease provides PowerShell (`irm ... | iex`) and shell
+(`curl ... | sh`) installers pinned to that prerelease.
 
 ## Build from source
 

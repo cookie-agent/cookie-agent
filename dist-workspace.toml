@@ -23,6 +23,7 @@ install-path = "CARGO_HOME"
 github-attestations = false
 precise-builds = true
 allow-dirty = ["ci"]
+release-branch = "main"
 
 [dist.binaries]
 "*" = ["cookie"]
@@ -31,3 +32,7 @@ allow-dirty = ["ci"]
 "actions/checkout" = "11bd71901bbe5b1630ceea73d27597364c9af683" # v4.2.2
 "actions/upload-artifact" = "ea165f8d65b6e75b540449e92b4886f43607fa02" # v4.6.2
 "actions/download-artifact" = "d3f86a106a0bac45b974a628896c90dbdf5c8093" # v4.3.0
+"swatinem/rust-cache" = "6323deb102c322ba6fcbdcafc7e3dddab59af2b6" # v2.9.2
+
+[dist.github-custom-runners]
+"aarch64-pc-windows-msvc" = "windows-11-arm"
