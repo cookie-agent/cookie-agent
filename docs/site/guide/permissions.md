@@ -44,6 +44,11 @@ as `git *` also matches a longer command beginning with `git`. See
 [Security guarantees](security.md) for the platform-specific filesystem and
 process boundaries behind these tools.
 
+Permission policy does not validate cookie agent's pre-existing private-state
+paths. New state is created with owner-only permissions, but existing loose,
+foreign-owned, hard-linked, or symlinked state is read and written as-is. This is
+part of the local storage threat model, not an `allow`/`ask`/`deny` decision.
+
 MCP checks are always scoped. A rule such as `"github_*": allow` covers every
 tool from that generated server prefix, while a more-specific deny can override
 one tool. An unmatched MCP tool asks.

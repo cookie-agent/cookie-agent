@@ -119,11 +119,14 @@ fn load_or_create_token_unix(path: &Path) -> Result<String, TokenError> {
         #[cfg(test)]
         {
             let parent_path = path.parent().ok_or(TokenError::UnsafePath)?;
-            fs::create_dir_all(parent_path).map_err(TokenError::Io)?;
-            let directory = fs::File::open(parent_path).map_err(TokenError::Io)?;
-            rustix::fs::fchmod(&directory, rustix::fs::Mode::RWXU)
-                .map_err(|error| TokenError::Io(error.into()))?;
-            directory
+            if !parent_path.exists() {
+                use std::os::unix::fs::DirBuilderExt as _;
+
+                let mut builder = fs::DirBuilder::new();
+                builder.recursive(true).mode(0o700);
+                builder.create(parent_path).map_err(TokenError::Io)?;
+            }
+            fs::File::open(parent_path).map_err(TokenError::Io)?
         }
         #[cfg(not(test))]
         unreachable!()
@@ -173,10 +176,8 @@ fn open_trusted_token_anchor(path: &Path) -> Result<fs::File, TokenError> {
     if !path.is_absolute() {
         return Err(TokenError::UnsafePath);
     }
-    let flags = rustix::fs::OFlags::RDONLY
-        | rustix::fs::OFlags::DIRECTORY
-        | rustix::fs::OFlags::NOFOLLOW
-        | rustix::fs::OFlags::CLOEXEC;
+    let flags =
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC;
     let mut current = fs::File::from(
         rustix::fs::open("/", flags, rustix::fs::Mode::empty()).map_err(token_path_error)?,
     );
@@ -192,26 +193,24 @@ fn open_trusted_token_anchor(path: &Path) -> Result<fs::File, TokenError> {
             _ => return Err(TokenError::UnsafePath),
         }
     }
-    validate_safe_anchor(&current.metadata().map_err(TokenError::Io)?)?;
     Ok(current)
 }
 
 #[cfg(unix)]
 fn open_or_create_private_dir(parent: &fs::File, name: &str) -> Result<fs::File, TokenError> {
     match open_directory_at(parent, name) {
-        Ok(directory) => {
-            validate_private_directory(&directory.metadata().map_err(TokenError::Io)?)?;
-            Ok(directory)
-        }
+        Ok(directory) => Ok(directory),
         Err(TokenError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
-            match rustix::fs::mkdirat(parent, name, rustix::fs::Mode::RWXU) {
-                Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+            let created = match rustix::fs::mkdirat(parent, name, rustix::fs::Mode::RWXU) {
+                Ok(()) => true,
+                Err(rustix::io::Errno::EXIST) => false,
                 Err(error) => return Err(TokenError::Io(error.into())),
-            }
+            };
             let directory = open_directory_at(parent, name)?;
-            rustix::fs::fchmod(&directory, rustix::fs::Mode::RWXU)
-                .map_err(|error| TokenError::Io(error.into()))?;
-            validate_private_directory(&directory.metadata().map_err(TokenError::Io)?)?;
+            if created {
+                rustix::fs::fchmod(&directory, rustix::fs::Mode::RWXU)
+                    .map_err(|error| TokenError::Io(error.into()))?;
+            }
             Ok(directory)
         }
         Err(error) => Err(error),
@@ -220,10 +219,8 @@ fn open_or_create_private_dir(parent: &fs::File, name: &str) -> Result<fs::File,
 
 #[cfg(unix)]
 fn open_directory_at(parent: &fs::File, name: &str) -> Result<fs::File, TokenError> {
-    let flags = rustix::fs::OFlags::RDONLY
-        | rustix::fs::OFlags::DIRECTORY
-        | rustix::fs::OFlags::NOFOLLOW
-        | rustix::fs::OFlags::CLOEXEC;
+    let flags =
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC;
     rustix::fs::openat(parent, name, flags, rustix::fs::Mode::empty())
         .map(fs::File::from)
         .map_err(token_path_error)
@@ -231,14 +228,9 @@ fn open_directory_at(parent: &fs::File, name: &str) -> Result<fs::File, TokenErr
 
 #[cfg(unix)]
 fn open_token_file(parent: &fs::File) -> Result<Option<fs::File>, TokenError> {
-    let flags =
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC;
+    let flags = rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC;
     match rustix::fs::openat(parent, TOKEN_FILE, flags, rustix::fs::Mode::empty()) {
-        Ok(file) => {
-            let file = fs::File::from(file);
-            validate_token_file(&file.metadata().map_err(TokenError::Io)?)?;
-            Ok(Some(file))
-        }
+        Ok(file) => Ok(Some(fs::File::from(file))),
         Err(rustix::io::Errno::NOENT) => Ok(None),
         Err(error) => Err(token_path_error(error)),
     }
@@ -259,57 +251,8 @@ fn create_token_file(parent: &fs::File, name: &str) -> Result<fs::File, TokenErr
 }
 
 #[cfg(unix)]
-fn validate_safe_anchor(metadata: &fs::Metadata) -> Result<(), TokenError> {
-    use std::os::unix::fs::MetadataExt as _;
-    if !metadata.is_dir()
-        || metadata.file_type().is_symlink()
-        || metadata.uid() != rustix::process::getuid().as_raw()
-        || metadata.mode() & 0o022 != 0
-    {
-        Err(TokenError::UnsafePath)
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(unix)]
-fn validate_private_directory(metadata: &fs::Metadata) -> Result<(), TokenError> {
-    use std::os::unix::fs::MetadataExt as _;
-    if !metadata.is_dir()
-        || metadata.file_type().is_symlink()
-        || metadata.uid() != rustix::process::getuid().as_raw()
-        || metadata.mode() & 0o777 != 0o700
-    {
-        Err(TokenError::UnsafePath)
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(unix)]
-fn validate_token_file(metadata: &fs::Metadata) -> Result<(), TokenError> {
-    use std::os::unix::fs::MetadataExt as _;
-    if !metadata.is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.uid() != rustix::process::getuid().as_raw()
-        || metadata.mode() & 0o777 != 0o600
-        || metadata.nlink() != 1
-        || metadata.len() != TOKEN_ENCODED_BYTES as u64
-    {
-        Err(TokenError::UnsafePath)
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(unix)]
 fn token_path_error(error: rustix::io::Errno) -> TokenError {
-    let error: io::Error = error.into();
-    if matches!(error.raw_os_error(), Some(code) if code == libc::ELOOP || code == libc::ENOTDIR) {
-        TokenError::UnsafePath
-    } else {
-        TokenError::Io(error)
-    }
+    TokenError::Io(error.into())
 }
 
 #[cfg(unix)]
@@ -331,6 +274,56 @@ fn generate_token() -> Result<String, TokenError> {
     let mut bytes = [0_u8; TOKEN_BYTES];
     getrandom::getrandom(&mut bytes).map_err(|error| TokenError::Io(error.into()))?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+    use super::*;
+
+    #[test]
+    fn existing_loose_symlinked_token_is_used_as_is() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let parent = temporary.path().join("daemon");
+        fs::create_dir(&parent).expect("loose token directory");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        let target = parent.join("shared-token");
+        let token = generate_token().unwrap();
+        fs::write(&target, &token).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+        let path = parent.join(TOKEN_FILE);
+        symlink(&target, &path).unwrap();
+
+        assert_eq!(load_or_create_token(&path).unwrap(), token);
+        assert_eq!(
+            fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+    }
+
+    #[test]
+    fn new_token_is_private_at_creation() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let path = temporary.path().join("daemon").join(TOKEN_FILE);
+        load_or_create_token(&path).unwrap();
+        assert_eq!(
+            fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 }
 
 #[cfg(windows)]
@@ -355,6 +348,7 @@ mod windows_tests {
         let first = load_or_create_token(&path).expect("first token");
         let second = load_or_create_token(&path).expect("second token");
         assert_eq!(first, second);
-        cookie_agent_models::secure_store::validate_windows_path_acl(&path).expect("token ACL");
+        cookie_agent_models::secure_store::verify_windows_private_creation(&path)
+            .expect("token ACL");
     }
 }
