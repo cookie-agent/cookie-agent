@@ -79,8 +79,16 @@ jobs:
       - run: cargo test --locked -p cookie_agent_models --test release_integrity release_binary_contains_no_secret_material -- --ignored --exact
 
   windows:
-    name: Windows MSVC
-    runs-on: windows-latest
+    name: Windows MSVC (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-latest
+          - arch: aarch64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
@@ -115,9 +123,45 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        if: runner.os == 'Windows'
         with:
           toolchain: 1.88.0
-          targets: ${{ matrix.target }}
+      - name: Install Rust 1.88.0 with retries
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          toolchain=1.88.0
+          target='${{ matrix.target }}'
+          CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+          export CARGO_HOME
+          export PATH="$CARGO_HOME/bin:$PATH"
+          echo "CARGO_HOME=$CARGO_HOME" >> "$GITHUB_ENV"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+
+          for attempt in 1 2 3; do
+            echo "Installing Rust $toolchain for $target (attempt $attempt/3)"
+            install_ok=true
+            if ! command -v rustup >/dev/null 2>&1; then
+              curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
+                https://sh.rustup.rs \
+                | sh -s -- --default-toolchain none --no-modify-path -y \
+                || install_ok=false
+            fi
+            if [[ "$install_ok" == true ]] \
+              && RUSTUP_PERMIT_COPY_RENAME=1 rustup toolchain install "$toolchain" \
+                --target "$target" --profile minimal --no-self-update \
+              && rustup default "$toolchain"; then
+              rustc --version --verbose
+              exit 0
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              echo "Failed to install Rust $toolchain for $target after 3 attempts" >&2
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
       - name: Install musl build tools
         if: ${{ matrix.target == 'x86_64-unknown-linux-musl' }}
         run: |
